@@ -48,10 +48,24 @@ def main():
         started = time.monotonic()
         process = subprocess.Popen([str(binary)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         peak_rss = peak_footprint = 0
+        phase_memory = {}
         while process.poll() is None and time.monotonic() - started < 30:
             rss, footprint = main_memory(process.pid)
             peak_rss = max(peak_rss, rss)
             peak_footprint = max(peak_footprint, footprint)
+            try:
+                checkpoint = json.loads((directory / "checkpoint.json").read_text())
+                phase = checkpoint["phase"]
+                if phase not in phase_memory:
+                    phase_memory[phase] = {"samples": 0, "rssBytes": [], "physicalFootprintBytes": []}
+                sample = phase_memory[phase]
+                if rss:
+                    sample["samples"] += 1
+                    sample["rssBytes"].append(rss)
+                    if footprint:
+                        sample["physicalFootprintBytes"].append(footprint)
+            except (OSError, ValueError, KeyError):
+                pass  # A checkpoint can be replaced between polling reads.
             time.sleep(0.05)
         if process.poll() is None:
             process.kill()
@@ -59,8 +73,10 @@ def main():
         report_file = directory / "report.json"
         report = json.loads(report_file.read_text()) if report_file.exists() else {"passed": False, "error": stderr.decode(errors="replace")[-2000:]}
         report.update(processElapsedMs=round((time.monotonic() - started) * 1000), mainProcessPeakRssMiB=round(peak_rss / 1048576, 2), mainProcessPeakPhysicalFootprintMiB=round(peak_footprint / 1048576, 2), returnCode=process.returncode)
+        report["mainProcessMemoryAvailable"] = peak_rss > 0
+        report["phaseMemory"] = phase_memory
         results.append(report)
-    evidence = {"binarySha256": build["sha256"], "platform": platform.platform(), "scope": "Hidden native integration fixture. Main-process memory only; includes startup peaks. OS services may be warm. Does not measure total idle RAM, visible paint, or display FPS.", "runs": results}
+    evidence = {"build": build, "binarySha256": build["sha256"], "platform": platform.platform(), "scope": "Hidden native integration fixture, including ten tab/result cleanup cycles with in-flight Arrow requests. Phase memory is sampled every 50 ms for the main process only; WebView helpers are excluded. Shell checkpoint measures bootstrap completion, not visible paint. OS services may be warm. Does not qualify total idle RAM, fully cold startup, or display FPS.", "acceptance": {"totalIdleMemory": "unqualified", "coldVisibleStartup": "unqualified", "displayFps": "unqualified"}, "runs": results}
     (root / "runs.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(evidence, indent=2))
     if any(not row.get("passed") or row.get("returnCode") != 0 for row in results):

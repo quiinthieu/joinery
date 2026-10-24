@@ -78,3 +78,24 @@ impl SecretStore for MemorySecrets {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_store_failures_have_safe_actionable_messages() {
+        use keyring_core::Error;
+        for error in [
+            Error::NoStorageAccess(Box::new(std::io::Error::other(
+                "private locked-store detail",
+            ))),
+            Error::PlatformFailure(Box::new(std::io::Error::other("private OS account detail"))),
+            Error::BadEncoding(b"private secret bytes".to_vec()),
+        ] {
+            let mapped = super::store_error(error);
+            assert_eq!(mapped.code, crate::domain::ErrorCode::CredentialStore);
+            assert!(mapped.message.contains("session"));
+            assert!(mapped.message.contains("unlock"));
+            assert!(!mapped.message.contains("private"));
+        }
+    }
+}

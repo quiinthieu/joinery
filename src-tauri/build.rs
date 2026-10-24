@@ -33,6 +33,7 @@ fn main() {
             "probe_ssh",
             "trust_ssh_key",
             "native_smoke_fixture",
+            "native_smoke_checkpoint",
             "native_smoke_report",
         ]),
     ))

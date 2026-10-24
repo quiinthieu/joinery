@@ -539,9 +539,9 @@ Keep access and refresh tokens in memory only. [Snowflake OAuth for local applic
 
 The read-only SQL pilot has browser sign-in, explicit context, bounded results,
 async polling, and own-query cancellation. One live account passed browser SSO,
-identity checks, and `SELECT 1`. The next local implementation adds catalog
-discovery, lazy schema-aware completion, structure inspection, and read-only
-table previews; these are not in the preview.2 download. Broader account
+identity checks, and `SELECT 1`. Preview.3 ships catalog discovery, lazy
+schema-aware completion, structure inspection, and read-only table previews.
+These additions passed synthetic API/browser fixtures; broader live table/account
 qualification and full P6 exit criteria remain open.
 
 Discover accessible objects in the configured database through
@@ -608,16 +608,17 @@ Deliver the remaining work in reviewable batches, preserving the P0–P7 exit ga
 
 | Batch | Scope | Current status / exit |
 |---|---|---|
-| A | Finish browsing in the existing Snowflake pilot | Catalog, lazy columns/completion, structure and bounded read-only previews implemented locally; release and approved-table live qualification pending |
-| B | Runtime and performance qualification | Next: total idle memory including WebView helpers, visible startup/frame-time instrumentation, repeatable cleanup cycles, and native credential-store flows; target-hardware and OS checks must be recorded separately |
+| A | Finish browsing in the existing Snowflake pilot | Shipped in preview.3 after five PR checks and downloaded-archive verification; approved-table live qualification pending |
+| B | Runtime and performance qualification | Validation infrastructure implemented: phase checkpoints, repeated native/PostgreSQL cleanup, native Keychain round trip and injected failure coverage pass. Remaining: total helper memory, visible startup/frame times, real OS locked-store behavior and sustained target-hardware qualification |
 | C | P4 MySQL/MariaDB | Pending; adapter, safety/dialect/value fidelity, table paging/editing, TLS/SSH and cancellation with disposable engines |
 | D | P5 Redis | Pending; native console, bounded SCAN/value browser, edits and backend command policy |
 | E | Complete P6/P7 release gates | Pending; Snowflake account/token/cancellation/value matrix, accessibility, migrations/crash recovery, signed distribution and verified updates, packaged Windows/Linux checks |
 
 Keep each batch's implementation, local verification, merge, and published release
-states distinct on the project Site. The preview.2 release is unchanged by a local
-feature build. No new production table reads are implied by the earlier identity
-and SELECT 1 canary approval; use explicit approved tables for live qualification.
+states distinct on the project Site. Preview.3 ships batch A; batch B ships source
+validation tooling with performance qualification tracked separately. No new production table reads are implied
+by the earlier identity and SELECT 1 canary approval; use explicit approved tables
+for live qualification.
 
 # Suggested dependency baseline
 

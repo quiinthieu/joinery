@@ -7,29 +7,25 @@ is the canonical plan and shipping-status destination. Update the Site after
 implementation, verification, merge, and release milestones. The detailed
 engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
-The [macOS preview](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.2)
-includes the PostgreSQL studio and a read-only Snowflake SQL pilot. Shipped
-features, remaining work, and connection-test results are tracked on the Site.
-Keep connection secrets in the ignored local `.env`; `.env.example` provides
-blank inventory fields. These fields are transferred manually into the app,
-not loaded by the frontend or automatically imported into profiles.
+The [macOS preview.3](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.3)
+includes the PostgreSQL studio and a read-only Snowflake SQL/catalog pilot.
+Shipped features, remaining work, and connection-test results are tracked on the
+Site. Keep connection secrets in the ignored local `.env`; `.env.example`
+provides blank inventory fields. Transfer these manually into the app; the
+frontend does not load or automatically import them.
 
-The preview includes a **read-only Snowflake SQL pilot**. In New
-connection, choose Snowflake and enter the account hostname, username, database,
-uppercase role, warehouse, and schema. Joinery opens the system browser using
-Snowflake's local-application OAuth flow; no password or OAuth token is entered
-in Joinery. The account must enable the `SNOWFLAKE$LOCAL_APPLICATION` integration.
-Only SQL reads are available in this pilot; catalog browsing and editing remain
-unfinished. Use a database-enforced read-only role and a bounded warehouse/query
-budget. A live read-only canary passed browser SSO, context verification, and
-`SELECT 1`; broader production qualification remains open.
+In New connection, choose Snowflake and enter the account hostname, username,
+database, uppercase role, warehouse, and schema. Joinery opens the system browser
+using local-application OAuth; no password or token is entered in Joinery. The
+account must enable `SNOWFLAKE$LOCAL_APPLICATION`. Use a database-enforced
+read-only role and a bounded warehouse/query budget.
 
-The current development branch adds Snowflake catalog discovery, lazy column
-completion, structure inspection, and read-only table previews. Previews are
-unordered and stop at 500 rows or 2 MiB; use SQL for larger or ordered results.
-Catalog discovery is scoped to the configured database and limited to 10,000
-objects, with an explicit error instead of a partial catalog. This work is not
-included in the `preview.2` download. Snowflake editing remains disabled.
+Snowflake supports read-only SQL, catalog discovery, lazy column completion,
+structure inspection, and unordered table previews capped at 500 rows or 2 MiB.
+Use SQL for larger or ordered results. Catalog discovery covers the configured
+database and rejects inventories beyond 10,000 objects. Editing stays disabled.
+The live canary covered browser SSO, context verification and `SELECT 1`;
+catalog/table tests use synthetic fixtures and live table qualification is open.
 
 ## Development
 
@@ -110,7 +106,15 @@ pnpm desktop:smoke:build
 pnpm test:native
 ```
 
-This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Detailed scope and measurements are in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
+This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. It also checks ten tab/result cleanup cycles with Arrow requests in flight and records shell/loading/release checkpoints with main-process memory samples. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Build provenance records the source revision, tree, and whether the working tree was dirty. The shell checkpoint is hidden DOM readiness; WebView helper memory, visible paint, and display FPS remain unqualified.
+
+To explicitly qualify the native credential store with one disposable random entry:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test credential_store native_store_roundtrip_and_cleanup -- --ignored --test-threads=1
+```
+
+This writes, reads, deletes, and checks absence of that synthetic entry. It never reads saved connection credentials. It is ignored in ordinary validation/CI; it needs native credential-store access on the local host. Locked/denied-store behavior is separately covered through injected failures; real OS locked-store qualification is still pending. Detailed scope and measurements are in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 
 MySQL/MariaDB, Redis, broader Snowflake production qualification,
 distribution signing, and full performance qualification remain on the
