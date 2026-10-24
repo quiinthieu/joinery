@@ -80,6 +80,8 @@ pub fn run() {
             commands::execute_plan,
             commands::cancel_run,
             commands::catalog,
+            commands::redis_scan,
+            commands::redis_inspect,
             commands::table_schema,
             commands::browse_table,
             commands::result_range,

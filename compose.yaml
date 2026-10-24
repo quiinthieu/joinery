@@ -1,5 +1,16 @@
 name: joinery-development
 services:
+  redis:
+    image: redis:8.2-alpine
+    profiles: [redis]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--requirepass", "joinery-redis-local-only", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "joinery-redis-local-only", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
   mysql:
     image: mysql:8.4
     profiles: [mysql]

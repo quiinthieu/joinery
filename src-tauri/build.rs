@@ -18,6 +18,8 @@ fn main() {
             "execute_plan",
             "cancel_run",
             "catalog",
+            "redis_scan",
+            "redis_inspect",
             "table_schema",
             "browse_table",
             "result_range",

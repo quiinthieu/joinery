@@ -59,9 +59,9 @@ async fn rpc(
             "save_profile" => {
                 let profile: ConnectionProfile = arg(&args, "profile")?;
                 if profile.host != "127.0.0.1"
-                    || !matches!((profile.engine,profile.port),(EngineKind::Postgres,55432)|(EngineKind::Mysql,53306|53307))
-                    || profile.database != "joinery"
-                    || profile.username != "joinery"
+                    || !matches!((profile.engine,profile.port),(EngineKind::Postgres,55432)|(EngineKind::Mysql,53306|53307)|(EngineKind::Redis,56379))
+                    || (profile.engine!=EngineKind::Redis && (profile.database!="joinery"||profile.username!="joinery"))
+                    || (profile.engine==EngineKind::Redis && (profile.database!="0"||profile.username!="default"))
                     || profile.ssh.is_some()
                     || profile.environment == Environment::Production
                 {
@@ -150,6 +150,8 @@ async fn rpc(
                 studio.cancel(&arg::<String>(&args, "runId")?).await?;
                 Value::Null
             }
+            "redis_scan" => json!(studio.redis_scan(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"pattern")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
+            "redis_inspect" => json!(studio.redis_inspect(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"argument")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
             "table_schema" => json!(
                 studio

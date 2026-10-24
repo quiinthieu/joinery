@@ -529,6 +529,17 @@ Provide a dedicated key browser and command console:
 - Explicit treatment of expired keys and duplicate SCAN results.
 - Standalone Redis in v1.0; Cluster and Sentinel are stretch goals.
 
+Current implementation uses redis-rs for command encoding and RESP2 parsing
+over an owned async TCP/TLS stream. A framing guard checks declared lengths,
+node count and depth before decoding (2 MiB / 10,000 / 16). This avoids an
+uncancellable background multiplexed task. Blocking, scripting, transaction and
+administrative commands are rejected before the complete batch is submitted.
+All writes require immutable one-use review; production adds the passphrase gate.
+Browser cursors are opaque, scoped to pattern/key/type and expire after five
+minutes. Preview limits are explicit; no unbounded KEYS/HGETALL/SMEMBERS reads.
+String forms keep TTL; values may change after inspection and command batches
+have no automatic rollback. Lost write acknowledgements are outcome unknown.
+
 ### Snowflake
 
 Use Snowflake's built-in local-application OAuth authorization-code flow with
@@ -614,7 +625,7 @@ Deliver the remaining work in reviewable batches, preserving the P0–P7 exit ga
 | A | Finish browsing in the existing Snowflake pilot | Shipped in preview.3 after five PR checks and downloaded-archive verification; approved-table live qualification pending |
 | B | Runtime and performance qualification | Validation infrastructure implemented: phase checkpoints, repeated native/PostgreSQL cleanup, native Keychain round trip and injected failure coverage pass. Remaining: total helper memory, visible startup/frame times, real OS locked-store behavior and sustained target-hardware qualification |
 | C | P4 MySQL/MariaDB | Implemented and locally tested against MySQL 8.4/MariaDB 11.4: exact values, schema/paging, reviewed InnoDB edits, TLS/SSH and owned cancellation. Merge/release evidence tracked on Site; external process cancellation and broader version/production qualification pending |
-| D | P5 Redis | Pending; native console, bounded SCAN/value browser, edits and backend command policy |
+| D | P5 Redis | Implemented and locally tested: standalone console, SCAN/type/TTL browser, typed bounded previews/edits, backend command policy, byte fidelity, owned cancellation and verified TLS/SSH. Merge/release evidence tracked on Site; Cluster/Sentinel/streams and production qualification remain open |
 | E | Complete P6/P7 release gates | Pending; Snowflake account/token/cancellation/value matrix, accessibility, migrations/crash recovery, signed distribution and verified updates, packaged Windows/Linux checks |
 
 Keep each batch's implementation, local verification, merge, and published release
@@ -696,9 +707,8 @@ tokio-postgres-rustls = { version = "0.14", features = [
 mysql_async = { version = "0.37", default-features = false, features = [
   "minimal-rust", "rustls-tls", "ring", "tls12"
 ] }
-redis = { version = "1", default-features = false, features = [
-  "tokio-rustls-comp", "tls-rustls-webpki-roots"
-] }
+redis = { version = "1.8", default-features = false }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 russh = { version = "0.64", default-features = false, features = [
   "ring", "rsa"

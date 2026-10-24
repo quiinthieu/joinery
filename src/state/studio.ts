@@ -189,11 +189,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     const engine = get().bootstrap?.profiles.find((profile) => profile.id === connectionId)?.engine;
     next.sql =
       sql ??
-      (engine === "snowflake"
-        ? "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();"
-        : engine === "mysql"
-          ? "-- A little space to think.\nSELECT DATABASE(), CURRENT_USER(), VERSION();"
-          : "-- A little space to think.\nSELECT current_database(), current_user, version();");
+      (engine === "redis"
+        ? "PING"
+        : engine === "snowflake"
+          ? "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();"
+          : engine === "mysql"
+            ? "-- A little space to think.\nSELECT DATABASE(), CURRENT_USER(), VERSION();"
+            : "-- A little space to think.\nSELECT current_database(), current_user, version();");
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     return next.id;
   },

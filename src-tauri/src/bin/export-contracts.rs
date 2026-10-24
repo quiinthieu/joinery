@@ -3,6 +3,10 @@ use ts_rs::TS;
 
 fn main() {
     let definitions = [
+        RedisKeyInfo::decl(),
+        RedisScanPage::decl(),
+        RedisValuePreview::decl(),
+        RedisValueEntry::decl(),
         EngineKind::decl(),
         Environment::decl(),
         SafeMode::decl(),
