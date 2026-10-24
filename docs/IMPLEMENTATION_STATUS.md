@@ -141,9 +141,9 @@ verification after re-signing the stale resource seal left by the incremental
 bundler. Developer ID signing/notarization remains pending. No production databases
 were connected during this batch. [Download preview.3](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.3).
 
-## Continuation batch B: runtime qualification (local, partially implemented)
+## Continuation batch B: validation infrastructure (qualification incomplete)
 
-The next branch adds test-only shell/loading/cycling/release checkpoints, source
+The runtime harness adds test-only shell/loading/cycling/release checkpoints, source
 provenance and dirty-tree flags for native builds, and phase-specific main-process
 memory samples. Three hidden native runs passed ten tab/result cleanup cycles
 each, including Arrow requests in flight at closure. Rust result counters and
@@ -171,7 +171,9 @@ MiB, and after result release 27.91 / 29.75 / 28.42 MiB. Helpers are excluded;
 these short observations do not establish total idle RAM or sustained stability.
 The 50–80 MB total-idle, cold visible-startup and 100+ FPS gates stay unqualified.
 
-These batch B additions are not part of preview.3. Complete helper attribution,
+This batch ships source validation tooling through [PR #8](https://github.com/quiinthieu/joinery/pull/8);
+preview.3 remains the application download. The test-only harness is excluded
+from that normal app. Complete helper attribution,
 representative visible startup/frame-time qualification, real locked-store cases,
 and sustained cleanup checks before adding MySQL/MariaDB and Redis scope.
 
