@@ -209,18 +209,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         closeBrackets(),
         highlightActiveLine(),
         highlightSelectionMatches(),
-        languageCompartment.of(
-          latest.current.engine === "redis"
-            ? []
-            : sql({
-                dialect:
-                  latest.current.engine === "postgres"
-                    ? PostgreSQL
-                    : latest.current.engine === "mysql"
-                      ? MySQL
-                      : StandardSQL,
-              }),
-        ),
+        languageCompartment.of(editorLanguage(latest.current.engine)),
         themeCompartment.of([
           editorTheme(latest.current.theme),
           highlighting(latest.current.theme),
@@ -272,10 +261,6 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         EditorView.updateListener.of((update) => {
           if (update.docChanged) latest.current.onChange(update.state.doc.toString());
         }),
-        EditorView.contentAttributes.of({
-          "aria-label": latest.current.engine === "redis" ? "Redis command editor" : "SQL editor",
-          spellcheck: "false",
-        }),
       ],
     });
     view.current = new EditorView({ state, parent: host.current! });
@@ -301,18 +286,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   }, [props.theme]);
   useEffect(() => {
     view.current?.dispatch({
-      effects: languageCompartment.reconfigure(
-        props.engine === "redis"
-          ? []
-          : sql({
-              dialect:
-                props.engine === "postgres"
-                  ? PostgreSQL
-                  : props.engine === "mysql"
-                    ? MySQL
-                    : StandardSQL,
-            }),
-      ),
+      effects: languageCompartment.reconfigure(editorLanguage(props.engine)),
     });
   }, [props.engine]);
   useEffect(() => {
@@ -401,4 +375,18 @@ function redisSelection(state: EditorState) {
   return selection.empty
     ? state.doc.lineAt(selection.head).text
     : state.sliceDoc(selection.from, selection.to);
+}
+
+function editorLanguage(engine: EngineKind) {
+  return [
+    engine === "redis"
+      ? []
+      : sql({
+          dialect: engine === "postgres" ? PostgreSQL : engine === "mysql" ? MySQL : StandardSQL,
+        }),
+    EditorView.contentAttributes.of({
+      "aria-label": engine === "redis" ? "Redis command editor" : "SQL editor",
+      spellcheck: "false",
+    }),
+  ];
 }

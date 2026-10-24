@@ -6,10 +6,12 @@ import { redisEditCommand } from "./commands";
 export function RedisTools({
   sessionId,
   disabled,
+  readOnly,
   onCommand,
 }: {
   sessionId: string | null;
   disabled: boolean;
+  readOnly: boolean;
   onCommand(command: string): void;
 }) {
   const [pattern, setPattern] = useState("*");
@@ -60,6 +62,10 @@ export function RedisTools({
         cursor,
       });
       if (generation.current !== current) return;
+      if (preview?.key.argument !== result.key.argument) {
+        setField("");
+        setValue("");
+      }
       setPreview(result);
       setOperation(
         (
@@ -203,18 +209,22 @@ export function RedisTools({
               <div className="redis-value-list">
                 <table>
                   <tbody>
-                    {preview.entries.map(([field, value], i) => (
+                    {preview.entries.map(({ field, value, fieldBinary, valueBinary }, i) => (
                       <tr key={i}>
-                        <th>{field ?? i}</th>
+                        <th>
+                          {field ?? i}
+                          {fieldBinary && <small> · binary</small>}
+                        </th>
                         <td>
                           <pre>{value === null ? "(nil)" : value === "" ? '""' : value}</pre>
+                          {valueBinary && <small>Binary bytes · quoted escapes</small>}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              {preview.key.kind !== "none" && (
+              {preview.key.kind !== "none" && !readOnly && (
                 <div className="redis-controls redis-edit">
                   <select
                     aria-label="Redis edit operation"

@@ -6,6 +6,7 @@ fn main() {
         RedisKeyInfo::decl(),
         RedisScanPage::decl(),
         RedisValuePreview::decl(),
+        RedisValueEntry::decl(),
         EngineKind::decl(),
         Environment::decl(),
         SafeMode::decl(),

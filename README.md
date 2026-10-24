@@ -9,7 +9,8 @@ engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELO
 
 The [latest macOS preview](https://github.com/quiinthieu/joinery/releases)
 includes the PostgreSQL studio and a read-only Snowflake SQL/catalog pilot.
-The current source also supports MySQL 8.4 and MariaDB 11.4; see the Site for
+Preview.4 adds the MySQL 8.4/MariaDB 11.4 studio. Current source also includes a
+standalone Redis workspace; see the Site for
 the exact published version and verification state.
 Shipped features, remaining work, and connection-test results are tracked on the
 Site. Keep connection secrets in the ignored local `.env`; `.env.example`
@@ -73,8 +74,8 @@ steps below. Rust integration tests marked ignored do not run in `pnpm validate`
 
 ```sh
 python3 scripts/mysql-tls-fixture.py
-docker compose --profile mysql up -d --wait
-cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql -- --ignored --test-threads=1
+docker compose --profile mysql --profile redis up -d --wait
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test redis -- --ignored --test-threads=1
 pnpm exec playwright install chromium --only-shell
 pnpm test:e2e
 ```
@@ -89,7 +90,39 @@ select **MySQL / MariaDB**, choose Local, and either disable TLS or select
 credentials or keys outside local tests. Stop just these services with
 `docker compose --profile mysql stop mysql mariadb`.
 
-Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. PostgreSQL, MySQL, and MariaDB browser tests exercise the actual Rust service and disposable databases. The Snowflake browser workflow intercepts that API boundary with synthetic responses and Arrow data; separate Rust tests exercise the Snowflake adapter against a loopback HTTP fixture. Neither Snowflake test path signs in or queries a production account.
+Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. PostgreSQL, MySQL, MariaDB, and Redis browser tests exercise the actual Rust service and disposable databases. The Snowflake browser workflow intercepts that API boundary with synthetic responses and Arrow data; separate Rust tests exercise the Snowflake adapter against a loopback HTTP fixture. Neither Snowflake test path signs in or queries a production account.
+
+The optional `redis` profile starts Redis 8.2 on `127.0.0.1:56379`, database `0`,
+ACL username `default`, password `joinery-redis-local-only`. Select **Redis**,
+Local, and disable TLS for this disposable fixture. Its data stays in memory.
+Stop only this fixture with `docker compose --profile redis stop redis`.
+
+## Redis workspace
+
+Open a query tab on a Redis connection for the native command console and
+expand **Key browser** for SCAN, type/TTL inspection and bounded string/hash/
+list/set/sorted-set previews. MATCH patterns and opaque next-page cursors stay
+scoped to the current session. Keys can expire, change or repeat during a live
+scan; the browser does not represent a snapshot. Binary values have explicit
+escaped-byte labels. String previews stop at 64 KiB; other previews stop at
+500 entries / 2 MiB. Use bounded console ranges for larger values.
+
+Commands use newline boundaries outside quotes; semicolons are argument bytes.
+Double/single quotes and `\\xHH` escapes preserve byte arguments. Command completion
+and current-line/selection execution use CodeMirror. Typed edit forms generate
+commands for review; string edits use `SET ... KEEPTTL`. Every Redis write needs
+one-use approval, with the normal production passphrase gate. Batches execute
+commands sequentially without automatic rollback. Blocking, script, transaction,
+administrative/session commands, KEYS and unbounded aggregate commands are
+unavailable. Cluster, Sentinel, streams and Pub/Sub are not supported.
+
+RESP2 replies are bounded before decoding: 2 MiB, 10,000 elements and 16 levels.
+The adapter uses redis-rs serialization/parsing over owned async TCP/TLS streams
+so cancellation can close the socket without leaving a background task. A write
+whose acknowledgement is lost is outcome unknown; reconnect and check state
+before retrying. Read-only ACL grants remain the authorization boundary. TLS
+uses the original hostname, including through SSH; custom ACL usernames are
+authenticated explicitly and never fall back to the default user.
 
 ## Current implementation
 
@@ -137,7 +170,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test cre
 
 This writes, reads, deletes, and checks absence of that synthetic entry. It never reads saved connection credentials. It is ignored in ordinary validation/CI; it needs native credential-store access on the local host. Locked/denied-store behavior is separately covered through injected failures; real OS locked-store qualification is still pending. Detailed scope and measurements are in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 
-Redis, broader MySQL/MariaDB and Snowflake production qualification,
+Broader Redis, MySQL/MariaDB and Snowflake production qualification,
 distribution signing, and full performance qualification remain on the
 [development roadmap](docs/DEVELOPMENT_PLAN.md). The preview is available for
 macOS Apple Silicon; RAM/startup/FPS targets remain unqualified.

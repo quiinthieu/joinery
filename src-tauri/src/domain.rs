@@ -475,7 +475,16 @@ pub struct RedisScanPage {
 #[serde(rename_all = "camelCase")]
 pub struct RedisValuePreview {
     pub key: RedisKeyInfo,
-    pub entries: Vec<(Option<String>, Option<String>)>,
+    pub entries: Vec<RedisValueEntry>,
     pub next_cursor: Option<String>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisValueEntry {
+    pub field: Option<String>,
+    pub value: Option<String>,
+    pub field_binary: bool,
+    pub value_binary: bool,
 }

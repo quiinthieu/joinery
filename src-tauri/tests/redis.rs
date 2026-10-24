@@ -1,5 +1,6 @@
 use joinery_core::{domain::*, execution::Studio, safety, secrets::MemorySecrets};
 use std::sync::Arc;
+mod common;
 
 fn profile() -> ConnectionProfile {
     ConnectionProfile {
@@ -64,6 +65,11 @@ fn redis_is_available_and_commands_use_backend_policy() {
             "{command}"
         );
     }
+    p.environment = Environment::Production;
+    p.safe_mode = SafeMode::Silent;
+    let protected = safety::prepare("test", &p, "SET key value").unwrap();
+    assert!(protected.requires_approval);
+    assert!(protected.requires_passphrase);
 }
 
 async fn setup(mode: SafeMode) -> (tempfile::TempDir, Arc<Studio>, SessionInfo) {
@@ -171,6 +177,42 @@ async fn console_preserves_bytes_null_empty_and_exact_integers_and_preflights_ba
         rows(&studio, &binary)[0][1].as_deref(),
         Some("\"\\x00\\xff\"")
     );
+    assert_eq!(
+        rows(&studio, &binary)[0][2].as_deref(),
+        Some("binary (escaped)")
+    );
+    let literal = joinery_core::drivers::redis::commands::argument(b"\"\\x00\\xff\"");
+    completed(
+        &run(
+            &studio,
+            &session,
+            &format!("HSET {key}:hash literal {literal}"),
+        )
+        .await,
+    );
+    let text = run(&studio, &session, &format!("HGET {key}:hash literal")).await;
+    assert_eq!(rows(&studio, &text)[0][1], rows(&studio, &binary)[0][1]);
+    assert_eq!(rows(&studio, &text)[0][2].as_deref(), Some("UTF-8 string"));
+    let preview = studio
+        .redis_inspect(&session.id, &format!("{key}:hash"), None)
+        .await
+        .unwrap();
+    assert!(
+        preview
+            .entries
+            .iter()
+            .find(|e| e.field.as_deref() == Some("b"))
+            .unwrap()
+            .value_binary
+    );
+    assert!(
+        !preview
+            .entries
+            .iter()
+            .find(|e| e.field.as_deref() == Some("literal"))
+            .unwrap()
+            .value_binary
+    );
     assert!(
         studio
             .prepare_execution(&session.id, &format!("SET {key}:untouched yes\nFLUSHDB"))
@@ -254,7 +296,7 @@ async fn key_browser_and_typed_previews_handle_paging_expiry_and_binary_keys() {
         .redis_inspect(&session.id, &format!("{prefix}:string"), None)
         .await
         .unwrap();
-    assert_eq!(string.entries[0].1.as_deref(), Some("café"));
+    assert_eq!(string.entries[0].value.as_deref(), Some("café"));
     assert!(string.key.ttl_ms.parse::<i64>().unwrap() > 0);
     completed(
         &run(
@@ -269,7 +311,7 @@ async fn key_browser_and_typed_previews_handle_paging_expiry_and_binary_keys() {
         .await
         .unwrap();
     assert!(changed.key.ttl_ms.parse::<i64>().unwrap() > 0);
-    assert_eq!(changed.entries[0].1.as_deref(), Some("changed"));
+    assert_eq!(changed.entries[0].value.as_deref(), Some("changed"));
     completed(&run(&studio, &session, &format!("PEXPIRE {prefix}:string 0")).await);
     let missing = studio
         .redis_inspect(&session.id, &format!("{prefix}:string"), None)
@@ -344,7 +386,7 @@ async fn list_pages_use_scoped_cursors_and_large_strings_use_bounded_previews() 
             .await
             .unwrap();
         assert_eq!(preview.entries.len(), 100);
-        values.extend(preview.entries.into_iter().map(|(_, v)| v.unwrap()));
+        values.extend(preview.entries.into_iter().map(|v| v.value.unwrap()));
         cursor = preview.next_cursor;
         assert_eq!(cursor.is_some(), page < 2);
         if let Some(cursor) = cursor.as_deref() {
@@ -376,7 +418,89 @@ async fn list_pages_use_scoped_cursors_and_large_strings_use_bounded_previews() 
         .await
         .unwrap();
     assert!(preview.truncated);
-    assert_eq!(preview.entries[0].1.as_ref().unwrap().len(), 65_536);
+    assert_eq!(preview.entries[0].value.as_ref().unwrap().len(), 65_536);
     assert!(preview.next_cursor.is_none());
     completed(&run(&studio, &session, &format!("UNLINK {key} {key}:wide")).await);
+}
+
+#[tokio::test]
+#[ignore = "requires disposable Redis service"]
+async fn authenticated_commands_and_metadata_cross_the_shared_ssh_bastion() {
+    use russh::keys::{Algorithm, PrivateKey};
+    let identity = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let bastion = common::bastion(56379, &identity, None, 0).await;
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let mut p = profile();
+    p.host = "database.fixture.test".into();
+    p.ssh = Some(SshConfig {
+        host: "127.0.0.1".into(),
+        port: bastion.port,
+        username: "fixture".into(),
+        authentication: SshAuthentication::Password,
+        private_key_path: None,
+        agent_socket_path: None,
+    });
+    let p = studio.save_profile(p, None).unwrap();
+    let key = studio.probe_ssh(&p.id).await.unwrap();
+    assert_eq!(
+        key.fingerprint,
+        bastion
+            .key
+            .public_key()
+            .fingerprint(russh::keys::HashAlg::Sha256)
+            .to_string()
+    );
+    studio
+        .trust_ssh_key(key.challenge_id.as_deref().unwrap(), &key.fingerprint)
+        .unwrap();
+    let session = studio
+        .connect(
+            &p.id,
+            ConnectionSecrets {
+                password: Some("joinery-redis-local-only".into()),
+                ssh_password: Some("ssh-test-only".into()),
+                key_passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+    let events = run(&studio, &session, "PING").await;
+    completed(&events);
+    assert_eq!(rows(&studio, &events)[0][1].as_deref(), Some("PONG"));
+    studio
+        .redis_scan(&session.id, "joinery-no-match:*", None)
+        .await
+        .unwrap();
+    studio.health(&session.id).await.unwrap();
+    assert!(
+        bastion
+            .connections
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+    );
+    studio.disconnect(&session.id);
+    assert_eq!(studio.usage().session_count, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires disposable Redis service"]
+async fn full_viewer_budgets_do_not_misreport_acknowledged_writes() {
+    let (_root, studio, session) = setup(SafeMode::Confirm).await;
+    for _ in 0..100 {
+        completed(&run(&studio, &session, "PING").await);
+    }
+    assert_eq!(studio.usage().result_count, 100);
+    let key = format!("redis-budget:{}", new_id());
+    let events = run(&studio, &session, &format!("SET {key} committed")).await;
+    completed(&events);
+    assert!(events.iter().any(
+        |e| matches!(e,QueryEvent::Notice{message} if message.contains("Close a result tab"))
+    ));
+    let preview = studio.redis_inspect(&session.id, &key, None).await.unwrap();
+    assert_eq!(preview.entries[0].value.as_deref(), Some("committed"));
+    completed(&run(&studio, &session, &format!("UNLINK {key}")).await);
+    studio.disconnect(&session.id);
+    assert_eq!(studio.usage().result_count, 0);
+    assert_eq!(studio.usage().retained_bytes, 0);
 }

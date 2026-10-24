@@ -194,7 +194,8 @@ impl Options {
                 let stream=tokio_rustls::TlsConnector::from(tls.clone()).connect(name,stream).await.map_err(|_|AppError::new(ErrorCode::ConnectionFailed,"Redis verified TLS failed. Check the hostname, CA and server certificate."))?;
                 Wire::new(stream)
             } else {Wire::new(stream)};
-            if let Some(password)=&self.password {
+            if self.password.is_some() || self.username!="default" {
+                let password=self.password.as_deref().map(String::as_str).unwrap_or("");
                 wire.request(&args(&[b"AUTH",self.username.as_bytes(),password.as_bytes()])).await.map_err(|_|AppError::new(ErrorCode::PermissionDenied,"Redis authentication failed. Check the ACL username and password."))?;
             }
             if self.database!=0 {wire.request(&args(&[b"SELECT",self.database.to_string().as_bytes()])).await?;}
@@ -255,7 +256,28 @@ impl Driver for Redis {
         };
         let mut rows = Vec::new();
         flatten(response, "".into(), &mut rows)?;
-        sink.describe(vec![column(0, "path"), column(1, "value")])?;
+        sink.describe(vec![
+            column(0, "path"),
+            column(1, "value"),
+            column(2, "kind"),
+        ])?;
+        let mut bytes = 0;
+        let mut kept = 0;
+        for row in &rows {
+            let size = row
+                .iter()
+                .map(|v| v.as_ref().map_or(5, |v| v.len() + 5))
+                .sum::<usize>();
+            if bytes + size > 2 * 1024 * 1024 {
+                sink.limit(
+                    "The decoded Redis viewer reached its 2 MiB budget. Use a smaller range.",
+                );
+                break;
+            }
+            bytes += size;
+            kept += 1;
+        }
+        rows.truncate(kept);
         for chunk in rows.chunks(200) {
             if !sink.rows(chunk.to_vec())? {
                 break;
@@ -375,11 +397,10 @@ impl Driver for Redis {
                 let length = scalar(self.request(&mut wire, &args(&[b"STRLEN", key])).await?)?
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(0);
-                let value = scalar(
-                    self.request(&mut wire, &args(&[b"GETRANGE", key, b"0", b"65535"]))
-                        .await?,
-                )?;
-                (vec![(None, value)], length > 65536)
+                let value = self
+                    .request(&mut wire, &args(&[b"GETRANGE", key, b"0", b"65535"]))
+                    .await?;
+                (vec![entry(None, value)?], length > 65536)
             }
             "hash" | "set" | "zset" => {
                 let name = match info.kind.as_str() {
@@ -398,7 +419,7 @@ impl Driver for Redis {
                 let entries = if info.kind == "set" {
                     values
                         .into_iter()
-                        .map(|v| Ok((None, scalar(v)?)))
+                        .map(|v| entry(None, v))
                         .collect::<AppResult<Vec<_>>>()?
                 } else {
                     if values.len() % 2 != 0 {
@@ -407,7 +428,7 @@ impl Driver for Redis {
                     let mut entries = Vec::new();
                     let mut values = values.into_iter();
                     while let Some(field) = values.next() {
-                        entries.push((scalar(field)?, scalar(values.next().unwrap())?));
+                        entries.push(entry(Some(field), values.next().unwrap())?);
                     }
                     entries
                 };
@@ -432,21 +453,30 @@ impl Driver for Redis {
                 let entries = values
                     .into_iter()
                     .enumerate()
-                    .map(|(i, v)| Ok((Some((position + i as u64).to_string()), scalar(v)?)))
+                    .map(|(i, v)| {
+                        entry(
+                            Some(Value::BulkString(
+                                (position + i as u64).to_string().into_bytes(),
+                            )),
+                            v,
+                        )
+                    })
                     .collect::<AppResult<Vec<_>>>()?;
                 (entries, next != 0)
             }
             _ => (
-                vec![(
+                vec![entry(
                     None,
-                    Some("This key type has no viewer in this preview.".into()),
-                )],
+                    Value::SimpleString("This key type has no viewer in this preview.".into()),
+                )?],
                 true,
             ),
         };
         let bytes = entries
             .iter()
-            .map(|(a, b)| a.as_ref().map_or(0, String::len) + b.as_ref().map_or(0, String::len))
+            .map(|e| {
+                e.field.as_ref().map_or(0, String::len) + e.value.as_ref().map_or(0, String::len)
+            })
             .sum::<usize>();
         if entries.len() > 500 || bytes > 2 * 1024 * 1024 {
             return Err(AppError::new(
@@ -542,14 +572,28 @@ fn flatten(value: Value, path: String, rows: &mut Vec<TextRow>) -> AppResult<()>
     match value {
         Value::Array(v) => {
             if v.is_empty() {
-                rows.push(vec![Some(path), Some("[]".into())]);
+                rows.push(vec![Some(path), Some("[]".into()), Some("array".into())]);
             } else {
                 for (i, v) in v.into_iter().enumerate() {
                     flatten(v, format!("{path}[{i}]"), rows)?;
                 }
             }
         }
-        value => rows.push(vec![Some(path), scalar(value)?]),
+        value => {
+            let kind = match &value {
+                Value::Nil => "nil",
+                Value::Int(_) => "integer",
+                Value::BulkString(v) => {
+                    if std::str::from_utf8(v).is_ok() {
+                        "UTF-8 string"
+                    } else {
+                        "binary (escaped)"
+                    }
+                }
+                _ => "status",
+            };
+            rows.push(vec![Some(path), scalar(value)?, Some(kind.into())]);
+        }
     }
     Ok(())
 }
@@ -558,4 +602,15 @@ fn unsupported() -> AppError {
         ErrorCode::Unsupported,
         "Use the dedicated Redis key browser and native command console",
     )
+}
+
+fn entry(field: Option<Value>, value: Value) -> AppResult<RedisValueEntry> {
+    let binary =
+        |v: &Value| matches!(v,Value::BulkString(bytes)if std::str::from_utf8(bytes).is_err());
+    Ok(RedisValueEntry {
+        field_binary: field.as_ref().is_some_and(binary),
+        value_binary: binary(&value),
+        field: field.map(scalar).transpose()?.flatten(),
+        value: scalar(value)?,
+    })
 }

@@ -249,6 +249,7 @@ export function Workbench({
         <RedisTools
           sessionId={session?.id ?? null}
           disabled={running}
+          readOnly={profile.safeMode === "readOnly"}
           onCommand={(command) => {
             state.updateTab(tab.id, { sql: command });
             onRun(command);
