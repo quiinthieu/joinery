@@ -1,6 +1,8 @@
 # Implementation and release status
 
-Updated 2026-10-24. Release scope for `v0.1.0-preview.3`: the PostgreSQL studio,
+Updated 2026-10-24. Current source additionally implements the MySQL/MariaDB
+studio described below; its exact merge/release state is tracked on the Site.
+Release scope for `v0.1.0-preview.3`: the PostgreSQL studio,
 SSH support, and read-only Snowflake SQL/catalog/table previews on macOS Apple Silicon. This remains
 a development preview; full multi-engine v1.0 qualification is pending.
 
@@ -19,7 +21,7 @@ previous `v0.1.0-preview.1` release remains available as the PostgreSQL-only pre
 |---|---|
 | Included in preview.3 | PostgreSQL studio, SSH/TLS, editing and review, Safe Mode, themes, history/audit, bounded grid/Arrow results |
 | Included as a pilot in preview.3 | Snowflake browser OAuth, identity checks, read-only SQL results, async polling, own-query cancellation, catalog/column completion and bounded table previews |
-| Pending | Broader Snowflake live table/value/cancellation/token qualification, MySQL/MariaDB, Redis, signing/notarization, cross-platform installers, full performance and recovery qualification |
+| Pending | Broader Snowflake and MySQL/MariaDB production qualification, Redis, signing/notarization, cross-platform installers, full performance and recovery qualification |
 
 ## Implemented
 
@@ -93,17 +95,17 @@ Platform: Apple Silicon, macOS 27.2. The hidden fixture loads 20,000 result rows
 | Subsequent fresh process | 668 ms | 105.36 MiB | 30.20 MiB |
 | Subsequent fresh process | 619 ms | 105.02 MiB | 30.03 MiB |
 
-The later processes benefit from warm OS services and caches. These are integration-test timings, not visible first-paint measurements. WebKit helper memory is excluded; peak main-process figures are not total idle app RAM. The **50–80 MB idle target, fully cold sub-second startup target, and 100+ FPS target remain unqualified**. The million-row test verifies virtualization and scrolling, not a display-frame-rate guarantee. Per the roadmap, complete those measurements before adding broad engine scope.
+The later processes benefit from warm OS services and caches. These are integration-test timings, not visible first-paint measurements. WebKit helper memory is excluded; peak main-process figures are not total idle app RAM. The **50–80 MB idle target, fully cold sub-second startup target, and 100+ FPS target remain unqualified**. The million-row test verifies virtualization and scrolling, not a display-frame-rate guarantee. Engine implementation continues while these release-qualification gates remain open.
 
 The reproducible runner writes detailed local evidence to `.cache/native-smoke/runs.json` and identifies the exact test executable by SHA-256.
 
 ## Remaining release work
 
-1. Qualify total idle memory including WebKit helpers, visible first paint, and frame times on representative hardware; address any regressions before P4.
+1. Qualify total idle memory including WebKit helpers, visible first paint, and frame times on representative hardware; address regressions before v1.0 qualification.
 2. Exercise native credential-store success/denial/locked-store flows. Current connection tests inject a memory store and never access personal credentials.
 3. Run packaging and platform UI smoke checks on Windows and Linux as well as macOS. Only macOS was executed in this workspace; CI compilation does not qualify packaged app behavior.
 4. Add Developer ID signing/notarization and release/update recovery. The delivered local macOS bundle uses ad-hoc signing.
-5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and broader Snowflake live table/OAuth/result/cancellation qualification. Preview.3 includes read-only catalog/grid browsing; preview.2 covered SQL only.
+5. Complete P4 qualification, P5 Redis console/key browser, and broader Snowflake live table/OAuth/result/cancellation qualification. Preview.3 includes read-only catalog/grid browsing; preview.2 covered SQL only.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
 
 ## Continuation batch A: Snowflake browsing (shipped in preview.3)
@@ -175,10 +177,47 @@ This batch ships source validation tooling through [PR #8](https://github.com/qu
 preview.3 remains the application download. The test-only harness is excluded
 from that normal app. Complete helper attribution,
 representative visible startup/frame-time qualification, real locked-store cases,
-and sustained cleanup checks before adding MySQL/MariaDB and Redis scope.
+and sustained cleanup checks remain release gates while engine implementation continues.
 
 The detailed blueprint remains in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The private [ChatGPT Site](https://joinery-project-hub.otohime-nokimi.chatgpt.site)
 is the canonical plan, implementation-progress, and shipping-status destination.
 Update it after implementation, verification, merge, and release milestones;
 the former plan and testing Pages are retired.
+
+
+## Continuation batch C: MySQL/MariaDB studio
+
+The new `mysql_async` adapter is verified against disposable MySQL 8.4 and
+MariaDB 11.4. It supports connection health, verified system/custom-CA TLS,
+original-hostname verification through SSH, CodeMirror execution/formatting/
+completion, exact bigint/decimal values, individual result sets, catalog/PK/FK
+inspection, keyset paging, and reviewed InnoDB edits. Auxiliary connections keep
+grid commits separate from editor transactions. Generated, binary, floating-point
+columns, views, MyISAM tables, and unsupported keys stay read-only.
+
+MySQL-specific enforcement rejects executable comments and parser/charset mode
+changes. Fixed backend session settings are restored before every editor
+statement. Grid updates use typed bound parameters, metadata/row locks, full
+original comparisons, matched-row counts, strict warnings, and one transaction.
+Lossy integer/decimal edits are rejected before review. Cancellation holds the
+owned connection identity until control requests finish and quarantines the
+session. A server-acknowledged write remains completed if cancellation arrives
+too late; uncertain writes are never retried. Full viewers discard output while
+draining writes, so result-budget exhaustion does not misreport a committed write.
+
+Process inspection is available; killing external MySQL processes is deliberately
+unavailable because a process-list snapshot cannot authorize a later reused ID.
+The SQL toolbar cancels Joinery's owned run. DDL may implicitly commit an editor
+transaction. Broader server versions, live production accounts, OS/platform
+qualification and signed distribution remain open. Redis is the next engine.
+
+The final `pnpm validate` passed 38 Rust tests, 14 frontend tests, the production
+frontend build, formatting, native compilation and strict all-feature Clippy.
+Local database validation passed nine MySQL/MariaDB integration tests (each
+exercising both engines), nine PostgreSQL integration tests and two SSH/database
+tests. Eight browser workflows passed, including actual connect, catalog, inline
+edit, generated SQL review, commit/readback and lazy completion for both new
+engines. These use disposable synthetic data; no production databases were read
+or modified. Build/native/release evidence is recorded on the project Site after
+completion.

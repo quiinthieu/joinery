@@ -31,3 +31,11 @@ test("schema lookups remain stable while typing expressions and resolve table al
     referencedTables("SELECT status, notes FROM orders WHERE id=12", lookup),
   );
 });
+
+test("resolves MySQL backtick identifiers and escaped aliases for lazy completion", () => {
+  const table = { schema: "joinery", name: "odd`table" };
+  const lookup = new Map([["joinery.odd`table", table]]);
+  expect(
+    referencedTables("SELECT `o``x`.note FROM `joinery`.`odd``table` AS `o``x`", lookup),
+  ).toEqual([{ table, aliases: ["o`x"] }]);
+});
