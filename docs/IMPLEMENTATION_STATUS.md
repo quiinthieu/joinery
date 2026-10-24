@@ -52,6 +52,23 @@ These bounds constrain owned buffers; they do not include WebView, operating-sys
 
 ## Validation performed locally
 
+### Build policy
+
+GitHub Actions is disabled at the repository level and the remote CI workflow
+has been removed. GitHub is used for version control and pull requests. Run
+`pnpm validate` locally before shipping, followed by local database/SSH/browser
+integration and native/package checks appropriate to the change (commands in
+the README). Checks apply to the host where they run; Windows and Linux still
+need their own platform validation. Historical preview.2 CI results remain
+release evidence, not an active remote validation service.
+
+The local-only build-policy change passed `pnpm validate` on macOS: 13 frontend
+tests, 27 Rust tests, frontend production build, Rust compilation, formatting,
+and strict Clippy. The 10 disposable database integration tests were ignored by
+that baseline command; no new production connection checks were run.
+
+### Recorded application checks
+
 - **28 Rust tests passed**, including live PostgreSQL and SSH/TLS integration tests.
 - **13 frontend tests passed**, including exact Arrow values, wide-page adaptation, dirty tracking, SQL statement boundaries, host trust, and stale schema refreshes.
 - **4 headless browser workflows passed** against the real Rust service and disposable PostgreSQL: connect/query; edit/review/commit/readback; guarded writes/cancellation/million-row scrolling; nested groups/audit viewing.
@@ -81,7 +98,7 @@ The reproducible runner writes detailed local evidence to `.cache/native-smoke/r
 
 1. Qualify total idle memory including WebKit helpers, visible first paint, and frame times on representative hardware; address any regressions before P4.
 2. Exercise native credential-store success/denial/locked-store flows. Current connection tests inject a memory store and never access personal credentials.
-3. Run the configured Windows/Linux/macOS CI matrix and platform UI smoke checks. Only macOS was executed in this workspace.
+3. Run local validation, packaging, and platform UI smoke checks on Windows and Linux as well as macOS. Only macOS was executed in this workspace; historical CI does not qualify packaged app behavior.
 4. Add Developer ID signing/notarization and release/update recovery. The delivered local macOS bundle uses ad-hoc signing.
 5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake catalog, broader OAuth qualification, result/cancellation edge cases, and read-only grid browsing. The preview.2 Snowflake pilot covers read-only SQL only.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
