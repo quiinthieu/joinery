@@ -329,6 +329,33 @@ pub async fn native_smoke_fixture(studio: State<'_, Arc<Studio>>) -> AppResult<R
 
 #[cfg(feature = "native-smoke")]
 #[tauri::command]
+pub async fn native_smoke_checkpoint(
+    state: State<'_, NativeSmokeState>,
+    studio: State<'_, Arc<Studio>>,
+    phase: String,
+) -> AppResult<serde_json::Value> {
+    if !matches!(
+        phase.as_str(),
+        "shell" | "loading" | "loaded" | "cycling" | "released" | "idle"
+    ) {
+        return Err(AppError::invalid("Unknown native test phase"));
+    }
+    let checkpoint = serde_json::json!({
+        "phase": phase,
+        "nativeElapsedMs": state.started.elapsed().as_millis() as u64,
+        "usage": studio.usage(),
+    });
+    std::fs::write(
+        state.root.join("checkpoint.json"),
+        serde_json::to_vec(&checkpoint)
+            .map_err(|_| AppError::internal("Could not encode native test checkpoint"))?,
+    )
+    .map_err(|_| AppError::internal("Could not write native test checkpoint"))?;
+    Ok(checkpoint)
+}
+
+#[cfg(feature = "native-smoke")]
+#[tauri::command]
 pub async fn native_smoke_report(
     app: tauri::AppHandle,
     state: State<'_, NativeSmokeState>,

@@ -3,5 +3,5 @@
   "identifier": "native-smoke",
   "description": "Fixture and reporting commands for a hidden, separately built native integration test.",
   "windows": ["main"],
-  "permissions": ["allow-native-smoke-fixture", "allow-native-smoke-report", "core:window:allow-close"]
+  "permissions": ["allow-native-smoke-fixture", "allow-native-smoke-checkpoint", "allow-native-smoke-report", "core:window:allow-close"]
 }

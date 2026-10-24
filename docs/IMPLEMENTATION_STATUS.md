@@ -1,7 +1,7 @@
 # Implementation and release status
 
-Updated 2026-10-24. Release scope for `v0.1.0-preview.2`: the PostgreSQL studio,
-SSH support, and read-only Snowflake SQL on macOS Apple Silicon. This remains
+Updated 2026-10-24. Release scope for `v0.1.0-preview.3`: the PostgreSQL studio,
+SSH support, and read-only Snowflake SQL/catalog/table previews on macOS Apple Silicon. This remains
 a development preview; full multi-engine v1.0 qualification is pending.
 
 The preview also contains a **Snowflake read-only SQL pilot**:
@@ -12,14 +12,14 @@ build, and a headless Snowflake form check pass. A live read-only account canary
 also passed browser SSO, context identity verification, and `SELECT 1 AS CANARY`
 with one result row. The canary exposed a redirect-path mismatch and an
 unsupported SQL API `AUTOCOMMIT` request parameter; both were fixed and retested.
-Catalog/table browsing and the remaining P6 criteria are not complete. The
+Preview.3 adds database-scoped catalog discovery, lazy column completion, structure, and bounded read-only table previews. Live table qualification and the remaining P6 criteria are not complete. The
 previous `v0.1.0-preview.1` release remains available as the PostgreSQL-only preview.
 
 | Status | Scope |
 |---|---|
-| Included in preview.2 | PostgreSQL studio, SSH/TLS, editing and review, Safe Mode, themes, history/audit, bounded grid/Arrow results |
-| Included as a pilot in preview.2 | Snowflake browser OAuth, identity checks, read-only SQL results, async polling and own-query cancellation |
-| Pending | Snowflake catalog/table browsing, broader value/cancellation/token qualification, MySQL/MariaDB, Redis, signing/notarization, cross-platform installers, full performance and recovery qualification |
+| Included in preview.3 | PostgreSQL studio, SSH/TLS, editing and review, Safe Mode, themes, history/audit, bounded grid/Arrow results |
+| Included as a pilot in preview.3 | Snowflake browser OAuth, identity checks, read-only SQL results, async polling, own-query cancellation, catalog/column completion and bounded table previews |
+| Pending | Broader Snowflake live table/value/cancellation/token qualification, MySQL/MariaDB, Redis, signing/notarization, cross-platform installers, full performance and recovery qualification |
 
 ## Implemented
 
@@ -103,12 +103,12 @@ The reproducible runner writes detailed local evidence to `.cache/native-smoke/r
 2. Exercise native credential-store success/denial/locked-store flows. Current connection tests inject a memory store and never access personal credentials.
 3. Run packaging and platform UI smoke checks on Windows and Linux as well as macOS. Only macOS was executed in this workspace; CI compilation does not qualify packaged app behavior.
 4. Add Developer ID signing/notarization and release/update recovery. The delivered local macOS bundle uses ad-hoc signing.
-5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake catalog, broader OAuth qualification, result/cancellation edge cases, and read-only grid browsing. The preview.2 Snowflake pilot covers read-only SQL only.
+5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and broader Snowflake live table/OAuth/result/cancellation qualification. Preview.3 includes read-only catalog/grid browsing; preview.2 covered SQL only.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
 
-## Continuation batch A: Snowflake browsing (local, unreleased)
+## Continuation batch A: Snowflake browsing (shipped in preview.3)
 
-The `feat/snowflake-browser` branch adds catalog discovery and estimates for the
+PR #7 (`846dd0a`) adds catalog discovery and estimates for the
 configured database, lazy column metadata feeding existing completion workers,
 structure inspection, and read-only table previews. Previews stop at 500 rows
 or 2 MiB, are explicitly unordered, and do not expose continuation or editing.
@@ -117,7 +117,11 @@ partial inventory. Metadata uses a separate bounded lane and local statement
 handles so it cannot replace the editor cancellation target. Heartbeats remain
 query-free. New Snowflake tabs use Snowflake identity/version functions.
 
-This code is **not included in preview.2**. Live account/table qualification is
+This code is included in **preview.3**, published after all five PR checks passed.
+The downloaded ZIP, all three release assets, executable digest and ad-hoc
+signature were verified against the source manifest. The build source
+`0b1f22f` and merged release `846dd0a` have identical complete Git trees.
+Live account/table qualification is
 pending; the earlier identity/SELECT 1 canary did not test these additions.
 Seven new adapter regression tests use a synthetic loopback SQL API. They cover
 multipart catalog/preview responses, object quoting, exact values, NULL/empty,
@@ -135,11 +139,41 @@ timings with main-process-only memory, not cold visible-startup or idle-RAM gate
 The normal macOS application bundle also built locally and passed ad-hoc signature
 verification after re-signing the stale resource seal left by the incremental
 bundler. Developer ID signing/notarization remains pending. No production databases
-were connected during this batch; a new GitHub release has not been published.
+were connected during this batch. [Download preview.3](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.3).
 
-Next is continuation batch B: runtime/performance and credential-store
-qualification, followed by MySQL/MariaDB, Redis, and the remaining P6/P7 gates.
-The memory, startup and FPS targets above remain unqualified.
+## Continuation batch B: runtime qualification (local, partially implemented)
+
+The next branch adds test-only shell/loading/cycling/release checkpoints, source
+provenance and dirty-tree flags for native builds, and phase-specific main-process
+memory samples. Three hidden native runs passed ten tab/result cleanup cycles
+each, including Arrow requests in flight at closure. Rust result counters and
+frontend Arrow bytes returned to zero after every cycle. A new disposable
+PostgreSQL regression also passed ten connect/run/release/disconnect cycles;
+all nine PostgreSQL integration tests passed. The baseline `pnpm validate` also
+passed: 36 Rust tests, 13 frontend tests, production frontend build, formatting,
+Rust compilation, and strict Clippy. Twelve tests remain ignored in that baseline
+(nine PostgreSQL, two SSH/database, and one real credential-store qualification).
+
+The native OS credential-store round trip passed on macOS using one random
+synthetic entry, followed by deletion and absence checks. It initially failed
+inside the filesystem sandbox and passed with native Keychain access. No saved
+connection credentials were accessed. Injected failure coverage verifies that an
+unavailable store fails before network dialing, leaves no session, preserves
+saved configuration when deletion is denied, and redacts OS error details.
+Real OS denial/locked-store interactions remain pending.
+
+The final native fixture binary digest is
+`e43f658af8c043be4fa62bb8da7ceab0b30758119334ea15b20bb745efd3bea5`.
+It was built from the batch B working tree, explicitly recorded as dirty in its
+build manifest. Hidden shell DOM checkpoints were 1,320 / 393 / 402 ms. Median
+main-process footprint during the empty-shell interval was 26.59 / 27.45 / 26.97
+MiB, and after result release 27.91 / 29.75 / 28.42 MiB. Helpers are excluded;
+these short observations do not establish total idle RAM or sustained stability.
+The 50–80 MB total-idle, cold visible-startup and 100+ FPS gates stay unqualified.
+
+These batch B additions are not part of preview.3. Complete helper attribution,
+representative visible startup/frame-time qualification, real locked-store cases,
+and sustained cleanup checks before adding MySQL/MariaDB and Redis scope.
 
 The detailed blueprint remains in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The private [ChatGPT Site](https://joinery-project-hub.otohime-nokimi.chatgpt.site)

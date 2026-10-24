@@ -1,7 +1,7 @@
 import { client, messageOf } from "./ipc/client";
 import { resultCache } from "./data/result-cache";
 import { useStudio } from "./state/studio";
-import type { ResultInfo } from "./ipc/generated";
+import type { ResourceUsage, ResultInfo } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -33,6 +33,28 @@ export async function runNativeSmoke() {
     await useStudio.getState().initialize();
     assert(useStudio.getState().bootstrap, "Native bootstrap failed");
     report.bootstrapMs = performance.now() - started;
+    const shellDeadline = performance.now() + 3000;
+    while (
+      !document.querySelector('[aria-label="New query tab"]') &&
+      performance.now() < shellDeadline
+    )
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    assert(document.querySelector('[aria-label="New query tab"]'), "Native shell did not mount");
+    report.shellDomReadyMs = performance.now() - started;
+    const checkpoints: unknown[] = [];
+    const checkpoint = async (phase: string) => {
+      const value = await client.call<{ nativeElapsedMs: number; usage: ResourceUsage }>(
+        "native_smoke_checkpoint",
+        { phase },
+      );
+      checkpoints.push({ ...value, frontendRetainedBytes: resultCache.retainedBytes });
+      return value.usage;
+    };
+    await checkpoint("shell");
+    // Leave a measurable empty-idle interval. This is a hidden test WebView;
+    // its shell timing is deliberately not labeled visible first paint.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await checkpoint("loading");
     const result = await client.call<ResultInfo>("native_smoke_fixture");
     const buffer = await client.range(result.id, 0, 128);
     assert(
@@ -76,6 +98,8 @@ export async function runNativeSmoke() {
       await new Promise((resolve) => setTimeout(resolve, 25));
     assert(document.querySelector("canvas"), "Native Canvas grid did not mount");
     assert(document.querySelector(".cm-editor"), "Native CodeMirror editor did not mount");
+    const loaded = await checkpoint("loaded");
+    assert(loaded.resultCount === 1 && loaded.retainedBytes > 0, "Native fixture was not retained");
     useStudio.getState().updateTab(tabId, { status: "running" });
     await getCurrentWindow().close();
     const closeDeadline = performance.now() + 2000;
@@ -91,6 +115,42 @@ export async function runNativeSmoke() {
     assert(keepWorking, "Native close confirmation is missing its cancel action");
     keepWorking.click();
     useStudio.getState().updateTab(tabId, { status: "completed" });
+    useStudio.getState().closeTab(tabId);
+    const waitForRelease = async () => {
+      const deadline = performance.now() + 3000;
+      while (performance.now() < deadline) {
+        const usage = await client.call<ResourceUsage>("resource_usage");
+        if (usage.resultCount === 0 && usage.retainedBytes === 0) {
+          assert(usage.sessionCount === 0 && usage.activeRuns === 0, "Native resources leaked");
+          assert(resultCache.retainedBytes === 0, "Frontend Arrow pages leaked");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("Native result resources were not released after closing the tab");
+    };
+    await waitForRelease();
+    await checkpoint("cycling");
+    // Exercise the real tab-close path repeatedly, including four concurrent
+    // native binary/worker page requests during each close.
+    for (let cycle = 0; cycle < 10; cycle++) {
+      const next = await client.call<ResultInfo>("native_smoke_fixture");
+      const id = useStudio.getState().openQuery(null, "SELECT lifecycle_fixture;");
+      useStudio.getState().updateTab(id, { results: [next], activeResultId: next.id });
+      await resultCache.ensure(next.id, 0, next.retainedRows);
+      assert(resultCache.retainedBytes > 0, "Lifecycle fixture did not populate Arrow cache");
+      const pending = [128, 256, 384, 512].map((row) =>
+        resultCache.ensure(next.id, row, next.retainedRows),
+      );
+      useStudio.getState().closeTab(id);
+      await Promise.all(pending);
+      await waitForRelease();
+    }
+    report.cleanupCycles = 10;
+    await checkpoint("released");
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await checkpoint("idle");
+    report.checkpoints = checkpoints;
     report.passed = true;
     report.checks = [
       "native bootstrap",
@@ -103,6 +163,8 @@ export async function runNativeSmoke() {
       "CodeMirror",
       "Canvas grid",
       "native close guard",
+      "repeated result/tab cleanup",
+      "in-flight Arrow release",
     ];
     report.frontendElapsedMs = performance.now() - started;
   } catch (error) {

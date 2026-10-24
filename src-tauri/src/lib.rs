@@ -97,6 +97,8 @@ pub fn run() {
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]
+            commands::native_smoke_checkpoint,
+            #[cfg(feature = "native-smoke")]
             commands::native_smoke_report
         ])
         .build(tauri::generate_context!())

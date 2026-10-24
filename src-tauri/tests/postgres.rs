@@ -121,6 +121,50 @@ fn result(events: &[QueryEvent]) -> ResultInfo {
 
 #[tokio::test]
 #[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn repeated_connect_run_release_disconnect_returns_resource_counters_to_zero() {
+    let (_root, studio, initial) = setup(SafeMode::ReadOnly).await;
+    let profile_id = studio.bootstrap().unwrap().profiles[0].id.clone();
+    studio.disconnect(&initial.id);
+    for _ in 0..10 {
+        let session = studio
+            .connect(
+                &profile_id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let sql = format!(
+            "SELECT i, '{}' AS value FROM generate_series(1, 128) i",
+            "x".repeat(1024)
+        );
+        let events = run(&studio, &session, &sql).await;
+        assert_eq!(status(&events), RunStatus::Completed);
+        let retained = result(&events);
+        assert!(studio.usage().retained_bytes > 0);
+        assert!(!studio.range(&retained.id, 0, 128).unwrap().is_empty());
+        studio.release_result(&retained.id);
+        studio.disconnect(&session.id);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let usage = studio.usage();
+                if usage.active_runs == 0 && usage.session_count == 0 {
+                    assert_eq!(usage.retained_bytes, 0);
+                    assert_eq!(usage.result_count, 0);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("resource cleanup deadline");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
 async fn streams_exact_values_and_individual_results_without_disk_rows() {
     let (root, studio, session) = setup(SafeMode::Silent).await;
     let events=run(&studio,&session,"SELECT 9223372036854775807::bigint AS n, 12345678901234567890.123456789::numeric AS d, NULL::text AS nil, ''::text AS empty, 'private-result-needle'::text AS secret; SELECT 'héllo;世界'::text AS value").await;
