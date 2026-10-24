@@ -68,7 +68,7 @@ flowchart TB
     Drivers --> PG[("PostgreSQL")]
     Drivers --> MY[("MySQL / MariaDB")]
     Drivers --> RD[("Redis")]
-    Drivers --> SF[("Snowflake SQL API")]
+    Drivers --> SF[("Snowflake SQL API with local OAuth")]
     SSH -. "Forwarded database connections" .-> PG
     SSH -.-> MY
     SSH -.-> RD
@@ -506,7 +506,7 @@ Queued → Running → Cancelling → Completed / Failed / Cancelled / OutcomeUn
 - **PostgreSQL:** use the native cancellation token, then observe the execution result. A successful cancellation request does not prove the query was cancelled. [Cancellation semantics](https://docs.rs/tokio-postgres/latest/tokio_postgres/struct.CancelToken.html).
 - **MySQL/MariaDB:** use a separate control connection and `KILL QUERY`, with permission-aware errors.
 - **Redis:** separate blocking operations from shared multiplexed connections. Dropping a request future does not cancel a command already sent to Redis. [Redis async connection behavior](https://docs.rs/redis/latest/redis/aio/struct.MultiplexedConnection.html).
-- **Snowflake:** cancel by statement handle and poll the final status.
+- **Snowflake:** cancel by statement handle and poll the final status; discard a session after an explicit cancellation until the terminal outcome is known.
 
 Keep an execution session quarantined while cancellation is unresolved so a late cancellation request cannot hit a subsequent query. Drain protocol state or discard the connection before reuse.
 
@@ -531,9 +531,20 @@ Provide a dedicated key browser and command console:
 
 ### Snowflake
 
-Use the SQL API through Rust HTTP:
+Use Snowflake's built-in local-application OAuth authorization-code flow with
+PKCE through the system browser, then call the SQL API through Rust HTTP. This
+avoids a separate ODBC installation and does not require a user-entered token.
+Confirm that the account's `SNOWFLAKE$LOCAL_APPLICATION` integration is enabled.
+Keep access and refresh tokens in memory only. [Snowflake OAuth for local applications](https://docs.snowflake.com/en/user-guide/oauth-local-applications).
 
-- Key-pair authentication and OAuth.
+The read-only SQL pilot has browser sign-in, explicit context, bounded results,
+async polling, and own-query cancellation. One live account passed browser SSO,
+identity checks, and `SELECT 1`. Catalog, table browsing, broader account
+qualification, and full P6 exit criteria remain open.
+
+Complete P6 with:
+
+- Account-specific browser OAuth qualification and optional key-pair support for service accounts.
 - Explicit account, role, warehouse, database, and schema context.
 - Async submission, status polling, cancellation, and partition retrieval.
 - SQL results converted to the same internal Arrow representation.
@@ -668,7 +679,7 @@ secrecy = "0.10"
 zeroize = "1"
 ```
 
-Add `reqwest`, JWT signing, and OAuth dependencies in the Snowflake phase. Add platform-specific Apple, Windows, and Secret Service credential-store crates. Current keyring guidance recommends applications select stores through `keyring-core` rather than linking every available store. [Credential-store guidance](https://docs.rs/keyring/4.2.0/keyring/).
+Use `reqwest` for Snowflake's SQL API and a loopback OAuth callback with PKCE. Add JWT signing only for a later approved key-pair path. Add platform-specific Apple, Windows, and Secret Service credential-store crates. Current keyring guidance recommends applications select stores through `keyring-core` rather than linking every available store. [Credential-store guidance](https://docs.rs/keyring/4.2.0/keyring/).
 
 Compile later engine adapters behind features until their milestones. Initialize one explicit Rustls crypto provider and inspect feature unification to avoid accidental provider duplication.
 

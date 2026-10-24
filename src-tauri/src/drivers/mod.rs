@@ -2,6 +2,8 @@ use crate::domain::*;
 use async_trait::async_trait;
 
 pub mod postgres;
+pub mod snowflake;
+pub mod snowflake_auth;
 
 pub trait QuerySink: Send {
     fn limit(&mut self, reason: &str);

@@ -12,6 +12,7 @@ fn main() {
         SshHostKey::decl(),
         SshConfig::decl(),
         ConnectionProfile::decl(),
+        SnowflakeConfig::decl(),
         ConnectionSecrets::decl(),
         SessionInfo::decl(),
         EngineCapabilities::decl(),
