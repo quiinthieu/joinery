@@ -28,6 +28,9 @@ pub fn prepare(
             "A query batch must be smaller than 1 MiB",
         ));
     }
+    if profile.engine == EngineKind::Redis {
+        return crate::drivers::redis::commands::prepare(session_id, profile, sql);
+    }
     let dialect: Box<dyn Dialect> = match profile.engine {
         EngineKind::Postgres => Box::new(PostgreSqlDialect {}),
         EngineKind::Mysql => Box::new(MySqlDialect {}),
@@ -73,6 +76,14 @@ pub fn prepare(
     if statements.len() > 100 {
         return Err(AppError::invalid("Run at most 100 statements in one batch"));
     }
+    plan_for_statements(session_id, profile, statements)
+}
+
+pub(crate) fn plan_for_statements(
+    session_id: &str,
+    profile: &ConnectionProfile,
+    statements: Vec<StatementPlan>,
+) -> AppResult<PreparedPlan> {
     let mode = effective_mode(profile);
     let unsafe_batch = statements.iter().any(needs_authorization);
     if mode == SafeMode::ReadOnly && unsafe_batch {

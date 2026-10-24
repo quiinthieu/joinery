@@ -59,13 +59,13 @@ async fn rpc(
             "save_profile" => {
                 let profile: ConnectionProfile = arg(&args, "profile")?;
                 if profile.host != "127.0.0.1"
-                    || profile.port != 55432
-                    || profile.engine != EngineKind::Postgres
+                    || !matches!((profile.engine,profile.port),(EngineKind::Postgres,55432)|(EngineKind::Redis,56379))
+                    || (profile.engine==EngineKind::Redis && (profile.database!="0"||profile.username!="default"))
                     || profile.ssh.is_some()
                     || profile.environment == Environment::Production
                 {
                     return Err(AppError::invalid(
-                        "The browser test harness accepts only the local PostgreSQL fixture",
+                        "The browser test harness accepts only the disposable local database fixtures",
                     ));
                 }
                 json!(studio.save_profile(
@@ -149,6 +149,8 @@ async fn rpc(
                 studio.cancel(&arg::<String>(&args, "runId")?).await?;
                 Value::Null
             }
+            "redis_scan" => json!(studio.redis_scan(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"pattern")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
+            "redis_inspect" => json!(studio.redis_inspect(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"argument")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
             "table_schema" => json!(
                 studio

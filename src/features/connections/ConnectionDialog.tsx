@@ -122,8 +122,10 @@ export function ConnectionDialog({
                   ...current,
                   engine,
                   host: engine === "snowflake" ? "" : "localhost",
-                  port: engine === "snowflake" ? 443 : 5432,
-                  database: engine === "snowflake" ? "" : "postgres",
+                  port: engine === "snowflake" ? 443 : engine === "redis" ? 6379 : 5432,
+                  database: engine === "redis" ? "0" : engine === "snowflake" ? "" : "postgres",
+                  username:
+                    engine === "redis" ? "default" : engine === "postgres" ? "postgres" : "",
                   safeMode: engine === "snowflake" ? "readOnly" : current.safeMode,
                   tlsMode: "verifyFull",
                   caCertPath: null,
@@ -136,7 +138,7 @@ export function ConnectionDialog({
             >
               {bootstrap?.supportedEngines.map((engine) => (
                 <option key={engine} value={engine}>
-                  {engine === "postgres" ? "PostgreSQL" : engine}
+                  {engine === "postgres" ? "PostgreSQL" : engine === "redis" ? "Redis" : engine}
                 </option>
               ))}
             </select>
@@ -237,7 +239,7 @@ export function ConnectionDialog({
             />
           </label>
           <label>
-            Database
+            {draft.engine === "redis" ? "Database index" : "Database"}
             <input
               value={draft.database}
               onChange={(e) => change("database", e.target.value)}

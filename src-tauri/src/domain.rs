@@ -454,3 +454,28 @@ pub fn now_ms() -> u64 {
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisKeyInfo {
+    pub key: String,
+    pub argument: String,
+    pub kind: String,
+    pub ttl_ms: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisScanPage {
+    pub keys: Vec<RedisKeyInfo>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisValuePreview {
+    pub key: RedisKeyInfo,
+    pub entries: Vec<(Option<String>, Option<String>)>,
+    pub next_cursor: Option<String>,
+    pub truncated: bool,
+}

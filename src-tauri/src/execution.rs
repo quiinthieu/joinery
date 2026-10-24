@@ -3,6 +3,7 @@ use crate::{
     drivers::{
         Driver, QuerySink, RowMutation,
         postgres::{Postgres, update_sql},
+        redis::Redis,
         snowflake::Snowflake,
     },
     persistence::Persistence,
@@ -110,7 +111,11 @@ impl Studio {
                 .setting("passphrase-configured")?
                 .as_deref()
                 == Some("true"),
-            supported_engines: vec![EngineKind::Postgres, EngineKind::Snowflake],
+            supported_engines: vec![
+                EngineKind::Postgres,
+                EngineKind::Redis,
+                EngineKind::Snowflake,
+            ],
             result_budget_bytes: RESULT_BUDGET,
             row_limit: ROW_LIMIT,
         })
@@ -185,6 +190,9 @@ impl Studio {
             return Err(AppError::invalid(
                 "Production connections require verified TLS",
             ));
+        }
+        if profile.engine == EngineKind::Redis {
+            Redis::validate_profile(&profile)?;
         }
         if profile.engine == EngineKind::Snowflake {
             Snowflake::validate_profile(&profile)?;
@@ -341,6 +349,16 @@ impl Studio {
             None
         };
         let (driver, info): (Arc<dyn Driver>, SessionInfo) = match profile.engine {
+            EngineKind::Redis => {
+                let (driver, info) = Redis::open(
+                    &profile,
+                    password.as_deref().map(String::as_str),
+                    &session_id,
+                    tunnel.as_ref().map(|t| t.port),
+                )
+                .await?;
+                (driver, info)
+            }
             EngineKind::Postgres => {
                 let (d, i) = Postgres::open(
                     &profile,
@@ -754,7 +772,9 @@ impl Studio {
                                     statement_index: index,
                                 });
                             } else {
-                                status = if error.code == ErrorCode::Cancelled {
+                                status = if error.code == ErrorCode::OutcomeUnknown {
+                                    RunStatus::OutcomeUnknown
+                                } else if error.code == ErrorCode::Cancelled {
                                     RunStatus::Cancelled
                                 } else {
                                     RunStatus::Failed
@@ -901,6 +921,46 @@ impl Studio {
             }
         }
         Ok(schema)
+    }
+    pub async fn redis_scan(
+        &self,
+        session_id: &str,
+        pattern: &str,
+        cursor: Option<&str>,
+    ) -> AppResult<RedisScanPage> {
+        let session = self.session(session_id)?;
+        let _lane = session.lane.lock().await;
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            session.driver.redis_scan(pattern, cursor),
+        )
+        .await
+        .map_err(|_| {
+            AppError::new(
+                ErrorCode::ConnectionFailed,
+                "The Redis browser timed out. Narrow the pattern and restart the scan.",
+            )
+        })?
+    }
+    pub async fn redis_inspect(
+        &self,
+        session_id: &str,
+        argument: &str,
+        cursor: Option<&str>,
+    ) -> AppResult<RedisValuePreview> {
+        let session = self.session(session_id)?;
+        let _lane = session.lane.lock().await;
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            session.driver.redis_inspect(argument, cursor),
+        )
+        .await
+        .map_err(|_| {
+            AppError::new(
+                ErrorCode::ConnectionFailed,
+                "The Redis value preview timed out. Retry with a smaller range in the console.",
+            )
+        })?
     }
     pub async fn health(&self, session_id: &str) -> AppResult<u32> {
         self.session(session_id)?.driver.health().await

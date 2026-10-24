@@ -24,6 +24,8 @@
     "allow-execute-plan",
     "allow-cancel-run",
     "allow-catalog",
+    "allow-redis-scan",
+    "allow-redis-inspect",
     "allow-table-schema",
     "allow-browse-table",
     "allow-result-range",
