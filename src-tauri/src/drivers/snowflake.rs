@@ -281,7 +281,7 @@ impl Snowflake {
     async fn submit(&self, sql: &str) -> AppResult<Value> {
         let body = json!({"statement": sql, "timeout": 60, "database": self.database,
             "schema": self.schema, "warehouse": self.warehouse, "role": self.role,
-            "parameters": {"AUTOCOMMIT": "TRUE", "QUERY_TAG": self.query_tag}});
+            "parameters": {"QUERY_TAG": self.query_tag}});
         let (mut status, mut value) = self
             .request(Method::POST, "api/v2/statements?async=true", Some(body))
             .await?;
@@ -634,7 +634,7 @@ mod tests {
                 );
                 if step == 0 {
                     assert!(request.contains("\"QUERY_TAG\":\"Joinery/test\""));
-                    assert!(request.contains("\"AUTOCOMMIT\":\"TRUE\""));
+                    assert!(!request.contains("\"AUTOCOMMIT\""));
                     assert!(request.contains("\"role\":\"READ_ONLY\""));
                 }
                 let (status, body) = match step {

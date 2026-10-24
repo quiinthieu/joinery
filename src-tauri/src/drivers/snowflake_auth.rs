@@ -92,7 +92,7 @@ async fn callback(listener: TcpListener, state: &str) -> AppResult<String> {
         let Ok(url) = Url::parse(&format!("http://127.0.0.1{path}")) else {
             continue;
         };
-        if url.path() != "/joinery/snowflake/callback" {
+        if url.path() != "/" {
             continue;
         }
         let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
@@ -133,7 +133,7 @@ pub async fn sign_in(client: &reqwest::Client, base: &Url, role: &str) -> AppRes
         .local_addr()
         .map_err(|_| AppError::internal("Missing sign-in callback port"))?
         .port();
-    let redirect = format!("http://127.0.0.1:{port}/joinery/snowflake/callback");
+    let redirect = format!("http://127.0.0.1:{port}");
     let state = random_url_safe();
     let verifier = Zeroizing::new(random_url_safe());
     let url = authorize_url(base, &redirect, role, &state, &verifier)?;
@@ -240,7 +240,7 @@ mod tests {
         let base = Url::parse("https://org-account.snowflakecomputing.com/").unwrap();
         let url = authorize_url(
             &base,
-            "http://127.0.0.1:1234/joinery/snowflake/callback",
+            "http://127.0.0.1:1234",
             "READ_ONLY",
             "state",
             "verifier",
@@ -248,6 +248,7 @@ mod tests {
         .unwrap();
         let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(query["scope"], "refresh_token session:role:READ_ONLY");
+        assert_eq!(query["redirect_uri"], "http://127.0.0.1:1234");
         assert_eq!(query["code_challenge_method"], "S256");
         assert_ne!(query["code_challenge"], "verifier");
         assert_eq!(query["state"], "state");
@@ -263,9 +264,8 @@ mod tests {
             let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
                 .await
                 .unwrap();
-            let request = format!(
-                "GET /joinery/snowflake/callback?state={state}&code={code} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
-            );
+            let request =
+                format!("GET /?state={state}&code={code} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
             stream.write_all(request.as_bytes()).await.unwrap();
             let mut response = Vec::new();
             stream.read_to_end(&mut response).await.unwrap();
