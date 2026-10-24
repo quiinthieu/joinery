@@ -4,6 +4,12 @@ A desktop database studio built with Tauri v2, Rust, React, CodeMirror, and a Ca
 
 The approved [development blueprint](https://chatgpt.com/space/page_c4b9e62285c481918eec36b706cca3a7) is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
+For local trials against your own PostgreSQL and future Snowflake connections,
+follow the [production connection test plan](docs/PRODUCTION_CONNECTION_TEST_PLAN.md).
+Keep connection secrets in the ignored local `.env`; `.env.example` provides
+blank inventory fields. These fields are transferred manually into the app,
+not loaded by the frontend or automatically imported into profiles.
+
 ## Development
 
 Install Node 24, pnpm 11, the pinned Rust toolchain, and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).
