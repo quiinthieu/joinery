@@ -11,6 +11,44 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  mysql:
+    image: mysql:8.4
+    profiles: [mysql]
+    environment:
+      MYSQL_ROOT_PASSWORD: joinery-root-local-only
+      MYSQL_DATABASE: joinery
+      MYSQL_USER: joinery
+      MYSQL_PASSWORD: joinery-local-only
+    command: ["--innodb-buffer-pool-size=64M", "--max-connections=30", "--ssl-ca=/tls/ca.pem", "--ssl-cert=/tls/server.pem", "--ssl-key=/tls/server-key.pem"]
+    ports:
+      - "127.0.0.1:53306:3306"
+    volumes:
+      - ./tests/fixtures/mysql.sql:/docker-entrypoint-initdb.d/001-fixtures.sql:ro
+      - ./.cache/mysql-fixture-tls:/tls:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+  mariadb:
+    image: mariadb:11.4
+    profiles: [mysql]
+    environment:
+      MARIADB_ROOT_PASSWORD: joinery-root-local-only
+      MARIADB_DATABASE: joinery
+      MARIADB_USER: joinery
+      MARIADB_PASSWORD: joinery-local-only
+    command: ["--innodb-buffer-pool-size=64M", "--max-connections=30", "--ssl-ca=/tls/ca.pem", "--ssl-cert=/tls/server.pem", "--ssl-key=/tls/server-key.pem"]
+    ports:
+      - "127.0.0.1:53307:3306"
+    volumes:
+      - ./tests/fixtures/mysql.sql:/docker-entrypoint-initdb.d/001-fixtures.sql:ro
+      - ./.cache/mysql-fixture-tls:/tls:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
   postgres:
     image: postgres:18-alpine
     environment:

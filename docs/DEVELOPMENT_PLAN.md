@@ -600,7 +600,10 @@ Estimates are **engineer-weeks for one experienced Rust/TypeScript developer**, 
 
 **Planning range: 20–29 engineer-weeks**, with contingency for WebView differences, authentication, and driver behavior.
 
-Do not leave performance validation until P7. Re-run the P0 benchmark suite at every milestone. If the empty packaged shell cannot approach the memory/startup budget, resolve that before adding broad feature scope.
+Re-run the available P0 checks at every milestone. Continue engine implementation
+while visible-display, total-helper-memory, and real locked-store qualification
+remain explicitly open; these gates still block v1.0 performance claims. The
+current macOS checks use a hidden WebView and do not establish the target figures.
 
 ## Continuation sequence after preview.2
 
@@ -610,12 +613,12 @@ Deliver the remaining work in reviewable batches, preserving the P0–P7 exit ga
 |---|---|---|
 | A | Finish browsing in the existing Snowflake pilot | Shipped in preview.3 after five PR checks and downloaded-archive verification; approved-table live qualification pending |
 | B | Runtime and performance qualification | Validation infrastructure implemented: phase checkpoints, repeated native/PostgreSQL cleanup, native Keychain round trip and injected failure coverage pass. Remaining: total helper memory, visible startup/frame times, real OS locked-store behavior and sustained target-hardware qualification |
-| C | P4 MySQL/MariaDB | Pending; adapter, safety/dialect/value fidelity, table paging/editing, TLS/SSH and cancellation with disposable engines |
+| C | P4 MySQL/MariaDB | Implemented and locally tested against MySQL 8.4/MariaDB 11.4: exact values, schema/paging, reviewed InnoDB edits, TLS/SSH and owned cancellation. Merge/release evidence tracked on Site; external process cancellation and broader version/production qualification pending |
 | D | P5 Redis | Pending; native console, bounded SCAN/value browser, edits and backend command policy |
 | E | Complete P6/P7 release gates | Pending; Snowflake account/token/cancellation/value matrix, accessibility, migrations/crash recovery, signed distribution and verified updates, packaged Windows/Linux checks |
 
 Keep each batch's implementation, local verification, merge, and published release
-states distinct on the project Site. Preview.3 ships batch A; batch B ships source
+states distinct on the project Site. The current source implements batch C; preview.3 ships batch A; batch B ships source
 validation tooling with performance qualification tracked separately. No new production table reads are implied
 by the earlier identity and SELECT 1 canary approval; use explicit approved tables
 for live qualification.

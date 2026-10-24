@@ -2,6 +2,7 @@ use crate::{
     domain::*,
     drivers::{
         Driver, QuerySink, RowMutation,
+        mysql::Mysql,
         postgres::{Postgres, update_sql},
         redis::Redis,
         snowflake::Snowflake,
@@ -114,6 +115,7 @@ impl Studio {
             supported_engines: vec![
                 EngineKind::Postgres,
                 EngineKind::Redis,
+                EngineKind::Mysql,
                 EngineKind::Snowflake,
             ],
             result_budget_bytes: RESULT_BUDGET,
@@ -359,6 +361,16 @@ impl Studio {
                 .await?;
                 (driver, info)
             }
+            EngineKind::Mysql => {
+                let (driver, info) = Mysql::open(
+                    &profile,
+                    password.as_deref().map(String::as_str),
+                    &session_id,
+                    tunnel.as_ref().map(|t| t.port),
+                )
+                .await?;
+                (driver, info)
+            }
             EngineKind::Postgres => {
                 let (d, i) = Postgres::open(
                     &profile,
@@ -377,12 +389,6 @@ impl Studio {
                 }
                 let (d, i) = Snowflake::open(&profile, &session_id).await?;
                 (d, i)
-            }
-            _ => {
-                return Err(AppError::new(
-                    ErrorCode::Unsupported,
-                    "This database engine is not available in this build",
-                ));
             }
         };
         let _configuration = self.configuration_gate.lock();
@@ -796,7 +802,9 @@ impl Studio {
                 if token.is_cancelled() {
                     status = RunStatus::Cancelled;
                 } else if let Err(error) = session.driver.apply(schema, rows).await {
-                    status = if error.code == ErrorCode::OutcomeUnknown {
+                    status = if error.code == ErrorCode::Cancelled {
+                        RunStatus::Cancelled
+                    } else if error.code == ErrorCode::OutcomeUnknown {
                         RunStatus::OutcomeUnknown
                     } else {
                         RunStatus::Failed
@@ -825,7 +833,11 @@ impl Studio {
             if cancellation_sent.load(Ordering::Acquire) {
                 session.closed.store(true, Ordering::Release);
                 session.driver.close();
-                reason = Some("The query was cancelled. Reconnect before running another query.");
+                reason = Some(if status == RunStatus::Completed {
+                    "The operation completed before cancellation took effect. Its reported outcome still applies. Reconnect before running another query."
+                } else {
+                    "Cancellation was requested. Review the reported statement outcomes before retrying; reconnect before running another query."
+                });
             } else if session.driver.is_closed() {
                 session.closed.store(true, Ordering::Release);
                 reason = Some("This database session closed. Reconnect to run another query.");
@@ -1140,7 +1152,13 @@ impl Studio {
         }
         let generated = mutations
             .iter()
-            .map(|m| update_sql(&schema, m))
+            .map(|m| {
+                if session.profile.engine == EngineKind::Mysql {
+                    crate::drivers::mysql::update_sql(&schema, m)
+                } else {
+                    update_sql(&schema, m)
+                }
+            })
             .collect::<AppResult<Vec<_>>>()?;
         let sql = generated
             .iter()

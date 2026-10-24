@@ -31,6 +31,46 @@ pub fn prepare(
     if profile.engine == EngineKind::Redis {
         return crate::drivers::redis::commands::prepare(session_id, profile, sql);
     }
+    if profile.engine == EngineKind::Mysql {
+        let tokens = Tokenizer::new(&MySqlDialect {}, sql)
+            .tokenize()
+            .map_err(|_| AppError::invalid("The SQL contains an unterminated token"))?;
+        if tokens.iter().any(|token|matches!(token,Token::Whitespace(sqlparser::tokenizer::Whitespace::MultiLineComment(comment)) if comment.starts_with('!')||comment.to_ascii_uppercase().starts_with("M!"))) {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "MySQL executable comments are not supported. Submit their SQL explicitly for review.",
+            ));
+        }
+        let words = tokens
+            .iter()
+            .filter_map(|t| {
+                if let Token::Word(w) = t {
+                    Some(w.value.to_ascii_uppercase())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if words.iter().any(|w| w == "SET")
+            && (words.iter().any(|w| {
+                [
+                    "SQL_MODE",
+                    "CHARACTER_SET_CLIENT",
+                    "CHARACTER_SET_CONNECTION",
+                    "CHARACTER_SET_RESULTS",
+                    "COLLATION_CONNECTION",
+                ]
+                .contains(&w.as_str())
+            }) || words
+                .windows(2)
+                .any(|w| w == ["SET", "NAMES"] || w == ["SET", "CHARACTER"]))
+        {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Joinery manages MySQL SQL mode and character encoding to keep query review and execution consistent.",
+            ));
+        }
+    }
     let dialect: Box<dyn Dialect> = match profile.engine {
         EngineKind::Postgres => Box::new(PostgreSqlDialect {}),
         EngineKind::Mysql => Box::new(MySqlDialect {}),
@@ -57,7 +97,10 @@ pub fn prepare(
             ast.iter()
                 .zip(parts)
                 .map(|(statement, sql)| {
-                    let mut classification = Classification::default();
+                    let mut classification = Classification {
+                        engine: Some(profile.engine),
+                        ..Default::default()
+                    };
                     let _ = statement.visit(&mut classification);
                     StatementPlan {
                         sql,
@@ -183,6 +226,7 @@ fn byte_offset(sql: &str, location: Location) -> usize {
 
 #[derive(Default)]
 struct Classification {
+    engine: Option<EngineKind>,
     kind: Option<StatementKind>,
     missing_where: bool,
 }
@@ -263,7 +307,11 @@ impl Visitor for Classification {
     fn pre_visit_expr(&mut self, expression: &sqlparser::ast::Expr) -> ControlFlow<()> {
         if let sqlparser::ast::Expr::Function(function) = expression {
             let name = function.name.to_string().to_lowercase();
-            let builtin = name.strip_prefix("pg_catalog.").unwrap_or(&name);
+            let builtin = if self.engine == Some(EngineKind::Postgres) {
+                name.strip_prefix("pg_catalog.").unwrap_or(&name)
+            } else {
+                &name
+            };
             if ![
                 "count",
                 "sum",
@@ -303,6 +351,19 @@ impl Visitor for Classification {
                 "current_schema",
             ]
             .contains(&builtin)
+                && !(self.engine == Some(EngineKind::Mysql)
+                    && [
+                        "database",
+                        "current_user",
+                        "connection_id",
+                        "sleep",
+                        "hex",
+                        "json_extract",
+                        "json_unquote",
+                        "date_format",
+                        "utc_timestamp",
+                    ]
+                    .contains(&builtin))
             {
                 self.raise(StatementKind::Unknown);
             }
