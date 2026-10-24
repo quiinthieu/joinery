@@ -8,10 +8,9 @@ implementation, verification, merge, and release milestones. The detailed
 engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
 The [latest macOS preview](https://github.com/quiinthieu/joinery/releases)
-includes the PostgreSQL studio and a read-only Snowflake SQL/catalog pilot.
-Preview.4 adds the MySQL 8.4/MariaDB 11.4 studio. Current source also includes a
-standalone Redis workspace; see the Site for
-the exact published version and verification state.
+includes PostgreSQL, MySQL/MariaDB, standalone Redis and the read-only
+Snowflake SQL/catalog pilot. See the Site for the exact published version
+and verification state.
 Shipped features, remaining work, and connection-test results are tracked on the
 Site. Keep connection secrets in the ignored local `.env`; `.env.example`
 provides blank inventory fields. Transfer these manually into the app; the
@@ -174,3 +173,12 @@ Broader Redis, MySQL/MariaDB and Snowflake production qualification,
 distribution signing, and full performance qualification remain on the
 [development roadmap](docs/DEVELOPMENT_PLAN.md). The preview is available for
 macOS Apple Silicon; RAM/startup/FPS targets remain unqualified.
+
+Local metadata startup validates its schema version and required table/key
+constraints before accepting the store. Newer or incompatible stores fail with
+actionable errors and retain their data. Legacy initialization, schema version
+and default environment groups commit in one transaction; reopening preserves
+custom group names and existing metadata. There is no automatic reset. Keep a
+compatible app and a consistent backup of app data for manual recovery; a full
+restore UI and process-crash/upgrade qualification remain pending. Exact shipped
+versions are tracked on the Site.
