@@ -1,0 +1,137 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DataEditor, { GridCellKind, type DataEditorRef, type EditableGridCell, type GridCell, type GridColumn, type Item, type Rectangle, type Theme } from "@glideapps/glide-data-grid";
+import "@glideapps/glide-data-grid/dist/index.css";
+import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
+import { resultCache } from "../../data/result-cache";
+import { dirtyStore } from "../../data/dirty-store";
+import { useStudio, type StudioTab } from "../../state/studio";
+
+export interface CellTarget { resultId: string; row: number; column: ColumnInfo; value: string | null; large: boolean }
+interface Props { tab: StudioTab; result?: ResultInfo; theme: string; onSelect(target: CellTarget | null): void; onOpenValue(target: CellTarget): void }
+
+const benchmarkColumns: ColumnInfo[] = [
+  ["id", "bigint", "integer"], ["workspace", "text", "text"], ["status", "text", "text"], ["owner", "text", "text"], ["email", "text", "text"], ["amount", "numeric", "decimal"], ["region", "text", "text"], ["created_at", "timestamptz", "temporal"],
+].map(([name, databaseType, kind], i) => ({ id: `c${i}`, name, databaseType, kind: kind as ColumnInfo["kind"], nullable: false, primaryKey: i === 0, foreignKey: false, editable: false }));
+function benchmarkValue(col: number, row: number) {
+  const statuses = ["completed", "processing", "pending", "completed", "refunded"];
+  return [String(100000 + row), `Workspace ${String(row + 1).padStart(5, "0")}`, statuses[row % 5], ["Alex Morgan", "Jamie Chen", "Sam Rivera", "Taylor Kim"][row % 4], `team${row + 1}@example.test`, `${(row * 137 % 90000) + 100}.00`, ["us-east-1", "eu-west-1", "ap-southeast-1"][row % 3], `2026-10-${String(1 + row % 24).padStart(2, "0")} 09:42:18+00`][col];
+}
+
+export default function DatabaseGrid({ tab, result, theme: themeName, onSelect, onOpenValue }: Props) {
+  const grid = useRef<DataEditorRef>(null), host = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 800, height: 400 });
+  const [widths, setWidths] = useState<Record<string, number>>({});
+  const connected = useStudio((state) => !!(tab.connectionId && state.sessions[tab.connectionId]));
+  const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
+  const model = useRef({ tab, result }); model.current = { tab, result };
+  const columnsInfo = tab.kind === "benchmark" ? benchmarkColumns : tab.kind === "table" ? tab.schema?.columns ?? [] : result?.columns ?? [];
+  const columns = useMemo<GridColumn[]>(() => columnsInfo.map((column) => ({
+    id: column.id,
+    title: `${column.primaryKey ? "⌑ " : column.foreignKey ? "↗ " : ""}${column.name}`,
+    width: widths[column.id] ?? (column.name.includes("email") ? 230 : column.kind === "temporal" ? 225 : column.kind === "integer" ? 110 : column.name === "status" ? 150 : 200),
+    icon: column.kind === "integer" || column.kind === "decimal" ? "headerNumber" : column.kind === "boolean" ? "headerBoolean" : column.kind === "temporal" ? "headerDate" : column.kind === "json" ? "headerCode" : "headerString",
+  })), [columnsInfo, widths]);
+  const rowCount = tab.kind === "benchmark" ? 1_000_000 : tab.kind === "table" ? tab.loadedRows + (tab.hasMore ? 1 : 0) : result?.retainedRows ?? 0;
+  const theme = useMemo<Partial<Theme>>(() => {
+    const style = getComputedStyle(document.documentElement), color = (key: string) => style.getPropertyValue(key).trim();
+    return { accentColor: color("--accent"), accentLight: color("--selection"), textDark: color("--text"), textMedium: color("--muted"), textLight: color("--faint"), textHeader: color("--muted"), bgCell: color("--surface"), bgCellMedium: color("--surface-hover"), bgHeader: color("--header"), bgHeaderHasFocus: color("--surface-hover"), bgHeaderHovered: color("--surface-hover"), borderColor: color("--border"), horizontalBorderColor: color("--row-border"), headerBottomBorderColor: color("--border"), baseFontStyle: "12px", headerFontStyle: "500 11px", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", cellHorizontalPadding: 16, editorFontSize: "13px" };
+  }, [themeName]);
+
+  useEffect(() => {
+    const observer = new ResizeObserver(([entry]) => setSize({ width: Math.max(1, Math.floor(entry.contentRect.width)), height: Math.max(1, Math.floor(entry.contentRect.height)) }));
+    if (host.current) observer.observe(host.current); return () => observer.disconnect();
+  }, []);
+
+  const redraw = useCallback(() => {
+    const range = visible.current, cells: { cell: Item }[] = [];
+    for (let y = range.y; y < range.y + range.height + 1; y++) for (let x = range.x; x < range.x + range.width; x++) cells.push({ cell: [x, y] });
+    grid.current?.updateCells(cells);
+  }, []);
+  useEffect(() => resultCache.subscribe(redraw), [redraw]);
+  useEffect(() => dirtyStore.subscribe(redraw), [redraw]);
+
+  const locate = useCallback((row: number) => {
+    const { tab, result } = model.current;
+    if (tab.kind === "table") {
+      const page = tab.pages.find((p) => row >= p.start && row < p.start + p.result.retainedRows);
+      return page ? { result: page.result, row: row - page.start } : null;
+    }
+    return result ? { result, row } : null;
+  }, []);
+  const targetAt = useCallback(([col, row]: Item, full = false): CellTarget | null => {
+    const source = locate(row), column = columnsInfo[col];
+    if (!source || !column) return null;
+    const value = resultCache.read(source.result.id, column.id, source.row, full);
+    if (!value) return null;
+    const dirty = dirtyStore.get(source.result.id, source.row, column.id);
+    const editable = connected && !["running", "queued", "outcomeUnknown"].includes(model.current.tab.status) && !!model.current.tab.schema?.editable;
+    return { resultId: source.result.id, row: source.row, column: { ...column, editable: column.editable && editable }, value: dirty ? dirty.value : value.value, large: value.large };
+  }, [locate, columnsInfo, connected]);
+
+  const getCellContent = useCallback(([col, row]: Item): GridCell => {
+    const { tab } = model.current, column = columnsInfo[col];
+    if (!column) return { kind: GridCellKind.Loading, allowOverlay: false };
+    if (tab.kind === "benchmark") return { kind: GridCellKind.Text, data: benchmarkValue(col, row), displayData: benchmarkValue(col, row), allowOverlay: true, readonly: true };
+    const source = locate(row);
+    if (!source) {
+      if (tab.kind === "table" && row < tab.loadedRows) void useStudio.getState().ensureTablePage(tab.id, row);
+      return { kind: GridCellKind.Loading, allowOverlay: false };
+    }
+    const cached = resultCache.read(source.result.id, column.id, source.row);
+    if (!cached) {
+      if (!resultCache.error(source.result.id, source.row)) void resultCache.ensure(source.result.id, source.row, source.result.retainedRows);
+      else return { kind: GridCellKind.Text, data: "", displayData: "Unable to load", allowOverlay: false, readonly: true, style: "faded" };
+      return { kind: GridCellKind.Loading, allowOverlay: false };
+    }
+    const dirty = dirtyStore.get(source.result.id, source.row, column.id), value = dirty ? dirty.value : cached.value;
+    const editable = connected && tab.kind === "table" && column.editable && !!tab.schema?.editable && !["outcomeUnknown", "queued", "running"].includes(tab.status) && !cached.large;
+    const override = dirty ? { bgCell: themeName === "light" ? "#fff3d9" : "#353021", textDark: themeName === "light" ? "#845715" : "#e7c384" } : undefined;
+    if (column.kind === "boolean" && value !== null) return { kind: GridCellKind.Boolean, data: value === "true" || value === "t" || value === "1", allowOverlay: false, readonly: !editable, themeOverride: override };
+    return { kind: GridCellKind.Text, data: value ?? "", displayData: value === null ? "NULL" : value, allowOverlay: !cached.large, readonly: !editable, style: value === null ? "faded" : "normal", themeOverride: override };
+  }, [columnsInfo, locate, themeName, connected]);
+
+  const edit = useCallback((cell: Item, edited: EditableGridCell) => {
+    const target = targetAt(cell, true); if (!target || !target.column.editable || !model.current.tab.schema?.editable) return;
+    const value = edited.kind === GridCellKind.Boolean ? edited.data === undefined || edited.data === null ? null : edited.data ? "true" : "false" : edited.kind === GridCellKind.Text ? edited.data : target.value;
+    try { dirtyStore.set({ resultId: target.resultId, row: target.row, column: target.column.id, original: resultCache.read(target.resultId, target.column.id, target.row, true)!.value, value }); }
+    catch (error) { useStudio.getState().notify(error instanceof Error ? error.message : "Could not edit this value"); }
+  }, [targetAt]);
+
+  return <div className="grid-host" ref={host}>
+    {columns.length ? <DataEditor ref={grid} width={size.width} height={size.height} columns={columns} rows={rowCount} getCellContent={getCellContent}
+      rowMarkers="number" rowHeight={36} headerHeight={37} smoothScrollX smoothScrollY theme={theme} freezeColumns={columnsInfo[0]?.primaryKey ? 1 : 0}
+      onColumnResize={(column, width) => { if (column.id) setWidths((old) => ({ ...old, [column.id!]: width })); }}
+      onCellEdited={edit}
+      onCellClicked={(cell) => onSelect(targetAt(cell, true))}
+      onCellActivated={(cell) => { const target = targetAt(cell, true); if (target && (target.large || target.column.kind === "json" || target.column.kind === "temporal")) onOpenValue(target); }}
+      onVisibleRegionChanged={(range) => { visible.current = range; const current = model.current.tab; if (current.kind === "table" && current.hasMore && range.y + range.height >= current.loadedRows - 40) void useStudio.getState().loadNextPage(current.id); }}
+      getCellsForSelection={(rectangle, signal) => {
+        if (rectangle.width * rectangle.height > 10000) { useStudio.getState().notify("Select at most 10,000 cells to copy."); return []; }
+        return async () => {
+          const revision = model.current.tab.revision, tabId = model.current.tab.id;
+          try {
+            let bytes = 0;
+            const cells: GridCell[][] = [];
+            for (let row = rectangle.y; row < rectangle.y + rectangle.height; row++) {
+              if (signal.aborted || model.current.tab.id !== tabId || model.current.tab.revision !== revision) return [];
+              if (model.current.tab.kind === "table" && !locate(row)) await useStudio.getState().ensureTablePage(tabId, row);
+              const source = locate(row);
+              if (source) await resultCache.ensure(source.result.id, source.row, source.result.retainedRows);
+              const line: GridCell[] = [];
+              for (let col = rectangle.x; col < rectangle.x + rectangle.width; col++) {
+                if (model.current.tab.kind === "benchmark") { line.push(getCellContent([col, row])); continue; }
+                const target = targetAt([col, row], true);
+                if (!target) throw new Error("Wait for the selected rows to load before copying.");
+                bytes += (target.value?.length ?? 0) * 2;
+                if (bytes > 8 * 1024 * 1024) throw new Error("Copy is limited to 8 MiB. Select fewer cells.");
+                line.push({ kind: GridCellKind.Text, data: target.value ?? "NULL", displayData: target.value ?? "NULL", allowOverlay: false, readonly: true });
+              }
+              cells.push(line);
+            }
+            return cells;
+          } catch (error) { useStudio.getState().notify(error instanceof Error ? error.message : "Could not copy these cells"); return []; }
+        };
+      }}
+    /> : <div className="grid-empty">{tab.loadingPage || tab.status === "running" ? "Waiting for results…" : "No rows to display"}</div>}
+  </div>;
+}

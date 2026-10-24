@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.23.0",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "icons": "tauri icon public/joinery.svg --output src-tauri/icons",
-    "dev": "pnpm icons && vite --host 127.0.0.1",
-    "build": "pnpm icons && tsc -b && vite build",
-    "check": "tsc -b && vitest run",
+    "dev": "pnpm contracts && pnpm icons && vite --host 127.0.0.1",
+    "build": "pnpm contracts && pnpm icons && tsc -b && vite build",
+    "check": "pnpm contracts && tsc -b && vitest run",
     "test": "vitest run",
     "tauri": "tauri",
     "desktop": "tauri dev",
@@ -27,6 +29,7 @@
     "@codemirror/state": "^6",
     "@codemirror/view": "^6",
     "@glideapps/glide-data-grid": "6.0.3",
+    "@lezer/highlight": "^1.2.5",
     "@tauri-apps/api": "^2",
     "apache-arrow": "^21.2.0",
     "lodash": "^4.17.21",

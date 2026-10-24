@@ -5,6 +5,6 @@ import { App } from "./App";
 describe("application shell", () => {
   it("renders the product without waiting for a database", () => {
     render(<App />);
-    expect(screen.getByRole("heading", { name: "Joinery" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Welcome to Joinery." })).toBeTruthy();
   });
 });
