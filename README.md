@@ -35,13 +35,28 @@ pnpm desktop
 
 Run the frontend separately with `pnpm dev` for a UI preview and the synthetic million-row grid. Database access runs inside the desktop Rust process. TypeScript IPC contracts and platform icons are generated automatically before development and builds.
 
+### Local validation and packaging
+
+GitHub is used for source control and pull requests. GitHub Actions is disabled
+for this repository, and the remote CI workflow has been removed. Run validation
+locally before committing or shipping:
+
 ```sh
-pnpm check
-pnpm format:check
-pnpm test:rust
+pnpm validate
 pnpm desktop:build
 pnpm desktop:bundle:mac
 ```
+
+`pnpm validate` checks frontend formatting, regenerates Rust/TypeScript contracts,
+runs TypeScript and frontend tests, builds frontend assets, runs Rust unit tests,
+and checks Rust formatting, compilation, and strict Clippy. It stops on the first
+failure. The desktop commands compile/package on the current host; the macOS
+bundle command requires macOS. Windows/Linux qualification requires running on
+those platforms. Existing GitHub release downloads remain available; new builds
+and packaging are performed locally.
+
+Database/SSH/browser integration and hidden native checks are separate local
+steps below. Rust integration tests marked ignored do not run in `pnpm validate`.
 
 ## Local database and integration tests
 

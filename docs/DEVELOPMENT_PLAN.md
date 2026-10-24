@@ -218,7 +218,7 @@ Use a small engine adapter boundary with operations for:
 | `process_*` | List processes and prepare explicitly authorized administrative actions |
 | `history_*` | Search, reopen, and delete permitted history |
 
-Generate TypeScript DTOs from Rust definitions and check contract drift in CI. Keep channel framing versioned.
+Generate TypeScript DTOs from Rust definitions before local checks and builds. Run `pnpm validate` before shipping and review generated contract changes. Keep channel framing versioned.
 
 Separate **execution status** from **result retention status**: a statement can finish successfully while its displayed rows are truncated.
 
@@ -574,7 +574,7 @@ Estimates are **engineer-weeks for one experienced Rust/TypeScript developer**, 
 | Phase | Deliverable and milestone exit criteria | Complexity | Estimate |
 |---|---|---|---|
 | P0: Feasibility | Packaged Tauri shell; real Arrow IPC; million-row virtual grid fixture; memory measurements; verified TLS through SSH; PostgreSQL cancellation | High | 1–2 |
-| P1: Foundation | Connection/group persistence, credential stores, typed contracts, capabilities, command registry, CI and cross-platform smoke builds | Medium | 2–3 |
+| P1: Foundation | Connection/group persistence, credential stores, typed contracts, capabilities, command registry, local validation and cross-platform smoke builds | Medium | 2–3 |
 | P2: PostgreSQL Studio | Editor, schema browser, autocomplete, multiple results, metrics, history, bounded retention, table paging | High | 3–4 |
 | P3: PostgreSQL MVP | Inline editing, transactional review/apply, all Safe Mode levels, SSH authentication methods, health, processes, signed macOS build | Very high | 4–6 |
 | P4: MySQL/MariaDB | Adapter parity, dialect tests, matched-row behavior, nontransactional-table handling, TLS/SSH and cancellation tests | High | 2–3 |
@@ -686,6 +686,13 @@ Compile later engine adapters behind features until their milestones. Initialize
 Use release LTO, stripped symbols, and measured compiler settings. Keep database transactions and resource cleanup explicit rather than relying solely on process-exit destructors.
 
 # Verification risks and release gates
+
+Builds, tests, and packaging run locally. GitHub hosts version control and pull
+requests; GitHub Actions is disabled and no remote build workflow is retained.
+Use `pnpm validate` for the baseline checks, then the integration, native, and
+packaging checks appropriate to each change. Validate Windows and Linux on
+their own hosts before claiming support. Existing release downloads and past
+CI evidence remain historical records.
 
 ## Required test scenarios
 
