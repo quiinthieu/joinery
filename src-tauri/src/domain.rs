@@ -181,7 +181,7 @@ pub enum ColumnKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnInfo {
     pub id: String,

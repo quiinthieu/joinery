@@ -22,6 +22,7 @@ pub struct BrowseRows {
     pub rows: Vec<TextRow>,
     pub next_key: Option<Vec<Option<String>>>,
     pub has_more: bool,
+    pub truncated: bool,
 }
 
 #[async_trait]

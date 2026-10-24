@@ -539,8 +539,24 @@ Keep access and refresh tokens in memory only. [Snowflake OAuth for local applic
 
 The read-only SQL pilot has browser sign-in, explicit context, bounded results,
 async polling, and own-query cancellation. One live account passed browser SSO,
-identity checks, and `SELECT 1`. Catalog, table browsing, broader account
-qualification, and full P6 exit criteria remain open.
+identity checks, and `SELECT 1`. The next local implementation adds catalog
+discovery, lazy schema-aware completion, structure inspection, and read-only
+table previews; these are not in the preview.2 download. Broader account
+qualification and full P6 exit criteria remain open.
+
+Discover accessible objects in the configured database through
+`INFORMATION_SCHEMA.TABLES`, including metadata row/byte estimates; never run
+`COUNT(*)` automatically. Stop with an explicit error above 10,000 objects or
+8 MiB of retained metadata. Fetch column metadata lazily with a zero-row SELECT,
+and keep its local SQL API handle separate from the editor's cancellation handle.
+Read all metadata partitions within response/partition budgets; reject incomplete
+catalog results rather than silently omitting objects.
+
+Table previews use quoted, fully qualified identifiers and an explicit projection,
+stop at 500 rows or 2 MiB, and expose truncation. They are unordered single pages;
+larger or ordered results belong in SQL Studio. All columns stay read-only.
+Do not infer keys or use standard-table declarations for paging/editing:
+[Snowflake does not enforce standard-table PK/FK constraints](https://docs.snowflake.com/en/sql-reference/constraints-overview).
 
 Complete P6 with:
 
@@ -585,6 +601,23 @@ Estimates are **engineer-weeks for one experienced Rust/TypeScript developer**, 
 **Planning range: 20–29 engineer-weeks**, with contingency for WebView differences, authentication, and driver behavior.
 
 Do not leave performance validation until P7. Re-run the P0 benchmark suite at every milestone. If the empty packaged shell cannot approach the memory/startup budget, resolve that before adding broad feature scope.
+
+## Continuation sequence after preview.2
+
+Deliver the remaining work in reviewable batches, preserving the P0–P7 exit gates:
+
+| Batch | Scope | Current status / exit |
+|---|---|---|
+| A | Finish browsing in the existing Snowflake pilot | Catalog, lazy columns/completion, structure and bounded read-only previews implemented locally; release and approved-table live qualification pending |
+| B | Runtime and performance qualification | Next: total idle memory including WebView helpers, visible startup/frame-time instrumentation, repeatable cleanup cycles, and native credential-store flows; target-hardware and OS checks must be recorded separately |
+| C | P4 MySQL/MariaDB | Pending; adapter, safety/dialect/value fidelity, table paging/editing, TLS/SSH and cancellation with disposable engines |
+| D | P5 Redis | Pending; native console, bounded SCAN/value browser, edits and backend command policy |
+| E | Complete P6/P7 release gates | Pending; Snowflake account/token/cancellation/value matrix, accessibility, migrations/crash recovery, signed distribution and verified updates, packaged Windows/Linux checks |
+
+Keep each batch's implementation, local verification, merge, and published release
+states distinct on the project Site. The preview.2 release is unchanged by a local
+feature build. No new production table reads are implied by the earlier identity
+and SELECT 1 canary approval; use explicit approved tables for live qualification.
 
 # Suggested dependency baseline
 

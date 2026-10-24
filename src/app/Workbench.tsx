@@ -326,9 +326,11 @@ export function Workbench({
           <span className="result-caption">
             {session && tab.dataSessionId !== session.id
               ? "Refresh after reconnecting"
-              : tab.schema?.editable
-                ? "Double-click a cell to edit"
-                : "Read-only result"}
+              : profile?.engine === "snowflake"
+                ? "Read-only preview · up to 500 rows / 2 MiB"
+                : tab.schema?.editable
+                  ? "Double-click a cell to edit"
+                  : "Read-only result"}
           </span>
         </div>
       ) : (
@@ -391,9 +393,14 @@ export function Workbench({
             <>
               <Table2 size={12} />
               {tab.loadedRows.toLocaleString()} rows loaded{tab.hasMore ? " · scroll for more" : ""}
-              {tab.schema && !tab.schema.primaryKey.length
-                ? " · first page only, no primary key"
-                : ""}
+              {profile?.engine === "snowflake"
+                ? " · unordered preview · use SQL for more"
+                : tab.schema && !tab.schema.primaryKey.length
+                  ? " · first page only, no primary key"
+                  : ""}
+              {tab.pages.some((page) => page.result.status === "truncated") && (
+                <span className="truncated-label">Preview limit reached</span>
+              )}
             </>
           ) : (
             <>

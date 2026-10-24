@@ -106,6 +106,41 @@ The reproducible runner writes detailed local evidence to `.cache/native-smoke/r
 5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake catalog, broader OAuth qualification, result/cancellation edge cases, and read-only grid browsing. The preview.2 Snowflake pilot covers read-only SQL only.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
 
+## Continuation batch A: Snowflake browsing (local, unreleased)
+
+The `feat/snowflake-browser` branch adds catalog discovery and estimates for the
+configured database, lazy column metadata feeding existing completion workers,
+structure inspection, and read-only table previews. Previews stop at 500 rows
+or 2 MiB, are explicitly unordered, and do not expose continuation or editing.
+Catalog discovery rejects incomplete/oversized results rather than presenting a
+partial inventory. Metadata uses a separate bounded lane and local statement
+handles so it cannot replace the editor cancellation target. Heartbeats remain
+query-free. New Snowflake tabs use Snowflake identity/version functions.
+
+This code is **not included in preview.2**. Live account/table qualification is
+pending; the earlier identity/SELECT 1 canary did not test these additions.
+Seven new adapter regression tests use a synthetic loopback SQL API. They cover
+multipart catalog/preview responses, object quoting, exact values, NULL/empty,
+row/byte limits, schema changes, invalid continuation, cancellation isolation,
+and write rejection. The browser workflow separately uses synthetic API/Arrow
+responses; PostgreSQL browser/integration tests continue to use disposable data.
+
+Local verification on macOS Apple Silicon passed `pnpm validate` (13 frontend
+and 34 Rust tests, production frontend build, formatting, compilation and strict
+Clippy), all eight disposable PostgreSQL integration tests, all six headless
+browser workflows, and three hidden native WebView runs. The native smoke
+binary digest was `8a4f4c0190e352c2b8018a8802840167bb525ae1993f575d3646c2202dd1a536`.
+Its native completion times were 2,810 / 663 / 531 ms; these remain hidden-fixture
+timings with main-process-only memory, not cold visible-startup or idle-RAM gates.
+The normal macOS application bundle also built locally and passed ad-hoc signature
+verification after re-signing the stale resource seal left by the incremental
+bundler. Developer ID signing/notarization remains pending. No production databases
+were connected during this batch; a new GitHub release has not been published.
+
+Next is continuation batch B: runtime/performance and credential-store
+qualification, followed by MySQL/MariaDB, Redis, and the remaining P6/P7 gates.
+The memory, startup and FPS targets above remain unqualified.
+
 The detailed blueprint remains in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The private [ChatGPT Site](https://joinery-project-hub.otohime-nokimi.chatgpt.site)
 is the canonical plan, implementation-progress, and shipping-status destination.
