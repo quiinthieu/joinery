@@ -4,11 +4,20 @@ A desktop database studio built with Tauri v2, Rust, React, CodeMirror, and a Ca
 
 The approved [development blueprint](https://chatgpt.com/space/page_c4b9e62285c481918eec36b706cca3a7) is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
-For local trials against your own PostgreSQL and future Snowflake connections,
+For local trials against your own PostgreSQL and Snowflake connections,
 follow the [production connection testing Page](https://chatgpt.com/space/page_7c29d14940848191a968292cc01540a4).
 Keep connection secrets in the ignored local `.env`; `.env.example` provides
 blank inventory fields. These fields are transferred manually into the app,
 not loaded by the frontend or automatically imported into profiles.
+
+The development build includes a **read-only Snowflake SQL pilot**. In New
+connection, choose Snowflake and enter the account hostname, username, database,
+uppercase role, warehouse, and schema. Joinery opens the system browser using
+Snowflake's local-application OAuth flow; no password or OAuth token is entered
+in Joinery. The account must enable the `SNOWFLAKE$LOCAL_APPLICATION` integration.
+Only SQL reads are available in this pilot; catalog browsing and editing remain
+unfinished. Use a database-enforced read-only role and a bounded warehouse/query
+budget. The pilot has not yet been verified against a live Snowflake account.
 
 ## Development
 
@@ -70,4 +79,4 @@ pnpm test:native
 
 This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Detailed scope and measurements are in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 
-Additional engines, distribution signing, and full performance qualification remain on the [development roadmap](docs/DEVELOPMENT_PLAN.md). The current implementation is the PostgreSQL milestone; RAM/startup/FPS targets are not release guarantees.
+MySQL/MariaDB, Redis, Snowflake qualification, distribution signing, and full performance qualification remain on the [development roadmap](docs/DEVELOPMENT_PLAN.md). The published preview is the PostgreSQL milestone; RAM/startup/FPS targets are not release guarantees.

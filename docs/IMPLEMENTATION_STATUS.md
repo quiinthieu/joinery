@@ -2,6 +2,15 @@
 
 Updated 2026-10-24. This checkpoint implements the PostgreSQL studio and SSH portion of the approved roadmap. It is a local macOS development build; it is not the complete multi-engine v1.0 release.
 
+The current development branch also contains a **Snowflake read-only SQL pilot**:
+system-browser OAuth with PKCE, explicit account context, async SQL API polling,
+bounded JSON partitions, exact text values, own-query cancellation, and a
+read-only connection form. Mocked callback and SQL API tests, the native macOS
+build, and a headless Snowflake form check pass. A real Snowflake account canary
+is still required before calling this pilot
+usable against production. Catalog/table browsing and the remaining P6 criteria
+are not complete. The published preview remains PostgreSQL-only.
+
 ## Implemented
 
 | Area | Current behavior |
@@ -64,7 +73,7 @@ The reproducible runner writes detailed local evidence to `.cache/native-smoke/r
 2. Exercise native credential-store success/denial/locked-store flows. Current connection tests inject a memory store and never access personal credentials.
 3. Run the configured Windows/Linux/macOS CI matrix and platform UI smoke checks. Only macOS was executed in this workspace.
 4. Add Developer ID signing/notarization and release/update recovery. The delivered local macOS bundle uses ad-hoc signing.
-5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake authentication/jobs/partitions. These engines are not advertised as supported by this build.
+5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake catalog, live OAuth qualification, result/cancellation edge cases, and read-only grid browsing. The Snowflake development pilot is not part of the published preview.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
 
 The approved blueprint remains in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) and the [recorded ChatGPT Page](https://chatgpt.com/space/page_c4b9e62285c481918eec36b706cca3a7).
