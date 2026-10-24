@@ -109,8 +109,23 @@ export function App() {
         action: () => windowHandle.destroy(),
       });
     });
+    const quit = windowHandle.listen<number>("joinery:quit-requested", (event) => {
+      void client.call("acknowledge_quit", { generation: event.payload });
+      if (!hasPendingWork()) {
+        void windowHandle.destroy();
+        return;
+      }
+      setDialog({
+        kind: "confirm",
+        title: "Close Joinery?",
+        description:
+          "Pending edits will be discarded and running queries will be cancelled. Completed writes are not undone.",
+        action: () => windowHandle.destroy(),
+      });
+    });
     return () => {
       void unsubscribe.then((off) => off());
+      void quit.then((off) => off());
     };
   }, []);
   useEffect(() => {
@@ -156,12 +171,14 @@ export function App() {
       }
       state.updateTab(tabId, { results: [], activeResultId: null });
     }
+    const revision = active.revision + 1;
     state.updateTab(tabId, {
       status: "queued",
       error: null,
       elapsedMs: 0,
       metrics: {},
-      revision: active.revision + 1,
+      revision,
+      dataSessionId: plan.sessionId,
     });
     const batch = beginEventBatch(tabId);
     try {
@@ -170,13 +187,15 @@ export function App() {
         if (event.type === "finished" && event.status === "completed") onSuccess?.();
       });
       const latest = useStudio.getState().tabs.find((tab) => tab.id === tabId);
-      if (!latest) void client.call("cancel_run", { runId }).catch(() => {});
+      if (!latest || latest.revision !== revision)
+        void client.call("cancel_run", { runId }).catch(() => {});
       else if (latest.status === "queued") state.updateTab(tabId, { runId });
     } catch (error) {
-      state.updateTab(tabId, {
-        status: "failed",
-        error: { code: "database", message: messageOf(error) },
-      });
+      if (useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision === revision)
+        state.updateTab(tabId, {
+          status: "failed",
+          error: { code: "database", message: messageOf(error) },
+        });
     }
   }
   async function runSql(sql?: string) {
@@ -211,6 +230,10 @@ export function App() {
     const session = active.connectionId ? useStudio.getState().sessions[active.connectionId] : null;
     if (!session) {
       state.notify("Reconnect and refresh the table before applying edits.");
+      return;
+    }
+    if (active.dataSessionId !== session.id) {
+      state.notify("This page belongs to an earlier session. Refresh the table before editing.");
       return;
     }
     const changes = dirtyFor(active);

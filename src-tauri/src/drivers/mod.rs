@@ -4,6 +4,7 @@ use async_trait::async_trait;
 pub mod postgres;
 
 pub trait QuerySink: Send {
+    fn limit(&mut self, reason: &str);
     fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()>;
     fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool>;
     fn complete(&mut self, affected: u64) -> AppResult<()>;

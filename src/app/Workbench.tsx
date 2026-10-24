@@ -23,6 +23,7 @@ import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { StructureView } from "../features/studio/UtilityViews";
+import { resultCache } from "../data/result-cache";
 
 const SqlEditor = lazy(() =>
   import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
@@ -59,6 +60,23 @@ export function Workbench({
   const running = tab.status === "running" || tab.status === "queued";
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const edits = tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
+  function changeConnection(connectionId: string) {
+    for (const result of tab.results) {
+      resultCache.release(result.id);
+      void client.call("release_result", { resultId: result.id }).catch(() => {});
+    }
+    state.updateTab(tab.id, {
+      connectionId: connectionId || null,
+      results: [],
+      activeResultId: null,
+      status: "idle",
+      error: null,
+      metrics: {},
+      dataSessionId: null,
+      revision: tab.revision + 1,
+    });
+    onSelect(null);
+  }
   useEffect(() => {
     if (!running) return;
     const start = performance.now();
@@ -109,7 +127,7 @@ export function Workbench({
               aria-label="Query connection"
               value={tab.connectionId ?? ""}
               disabled={running}
-              onChange={(e) => state.updateTab(tab.id, { connectionId: e.target.value || null })}
+              onChange={(e) => changeConnection(e.target.value)}
             >
               <option value="">Choose connection</option>
               {state.bootstrap?.profiles.map((profile) => (
@@ -206,7 +224,12 @@ export function Workbench({
                   </button>
                   <button
                     className="button primary small"
-                    disabled={running || !session || tab.status === "outcomeUnknown"}
+                    disabled={
+                      running ||
+                      !session ||
+                      session.id !== tab.dataSessionId ||
+                      tab.status === "outcomeUnknown"
+                    }
                     onClick={onReview}
                   >
                     <Check size={13} />
@@ -301,7 +324,11 @@ export function Workbench({
             </button>
           </div>
           <span className="result-caption">
-            {tab.schema?.editable ? "Double-click a cell to edit" : "Read-only result"}
+            {session && tab.dataSessionId !== session.id
+              ? "Refresh after reconnecting"
+              : tab.schema?.editable
+                ? "Double-click a cell to edit"
+                : "Read-only result"}
           </span>
         </div>
       ) : (
@@ -364,7 +391,7 @@ export function Workbench({
             <>
               <Table2 size={12} />
               {tab.loadedRows.toLocaleString()} rows loaded{tab.hasMore ? " · scroll for more" : ""}
-              {!tab.schema?.primaryKey.length && tab.loadedRows >= 500
+              {tab.schema && !tab.schema.primaryKey.length
                 ? " · first page only, no primary key"
                 : ""}
             </>

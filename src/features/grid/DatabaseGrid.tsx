@@ -51,16 +51,24 @@ const benchmarkColumns: ColumnInfo[] = [
 }));
 function benchmarkValue(col: number, row: number) {
   const statuses = ["completed", "processing", "pending", "completed", "refunded"];
-  return [
-    String(100000 + row),
-    `Workspace ${String(row + 1).padStart(5, "0")}`,
-    statuses[row % 5],
-    ["Alex Morgan", "Jamie Chen", "Sam Rivera", "Taylor Kim"][row % 4],
-    `team${row + 1}@example.test`,
-    `${((row * 137) % 90000) + 100}.00`,
-    ["us-east-1", "eu-west-1", "ap-southeast-1"][row % 3],
-    `2026-10-${String(1 + (row % 24)).padStart(2, "0")} 09:42:18+00`,
-  ][col];
+  switch (col) {
+    case 0:
+      return String(100000 + row);
+    case 1:
+      return `Workspace ${String(row + 1).padStart(5, "0")}`;
+    case 2:
+      return statuses[row % 5];
+    case 3:
+      return ["Alex Morgan", "Jamie Chen", "Sam Rivera", "Taylor Kim"][row % 4];
+    case 4:
+      return `team${row + 1}@example.test`;
+    case 5:
+      return `${((row * 137) % 90000) + 100}.00`;
+    case 6:
+      return ["us-east-1", "eu-west-1", "ap-southeast-1"][row % 3];
+    default:
+      return `2026-10-${String(1 + (row % 24)).padStart(2, "0")} 09:42:18+00`;
+  }
 }
 
 export default function DatabaseGrid({
@@ -74,7 +82,9 @@ export default function DatabaseGrid({
     host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 800, height: 400 });
   const [widths, setWidths] = useState<Record<string, number>>({});
-  const connected = useStudio((state) => !!(tab.connectionId && state.sessions[tab.connectionId]));
+  const connected = useStudio(
+    (state) => !!(tab.connectionId && state.sessions[tab.connectionId]?.id === tab.dataSessionId),
+  );
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
   const model = useRef({ tab, result });
   model.current = { tab, result };
@@ -202,14 +212,16 @@ export default function DatabaseGrid({
       const { tab } = model.current,
         column = columnsInfo[col];
       if (!column) return { kind: GridCellKind.Loading, allowOverlay: false };
-      if (tab.kind === "benchmark")
+      if (tab.kind === "benchmark") {
+        const value = benchmarkValue(col, row);
         return {
           kind: GridCellKind.Text,
-          data: benchmarkValue(col, row),
-          displayData: benchmarkValue(col, row),
+          data: value,
+          displayData: value,
           allowOverlay: true,
           readonly: true,
         };
+      }
       const source = locate(row);
       if (!source) {
         if (tab.kind === "table" && row < tab.loadedRows)

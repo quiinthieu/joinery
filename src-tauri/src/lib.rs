@@ -3,10 +3,12 @@ use serde::Serialize;
 pub mod domain;
 pub mod drivers;
 pub mod execution;
+mod files;
 pub mod persistence;
 pub mod results;
 pub mod safety;
 pub mod secrets;
+pub mod ssh;
 
 #[cfg(feature = "desktop")]
 mod commands;
@@ -29,11 +31,29 @@ fn app_info() -> AppInfo {
 
 #[cfg(feature = "desktop")]
 pub fn run() {
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
+    #[cfg(feature = "native-smoke")]
+    let started = std::time::Instant::now();
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
+            app.manage(commands::WindowGuard::default());
+            #[cfg(not(feature = "native-smoke"))]
+            {
             let root = app.path().app_data_dir()?;
             app.manage(execution::Studio::open(&root)?);
+            }
+            #[cfg(feature = "native-smoke")]
+            {
+                let root = std::path::PathBuf::from(std::env::var("JOINERY_NATIVE_SMOKE_ROOT")?);
+                app.manage(execution::Studio::with_secrets(&root, std::sync::Arc::new(secrets::MemorySecrets::default()))?);
+                app.manage(commands::NativeSmokeState { started, root: root.clone() });
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(25)).await;
+                    let _ = std::fs::write(root.join("report.json"), r#"{"passed":false,"error":"Native frontend did not finish within 25 seconds"}"#);
+                    handle.exit(1);
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -46,6 +66,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             commands::bootstrap,
+            commands::acknowledge_quit,
+            commands::save_group,
+            commands::delete_group,
+            commands::audit_log,
             commands::save_profile,
             commands::delete_profile,
             commands::connect,
@@ -67,10 +91,35 @@ pub fn run() {
             commands::health,
             commands::history,
             commands::clear_history,
-            commands::resource_usage
+            commands::resource_usage,
+            commands::probe_ssh,
+            commands::trust_ssh_key,
+            #[cfg(feature = "native-smoke")]
+            commands::native_smoke_fixture,
+            #[cfg(feature = "native-smoke")]
+            commands::native_smoke_report
         ])
-        .run(tauri::generate_context!())
-        .expect("could not start Joinery");
+        .build(tauri::generate_context!())
+        .expect("could not start Joinery")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    api.prevent_exit();
+                    let state = app.state::<commands::WindowGuard>();
+                    let generation = state.requested.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let _ = window.emit("joinery:quit-requested", generation);
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        if handle.state::<commands::WindowGuard>().acknowledged.load(std::sync::atomic::Ordering::Acquire) < generation {
+                            handle.exit(0);
+                        }
+                    });
+                }
+            } else if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<std::sync::Arc<execution::Studio>>().shutdown();
+            }
+        });
 }
 
 #[cfg(test)]

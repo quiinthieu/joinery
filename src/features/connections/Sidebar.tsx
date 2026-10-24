@@ -17,6 +17,7 @@ import { useStudio } from "../../state/studio";
 import type { ConnectionProfile } from "../../ipc/generated";
 import { client } from "../../ipc/client";
 import { useShallow } from "zustand/react/shallow";
+import { orderedGroups } from "./GroupManager";
 const EMPTY_TABLES: import("../../ipc/generated").TableInfo[] = [];
 
 export function Sidebar({
@@ -65,6 +66,14 @@ export function Sidebar({
   const selected = state.bootstrap?.profiles.find(
     (profile) => profile.id === state.selectedConnectionId,
   );
+  const ordered = useMemo(
+    () => orderedGroups(state.bootstrap?.groups ?? []),
+    [state.bootstrap?.groups],
+  );
+  const hiddenGroups = new Set<string>();
+  for (const { group } of ordered)
+    if (group.parentId && (collapsed.has(group.parentId) || hiddenGroups.has(group.parentId)))
+      hiddenGroups.add(group.id);
   const tables = selected ? (state.catalog[selected.id] ?? EMPTY_TABLES) : EMPTY_TABLES;
   const grouped = useMemo(() => {
     const groups = new Map<string, typeof tables>();
@@ -104,74 +113,78 @@ export function Sidebar({
         </button>
       </div>
       <div className="connection-groups">
-        {(state.bootstrap?.groups ?? []).map((group) => (
-          <div key={group.id} className="connection-group">
-            <div className="group-heading">
-              <button
-                className="group-toggle"
-                onClick={() => toggle(group.id)}
-                aria-expanded={!collapsed.has(group.id)}
-              >
-                {collapsed.has(group.id) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                <span className={`environment-dot ${group.environment}`} />
-                {group.name}
-              </button>
-              <button
-                className="group-add icon-button"
-                aria-label={`Add ${group.name} connection`}
-                onClick={() => onNew(group.id)}
-              >
-                <Plus size={12} />
-              </button>
-            </div>
-            {!collapsed.has(group.id) && (
-              <div className="group-children">
-                {state.bootstrap?.profiles
-                  .filter((profile) => profile.groupId === group.id)
-                  .map((profile) => (
-                    <div
-                      className={`connection-row ${state.selectedConnectionId === profile.id ? "selected" : ""}`}
-                      key={profile.id}
-                    >
-                      <button
-                        className="connection-select"
-                        title={`${profile.username}@${profile.host}/${profile.database}`}
-                        onClick={() => {
-                          state.selectConnection(profile.id);
-                          if (!state.sessions[profile.id]) onConnect(profile);
-                        }}
+        {ordered
+          .filter(({ group }) => !hiddenGroups.has(group.id))
+          .map(({ group, depth }) => (
+            <div key={group.id} className="connection-group" style={{ marginLeft: depth * 12 }}>
+              <div className="group-heading">
+                <button
+                  className="group-toggle"
+                  onClick={() => toggle(group.id)}
+                  aria-expanded={!collapsed.has(group.id)}
+                >
+                  {collapsed.has(group.id) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                  <span className={`environment-dot ${group.environment}`} />
+                  {group.name}
+                </button>
+                <button
+                  className="group-add icon-button"
+                  aria-label={`Add ${group.name} connection`}
+                  onClick={() => onNew(group.id)}
+                >
+                  <Plus size={12} />
+                </button>
+              </div>
+              {!collapsed.has(group.id) && (
+                <div className="group-children">
+                  {state.bootstrap?.profiles
+                    .filter((profile) => profile.groupId === group.id)
+                    .map((profile) => (
+                      <div
+                        className={`connection-row ${state.selectedConnectionId === profile.id ? "selected" : ""}`}
+                        key={profile.id}
                       >
-                        <Database size={14} />
-                        <span>{profile.name}</span>
-                        <i className={state.sessions[profile.id] ? "online-dot" : "offline-dot"} />
-                      </button>
-                      <div className="connection-actions">
-                        {state.sessions[profile.id] && (
+                        <button
+                          className="connection-select"
+                          title={`${profile.username}@${profile.host}/${profile.database}`}
+                          onClick={() => {
+                            state.selectConnection(profile.id);
+                            if (!state.sessions[profile.id]) onConnect(profile);
+                          }}
+                        >
+                          <Database size={14} />
+                          <span>{profile.name}</span>
+                          <i
+                            className={state.sessions[profile.id] ? "online-dot" : "offline-dot"}
+                          />
+                        </button>
+                        <div className="connection-actions">
+                          {state.sessions[profile.id] && (
+                            <button
+                              className="icon-button"
+                              aria-label={`Disconnect ${profile.name}`}
+                              onClick={() => onDisconnect(profile)}
+                            >
+                              <Unplug size={12} />
+                            </button>
+                          )}
                           <button
                             className="icon-button"
-                            aria-label={`Disconnect ${profile.name}`}
-                            onClick={() => onDisconnect(profile)}
+                            aria-label={`Edit ${profile.name}`}
+                            onClick={() => onEdit(profile)}
                           >
-                            <Unplug size={12} />
+                            <Pencil size={12} />
                           </button>
-                        )}
-                        <button
-                          className="icon-button"
-                          aria-label={`Edit ${profile.name}`}
-                          onClick={() => onEdit(profile)}
-                        >
-                          <Pencil size={12} />
-                        </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                {!state.bootstrap?.profiles.some((profile) => profile.groupId === group.id) && (
-                  <span className="empty-group">No connections</span>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+                    ))}
+                  {!state.bootstrap?.profiles.some((profile) => profile.groupId === group.id) && (
+                    <span className="empty-group">No connections</span>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
       </div>
       <div className="sidebar-divider" />
       <div className="sidebar-section-title">

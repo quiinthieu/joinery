@@ -50,6 +50,12 @@ async fn rpc(
         let studio = &state.studio;
         Ok(match command.as_str() {
             "bootstrap" => json!(studio.bootstrap()?),
+            "save_group" => json!(studio.save_group(arg(&args, "group")?)?),
+            "delete_group" => {
+                studio.delete_group(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "audit_log" => json!(studio.audit_log()?),
             "save_profile" => {
                 let profile: ConnectionProfile = arg(&args, "profile")?;
                 if profile.host != "127.0.0.1"

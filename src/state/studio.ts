@@ -45,6 +45,7 @@ export interface StudioTab {
   view: "data" | "structure";
   revision: number;
   metrics: Record<number, { affectedRows: string; elapsedMs: number }>;
+  dataSessionId: string | null;
 }
 
 interface StudioState {
@@ -108,9 +109,24 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     view: "data",
     revision: 0,
     metrics: {},
+    dataSessionId: null,
   };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
+
+function requestIsCurrent(id: string, revision: number, connectionId: string, sessionId: string) {
+  const state = useStudio.getState();
+  return (
+    state.tabs.some((tab) => tab.id === id && tab.revision === revision) &&
+    state.sessions[connectionId]?.id === sessionId
+  );
+}
+function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
+  if (!schema || JSON.stringify(schema.columns) !== JSON.stringify(result.columns)) {
+    void client.call("release_result", { resultId: result.id }).catch(() => {});
+    throw new Error("The table schema changed. Refresh the table before continuing.");
+  }
+}
 
 export const useStudio = create<StudioState>((set, get) => ({
   bootstrap: null,
@@ -223,27 +239,43 @@ export const useStudio = create<StudioState>((set, get) => ({
       loadedRows: 0,
       nextKey: null,
       hasMore: true,
-      loadingPage: false,
+      loadingPage: true,
+      schema: null,
       error: null,
       status: "idle",
       runId: null,
       revision: current.revision + 1,
+      dataSessionId: session.id,
     });
     try {
       const schema = await client.call<TableSchema>("table_schema", {
         sessionId: session.id,
         table: current.table,
       });
-      get().updateTab(id, { schema });
+      if (!requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id)) return;
+      get().updateTab(id, { schema, loadingPage: false });
       await get().loadNextPage(id);
     } catch (error) {
-      get().updateTab(id, { error: { code: "database", message: messageOf(error) } });
+      if (requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id))
+        get().updateTab(id, {
+          error: { code: "database", message: messageOf(error) },
+          loadingPage: false,
+          hasMore: false,
+        });
     }
   },
   async loadNextPage(id) {
     const current = get().tabs.find((t) => t.id === id),
       session = current?.connectionId ? get().sessions[current.connectionId] : null;
-    if (!current?.table || !session || current.loadingPage || !current.hasMore) return;
+    if (
+      !current?.table ||
+      !session ||
+      current.dataSessionId !== session.id ||
+      current.loadingPage ||
+      !current.hasMore ||
+      current.error
+    )
+      return;
     get().updateTab(id, { loadingPage: true });
     const start = current.loadedRows,
       after = current.nextKey;
@@ -261,6 +293,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         return;
       }
       const latest = get().tabs.find((t) => t.id === id)!;
+      verifyPageColumns(latest.schema, page.result);
       const pages = [...latest.pages, { start, after, result: page.result }];
       if (pages.length > 8) {
         const evict = pages.findIndex(
@@ -280,9 +313,14 @@ export const useStudio = create<StudioState>((set, get) => ({
         hasMore: page.hasMore,
       });
     } catch (error) {
-      get().updateTab(id, { error: { code: "database", message: messageOf(error) } });
+      if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
+        get().updateTab(id, {
+          error: { code: "database", message: messageOf(error) },
+          hasMore: false,
+        });
     } finally {
-      get().updateTab(id, { loadingPage: false });
+      if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
+        get().updateTab(id, { loadingPage: false });
     }
   },
   async ensureTablePage(id, row) {
@@ -291,6 +329,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (
       !current?.table ||
       !session ||
+      current.dataSessionId !== session.id ||
+      current.error ||
       current.loadingPage ||
       current.pages.some((p) => row >= p.start && row < p.start + p.result.retainedRows)
     )
@@ -312,6 +352,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         void client.call("release_result", { resultId: page.result.id });
         return;
       }
+      verifyPageColumns(latest.schema, page.result);
       const pages = [
         ...latest.pages,
         { start, after: current.pageKeys[start], result: page.result },
@@ -328,9 +369,11 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       get().updateTab(id, { pages });
     } catch (error) {
-      get().notify(messageOf(error));
+      if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
+        get().updateTab(id, { error: { code: "database", message: messageOf(error) } });
     } finally {
-      get().updateTab(id, { loadingPage: false });
+      if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
+        get().updateTab(id, { loadingPage: false });
     }
   },
   updateTab(id, update) {

@@ -107,7 +107,7 @@ class PreviewClient implements StudioClient {
       } as T;
     if (command === "resource_usage")
       return { retainedBytes: 0, resultCount: 0, sessionCount: 0, activeRuns: 0 } as T;
-    if (command === "history") return [] as T;
+    if (command === "history" || command === "audit_log") return [] as T;
     throw new Error(
       "Open Joinery on your desktop to connect to a database. You can explore the grid benchmark here.",
     );

@@ -6,9 +6,39 @@ use tauri::{
 };
 use zeroize::Zeroizing;
 
+#[derive(Default)]
+pub struct WindowGuard {
+    pub requested: std::sync::atomic::AtomicU64,
+    pub acknowledged: std::sync::atomic::AtomicU64,
+}
+
+#[tauri::command]
+pub async fn acknowledge_quit(state: State<'_, WindowGuard>, generation: u64) -> AppResult<()> {
+    state
+        .acknowledged
+        .fetch_max(generation, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn bootstrap(studio: State<'_, Arc<Studio>>) -> AppResult<Bootstrap> {
     studio.bootstrap()
+}
+
+#[tauri::command]
+pub async fn save_group(
+    studio: State<'_, Arc<Studio>>,
+    group: ConnectionGroup,
+) -> AppResult<ConnectionGroup> {
+    studio.save_group(group)
+}
+#[tauri::command]
+pub async fn delete_group(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
+    studio.delete_group(&id)
+}
+#[tauri::command]
+pub async fn audit_log(studio: State<'_, Arc<Studio>>) -> AppResult<Vec<AuditEntry>> {
+    studio.audit_log()
 }
 
 #[tauri::command]
@@ -54,6 +84,23 @@ pub async fn connect(
 pub async fn disconnect(studio: State<'_, Arc<Studio>>, session_id: String) -> AppResult<()> {
     studio.disconnect(&session_id);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn probe_ssh(
+    studio: State<'_, Arc<Studio>>,
+    profile_id: String,
+) -> AppResult<SshHostKey> {
+    studio.probe_ssh(&profile_id).await
+}
+
+#[tauri::command]
+pub async fn trust_ssh_key(
+    studio: State<'_, Arc<Studio>>,
+    challenge_id: String,
+    fingerprint: String,
+) -> AppResult<()> {
+    studio.trust_ssh_key(&challenge_id, &fingerprint)
 }
 
 #[tauri::command]
@@ -232,4 +279,76 @@ pub async fn resource_usage(studio: State<'_, Arc<Studio>>) -> AppResult<Resourc
 
 fn join_error(_: tokio::task::JoinError) -> AppError {
     AppError::internal("The background operation could not finish")
+}
+
+#[cfg(feature = "native-smoke")]
+pub struct NativeSmokeState {
+    pub started: std::time::Instant,
+    pub root: std::path::PathBuf,
+}
+
+#[cfg(feature = "native-smoke")]
+#[tauri::command]
+pub async fn native_smoke_fixture(studio: State<'_, Arc<Studio>>) -> AppResult<ResultInfo> {
+    let columns = ["exact_integer", "null_value", "empty_value", "unicode"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| ColumnInfo {
+            id: format!("c{i}"),
+            name: name.into(),
+            database_type: if i == 0 { "bigint" } else { "text" }.into(),
+            kind: if i == 0 {
+                ColumnKind::Integer
+            } else {
+                ColumnKind::Text
+            },
+            nullable: true,
+            primary_key: false,
+            foreign_key: false,
+            editable: false,
+        })
+        .collect();
+    let result = studio.results.create("native-smoke", 0, columns, None)?;
+    for _ in 0..40 {
+        studio.results.append(
+            &result.id,
+            (0..500)
+                .map(|_| {
+                    vec![
+                        Some("9223372036854775807".into()),
+                        None,
+                        Some("".into()),
+                        Some("héllo;世界".into()),
+                    ]
+                })
+                .collect(),
+        )?;
+    }
+    studio.results.finish(&result.id, false)
+}
+
+#[cfg(feature = "native-smoke")]
+#[tauri::command]
+pub async fn native_smoke_report(
+    app: tauri::AppHandle,
+    state: State<'_, NativeSmokeState>,
+    mut report: serde_json::Value,
+) -> AppResult<()> {
+    if report.to_string().len() > 16 * 1024 {
+        return Err(AppError::invalid("Native test report is too large"));
+    }
+    report["nativeElapsedMs"] = serde_json::json!(state.started.elapsed().as_millis() as u64);
+    report["pid"] = serde_json::json!(std::process::id());
+    let passed = report["passed"] == true;
+    std::fs::write(
+        state.root.join("report.json"),
+        serde_json::to_vec_pretty(&report)
+            .map_err(|_| AppError::internal("Could not encode native test report"))?,
+    )
+    .map_err(|_| AppError::internal("Could not write native test report"))?;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        app.exit(if passed { 0 } else { 1 });
+    });
+    Ok(())
 }

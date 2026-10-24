@@ -4,6 +4,8 @@ import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
 import type { ConnectionProfile, SafeMode, SessionInfo } from "../../ipc/generated";
 import { useStudio } from "../../state/studio";
+import { useSshTrust } from "./SshHostTrust";
+import { orderedGroups } from "./GroupManager";
 
 export function ConnectionDialog({
   profile,
@@ -45,6 +47,10 @@ export function ConnectionDialog({
     [passphrase, setPassphrase] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
+  const [sshPassword, setSshPassword] = useState(""),
+    [keyPassphrase, setKeyPassphrase] = useState("");
+  const trust = useSshTrust();
+  const [deleting, setDeleting] = useState(false);
   const production =
     bootstrap?.groups.find((g) => g.id === draft.groupId)?.environment === "production";
   function change<K extends keyof ConnectionProfile>(key: K, value: ConnectionProfile[K]) {
@@ -61,9 +67,14 @@ export function ConnectionDialog({
       });
       useStudio.getState().resetConnectionResults(saved.id);
       useStudio.getState().updateProfile(saved);
+      await trust.verify(saved);
       const session = await client.call<SessionInfo>("connect", {
         id: saved.id,
-        secrets: { password: password || null, sshPassword: null, keyPassphrase: null },
+        secrets: {
+          password: password || null,
+          sshPassword: sshPassword || null,
+          keyPassphrase: keyPassphrase || null,
+        },
       });
       useStudio.getState().setSession(session);
       await useStudio.getState().refreshCatalog(saved.id);
@@ -74,9 +85,12 @@ export function ConnectionDialog({
     } finally {
       setPassword("");
       setPassphrase("");
+      setSshPassword("");
+      setKeyPassphrase("");
       setBusy(false);
     }
   }
+  if (trust.dialog) return trust.dialog;
   return (
     <Modal
       title={profile ? "Edit connection" : "New connection"}
@@ -113,6 +127,7 @@ export function ConnectionDialog({
           <label>
             Group
             <select
+              aria-label="Connection group"
               value={draft.groupId}
               onChange={(e) => {
                 const group = bootstrap?.groups.find((g) => g.id === e.target.value);
@@ -130,9 +145,9 @@ export function ConnectionDialog({
                 }));
               }}
             >
-              {bootstrap?.groups.map((group) => (
+              {orderedGroups(bootstrap?.groups ?? []).map(({ group, path }) => (
                 <option value={group.id} key={group.id}>
-                  {group.name}
+                  {path}
                 </option>
               ))}
             </select>
@@ -194,6 +209,133 @@ export function ConnectionDialog({
             />
             Remember password in the system credential store
           </label>
+          <label className="checkbox-label span-2">
+            <input
+              type="checkbox"
+              checked={!!draft.ssh}
+              onChange={(e) =>
+                change(
+                  "ssh",
+                  e.target.checked
+                    ? {
+                        host: "",
+                        port: 22,
+                        username: draft.username,
+                        authentication: "agent",
+                        privateKeyPath: null,
+                        agentSocketPath: null,
+                      }
+                    : null,
+                )
+              }
+            />
+            Connect through an SSH bastion
+          </label>
+          {draft.ssh && (
+            <>
+              <label>
+                SSH host
+                <input
+                  value={draft.ssh.host}
+                  onChange={(e) => change("ssh", { ...draft.ssh!, host: e.target.value })}
+                  required
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                SSH port
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={draft.ssh.port}
+                  onChange={(e) => change("ssh", { ...draft.ssh!, port: Number(e.target.value) })}
+                  required
+                />
+              </label>
+              <label>
+                SSH username
+                <input
+                  value={draft.ssh.username}
+                  onChange={(e) => change("ssh", { ...draft.ssh!, username: e.target.value })}
+                  required
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                SSH authentication
+                <select
+                  aria-label="SSH authentication"
+                  value={draft.ssh.authentication}
+                  onChange={(e) =>
+                    change("ssh", {
+                      ...draft.ssh!,
+                      authentication: e.target.value as NonNullable<
+                        ConnectionProfile["ssh"]
+                      >["authentication"],
+                    })
+                  }
+                >
+                  <option value="agent">SSH agent</option>
+                  <option value="privateKey">Private key</option>
+                  <option value="password">Password</option>
+                </select>
+              </label>
+              {draft.ssh.authentication === "password" && (
+                <label className="span-2">
+                  SSH password
+                  <input
+                    type="password"
+                    value={sshPassword}
+                    onChange={(e) => setSshPassword(e.target.value)}
+                    autoComplete="off"
+                  />
+                </label>
+              )}
+              {draft.ssh.authentication === "agent" && (
+                <label className="span-2">
+                  Agent socket path <span className="optional">optional</span>
+                  <input
+                    value={draft.ssh.agentSocketPath ?? ""}
+                    onChange={(e) =>
+                      change("ssh", { ...draft.ssh!, agentSocketPath: e.target.value || null })
+                    }
+                    spellCheck={false}
+                    placeholder="Use SSH_AUTH_SOCK or the Windows OpenSSH agent"
+                  />
+                </label>
+              )}
+              {draft.ssh.authentication === "privateKey" && (
+                <>
+                  <label className="span-2">
+                    SSH private key path
+                    <input
+                      value={draft.ssh.privateKeyPath ?? ""}
+                      onChange={(e) =>
+                        change("ssh", { ...draft.ssh!, privateKeyPath: e.target.value })
+                      }
+                      required
+                      spellCheck={false}
+                      placeholder="/Users/you/.ssh/id_ed25519"
+                    />
+                  </label>
+                  <label className="span-2">
+                    Key passphrase
+                    <input
+                      type="password"
+                      value={keyPassphrase}
+                      onChange={(e) => setKeyPassphrase(e.target.value)}
+                      autoComplete="off"
+                    />
+                  </label>
+                </>
+              )}
+              <p className="form-note span-2">
+                The database host is resolved from the bastion. SSH credentials stay in this
+                session; agent forwarding is disabled.
+              </p>
+            </>
+          )}
           <div className="form-divider span-2">
             <ShieldCheck size={14} /> CONNECTION SAFETY
           </div>
@@ -261,6 +403,12 @@ export function ConnectionDialog({
               Saving reconnects this profile and closes its existing results.
             </p>
           )}
+          {deleting && (
+            <p className="form-note span-2">
+              Removing this saved connection also deletes its saved password and closes its
+              workspaces.
+            </p>
+          )}
           <div className="span-2">
             <InlineError
               message={
@@ -270,6 +418,33 @@ export function ConnectionDialog({
           </div>
         </div>
         <footer className="modal-footer">
+          {profile && (
+            <button
+              type="button"
+              className="button danger-text delete-profile"
+              disabled={busy}
+              onClick={() => {
+                if (!deleting) {
+                  setDeleting(true);
+                  return;
+                }
+                setBusy(true);
+                void client
+                  .call("delete_profile", { id: profile.id, passphrase: passphrase || null })
+                  .then(() => {
+                    useStudio.getState().removeConnection(profile.id);
+                    onClose();
+                  })
+                  .catch((error) => setError(messageOf(error)))
+                  .finally(() => {
+                    setPassphrase("");
+                    setBusy(false);
+                  });
+              }}
+            >
+              {deleting ? "Remove saved connection" : "Delete connection"}
+            </button>
+          )}
           <button type="button" className="button ghost" onClick={onClose} disabled={busy}>
             Cancel
           </button>
@@ -293,14 +468,22 @@ export function ConnectDialog({
   const [password, setPassword] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
+  const [sshPassword, setSshPassword] = useState(""),
+    [keyPassphrase, setKeyPassphrase] = useState("");
+  const trust = useSshTrust();
   async function connect(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
+      await trust.verify(profile);
       const session = await client.call<SessionInfo>("connect", {
         id: profile.id,
-        secrets: { password: password || null, sshPassword: null, keyPassphrase: null },
+        secrets: {
+          password: password || null,
+          sshPassword: sshPassword || null,
+          keyPassphrase: keyPassphrase || null,
+        },
       });
       useStudio.getState().setSession(session);
       await useStudio.getState().refreshCatalog(profile.id);
@@ -309,9 +492,12 @@ export function ConnectDialog({
       setError(messageOf(error));
     } finally {
       setPassword("");
+      setSshPassword("");
+      setKeyPassphrase("");
       setBusy(false);
     }
   }
+  if (trust.dialog) return trust.dialog;
   return (
     <Modal
       title={`Connect to ${profile.name}`}
@@ -336,6 +522,28 @@ export function ConnectDialog({
               }
             />
           </label>
+          {profile.ssh?.authentication === "password" && (
+            <label>
+              SSH password
+              <input
+                type="password"
+                value={sshPassword}
+                onChange={(e) => setSshPassword(e.target.value)}
+                autoComplete="off"
+              />
+            </label>
+          )}
+          {profile.ssh?.authentication === "privateKey" && (
+            <label>
+              Key passphrase
+              <input
+                type="password"
+                value={keyPassphrase}
+                onChange={(e) => setKeyPassphrase(e.target.value)}
+                autoComplete="off"
+              />
+            </label>
+          )}
           <InlineError message={error} />
         </div>
         <footer className="modal-footer">

@@ -507,3 +507,70 @@ async fn process_cancellation_can_interrupt_a_busy_query_lane() {
     assert_eq!(status(&finish(events).await), RunStatus::Cancelled);
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn closed_viewers_and_full_result_budgets_do_not_misreport_committed_writes() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let name = format!("outcome_{}", uuid::Uuid::new_v4().simple());
+    run(&studio, &session, &format!("CREATE TABLE public.\"{name}\" (id integer PRIMARY KEY, value integer); INSERT INTO public.\"{name}\" VALUES(1,0)")).await;
+    let plan = studio
+        .prepare_execution(
+            &session.id,
+            &format!("UPDATE public.\"{name}\" SET value=value+1 WHERE id=1 RETURNING value"),
+        )
+        .unwrap();
+    let (tx, rx) = mpsc::unbounded_channel();
+    studio
+        .execute(
+            &plan.id,
+            None,
+            Arc::new(move |event| {
+                if matches!(
+                    event,
+                    QueryEvent::Result { .. } | QueryEvent::Progress { .. }
+                ) {
+                    return false;
+                }
+                tx.send(event).is_ok()
+            }),
+        )
+        .unwrap();
+    assert_eq!(status(&finish(rx).await), RunStatus::Completed);
+    let mut filler = Vec::new();
+    while studio.usage().result_count < 100 {
+        filler.push(
+            studio
+                .results
+                .create("budget-fixture", 0, vec![], None)
+                .unwrap()
+                .id,
+        );
+    }
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!("UPDATE public.\"{name}\" SET value=value+1 WHERE id=1")
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    for id in filler {
+        studio.release_result(&id);
+    }
+    let events = run(
+        &studio,
+        &session,
+        &format!("SELECT value FROM public.\"{name}\" WHERE id=1"),
+    )
+    .await;
+    assert_eq!(
+        studio.results.row(&result(&events).id, 0).unwrap()[0].as_deref(),
+        Some("2")
+    );
+    run(&studio, &session, &format!("DROP TABLE public.\"{name}\"")).await;
+    studio.shutdown();
+}

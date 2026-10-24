@@ -34,10 +34,8 @@ impl Postgres {
             .user(&profile.username).dbname(&profile.database).application_name(format!("Joinery {session_id}"))
             .connect_timeout(Duration::from_secs(10))
             .options("-c statement_timeout=60000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=60000");
-        if let Some(port) = forwarded_port {
-            config
-                .hostaddr(std::net::Ipv4Addr::LOCALHOST.into())
-                .port(port);
+        if forwarded_port.is_some() {
+            config.hostaddr(std::net::Ipv4Addr::LOCALHOST.into());
         }
         if let Some(password) = password {
             config.password(password);
@@ -55,17 +53,18 @@ impl Postgres {
             let _ = roots.add(cert);
         }
         if let Some(path) = &profile.ca_cert_path {
-            let bytes = std::fs::read(path)
-                .map_err(|_| AppError::invalid("Could not read the selected CA certificate"))?;
-            if bytes.len() > 1024 * 1024 {
-                return Err(AppError::invalid(
-                    "The CA certificate must be smaller than 1 MiB",
-                ));
-            }
-            for cert in rustls_pemfile::certs(&mut std::io::Cursor::new(bytes)) {
+            let bytes = crate::files::read_bounded(path, 1024 * 1024)?;
+            let mut certificate_count = 0;
+            for cert in rustls_pemfile::certs(&mut std::io::Cursor::new(bytes.as_slice())) {
                 roots
                     .add(cert.map_err(|_| AppError::invalid("Invalid CA certificate"))?)
                     .map_err(|_| AppError::invalid("Invalid CA certificate"))?;
+                certificate_count += 1;
+            }
+            if certificate_count == 0 {
+                return Err(AppError::invalid(
+                    "The selected file contains no PEM certificates",
+                ));
             }
         }
         let tls = MakeRustlsConnect::new(
@@ -155,6 +154,7 @@ impl Driver for Postgres {
         let mut pending_bytes = 0usize;
         let mut retaining = true;
         let mut total = 0u64;
+        let mut limit_cancel_sent = false;
         loop {
             let message = match stream.try_next().await {
                 Ok(Some(message)) => message,
@@ -184,11 +184,18 @@ impl Driver for Postgres {
                     let bytes = (0..row.len())
                         .map(|i| row.get(i).map_or(0, str::len))
                         .sum::<usize>();
-                    if bytes > 16 * 1024 * 1024 {
-                        return Err(AppError::new(
-                            ErrorCode::ResultLimitReached,
-                            "A returned row exceeds the 16 MiB row limit",
-                        ));
+                    if bytes > 2 * 1024 * 1024 {
+                        retaining = false;
+                        sink.limit("A returned row exceeds the 2 MiB viewer limit. Use a query with a smaller projection.");
+                        if kind == StatementKind::Read {
+                            if !pending.is_empty() {
+                                sink.rows(std::mem::take(&mut pending))?;
+                            }
+                            sink.complete(total)?;
+                            self.close();
+                            return Ok(total);
+                        }
+                        continue;
                     }
                     pending.push(
                         (0..row.len())
@@ -200,6 +207,7 @@ impl Driver for Postgres {
                         retaining = sink.rows(std::mem::take(&mut pending))?;
                         pending_bytes = 0;
                         if !retaining && kind == StatementKind::Read {
+                            limit_cancel_sent = true;
                             self.cancel().await?;
                         }
                     }
@@ -214,6 +222,9 @@ impl Driver for Postgres {
                 }
                 _ => {}
             }
+        }
+        if limit_cancel_sent {
+            self.close();
         }
         Ok(total)
     }
@@ -461,7 +472,7 @@ impl Driver for Postgres {
     }
 
     async fn processes(&self) -> AppResult<Vec<ProcessInfo>> {
-        let rows=self.metadata().await?.query("SELECT pid,backend_start::text,COALESCE(usename::text,''),COALESCE(datname,''),COALESCE(state,''),COALESCE(EXTRACT(EPOCH FROM now()-query_start)::float8,0),left(query,4096) FROM pg_catalog.pg_stat_activity WHERE backend_type='client backend' ORDER BY query_start NULLS LAST LIMIT 500",&[]).await.map_err(pg_error)?;
+        let rows=self.metadata().await?.query("SELECT pid,backend_start::text || '|' || COALESCE(query_start::text,''),COALESCE(usename::text,''),COALESCE(datname,''),COALESCE(state,''),COALESCE(EXTRACT(EPOCH FROM now()-query_start)::float8,0),left(query,4096) FROM pg_catalog.pg_stat_activity WHERE backend_type='client backend' ORDER BY query_start NULLS LAST LIMIT 500",&[]).await.map_err(pg_error)?;
         Ok(rows
             .iter()
             .map(|r| {
@@ -483,11 +494,11 @@ impl Driver for Postgres {
         let pid = id
             .parse::<i32>()
             .map_err(|_| AppError::invalid("Invalid process identifier"))?;
-        let row=self.metadata().await?.query_opt("SELECT pg_catalog.pg_cancel_backend(pid) FROM pg_catalog.pg_stat_activity WHERE pid=$1 AND backend_start::text=$2",&[&pid,&identity]).await.map_err(pg_error)?;
-        if row.is_none() {
+        let row=self.metadata().await?.query_opt("SELECT pg_catalog.pg_cancel_backend(pid) FROM pg_catalog.pg_stat_activity WHERE pid=$1 AND backend_start::text || '|' || COALESCE(query_start::text,'')=$2 AND state='active'",&[&pid,&identity]).await.map_err(pg_error)?;
+        if row.is_none_or(|row| !row.get::<_, bool>(0)) {
             return Err(AppError::new(
                 ErrorCode::Conflict,
-                "The selected process no longer exists",
+                "The selected query finished, changed, or could not be cancelled. Refresh the process list.",
             ));
         }
         Ok(())

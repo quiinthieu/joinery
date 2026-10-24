@@ -10,6 +10,34 @@ pub const RESULT_BUDGET: usize = 64 * 1024 * 1024;
 pub const ROW_LIMIT: usize = 100_000;
 pub const BATCH_ROWS: usize = 512;
 pub const MAX_RANGE_ROWS: usize = 512;
+const FRAME_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct BoundedFrame(Vec<u8>);
+impl std::io::Write for BoundedFrame {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.0.len().saturating_add(bytes.len()) > FRAME_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "Arrow frame budget exceeded",
+            ));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+fn frame_limit(_: arrow_schema::ArrowError) -> AppError {
+    frame_limit_error()
+}
+fn frame_limit_error() -> AppError {
+    AppError::new(
+        ErrorCode::ResultLimitReached,
+        "This page contains large values. Request fewer rows.",
+    )
+}
 
 struct StoredResult {
     info: ResultInfo,
@@ -218,6 +246,34 @@ impl ResultStore {
                 "The requested result range is not retained",
             ));
         }
+        // Arrow creates its encoded body before writing it. Reject wide ranges
+        // before encoding, in addition to bounding the destination writer.
+        let end = start.saturating_add(count).min(result.info.retained_rows);
+        let mut estimated = 4096 + result.info.columns.len() * 128;
+        let mut offset = 0;
+        for batch in &result.batches {
+            let batch_end = offset + batch.num_rows();
+            if start < batch_end && end > offset {
+                let from = start.saturating_sub(offset);
+                let length = (end.min(batch_end) - offset) - from;
+                estimated += batch.num_columns() * (128 + (length + 1) * 5);
+                for column in batch.columns() {
+                    let values = column
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .ok_or_else(|| AppError::internal("Invalid result column"))?;
+                    estimated += (values.value_offsets()[from + length]
+                        - values.value_offsets()[from]) as usize;
+                }
+                if estimated > FRAME_BYTES {
+                    return Err(frame_limit_error());
+                }
+            }
+            offset = batch_end;
+            if offset >= end {
+                break;
+            }
+        }
         let mut metadata = HashMap::new();
         metadata.insert("joinery.protocol".into(), "1".into());
         metadata.insert("joinery.resultId".into(), id.into());
@@ -232,11 +288,9 @@ impl ResultStore {
             metadata,
         );
         let schema = Arc::new(schema);
-        let mut output = Vec::new();
+        let mut output = BoundedFrame::default();
         {
-            let mut writer = StreamWriter::try_new(&mut output, &schema)
-                .map_err(|_| AppError::internal("Could not open Arrow stream"))?;
-            let end = start.saturating_add(count).min(result.info.retained_rows);
+            let mut writer = StreamWriter::try_new(&mut output, &schema).map_err(frame_limit)?;
             let mut offset = 0;
             for batch in &result.batches {
                 let batch_end = offset + batch.num_rows();
@@ -246,26 +300,16 @@ impl ResultStore {
                     let slice = batch.slice(from, length);
                     let slice = RecordBatch::try_new(schema.clone(), slice.columns().to_vec())
                         .map_err(|_| AppError::internal("Invalid result slice"))?;
-                    writer
-                        .write(&slice)
-                        .map_err(|_| AppError::internal("Could not encode Arrow stream"))?;
+                    writer.write(&slice).map_err(frame_limit)?;
                 }
                 offset = batch_end;
                 if offset >= end {
                     break;
                 }
             }
-            writer
-                .finish()
-                .map_err(|_| AppError::internal("Could not finish Arrow stream"))?;
+            writer.finish().map_err(frame_limit)?;
         }
-        if output.len() > 4 * 1024 * 1024 {
-            return Err(AppError::new(
-                ErrorCode::ResultLimitReached,
-                "This page contains large values. Request fewer rows.",
-            ));
-        }
-        Ok(output)
+        Ok(output.0)
     }
 
     pub fn release(&self, id: &str) {
@@ -301,6 +345,28 @@ mod tests {
             foreign_key: false,
             editable: false,
         }]
+    }
+    #[test]
+    fn wide_ipc_ranges_are_rejected_before_encoding_and_small_ranges_work() {
+        let store = ResultStore::default();
+        let result = store.create("wide", 0, columns(), None).unwrap();
+        assert!(
+            store
+                .append(
+                    &result.id,
+                    (0..8).map(|_| vec![Some("x".repeat(700_000))]).collect()
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            store.range(&result.id, 0, 8).unwrap_err().code,
+            ErrorCode::ResultLimitReached
+        );
+        let frame = store.range(&result.id, 3, 1).unwrap();
+        assert!(frame.len() < FRAME_BYTES);
+        let mut reader =
+            arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(frame), None).unwrap();
+        assert_eq!(reader.next().unwrap().unwrap().num_rows(), 1);
     }
     #[test]
     fn arrow_round_trip_preserves_null_empty_and_large_integer_text() {

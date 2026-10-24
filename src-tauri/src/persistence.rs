@@ -109,6 +109,33 @@ impl Persistence {
         Ok(())
     }
 
+    pub fn delete_group(&self, id: &str) -> AppResult<()> {
+        self.connection
+            .lock()
+            .execute("DELETE FROM groups WHERE id=?1", [id])
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    pub fn audit_log(&self) -> AppResult<Vec<AuditEntry>> {
+        let conn = self.connection.lock();
+        let mut statement = conn.prepare("SELECT id,occurred_at,connection_id,action,digest,outcome FROM audit ORDER BY occurred_at DESC LIMIT 1000").map_err(db_error)?;
+        statement
+            .query_map([], |row| {
+                Ok(AuditEntry {
+                    id: row.get(0)?,
+                    occurred_at: row.get::<_, i64>(1)? as u64,
+                    connection_id: row.get(2)?,
+                    action: row.get(3)?,
+                    digest: row.get(4)?,
+                    outcome: row.get(5)?,
+                })
+            })
+            .map_err(db_error)?
+            .map(|r| r.map_err(db_error))
+            .collect()
+    }
+
     pub fn setting(&self, key: &str) -> AppResult<Option<String>> {
         self.connection
             .lock()

@@ -1,0 +1,9 @@
+{
+  "identifier": "com.quiinthieu.joinery.native-smoke",
+  "build": { "beforeBuildCommand": "pnpm build:smoke" },
+  "app": {
+    "windows": [{ "label": "main", "title": "Joinery Native Smoke", "width": 1440, "height": 920, "visible": false }],
+    "security": { "capabilities": ["main", "native-smoke"] }
+  },
+  "bundle": { "active": false }
+}

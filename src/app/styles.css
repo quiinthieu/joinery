@@ -1,5 +1,70 @@
 @import "tailwindcss";
 
+.host-fingerprint {
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--accent);
+}
+.managed-groups {
+  margin: 12px 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+.managed-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.managed-group > span {
+  flex: 1;
+  font-size: 12px;
+}
+.group-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.group-form-actions {
+  grid-column: 1/-1;
+  display: flex;
+  gap: 8px;
+}
+.delete-profile {
+  margin-right: auto;
+}
+.utility-actions {
+  display: flex;
+  gap: 8px;
+}
+.history-switch {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.history-switch button {
+  padding: 10px 14px;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+.history-switch button.selected {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.audit-table code {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 :root {
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

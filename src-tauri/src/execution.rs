@@ -8,6 +8,7 @@ use crate::{
     results::{RESULT_BUDGET, ROW_LIMIT, ResultStore},
     safety,
     secrets::{OsSecrets, SecretStore},
+    ssh::{SshManager, Tunnel, host_setting},
 };
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
@@ -37,6 +38,7 @@ struct Session {
     cancellation_gate: tokio::sync::Mutex<()>,
     active_run: Mutex<Option<String>>,
     closed: AtomicBool,
+    tunnel: Option<Arc<Tunnel>>,
 }
 
 enum Action {
@@ -75,6 +77,8 @@ pub struct Studio {
     result_sessions: Mutex<HashMap<String, String>>,
     pub results: ResultStore,
     connect_gate: tokio::sync::Mutex<()>,
+    configuration_gate: Mutex<()>,
+    tunnels: SshManager,
 }
 
 impl Studio {
@@ -91,6 +95,8 @@ impl Studio {
             result_sessions: Mutex::new(HashMap::new()),
             results: ResultStore::default(),
             connect_gate: tokio::sync::Mutex::new(()),
+            configuration_gate: Mutex::new(()),
+            tunnels: SshManager::default(),
         }))
     }
 
@@ -114,6 +120,7 @@ impl Studio {
         mut profile: ConnectionProfile,
         passphrase: Option<&str>,
     ) -> AppResult<ConnectionProfile> {
+        let _configuration = self.configuration_gate.lock();
         if profile.id.is_empty() {
             profile.id = new_id();
         }
@@ -125,7 +132,13 @@ impl Studio {
             || profile.host.len() > 253
             || profile.port == 0
             || profile.username.is_empty()
+            || profile.username.len() > 1024
             || profile.database.is_empty()
+            || profile.database.len() > 1024
+            || profile
+                .ca_cert_path
+                .as_ref()
+                .is_some_and(|p| p.len() > 4096)
         {
             return Err(AppError::invalid(
                 "Provide a name, host, port, database, and username",
@@ -135,6 +148,27 @@ impl Studio {
             && previous.environment == Environment::Production
         {
             self.verify_passphrase(passphrase)?;
+        }
+        let profiles = self.persistence.profiles()?;
+        if !profiles.iter().any(|p| p.id == profile.id) && profiles.len() >= 256 {
+            return Err(AppError::invalid(
+                "At most 256 connection profiles may be stored",
+            ));
+        }
+        if let Some(ssh) = &profile.ssh
+            && (ssh.host.trim().is_empty()
+                || ssh.host.len() > 253
+                || ssh.port == 0
+                || ssh.username.is_empty()
+                || ssh.username.len() > 255
+                || ssh
+                    .private_key_path
+                    .as_ref()
+                    .is_some_and(|p| p.len() > 4096))
+        {
+            return Err(AppError::invalid(
+                "Provide a valid SSH host, port, username, and key path",
+            ));
         }
         let groups = self.persistence.groups()?;
         let group = groups
@@ -152,11 +186,106 @@ impl Studio {
             ));
         }
         self.close_profile_sessions(&profile.id);
+        if profiles
+            .iter()
+            .any(|p| p.id == profile.id && p.remember_password)
+            && !profile.remember_password
+        {
+            self.secrets.delete(&format!("database:{}", profile.id))?;
+        }
         self.persistence.save_profile(&profile)?;
         Ok(profile)
     }
 
+    pub fn save_group(&self, mut group: ConnectionGroup) -> AppResult<ConnectionGroup> {
+        let _configuration = self.configuration_gate.lock();
+        let groups = self.persistence.groups()?;
+        let previous = groups.iter().find(|g| g.id == group.id);
+        if previous.is_none() && (uuid::Uuid::parse_str(&group.id).is_err() || groups.len() >= 256)
+        {
+            return Err(AppError::invalid(
+                "Use a valid group identifier; at most 256 groups may be stored",
+            ));
+        }
+        group.name = group.name.trim().to_string();
+        if group.name.is_empty() || group.name.len() > 100 {
+            return Err(AppError::invalid("Use a group name of 1 to 100 bytes"));
+        }
+        let mut current = group.parent_id.as_deref();
+        let mut depth = 0;
+        while let Some(id) = current {
+            if id == group.id || depth >= 7 {
+                return Err(AppError::invalid(
+                    "Groups cannot form a cycle or exceed eight levels",
+                ));
+            }
+            let parent = groups
+                .iter()
+                .find(|g| g.id == id)
+                .ok_or_else(|| AppError::invalid("Choose an existing parent group"))?;
+            if depth == 0 {
+                group.environment = parent.environment;
+            }
+            current = parent.parent_id.as_deref();
+            depth += 1;
+        }
+        if previous.is_some_and(|old| old.environment != group.environment) {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "A group's environment cannot change. Create a new group in the desired environment, then move profiles individually.",
+            ));
+        }
+        // Count the deepest descendant too when moving an existing subtree.
+        for descendant in &groups {
+            let mut id = descendant.parent_id.as_deref();
+            let mut below = 0;
+            while let Some(parent) = id {
+                below += 1;
+                if parent == group.id && depth + below >= 8 {
+                    return Err(AppError::invalid(
+                        "This move would exceed eight group levels",
+                    ));
+                }
+                if below > 256 {
+                    return Err(AppError::invalid("The stored group hierarchy is invalid"));
+                }
+                id = groups
+                    .iter()
+                    .find(|g| g.id == parent)
+                    .and_then(|g| g.parent_id.as_deref());
+            }
+        }
+        self.persistence.save_group(&group)?;
+        Ok(group)
+    }
+
+    pub fn delete_group(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        let groups = self.persistence.groups()?;
+        if ["production", "staging", "local"].contains(&id) {
+            return Err(AppError::invalid(
+                "The default environment groups cannot be removed",
+            ));
+        }
+        if !groups.iter().any(|g| g.id == id) {
+            return Err(AppError::new(ErrorCode::NotFound, "Group no longer exists"));
+        }
+        if groups.iter().any(|g| g.parent_id.as_deref() == Some(id))
+            || self
+                .persistence
+                .profiles()?
+                .iter()
+                .any(|p| p.group_id == id)
+        {
+            return Err(AppError::invalid(
+                "Move this group's connections and child groups before removing it",
+            ));
+        }
+        self.persistence.delete_group(id)
+    }
+
     pub fn delete_profile(&self, id: &str, passphrase: Option<&str>) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
         let profile = self.persistence.profile(id)?;
         if profile.environment == Environment::Production {
             self.verify_passphrase(passphrase)?;
@@ -184,12 +313,6 @@ impl Studio {
                 "This connection already has four open sessions",
             ));
         }
-        if profile.ssh.is_some() {
-            return Err(AppError::new(
-                ErrorCode::Unsupported,
-                "SSH transport is not available in this build",
-            ));
-        }
         let password = match secrets.password {
             Some(value) => Some(Zeroizing::new(value)),
             None if profile.remember_password => self
@@ -199,13 +322,27 @@ impl Studio {
             None => None,
         };
         let session_id = new_id();
+        let tunnel = if let Some(ssh) = &profile.ssh {
+            Some(
+                self.tunnels
+                    .acquire(
+                        &profile,
+                        self.persistence.setting(&host_setting(ssh))?,
+                        secrets.ssh_password.map(Zeroizing::new),
+                        secrets.key_passphrase.map(Zeroizing::new),
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
         let (driver, info): (Arc<dyn Driver>, SessionInfo) = match profile.engine {
             EngineKind::Postgres => {
                 let (d, i) = Postgres::open(
                     &profile,
                     password.as_deref().map(String::as_str),
                     &session_id,
-                    None,
+                    tunnel.as_ref().map(|t| t.port),
                 )
                 .await?;
                 (d, i)
@@ -217,6 +354,20 @@ impl Studio {
                 ));
             }
         };
+        let _configuration = self.configuration_gate.lock();
+        if self
+            .persistence
+            .profile(id)
+            .ok()
+            .and_then(|current| serde_json::to_string(&current).ok())
+            != serde_json::to_string(&profile).ok()
+        {
+            driver.close();
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "This connection profile changed while connecting. Connect again using its current settings.",
+            ));
+        }
         if profile.remember_password
             && let Some(password) = password.as_ref()
             && let Err(error) = self.secrets.set(&format!("database:{id}"), password)
@@ -234,6 +385,7 @@ impl Studio {
                 cancellation_gate: tokio::sync::Mutex::new(()),
                 active_run: Mutex::new(None),
                 closed: AtomicBool::new(false),
+                tunnel,
             }),
         );
         Ok(info)
@@ -243,13 +395,45 @@ impl Studio {
         let session = self.sessions.lock().get(id).cloned().ok_or_else(|| {
             AppError::new(ErrorCode::ConnectionClosed, "Connect to a database first")
         })?;
-        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+        if session.closed.load(Ordering::Acquire)
+            || session.driver.is_closed()
+            || session.tunnel.as_ref().is_some_and(|t| t.is_closed())
+        {
             return Err(AppError::new(
                 ErrorCode::ConnectionClosed,
                 "This database session is disconnected",
             ));
         }
         Ok(session)
+    }
+
+    pub async fn probe_ssh(&self, profile_id: &str) -> AppResult<SshHostKey> {
+        let profile = self.persistence.profile(profile_id)?;
+        let ssh = profile
+            .ssh
+            .as_ref()
+            .ok_or_else(|| AppError::invalid("SSH is not configured"))?;
+        self.tunnels
+            .probe(ssh, self.persistence.setting(&host_setting(ssh))?)
+            .await
+    }
+
+    pub fn trust_ssh_key(&self, challenge_id: &str, fingerprint: &str) -> AppResult<()> {
+        let (host, line) = self.tunnels.accept(challenge_id, fingerprint)?;
+        let setting = host_setting(&host);
+        if self
+            .persistence
+            .setting(&setting)?
+            .is_some_and(|previous| previous != line)
+        {
+            return Err(AppError::new(
+                ErrorCode::SshHostKeyChanged,
+                "A different host key is already trusted. Connection blocked.",
+            ));
+        }
+        self.persistence.set_setting(&setting, &line)?;
+        self.persistence
+            .audit("ssh", "trust-host", fingerprint, "accepted")
     }
 
     pub fn disconnect(&self, id: &str) {
@@ -525,6 +709,7 @@ impl Studio {
                         index,
                         current: None,
                         truncated: false,
+                        viewer_closed: false,
                         events: &events,
                     };
                     let outcome = session
@@ -603,13 +788,23 @@ impl Studio {
             let _gate = session.cancellation_gate.lock().await;
             // PostgreSQL's cancel protocol has no acknowledgement. Discard a session
             // after an explicit cancellation so a late request cannot hit the next run.
+            let mut reason = None;
             if cancellation_sent.load(Ordering::Acquire) {
                 session.closed.store(true, Ordering::Release);
                 session.driver.close();
+                reason = Some("The query was cancelled. Reconnect before running another query.");
+            } else if session.driver.is_closed() {
+                session.closed.store(true, Ordering::Release);
+                reason = Some("This database session closed. Reconnect to run another query.");
+            }
+            if let Some(reason) = reason {
+                self.sessions.lock().remove(&session.info.id);
+                self.plans
+                    .lock()
+                    .retain(|_, p| p.plan.session_id != session.info.id);
                 events(QueryEvent::SessionClosed {
                     session_id: session.info.id.clone(),
-                    reason: "The query was cancelled. Reconnect before running another query."
-                        .into(),
+                    reason: reason.into(),
                 });
             }
             *session.active_run.lock() = None;
@@ -946,6 +1141,9 @@ impl Studio {
     pub fn clear_history(&self) -> AppResult<()> {
         self.persistence.clear_history()
     }
+    pub fn audit_log(&self) -> AppResult<Vec<AuditEntry>> {
+        self.persistence.audit_log()
+    }
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         ResourceUsage {
@@ -977,9 +1175,16 @@ struct Output<'a> {
     index: usize,
     current: Option<String>,
     truncated: bool,
+    viewer_closed: bool,
     events: &'a EventHandler,
 }
 impl Output<'_> {
+    fn discard(&mut self) {
+        self.viewer_closed = true;
+        if let Some(id) = self.current.take() {
+            self.studio.release_result(&id);
+        }
+    }
     fn fail(&mut self) {
         if let Some(id) = self.current.take()
             && let Ok(result) = self.studio.results.finish(&id, true)
@@ -989,11 +1194,28 @@ impl Output<'_> {
     }
 }
 impl QuerySink for Output<'_> {
+    fn limit(&mut self, reason: &str) {
+        self.truncated = true;
+        (self.events)(QueryEvent::Notice {
+            message: reason.into(),
+        });
+    }
     fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()> {
-        let info = self
+        if self.viewer_closed {
+            return Ok(());
+        }
+        let info = match self
             .studio
             .results
-            .create(self.run_id, self.index, columns, None)?;
+            .create(self.run_id, self.index, columns, None)
+        {
+            Ok(info) => info,
+            Err(error) => {
+                self.limit(&error.message);
+                self.discard();
+                return Ok(());
+            }
+        };
         self.studio
             .result_sessions
             .lock()
@@ -1001,35 +1223,46 @@ impl QuerySink for Output<'_> {
         self.current = Some(info.id.clone());
         self.truncated = false;
         if !(self.events)(QueryEvent::Result { result: info }) {
-            return Err(AppError::new(
-                ErrorCode::Cancelled,
-                "The result viewer closed",
-            ));
+            self.discard();
         }
         Ok(())
     }
     fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool> {
+        if self.viewer_closed {
+            return Ok(false);
+        }
         let id = self
             .current
             .as_deref()
             .ok_or_else(|| AppError::internal("Rows arrived before column metadata"))?;
-        let retained = self.studio.results.append(id, rows)?;
+        let retained = match self.studio.results.append(id, rows) {
+            Ok(value) => value,
+            Err(error) => {
+                self.limit(&error.message);
+                self.discard();
+                return Ok(false);
+            }
+        };
         self.truncated |= !retained;
         let info = self.studio.results.info(id)?;
         if !(self.events)(QueryEvent::Progress {
             result_id: id.into(),
             retained_rows: info.retained_rows,
         }) {
-            return Err(AppError::new(
-                ErrorCode::Cancelled,
-                "The result viewer closed",
-            ));
+            self.discard();
+            return Ok(false);
         }
         Ok(retained)
     }
     fn complete(&mut self, _affected: u64) -> AppResult<()> {
+        if self.viewer_closed {
+            return Ok(());
+        }
         if self.current.is_none() {
             self.describe(Vec::new())?;
+        }
+        if self.viewer_closed {
+            return Ok(());
         }
         let id = self.current.take().unwrap();
         let result = self.studio.results.finish(&id, self.truncated)?;

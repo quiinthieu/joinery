@@ -17,8 +17,14 @@
     "desktop": "tauri dev",
     "desktop:build": "tauri build --no-bundle",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
-    "contracts": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --bin export-contracts",
-    "test:e2e": "playwright test"
+    "contracts": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --features contracts --bin export-contracts",
+    "test:e2e": "playwright test",
+    "build:smoke": "pnpm contracts && pnpm icons && tsc -b && vite build --mode native-smoke",
+    "desktop:smoke:build": "tauri build --no-bundle --features native-smoke --config src-tauri/tauri.smoke.conf.json && node scripts/prepare-native-smoke.mjs",
+    "test:native": "python3 scripts/native-smoke.py",
+    "format:check": "prettier --check src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs",
+    "format": "prettier --write src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs",
+    "desktop:bundle:mac": "tauri build --bundles app"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6",
@@ -30,7 +36,7 @@
     "@codemirror/view": "^6",
     "@glideapps/glide-data-grid": "6.0.3",
     "@lezer/highlight": "^1.2.5",
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "~2.11.1",
     "apache-arrow": "^21.2.0",
     "lodash": "^4.17.21",
     "lucide-react": "^0.468.0",
@@ -52,6 +58,7 @@
     "@types/react-dom": "^18",
     "@vitejs/plugin-react": "^6",
     "jsdom": "^28",
+    "prettier": "^3.9.10",
     "tailwindcss": "^4",
     "typescript": "^6",
     "vite": "^8",

@@ -4,7 +4,7 @@ import { readValue, type ColumnarPage } from "./columnar";
 const PAGE_ROWS = 128;
 const CACHE_BUDGET = 32 * 1024 * 1024;
 
-class ResultCache {
+export class ResultCache {
   private pages = new Map<string, ColumnarPage>();
   private pending = new Map<string, Promise<void>>();
   private errors = new Map<string, string>();
@@ -20,6 +20,7 @@ class ResultCache {
   >();
   private generations = new Map<string, number>();
   private notifyFrame = 0;
+  private pageSizes = new Map<string, number>();
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -35,7 +36,8 @@ class ResultCache {
       });
   }
   private key(id: string, row: number) {
-    return `${id}:${Math.floor(row / PAGE_ROWS) * PAGE_ROWS}`;
+    const size = this.pageSizes.get(id) ?? PAGE_ROWS;
+    return `${id}:${Math.floor(row / size) * size}`;
   }
 
   read(id: string, column: string, row: number, full = false) {
@@ -58,30 +60,66 @@ class ResultCache {
     if (this.errors.has(key)) return Promise.resolve();
     const generation = this.generations.get(id) ?? 0;
     const task = new Promise<void>((resolve) => {
-      const start = Math.floor(row / PAGE_ROWS) * PAGE_ROWS;
       const run = async () => {
         this.active++;
         try {
-          const buffer = await client.range(id, start, Math.min(PAGE_ROWS, rowCount - start));
+          let size = this.pageSizes.get(id) ?? PAGE_ROWS,
+            start = Math.floor(row / size) * size,
+            buffer: ArrayBuffer;
+          while (true) {
+            try {
+              buffer = await client.range(id, start, Math.min(size, rowCount - start));
+              break;
+            } catch (error) {
+              if (
+                size === 1 ||
+                !error ||
+                typeof error !== "object" ||
+                !("code" in error) ||
+                error.code !== "resultLimitReached"
+              )
+                throw error;
+              size = Math.min(
+                this.pageSizes.get(id) ?? PAGE_ROWS,
+                Math.max(1, Math.floor(size / 4)),
+              );
+              this.pageSizes.set(id, size);
+              this.dropPages(id);
+              start = Math.floor(row / size) * size;
+            }
+          }
           const page = await this.decode(buffer);
           if (page.resultId !== id || page.start !== start)
             throw new Error("Received data for a different result");
           if ((this.generations.get(id) ?? 0) !== generation) return;
+          if (size !== (this.pageSizes.get(id) ?? PAGE_ROWS)) return;
           if (page.byteLength > CACHE_BUDGET)
             throw new Error("This result page exceeds the display cache budget");
-          while (this.bytes + page.byteLength > CACHE_BUDGET && this.pages.size) {
+          while (
+            (this.bytes + page.byteLength > CACHE_BUDGET || this.pages.size >= 512) &&
+            this.pages.size
+          ) {
             const oldest = this.pages.entries().next().value!;
             this.pages.delete(oldest[0]);
             this.bytes -= oldest[1].byteLength;
           }
-          this.pages.set(key, page);
+          const actualKey = this.key(id, row);
+          const previous = this.pages.get(actualKey);
+          if (previous) this.bytes -= previous.byteLength;
+          this.pages.set(actualKey, page);
           this.bytes += page.byteLength;
         } catch (error) {
           if ((this.generations.get(id) ?? 0) === generation)
-            this.errors.set(key, messageOf(error));
+            this.errors.set(this.key(id, row), messageOf(error));
         } finally {
           this.pending.delete(key);
           this.active--;
+          if (![...this.pending.keys()].some((key) => key.startsWith(`${id}:`)))
+            this.generations.delete(id);
+          if (!this.pending.size && !this.pages.size) {
+            this.worker?.terminate();
+            this.worker = null;
+          }
           this.notify();
           resolve();
           this.queue.shift()?.();
@@ -124,13 +162,23 @@ class ResultCache {
 
   release(id: string) {
     this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
+    this.dropPages(id);
+    this.pageSizes.delete(id);
+    for (const key of this.errors.keys()) if (key.startsWith(`${id}:`)) this.errors.delete(key);
+    if (![...this.pending.keys()].some((key) => key.startsWith(`${id}:`)))
+      this.generations.delete(id);
+    if (!this.pending.size && !this.pages.size) {
+      this.worker?.terminate();
+      this.worker = null;
+    }
+    this.notify();
+  }
+  private dropPages(id: string) {
     for (const [key, page] of this.pages)
       if (page.resultId === id) {
         this.pages.delete(key);
         this.bytes -= page.byteLength;
       }
-    for (const key of this.errors.keys()) if (key.startsWith(`${id}:`)) this.errors.delete(key);
-    this.notify();
   }
   get retainedBytes() {
     return this.bytes;

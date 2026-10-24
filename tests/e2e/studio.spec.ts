@@ -93,5 +93,37 @@ test("guards writes, cancels a long query, and opens a million-row benchmark", a
   const box = (await page.locator(".grid-host").boundingBox())!;
   await page.mouse.move(box.x + 300, box.y + 150);
   await page.mouse.wheel(0, 15000);
+  await expect
+    .poll(() =>
+      page
+        .locator(".grid-host")
+        .evaluate((root) =>
+          Math.max(0, ...Array.from(root.querySelectorAll("*")).map((node) => node.scrollTop)),
+        ),
+    )
+    .toBeGreaterThan(1000);
   await page.screenshot({ path: ".cache/screenshots/benchmark.png", fullPage: true });
+});
+
+test("manages nested groups and reads local audit entries", async ({ page }) => {
+  const group = `Analytics ${Date.now()}`;
+  await connect(page, "Audit fixture");
+  await page.getByRole("button", { name: "New query tab" }).click();
+  await page.getByRole("textbox", { name: "SQL editor" }).fill("SELECT 1;");
+  await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+  await expect(page.locator(".result-footer")).toContainText("1 rows");
+  await page.getByRole("button", { name: /^Preferences/ }).click();
+  await page.getByLabel("Group name", { exact: true }).fill(group);
+  await page.getByRole("combobox", { name: "Parent group", exact: true }).selectOption("local");
+  await page.getByRole("button", { name: "Add group", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: `Rename group ${group}`, exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("button", { name: group, exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Query history", exact: true }).click();
+  await page.getByRole("button", { name: "Audit log", exact: true }).click();
+  await expect(page.locator(".audit-table")).toContainText("Audit fixture");
+  await expect(page.locator(".audit-table")).toContainText("Completed");
+  await page.screenshot({ path: ".cache/screenshots/audit-log.png", fullPage: true });
 });

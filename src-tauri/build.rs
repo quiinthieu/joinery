@@ -4,6 +4,10 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "app_info",
             "bootstrap",
+            "acknowledge_quit",
+            "save_group",
+            "delete_group",
+            "audit_log",
             "save_profile",
             "delete_profile",
             "connect",
@@ -26,6 +30,10 @@ fn main() {
             "history",
             "clear_history",
             "resource_usage",
+            "probe_ssh",
+            "trust_ssh_key",
+            "native_smoke_fixture",
+            "native_smoke_report",
         ]),
     ))
     .expect("Tauri build configuration must be valid");

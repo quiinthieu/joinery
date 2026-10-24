@@ -10,6 +10,10 @@
     "core:window:allow-destroy",
     "allow-app-info",
     "allow-bootstrap",
+    "allow-acknowledge-quit",
+    "allow-save-group",
+    "allow-delete-group",
+    "allow-audit-log",
     "allow-save-profile",
     "allow-delete-profile",
     "allow-connect",
@@ -31,6 +35,8 @@
     "allow-health",
     "allow-history",
     "allow-clear-history",
-    "allow-resource-usage"
+    "allow-resource-usage",
+    "allow-probe-ssh",
+    "allow-trust-ssh-key"
   ]
 }

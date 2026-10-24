@@ -52,6 +52,8 @@ pub struct SshConfig {
     pub username: String,
     pub authentication: SshAuthentication,
     pub private_key_path: Option<String>,
+    #[serde(default)]
+    pub agent_socket_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -60,6 +62,16 @@ pub enum SshAuthentication {
     Password,
     PrivateKey,
     Agent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostKey {
+    pub host: String,
+    pub port: u16,
+    pub fingerprint: String,
+    pub previous_fingerprint: Option<String>,
+    pub challenge_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -337,6 +349,18 @@ pub struct HistoryEntry {
     pub statement_count: usize,
     pub status: RunStatus,
     pub elapsed_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditEntry {
+    pub id: String,
+    #[ts(type = "number")]
+    pub occurred_at: u64,
+    pub connection_id: String,
+    pub action: String,
+    pub digest: String,
+    pub outcome: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

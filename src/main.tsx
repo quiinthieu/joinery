@@ -8,3 +8,6 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>,
 );
+
+if (import.meta.env.MODE === "native-smoke")
+  void import("./native-smoke").then((module) => module.runNativeSmoke());

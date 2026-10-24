@@ -3,6 +3,7 @@ import { Check, LockKeyhole, Monitor, Moon, Sun, Loader2 } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
 import { useStudio } from "../../state/studio";
+import { GroupManager } from "../connections/GroupManager";
 
 export function Preferences({ onClose }: { onClose(): void }) {
   const state = useStudio(),
@@ -90,6 +91,8 @@ export function Preferences({ onClose }: { onClose(): void }) {
             {state.bootstrap?.passphraseConfigured ? "Update passphrase" : "Set passphrase"}
           </button>
         </form>
+        <div className="preference-divider" />
+        <GroupManager />
         <div className="preference-divider" />
         <h3>Data privacy</h3>
         <p className="form-note">
