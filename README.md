@@ -2,12 +2,14 @@
 
 A desktop database studio built with Tauri v2, Rust, React, CodeMirror, and a Canvas data grid.
 
-The approved [development blueprint](https://chatgpt.com/space/page_c4b9e62285c481918eec36b706cca3a7) is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
+The private [Joinery project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)
+is the canonical plan and shipping-status destination. Update the Site after
+implementation, verification, merge, and release milestones. The detailed
+engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
 The [macOS preview](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.2)
 includes the PostgreSQL studio and a read-only Snowflake SQL pilot. Shipped
-features, remaining work, and connection-test results are tracked on the
-[project plan Page](https://chatgpt.com/space/page_c4b9e62285c481918eec36b706cca3a7).
+features, remaining work, and connection-test results are tracked on the Site.
 Keep connection secrets in the ignored local `.env`; `.env.example` provides
 blank inventory fields. These fields are transferred manually into the app,
 not loaded by the frontend or automatically imported into profiles.
