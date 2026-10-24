@@ -27,7 +27,7 @@ export function tableLookup(tables: TableInfo[]) {
 }
 
 export function referencedTables(text: string, tables: Map<string, TableRef>) {
-  const id = '(?:"(?:[^"]|"")+"|[\\p{L}_][\\p{L}\\p{N}_$]*)';
+  const id = '(?:"(?:[^"]|"")+"|`(?:[^`]|``)+`|[\\p{L}_][\\p{L}\\p{N}_$]*)';
   const pattern = new RegExp(
     `\\b(?:from|join|update|into)\\s+(${id}(?:\\s*\\.\\s*${id})?)(?:\\s+(?:as\\s+)?(${id}))?`,
     "giu",
@@ -36,12 +36,16 @@ export function referencedTables(text: string, tables: Map<string, TableRef>) {
   for (const match of text.matchAll(pattern)) {
     const name = match[1]
       .replace(/\s*\.\s*/g, ".")
-      .replace(/"((?:[^"]|"")+)"/g, (_, value: string) => value.replace(/""/g, '"'));
+      .replace(/"((?:[^"]|"")+)"/g, (_, value: string) => value.replace(/""/g, '"'))
+      .replace(/`((?:[^`]|``)+)`/g, (_, value: string) => value.replace(/``/g, "`"));
     const table = tables.get(name.toLowerCase());
     if (!table) continue;
     const key = JSON.stringify(table),
       item = found.get(key) ?? { table, aliases: [] };
-    const alias = match[2]?.replace(/^"|"$/g, "");
+    const alias = match[2]
+      ?.replace(/^["`]|["`]$/g, "")
+      .replace(/``/g, "`")
+      .replace(/""/g, '"');
     if (
       alias &&
       !/^(where|join|left|right|inner|outer|full|cross|on|group|order|limit|offset|set|returning|union|having|for|using)$/i.test(

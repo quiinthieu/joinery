@@ -59,13 +59,14 @@ async fn rpc(
             "save_profile" => {
                 let profile: ConnectionProfile = arg(&args, "profile")?;
                 if profile.host != "127.0.0.1"
-                    || profile.port != 55432
-                    || profile.engine != EngineKind::Postgres
+                    || !matches!((profile.engine,profile.port),(EngineKind::Postgres,55432)|(EngineKind::Mysql,53306|53307))
+                    || profile.database != "joinery"
+                    || profile.username != "joinery"
                     || profile.ssh.is_some()
                     || profile.environment == Environment::Production
                 {
                     return Err(AppError::invalid(
-                        "The browser test harness accepts only the local PostgreSQL fixture",
+                        "The browser test harness accepts only the local disposable database fixtures",
                     ));
                 }
                 json!(studio.save_profile(

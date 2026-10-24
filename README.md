@@ -7,8 +7,10 @@ is the canonical plan and shipping-status destination. Update the Site after
 implementation, verification, merge, and release milestones. The detailed
 engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
-The [macOS preview.3](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.3)
+The [latest macOS preview](https://github.com/quiinthieu/joinery/releases)
 includes the PostgreSQL studio and a read-only Snowflake SQL/catalog pilot.
+The current source also supports MySQL 8.4 and MariaDB 11.4; see the Site for
+the exact published version and verification state.
 Shipped features, remaining work, and connection-test results are tracked on the
 Site. Keep connection secrets in the ignored local `.env`; `.env.example`
 provides blank inventory fields. Transfer these manually into the app; the
@@ -70,19 +72,28 @@ steps below. Rust integration tests marked ignored do not run in `pnpm validate`
 ## Local database and integration tests
 
 ```sh
-docker compose up -d --wait
-cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh -- --ignored
+python3 scripts/mysql-tls-fixture.py
+docker compose --profile mysql up -d --wait
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql -- --ignored --test-threads=1
 pnpm exec playwright install chromium --only-shell
 pnpm test:e2e
 ```
 
 The disposable PostgreSQL fixture listens on `127.0.0.1:55432`; database/user `joinery`, password `joinery-local-only`. Select **Local**, disable TLS for this fixture, and use these credentials. `docker compose down` stops the fixture while retaining its volume; `docker compose down -v` also deletes its test data.
 
-Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. PostgreSQL browser tests exercise the actual Rust service and disposable database. The Snowflake browser workflow intercepts that API boundary with synthetic responses and Arrow data; separate Rust tests exercise the Snowflake adapter against a loopback HTTP fixture. Neither Snowflake test path signs in or queries a production account.
+The optional `mysql` Compose profile adds MySQL 8.4 on `127.0.0.1:53306` and
+MariaDB 11.4 on `127.0.0.1:53307`, with the same disposable database/user/password.
+The TLS preparation script creates an ignored two-day fixture CA/server key;
+select **MySQL / MariaDB**, choose Local, and either disable TLS or select
+`.cache/mysql-fixture-tls/ca.pem` as the custom CA. Never reuse these fixture
+credentials or keys outside local tests. Stop just these services with
+`docker compose --profile mysql stop mysql mariadb`.
+
+Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. PostgreSQL, MySQL, and MariaDB browser tests exercise the actual Rust service and disposable databases. The Snowflake browser workflow intercepts that API boundary with synthetic responses and Arrow data; separate Rust tests exercise the Snowflake adapter against a loopback HTTP fixture. Neither Snowflake test path signs in or queries a production account.
 
 ## Current implementation
 
-- PostgreSQL profiles, verified TLS/custom CAs, system credential storage, hierarchical environment groups, and connection health.
+- PostgreSQL and MySQL/MariaDB profiles, verified TLS/custom CAs, system credential storage, hierarchical environment groups, and connection health.
 - SSH bastions with password, encrypted OpenSSH key, or agent authentication; explicit host fingerprint trust; shared tunnels and loopback-only forwarding. Database TLS verifies the original database hostname through the tunnel.
 - CodeMirror SQL tabs, current-statement/selection execution, complete-batch execution, schema-aware completion, worker-based formatting, cancellation, process inspection, and metadata history.
 - Canvas grid, exact integer/decimal text, explicit NULLs, keyset table browsing, PK/FK structure, sparse edits, typed values, generated SQL/bindings review, and atomic conflict-checked commits across pages.
@@ -93,7 +104,17 @@ Grid browsing and commits use login credentials independently of SQL-editor tran
 
 Results are never written to disk: Rust retains at most 64 MiB in total and 100,000 rows per query result, the display cache retains at most 32 MiB / 512 pages, and pending edits have an 8 MiB budget. A table page stops at 500 rows or 2 MiB. IPC frames stop at 4 MiB and the frontend adapts page sizes for wide results. SQL history text is opt-in per connection; passwords stay in memory or the operating-system credential store.
 
-Cancellation discards the affected SQL session after the native PostgreSQL cancel request to prevent a late request from cancelling a subsequent query. Reconnect before running another query. A lost connection during commit requires checking database state before retrying.
+Cancellation discards the affected SQL session after a native PostgreSQL cancel request or MySQL/MariaDB owned-query cancellation to prevent a late request from cancelling a subsequent query. Reconnect before running another query. A lost connection during commit requires checking database state before retrying.
+
+MySQL/MariaDB editing requires an InnoDB base table and a supported primary key.
+Views, nontransactional tables, generated/binary/floating-point columns, and
+arbitrary SQL results remain read-only. The backend fixes SQL mode, character
+set, and timezone before editor statements; attempts to change parser settings
+or use executable comments are rejected. DDL can implicitly commit an editor
+transaction. MySQL process inspection is available; external process cancellation
+is disabled because process-list identity cannot safely authorize a later kill.
+Use the SQL toolbar to cancel Joinery’s own run. A cancellation request may race
+a successful write: the observed server outcome takes precedence.
 
 SSH host trust is local to Joinery. A changed key is blocked; the app does not silently replace a trusted key. Agent forwarding is disabled. A custom agent socket path is available when a GUI launch does not inherit `SSH_AUTH_SOCK`.
 
@@ -116,7 +137,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test cre
 
 This writes, reads, deletes, and checks absence of that synthetic entry. It never reads saved connection credentials. It is ignored in ordinary validation/CI; it needs native credential-store access on the local host. Locked/denied-store behavior is separately covered through injected failures; real OS locked-store qualification is still pending. Detailed scope and measurements are in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 
-MySQL/MariaDB, Redis, broader Snowflake production qualification,
+Redis, broader MySQL/MariaDB and Snowflake production qualification,
 distribution signing, and full performance qualification remain on the
 [development roadmap](docs/DEVELOPMENT_PLAN.md). The preview is available for
 macOS Apple Silicon; RAM/startup/FPS targets remain unqualified.

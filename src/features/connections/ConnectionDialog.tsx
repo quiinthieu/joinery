@@ -122,8 +122,9 @@ export function ConnectionDialog({
                   ...current,
                   engine,
                   host: engine === "snowflake" ? "" : "localhost",
-                  port: engine === "snowflake" ? 443 : 5432,
-                  database: engine === "snowflake" ? "" : "postgres",
+                  port: engine === "snowflake" ? 443 : engine === "mysql" ? 3306 : 5432,
+                  database: engine === "postgres" ? "postgres" : "",
+                  username: engine === "postgres" ? "postgres" : "",
                   safeMode: engine === "snowflake" ? "readOnly" : current.safeMode,
                   tlsMode: "verifyFull",
                   caCertPath: null,
@@ -136,7 +137,11 @@ export function ConnectionDialog({
             >
               {bootstrap?.supportedEngines.map((engine) => (
                 <option key={engine} value={engine}>
-                  {engine === "postgres" ? "PostgreSQL" : engine}
+                  {engine === "postgres"
+                    ? "PostgreSQL"
+                    : engine === "mysql"
+                      ? "MySQL / MariaDB"
+                      : engine}
                 </option>
               ))}
             </select>

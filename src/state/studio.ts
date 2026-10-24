@@ -191,7 +191,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       sql ??
       (engine === "snowflake"
         ? "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();"
-        : "-- A little space to think.\nSELECT current_database(), current_user, version();");
+        : engine === "mysql"
+          ? "-- A little space to think.\nSELECT DATABASE(), CURRENT_USER(), VERSION();"
+          : "-- A little space to think.\nSELECT current_database(), current_user, version();");
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     return next.id;
   },

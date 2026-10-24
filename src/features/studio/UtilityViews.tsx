@@ -263,7 +263,11 @@ export function ProcessesView({
         <div>
           <span className="eyebrow">INSTANCE ACTIVITY</span>
           <h1>Processes</h1>
-          <p>Inspect active sessions and cancel long-running queries.</p>
+          <p>
+            {session?.engine === "mysql"
+              ? "Inspect server sessions. Cancel your own queries from their SQL tabs."
+              : "Inspect active sessions and cancel long-running queries."}
+          </p>
         </div>
         <button
           className="button ghost"
@@ -317,7 +321,7 @@ export function ProcessesView({
                     </code>
                   </td>
                   <td>
-                    {process.state === "active" && (
+                    {process.state === "active" && session.engine !== "mysql" && (
                       <button
                         className="button small danger-text"
                         onClick={() => onCancel(process)}

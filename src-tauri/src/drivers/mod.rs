@@ -1,6 +1,7 @@
 use crate::domain::*;
 use async_trait::async_trait;
 
+pub mod mysql;
 pub mod postgres;
 pub mod snowflake;
 pub mod snowflake_auth;
