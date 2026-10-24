@@ -35,11 +35,16 @@ pnpm desktop
 
 Run the frontend separately with `pnpm dev` for a UI preview and the synthetic million-row grid. Database access runs inside the desktop Rust process. TypeScript IPC contracts and platform icons are generated automatically before development and builds.
 
-### Local validation and packaging
+### Validation and local packaging
 
-GitHub is used for source control and pull requests. GitHub Actions is disabled
-for this repository, and the remote CI workflow has been removed. Run validation
-locally before committing or shipping:
+GitHub Actions validates pull requests and pushes to `main` using standard
+Linux, Windows, and macOS runners. Jobs only run while the repository is public,
+where standard runner minutes are free. The workflow has no artifact uploads,
+caches, custom images, larger runners, or paid external services. It uses
+disposable integration fixtures and no production database secrets. See
+[GitHub's runner policy](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job).
+
+Run the same baseline validation locally before committing or shipping:
 
 ```sh
 pnpm validate
@@ -52,8 +57,9 @@ runs TypeScript and frontend tests, builds frontend assets, runs Rust unit tests
 and checks Rust formatting, compilation, and strict Clippy. It stops on the first
 failure. The desktop commands compile/package on the current host; the macOS
 bundle command requires macOS. Windows/Linux qualification requires running on
-those platforms. Existing GitHub release downloads remain available; new builds
-and packaging are performed locally.
+those platforms. Release packaging remains local; CI builds frontend assets and
+checks native compilation without uploading installers. Existing GitHub release
+downloads remain available.
 
 Database/SSH/browser integration and hidden native checks are separate local
 steps below. Rust integration tests marked ignored do not run in `pnpm validate`.
