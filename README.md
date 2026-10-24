@@ -17,15 +17,17 @@ Run the frontend separately with `pnpm dev` for a UI preview and the synthetic m
 
 ```sh
 pnpm check
+pnpm format:check
 pnpm test:rust
 pnpm desktop:build
+pnpm desktop:bundle:mac
 ```
 
 ## Local database and integration tests
 
 ```sh
 docker compose up -d --wait
-cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres -- --ignored
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh -- --ignored
 pnpm exec playwright install chromium --only-shell
 pnpm test:e2e
 ```
@@ -36,16 +38,30 @@ Browser tests use an explicitly enabled, authenticated loopback harness compiled
 
 ## Current implementation
 
-- PostgreSQL profiles, verified TLS/custom CAs, system credential storage, environment groups, and connection health.
+- PostgreSQL profiles, verified TLS/custom CAs, system credential storage, hierarchical environment groups, and connection health.
+- SSH bastions with password, encrypted OpenSSH key, or agent authentication; explicit host fingerprint trust; shared tunnels and loopback-only forwarding. Database TLS verifies the original database hostname through the tunnel.
 - CodeMirror SQL tabs, current-statement/selection execution, complete-batch execution, schema-aware completion, worker-based formatting, cancellation, process inspection, and metadata history.
 - Canvas grid, exact integer/decimal text, explicit NULLs, keyset table browsing, PK/FK structure, sparse edits, typed values, generated SQL/bindings review, and atomic conflict-checked commits across pages.
-- Rust-enforced Safe Mode, production password gates, one-use expiring approvals, hash-only audit records, and uncertain commit outcomes.
+- Rust-enforced Safe Mode, production password gates, one-use expiring approvals, a hash-only audit viewer, and uncertain commit outcomes.
 - Dark/light/high-contrast themes, keyboard commands, inspector, and bounded in-memory result storage.
 
 Grid browsing and commits use login credentials independently of SQL-editor transactions and session settings. A grid commit never commits an editor transaction. Tables without a supported primary key have a bounded first page and cannot be edited.
 
-Results are never written to disk: Rust retains at most 64 MiB in total and 100,000 rows per query result, the display cache retains at most 32 MiB, and pending edits have an 8 MiB budget. A table page stops at 500 rows or 2 MiB. SQL history text is opt-in per connection; passwords stay in memory or the operating-system credential store.
+Results are never written to disk: Rust retains at most 64 MiB in total and 100,000 rows per query result, the display cache retains at most 32 MiB / 512 pages, and pending edits have an 8 MiB budget. A table page stops at 500 rows or 2 MiB. IPC frames stop at 4 MiB and the frontend adapts page sizes for wide results. SQL history text is opt-in per connection; passwords stay in memory or the operating-system credential store.
 
 Cancellation discards the affected SQL session after the native PostgreSQL cancel request to prevent a late request from cancelling a subsequent query. Reconnect before running another query. A lost connection during commit requires checking database state before retrying.
 
-SSH transport, additional engines, release signing, and native performance measurements are tracked in the [development blueprint](docs/DEVELOPMENT_PLAN.md). RAM/startup/FPS figures in that blueprint are targets, not measured claims.
+SSH host trust is local to Joinery. A changed key is blocked; the app does not silently replace a trusted key. Agent forwarding is disabled. A custom agent socket path is available when a GUI launch does not inherit `SSH_AUTH_SOCK`.
+
+Safe Mode provides operational safeguards. Database roles remain the access-control boundary; use a read-only role for production browsing.
+
+## Hidden native validation
+
+```sh
+pnpm desktop:smoke:build
+pnpm test:native
+```
+
+This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Detailed scope and measurements are in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
+
+Additional engines, distribution signing, and full performance qualification remain on the [development roadmap](docs/DEVELOPMENT_PLAN.md). The current implementation is the PostgreSQL milestone; RAM/startup/FPS targets are not release guarantees.
