@@ -86,4 +86,8 @@ The reproducible runner writes detailed local evidence to `.cache/native-smoke/r
 5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake catalog, broader OAuth qualification, result/cancellation edge cases, and read-only grid browsing. The preview.2 Snowflake pilot covers read-only SQL only.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
 
-The approved blueprint remains in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) and the [recorded ChatGPT Page](https://chatgpt.com/space/page_c4b9e62285c481918eec36b706cca3a7).
+The detailed blueprint remains in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
+The private [ChatGPT Site](https://joinery-project-hub.otohime-nokimi.chatgpt.site)
+is the canonical plan, implementation-progress, and shipping-status destination.
+Update it after implementation, verification, merge, and release milestones;
+the former plan and testing Pages are retired.
