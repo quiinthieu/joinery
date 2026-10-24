@@ -14,9 +14,15 @@ name = "joinery"
 path = "src/main.rs"
 required-features = ["desktop"]
 
+[[bin]]
+name = "test-harness"
+path = "src/bin/test-harness.rs"
+required-features = ["test-harness"]
+
 [features]
 default = ["desktop"]
 desktop = ["dep:tauri", "dep:tauri-build"]
+test-harness = ["dep:axum", "dep:tower-http"]
 
 [build-dependencies]
 tauri-build = { version = "2", optional = true }
@@ -26,6 +32,44 @@ tauri = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures-util = "0.3"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+ts-rs = "11"
+sqlparser = { version = "0.63", features = ["visitor"] }
+tokio-postgres = "0.7"
+tokio-postgres-rustls = { version = "0.14", features = ["ring", "native-certs"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+arrow-array = "60"
+arrow-schema = "60"
+arrow-ipc = "60"
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+keyring-core = "1"
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
+parking_lot = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 codegen-units = 1

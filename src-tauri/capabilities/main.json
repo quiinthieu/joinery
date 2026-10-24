@@ -2,6 +2,35 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
   "description": "The bundled main window may use explicitly enrolled studio commands.",
-  "windows": ["main"],
-  "permissions": ["core:default", "allow-app-info"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-destroy",
+    "allow-app-info",
+    "allow-bootstrap",
+    "allow-save-profile",
+    "allow-delete-profile",
+    "allow-connect",
+    "allow-disconnect",
+    "allow-set-passphrase",
+    "allow-prepare-execution",
+    "allow-authorize-plan",
+    "allow-execute-plan",
+    "allow-cancel-run",
+    "allow-catalog",
+    "allow-table-schema",
+    "allow-browse-table",
+    "allow-result-range",
+    "allow-release-result",
+    "allow-prepare-changes",
+    "allow-prepare-changes-batch",
+    "allow-processes",
+    "allow-prepare-process-cancel",
+    "allow-health",
+    "allow-history",
+    "allow-clear-history",
+    "allow-resource-usage"
+  ]
 }
