@@ -154,6 +154,7 @@ fn profile(
         }),
         remember_password: false,
         store_query_text: false,
+        snowflake: None,
     }
 }
 async fn echo(port: u16) {

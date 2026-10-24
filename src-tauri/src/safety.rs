@@ -332,6 +332,7 @@ mod tests {
             ssh: None,
             remember_password: false,
             store_query_text: false,
+            snowflake: None,
         }
     }
     #[test]
@@ -381,6 +382,25 @@ mod tests {
                 prepare("s", &profile(SafeMode::ReadOnly, Environment::Local), sql)
                     .unwrap_err()
                     .code,
+                ErrorCode::PolicyBlocked
+            );
+        }
+    }
+    #[test]
+    fn snowflake_read_only_blocks_writes_and_unknown_sql() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Production);
+        p.engine = EngineKind::Snowflake;
+        assert_eq!(
+            prepare("s", &p, "SELECT 1").unwrap().statements[0].kind,
+            StatementKind::Read
+        );
+        for sql in [
+            "DELETE FROM T WHERE ID = 1",
+            "CREATE TABLE T (ID INT)",
+            "EXECUTE IMMEDIATE 'DELETE FROM T'",
+        ] {
+            assert_eq!(
+                prepare("s", &p, sql).unwrap_err().code,
                 ErrorCode::PolicyBlocked
             );
         }

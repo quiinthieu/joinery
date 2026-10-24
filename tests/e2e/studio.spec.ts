@@ -16,6 +16,22 @@ async function connect(page: Page, name: string, safeMode = "silent") {
   await expect(page.locator(".status-bar")).toContainText(name);
 }
 
+test("Snowflake form requires browser sign-in and read-only mode", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Connect a database" }).click();
+  await page.getByLabel("Database engine").selectOption("snowflake");
+  await expect(page.getByLabel("Snowflake account hostname")).toBeVisible();
+  await expect(page.getByLabel("Port", { exact: true })).toHaveValue("443");
+  await expect(page.getByLabel("Role", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Warehouse", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Schema", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toHaveValue("readOnly");
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Connect through an SSH bastion")).toHaveCount(0);
+  await expect(page.getByText(/system browser for Snowflake sign-in/)).toBeVisible();
+});
+
 test("connects and runs SQL with separate binary-backed result tabs", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

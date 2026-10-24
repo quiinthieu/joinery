@@ -92,6 +92,16 @@ pub struct ConnectionProfile {
     pub ssh: Option<SshConfig>,
     pub remember_password: bool,
     pub store_query_text: bool,
+    #[serde(default)]
+    pub snowflake: Option<SnowflakeConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeConfig {
+    pub role: String,
+    pub warehouse: String,
+    pub schema: String,
 }
 
 // Secret inputs deliberately do not implement Debug and are never persisted with profiles.

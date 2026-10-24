@@ -3,6 +3,7 @@ use crate::{
     drivers::{
         Driver, QuerySink, RowMutation,
         postgres::{Postgres, update_sql},
+        snowflake::Snowflake,
     },
     persistence::Persistence,
     results::{RESULT_BUDGET, ROW_LIMIT, ResultStore},
@@ -109,7 +110,7 @@ impl Studio {
                 .setting("passphrase-configured")?
                 .as_deref()
                 == Some("true"),
-            supported_engines: vec![EngineKind::Postgres],
+            supported_engines: vec![EngineKind::Postgres, EngineKind::Snowflake],
             result_budget_bytes: RESULT_BUDGET,
             row_limit: ROW_LIMIT,
         })
@@ -184,6 +185,9 @@ impl Studio {
             return Err(AppError::invalid(
                 "Production connections require verified TLS",
             ));
+        }
+        if profile.engine == EngineKind::Snowflake {
+            Snowflake::validate_profile(&profile)?;
         }
         self.close_profile_sessions(&profile.id);
         if profiles
@@ -345,6 +349,15 @@ impl Studio {
                     tunnel.as_ref().map(|t| t.port),
                 )
                 .await?;
+                (d, i)
+            }
+            EngineKind::Snowflake => {
+                if password.is_some() {
+                    return Err(AppError::invalid(
+                        "Snowflake browser sign-in does not use a password",
+                    ));
+                }
+                let (d, i) = Snowflake::open(&profile, &session_id).await?;
                 (d, i)
             }
             _ => {

@@ -26,6 +26,7 @@ async fn setup(mode: SafeMode) -> (tempfile::TempDir, Arc<Studio>, SessionInfo) 
                 ssh: None,
                 remember_password: false,
                 store_query_text: false,
+                snowflake: None,
             },
             None,
         )

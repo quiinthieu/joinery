@@ -41,6 +41,7 @@ export function ConnectionDialog({
         ssh: null,
         rememberPassword: false,
         storeQueryText: false,
+        snowflake: null,
       },
   );
   const [password, setPassword] = useState(""),
@@ -115,7 +116,23 @@ export function ConnectionDialog({
             Database engine
             <select
               value={draft.engine}
-              onChange={(e) => change("engine", e.target.value as ConnectionProfile["engine"])}
+              onChange={(e) => {
+                const engine = e.target.value as ConnectionProfile["engine"];
+                setDraft((current) => ({
+                  ...current,
+                  engine,
+                  host: engine === "snowflake" ? "" : "localhost",
+                  port: engine === "snowflake" ? 443 : 5432,
+                  database: engine === "snowflake" ? "" : "postgres",
+                  safeMode: engine === "snowflake" ? "readOnly" : current.safeMode,
+                  tlsMode: "verifyFull",
+                  caCertPath: null,
+                  ssh: null,
+                  rememberPassword: false,
+                  snowflake:
+                    engine === "snowflake" ? { role: "", warehouse: "", schema: "" } : null,
+                }));
+              }}
             >
               {bootstrap?.supportedEngines.map((engine) => (
                 <option key={engine} value={engine}>
@@ -136,11 +153,13 @@ export function ConnectionDialog({
                   groupId: e.target.value,
                   environment: group?.environment ?? "local",
                   safeMode:
-                    group?.environment === "production"
-                      ? "passwordGated"
-                      : group?.environment === "staging"
-                        ? "confirm"
-                        : "silent",
+                    draft.engine === "snowflake"
+                      ? "readOnly"
+                      : group?.environment === "production"
+                        ? "passwordGated"
+                        : group?.environment === "staging"
+                          ? "confirm"
+                          : "silent",
                   tlsMode: group?.environment === "production" ? "verifyFull" : draft.tlsMode,
                 }));
               }}
@@ -153,14 +172,59 @@ export function ConnectionDialog({
             </select>
           </label>
           <label>
-            Host
+            {draft.engine === "snowflake" ? "Snowflake account hostname" : "Host"}
             <input
               value={draft.host}
               onChange={(e) => change("host", e.target.value)}
               required
               spellCheck={false}
+              placeholder={
+                draft.engine === "snowflake" ? "org-account.snowflakecomputing.com" : undefined
+              }
             />
           </label>
+          {draft.engine === "snowflake" && draft.snowflake && (
+            <>
+              <label>
+                Role
+                <input
+                  value={draft.snowflake.role}
+                  onChange={(e) =>
+                    change("snowflake", { ...draft.snowflake!, role: e.target.value })
+                  }
+                  required
+                  spellCheck={false}
+                  placeholder="READ_ONLY_ROLE"
+                />
+              </label>
+              <label>
+                Warehouse
+                <input
+                  value={draft.snowflake.warehouse}
+                  onChange={(e) =>
+                    change("snowflake", { ...draft.snowflake!, warehouse: e.target.value })
+                  }
+                  required
+                  spellCheck={false}
+                />
+              </label>
+              <label className="span-2">
+                Schema
+                <input
+                  value={draft.snowflake.schema}
+                  onChange={(e) =>
+                    change("snowflake", { ...draft.snowflake!, schema: e.target.value })
+                  }
+                  required
+                  spellCheck={false}
+                />
+              </label>
+              <p className="form-note span-2">
+                Joinery opens your system browser for Snowflake sign-in. This pilot runs read-only
+                SQL and needs the account’s local-application OAuth integration.
+              </p>
+            </>
+          )}
           <label>
             Port
             <input
@@ -191,46 +255,52 @@ export function ConnectionDialog({
               spellCheck={false}
             />
           </label>
-          <label className="span-2">
-            Password
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              placeholder="Enter for this session"
-            />
-          </label>
-          <label className="checkbox-label span-2">
-            <input
-              type="checkbox"
-              checked={draft.rememberPassword}
-              onChange={(e) => change("rememberPassword", e.target.checked)}
-            />
-            Remember password in the system credential store
-          </label>
-          <label className="checkbox-label span-2">
-            <input
-              type="checkbox"
-              checked={!!draft.ssh}
-              onChange={(e) =>
-                change(
-                  "ssh",
-                  e.target.checked
-                    ? {
-                        host: "",
-                        port: 22,
-                        username: draft.username,
-                        authentication: "agent",
-                        privateKeyPath: null,
-                        agentSocketPath: null,
-                      }
-                    : null,
-                )
-              }
-            />
-            Connect through an SSH bastion
-          </label>
+          {draft.engine !== "snowflake" && (
+            <label className="span-2">
+              Password
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                placeholder="Enter for this session"
+              />
+            </label>
+          )}
+          {draft.engine !== "snowflake" && (
+            <label className="checkbox-label span-2">
+              <input
+                type="checkbox"
+                checked={draft.rememberPassword}
+                onChange={(e) => change("rememberPassword", e.target.checked)}
+              />
+              Remember password in the system credential store
+            </label>
+          )}
+          {draft.engine !== "snowflake" && (
+            <label className="checkbox-label span-2">
+              <input
+                type="checkbox"
+                checked={!!draft.ssh}
+                onChange={(e) =>
+                  change(
+                    "ssh",
+                    e.target.checked
+                      ? {
+                          host: "",
+                          port: 22,
+                          username: draft.username,
+                          authentication: "agent",
+                          privateKeyPath: null,
+                          agentSocketPath: null,
+                        }
+                      : null,
+                  )
+                }
+              />
+              Connect through an SSH bastion
+            </label>
+          )}
           {draft.ssh && (
             <>
               <label>
@@ -343,12 +413,12 @@ export function ConnectionDialog({
             <input
               type="checkbox"
               checked={draft.tlsMode === "verifyFull"}
-              disabled={production}
+              disabled={production || draft.engine === "snowflake"}
               onChange={(e) => change("tlsMode", e.target.checked ? "verifyFull" : "disable")}
             />
             Require TLS and verify the server certificate
           </label>
-          {draft.tlsMode === "verifyFull" && (
+          {draft.tlsMode === "verifyFull" && draft.engine !== "snowflake" && (
             <label className="span-2">
               CA certificate path <span className="optional">optional</span>
               <input
@@ -364,16 +434,19 @@ export function ConnectionDialog({
             <select
               aria-label="Safe Mode"
               value={draft.safeMode}
+              disabled={draft.engine === "snowflake"}
               onChange={(e) => change("safeMode", e.target.value as SafeMode)}
             >
-              {!production && (
+              {!production && draft.engine !== "snowflake" && (
                 <>
                   <option value="silent">Silent · run without confirmations</option>
                   <option value="confirm">Confirm · review writes</option>
                   <option value="guard">Guard · stronger checks for unrestricted writes</option>
                 </>
               )}
-              <option value="passwordGated">Password gated · authorize each write batch</option>
+              {draft.engine !== "snowflake" && (
+                <option value="passwordGated">Password gated · authorize each write batch</option>
+              )}
               <option value="readOnly">Read only · block writes</option>
             </select>
           </label>
@@ -507,21 +580,25 @@ export function ConnectDialog({
     >
       <form onSubmit={(e) => void connect(e)}>
         <div className="modal-body">
-          <label>
-            Password
-            <input
-              autoFocus
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={
-                profile.rememberPassword
-                  ? "Leave blank to use the saved password"
-                  : "Enter for this session"
-              }
-            />
-          </label>
+          {profile.engine !== "snowflake" ? (
+            <label>
+              Password
+              <input
+                autoFocus
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={
+                  profile.rememberPassword
+                    ? "Leave blank to use the saved password"
+                    : "Enter for this session"
+                }
+              />
+            </label>
+          ) : (
+            <p className="form-note">Your system browser will open for Snowflake sign-in.</p>
+          )}
           {profile.ssh?.authentication === "password" && (
             <label>
               SSH password
