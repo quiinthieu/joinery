@@ -1,0 +1,33 @@
+[package]
+name = "joinery"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+default-run = "joinery"
+
+[lib]
+name = "joinery_core"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "joinery"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build"]
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
+
+[dependencies]
+tauri = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+thiserror = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = true
