@@ -1,6 +1,6 @@
 use crate::domain::*;
 use parking_lot::Mutex;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::Path;
 
 pub struct Persistence {
@@ -18,7 +18,7 @@ impl Persistence {
                 .map_err(|_| AppError::internal("Could not protect application data directory"))?;
         }
         let path = root.join("joinery.sqlite");
-        let connection = Connection::open(&path).map_err(db_error)?;
+        let mut connection = Connection::open(&path).map_err(db_error)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -28,34 +28,15 @@ impl Persistence {
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(db_error)?;
-        connection.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA foreign_keys=ON;
-             CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, connection_id TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, outcome TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             PRAGMA user_version=1;"
-        ).map_err(db_error)?;
-        let store = Self {
+        initialize_schema(&mut connection)?;
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;",
+            )
+            .map_err(db_error)?;
+        Ok(Self {
             connection: Mutex::new(connection),
-        };
-        if store.groups()?.is_empty() {
-            for (id, name, environment) in [
-                ("production", "Production", Environment::Production),
-                ("staging", "Staging", Environment::Staging),
-                ("local", "Local", Environment::Local),
-            ] {
-                store.save_group(&ConnectionGroup {
-                    id: id.into(),
-                    name: name.into(),
-                    parent_id: None,
-                    environment,
-                })?;
-            }
-        }
-        Ok(store)
+        })
     }
 
     pub fn profiles(&self) -> AppResult<Vec<ConnectionProfile>> {
@@ -217,6 +198,136 @@ impl Persistence {
     }
 }
 
+const SCHEMA_VERSION: i64 = 1;
+
+fn schema_version(connection: &Connection) -> AppResult<i64> {
+    let version = connection
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map_err(db_error)?;
+    if !(0..=SCHEMA_VERSION).contains(&version) {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "This local database belongs to a newer or unsupported Joinery version. Open it with the matching app; the existing database has been preserved.",
+        ));
+    }
+    Ok(version)
+}
+
+fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
+    // Check before persistent pragmas and again under the writer lock. A second
+    // app may have migrated between the first check and transaction acquisition.
+    schema_version(connection)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_error)?;
+    let version = schema_version(&transaction)?;
+    if version == 0 {
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, connection_id TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, outcome TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+        ).map_err(db_error)?;
+    }
+    validate_schema(&transaction)?;
+    for (id, name, environment) in [
+        ("production", "Production", Environment::Production),
+        ("staging", "Staging", Environment::Staging),
+        ("local", "Local", Environment::Local),
+    ] {
+        let group = ConnectionGroup {
+            id: id.into(),
+            name: name.into(),
+            parent_id: None,
+            environment,
+        };
+        let json = serde_json::to_string(&group)
+            .map_err(|_| AppError::internal("Could not initialize environment groups"))?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO groups(id,json) VALUES(?1,?2)",
+                params![id, json],
+            )
+            .map_err(db_error)?;
+    }
+    if version == 0 {
+        transaction
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(db_error)?;
+    }
+    transaction.commit().map_err(db_error)
+}
+
+fn validate_schema(connection: &Connection) -> AppResult<()> {
+    // Names alone are insufficient: the unique keys and null constraints are
+    // required by INSERT OR IGNORE, profile replacement and metadata retention.
+    type Column = (&'static str, &'static str, bool, bool);
+    const TABLES: &[(&str, &[Column])] = &[
+        (
+            "profiles",
+            &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
+        ),
+        (
+            "groups",
+            &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
+        ),
+        (
+            "history",
+            &[
+                ("id", "TEXT", false, true),
+                ("started_at", "INTEGER", true, false),
+                ("json", "TEXT", true, false),
+            ],
+        ),
+        (
+            "audit",
+            &[
+                ("id", "TEXT", false, true),
+                ("occurred_at", "INTEGER", true, false),
+                ("connection_id", "TEXT", true, false),
+                ("action", "TEXT", true, false),
+                ("digest", "TEXT", true, false),
+                ("outcome", "TEXT", true, false),
+            ],
+        ),
+        (
+            "settings",
+            &[("key", "TEXT", false, true), ("value", "TEXT", true, false)],
+        ),
+    ];
+    for (table, expected) in TABLES {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(db_error)?;
+        let columns = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?.to_ascii_uppercase(),
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, bool>(5)?,
+                ))
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        let expected = expected
+            .iter()
+            .map(|(name, kind, not_null, key)| {
+                (name.to_string(), kind.to_string(), *not_null, *key)
+            })
+            .collect::<Vec<_>>();
+        if columns != expected {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "The local metadata schema is incomplete or incompatible. Keep the existing database and restore a compatible copy; Joinery has not reset its contents.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn db_error(_: rusqlite::Error) -> AppError {
     AppError::internal("Could not read or write the local application database")
 }
@@ -224,6 +335,169 @@ fn db_error(_: rusqlite::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_metadata_versions_are_rejected_without_rewriting_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE future_metadata(value TEXT); INSERT INTO future_metadata VALUES('preserve'); PRAGMA user_version=99;").unwrap();
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+        let error = match Persistence::open(root.path()) {
+            Err(e) => e,
+            Ok(_) => panic!("An older app accepted a newer metadata schema"),
+        };
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("newer"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            99
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT value FROM future_metadata", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "preserve"
+        );
+    }
+
+    #[test]
+    fn failed_legacy_initialization_rolls_back_schema_and_keeps_existing_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE profiles(id TEXT PRIMARY KEY, unexpected TEXT); INSERT INTO profiles VALUES('old','preserve');").unwrap();
+        drop(connection);
+        assert!(Persistence::open(root.path()).is_err());
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT unexpected FROM profiles", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "preserve"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE type='table'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn versioned_metadata_with_missing_tables_is_preserved_instead_of_reset() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO settings VALUES('marker','preserve'); PRAGMA user_version=1;").unwrap();
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+        let error = match Persistence::open(root.path()) {
+            Err(e) => e,
+            Ok(_) => panic!("The incomplete versioned store was silently reset"),
+        };
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn partial_unversioned_metadata_and_renamed_groups_survive_initialization() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO settings VALUES('marker','preserve');").unwrap();
+        drop(connection);
+        let db = Persistence::open(root.path()).unwrap();
+        assert_eq!(db.setting("marker").unwrap().as_deref(), Some("preserve"));
+        let mut production = db
+            .groups()
+            .unwrap()
+            .into_iter()
+            .find(|g| g.id == "production")
+            .unwrap();
+        production.name = "Protected accounts".into();
+        db.save_group(&production).unwrap();
+        // Simulate the partial default-group seed left by an interrupted old build.
+        db.connection
+            .lock()
+            .execute("DELETE FROM groups WHERE id IN ('staging','local')", [])
+            .unwrap();
+        drop(db);
+        let db = Persistence::open(root.path()).unwrap();
+        let groups = db.groups().unwrap();
+        assert_eq!(groups.len(), 3);
+        assert_eq!(
+            groups.iter().find(|g| g.id == "production").unwrap().name,
+            "Protected accounts"
+        );
+        assert_eq!(db.setting("marker").unwrap().as_deref(), Some("preserve"));
+        assert_eq!(
+            db.connection
+                .lock()
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn concurrent_app_starts_create_one_complete_metadata_store() {
+        let root = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let threads = (0..4)
+            .map(|_| {
+                let root = root.path().to_path_buf();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let db = Persistence::open(&root).unwrap();
+                    assert_eq!(db.groups().unwrap().len(), 3);
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(
+            Persistence::open(root.path())
+                .unwrap()
+                .groups()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn legacy_tables_without_required_unique_keys_are_not_adopted() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE groups(id TEXT,json TEXT NOT NULL);")
+            .unwrap();
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+        assert!(Persistence::open(root.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
 
     #[test]
     fn initializes_groups_and_keeps_history_metadata_without_sql() {
