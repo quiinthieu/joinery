@@ -1,8 +1,10 @@
-# PostgreSQL implementation checkpoint
+# Implementation and release status
 
-Updated 2026-10-24. This checkpoint implements the PostgreSQL studio and SSH portion of the approved roadmap. It is a local macOS development build; it is not the complete multi-engine v1.0 release.
+Updated 2026-10-24. Release scope for `v0.1.0-preview.2`: the PostgreSQL studio,
+SSH support, and read-only Snowflake SQL on macOS Apple Silicon. This remains
+a development preview; full multi-engine v1.0 qualification is pending.
 
-The current development branch also contains a **Snowflake read-only SQL pilot**:
+The preview also contains a **Snowflake read-only SQL pilot**:
 system-browser OAuth with PKCE, explicit account context, async SQL API polling,
 bounded JSON partitions, exact text values, own-query cancellation, and a
 read-only connection form. Mocked callback and SQL API tests, the native macOS
@@ -11,7 +13,13 @@ also passed browser SSO, context identity verification, and `SELECT 1 AS CANARY`
 with one result row. The canary exposed a redirect-path mismatch and an
 unsupported SQL API `AUTOCOMMIT` request parameter; both were fixed and retested.
 Catalog/table browsing and the remaining P6 criteria are not complete. The
-published preview remains PostgreSQL-only.
+previous `v0.1.0-preview.1` release remains available as the PostgreSQL-only preview.
+
+| Status | Scope |
+|---|---|
+| Included in preview.2 | PostgreSQL studio, SSH/TLS, editing and review, Safe Mode, themes, history/audit, bounded grid/Arrow results |
+| Included as a pilot in preview.2 | Snowflake browser OAuth, identity checks, read-only SQL results, async polling and own-query cancellation |
+| Pending | Snowflake catalog/table browsing, broader value/cancellation/token qualification, MySQL/MariaDB, Redis, signing/notarization, cross-platform installers, full performance and recovery qualification |
 
 ## Implemented
 
@@ -75,7 +83,7 @@ The reproducible runner writes detailed local evidence to `.cache/native-smoke/r
 2. Exercise native credential-store success/denial/locked-store flows. Current connection tests inject a memory store and never access personal credentials.
 3. Run the configured Windows/Linux/macOS CI matrix and platform UI smoke checks. Only macOS was executed in this workspace.
 4. Add Developer ID signing/notarization and release/update recovery. The delivered local macOS bundle uses ad-hoc signing.
-5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake catalog, live OAuth qualification, result/cancellation edge cases, and read-only grid browsing. The Snowflake development pilot is not part of the published preview.
+5. Continue P4–P6: MySQL/MariaDB parity, Redis console/key browser, and Snowflake catalog, broader OAuth qualification, result/cancellation edge cases, and read-only grid browsing. The preview.2 Snowflake pilot covers read-only SQL only.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
 
 The approved blueprint remains in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) and the [recorded ChatGPT Page](https://chatgpt.com/space/page_c4b9e62285c481918eec36b706cca3a7).
