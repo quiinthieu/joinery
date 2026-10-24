@@ -624,12 +624,12 @@ Deliver the remaining work in reviewable batches, preserving the P0–P7 exit ga
 |---|---|---|
 | A | Finish browsing in the existing Snowflake pilot | Shipped in preview.3 after five PR checks and downloaded-archive verification; approved-table live qualification pending |
 | B | Runtime and performance qualification | Validation infrastructure implemented: phase checkpoints, repeated native/PostgreSQL cleanup, native Keychain round trip and injected failure coverage pass. Remaining: total helper memory, visible startup/frame times, real OS locked-store behavior and sustained target-hardware qualification |
-| C | P4 MySQL/MariaDB | Implemented and locally tested against MySQL 8.4/MariaDB 11.4: exact values, schema/paging, reviewed InnoDB edits, TLS/SSH and owned cancellation. Merge/release evidence tracked on Site; external process cancellation and broader version/production qualification pending |
-| D | P5 Redis | Implemented and locally tested: standalone console, SCAN/type/TTL browser, typed bounded previews/edits, backend command policy, byte fidelity, owned cancellation and verified TLS/SSH. Merge/release evidence tracked on Site; Cluster/Sentinel/streams and production qualification remain open |
-| E | Complete P6/P7 release gates | Pending; Snowflake account/token/cancellation/value matrix, accessibility, migrations/crash recovery, signed distribution and verified updates, packaged Windows/Linux checks |
+| C | P4 MySQL/MariaDB | Shipped in preview.4; locally tested against MySQL 8.4/MariaDB 11.4: exact values, schema/paging, reviewed InnoDB edits, TLS/SSH and owned cancellation. Merge/release evidence tracked on Site; external process cancellation and broader version/production qualification pending |
+| D | P5 Redis | Shipped in preview.5; locally tested: standalone console, SCAN/type/TTL browser, typed bounded previews/edits, backend command policy, byte fidelity, owned cancellation and verified TLS/SSH. Merge/release evidence tracked on Site; Cluster/Sentinel/streams and production qualification remain open |
+| E | Complete P6/P7 release gates | In progress: local metadata version/constraint guard and transactional initialization verified; Snowflake account/token/cancellation/value matrix, accessibility, migrations/crash recovery, signed distribution and verified updates, packaged Windows/Linux checks |
 
 Keep each batch's implementation, local verification, merge, and published release
-states distinct on the project Site. The current source implements batch C; preview.3 ships batch A; batch B ships source
+states distinct on the project Site. Preview.4 ships batch C; preview.5 ships batch D; preview.3 ships batch A; batch B ships source
 validation tooling with performance qualification tracked separately. No new production table reads are implied
 by the earlier identity and SELECT 1 canary approval; use explicit approved tables
 for live qualification.

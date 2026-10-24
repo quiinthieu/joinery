@@ -1,10 +1,11 @@
 # Implementation and release status
 
-Updated 2026-10-24. Current source additionally implements the MySQL/MariaDB
-studio and standalone Redis workspace described below; its exact merge/release state is tracked on the Site.
-Release scope for `v0.1.0-preview.3`: the PostgreSQL studio,
-SSH support, and read-only Snowflake SQL/catalog/table previews on macOS Apple Silicon. This remains
-a development preview; full multi-engine v1.0 qualification is pending.
+Updated 2026-10-25. Release `v0.1.0-preview.5` includes PostgreSQL,
+MySQL/MariaDB, standalone Redis and the read-only Snowflake SQL/catalog pilot
+on macOS Apple Silicon. Metadata startup protection is implemented in the
+current branch and awaits its separate merge/release. The canonical Site
+distinguishes implementation, verification, merge and download states.
+Full multi-engine v1.0 qualification remains pending.
 
 The preview also contains a **Snowflake read-only SQL pilot**:
 system-browser OAuth with PKCE, explicit account context, async SQL API polling,
@@ -19,9 +20,12 @@ previous `v0.1.0-preview.1` release remains available as the PostgreSQL-only pre
 
 | Status | Scope |
 |---|---|
-| Included in preview.3 | PostgreSQL studio, SSH/TLS, editing and review, Safe Mode, themes, history/audit, bounded grid/Arrow results |
-| Included as a pilot in preview.3 | Snowflake browser OAuth, identity checks, read-only SQL results, async polling, own-query cancellation, catalog/column completion and bounded table previews |
-| Pending | Broader Snowflake, MySQL/MariaDB and Redis production qualification, signing/notarization, cross-platform installers, full performance and recovery qualification |
+| Shipped in preview.5 | PostgreSQL studio, SSH/TLS, editing/review, Safe Mode, themes, history/audit, bounded grid/Arrow results |
+| Shipped since preview.4 | MySQL/MariaDB studio; fixture-qualified on MySQL 8.4 and MariaDB 11.4 |
+| Shipped in preview.5 | Standalone Redis 8.2 workspace with SCAN/type/TTL, bounded typed viewers and reviewed commands |
+| Shipped pilot in preview.5 | Read-only Snowflake browser OAuth, SQL, catalog/columns and bounded table previews |
+| Implemented, not yet released | Local metadata schema/version guard and transactional initialization; exact publication state on the Site |
+| Pending | Broader live account/version qualification, signing/notarization, packaged Windows/Linux, measured performance and full recovery/update qualification |
 
 ## Implemented
 
@@ -265,3 +269,25 @@ production frontend build, formatting, native compilation and strict Clippy.
 All nine browser workflows pass across the four engine families. Six disposable
 Redis integration tests pass alongside the earlier twenty PostgreSQL/MySQL/SSH
 tests. These checks use synthetic fixtures and never read production tables.
+
+
+## Continuation batch E: local metadata startup protection
+
+Startup previously reset `user_version` to 1 regardless of the existing version,
+and initialized tables/default groups through separate writes. Regression tests
+reproduced acceptance of a newer schema and an incompatible unversioned store.
+The fix checks version compatibility before persistent pragmas and again under
+an immediate transaction, validates required column types/nullability/unique
+keys, and commits initialization/version/default groups together. Newer or
+incompatible stores fail without an automatic reset. Failed initialization
+rolls back new schema while preserving existing rows. Missing default groups
+are restored with insert-if-absent semantics; user-renamed groups stay intact.
+
+Six new regressions cover newer-file preservation, invalid legacy rollback,
+missing versioned tables, missing unique keys, partial legacy/default-group
+recovery and concurrent application starts. Combined baseline validation passes
+53 Rust and 16 frontend tests, build, formatting, native compilation and strict
+Clippy. Native, integration, CI and publication evidence is recorded on the Site
+after completion. This ships a bounded startup/downgrade guard; it does not
+qualify a restore UI, arbitrary historical migrations, process-crash recovery,
+signed updates or platform distribution. Those P7 gates remain open.
