@@ -15,11 +15,14 @@ describe("dirty cell tracking", () => {
     store.set({ resultId: "a", row: 0, column: "c", original: "second", value: "third" });
     store.set({ resultId: "b", row: 0, column: "c", original: "other", value: "value" });
     expect(store.get("a", 0, "c")?.original).toBe("first");
-    store.clear("a"); expect(store.count).toBe(1);
+    store.clear("a");
+    expect(store.count).toBe(1);
   });
   it("rejects edits before exceeding the memory budget", () => {
     const store = new DirtyStore(200);
-    expect(() => store.set({ resultId: "r", row: 0, column: "c", original: "", value: "x".repeat(100) })).toThrow();
+    expect(() =>
+      store.set({ resultId: "r", row: 0, column: "c", original: "", value: "x".repeat(100) }),
+    ).toThrow();
     expect(store.count).toBe(0);
   });
 });

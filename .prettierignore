@@ -1,0 +1,6 @@
+src/ipc/generated.ts
+dist/
+.cache/
+.pnpm-store/
+node_modules/
+src-tauri/target/

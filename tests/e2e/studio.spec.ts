@@ -17,11 +17,14 @@ async function connect(page: Page, name: string, safeMode = "silent") {
 }
 
 test("connects and runs SQL with separate binary-backed result tabs", async ({ page }) => {
-  const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
   await connect(page, "Query fixture");
   await page.getByRole("button", { name: "New query tab" }).click();
   const editor = page.getByRole("textbox", { name: "SQL editor" });
-  await editor.fill("SELECT 9223372036854775807::bigint AS exact_integer, NULL::text AS absent; SELECT 'hello; world' AS message;");
+  await editor.fill(
+    "SELECT 9223372036854775807::bigint AS exact_integer, NULL::text AS absent; SELECT 'hello; world' AS message;",
+  );
   await page.getByRole("button", { name: "Run all statements", exact: true }).click();
   await expect(page.locator(".result-tabs").getByRole("button")).toHaveCount(2);
   await expect(page.locator(".result-footer")).toContainText("1 rows");
@@ -42,10 +45,13 @@ test("reviews an inline change and reads the committed value back", async ({ pag
   const box = (await grid.boundingBox())!;
   await expect(async () => {
     await page.mouse.dblclick(box.x + 44 + 110 + 110 + 70, box.y + 37 + 18);
-    await expect(page.locator("#portal textarea, #portal input").first()).toBeVisible({ timeout: 500 });
+    await expect(page.locator("#portal textarea, #portal input").first()).toBeVisible({
+      timeout: 500,
+    });
   }).toPass({ timeout: 10000 });
   const overlay = page.locator("#portal textarea, #portal input").first();
-  await overlay.fill(changedValue); await overlay.press("Enter");
+  await overlay.fill(changedValue);
+  await overlay.press("Enter");
   await page.getByRole("button", { name: "Review 1 edit", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Review pending changes" })).toBeVisible();
   await expect(page.locator(".sql-preview")).toContainText('UPDATE "public"."orders"');
@@ -54,7 +60,9 @@ test("reviews an inline change and reads the committed value back", async ({ pag
   await expect(page.getByRole("status")).toContainText("Changes committed");
   await expect(page.locator(".dirty-count")).toHaveCount(0);
   await page.getByRole("button", { name: "New query tab" }).click();
-  await page.getByRole("textbox", { name: "SQL editor" }).fill("SELECT status FROM public.orders WHERE id=1;");
+  await page
+    .getByRole("textbox", { name: "SQL editor" })
+    .fill("SELECT status FROM public.orders WHERE id=1;");
   await page.getByRole("button", { name: "Run all statements", exact: true }).click();
   await expect(page.locator(".result-footer")).toContainText("1 rows");
   await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
@@ -83,6 +91,7 @@ test("guards writes, cancels a long query, and opens a million-row benchmark", a
   await expect(page.locator(".result-footer")).toContainText("1,000,000 rows");
   await expect(page.locator("canvas").first()).toBeVisible();
   const box = (await page.locator(".grid-host").boundingBox())!;
-  await page.mouse.move(box.x + 300, box.y + 150); await page.mouse.wheel(0, 15000);
+  await page.mouse.move(box.x + 300, box.y + 150);
+  await page.mouse.wheel(0, 15000);
   await page.screenshot({ path: ".cache/screenshots/benchmark.png", fullPage: true });
 });

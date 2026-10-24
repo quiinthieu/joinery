@@ -1,5 +1,20 @@
 import { lazy, Suspense, useEffect, useRef, useState, type RefObject } from "react";
-import { ArrowRight, Check, ChevronDown, Clock3, Code2, Gauge, Loader2, Play, Plus, RefreshCw, ShieldCheck, Square, Table2, X } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  ChevronDown,
+  Clock3,
+  Code2,
+  Gauge,
+  Loader2,
+  Play,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Square,
+  Table2,
+  X,
+} from "lucide-react";
 import type { ConnectionProfile, SessionInfo, TableInfo } from "../ipc/generated";
 import type { StudioTab } from "../state/studio";
 import { useStudio } from "../state/studio";
@@ -9,36 +24,433 @@ import type { CellTarget } from "../features/grid/DatabaseGrid";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { StructureView } from "../features/studio/UtilityViews";
 
-const SqlEditor = lazy(() => import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })));
+const SqlEditor = lazy(() =>
+  import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
+);
 const DatabaseGrid = lazy(() => import("../features/grid/DatabaseGrid"));
 const EMPTY_TABLES: TableInfo[] = [];
-interface Props { tab: StudioTab; profile?: ConnectionProfile; session?: SessionInfo; editorRef: RefObject<EditorHandle>; onRun(sql?: string): void; onReview(): void; onConfirm(title: string, description: string, action: () => void): void; onSelect(target: CellTarget | null): void; onOpenValue(target: CellTarget): void }
+interface Props {
+  tab: StudioTab;
+  profile?: ConnectionProfile;
+  session?: SessionInfo;
+  editorRef: RefObject<EditorHandle>;
+  onRun(sql?: string): void;
+  onReview(): void;
+  onConfirm(title: string, description: string, action: () => void): void;
+  onSelect(target: CellTarget | null): void;
+  onOpenValue(target: CellTarget): void;
+}
 
-export function Workbench({ tab, profile, session, editorRef, onRun, onReview, onConfirm, onSelect, onOpenValue }: Props) {
-  const state = useStudio(), [editorSize, setEditorSize] = useState(290), [runningTime, setRunningTime] = useState(0), editorHeight = useRef(290);
+export function Workbench({
+  tab,
+  profile,
+  session,
+  editorRef,
+  onRun,
+  onReview,
+  onConfirm,
+  onSelect,
+  onOpenValue,
+}: Props) {
+  const state = useStudio(),
+    [editorSize, setEditorSize] = useState(290),
+    [runningTime, setRunningTime] = useState(0),
+    editorHeight = useRef(290);
   const running = tab.status === "running" || tab.status === "queued";
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const edits = tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
-  useEffect(() => { if (!running) return; const start = performance.now(); setRunningTime(0); const timer = setInterval(() => setRunningTime(performance.now() - start), 200); return () => clearInterval(timer); }, [running, tab.id]);
+  useEffect(() => {
+    if (!running) return;
+    const start = performance.now();
+    setRunningTime(0);
+    const timer = setInterval(() => setRunningTime(performance.now() - start), 200);
+    return () => clearInterval(timer);
+  }, [running, tab.id]);
   function resizeEditor(event: React.PointerEvent) {
-    const start = event.clientY, before = editorHeight.current;
-    const move = (event: PointerEvent) => { const height = Math.min(window.innerHeight - 350, Math.max(140, before + event.clientY - start)); editorHeight.current = height; setEditorSize(height); };
-    const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); document.body.style.cursor = ""; };
-    document.body.style.cursor = "row-resize"; window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true });
+    const start = event.clientY,
+      before = editorHeight.current;
+    const move = (event: PointerEvent) => {
+      const height = Math.min(
+        window.innerHeight - 350,
+        Math.max(140, before + event.clientY - start),
+      );
+      editorHeight.current = height;
+      setEditorSize(height);
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      document.body.style.cursor = "";
+    };
+    document.body.style.cursor = "row-resize";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
   }
-  return <>
-    <div className="query-toolbar"><div className="query-context">{tab.kind === "query" ? <Code2 size={15} /> : tab.kind === "benchmark" ? <Gauge size={15} /> : <Table2 size={15} />}<span>{tab.kind === "benchmark" ? "1,000,000 virtual rows" : tab.kind === "table" ? `${tab.table?.schema}.${tab.table?.name}` : "SQL editor"}</span>{tab.kind === "query" && <select aria-label="Query connection" value={tab.connectionId ?? ""} disabled={running} onChange={(e) => state.updateTab(tab.id, { connectionId: e.target.value || null })}><option value="">Choose connection</option>{state.bootstrap?.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select>}{profile && <span className="read-policy"><ShieldCheck size={12} />{profile.safeMode === "readOnly" ? "Read only" : profile.safeMode === "silent" ? "Local session" : "Safe Mode"}</span>}</div><div className="query-actions">
-      {tab.kind === "query" && <><button className="button ghost small" title="Format SQL · ⇧⌘F" onClick={() => editorRef.current?.format()}><Code2 size={13} />Format</button>{running ? <button className="button cancel-query" onClick={() => tab.runId && void client.call("cancel_run", { runId: tab.runId }).catch((error) => state.notify(messageOf(error)))}><Square size={11} />Cancel<kbd>⌘ .</kbd></button> : <button className="button primary run-button" onClick={() => onRun()} disabled={!session}><Play size={12} fill="currentColor" />Run<kbd>⌘ ↵</kbd></button>}<button className="icon-button run-all" title="Run all statements · ⇧⌘↵" aria-label="Run all statements" disabled={running || !session} onClick={() => onRun(tab.sql)}><ChevronDown size={13} /></button></>}
-      {tab.kind === "table" && <><button className="button ghost small" disabled={tab.loadingPage || running} onClick={() => edits.length ? onConfirm("Refresh and discard edits?", "This reloads current database values and discards pending cell edits.", () => void state.refreshTable(tab.id)) : void state.refreshTable(tab.id)}><RefreshCw size={13} className={tab.loadingPage ? "spin" : ""} />Refresh</button>{edits.length > 0 && <><button className="button ghost small" disabled={running} onClick={() => { for (const page of tab.pages) dirtyStore.clear(page.result.id); }}>Discard</button><button className="button primary small" disabled={running || !session || tab.status === "outcomeUnknown"} onClick={onReview}><Check size={13} />Review {edits.length} edit{edits.length === 1 ? "" : "s"}</button></>}</>}
-    </div></div>
-    {tab.kind === "query" && <><div className="editor-panel" style={{ height: editorSize }}><Suspense fallback={<div className="editor-loading">Opening SQL editor…</div>}><SqlEditor ref={editorRef} key={tab.id} value={tab.sql} onChange={(sql) => state.updateTab(tab.id, { sql })} onRun={onRun} engine={profile?.engine ?? "postgres"} sessionId={session?.id ?? null} tables={profile ? state.catalog[profile.id] ?? EMPTY_TABLES : EMPTY_TABLES} theme={state.theme} /></Suspense></div><div className="editor-divider" role="separator" aria-label="Resize SQL editor" aria-orientation="horizontal" onPointerDown={resizeEditor}><span /></div></>}
-    {tab.kind === "query" ? <div className="results-header"><div className="result-tabs">{tab.results.length ? tab.results.map((result, i) => <button className={result.id === tab.activeResultId ? "active" : ""} key={result.id} onClick={() => state.updateTab(tab.id, { activeResultId: result.id })}><Table2 size={12} />Query {result.statementIndex + 1}{tab.results.filter((r) => r.statementIndex === result.statementIndex).length > 1 ? ` · ${i + 1}` : ""}<span>{result.retainedRows.toLocaleString()}</span></button>) : <span className="result-placeholder">Results</span>}</div><span className="result-caption">{running ? <><Loader2 size={12} className="spin" />{(runningTime / 1000).toFixed(1)} s</> : <><Clock3 size={12} />{tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}</>}</span></div> : tab.kind === "table" ? <div className="results-header table-views"><div className="result-tabs"><button className={tab.view === "data" ? "active" : ""} onClick={() => state.updateTab(tab.id, { view: "data" })}><Table2 size={12} />Data</button><button className={tab.view === "structure" ? "active" : ""} onClick={() => state.updateTab(tab.id, { view: "structure" })}><Code2 size={12} />Structure</button></div><span className="result-caption">{tab.schema?.editable ? "Double-click a cell to edit" : "Read-only result"}</span></div> : <div className="benchmark-note"><Gauge size={13} />Generated on demand · no database connection · constant row storage</div>}
-    {tab.error && <div className={`query-error ${tab.error.code === "outcomeUnknown" ? "uncertain" : ""}`} role="alert"><span className="error-symbol">!</span><span>{tab.error.message}</span><button className="icon-button" aria-label="Dismiss query error" onClick={() => state.updateTab(tab.id, { error: null })}><X size={12} /></button></div>}
-    {tab.kind === "table" && tab.view === "structure" ? <StructureView schema={tab.schema} /> : tab.kind === "query" && !result ? <div className="results-empty"><Table2 size={27} /><h3>{running ? "Your query is running" : "A fresh perspective awaits"}</h3><p>{running ? "Results will appear as they arrive." : "Run a query to explore its results here."}</p><span><kbd>⌘ ↵</kbd>Run current query</span></div> : <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}><DatabaseGrid key={tab.id} tab={tab} result={result} theme={state.theme} onSelect={onSelect} onOpenValue={onOpenValue} /></Suspense>}
-    <div className="result-footer"><div>{tab.kind === "benchmark" ? <><span className="status-dot completed" />1,000,000 rows · virtualized</> : tab.kind === "table" ? <><Table2 size={12} />{tab.loadedRows.toLocaleString()} rows loaded{tab.hasMore ? " · scroll for more" : ""}{!tab.schema?.primaryKey.length && tab.loadedRows >= 500 ? " · first page only, no primary key" : ""}</> : <><span className={`status-dot ${tab.status}`} />{result?.retainedRows.toLocaleString() ?? "0"} rows{result?.status === "truncated" && <span className="truncated-label">Retention limit reached</span>}{tab.status === "completed" && result?.columns.length === 0 && <span>{tab.metrics[result.statementIndex]?.affectedRows ?? "0"} affected</span>}</>}</div><div>{edits.length > 0 && <span className="dirty-count"><i className="dirty-dot" />{edits.length} pending</span>}<span>{tab.kind === "benchmark" ? "Synthetic data" : "Results stay in memory"}</span></div></div>
-  </>;
+  return (
+    <>
+      <div className="query-toolbar">
+        <div className="query-context">
+          {tab.kind === "query" ? (
+            <Code2 size={15} />
+          ) : tab.kind === "benchmark" ? (
+            <Gauge size={15} />
+          ) : (
+            <Table2 size={15} />
+          )}
+          <span>
+            {tab.kind === "benchmark"
+              ? "1,000,000 virtual rows"
+              : tab.kind === "table"
+                ? `${tab.table?.schema}.${tab.table?.name}`
+                : "SQL editor"}
+          </span>
+          {tab.kind === "query" && (
+            <select
+              aria-label="Query connection"
+              value={tab.connectionId ?? ""}
+              disabled={running}
+              onChange={(e) => state.updateTab(tab.id, { connectionId: e.target.value || null })}
+            >
+              <option value="">Choose connection</option>
+              {state.bootstrap?.profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+          )}
+          {profile && (
+            <span className="read-policy">
+              <ShieldCheck size={12} />
+              {profile.safeMode === "readOnly"
+                ? "Read only"
+                : profile.safeMode === "silent"
+                  ? "Local session"
+                  : "Safe Mode"}
+            </span>
+          )}
+        </div>
+        <div className="query-actions">
+          {tab.kind === "query" && (
+            <>
+              <button
+                className="button ghost small"
+                title="Format SQL · ⇧⌘F"
+                onClick={() => editorRef.current?.format()}
+              >
+                <Code2 size={13} />
+                Format
+              </button>
+              {running ? (
+                <button
+                  className="button cancel-query"
+                  onClick={() =>
+                    tab.runId &&
+                    void client
+                      .call("cancel_run", { runId: tab.runId })
+                      .catch((error) => state.notify(messageOf(error)))
+                  }
+                >
+                  <Square size={11} />
+                  Cancel<kbd>⌘ .</kbd>
+                </button>
+              ) : (
+                <button
+                  className="button primary run-button"
+                  onClick={() => onRun()}
+                  disabled={!session}
+                >
+                  <Play size={12} fill="currentColor" />
+                  Run<kbd>⌘ ↵</kbd>
+                </button>
+              )}
+              <button
+                className="icon-button run-all"
+                title="Run all statements · ⇧⌘↵"
+                aria-label="Run all statements"
+                disabled={running || !session}
+                onClick={() => onRun(tab.sql)}
+              >
+                <ChevronDown size={13} />
+              </button>
+            </>
+          )}
+          {tab.kind === "table" && (
+            <>
+              <button
+                className="button ghost small"
+                disabled={tab.loadingPage || running}
+                onClick={() =>
+                  edits.length
+                    ? onConfirm(
+                        "Refresh and discard edits?",
+                        "This reloads current database values and discards pending cell edits.",
+                        () => void state.refreshTable(tab.id),
+                      )
+                    : void state.refreshTable(tab.id)
+                }
+              >
+                <RefreshCw size={13} className={tab.loadingPage ? "spin" : ""} />
+                Refresh
+              </button>
+              {edits.length > 0 && (
+                <>
+                  <button
+                    className="button ghost small"
+                    disabled={running}
+                    onClick={() => {
+                      for (const page of tab.pages) dirtyStore.clear(page.result.id);
+                    }}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    className="button primary small"
+                    disabled={running || !session || tab.status === "outcomeUnknown"}
+                    onClick={onReview}
+                  >
+                    <Check size={13} />
+                    Review {edits.length} edit{edits.length === 1 ? "" : "s"}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+      {tab.kind === "query" && (
+        <>
+          <div className="editor-panel" style={{ height: editorSize }}>
+            <Suspense fallback={<div className="editor-loading">Opening SQL editor…</div>}>
+              <SqlEditor
+                ref={editorRef}
+                key={tab.id}
+                value={tab.sql}
+                onChange={(sql) => state.updateTab(tab.id, { sql })}
+                onRun={onRun}
+                engine={profile?.engine ?? "postgres"}
+                sessionId={session?.id ?? null}
+                tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}
+                theme={state.theme}
+              />
+            </Suspense>
+          </div>
+          <div
+            className="editor-divider"
+            role="separator"
+            aria-label="Resize SQL editor"
+            aria-orientation="horizontal"
+            onPointerDown={resizeEditor}
+          >
+            <span />
+          </div>
+        </>
+      )}
+      {tab.kind === "query" ? (
+        <div className="results-header">
+          <div className="result-tabs">
+            {tab.results.length ? (
+              tab.results.map((result, i) => (
+                <button
+                  className={result.id === tab.activeResultId ? "active" : ""}
+                  key={result.id}
+                  onClick={() => state.updateTab(tab.id, { activeResultId: result.id })}
+                >
+                  <Table2 size={12} />
+                  Query {result.statementIndex + 1}
+                  {tab.results.filter((r) => r.statementIndex === result.statementIndex).length > 1
+                    ? ` · ${i + 1}`
+                    : ""}
+                  <span>{result.retainedRows.toLocaleString()}</span>
+                </button>
+              ))
+            ) : (
+              <span className="result-placeholder">Results</span>
+            )}
+          </div>
+          <span className="result-caption">
+            {running ? (
+              <>
+                <Loader2 size={12} className="spin" />
+                {(runningTime / 1000).toFixed(1)} s
+              </>
+            ) : (
+              <>
+                <Clock3 size={12} />
+                {tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}
+              </>
+            )}
+          </span>
+        </div>
+      ) : tab.kind === "table" ? (
+        <div className="results-header table-views">
+          <div className="result-tabs">
+            <button
+              className={tab.view === "data" ? "active" : ""}
+              onClick={() => state.updateTab(tab.id, { view: "data" })}
+            >
+              <Table2 size={12} />
+              Data
+            </button>
+            <button
+              className={tab.view === "structure" ? "active" : ""}
+              onClick={() => state.updateTab(tab.id, { view: "structure" })}
+            >
+              <Code2 size={12} />
+              Structure
+            </button>
+          </div>
+          <span className="result-caption">
+            {tab.schema?.editable ? "Double-click a cell to edit" : "Read-only result"}
+          </span>
+        </div>
+      ) : (
+        <div className="benchmark-note">
+          <Gauge size={13} />
+          Generated on demand · no database connection · constant row storage
+        </div>
+      )}
+      {tab.error && (
+        <div
+          className={`query-error ${tab.error.code === "outcomeUnknown" ? "uncertain" : ""}`}
+          role="alert"
+        >
+          <span className="error-symbol">!</span>
+          <span>{tab.error.message}</span>
+          <button
+            className="icon-button"
+            aria-label="Dismiss query error"
+            onClick={() => state.updateTab(tab.id, { error: null })}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      {tab.kind === "table" && tab.view === "structure" ? (
+        <StructureView schema={tab.schema} />
+      ) : tab.kind === "query" && !result ? (
+        <div className="results-empty">
+          <Table2 size={27} />
+          <h3>{running ? "Your query is running" : "A fresh perspective awaits"}</h3>
+          <p>
+            {running
+              ? "Results will appear as they arrive."
+              : "Run a query to explore its results here."}
+          </p>
+          <span>
+            <kbd>⌘ ↵</kbd>Run current query
+          </span>
+        </div>
+      ) : (
+        <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}>
+          <DatabaseGrid
+            key={tab.id}
+            tab={tab}
+            result={result}
+            theme={state.theme}
+            onSelect={onSelect}
+            onOpenValue={onOpenValue}
+          />
+        </Suspense>
+      )}
+      <div className="result-footer">
+        <div>
+          {tab.kind === "benchmark" ? (
+            <>
+              <span className="status-dot completed" />
+              1,000,000 rows · virtualized
+            </>
+          ) : tab.kind === "table" ? (
+            <>
+              <Table2 size={12} />
+              {tab.loadedRows.toLocaleString()} rows loaded{tab.hasMore ? " · scroll for more" : ""}
+              {!tab.schema?.primaryKey.length && tab.loadedRows >= 500
+                ? " · first page only, no primary key"
+                : ""}
+            </>
+          ) : (
+            <>
+              <span className={`status-dot ${tab.status}`} />
+              {result?.retainedRows.toLocaleString() ?? "0"} rows
+              {result?.status === "truncated" && (
+                <span className="truncated-label">Retention limit reached</span>
+              )}
+              {tab.status === "completed" && result?.columns.length === 0 && (
+                <span>{tab.metrics[result.statementIndex]?.affectedRows ?? "0"} affected</span>
+              )}
+            </>
+          )}
+        </div>
+        <div>
+          {edits.length > 0 && (
+            <span className="dirty-count">
+              <i className="dirty-dot" />
+              {edits.length} pending
+            </span>
+          )}
+          <span>{tab.kind === "benchmark" ? "Synthetic data" : "Results stay in memory"}</span>
+        </div>
+      </div>
+    </>
+  );
 }
 
-export function Welcome({ onConnect, onQuery, onBenchmark }: { onConnect(): void; onQuery(): void; onBenchmark(): void }) {
-  return <div className="welcome"><div className="welcome-mark"><img src="/joinery.svg" alt="" width={52} height={52} /></div><span className="eyebrow">A LITTLE CLARITY FOR YOUR DATA</span><h1>Welcome to Joinery.</h1><p>Your databases. A clear workspace.<br />Everything you need to get into the flow.</p><button className="button primary welcome-connect" onClick={onConnect}><Plus size={15} />Connect a database<ArrowRight size={15} /></button><div className="welcome-cards"><button onClick={onQuery}><div className="welcome-card-icon"><Code2 size={20} /></div><strong>Start with SQL</strong><span>A scratchpad for your next idea.</span><kbd>⌘ T</kbd></button><button onClick={onBenchmark}><div className="welcome-card-icon"><Gauge size={20} /></div><strong>Take the grid for a spin</strong><span>A million rows, generated as you scroll.</span><ArrowRight size={15} /></button></div><div className="welcome-shortcuts"><span><kbd>⌘ K</kbd>Command palette</span><span><kbd>⌘ B</kbd>Toggle sidebar</span><span><ShieldCheck size={12} />Built for considered changes</span></div></div>;
+export function Welcome({
+  onConnect,
+  onQuery,
+  onBenchmark,
+}: {
+  onConnect(): void;
+  onQuery(): void;
+  onBenchmark(): void;
+}) {
+  return (
+    <div className="welcome">
+      <div className="welcome-mark">
+        <img src="/joinery.svg" alt="" width={52} height={52} />
+      </div>
+      <span className="eyebrow">A LITTLE CLARITY FOR YOUR DATA</span>
+      <h1>Welcome to Joinery.</h1>
+      <p>
+        Your databases. A clear workspace.
+        <br />
+        Everything you need to get into the flow.
+      </p>
+      <button className="button primary welcome-connect" onClick={onConnect}>
+        <Plus size={15} />
+        Connect a database
+        <ArrowRight size={15} />
+      </button>
+      <div className="welcome-cards">
+        <button onClick={onQuery}>
+          <div className="welcome-card-icon">
+            <Code2 size={20} />
+          </div>
+          <strong>Start with SQL</strong>
+          <span>A scratchpad for your next idea.</span>
+          <kbd>⌘ T</kbd>
+        </button>
+        <button onClick={onBenchmark}>
+          <div className="welcome-card-icon">
+            <Gauge size={20} />
+          </div>
+          <strong>Take the grid for a spin</strong>
+          <span>A million rows, generated as you scroll.</span>
+          <ArrowRight size={15} />
+        </button>
+      </div>
+      <div className="welcome-shortcuts">
+        <span>
+          <kbd>⌘ K</kbd>Command palette
+        </span>
+        <span>
+          <kbd>⌘ B</kbd>Toggle sidebar
+        </span>
+        <span>
+          <ShieldCheck size={12} />
+          Built for considered changes
+        </span>
+      </div>
+    </div>
+  );
 }
