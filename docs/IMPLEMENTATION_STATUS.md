@@ -6,10 +6,12 @@ The current development branch also contains a **Snowflake read-only SQL pilot**
 system-browser OAuth with PKCE, explicit account context, async SQL API polling,
 bounded JSON partitions, exact text values, own-query cancellation, and a
 read-only connection form. Mocked callback and SQL API tests, the native macOS
-build, and a headless Snowflake form check pass. A real Snowflake account canary
-is still required before calling this pilot
-usable against production. Catalog/table browsing and the remaining P6 criteria
-are not complete. The published preview remains PostgreSQL-only.
+build, and a headless Snowflake form check pass. A live read-only account canary
+also passed browser SSO, context identity verification, and `SELECT 1 AS CANARY`
+with one result row. The canary exposed a redirect-path mismatch and an
+unsupported SQL API `AUTOCOMMIT` request parameter; both were fixed and retested.
+Catalog/table browsing and the remaining P6 criteria are not complete. The
+published preview remains PostgreSQL-only.
 
 ## Implemented
 

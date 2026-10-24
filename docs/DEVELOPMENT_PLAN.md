@@ -538,7 +538,8 @@ Confirm that the account's `SNOWFLAKE$LOCAL_APPLICATION` integration is enabled.
 Keep access and refresh tokens in memory only. [Snowflake OAuth for local applications](https://docs.snowflake.com/en/user-guide/oauth-local-applications).
 
 The read-only SQL pilot has browser sign-in, explicit context, bounded results,
-async polling, and own-query cancellation. Catalog, table browsing, live-account
+async polling, and own-query cancellation. One live account passed browser SSO,
+identity checks, and `SELECT 1`. Catalog, table browsing, broader account
 qualification, and full P6 exit criteria remain open.
 
 Complete P6 with:

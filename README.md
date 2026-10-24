@@ -17,7 +17,8 @@ Snowflake's local-application OAuth flow; no password or OAuth token is entered
 in Joinery. The account must enable the `SNOWFLAKE$LOCAL_APPLICATION` integration.
 Only SQL reads are available in this pilot; catalog browsing and editing remain
 unfinished. Use a database-enforced read-only role and a bounded warehouse/query
-budget. The pilot has not yet been verified against a live Snowflake account.
+budget. A live read-only canary passed browser SSO, context verification, and
+`SELECT 1`; broader production qualification remains open.
 
 ## Development
 
