@@ -1,0 +1,64 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Standard runners are free for public repositories. Skip every job if the
+# repository becomes private. Do not add caches, artifact uploads, custom images,
+# larger runners, or external paid services without reviewing the cost policy.
+jobs:
+  check:
+    if: ${{ github.event.repository.visibility == 'public' }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm validate
+
+  integration:
+    if: ${{ github.event.repository.visibility == 'public' }}
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - run: docker compose up -d --wait
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh -- --ignored
+      - run: pnpm contracts
+      - run: pnpm exec playwright install --with-deps chromium --only-shell
+      - run: pnpm test:e2e
+      - name: Stop disposable services
+        if: always()
+        run: docker compose down -v

@@ -574,7 +574,7 @@ Estimates are **engineer-weeks for one experienced Rust/TypeScript developer**, 
 | Phase | Deliverable and milestone exit criteria | Complexity | Estimate |
 |---|---|---|---|
 | P0: Feasibility | Packaged Tauri shell; real Arrow IPC; million-row virtual grid fixture; memory measurements; verified TLS through SSH; PostgreSQL cancellation | High | 1–2 |
-| P1: Foundation | Connection/group persistence, credential stores, typed contracts, capabilities, command registry, local validation and cross-platform smoke builds | Medium | 2–3 |
+| P1: Foundation | Connection/group persistence, credential stores, typed contracts, capabilities, command registry, local validation and free public-repository CI across platforms | Medium | 2–3 |
 | P2: PostgreSQL Studio | Editor, schema browser, autocomplete, multiple results, metrics, history, bounded retention, table paging | High | 3–4 |
 | P3: PostgreSQL MVP | Inline editing, transactional review/apply, all Safe Mode levels, SSH authentication methods, health, processes, signed macOS build | Very high | 4–6 |
 | P4: MySQL/MariaDB | Adapter parity, dialect tests, matched-row behavior, nontransactional-table handling, TLS/SSH and cancellation tests | High | 2–3 |
@@ -687,12 +687,16 @@ Use release LTO, stripped symbols, and measured compiler settings. Keep database
 
 # Verification risks and release gates
 
-Builds, tests, and packaging run locally. GitHub hosts version control and pull
-requests; GitHub Actions is disabled and no remote build workflow is retained.
-Use `pnpm validate` for the baseline checks, then the integration, native, and
-packaging checks appropriate to each change. Validate Windows and Linux on
-their own hosts before claiming support. Existing release downloads and past
-CI evidence remain historical records.
+GitHub Actions runs baseline validation on standard Linux, Windows, and macOS
+runners and disposable integration tests on Linux. All jobs require a public
+repository so standard runner time is free. The workflow uses no artifact
+uploads, caches, larger runners, custom images, paid external services, or
+production database secrets. See [GitHub's runner policy](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job).
+
+Release packaging remains local. Use `pnpm validate` locally for baseline
+checks, then the integration, native, and packaging checks appropriate to each
+change. Validate packaged Windows and Linux apps on their own hosts before
+claiming support. CI results and local checks must identify the tested revision.
 
 ## Required test scenarios
 
