@@ -442,6 +442,7 @@ impl Driver for Postgres {
             rows,
             next_key,
             has_more,
+            truncated: limited && !has_more,
         })
     }
 

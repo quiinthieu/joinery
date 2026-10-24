@@ -24,6 +24,13 @@ unfinished. Use a database-enforced read-only role and a bounded warehouse/query
 budget. A live read-only canary passed browser SSO, context verification, and
 `SELECT 1`; broader production qualification remains open.
 
+The current development branch adds Snowflake catalog discovery, lazy column
+completion, structure inspection, and read-only table previews. Previews are
+unordered and stop at 500 rows or 2 MiB; use SQL for larger or ordered results.
+Catalog discovery is scoped to the configured database and limited to 10,000
+objects, with an explicit error instead of a partial catalog. This work is not
+included in the `preview.2` download. Snowflake editing remains disabled.
+
 ## Development
 
 Install Node 24, pnpm 11, the pinned Rust toolchain, and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).
@@ -75,7 +82,7 @@ pnpm test:e2e
 
 The disposable PostgreSQL fixture listens on `127.0.0.1:55432`; database/user `joinery`, password `joinery-local-only`. Select **Local**, disable TLS for this fixture, and use these credentials. `docker compose down` stops the fixture while retaining its volume; `docker compose down -v` also deletes its test data.
 
-Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. Browser tests exercise the actual Rust service and PostgreSQL, with Arrow responses decoded by the same frontend worker used on desktop.
+Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. PostgreSQL browser tests exercise the actual Rust service and disposable database. The Snowflake browser workflow intercepts that API boundary with synthetic responses and Arrow data; separate Rust tests exercise the Snowflake adapter against a loopback HTTP fixture. Neither Snowflake test path signs in or queries a production account.
 
 ## Current implementation
 
@@ -105,7 +112,7 @@ pnpm test:native
 
 This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Detailed scope and measurements are in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 
-MySQL/MariaDB, Redis, Snowflake catalog/table browsing and broader qualification,
+MySQL/MariaDB, Redis, broader Snowflake production qualification,
 distribution signing, and full performance qualification remain on the
 [development roadmap](docs/DEVELOPMENT_PLAN.md). The preview is available for
 macOS Apple Silicon; RAM/startup/FPS targets remain unqualified.

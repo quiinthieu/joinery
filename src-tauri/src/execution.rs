@@ -936,7 +936,7 @@ impl Studio {
                 "Close a result tab to free memory before loading this page",
             ));
         }
-        let result = self.results.finish(&result.id, !retained)?;
+        let result = self.results.finish(&result.id, page.truncated)?;
         Ok(TablePage {
             result,
             next_key: page.next_key,

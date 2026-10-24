@@ -220,8 +220,8 @@ export function ConnectionDialog({
                 />
               </label>
               <p className="form-note span-2">
-                Joinery opens your system browser for Snowflake sign-in. This pilot runs read-only
-                SQL and needs the account’s local-application OAuth integration.
+                Joinery opens your system browser for Snowflake sign-in. Read-only SQL and bounded
+                table previews need the account’s local-application OAuth integration.
               </p>
             </>
           )}

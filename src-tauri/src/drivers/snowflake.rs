@@ -20,6 +20,10 @@ use super::snowflake_auth::{self, Tokens};
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PARTITIONS: usize = 64;
 
+mod catalog;
+#[cfg(test)]
+mod catalog_tests;
+
 struct AuthState {
     tokens: Tokens,
     expires_at: Instant,
@@ -34,6 +38,7 @@ pub struct Snowflake {
     warehouse: String,
     query_tag: String,
     auth: AsyncMutex<AuthState>,
+    metadata_lane: AsyncMutex<()>,
     active_handle: Mutex<Option<String>>,
     cancel_requested: AtomicBool,
     closed: AtomicBool,
@@ -129,6 +134,7 @@ impl Snowflake {
             warehouse: config.warehouse.clone(),
             query_tag: format!("Joinery/{session_id}"),
             auth: AsyncMutex::new(AuthState { tokens, expires_at }),
+            metadata_lane: AsyncMutex::new(()),
             active_handle: Mutex::new(None),
             cancel_requested: AtomicBool::new(false),
             closed: AtomicBool::new(false),
@@ -163,7 +169,7 @@ impl Snowflake {
                 sql: true,
                 transactions: false,
                 cancellation: true,
-                table_browsing: false,
+                table_browsing: true,
                 table_editing: false,
                 processes: false,
             },
@@ -278,7 +284,7 @@ impl Snowflake {
         Ok((status, value))
     }
 
-    async fn submit(&self, sql: &str) -> AppResult<Value> {
+    async fn submit(&self, sql: &str, track_query: bool) -> AppResult<Value> {
         let body = json!({"statement": sql, "timeout": 60, "database": self.database,
             "schema": self.schema, "warehouse": self.warehouse, "role": self.role,
             "parameters": {"QUERY_TAG": self.query_tag}});
@@ -295,8 +301,10 @@ impl Snowflake {
                         )
                     })?
                     .to_string();
-                *self.active_handle.lock() = Some(handle.clone());
-                if self.cancel_requested.load(Ordering::Acquire) {
+                if track_query {
+                    *self.active_handle.lock() = Some(handle.clone());
+                }
+                if track_query && self.cancel_requested.load(Ordering::Acquire) {
                     let _ = self
                         .request(
                             Method::POST,
@@ -333,20 +341,6 @@ impl Snowflake {
             ErrorCode::Database,
             "Snowflake query exceeded the polling limit",
         ))
-    }
-
-    async fn query_rows(&self, sql: &str, max_rows: usize) -> AppResult<Vec<TextRow>> {
-        let result = self.submit(sql).await;
-        *self.active_handle.lock() = None;
-        let first = result?;
-        let rows = decode_rows(&first)?;
-        if rows.len() > max_rows {
-            return Err(AppError::new(
-                ErrorCode::ResultLimitReached,
-                "Snowflake metadata query returned too many rows",
-            ));
-        }
-        Ok(rows)
     }
 }
 
@@ -450,7 +444,7 @@ impl Driver for Snowflake {
         }
         self.cancel_requested.store(false, Ordering::Release);
         let outcome = async {
-            let first = self.submit(sql).await?;
+            let first = self.submit(sql, true).await?;
             let columns = columns(&first)?;
             sink.describe(columns)?;
             let mut count = 0u64;
@@ -515,23 +509,17 @@ impl Driver for Snowflake {
         Ok(())
     }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
-        Ok(Vec::new())
+        self.catalog_tables().await
     }
-    async fn schema(&self, _: &TableRef) -> AppResult<TableSchema> {
-        Err(AppError::new(
-            ErrorCode::Unsupported,
-            "Snowflake table browsing is not available in this pilot",
-        ))
+    async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        self.table_schema(table).await
     }
     async fn browse(
         &self,
-        _: &TableSchema,
-        _: Option<Vec<Option<String>>>,
+        schema: &TableSchema,
+        after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
-        Err(AppError::new(
-            ErrorCode::Unsupported,
-            "Snowflake table browsing is not available in this pilot",
-        ))
+        self.table_preview(schema, after).await
     }
     async fn apply(&self, _: &TableSchema, _: &[RowMutation]) -> AppResult<()> {
         Err(AppError::new(
@@ -575,7 +563,7 @@ mod tests {
     };
 
     #[derive(Default)]
-    struct Sink {
+    pub(super) struct Sink {
         columns: Vec<ColumnInfo>,
         rows: Vec<TextRow>,
         completed: bool,
@@ -672,6 +660,7 @@ mod tests {
                 },
                 expires_at: Instant::now() + Duration::from_secs(600),
             }),
+            metadata_lane: AsyncMutex::new(()),
             active_handle: Mutex::new(None),
             cancel_requested: AtomicBool::new(false),
             closed: AtomicBool::new(false),

@@ -186,8 +186,12 @@ export const useStudio = create<StudioState>((set, get) => ({
   openQuery(connectionId = get().selectedConnectionId, sql) {
     const count = get().tabs.filter((t) => t.kind === "query").length + 1;
     const next = tab("query", `Query ${count}`, connectionId);
+    const engine = get().bootstrap?.profiles.find((profile) => profile.id === connectionId)?.engine;
     next.sql =
-      sql ?? "-- A little space to think.\nSELECT current_database(), current_user, version();";
+      sql ??
+      (engine === "snowflake"
+        ? "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();"
+        : "-- A little space to think.\nSELECT current_database(), current_user, version();");
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     return next.id;
   },
