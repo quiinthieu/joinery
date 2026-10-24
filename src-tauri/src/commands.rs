@@ -379,3 +379,26 @@ pub async fn native_smoke_report(
     });
     Ok(())
 }
+
+#[tauri::command]
+pub async fn redis_scan(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    pattern: String,
+    cursor: Option<String>,
+) -> AppResult<RedisScanPage> {
+    studio
+        .redis_scan(&session_id, &pattern, cursor.as_deref())
+        .await
+}
+#[tauri::command]
+pub async fn redis_inspect(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    argument: String,
+    cursor: Option<String>,
+) -> AppResult<RedisValuePreview> {
+    studio
+        .redis_inspect(&session_id, &argument, cursor.as_deref())
+        .await
+}

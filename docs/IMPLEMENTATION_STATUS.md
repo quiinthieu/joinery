@@ -1,7 +1,7 @@
 # Implementation and release status
 
 Updated 2026-10-24. Current source additionally implements the MySQL/MariaDB
-studio described below; its exact merge/release state is tracked on the Site.
+studio and standalone Redis workspace described below; its exact merge/release state is tracked on the Site.
 Release scope for `v0.1.0-preview.3`: the PostgreSQL studio,
 SSH support, and read-only Snowflake SQL/catalog/table previews on macOS Apple Silicon. This remains
 a development preview; full multi-engine v1.0 qualification is pending.
@@ -21,7 +21,7 @@ previous `v0.1.0-preview.1` release remains available as the PostgreSQL-only pre
 |---|---|
 | Included in preview.3 | PostgreSQL studio, SSH/TLS, editing and review, Safe Mode, themes, history/audit, bounded grid/Arrow results |
 | Included as a pilot in preview.3 | Snowflake browser OAuth, identity checks, read-only SQL results, async polling, own-query cancellation, catalog/column completion and bounded table previews |
-| Pending | Broader Snowflake and MySQL/MariaDB production qualification, Redis, signing/notarization, cross-platform installers, full performance and recovery qualification |
+| Pending | Broader Snowflake, MySQL/MariaDB and Redis production qualification, signing/notarization, cross-platform installers, full performance and recovery qualification |
 
 ## Implemented
 
@@ -105,7 +105,7 @@ The reproducible runner writes detailed local evidence to `.cache/native-smoke/r
 2. Exercise native credential-store success/denial/locked-store flows. Current connection tests inject a memory store and never access personal credentials.
 3. Run packaging and platform UI smoke checks on Windows and Linux as well as macOS. Only macOS was executed in this workspace; CI compilation does not qualify packaged app behavior.
 4. Add Developer ID signing/notarization and release/update recovery. The delivered local macOS bundle uses ad-hoc signing.
-5. Complete P4 qualification, P5 Redis console/key browser, and broader Snowflake live table/OAuth/result/cancellation qualification. Preview.3 includes read-only catalog/grid browsing; preview.2 covered SQL only.
+5. Complete P4/P5 production/version qualification, and broader Snowflake live table/OAuth/result/cancellation qualification. Preview.3 includes read-only catalog/grid browsing; preview.2 covered SQL only.
 6. Complete P7 accessibility, cross-platform releases, crash/upgrade recovery, and sustained performance qualification.
 
 ## Continuation batch A: Snowflake browsing (shipped in preview.3)
@@ -221,3 +221,47 @@ edit, generated SQL review, commit/readback and lazy completion for both new
 engines. These use disposable synthetic data; no production databases were read
 or modified. Build/native/release evidence is recorded on the project Site after
 completion.
+
+
+## Continuation batch D: Redis workspace
+
+Standalone Redis has a native CodeMirror console, command completion, current
+line/selection/batch execution, SCAN browser with type/TTL inspection, and
+string/hash/list/set/sorted-set previews. Typed forms generate commands through
+the same immutable plan, one-use approval and production passphrase gateway.
+Every Redis write requires review. Newline/quoted-byte parsing is shared by
+review and execution; the complete batch is preflighted before any command runs.
+Commands execute sequentially without rollback or automatic write retries.
+
+The adapter uses redis-rs encoding/parsing over owned async TCP/TLS streams.
+RESP2 framing caps declared bulk lengths, array nodes and nesting before decode.
+Replies and decoded viewers stop at 2 MiB / 10,000 nodes / 16 levels. String
+previews stop at 64 KiB; other previews stop at 500 entries / 2 MiB. Binary
+values carry explicit encoding metadata. Opaque browser cursors are scoped to
+pattern/key/type and expire after five minutes. Empty SCAN pages retain their
+continuation; duplicates and expiring/changing keys are explicitly live behavior.
+
+Cancellation closes the owned socket and retires the session. A lost write
+acknowledgement is outcome unknown. A full result registry still reports a
+server-acknowledged write as completed. TLS verifies the original hostname
+through SSH; custom ACL usernames authenticate explicitly even with an empty
+password, with no default-user fallback. The browser uses a separate bounded
+connection and 15-second deadline; health uses PING only.
+
+Redis 8.2 disposable fixtures cover exact integers, NULL/empty/binary/Unicode,
+preflight/approval/readonly policy, scoped list paging, expiry/KEEPTTL, large
+strings, authenticated SSH, cleanup and full viewer budgets. Synthetic transport
+tests cover cancelled-read socket closure, lost-write outcomes without retries,
+oversized response headers, TLS-over-SSH hostname rejection and ACL identity.
+The browser workflow covers real connect/scan/typed edit/review/commit/readback
+and byte-safe forms. Blocking, scripting, transaction, administrative/session
+commands and unbounded collection commands are unavailable. Cluster, Sentinel,
+streams and Pub/Sub remain unsupported. Production accounts and broader versions
+are unqualified. Final CI, native/package and release evidence is recorded on
+the canonical project Site after completion.
+
+Final local baseline validation passes 47 Rust tests and 16 frontend tests,
+production frontend build, formatting, native compilation and strict Clippy.
+All nine browser workflows pass across the four engine families. Six disposable
+Redis integration tests pass alongside the earlier twenty PostgreSQL/MySQL/SSH
+tests. These checks use synthetic fixtures and never read production tables.

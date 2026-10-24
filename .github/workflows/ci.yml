@@ -55,11 +55,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
       - run: python3 scripts/mysql-tls-fixture.py
-      - run: docker compose --profile mysql up -d --wait
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql -- --ignored --test-threads=1
+      - run: docker compose --profile mysql --profile redis up -d --wait
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test redis -- --ignored --test-threads=1
       - run: pnpm contracts
       - run: pnpm exec playwright install --with-deps chromium --only-shell
       - run: pnpm test:e2e
       - name: Stop disposable services
         if: always()
-        run: docker compose --profile mysql down -v
+        run: docker compose --profile mysql --profile redis down -v

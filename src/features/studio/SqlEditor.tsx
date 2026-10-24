@@ -29,6 +29,7 @@ import type { EngineKind, TableInfo, TableSchema } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import type { CompletionItem } from "../../data/completion-index";
 import { useStudio } from "../../state/studio";
+import { REDIS_COMMANDS } from "../redis/commands";
 import { referencedTables, selectedStatement, tableLookup } from "./sql-context";
 
 export interface EditorHandle {
@@ -134,13 +135,15 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       selection() {
         const editor = view.current;
         if (!editor) return latest.current.value;
-        return selectedStatement(editor.state);
+        return latest.current.engine === "redis"
+          ? redisSelection(editor.state)
+          : selectedStatement(editor.state);
       },
       focus() {
         view.current?.focus();
       },
       format() {
-        if (!view.current) return;
+        if (!view.current || latest.current.engine === "redis") return;
         if (!formatter.current) {
           formatter.current = new Worker(
             new URL("../../workers/formatter.worker.ts", import.meta.url),
@@ -206,16 +209,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         closeBrackets(),
         highlightActiveLine(),
         highlightSelectionMatches(),
-        languageCompartment.of(
-          sql({
-            dialect:
-              latest.current.engine === "postgres"
-                ? PostgreSQL
-                : latest.current.engine === "mysql"
-                  ? MySQL
-                  : StandardSQL,
-          }),
-        ),
+        languageCompartment.of(editorLanguage(latest.current.engine)),
         themeCompartment.of([
           editorTheme(latest.current.theme),
           highlighting(latest.current.theme),
@@ -247,7 +241,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             key: "Mod-Enter",
             run: (editor) => {
               try {
-                latest.current.onRun(selectedStatement(editor.state));
+                latest.current.onRun(
+                  latest.current.engine === "redis"
+                    ? redisSelection(editor.state)
+                    : selectedStatement(editor.state),
+                );
               } catch (error) {
                 useStudio.getState().notify(messageOf(error));
               }
@@ -263,7 +261,6 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         EditorView.updateListener.of((update) => {
           if (update.docChanged) latest.current.onChange(update.state.doc.toString());
         }),
-        EditorView.contentAttributes.of({ "aria-label": "SQL editor", spellcheck: "false" }),
       ],
     });
     view.current = new EditorView({ state, parent: host.current! });
@@ -289,16 +286,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   }, [props.theme]);
   useEffect(() => {
     view.current?.dispatch({
-      effects: languageCompartment.reconfigure(
-        sql({
-          dialect:
-            props.engine === "postgres"
-              ? PostgreSQL
-              : props.engine === "mysql"
-                ? MySQL
-                : StandardSQL,
-        }),
-      ),
+      effects: languageCompartment.reconfigure(editorLanguage(props.engine)),
     });
   }, [props.engine]);
   useEffect(() => {
@@ -323,10 +311,13 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       "WITH",
       "EXPLAIN",
     ];
-    const base = [...schemaItems, ...keywords.map((label) => ({ label, type: "keyword" }))];
+    const base =
+      props.engine === "redis"
+        ? REDIS_COMMANDS.map((label) => ({ label, type: "keyword" }))
+        : [...schemaItems, ...keywords.map((label) => ({ label, type: "keyword" }))];
     completion.current?.postMessage({ type: "replace", revision: current, items: base });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    if (props.sessionId) {
+    if (props.sessionId && props.engine !== "redis") {
       const referenced: { table: TableSchema["table"]; aliases: string[] }[] =
         JSON.parse(referenceKey);
       timer = setTimeout(() => {
@@ -375,6 +366,27 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [schemaItems, props.sessionId, referenceKey]);
+  }, [schemaItems, props.sessionId, props.engine, referenceKey]);
   return <div className="sql-editor" ref={host} />;
 });
+
+function redisSelection(state: EditorState) {
+  const selection = state.selection.main;
+  return selection.empty
+    ? state.doc.lineAt(selection.head).text
+    : state.sliceDoc(selection.from, selection.to);
+}
+
+function editorLanguage(engine: EngineKind) {
+  return [
+    engine === "redis"
+      ? []
+      : sql({
+          dialect: engine === "postgres" ? PostgreSQL : engine === "mysql" ? MySQL : StandardSQL,
+        }),
+    EditorView.contentAttributes.of({
+      "aria-label": engine === "redis" ? "Redis command editor" : "SQL editor",
+      spellcheck: "false",
+    }),
+  ];
+}

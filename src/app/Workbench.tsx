@@ -23,6 +23,7 @@ import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { StructureView } from "../features/studio/UtilityViews";
+import { RedisTools } from "../features/redis/RedisTools";
 import { resultCache } from "../data/result-cache";
 
 const SqlEditor = lazy(() =>
@@ -120,7 +121,9 @@ export function Workbench({
               ? "1,000,000 virtual rows"
               : tab.kind === "table"
                 ? `${tab.table?.schema}.${tab.table?.name}`
-                : "SQL editor"}
+                : profile?.engine === "redis"
+                  ? "Redis console"
+                  : "SQL editor"}
           </span>
           {tab.kind === "query" && (
             <select
@@ -154,6 +157,7 @@ export function Workbench({
               <button
                 className="button ghost small"
                 title="Format SQL · ⇧⌘F"
+                disabled={profile?.engine === "redis"}
                 onClick={() => editorRef.current?.format()}
               >
                 <Code2 size={13} />
@@ -241,6 +245,17 @@ export function Workbench({
           )}
         </div>
       </div>
+      {tab.kind === "query" && profile?.engine === "redis" && (
+        <RedisTools
+          sessionId={session?.id ?? null}
+          disabled={running}
+          readOnly={profile.safeMode === "readOnly"}
+          onCommand={(command) => {
+            state.updateTab(tab.id, { sql: command });
+            onRun(command);
+          }}
+        />
+      )}
       {tab.kind === "query" && (
         <>
           <div className="editor-panel" style={{ height: editorSize }}>
