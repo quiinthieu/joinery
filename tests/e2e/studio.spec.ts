@@ -16,6 +16,42 @@ async function connect(page: Page, name: string, safeMode = "silent") {
   await expect(page.locator(".status-bar")).toContainText(name);
 }
 
+test("keyboard palette keeps search focus, traps Tab and restores its trigger", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const trigger = page.getByRole("button", { name: "Jump to anything" });
+  await trigger.focus();
+  await trigger.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  const search = palette.getByRole("textbox", { name: "Search commands" });
+  await expect(palette).toBeVisible();
+  // Wait beyond the Modal effect's scheduled focus, which used to override
+  // React's autoFocus and move keyboard users onto the close button.
+  await expect(async () => {
+    await page.waitForTimeout(30);
+    await expect(search).toBeFocused();
+  }).toPass({ timeout: 1000 });
+  await search.press("Shift+Tab");
+  const close = palette.getByRole("button", { name: "Close dialog" });
+  await expect(close).toBeFocused();
+  await close.press("Shift+Tab");
+  await expect(palette.getByRole("button").last()).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(palette).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  await trigger.press("Control+k");
+  await expect(search).toBeFocused();
+  await page.keyboard.insertText("Grid benchmark");
+  await expect(palette.locator(".palette-commands button")).toHaveCount(1);
+  await page.keyboard.press("Enter");
+  await expect(palette).toHaveCount(0);
+  await expect(page.locator(".result-footer")).toContainText("1,000,000 rows");
+});
+
 test("Snowflake form requires browser sign-in and read-only mode", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();

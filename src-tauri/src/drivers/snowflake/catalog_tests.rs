@@ -72,8 +72,8 @@ async fn fixture(responses: Vec<Value>) -> (Snowflake, JoinHandle<Vec<(String, V
         }),
         metadata_lane: AsyncMutex::new(()),
         active_handle: Mutex::new(None),
-        cancel_requested: AtomicBool::new(false),
-        closed: AtomicBool::new(false),
+        cancel_requested: CancellationToken::new(),
+        closed: CancellationToken::new(),
     };
     (driver, server)
 }
@@ -94,7 +94,7 @@ async fn catalog_discovers_tables_across_partitions_without_touching_query_cance
         json!({"data":[["Mixed Schema","Quoted\"View","VIEW",null,null]]})
     ]).await;
     *driver.active_handle.lock() = Some(active.clone());
-    driver.cancel_requested.store(true, Ordering::Release);
+    driver.cancel_requested.cancel();
     let tables = driver.catalog().await.unwrap();
     assert_eq!(tables.len(), 2);
     assert_eq!(tables[0].estimated_rows, Some(123.0));
@@ -105,7 +105,7 @@ async fn catalog_discovers_tables_across_partitions_without_touching_query_cance
         driver.active_handle.lock().as_deref(),
         Some(active.as_str())
     );
-    assert!(driver.cancel_requested.load(Ordering::Acquire));
+    assert!(driver.cancel_requested.is_cancelled());
     let requests = server.await.unwrap();
     let sql = requests[0].1["statement"].as_str().unwrap();
     assert!(sql.contains("\"DB\".INFORMATION_SCHEMA.TABLES"));

@@ -189,9 +189,19 @@ async fn token_request(
         )
     })?;
     if !response.status().is_success() {
+        let temporary = response.status().is_server_error()
+            || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS;
         return Err(AppError::new(
-            ErrorCode::PermissionDenied,
-            "Snowflake sign-in was rejected. Check the account, role, and local OAuth integration.",
+            if temporary {
+                ErrorCode::ConnectionFailed
+            } else {
+                ErrorCode::PermissionDenied
+            },
+            if temporary {
+                "Snowflake sign-in service is temporarily unavailable. Try again."
+            } else {
+                "Snowflake sign-in was rejected. Check the account, role, and local OAuth integration."
+            },
         ));
     }
     let mut bytes = Zeroizing::new(Vec::new());

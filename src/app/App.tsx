@@ -746,6 +746,8 @@ function CommandPalette({
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && matches[0]) {
+              event.preventDefault();
+              event.stopPropagation();
               onClose();
               matches[0].action();
             }
