@@ -123,11 +123,17 @@ impl Studio {
             ],
             result_budget_bytes: RESULT_BUDGET,
             row_limit: ROW_LIMIT,
+            workspace: self.persistence.workspace()?,
         })
     }
 
     pub fn metadata_backups(&self) -> AppResult<Vec<MetadataBackup>> {
         self.persistence.metadata_backups()
+    }
+
+    pub fn save_workspace(&self, workspace: SavedWorkspace) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_workspace(workspace)
     }
 
     pub fn create_metadata_backup(&self) -> AppResult<MetadataBackup> {

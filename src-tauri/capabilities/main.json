@@ -10,6 +10,7 @@
     "core:window:allow-destroy",
     "allow-app-info",
     "allow-bootstrap",
+    "allow-save-workspace",
     "allow-metadata-backups",
     "allow-create-metadata-backup",
     "allow-restore-metadata-backup",

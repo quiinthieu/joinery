@@ -1,6 +1,17 @@
 use super::*;
 
 #[tauri::command]
+pub async fn save_workspace(
+    studio: State<'_, Arc<Studio>>,
+    workspace: SavedWorkspace,
+) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_workspace(workspace))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
 pub async fn metadata_backups(studio: State<'_, Arc<Studio>>) -> AppResult<Vec<MetadataBackup>> {
     let studio = studio.inner().clone();
     tokio::task::spawn_blocking(move || studio.metadata_backups())

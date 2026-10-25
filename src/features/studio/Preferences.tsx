@@ -43,6 +43,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
             <button
               key={id}
               className={`theme-option ${state.theme === id ? "selected" : ""}`}
+              aria-pressed={state.theme === id}
               onClick={() => state.setTheme(id)}
             >
               <Icon size={19} />
@@ -51,6 +52,19 @@ export function Preferences({ onClose }: { onClose(): void }) {
             </button>
           ))}
         </div>
+        <label>
+          Display density
+          <select
+            aria-label="Display density"
+            value={state.density}
+            onChange={(event) =>
+              useStudio.setState({ density: event.target.value as "comfortable" | "compact" })
+            }
+          >
+            <option value="comfortable">Comfortable</option>
+            <option value="compact">Compact</option>
+          </select>
+        </label>
         <div className="preference-divider" />
         <h3>
           <LockKeyhole size={15} />

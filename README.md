@@ -159,6 +159,17 @@ SSH host trust is local to Joinery. A changed key is blocked; the app does not s
 
 Safe Mode provides operational safeguards. Database roles remain the access-control boundary; use a read-only role for production browsing.
 
+Connection settings separately offer **Restore open query drafts after restart**,
+off by default for every environment. Only query text, tab titles and connection
+IDs for opted-in profiles are saved; sessions, results and grid edits are never
+restored. Disabling the option or deleting a profile purges its current saved
+drafts. Historical backups retain their snapshot contents until explicitly
+deleted. SQL text may contain sensitive literals. Draft storage is limited to
+32 tabs, 1 MiB per draft and 2 MiB total. Writes debounce for 400 ms and native
+close/quit flushes pending saves; an abrupt process loss can lose the latest
+debounce interval. Draft recovery never reconnects or executes queries. Theme,
+density and layout preferences are also stored in local metadata.
+
 ## Hidden native validation
 
 ```sh
@@ -194,7 +205,7 @@ passphrase when configured. Joinery checks snapshot integrity, version, schema,
 records and digest before replacement and creates an undo snapshot first.
 Current OS credentials and the write passphrase are retained; no queries run or
 connections reopen automatically. Snapshots include profiles, groups, settings,
-SSH trust and permitted query history, and exclude credentials and result rows.
+SSH trust, permitted query history and opted-in drafts, and exclude credentials and result rows.
 They stay under `backups/` in application data (20 snapshots, 64 MiB each).
 Delete old snapshots explicitly to leave room for an undo copy. Copy closed
 snapshots to separate storage for disk-loss recovery. This UI requires an

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DataEditor, {
   GridCellKind,
+  CompactSelection,
+  type GridSelection,
   type DataEditorRef,
   type EditableGridCell,
   type GridCell,
@@ -82,6 +84,11 @@ export default function DatabaseGrid({
     host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 800, height: 400 });
   const [widths, setWidths] = useState<Record<string, number>>({});
+  const density = useStudio((state) => state.density);
+  const [selection, setSelection] = useState<GridSelection>({
+    rows: CompactSelection.empty(),
+    columns: CompactSelection.empty(),
+  });
   const connected = useStudio(
     (state) => !!(tab.connectionId && state.sessions[tab.connectionId]?.id === tab.dataSessionId),
   );
@@ -175,6 +182,10 @@ export default function DatabaseGrid({
   }, []);
   useEffect(() => resultCache.subscribe(redraw), [redraw]);
   useEffect(() => dirtyStore.subscribe(redraw), [redraw]);
+  useEffect(() => {
+    setSelection({ rows: CompactSelection.empty(), columns: CompactSelection.empty() });
+    onSelect(null);
+  }, [tab.id, tab.revision, result?.id]);
 
   const locate = useCallback((row: number) => {
     const { tab, result } = model.current;
@@ -321,7 +332,7 @@ export default function DatabaseGrid({
           rows={rowCount}
           getCellContent={getCellContent}
           rowMarkers="number"
-          rowHeight={36}
+          rowHeight={density === "compact" ? 28 : 36}
           headerHeight={37}
           smoothScrollX
           smoothScrollY
@@ -332,6 +343,11 @@ export default function DatabaseGrid({
           }}
           onCellEdited={edit}
           onCellClicked={(cell) => onSelect(targetAt(cell, true))}
+          gridSelection={selection}
+          onGridSelectionChange={(selection) => {
+            setSelection(selection);
+            onSelect(selection.current ? targetAt(selection.current.cell, true) : null);
+          }}
           onCellActivated={(cell) => {
             const target = targetAt(cell, true);
             if (

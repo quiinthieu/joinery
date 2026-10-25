@@ -50,6 +50,7 @@ async fn rpc(
         let studio = &state.studio;
         Ok(match command.as_str() {
             "bootstrap" => json!(studio.bootstrap()?),
+            "save_workspace" => json!(studio.save_workspace(arg(&args, "workspace")?)?),
             // Test-only isolation for recovery flows; never enrolled in desktop IPC.
             "disconnect_fixtures" => { studio.shutdown(); Value::Null },
             "metadata_backups" => json!(studio.metadata_backups()?),

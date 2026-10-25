@@ -172,6 +172,13 @@ textarea:focus-visible {
   min-height: 0;
   overflow: hidden;
 }
+[data-density="compact"] .query-toolbar {
+  min-height: 40px;
+}
+[data-density="compact"] .structure-table td {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

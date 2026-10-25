@@ -1,6 +1,7 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
 import type { SessionInfo, TablePage, TableSchema } from "../ipc/generated";
+import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import { useStudio } from "./studio";
 
 vi.mock("../ipc/client", () => ({
@@ -105,4 +106,41 @@ test("a page with changed column positions is rejected before it can be edited",
   expect(result.pages).toHaveLength(0);
   expect(result.error?.message).toContain("schema changed");
   expect(client.call).toHaveBeenCalledWith("release_result", { resultId: "result" });
+});
+
+test("a new tab opened during startup cannot overwrite recoverable drafts", async () => {
+  useStudio.setState({ bootstrap: null, tabs: [], activeTabId: null, sessions: {} });
+  let resolve!: (bootstrap: Bootstrap) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise<Bootstrap>((done) => {
+      resolve = done;
+    }),
+  );
+  const pending = useStudio.getState().initialize();
+  const fresh = useStudio.getState().openQuery(null, "SELECT 'new work'");
+  const savedId = crypto.randomUUID(),
+    connectionId = crypto.randomUUID();
+  resolve({
+    profiles: [{ id: connectionId, storeDrafts: true } as ConnectionProfile],
+    groups: [],
+    passphraseConfigured: false,
+    supportedEngines: [],
+    resultBudgetBytes: 0,
+    rowLimit: 0,
+    workspace: {
+      theme: "contrast",
+      density: "compact",
+      sidebarVisible: true,
+      inspectorVisible: false,
+      activeDraftId: savedId,
+      drafts: [{ id: savedId, connectionId, title: "Recovered", sql: "SELECT 'recovered'" }],
+    },
+  });
+  await pending;
+  expect(useStudio.getState().tabs.map((tab) => tab.id)).toEqual([savedId, fresh]);
+  expect(useStudio.getState().activeTabId).toBe(fresh);
+  expect(useStudio.getState().sessions).toEqual({});
+  expect(
+    useStudio.getState().tabs.every((tab) => !tab.results.length && tab.status === "idle"),
+  ).toBe(true);
 });

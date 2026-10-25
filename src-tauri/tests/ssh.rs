@@ -40,6 +40,7 @@ fn profile(
         }),
         remember_password: false,
         store_query_text: false,
+        store_drafts: false,
         snowflake: None,
     }
 }

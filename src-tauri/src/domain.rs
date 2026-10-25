@@ -93,6 +93,8 @@ pub struct ConnectionProfile {
     pub remember_password: bool,
     pub store_query_text: bool,
     #[serde(default)]
+    pub store_drafts: bool,
+    #[serde(default)]
     pub snowflake: Option<SnowflakeConfig>,
 }
 
@@ -393,6 +395,27 @@ pub struct Bootstrap {
     pub supported_engines: Vec<EngineKind>,
     pub result_budget_bytes: usize,
     pub row_limit: usize,
+    pub workspace: Option<SavedWorkspace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryDraft {
+    pub id: String,
+    pub connection_id: String,
+    pub title: String,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedWorkspace {
+    pub theme: String,
+    pub density: String,
+    pub sidebar_visible: bool,
+    pub inspector_visible: bool,
+    pub active_draft_id: Option<String>,
+    pub drafts: Vec<QueryDraft>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

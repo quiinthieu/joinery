@@ -55,7 +55,8 @@ for (const [engine, port] of [
     await page.getByRole("button", { name: "Run all statements", exact: true }).click();
     await expect(page.locator(".result-footer")).toContainText("1 rows");
     await expect(page.locator(".query-error")).toHaveCount(0);
-    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+    if (!(await page.locator(".inspector").isVisible()))
+      await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
     const resultBox = (await page.locator(".grid-host").boundingBox())!;
     await expect(async () => {
       await page.mouse.click(resultBox.x + 90, resultBox.y + 55);

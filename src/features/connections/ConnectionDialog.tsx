@@ -41,6 +41,7 @@ export function ConnectionDialog({
         ssh: null,
         rememberPassword: false,
         storeQueryText: false,
+        storeDrafts: false,
         snowflake: null,
       },
   );
@@ -473,6 +474,15 @@ export function ConnectionDialog({
             />
             Save SQL text in local history{" "}
             <span className="optional">may contain sensitive literals</span>
+          </label>
+          <label className="checkbox-label span-2">
+            <input
+              type="checkbox"
+              checked={draft.storeDrafts ?? false}
+              onChange={(event) => change("storeDrafts", event.target.checked)}
+            />
+            Restore open query drafts after restart{" "}
+            <span className="optional">saves text locally; may contain sensitive literals</span>
           </label>
           {profile?.environment === "production" && (
             <label className="span-2">

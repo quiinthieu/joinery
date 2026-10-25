@@ -3,6 +3,7 @@ import type { MetadataBackup } from "../../ipc/generated";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
 import { useStudio } from "../../state/studio";
 import { InlineError } from "../../components/ui/Modal";
+import { flushWorkspace } from "../../state/workspace";
 
 export function MetadataRecovery({ onBusy }: { onBusy(busy: boolean): void }) {
   const state = useStudio();
@@ -59,6 +60,7 @@ export function MetadataRecovery({ onBusy }: { onBusy(busy: boolean): void }) {
         disabled={busy || !desktopAvailable}
         onClick={() =>
           void perform(async () => {
+            await flushWorkspace();
             await client.call<MetadataBackup>("create_metadata_backup");
             setBackups(await client.call("metadata_backups"));
             setNotice("Local metadata snapshot created.");
@@ -136,6 +138,7 @@ export function MetadataRecovery({ onBusy }: { onBusy(busy: boolean): void }) {
               }
               onClick={() =>
                 void perform(async () => {
+                  await flushWorkspace();
                   const undo = await client.call<MetadataBackup>("restore_metadata_backup", {
                     id: selected.id,
                     digest: selected.digest,
@@ -143,6 +146,7 @@ export function MetadataRecovery({ onBusy }: { onBusy(busy: boolean): void }) {
                     passphrase: passphrase || null,
                   });
                   useStudio.setState({
+                    bootstrap: null,
                     selectedConnectionId: null,
                     catalog: {},
                     tabs: [],

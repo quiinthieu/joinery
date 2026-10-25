@@ -36,6 +36,7 @@ import type {
   ResourceUsage,
 } from "../ipc/generated";
 import { useStudio, beginEventBatch, type StudioTab } from "../state/studio";
+import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
@@ -80,9 +81,11 @@ export function App() {
   useEffect(() => {
     void state.initialize();
   }, []);
+  useEffect(watchWorkspace, []);
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = state.theme;
-  }, [state.theme]);
+    document.documentElement.dataset.density = state.density;
+  }, [state.theme, state.density]);
   useEffect(() => {
     const hasPendingWork = () =>
       useStudio
@@ -99,21 +102,14 @@ export function App() {
       return () => window.removeEventListener("beforeunload", beforeUnload);
     }
     const windowHandle = getCurrentWindow();
+    const closeSafely = async () => {
+      await flushWorkspace();
+      await windowHandle.destroy();
+    };
     const unsubscribe = windowHandle.onCloseRequested((event) => {
-      if (!hasPendingWork()) return;
       event.preventDefault();
-      setDialog({
-        kind: "confirm",
-        title: "Close Joinery?",
-        description:
-          "Pending edits will be discarded and running queries will be cancelled. Completed writes are not undone.",
-        action: () => windowHandle.destroy(),
-      });
-    });
-    const quit = windowHandle.listen<number>("joinery:quit-requested", (event) => {
-      void client.call("acknowledge_quit", { generation: event.payload });
       if (!hasPendingWork()) {
-        void windowHandle.destroy();
+        void closeSafely().catch((error) => useStudio.getState().notify(messageOf(error)));
         return;
       }
       setDialog({
@@ -121,7 +117,21 @@ export function App() {
         title: "Close Joinery?",
         description:
           "Pending edits will be discarded and running queries will be cancelled. Completed writes are not undone.",
-        action: () => windowHandle.destroy(),
+        action: closeSafely,
+      });
+    });
+    const quit = windowHandle.listen<number>("joinery:quit-requested", (event) => {
+      void client.call("acknowledge_quit", { generation: event.payload });
+      if (!hasPendingWork()) {
+        void closeSafely().catch((error) => useStudio.getState().notify(messageOf(error)));
+        return;
+      }
+      setDialog({
+        kind: "confirm",
+        title: "Close Joinery?",
+        description:
+          "Pending edits will be discarded and running queries will be cancelled. Completed writes are not undone.",
+        action: closeSafely,
       });
     });
     return () => {
@@ -285,6 +295,14 @@ export function App() {
       });
     else action();
   }
+  function closeWorkspace(id: string) {
+    useStudio.getState().closeTab(id);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>('.workspace-tabs [role="tab"][aria-selected="true"]')
+        ?.focus(),
+    );
+  }
   function disconnectProfile(profile: ConnectionProfile) {
     const action = async () => {
       const session = useStudio.getState().sessions[profile.id];
@@ -322,7 +340,7 @@ export function App() {
         useStudio.getState().openQuery();
       } else if (key === "w" && active) {
         event.preventDefault();
-        confirmDiscard(active, () => useStudio.getState().closeTab(active.id));
+        confirmDiscard(active, () => closeWorkspace(active.id));
       } else if (key === "b") {
         event.preventDefault();
         useStudio.setState((state) => ({ sidebarVisible: !state.sidebarVisible }));
@@ -392,6 +410,7 @@ export function App() {
             <button
               className="icon-button"
               aria-label="Toggle sidebar"
+              aria-expanded={state.sidebarVisible}
               onClick={() => useStudio.setState({ sidebarVisible: !state.sidebarVisible })}
             >
               {state.sidebarVisible ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
@@ -417,6 +436,7 @@ export function App() {
             <button
               className={`icon-button ${state.inspectorVisible ? "active" : ""}`}
               aria-label="Toggle inspector"
+              aria-expanded={state.inspectorVisible}
               onClick={() => useStudio.setState({ inspectorVisible: !state.inspectorVisible })}
             >
               <PanelRight size={16} />
@@ -434,7 +454,7 @@ export function App() {
               <button
                 role="tab"
                 id={`workspace-tab-${tab.id}`}
-                aria-controls={`workspace-panel-${tab.id}`}
+                aria-controls="workspace-panel"
                 aria-selected={tab.id === current?.id}
                 tabIndex={tab.id === current?.id ? 0 : -1}
                 onClick={() => {
@@ -462,7 +482,7 @@ export function App() {
               <button
                 className="tab-close"
                 aria-label={`Close ${tab.title}`}
-                onClick={() => confirmDiscard(tab, () => state.closeTab(tab.id))}
+                onClick={() => confirmDiscard(tab, () => closeWorkspace(tab.id))}
               >
                 <X size={12} />
               </button>
@@ -480,7 +500,7 @@ export function App() {
         <div className="workspace-body">
           <section
             className="workspace-content"
-            id={current ? `workspace-panel-${current.id}` : undefined}
+            id={current ? "workspace-panel" : undefined}
             role={current ? "tabpanel" : undefined}
             aria-labelledby={current ? `workspace-tab-${current.id}` : undefined}
           >

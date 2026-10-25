@@ -4,6 +4,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "app_info",
             "bootstrap",
+            "save_workspace",
             "metadata_backups",
             "create_metadata_backup",
             "restore_metadata_backup",

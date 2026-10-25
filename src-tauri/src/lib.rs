@@ -66,6 +66,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             commands::bootstrap,
+            commands::save_workspace,
             commands::metadata_backups,
             commands::create_metadata_backup,
             commands::restore_metadata_backup,

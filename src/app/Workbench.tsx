@@ -357,6 +357,7 @@ export function Workbench({
           <div className="result-tabs">
             <button
               className={tab.view === "data" ? "active" : ""}
+              aria-pressed={tab.view === "data"}
               onClick={() => state.updateTab(tab.id, { view: "data" })}
             >
               <Table2 size={12} />
@@ -364,6 +365,7 @@ export function Workbench({
             </button>
             <button
               className={tab.view === "structure" ? "active" : ""}
+              aria-pressed={tab.view === "structure"}
               onClick={() => state.updateTab(tab.id, { view: "structure" })}
             >
               <Code2 size={12} />

@@ -31,7 +31,19 @@ reopening retains the complete pre-restore metadata and the undo snapshot. Other
 platforms have not been exercised. The UI needs a store that can open;
 incompatible-startup recovery still requires a compatible app and manual copy.
 
-Local baseline validation, including strict Clippy, passes. All twelve browser
+Query draft recovery is separately opt-in per profile and defaults off when
+opening older profiles. The backend filters every save against current policy;
+disabling draft storage or deleting a profile removes its current saved text in
+the same transaction. Results, sessions, edits and execution state cannot enter
+the typed workspace snapshot. Bounds are 32 drafts, 1 MiB each and 2 MiB total.
+Saves are serialized and native close/quit flushes the 400 ms debounce. Startup
+merges recovered drafts with any tabs opened during bootstrap. Recovery never
+reconnects or executes. Theme, layout and grid density persist too. Three Rust
+tests, two serialized-writer tests, a startup-race regression and a real browser
+restart/opt-out flow pass. Keyboard cell navigation updates the announced
+inspector, tab closure restores focus, and mode buttons expose their selection.
+
+Local baseline validation, including strict Clippy, passes. All thirteen browser
 workflows pass against disposable databases or synthetic Snowflake responses.
 The existing runtime-memory work remains separately unstaged. These changes
 are local implementation and verification, not a merged or published release.

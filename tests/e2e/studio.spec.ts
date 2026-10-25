@@ -26,6 +26,11 @@ test("workspace tabs and editor size are keyboard accessible", async ({ page }) 
   await expect(page.getByRole("tablist", { name: "Workspaces" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(second).toBeVisible();
+  const closeSecond = page.getByRole("button", { name: "Close Query 2", exact: true });
+  await closeSecond.focus();
+  await closeSecond.press("Enter");
+  await expect(first).toBeFocused();
+  await expect(first).toHaveAttribute("aria-controls", "workspace-panel");
 });
 
 async function connect(page: Page, name: string, safeMode = "silent") {
@@ -117,6 +122,19 @@ test("connects and runs SQL with separate binary-backed result tabs", async ({ p
   await expect(page.locator(".result-footer")).toContainText("1 rows");
   await expect(page.locator(".query-error")).toHaveCount(0);
   await expect(page.locator("canvas").first()).toBeVisible();
+  await resultTabs.first().click();
+  if (!(await page.locator(".inspector").isVisible()))
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+  const box = (await page.locator(".grid-host").boundingBox())!;
+  await expect(async () => {
+    await page.mouse.click(box.x + 90, box.y + 55);
+    await expect(page.locator(".inspector-value")).toContainText("9223372036854775807", {
+      timeout: 500,
+    });
+  }).toPass();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator(".inspector h3")).toHaveText("absent");
+  await expect(page.locator(".inspector-value")).toHaveText("NULL");
   expect(errors).toEqual([]);
   await page.screenshot({ path: ".cache/screenshots/sql-studio.png", fullPage: true });
 });
@@ -152,7 +170,8 @@ test("reviews an inline change and reads the committed value back", async ({ pag
     .fill("SELECT status FROM public.orders WHERE id=1;");
   await page.getByRole("button", { name: "Run all statements", exact: true }).click();
   await expect(page.locator(".result-footer")).toContainText("1 rows");
-  await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+  if (!(await page.locator(".inspector").isVisible()))
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
   const resultBox = (await page.locator(".grid-host").boundingBox())!;
   await expect(async () => {
     await page.mouse.click(resultBox.x + 100, resultBox.y + 55);

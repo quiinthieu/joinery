@@ -18,6 +18,7 @@ fn profile() -> ConnectionProfile {
         ssh: None,
         remember_password: false,
         store_query_text: false,
+        store_drafts: false,
         snowflake: Some(SnowflakeConfig {
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),

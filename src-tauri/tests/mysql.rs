@@ -20,6 +20,7 @@ fn profile(port: u16, mode: SafeMode) -> ConnectionProfile {
         ssh: None,
         remember_password: false,
         store_query_text: false,
+        store_drafts: false,
         snowflake: None,
     }
 }
