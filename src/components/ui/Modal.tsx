@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 
 export function Modal({
@@ -18,10 +18,27 @@ export function Modal({
 }) {
   const box = useRef<HTMLDivElement>(null),
     latest = useRef({ onClose, busy });
+  const descriptionId = useId();
   // Capture before child autoFocus runs during commit, rather than in an effect.
   const [previous] = useState(() => document.activeElement as HTMLElement | null);
   latest.current = { onClose, busy };
   useEffect(() => {
+    const hidden: { element: Element; inert: boolean; ariaHidden: string | null }[] = [];
+    // Hide siblings at each ancestor level, including dialogs nested inside a workspace.
+    let branch: Element | null = box.current?.parentElement ?? null;
+    while (branch && branch !== document.body) {
+      for (const element of branch.parentElement?.children ?? []) {
+        if (element === branch || element.matches("script,style,link")) continue;
+        hidden.push({
+          element,
+          inert: element.hasAttribute("inert"),
+          ariaHidden: element.getAttribute("aria-hidden"),
+        });
+        element.setAttribute("inert", "");
+        element.setAttribute("aria-hidden", "true");
+      }
+      branch = branch.parentElement;
+    }
     const fields = () =>
       [
         ...(box.current?.querySelectorAll<HTMLElement>(
@@ -71,6 +88,11 @@ export function Modal({
     return () => {
       clearTimeout(timer);
       document.removeEventListener("keydown", onKey, true);
+      for (const { element, inert, ariaHidden } of hidden) {
+        if (!inert) element.removeAttribute("inert");
+        if (ariaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", ariaHidden);
+      }
       if (previous?.isConnected) previous.focus();
     };
   }, [previous]);
@@ -87,12 +109,13 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        aria-describedby={subtitle ? descriptionId : undefined}
         tabIndex={-1}
       >
         <header className="modal-header">
           <div>
             <h2>{title}</h2>
-            {subtitle && <p>{subtitle}</p>}
+            {subtitle && <p id={descriptionId}>{subtitle}</p>}
           </div>
           <button
             className="icon-button"

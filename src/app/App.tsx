@@ -26,6 +26,7 @@ import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
+import { tabNavigation } from "../components/ui/tabs";
 import { client, messageOf } from "../ipc/client";
 import type {
   ChangePreview,
@@ -422,12 +423,20 @@ export function App() {
             </button>
           </div>
         </header>
-        <div className="workspace-tabs" role="tablist" aria-label="Workspaces">
+        <div
+          className="workspace-tabs"
+          role="tablist"
+          aria-label="Workspaces"
+          onKeyDown={tabNavigation}
+        >
           {state.tabs.map((tab) => (
             <div className={`workspace-tab ${tab.id === current?.id ? "active" : ""}`} key={tab.id}>
               <button
                 role="tab"
+                id={`workspace-tab-${tab.id}`}
+                aria-controls={`workspace-panel-${tab.id}`}
                 aria-selected={tab.id === current?.id}
+                tabIndex={tab.id === current?.id ? 0 : -1}
                 onClick={() => {
                   useStudio.setState({ activeTabId: tab.id });
                   setSelectedCell(null);
@@ -469,7 +478,12 @@ export function App() {
           </button>
         </div>
         <div className="workspace-body">
-          <section className="workspace-content">
+          <section
+            className="workspace-content"
+            id={current ? `workspace-panel-${current.id}` : undefined}
+            role={current ? "tabpanel" : undefined}
+            aria-labelledby={current ? `workspace-tab-${current.id}` : undefined}
+          >
             {!current ? (
               <Welcome
                 onConnect={() => setDialog({ kind: "connection" })}
@@ -497,7 +511,12 @@ export function App() {
             )}
           </section>
           {state.inspectorVisible && (
-            <aside className="inspector">
+            <aside
+              className="inspector"
+              aria-label="Selected cell inspector"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               <div className="inspector-title">
                 INSPECTOR
                 <button

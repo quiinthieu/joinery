@@ -1,5 +1,33 @@
 import { test, expect, type Page } from "@playwright/test";
 
+test("workspace tabs and editor size are keyboard accessible", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "New query tab" }).click();
+  await page.getByRole("button", { name: "New query tab" }).click();
+  const tabs = page.getByRole("tablist", { name: "Workspaces" });
+  const first = tabs.getByRole("tab", { name: "Query 1", exact: true });
+  const second = tabs.getByRole("tab", { name: "Query 2", exact: true });
+  await second.focus();
+  await second.press("ArrowRight");
+  await expect(first).toBeFocused();
+  await expect(first).toHaveAttribute("aria-selected", "true");
+  await expect(second).toHaveAttribute("tabindex", "-1");
+  await first.press("End");
+  await expect(second).toBeFocused();
+  const panel = page.getByRole("tabpanel", { name: "Query 2", exact: true });
+  const divider = panel.getByRole("separator", { name: "Resize SQL editor" });
+  await divider.focus();
+  await divider.press("ArrowDown");
+  await expect(divider).toHaveAttribute("aria-valuenow", "310");
+  await divider.press("Home");
+  await expect(divider).toHaveAttribute("aria-valuenow", "140");
+  await page.getByRole("button", { name: "Jump to anything" }).click();
+  await expect(page.locator(".main-shell")).toHaveAttribute("inert", "");
+  await expect(page.getByRole("tablist", { name: "Workspaces" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(second).toBeVisible();
+});
+
 async function connect(page: Page, name: string, safeMode = "silent") {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
@@ -78,7 +106,14 @@ test("connects and runs SQL with separate binary-backed result tabs", async ({ p
     "SELECT 9223372036854775807::bigint AS exact_integer, NULL::text AS absent; SELECT 'hello; world' AS message;",
   );
   await page.getByRole("button", { name: "Run all statements", exact: true }).click();
-  await expect(page.locator(".result-tabs").getByRole("button")).toHaveCount(2);
+  await expect(page.getByRole("tablist", { name: "Query results" }).getByRole("tab")).toHaveCount(
+    2,
+  );
+  const resultTabs = page.getByRole("tablist", { name: "Query results" }).getByRole("tab");
+  await resultTabs.first().focus();
+  await resultTabs.first().press("ArrowLeft");
+  await expect(resultTabs.last()).toBeFocused();
+  await expect(resultTabs.last()).toHaveAttribute("aria-selected", "true");
   await expect(page.locator(".result-footer")).toContainText("1 rows");
   await expect(page.locator(".query-error")).toHaveCount(0);
   await expect(page.locator("canvas").first()).toBeVisible();

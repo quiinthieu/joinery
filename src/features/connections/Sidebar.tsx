@@ -93,7 +93,7 @@ export function Sidebar({
       return next;
     });
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" aria-label="Connections and database explorer">
       <div className="sidebar-brand">
         <img src="/joinery.svg" width={25} height={25} alt="" />
         <span>
@@ -146,6 +146,9 @@ export function Sidebar({
                       >
                         <button
                           className="connection-select"
+                          aria-current={
+                            state.selectedConnectionId === profile.id ? "true" : undefined
+                          }
                           title={`${profile.username}@${profile.host}/${profile.database}`}
                           onClick={() => {
                             state.selectConnection(profile.id);
@@ -229,6 +232,7 @@ export function Sidebar({
             <div className="schema-group" key={name}>
               <button
                 className="schema-heading"
+                aria-expanded={Boolean(schemas.has(name) || search)}
                 onClick={() =>
                   setSchemas((old) => {
                     const next = new Set(old);

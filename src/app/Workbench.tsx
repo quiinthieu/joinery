@@ -25,6 +25,7 @@ import type { EditorHandle } from "../features/studio/SqlEditor";
 import { StructureView } from "../features/studio/UtilityViews";
 import { RedisTools } from "../features/redis/RedisTools";
 import { resultCache } from "../data/result-cache";
+import { tabNavigation } from "../components/ui/tabs";
 
 const SqlEditor = lazy(() =>
   import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
@@ -278,6 +279,27 @@ export function Workbench({
             role="separator"
             aria-label="Resize SQL editor"
             aria-orientation="horizontal"
+            tabIndex={0}
+            aria-valuemin={140}
+            aria-valuemax={Math.max(140, window.innerHeight - 350)}
+            aria-valuenow={editorSize}
+            onKeyDown={(event) => {
+              const max = Math.max(140, window.innerHeight - 350);
+              const next =
+                event.key === "ArrowUp"
+                  ? editorSize - 20
+                  : event.key === "ArrowDown"
+                    ? editorSize + 20
+                    : event.key === "Home"
+                      ? 140
+                      : event.key === "End"
+                        ? max
+                        : null;
+              if (next === null) return;
+              event.preventDefault();
+              editorHeight.current = Math.min(max, Math.max(140, next));
+              setEditorSize(editorHeight.current);
+            }}
             onPointerDown={resizeEditor}
           >
             <span />
@@ -286,10 +308,20 @@ export function Workbench({
       )}
       {tab.kind === "query" ? (
         <div className="results-header">
-          <div className="result-tabs">
+          <div
+            className="result-tabs"
+            role="tablist"
+            aria-label="Query results"
+            onKeyDown={tabNavigation}
+          >
             {tab.results.length ? (
               tab.results.map((result, i) => (
                 <button
+                  role="tab"
+                  id={`result-tab-${result.id}`}
+                  aria-controls={`result-panel-${tab.id}`}
+                  aria-selected={result.id === (tab.activeResultId ?? tab.results[0]?.id)}
+                  tabIndex={result.id === (tab.activeResultId ?? tab.results[0]?.id) ? 0 : -1}
                   className={result.id === tab.activeResultId ? "active" : ""}
                   key={result.id}
                   onClick={() => state.updateTab(tab.id, { activeResultId: result.id })}
@@ -370,33 +402,40 @@ export function Workbench({
           </button>
         </div>
       )}
-      {tab.kind === "table" && tab.view === "structure" ? (
-        <StructureView schema={tab.schema} />
-      ) : tab.kind === "query" && !result ? (
-        <div className="results-empty">
-          <Table2 size={27} />
-          <h3>{running ? "Your query is running" : "A fresh perspective awaits"}</h3>
-          <p>
-            {running
-              ? "Results will appear as they arrive."
-              : "Run a query to explore its results here."}
-          </p>
-          <span>
-            <kbd>⌘ ↵</kbd>Run current query
-          </span>
-        </div>
-      ) : (
-        <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}>
-          <DatabaseGrid
-            key={tab.id}
-            tab={tab}
-            result={result}
-            theme={state.theme}
-            onSelect={onSelect}
-            onOpenValue={onOpenValue}
-          />
-        </Suspense>
-      )}
+      <div
+        className="result-panel"
+        role={tab.kind === "query" && result ? "tabpanel" : undefined}
+        id={`result-panel-${tab.id}`}
+        aria-labelledby={tab.kind === "query" && result ? `result-tab-${result.id}` : undefined}
+      >
+        {tab.kind === "table" && tab.view === "structure" ? (
+          <StructureView schema={tab.schema} />
+        ) : tab.kind === "query" && !result ? (
+          <div className="results-empty">
+            <Table2 size={27} />
+            <h3>{running ? "Your query is running" : "A fresh perspective awaits"}</h3>
+            <p>
+              {running
+                ? "Results will appear as they arrive."
+                : "Run a query to explore its results here."}
+            </p>
+            <span>
+              <kbd>⌘ ↵</kbd>Run current query
+            </span>
+          </div>
+        ) : (
+          <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}>
+            <DatabaseGrid
+              key={tab.id}
+              tab={tab}
+              result={result}
+              theme={state.theme}
+              onSelect={onSelect}
+              onOpenValue={onOpenValue}
+            />
+          </Suspense>
+        )}
+      </div>
       <div className="result-footer">
         <div>
           {tab.kind === "benchmark" ? (
