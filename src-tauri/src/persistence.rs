@@ -1,10 +1,14 @@
 use crate::domain::*;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+mod recovery;
+mod workspace;
 
 pub struct Persistence {
     connection: Mutex<Connection>,
+    root: PathBuf,
 }
 
 impl Persistence {
@@ -36,6 +40,8 @@ impl Persistence {
             .map_err(db_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            root: std::fs::canonicalize(root)
+                .map_err(|_| AppError::internal("Could not resolve application data directory"))?,
         })
     }
 
@@ -71,16 +77,22 @@ impl Persistence {
     pub fn save_profile(&self, profile: &ConnectionProfile) -> AppResult<()> {
         let json = serde_json::to_string(profile)
             .map_err(|_| AppError::internal("Could not encode profile"))?;
-        self.connection.lock().execute("INSERT INTO profiles(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
-        Ok(())
+        let mut connection = self.connection.lock();
+        let tx = connection.transaction().map_err(db_error)?;
+        tx.execute("INSERT INTO profiles(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
+        if !profile.store_drafts {
+            workspace::purge_drafts(&tx, &profile.id)?;
+        }
+        tx.commit().map_err(db_error)
     }
 
     pub fn delete_profile(&self, id: &str) -> AppResult<()> {
-        self.connection
-            .lock()
-            .execute("DELETE FROM profiles WHERE id=?1", [id])
+        let mut connection = self.connection.lock();
+        let tx = connection.transaction().map_err(db_error)?;
+        tx.execute("DELETE FROM profiles WHERE id=?1", [id])
             .map_err(db_error)?;
-        Ok(())
+        workspace::purge_drafts(&tx, id)?;
+        tx.commit().map_err(db_error)
     }
 
     pub fn save_group(&self, group: &ConnectionGroup) -> AppResult<()> {

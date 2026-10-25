@@ -4,6 +4,7 @@ import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
 import { useStudio } from "../../state/studio";
 import { GroupManager } from "../connections/GroupManager";
+import { MetadataRecovery } from "./MetadataRecovery";
 
 export function Preferences({ onClose }: { onClose(): void }) {
   const state = useStudio(),
@@ -42,6 +43,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
             <button
               key={id}
               className={`theme-option ${state.theme === id ? "selected" : ""}`}
+              aria-pressed={state.theme === id}
               onClick={() => state.setTheme(id)}
             >
               <Icon size={19} />
@@ -50,6 +52,19 @@ export function Preferences({ onClose }: { onClose(): void }) {
             </button>
           ))}
         </div>
+        <label>
+          Display density
+          <select
+            aria-label="Display density"
+            value={state.density}
+            onChange={(event) =>
+              useStudio.setState({ density: event.target.value as "comfortable" | "compact" })
+            }
+          >
+            <option value="comfortable">Comfortable</option>
+            <option value="compact">Compact</option>
+          </select>
+        </label>
         <div className="preference-divider" />
         <h3>
           <LockKeyhole size={15} />
@@ -99,6 +114,8 @@ export function Preferences({ onClose }: { onClose(): void }) {
           Result rows stay in memory. Passwords use your system credential store. Query text is
           saved only when enabled for a connection.
         </p>
+        <div className="preference-divider" />
+        <MetadataRecovery onBusy={setBusy} />
       </div>
       <footer className="modal-footer">
         <button className="button ghost" onClick={onClose} disabled={busy}>

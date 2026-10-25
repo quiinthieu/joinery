@@ -634,6 +634,22 @@ validation tooling with performance qualification tracked separately. No new pro
 by the earlier identity and SELECT 1 canary approval; use explicit approved tables
 for live qualification.
 
+The current local P7 continuation adds keyboard workspace/result navigation,
+keyboard editor resizing, modal background isolation and reduced-motion support,
+plus bounded metadata backup/restore/undo controls. Snapshots preserve OS
+credentials/passphrase state and never restore sessions or execute statements.
+Exact shipping states are tracked on the project Site. Real assistive-technology,
+historical migrations and packaged-platform qualification
+remain open alongside the external performance/signing/account gates.
+
+Open query drafts now recover only for explicitly opted-in profiles; older and
+new profiles default off. Backend policy checks and transactional revocation
+prevent stale saves from retaining text after opt-out. Bounded draft snapshots
+and preferences are saved in SQLite, with serialized writes and native shutdown
+flushes. Recovered tabs contain no results or sessions and never execute or
+reconnect. This closes the local draft/settings recovery implementation; broad
+historical migration and external platform/signing/performance gates stay open.
+
 # Suggested dependency baseline
 
 Commit lockfiles and pin the Rust toolchain and Node version. Use Node 24 LTS for development.

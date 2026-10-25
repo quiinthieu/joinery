@@ -73,6 +73,11 @@ those platforms. Release packaging remains local; CI builds frontend assets and
 checks native compilation without uploading installers. Existing GitHub release
 downloads remain available.
 
+The macOS bundle command also verifies the assembled app's signature. It seals
+resources for an ad-hoc local bundle when the linker signature is insufficient;
+it preserves real signing identities and fails if their signatures are invalid.
+This does not provide Developer ID signing or notarization.
+
 Database/SSH/browser integration and hidden native checks are separate local
 steps below. Rust integration tests marked ignored do not run in `pnpm validate`.
 
@@ -159,6 +164,17 @@ SSH host trust is local to Joinery. A changed key is blocked; the app does not s
 
 Safe Mode provides operational safeguards. Database roles remain the access-control boundary; use a read-only role for production browsing.
 
+Connection settings separately offer **Restore open query drafts after restart**,
+off by default for every environment. Only query text, tab titles and connection
+IDs for opted-in profiles are saved; sessions, results and grid edits are never
+restored. Disabling the option or deleting a profile purges its current saved
+drafts. Historical backups retain their snapshot contents until explicitly
+deleted. SQL text may contain sensitive literals. Draft storage is limited to
+32 tabs, 1 MiB per draft and 2 MiB total. Writes debounce for 400 ms and native
+close/quit flushes pending saves; an abrupt process loss can lose the latest
+debounce interval. Draft recovery never reconnects or executes queries. Theme,
+density and layout preferences are also stored in local metadata.
+
 ## Hidden native validation
 
 ```sh
@@ -185,7 +201,21 @@ Local metadata startup validates its schema version and required table/key
 constraints before accepting the store. Newer or incompatible stores fail with
 actionable errors and retain their data. Legacy initialization, schema version
 and default environment groups commit in one transaction; reopening preserves
-custom group names and existing metadata. There is no automatic reset. Keep a
-compatible app and a consistent backup of app data for manual recovery; a full
-restore UI and process-crash/upgrade qualification remain pending. Exact shipped
+custom group names and existing metadata. There is no automatic reset.
+
+Preferences → Backup and recovery creates consistent local metadata snapshots
+even while the store uses WAL. Restore requires all connections disconnected and
+all workspace tabs closed, explicit confirmation, and the current write
+passphrase when configured. Joinery checks snapshot integrity, version, schema,
+records and digest before replacement and creates an undo snapshot first.
+Current OS credentials and the write passphrase are retained; no queries run or
+connections reopen automatically. Snapshots include profiles, groups, settings,
+SSH trust, permitted query history and opted-in drafts, and exclude credentials and result rows.
+They stay under `backups/` in application data (20 snapshots, 64 MiB each).
+Delete old snapshots explicitly to leave room for an undo copy. Copy closed
+snapshots to separate storage for disk-loss recovery. This UI requires an
+openable metadata store; if startup rejects the store, keep it and use a
+compatible app with a consistent backup for manual recovery. Broader historical
+migrations and packaged-platform qualification remain pending. A forced-process
+test covers interruption during restore on this host. Exact shipped
 versions are tracked on the Site.

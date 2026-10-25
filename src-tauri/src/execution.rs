@@ -31,6 +31,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+mod recovery_tests;
+
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 
 struct Session {
@@ -120,7 +123,60 @@ impl Studio {
             ],
             result_budget_bytes: RESULT_BUDGET,
             row_limit: ROW_LIMIT,
+            workspace: self.persistence.workspace()?,
         })
+    }
+
+    pub fn metadata_backups(&self) -> AppResult<Vec<MetadataBackup>> {
+        self.persistence.metadata_backups()
+    }
+
+    pub fn save_workspace(&self, workspace: SavedWorkspace) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_workspace(workspace)
+    }
+
+    pub fn create_metadata_backup(&self) -> AppResult<MetadataBackup> {
+        self.persistence.create_metadata_backup()
+    }
+
+    pub fn delete_metadata_backup(&self, id: &str, digest: &str) -> AppResult<()> {
+        self.persistence.delete_metadata_backup(id, digest)
+    }
+
+    pub fn restore_metadata_backup(
+        &self,
+        id: &str,
+        digest: &str,
+        confirmation: &str,
+        passphrase: Option<&str>,
+    ) -> AppResult<MetadataBackup> {
+        if confirmation != "RESTORE" {
+            return Err(AppError::invalid("Type RESTORE to replace local metadata"));
+        }
+        let _connections = self.connect_gate.try_lock().map_err(|_| {
+            AppError::invalid("Wait for connection setup to finish before restoring")
+        })?;
+        let _configuration = self.configuration_gate.lock();
+        if !self.sessions.lock().is_empty()
+            || !self.jobs.lock().is_empty()
+            || self.results.usage().1 > 0
+        {
+            return Err(AppError::invalid(
+                "Disconnect every connection and close all result tabs before restoring metadata",
+            ));
+        }
+        if self
+            .persistence
+            .setting("passphrase-configured")?
+            .as_deref()
+            == Some("true")
+        {
+            self.verify_passphrase(passphrase)?;
+        }
+        let undo = self.persistence.restore_metadata_backup(id, digest)?;
+        self.plans.lock().clear();
+        Ok(undo)
     }
 
     pub fn save_profile(
@@ -508,6 +564,7 @@ impl Studio {
     }
 
     pub fn set_passphrase(&self, passphrase: &str, previous: Option<&str>) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
         if self
             .persistence
             .setting("passphrase-configured")?

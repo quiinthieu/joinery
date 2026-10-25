@@ -57,6 +57,7 @@ interface StudioState {
   tabs: StudioTab[];
   activeTabId: string | null;
   theme: "dark" | "light" | "contrast";
+  density: "comfortable" | "compact";
   sidebarVisible: boolean;
   inspectorVisible: boolean;
   toast: string | null;
@@ -137,12 +138,49 @@ export const useStudio = create<StudioState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
+  density: "comfortable",
   sidebarVisible: true,
   inspectorVisible: false,
   toast: null,
   async initialize() {
     try {
-      set({ bootstrap: await client.call<Bootstrap>("bootstrap"), error: null });
+      const bootstrap = await client.call<Bootstrap>("bootstrap");
+      const workspace = !get().bootstrap ? bootstrap.workspace : null;
+      const restored =
+        workspace?.drafts
+          .filter((draft) =>
+            bootstrap.profiles.some(
+              (profile) => profile.id === draft.connectionId && profile.storeDrafts,
+            ),
+          )
+          .map((draft) => ({
+            ...tab("query", draft.title, draft.connectionId),
+            id: draft.id,
+            sql: draft.sql,
+          })) ?? [];
+      const existing = get().tabs;
+      const tabs = [
+        ...restored.filter((draft) => !existing.some((tab) => tab.id === draft.id)),
+        ...existing,
+      ];
+      set({
+        bootstrap,
+        error: null,
+        ...(workspace
+          ? {
+              theme: workspace.theme as StudioState["theme"],
+              density: workspace.density as StudioState["density"],
+              sidebarVisible: workspace.sidebarVisible,
+              inspectorVisible: workspace.inspectorVisible,
+              tabs,
+              activeTabId:
+                get().activeTabId ??
+                restored.find((draft) => draft.id === workspace.activeDraftId)?.id ??
+                restored[0]?.id ??
+                null,
+            }
+          : {}),
+      });
     } catch (error) {
       set({ error: messageOf(error) });
     }

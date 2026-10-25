@@ -58,10 +58,18 @@ export function HistoryView() {
         </div>
       </header>
       <div className="history-switch">
-        <button className={!audit ? "selected" : ""} onClick={() => setAudit(false)}>
+        <button
+          className={!audit ? "selected" : ""}
+          aria-pressed={!audit}
+          onClick={() => setAudit(false)}
+        >
           Executions
         </button>
-        <button className={audit ? "selected" : ""} onClick={() => setAudit(true)}>
+        <button
+          className={audit ? "selected" : ""}
+          aria-pressed={audit}
+          onClick={() => setAudit(true)}
+        >
           Audit log
         </button>
       </div>

@@ -46,6 +46,7 @@ async fn unavailable_store_fails_before_dialing_and_preserves_saved_configuratio
                 ssh: None,
                 remember_password: true,
                 store_query_text: false,
+                store_drafts: false,
                 snowflake: None,
             },
             None,

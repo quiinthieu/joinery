@@ -50,6 +50,13 @@ async fn rpc(
         let studio = &state.studio;
         Ok(match command.as_str() {
             "bootstrap" => json!(studio.bootstrap()?),
+            "save_workspace" => json!(studio.save_workspace(arg(&args, "workspace")?)?),
+            // Test-only isolation for recovery flows; never enrolled in desktop IPC.
+            "disconnect_fixtures" => { studio.shutdown(); Value::Null },
+            "metadata_backups" => json!(studio.metadata_backups()?),
+            "create_metadata_backup" => json!(studio.create_metadata_backup()?),
+            "delete_metadata_backup" => json!(studio.delete_metadata_backup(&arg::<String>(&args, "id")?, &arg::<String>(&args, "digest")?)?),
+            "restore_metadata_backup" => json!(studio.restore_metadata_backup(&arg::<String>(&args, "id")?, &arg::<String>(&args, "digest")?, &arg::<String>(&args, "confirmation")?, arg::<Option<String>>(&args, "passphrase")?.as_deref())?),
             "save_group" => json!(studio.save_group(arg(&args, "group")?)?),
             "delete_group" => {
                 studio.delete_group(&arg::<String>(&args, "id")?)?;
