@@ -29,6 +29,13 @@ database and rejects inventories beyond 10,000 objects. Editing stays disabled.
 The live canary covered browser SSO, context verification and `SELECT 1`;
 catalog/table tests use synthetic fixtures and live table qualification is open.
 
+Snowflake refreshes expiring OAuth credentials under a shared lock and retains
+rotated refresh tokens in memory. Expired or revoked sign-ins retire the session
+and require reconnecting; statements are never replayed automatically. Cancelled
+sessions also require reconnecting. Disconnect interrupts local HTTP work;
+already submitted remote reads may continue until Snowflake's statement timeout
+if the connection closes before a statement handle can be cancelled.
+
 ## Development
 
 Install Node 24, pnpm 11, the pinned Rust toolchain, and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).

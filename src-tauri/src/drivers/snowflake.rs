@@ -5,13 +5,11 @@ use parking_lot::Mutex;
 use reqwest::{Client, Method, StatusCode};
 use serde_json::{Value, json};
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -23,6 +21,8 @@ const MAX_PARTITIONS: usize = 64;
 mod catalog;
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 
 struct AuthState {
     tokens: Tokens,
@@ -40,8 +40,9 @@ pub struct Snowflake {
     auth: AsyncMutex<AuthState>,
     metadata_lane: AsyncMutex<()>,
     active_handle: Mutex<Option<String>>,
-    cancel_requested: AtomicBool,
-    closed: AtomicBool,
+    // Cancellation retires the Studio session, so neither signal is reset.
+    cancel_requested: CancellationToken,
+    closed: CancellationToken,
 }
 
 fn account_url(host: &str) -> AppResult<Url> {
@@ -136,8 +137,8 @@ impl Snowflake {
             auth: AsyncMutex::new(AuthState { tokens, expires_at }),
             metadata_lane: AsyncMutex::new(()),
             active_handle: Mutex::new(None),
-            cancel_requested: AtomicBool::new(false),
-            closed: AtomicBool::new(false),
+            cancel_requested: CancellationToken::new(),
+            closed: CancellationToken::new(),
         });
         let identity = driver.query_rows("SELECT CURRENT_VERSION(), CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE()", 1).await?;
         let row = identity.first().ok_or_else(|| {
@@ -179,14 +180,23 @@ impl Snowflake {
 
     async fn access_token(&self) -> AppResult<Zeroizing<String>> {
         let mut auth = self.auth.lock().await;
-        if auth.expires_at <= Instant::now() + Duration::from_secs(30) {
-            let refresh = auth.tokens.refresh.as_ref().ok_or_else(|| {
-                AppError::new(
-                    ErrorCode::ConnectionClosed,
-                    "Snowflake sign-in expired. Reconnect to sign in again.",
-                )
-            })?;
-            let mut next = snowflake_auth::refresh(&self.client, &self.base, refresh).await?;
+        let margin = Duration::from_secs((auth.tokens.expires_in / 10).min(30));
+        if auth.expires_at <= Instant::now() + margin {
+            let Some(refresh) = auth.tokens.refresh.as_ref() else {
+                if auth.expires_at > Instant::now() {
+                    return Ok(Zeroizing::new(auth.tokens.access.to_string()));
+                }
+                self.close();
+                return Err(Self::sign_in_expired());
+            };
+            let mut next = match snowflake_auth::refresh(&self.client, &self.base, refresh).await {
+                Ok(next) => next,
+                Err(error) if error.code == ErrorCode::PermissionDenied => {
+                    self.close();
+                    return Err(Self::sign_in_expired());
+                }
+                Err(error) => return Err(error),
+            };
             if next.refresh.is_none() {
                 next.refresh = auth.tokens.refresh.take();
             }
@@ -203,17 +213,57 @@ impl Snowflake {
         path: &str,
         body: Option<Value>,
     ) -> AppResult<(StatusCode, Value)> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(AppError::new(
-                ErrorCode::ConnectionClosed,
-                "Snowflake session closed",
-            ));
+        self.request_scoped(method, path, body, false).await
+    }
+
+    async fn request_scoped(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        query_submission: bool,
+    ) -> AppResult<(StatusCode, Value)> {
+        tokio::select! {
+            biased;
+            _ = self.closed.cancelled() => Err(Self::sign_in_expired()),
+            result = self.request_inner(method, path, body, query_submission) => result,
         }
+    }
+
+    fn sign_in_expired() -> AppError {
+        AppError::new(
+            ErrorCode::ConnectionClosed,
+            "Snowflake session closed or sign-in expired. Reconnect to sign in again.",
+        )
+    }
+
+    fn cancelled() -> AppError {
+        AppError::new(ErrorCode::Cancelled, "Snowflake query cancelled")
+    }
+
+    async fn query_request(&self, path: &str, track_query: bool) -> AppResult<(StatusCode, Value)> {
+        tokio::select! {
+            biased;
+            _ = self.cancel_requested.cancelled(), if track_query => Err(Self::cancelled()),
+            result = self.request(Method::GET, path, None) => result,
+        }
+    }
+
+    async fn request_inner(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        query_submission: bool,
+    ) -> AppResult<(StatusCode, Value)> {
         let url = self
             .base
             .join(path)
             .map_err(|_| AppError::internal("Invalid Snowflake request path"))?;
         let token = self.access_token().await?;
+        if query_submission && self.cancel_requested.is_cancelled() {
+            return Err(Self::cancelled());
+        }
         let mut request = self
             .client
             .request(method, url)
@@ -229,6 +279,12 @@ impl Snowflake {
             .await
             .map_err(|_| AppError::new(ErrorCode::ConnectionFailed, "Snowflake request failed"))?;
         let status = response.status();
+        // Do not replay a submitted statement after an authentication failure.
+        // The server's error body can contain account or token details.
+        if status == StatusCode::UNAUTHORIZED {
+            self.close();
+            return Err(Self::sign_in_expired());
+        }
         if response
             .content_length()
             .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
@@ -273,11 +329,7 @@ impl Snowflake {
                 .filter(|message| !message.is_empty())
                 .unwrap_or_else(|| "Check account access, role, warehouse, and SQL.".into());
             return Err(AppError::new(
-                if status == StatusCode::UNAUTHORIZED {
-                    ErrorCode::PermissionDenied
-                } else {
-                    ErrorCode::Database
-                },
+                ErrorCode::Database,
                 format!("Snowflake rejected the request: {detail}"),
             ));
         }
@@ -289,7 +341,12 @@ impl Snowflake {
             "schema": self.schema, "warehouse": self.warehouse, "role": self.role,
             "parameters": {"QUERY_TAG": self.query_tag}});
         let (mut status, mut value) = self
-            .request(Method::POST, "api/v2/statements?async=true", Some(body))
+            .request_scoped(
+                Method::POST,
+                "api/v2/statements?async=true",
+                Some(body),
+                track_query,
+            )
             .await?;
         for _ in 0..120 {
             if let Some(handle) = value.get("statementHandle").and_then(Value::as_str) {
@@ -304,7 +361,7 @@ impl Snowflake {
                 if track_query {
                     *self.active_handle.lock() = Some(handle.clone());
                 }
-                if track_query && self.cancel_requested.load(Ordering::Acquire) {
+                if track_query && self.cancel_requested.is_cancelled() {
                     let _ = self
                         .request(
                             Method::POST,
@@ -312,18 +369,19 @@ impl Snowflake {
                             None,
                         )
                         .await;
-                    return Err(AppError::new(
-                        ErrorCode::Cancelled,
-                        "Snowflake query cancelled",
-                    ));
+                    return Err(Self::cancelled());
                 }
                 if status == StatusCode::ACCEPTED {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::select! {
+                        biased;
+                        _ = self.cancel_requested.cancelled(), if track_query => return Err(Self::cancelled()),
+                        _ = self.closed.cancelled() => return Err(Self::sign_in_expired()),
+                        _ = tokio::time::sleep(Duration::from_millis(500)) => (),
+                    }
                     (status, value) = self
-                        .request(
-                            Method::GET,
+                        .query_request(
                             &format!("api/v2/statements/{handle}?partition=0"),
-                            None,
+                            track_query,
                         )
                         .await?;
                     continue;
@@ -442,7 +500,9 @@ impl Driver for Snowflake {
                 "Snowflake connections currently run read-only queries only",
             ));
         }
-        self.cancel_requested.store(false, Ordering::Release);
+        if self.cancel_requested.is_cancelled() {
+            return Err(Self::cancelled());
+        }
         let outcome = async {
             let first = self.submit(sql, true).await?;
             let columns = columns(&first)?;
@@ -456,16 +516,18 @@ impl Driver for Snowflake {
                 sink.limit("Snowflake result has too many partitions");
             }
             for index in 0..partitions.min(MAX_PARTITIONS) {
+                if self.cancel_requested.is_cancelled() {
+                    return Err(Self::cancelled());
+                }
                 let value = if index == 0 {
                     first.clone()
                 } else {
                     let handle = self.active_handle.lock().clone().ok_or_else(|| {
                         AppError::new(ErrorCode::Database, "Missing Snowflake result handle")
                     })?;
-                    self.request(
-                        Method::GET,
+                    self.query_request(
                         &format!("api/v2/statements/{handle}?partition={index}"),
-                        None,
+                        true,
                     )
                     .await?
                     .1
@@ -485,19 +547,21 @@ impl Driver for Snowflake {
         }
         .await;
         *self.active_handle.lock() = None;
-        if self.cancel_requested.load(Ordering::Acquire) {
-            Err(AppError::new(
-                ErrorCode::Cancelled,
-                "Snowflake query cancelled",
-            ))
+        if self.cancel_requested.is_cancelled() {
+            Err(Self::cancelled())
         } else {
             outcome
         }
     }
 
     async fn cancel(&self) -> AppResult<()> {
-        self.cancel_requested.store(true, Ordering::Release);
-        let handle = self.active_handle.lock().clone();
+        // Hold the handle lock while signaling, so the executor cannot clear a
+        // known handle before this cancellation has captured its target.
+        let handle = {
+            let active = self.active_handle.lock();
+            self.cancel_requested.cancel();
+            active.clone()
+        };
         if let Some(handle) = handle {
             self.request(
                 Method::POST,
@@ -547,10 +611,10 @@ impl Driver for Snowflake {
         }
     }
     fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        self.closed.is_cancelled()
     }
     fn close(&self) {
-        self.closed.store(true, Ordering::Release);
+        self.closed.cancel();
     }
 }
 
@@ -662,8 +726,8 @@ mod tests {
             }),
             metadata_lane: AsyncMutex::new(()),
             active_handle: Mutex::new(None),
-            cancel_requested: AtomicBool::new(false),
-            closed: AtomicBool::new(false),
+            cancel_requested: CancellationToken::new(),
+            closed: CancellationToken::new(),
         };
         let mut sink = Sink::default();
         let count = driver
