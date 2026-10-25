@@ -1,11 +1,11 @@
 # Implementation and release status
 
-Updated 2026-10-25. Release `v0.1.0-preview.5` includes PostgreSQL,
-MySQL/MariaDB, standalone Redis and the read-only Snowflake SQL/catalog pilot
-on macOS Apple Silicon. Metadata startup protection is implemented in the
-current branch and awaits its separate merge/release. The canonical Site
-distinguishes implementation, verification, merge and download states.
-Full multi-engine v1.0 qualification remains pending.
+Updated 2026-10-25. The source includes PostgreSQL, MySQL/MariaDB,
+standalone Redis and the read-only Snowflake SQL/catalog pilot. Preview.6 added
+metadata startup/version protection. The current hardening slice adds Snowflake
+OAuth/cancellation/disconnect fixes, dialog keyboard fixes and process-crash
+recovery coverage. The canonical Site records exact verification, merge and
+published download states. Full multi-engine v1.0 qualification remains pending.
 
 The preview also contains a **Snowflake read-only SQL pilot**:
 system-browser OAuth with PKCE, explicit account context, async SQL API polling,
@@ -24,7 +24,8 @@ previous `v0.1.0-preview.1` release remains available as the PostgreSQL-only pre
 | Shipped since preview.4 | MySQL/MariaDB studio; fixture-qualified on MySQL 8.4 and MariaDB 11.4 |
 | Shipped in preview.5 | Standalone Redis 8.2 workspace with SCAN/type/TTL, bounded typed viewers and reviewed commands |
 | Shipped pilot in preview.5 | Read-only Snowflake browser OAuth, SQL, catalog/columns and bounded table previews |
-| Implemented, not yet released | Local metadata schema/version guard and transactional initialization; exact publication state on the Site |
+| Shipped since preview.6 | Local metadata schema/version guard and transactional initialization |
+| Current hardening slice | Snowflake credential lifecycle and cancellation/disconnect; keyboard focus; WAL crash recovery and closed-store restoration tests |
 | Pending | Broader live account/version qualification, signing/notarization, packaged Windows/Linux, measured performance and full recovery/update qualification |
 
 ## Implemented
@@ -291,3 +292,33 @@ Clippy. Native, integration, CI and publication evidence is recorded on the Site
 after completion. This ships a bounded startup/downgrade guard; it does not
 qualify a restore UI, arbitrary historical migrations, process-crash recovery,
 signed updates or platform distribution. Those P7 gates remain open.
+
+## Session and recovery hardening
+
+Thirteen synthetic Snowflake lifecycle regressions cover serialized refresh,
+refresh-token rotation/retention, short token lifetimes, expiry/revocation,
+transient token-service failures, cancellation before SQL and during refresh,
+submission and partition retrieval, and disconnect during HTTP/auth waits.
+Eight failures were reproduced before the fixes. Closed or expired sessions
+require reconnecting; statements are never replayed automatically. Disconnect
+aborts local HTTP work; an already submitted remote read can remain until its
+server timeout when no cancellable handle was received.
+
+The keyboard browser regression reproduced search focus being stolen by the
+modal timer. It now verifies focus preservation, Tab wrapping, Escape restoration
+and Enter execution without reactivating the trigger. Focusable links and
+nonzero tab indexes participate in the dialog trap; empty dialogs retain focus.
+This covers the tested keyboard path, not a complete assistive-technology audit.
+
+A subprocess recovery regression kills a disposable writer with committed WAL
+records and an uncommitted transaction, reopens through Persistence, verifies
+committed settings/history/audit/groups, checks pending writes rolled back and
+runs SQLite quick_check. It also restores a closed/checkpointed store into a
+fresh root. This qualifies the local metadata store path, not a backup/restore
+UI, arbitrary historical upgrades or recovery of external database effects.
+
+Local baseline: 67 Rust and 16 frontend tests, frontend production build,
+formatting, native compilation and strict all-target/all-feature Clippy passed.
+The baseline skips the child-process helper, disposable database tests and the
+native credential-store check. Live production qualification is unchanged;
+see the Site for release-specific integration, browser and native evidence.
