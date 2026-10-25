@@ -4,6 +4,10 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "app_info",
             "bootstrap",
+            "metadata_backups",
+            "create_metadata_backup",
+            "restore_metadata_backup",
+            "delete_metadata_backup",
             "acknowledge_quit",
             "save_group",
             "delete_group",

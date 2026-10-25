@@ -7,6 +7,35 @@ OAuth/cancellation/disconnect fixes, dialog keyboard fixes and process-crash
 recovery coverage. The canonical Site records exact verification, merge and
 published download states. Full multi-engine v1.0 qualification remains pending.
 
+## Current local continuation (not released)
+
+Keyboard workspace and result tabs now support wrapping arrows and Home/End,
+roving focus and labelled panels. The editor splitter supports keyboard resizing.
+Dialogs remove background controls from assistive navigation and restore prior
+attributes on close; descriptions, explorer expansion, inspector announcements,
+focus indicators and reduced-motion handling are included. Two frontend
+regressions and a real keyboard browser flow pass. Assistive-technology and
+packaged platform qualification remain open.
+
+Preferences now provides app-owned SQLite metadata snapshots, guarded restore,
+undo snapshots and explicit deletion. Snapshots include committed WAL data and
+are published as closed single files with private Unix permissions. Integrity,
+schema version/shape, typed records, unexpected schema objects and selected-file
+digests are checked before restore. Paths never cross IPC. Limits are 20 files
+and 64 MiB per file. Restore serializes connection/configuration changes, requires
+an idle studio, exact confirmation and the current configured passphrase, and
+retains current OS credentials/passphrase state. It never reconnects or replays
+statements. Seven Rust regressions and a real backup/restore/undo/delete/reload
+browser flow pass. A child process is killed after the first restore backup step;
+reopening retains the complete pre-restore metadata and the undo snapshot. Other
+platforms have not been exercised. The UI needs a store that can open;
+incompatible-startup recovery still requires a compatible app and manual copy.
+
+Local baseline validation, including strict Clippy, passes. All twelve browser
+workflows pass against disposable databases or synthetic Snowflake responses.
+The existing runtime-memory work remains separately unstaged. These changes
+are local implementation and verification, not a merged or published release.
+
 The preview also contains a **Snowflake read-only SQL pilot**:
 system-browser OAuth with PKCE, explicit account context, async SQL API polling,
 bounded JSON partitions, exact text values, own-query cancellation, and a

@@ -4,6 +4,7 @@ import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
 import { useStudio } from "../../state/studio";
 import { GroupManager } from "../connections/GroupManager";
+import { MetadataRecovery } from "./MetadataRecovery";
 
 export function Preferences({ onClose }: { onClose(): void }) {
   const state = useStudio(),
@@ -99,6 +100,8 @@ export function Preferences({ onClose }: { onClose(): void }) {
           Result rows stay in memory. Passwords use your system credential store. Query text is
           saved only when enabled for a connection.
         </p>
+        <div className="preference-divider" />
+        <MetadataRecovery onBusy={setBusy} />
       </div>
       <footer className="modal-footer">
         <button className="button ghost" onClick={onClose} disabled={busy}>

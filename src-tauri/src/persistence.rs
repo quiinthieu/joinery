@@ -1,10 +1,13 @@
 use crate::domain::*;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+mod recovery;
 
 pub struct Persistence {
     connection: Mutex<Connection>,
+    root: PathBuf,
 }
 
 impl Persistence {
@@ -36,6 +39,8 @@ impl Persistence {
             .map_err(db_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            root: std::fs::canonicalize(root)
+                .map_err(|_| AppError::internal("Could not resolve application data directory"))?,
         })
     }
 

@@ -185,7 +185,21 @@ Local metadata startup validates its schema version and required table/key
 constraints before accepting the store. Newer or incompatible stores fail with
 actionable errors and retain their data. Legacy initialization, schema version
 and default environment groups commit in one transaction; reopening preserves
-custom group names and existing metadata. There is no automatic reset. Keep a
-compatible app and a consistent backup of app data for manual recovery; a full
-restore UI and process-crash/upgrade qualification remain pending. Exact shipped
+custom group names and existing metadata. There is no automatic reset.
+
+Preferences → Backup and recovery creates consistent local metadata snapshots
+even while the store uses WAL. Restore requires all connections disconnected and
+all workspace tabs closed, explicit confirmation, and the current write
+passphrase when configured. Joinery checks snapshot integrity, version, schema,
+records and digest before replacement and creates an undo snapshot first.
+Current OS credentials and the write passphrase are retained; no queries run or
+connections reopen automatically. Snapshots include profiles, groups, settings,
+SSH trust and permitted query history, and exclude credentials and result rows.
+They stay under `backups/` in application data (20 snapshots, 64 MiB each).
+Delete old snapshots explicitly to leave room for an undo copy. Copy closed
+snapshots to separate storage for disk-loss recovery. This UI requires an
+openable metadata store; if startup rejects the store, keep it and use a
+compatible app with a consistent backup for manual recovery. Broader historical
+migrations and packaged-platform qualification remain pending. A forced-process
+test covers interruption during restore on this host. Exact shipped
 versions are tracked on the Site.

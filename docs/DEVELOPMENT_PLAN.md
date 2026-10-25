@@ -634,6 +634,14 @@ validation tooling with performance qualification tracked separately. No new pro
 by the earlier identity and SELECT 1 canary approval; use explicit approved tables
 for live qualification.
 
+The current local P7 continuation adds keyboard workspace/result navigation,
+keyboard editor resizing, modal background isolation and reduced-motion support,
+plus bounded metadata backup/restore/undo controls. Snapshots preserve OS
+credentials/passphrase state and never restore sessions or execute statements.
+These changes are locally verified and unreleased. Real assistive-technology,
+historical migrations and packaged-platform qualification
+remain open alongside the external performance/signing/account gates.
+
 # Suggested dependency baseline
 
 Commit lockfiles and pin the Rust toolchain and Node version. Use Node 24 LTS for development.

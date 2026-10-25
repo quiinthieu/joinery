@@ -41,6 +41,7 @@ fn main() {
         HistoryEntry::decl(),
         AuditEntry::decl(),
         Bootstrap::decl(),
+        MetadataBackup::decl(),
         ResourceUsage::decl(),
         ErrorCode::decl(),
         AppError::decl(),

@@ -6,6 +6,9 @@ use tauri::{
 };
 use zeroize::Zeroizing;
 
+mod recovery;
+pub use recovery::*;
+
 #[derive(Default)]
 pub struct WindowGuard {
     pub requested: std::sync::atomic::AtomicU64,

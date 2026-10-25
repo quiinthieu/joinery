@@ -375,6 +375,17 @@ pub struct AuditEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct MetadataBackup {
+    pub id: String,
+    #[ts(type = "number")]
+    pub created_at: u64,
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
     pub profiles: Vec<ConnectionProfile>,
     pub groups: Vec<ConnectionGroup>,
