@@ -638,7 +638,7 @@ The current local P7 continuation adds keyboard workspace/result navigation,
 keyboard editor resizing, modal background isolation and reduced-motion support,
 plus bounded metadata backup/restore/undo controls. Snapshots preserve OS
 credentials/passphrase state and never restore sessions or execute statements.
-These changes are locally verified and unreleased. Real assistive-technology,
+Exact shipping states are tracked on the project Site. Real assistive-technology,
 historical migrations and packaged-platform qualification
 remain open alongside the external performance/signing/account gates.
 

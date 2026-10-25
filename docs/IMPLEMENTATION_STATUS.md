@@ -7,7 +7,7 @@ OAuth/cancellation/disconnect fixes, dialog keyboard fixes and process-crash
 recovery coverage. The canonical Site records exact verification, merge and
 published download states. Full multi-engine v1.0 qualification remains pending.
 
-## Current local continuation (not released)
+## Recovery and accessibility continuation
 
 Keyboard workspace and result tabs now support wrapping arrows and Home/End,
 roving focus and labelled panels. The editor splitter supports keyboard resizing.
@@ -45,8 +45,8 @@ inspector, tab closure restores focus, and mode buttons expose their selection.
 
 Local baseline validation, including strict Clippy, passes. All thirteen browser
 workflows pass against disposable databases or synthetic Snowflake responses.
-The existing runtime-memory work remains separately unstaged. These changes
-are local implementation and verification, not a merged or published release.
+The canonical project Site records the exact merge, published preview and
+download-verification states for this continuation.
 
 The local macOS packaging check reproduced a linker-only signature that failed
 strict resource verification. The bundle command now inspects signing, seals
