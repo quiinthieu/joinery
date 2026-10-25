@@ -24,9 +24,9 @@
     "build:smoke": "pnpm contracts && pnpm icons && tsc -b && vite build --mode native-smoke",
     "desktop:smoke:build": "tauri build --no-bundle --features native-smoke --config src-tauri/tauri.smoke.conf.json && node scripts/prepare-native-smoke.mjs",
     "test:native": "python3 scripts/native-smoke.py",
-    "format:check": "prettier --check src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs",
-    "format": "prettier --write src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs",
-    "desktop:bundle:mac": "tauri build --bundles app"
+    "format:check": "prettier --check src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs scripts/verify-macos-bundle.mjs",
+    "format": "prettier --write src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs scripts/verify-macos-bundle.mjs",
+    "desktop:bundle:mac": "tauri build --bundles app && node scripts/verify-macos-bundle.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6",

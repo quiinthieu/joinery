@@ -48,6 +48,13 @@ workflows pass against disposable databases or synthetic Snowflake responses.
 The existing runtime-memory work remains separately unstaged. These changes
 are local implementation and verification, not a merged or published release.
 
+The local macOS packaging check reproduced a linker-only signature that failed
+strict resource verification. The bundle command now inspects signing, seals
+ad-hoc local bundles when needed, and verifies the final app. It does not replace
+real signing identities or claim notarization. Native validation passed in three
+clean-source processes with 30 cleanup cycles; detailed local evidence is under
+`.cache/p7-clean-verification/`. External release gates remain open.
+
 The preview also contains a **Snowflake read-only SQL pilot**:
 system-browser OAuth with PKCE, explicit account context, async SQL API polling,
 bounded JSON partitions, exact text values, own-query cancellation, and a

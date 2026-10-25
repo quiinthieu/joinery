@@ -73,6 +73,11 @@ those platforms. Release packaging remains local; CI builds frontend assets and
 checks native compilation without uploading installers. Existing GitHub release
 downloads remain available.
 
+The macOS bundle command also verifies the assembled app's signature. It seals
+resources for an ad-hoc local bundle when the linker signature is insufficient;
+it preserves real signing identities and fails if their signatures are invalid.
+This does not provide Developer ID signing or notarization.
+
 Database/SSH/browser integration and hidden native checks are separate local
 steps below. Rust integration tests marked ignored do not run in `pnpm validate`.
 
