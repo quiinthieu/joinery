@@ -30,7 +30,12 @@ import { client, messageOf } from "../../ipc/client";
 import type { CompletionItem } from "../../data/completion-index";
 import { useStudio } from "../../state/studio";
 import { REDIS_COMMANDS } from "../redis/commands";
-import { referencedTables, selectedStatement, tableLookup } from "./sql-context";
+import {
+  catalogCompletions,
+  referencedTables,
+  selectedStatement,
+  tableLookup,
+} from "./sql-context";
 
 export interface EditorHandle {
   selection(): string;
@@ -44,6 +49,8 @@ interface Props {
   engine: EngineKind;
   sessionId: string | null;
   tables: TableInfo[];
+  database?: string;
+  defaultSchema?: string;
   theme: string;
 }
 const themeCompartment = new Compartment(),
@@ -118,15 +125,14 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const pending = useRef(new Map<number, (items: Completion[]) => void>());
   const formatting = useRef<{ id: number; source: string } | null>(null);
   const schemaCache = useRef(new Map<string, Promise<TableSchema>>());
-  const lookup = useMemo(() => tableLookup(props.tables), [props.tables]);
+  const lookup = useMemo(
+    () => tableLookup(props.tables, props.database, props.defaultSchema),
+    [props.tables, props.database, props.defaultSchema],
+  );
   const referenceKey = JSON.stringify(referencedTables(props.value, lookup));
   const schemaItems = useMemo<CompletionItem[]>(
-    () =>
-      props.tables.flatMap(({ table }) => [
-        { label: table.name, type: "type", detail: table.schema },
-        { label: `${table.schema}.${table.name}`, type: "type" },
-      ]),
-    [props.tables],
+    () => catalogCompletions(props.tables, props.database),
+    [props.tables, props.database],
   );
 
   useImperativeHandle(
@@ -343,6 +349,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 [
                   column.name,
                   `${schema.table.name}.${column.name}`,
+                  `${schema.table.schema}.${schema.table.name}.${column.name}`,
+                  ...(props.database
+                    ? [
+                        `${props.database}.${schema.table.schema}.${schema.table.name}.${column.name}`,
+                      ]
+                    : []),
                   ...referenced[i].aliases.map((alias) => `${alias}.${column.name}`),
                 ].map((label) => ({
                   label,
@@ -366,7 +378,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [schemaItems, props.sessionId, props.engine, referenceKey]);
+  }, [schemaItems, props.sessionId, props.engine, props.database, referenceKey]);
   return <div className="sql-editor" ref={host} />;
 });
 

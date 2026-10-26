@@ -151,11 +151,26 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
   await page.getByRole("button", { name: "New query tab" }).click();
   const editor = page.getByRole("textbox", { name: "SQL editor" });
   await expect(editor).toContainText("CURRENT_VERSION()");
-  await editor.fill("SELECT o.NO FROM PUBLIC.ORDERS o");
+  await editor.fill("SELECT * FROM ");
+  await editor.press("End");
+  await page.keyboard.type("PUB");
+  await expect(
+    page.locator(".cm-tooltip-autocomplete").getByText("PUBLIC", { exact: true }),
+  ).toBeVisible();
+  await page.locator(".cm-tooltip-autocomplete").getByText("PUBLIC", { exact: true }).click();
+  await expect(editor).toContainText("FROM PUBLIC.");
+  await page.keyboard.type("OR");
+  await expect(page.locator(".cm-tooltip-autocomplete")).toContainText("PUBLIC.ORDERS");
+  await editor.fill("SELECT * FROM DB.PUBLIC.");
+  await editor.press("End");
+  await page.keyboard.type("OR");
+  await expect(page.locator(".cm-tooltip-autocomplete")).toContainText("DB.PUBLIC.ORDERS");
+  await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
   await expect.poll(() => calls.filter((c) => c === "table_schema").length).toBeGreaterThan(1);
   await editor.press("Home");
-  await editor.press("ArrowRight");
-  for (let i = 0; i < 10; i++) await editor.press("ArrowRight");
+  for (let i = 0; i < 9; i++) await editor.press("ArrowRight");
+  await page.keyboard.type("N");
+  await expect(page.locator(".cm-tooltip-autocomplete")).toContainText("o.NOTES");
   await expect(async () => {
     await editor.press("Control+Space");
     await expect(page.locator(".cm-tooltip-autocomplete")).toContainText("o.NOTES", {
