@@ -7,8 +7,20 @@ import { useStudio } from "../../state/studio";
 import { useSshTrust } from "./SshHostTrust";
 import { orderedGroups } from "./GroupManager";
 
+function completeConnection(profile: ConnectionProfile, session: SessionInfo, onClose: () => void) {
+  const state = useStudio.getState();
+  state.setSession(session);
+  state.notify(`Connected to ${profile.name}`);
+  onClose();
+  void state.refreshCatalog(profile.id).catch((error) => {
+    const latest = useStudio.getState();
+    if (latest.sessions[profile.id]?.id === session.id)
+      latest.notify(`Connected to ${profile.name}. Could not load tables: ${messageOf(error)}`);
+  });
+}
+
 export function ConnectionDialog({
-  profile,
+  profile: initialProfile,
   groupId = "local",
   onClose,
 }: {
@@ -17,6 +29,7 @@ export function ConnectionDialog({
   onClose(): void;
 }) {
   const bootstrap = useStudio((s) => s.bootstrap);
+  const [profile, setProfile] = useState(initialProfile);
   const initialGroup = bootstrap?.groups.find((g) => g.id === (profile?.groupId ?? groupId));
   const [draft, setDraft] = useState<ConnectionProfile>(
     () =>
@@ -67,6 +80,7 @@ export function ConnectionDialog({
         profile: draft,
         passphrase: passphrase || null,
       });
+      setProfile(saved);
       useStudio.getState().resetConnectionResults(saved.id);
       useStudio.getState().updateProfile(saved);
       await trust.verify(saved);
@@ -78,10 +92,7 @@ export function ConnectionDialog({
           keyPassphrase: keyPassphrase || null,
         },
       });
-      useStudio.getState().setSession(session);
-      await useStudio.getState().refreshCatalog(saved.id);
-      useStudio.getState().notify(`Connected to ${saved.name}`);
-      onClose();
+      completeConnection(saved, session, onClose);
     } catch (error) {
       setError(messageOf(error));
     } finally {
@@ -620,9 +631,7 @@ export function ConnectDialog({
           keyPassphrase: keyPassphrase || null,
         },
       });
-      useStudio.getState().setSession(session);
-      await useStudio.getState().refreshCatalog(profile.id);
-      onClose();
+      completeConnection(profile, session, onClose);
     } catch (error) {
       setError(messageOf(error));
     } finally {

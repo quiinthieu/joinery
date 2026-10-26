@@ -68,3 +68,30 @@ fn studio_accepts_only_read_only_verified_snowflake_profiles() {
         ErrorCode::InvalidInput
     );
 }
+
+#[test]
+fn production_connection_retry_does_not_require_a_passphrase_for_unchanged_settings() {
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let saved = studio.save_profile(profile(), None).unwrap();
+    assert!(studio.save_profile(saved.clone(), None).is_ok());
+    let mut changed = saved.clone();
+    changed.database = "OTHER_DATABASE".into();
+    assert_eq!(
+        studio.save_profile(changed.clone(), None).unwrap_err().code,
+        ErrorCode::PassphraseRequired
+    );
+    assert_eq!(
+        studio.bootstrap().unwrap().profiles[0].database,
+        saved.database
+    );
+    studio
+        .set_passphrase("fixture-write-passphrase", None)
+        .unwrap();
+    assert!(studio.save_profile(saved, None).is_ok());
+    assert!(
+        studio
+            .save_profile(changed, Some("fixture-write-passphrase"))
+            .is_ok()
+    );
+}
