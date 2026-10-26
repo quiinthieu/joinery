@@ -60,18 +60,11 @@ pub async fn save_profile(
 }
 
 #[tauri::command]
-pub async fn delete_profile(
-    studio: State<'_, Arc<Studio>>,
-    id: String,
-    passphrase: Option<String>,
-) -> AppResult<()> {
+pub async fn delete_profile(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
     let studio = studio.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let passphrase = passphrase.map(Zeroizing::new);
-        studio.delete_profile(&id, passphrase.as_deref().map(String::as_str))
-    })
-    .await
-    .map_err(join_error)?
+    tokio::task::spawn_blocking(move || studio.delete_profile(&id))
+        .await
+        .map_err(join_error)?
 }
 
 #[tauri::command]

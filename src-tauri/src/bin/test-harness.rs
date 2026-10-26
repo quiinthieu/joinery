@@ -82,10 +82,7 @@ async fn rpc(
                 )?)
             }
             "delete_profile" => {
-                studio.delete_profile(
-                    &arg::<String>(&args, "id")?,
-                    arg::<Option<String>>(&args, "passphrase")?.as_deref(),
-                )?;
+                studio.delete_profile(&arg::<String>(&args, "id")?)?;
                 Value::Null
             }
             "connect" => json!(
