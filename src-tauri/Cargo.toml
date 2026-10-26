@@ -67,7 +67,7 @@ parking_lot = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip"] }
 url = "2"
 webbrowser = "1"
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa"] }
@@ -84,6 +84,7 @@ windows-native-keyring-store = "1"
 dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
 
 [dev-dependencies]
+flate2 = "1"
 tempfile = "3"
 rand = "0.10"
 rcgen = "0.14"

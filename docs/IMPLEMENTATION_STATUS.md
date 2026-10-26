@@ -1,6 +1,6 @@
 # Implementation and release status
 
-Updated 2026-10-25. The source includes PostgreSQL, MySQL/MariaDB,
+Updated 2026-10-26. The source includes PostgreSQL, MySQL/MariaDB,
 standalone Redis and the read-only Snowflake SQL/catalog pilot. Preview.6 added
 metadata startup/version protection. The current hardening slice adds Snowflake
 OAuth/cancellation/disconnect fixes, dialog keyboard fixes and process-crash
@@ -16,6 +16,13 @@ production profile does not require a write passphrase. Actual production
 setting changes remain gated, and a newly saved profile becomes editable if
 its first connection attempt fails. These paths are verified with synthetic
 Snowflake/browser fixtures; this does not qualify a live production account.
+
+Snowflake result partitions now support the SQL API's gzip encoding. A local
+HTTP regression reproduces the partial-result failure with 85 initial rows and
+15 compressed rows, then verifies all 100 rows complete with exact numeric text
+and nulls preserved. The 16 MiB response limit applies after decompression;
+oversized and corrupt compressed responses remain errors and never report a
+complete result. Live account retesting remains pending.
 
 Keyboard workspace and result tabs now support wrapping arrows and Home/End,
 roving focus and labelled panels. The editor splitter supports keyboard resizing.

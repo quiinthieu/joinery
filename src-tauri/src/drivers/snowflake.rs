@@ -22,6 +22,8 @@ mod catalog;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod compression_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 
 struct AuthState {
@@ -294,6 +296,8 @@ impl Snowflake {
                 "Snowflake result partition exceeds the 16 MiB response limit",
             ));
         }
+        // Reqwest decodes Snowflake's gzip partitions before yielding chunks,
+        // so this bound applies to decompressed data, not just the wire size.
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| {
             AppError::new(
@@ -629,8 +633,8 @@ mod tests {
     #[derive(Default)]
     pub(super) struct Sink {
         columns: Vec<ColumnInfo>,
-        rows: Vec<TextRow>,
-        completed: bool,
+        pub(super) rows: Vec<TextRow>,
+        pub(super) completed: bool,
     }
     impl QuerySink for Sink {
         fn limit(&mut self, _: &str) {}
