@@ -93,8 +93,64 @@ export function ConnectionDialog({
     }
   }
   if (trust.dialog) return trust.dialog;
+  if (deleting && profile)
+    return (
+      <Modal
+        key="delete"
+        title="Delete connection?"
+        subtitle={profile.name}
+        onClose={onClose}
+        busy={busy}
+      >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (busy) return;
+            setBusy(true);
+            setError(null);
+            void client
+              .call("delete_profile", { id: profile.id })
+              .then(() => {
+                useStudio.getState().removeConnection(profile.id);
+                onClose();
+              })
+              .catch((error) => setError(messageOf(error)))
+              .finally(() => {
+                setPassphrase("");
+                setBusy(false);
+              });
+          }}
+        >
+          <div className="modal-body">
+            <p className="form-note">
+              Removing this saved connection also deletes its saved password and query drafts, and
+              closes its workspaces. This cannot be undone.
+            </p>
+            <InlineError message={error} />
+          </div>
+          <footer className="modal-footer">
+            <button
+              type="button"
+              className="button ghost"
+              disabled={busy}
+              onClick={() => {
+                setDeleting(false);
+                setError(null);
+                setPassphrase("");
+              }}
+            >
+              Cancel
+            </button>
+            <button type="submit" className="button danger" disabled={busy}>
+              {busy ? "Removing…" : "Remove saved connection"}
+            </button>
+          </footer>
+        </form>
+      </Modal>
+    );
   return (
     <Modal
+      key="edit"
       title={profile ? "Edit connection" : "New connection"}
       subtitle="A direct line to your data."
       onClose={onClose}
@@ -501,12 +557,6 @@ export function ConnectionDialog({
               Saving reconnects this profile and closes its existing results.
             </p>
           )}
-          {deleting && (
-            <p className="form-note span-2">
-              Removing this saved connection also deletes its saved password and closes its
-              workspaces.
-            </p>
-          )}
           <div className="span-2">
             <InlineError
               message={
@@ -522,25 +572,12 @@ export function ConnectionDialog({
               className="button danger-text delete-profile"
               disabled={busy}
               onClick={() => {
-                if (!deleting) {
-                  setDeleting(true);
-                  return;
-                }
-                setBusy(true);
-                void client
-                  .call("delete_profile", { id: profile.id, passphrase: passphrase || null })
-                  .then(() => {
-                    useStudio.getState().removeConnection(profile.id);
-                    onClose();
-                  })
-                  .catch((error) => setError(messageOf(error)))
-                  .finally(() => {
-                    setPassphrase("");
-                    setBusy(false);
-                  });
+                setError(null);
+                setPassphrase("");
+                setDeleting(true);
               }}
             >
-              {deleting ? "Remove saved connection" : "Delete connection"}
+              Delete connection
             </button>
           )}
           <button type="button" className="button ghost" onClick={onClose} disabled={busy}>

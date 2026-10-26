@@ -354,12 +354,9 @@ impl Studio {
         self.persistence.delete_group(id)
     }
 
-    pub fn delete_profile(&self, id: &str, passphrase: Option<&str>) -> AppResult<()> {
+    pub fn delete_profile(&self, id: &str) -> AppResult<()> {
         let _configuration = self.configuration_gate.lock();
         let profile = self.persistence.profile(id)?;
-        if profile.environment == Environment::Production {
-            self.verify_passphrase(passphrase)?;
-        }
         self.close_profile_sessions(id);
         if profile.remember_password {
             self.secrets.delete(&format!("database:{id}"))?;

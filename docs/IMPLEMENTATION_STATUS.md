@@ -81,7 +81,7 @@ previous `v0.1.0-preview.1` release remains available as the PostgreSQL-only pre
 | Area | Current behavior |
 |---|---|
 | Shell | Tauri v2 system WebView; React/TypeScript; lazy editor/grid/worker bundles; explicit command capabilities and CSP |
-| Connections | Private local SQLite metadata; nested groups with inherited, immutable environments; protected production profiles; session passwords and optional native credential storage |
+| Connections | Private local SQLite metadata; nested groups with inherited, immutable environments; protected production profile edits; session passwords and optional native credential storage; saved connection deletion uses a dedicated confirmation without a passphrase |
 | SSH | Password, encrypted private key, and agent authentication; optional agent socket path; explicit fingerprint trust; changed-key rejection; reference-counted tunnel lifecycle; loopback listeners; bounded forwarding channels |
 | TLS | System trust plus a custom PEM CA; production requires certificate verification; tunneled database connections preserve the original hostname for verification |
 | SQL | CodeMirror tabs; selection/current-statement/all-statement execution; worker completion index and formatting; per-statement result tabs and metrics; cancellation; query history |
