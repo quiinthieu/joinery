@@ -1,7 +1,12 @@
 import { expect, test } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { sql, PostgreSQL } from "@codemirror/lang-sql";
-import { referencedTables, selectedStatement } from "./sql-context";
+import {
+  catalogCompletions,
+  referencedTables,
+  selectedStatement,
+  tableLookup,
+} from "./sql-context";
 
 test("runs only the statement under the cursor and respects SQL quoted semicolons", () => {
   const doc = "-- context\nSELECT $$héllo; there$$;\nSELECT 'it''s; safe';\nSELECT 3;";
@@ -38,4 +43,47 @@ test("resolves MySQL backtick identifiers and escaped aliases for lazy completio
   expect(
     referencedTables("SELECT `o``x`.note FROM `joinery`.`odd``table` AS `o``x`", lookup),
   ).toEqual([{ table, aliases: ["o`x"] }]);
+});
+
+test("suggests schemas and qualified Snowflake tables without duplicating schemas", () => {
+  const tables = [
+    {
+      table: { schema: "PROD", name: "FACT_PO_TRACKER_7" },
+      kind: "BASE TABLE",
+      estimatedRows: null,
+      totalBytes: null,
+    },
+    {
+      table: { schema: "PROD", name: "ORDERS" },
+      kind: "BASE TABLE",
+      estimatedRows: null,
+      totalBytes: null,
+    },
+  ];
+  const items = catalogCompletions(tables, "DWH");
+  expect(items.filter((item) => item.label === "PROD")).toEqual([
+    { label: "PROD", type: "namespace", detail: "schema", apply: "PROD." },
+  ]);
+  expect(items).toContainEqual({
+    label: "DWH.PROD.FACT_PO_TRACKER_7",
+    type: "type",
+    detail: "table",
+  });
+  expect(items).toContainEqual({
+    label: "DWH.PROD",
+    type: "namespace",
+    detail: "schema",
+    apply: "DWH.PROD.",
+  });
+  const lookup = tableLookup(tables, "DWH");
+  expect(referencedTables("SELECT f.PO FROM DWH.PROD.FACT_PO_TRACKER_7 AS f", lookup)).toEqual([
+    { table: tables[0].table, aliases: ["f"] },
+  ]);
+  const duplicate = {
+    table: { schema: "STAGING", name: "ORDERS" },
+    kind: "BASE TABLE",
+    estimatedRows: null,
+    totalBytes: null,
+  };
+  expect(tableLookup([duplicate, ...tables], "DWH", "PROD").get("orders")).toEqual(tables[1].table);
 });

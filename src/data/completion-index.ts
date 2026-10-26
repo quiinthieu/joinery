@@ -2,6 +2,7 @@ export interface CompletionItem {
   label: string;
   type: string;
   detail?: string;
+  apply?: string;
 }
 export class CompletionIndex {
   private entries: { key: string; item: CompletionItem }[] = [];

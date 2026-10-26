@@ -270,6 +270,10 @@ export function Workbench({
                 engine={profile?.engine ?? "postgres"}
                 sessionId={session?.id ?? null}
                 tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}
+                database={profile?.engine === "snowflake" ? profile.database : undefined}
+                defaultSchema={
+                  profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined
+                }
                 theme={state.theme}
               />
             </Suspense>

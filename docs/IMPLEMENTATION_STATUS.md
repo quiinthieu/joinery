@@ -17,6 +17,12 @@ setting changes remain gated, and a newly saved profile becomes editable if
 its first connection attempt fails. These paths are verified with synthetic
 Snowflake/browser fixtures; this does not qualify a live production account.
 
+The SQL editor suggests catalog schemas, tables, and columns as users type.
+Snowflake completions include `database.schema.table` names, and referenced
+tables in that form load their columns for alias suggestions. Suggestions use
+the connected session's catalog and lazy table-schema lookup; they are verified
+with local fixture metadata and a browser typing flow.
+
 Snowflake result partitions now support the SQL API's gzip encoding. A local
 HTTP regression reproduces the partial-result failure with 85 initial rows and
 15 compressed rows, then verifies all 100 rows complete with exact numeric text
