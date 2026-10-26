@@ -166,3 +166,93 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
   expect(calls).not.toContain("prepare_changes");
   expect(errors).toEqual([]);
 });
+
+test("approved Snowflake sign-in remains connected when table discovery fails", async ({
+  page,
+}) => {
+  const calls: string[] = [];
+  let profile: ConnectionProfile;
+  let catalogCalls = 0;
+  let finishDiscovery!: () => void;
+  const discovery = new Promise<void>((resolve) => {
+    finishDiscovery = resolve;
+  });
+  await page.route("http://127.0.0.1:1422/rpc/*", async (route) => {
+    const command = new URL(route.request().url()).pathname.split("/").at(-1)!;
+    calls.push(command);
+    if (command === "save_profile") {
+      profile = route.request().postDataJSON().profile;
+      await route.fulfill({ json: { result: profile } });
+    } else if (command === "connect") {
+      await route.fulfill({
+        json: {
+          result: {
+            id: "approved-sso",
+            connectionId: profile.id,
+            engine: "snowflake",
+            serverVersion: "fixture",
+            latencyMs: 1,
+            encrypted: true,
+            capabilities: {
+              sql: true,
+              transactions: false,
+              cancellation: true,
+              tableBrowsing: true,
+              tableEditing: false,
+              processes: false,
+            },
+          },
+        },
+      });
+    } else if (command === "catalog") {
+      if (++catalogCalls === 1) {
+        await discovery;
+        await route.fulfill({
+          json: {
+            error: {
+              code: "permissionDenied",
+              message: "Catalog unavailable for this role",
+            },
+          },
+        });
+      } else
+        await route.fulfill({
+          json: {
+            result: [
+              {
+                table: { schema: "PUBLIC", name: "ORDERS" },
+                kind: "BASE TABLE",
+                estimatedRows: 0,
+                totalBytes: 0,
+              },
+            ],
+          },
+        });
+    } else if (command === "health") await route.fulfill({ json: { result: 1 } });
+    else await route.continue();
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New connection", exact: true }).click();
+  await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Connection group").selectOption("production");
+  await page.getByLabel("Connection name", { exact: true }).fill("Approved SSO fixture");
+  await page.getByLabel("Snowflake account hostname").fill("org-account.snowflakecomputing.com");
+  await page.getByLabel("Database", { exact: true }).fill("ANALYTICS");
+  await page.getByLabel("Username", { exact: true }).fill("ANALYST");
+  await page.getByLabel("Role", { exact: true }).fill("READ_ONLY");
+  await page.getByLabel("Warehouse", { exact: true }).fill("WH");
+  await page.getByLabel("Schema", { exact: true }).fill("PUBLIC");
+  await page.getByRole("button", { name: "Save and connect", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".status-bar")).toContainText("Approved SSO fixture");
+  finishDiscovery();
+  await expect(page.getByRole("status")).toContainText("Could not load tables");
+  await expect(page.getByRole("status")).toContainText("Catalog unavailable for this role");
+  await page.getByRole("button", { name: "New query tab", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "SQL editor" })).toBeVisible();
+  await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
+  await page.getByRole("button", { name: /^PUBLIC/ }).click();
+  await expect(page.getByRole("button", { name: "ORDERS", exact: true })).toBeVisible();
+  expect(calls.filter((command) => command === "connect")).toHaveLength(1);
+  expect(calls).not.toContain("prepare_execution");
+});

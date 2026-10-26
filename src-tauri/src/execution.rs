@@ -208,11 +208,6 @@ impl Studio {
                 "Provide a name, host, port, database, and username",
             ));
         }
-        if let Ok(previous) = self.persistence.profile(&profile.id)
-            && previous.environment == Environment::Production
-        {
-            self.verify_passphrase(passphrase)?;
-        }
         let profiles = self.persistence.profiles()?;
         if !profiles.iter().any(|p| p.id == profile.id) && profiles.len() >= 256 {
             return Err(AppError::invalid(
@@ -254,6 +249,18 @@ impl Studio {
         }
         if profile.engine == EngineKind::Snowflake {
             Snowflake::validate_profile(&profile)?;
+        }
+        if let Some(previous) = profiles
+            .iter()
+            .find(|p| p.id == profile.id && p.environment == Environment::Production)
+        {
+            let previous_json = serde_json::to_value(previous)
+                .map_err(|_| AppError::internal("Could not compare connection settings"))?;
+            let proposed_json = serde_json::to_value(&profile)
+                .map_err(|_| AppError::internal("Could not compare connection settings"))?;
+            if previous_json != proposed_json {
+                self.verify_passphrase(passphrase)?;
+            }
         }
         self.close_profile_sessions(&profile.id);
         if profiles

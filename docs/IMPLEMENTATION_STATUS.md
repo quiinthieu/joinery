@@ -9,6 +9,14 @@ published download states. Full multi-engine v1.0 qualification remains pending.
 
 ## Recovery and accessibility continuation
 
+Connection setup now separates successful sign-in from table discovery. A
+connected session opens its workspace immediately; discovery failures produce a
+notification and can be retried with Refresh schema. Retrying an unchanged
+production profile does not require a write passphrase. Actual production
+setting changes remain gated, and a newly saved profile becomes editable if
+its first connection attempt fails. These paths are verified with synthetic
+Snowflake/browser fixtures; this does not qualify a live production account.
+
 Keyboard workspace and result tabs now support wrapping arrows and Home/End,
 roving focus and labelled panels. The editor splitter supports keyboard resizing.
 Dialogs remove background controls from assistive navigation and restore prior
