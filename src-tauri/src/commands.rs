@@ -281,6 +281,7 @@ fn join_error(_: tokio::task::JoinError) -> AppError {
 pub struct NativeSmokeState {
     pub started: std::time::Instant,
     pub root: std::path::PathBuf,
+    pub options: crate::native_smoke_config::SmokeOptions,
 }
 
 #[cfg(feature = "native-smoke")]
@@ -329,6 +330,7 @@ pub async fn native_smoke_checkpoint(
     state: State<'_, NativeSmokeState>,
     studio: State<'_, Arc<Studio>>,
     phase: String,
+    cycle: Option<u32>,
 ) -> AppResult<serde_json::Value> {
     if !matches!(
         phase.as_str(),
@@ -336,8 +338,13 @@ pub async fn native_smoke_checkpoint(
     ) {
         return Err(AppError::invalid("Unknown native test phase"));
     }
+    if cycle.is_some_and(|cycle| phase != "cycling" || cycle > state.options.cleanup_cycles) {
+        return Err(AppError::invalid("Invalid native test cycle"));
+    }
     let checkpoint = serde_json::json!({
         "phase": phase,
+        "cycle": cycle,
+        "options": state.options,
         "nativeElapsedMs": state.started.elapsed().as_millis() as u64,
         "usage": studio.usage(),
     });

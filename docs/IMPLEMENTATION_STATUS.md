@@ -391,3 +391,23 @@ formatting, native compilation and strict all-target/all-feature Clippy passed.
 The baseline skips the child-process helper, disposable database tests and the
 native credential-store check. Live production qualification is unchanged;
 see the Site for release-specific integration, browser and native evidence.
+
+## Sustained native fixture and helper-memory sampling
+
+The hidden native fixture accepts 10–1000 cleanup cycles and 1–60 second idle
+intervals, with matching bounded runner and Rust watchdog deadlines. Each cycle
+closes tabs with Arrow requests in flight and verifies Rust result/session/run
+counters and frontend retained bytes return to zero.
+
+Optional macOS sampling launches a separately signed hidden fixture bundle through
+LaunchServices. Helpers are attributed only when process responsibility points
+to the fixture itself. Shared or unavailable responsibility, missing WebKit
+helpers and unreadable processes remain explicit evidence gaps. RSS sums can
+double-count shared pages; physical footprint is recorded separately. Python
+regressions cover attribution isolation and incomplete samples; Rust tests cover
+configuration bounds. CI runs the Python regressions alongside identity checks.
+
+This ships validation tooling, excluded from the normal application build.
+Preview.11 remains the app download. Representative total-idle memory, cold
+visible startup and display FPS remain unqualified. Current validation and merge
+evidence is recorded on the private project hub.

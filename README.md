@@ -211,6 +211,20 @@ pnpm desktop:smoke:build
 pnpm test:native
 ```
 
+For longer synthetic cleanup and idle sampling on macOS:
+
+```sh
+python3 -m unittest discover -s scripts -p test_runtime_memory.py
+pnpm test:native --runs 3 --cycles 100 --idle-seconds 15 --attributed-memory
+```
+
+The optional memory mode launches a separate hidden, ad-hoc signed fixture bundle
+through LaunchServices and attributes helpers by process responsibility. Missing
+attribution or unreadable processes remain explicit gaps in the local evidence.
+The fixture disables WebView background suspension so hidden work can finish.
+RSS sums can double-count shared pages; physical footprint is reported separately.
+These samples do not qualify representative idle RAM, cold visible startup or FPS.
+
 This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. It also checks ten tab/result cleanup cycles with Arrow requests in flight and records shell/loading/release checkpoints with main-process memory samples. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Build provenance records the source revision, tree, and whether the working tree was dirty. The shell checkpoint is hidden DOM readiness; WebView helper memory, visible paint, and display FPS remain unqualified.
 
 To explicitly qualify the native credential store with one disposable random entry:

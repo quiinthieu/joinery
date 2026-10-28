@@ -17,3 +17,6 @@ playwright-report/
 *.sqlite*
 *.pem
 *.key
+
+# Local Python validation bytecode
+__pycache__/
