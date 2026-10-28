@@ -8,6 +8,9 @@
     "node": ">=24"
   },
   "scripts": {
+    "setup:git": "node scripts/git-identity.mjs --setup",
+    "check:git": "node scripts/git-identity.mjs",
+    "test:git": "node --test scripts/git-identity.test.mjs",
     "icons": "tauri icon public/joinery.svg --output src-tauri/icons",
     "dev": "pnpm contracts && pnpm icons && vite --host 127.0.0.1",
     "build": "pnpm contracts && pnpm icons && tsc -b && vite build",

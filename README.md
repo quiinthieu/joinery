@@ -41,11 +41,40 @@ if the connection closes before a statement handle can be cancelled.
 Install Node 24, pnpm 11, the pinned Rust toolchain, and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
+pnpm setup:git
 pnpm install
 pnpm desktop
 ```
 
 Run the frontend separately with `pnpm dev` for a UI preview and the synthetic million-row grid. Database access runs inside the desktop Rust process. TypeScript IPC contracts and platform icons are generated automatically before development and builds.
+
+### Commit identity across machines
+
+The tracked [AGENTS.md](AGENTS.md) contains the shared agent instructions.
+For the owner's work, run `pnpm setup:git` once in every clone or worktree to set
+the local email from `.github/commit-identity.json`. Global Git settings, names,
+and hooks are preserved. Node alone also works:
+`node scripts/git-identity.mjs --setup`.
+
+Run `pnpm check:git` before committing; it checks the effective author and
+committer, including environment overrides. Run `pnpm check:git --head` before
+pushing to check the latest commit's author. CI checks the actual PR head and
+`main` commit authors against the same email policy without installing app
+dependencies. Configure `commit-identity` as a required status check in GitHub
+branch protection to require it before merging.
+
+The approved address must be verified on the GitHub account connected to Vercel,
+with access to the destination Vercel project. The email check catches local
+identity drift; it does not verify Vercel membership. SSH authentication does not
+set the commit author. Other contributors must use their own verified identity
+and add their authorized email through review. See
+[Vercel's attribution guidance](https://vercel.com/docs/deployments/troubleshoot-project-collaboration).
+
+Changing Git config does not repair existing commits. Before retrying a failed
+deployment, check `git show -s --format='%h %an <%ae>' HEAD` and confirm the
+GitHub/Vercel account connection. Correctly authored new commits use the updated
+config. Rewriting an existing unmerged feature branch requires explicit approval;
+never rewrite `main` to repair author metadata.
 
 ### Validation and local packaging
 
