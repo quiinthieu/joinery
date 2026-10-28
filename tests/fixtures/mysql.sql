@@ -24,3 +24,6 @@ CREATE TABLE child_rows (id BIGINT PRIMARY KEY, parent_id BIGINT UNSIGNED, FOREI
 CREATE TABLE nontransactional (id INT PRIMARY KEY, value TEXT) ENGINE=MyISAM;
 INSERT INTO nontransactional VALUES (1,'read-only grid');
 CREATE VIEW sample_view AS SELECT id,note FROM sample;
+
+CREATE TABLE `completion names` (`No``tes` TEXT NOT NULL, `列` INTEGER NOT NULL) ENGINE=InnoDB;
+INSERT INTO `completion names` VALUES ('completion fixture', 42);

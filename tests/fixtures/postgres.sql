@@ -25,3 +25,6 @@ SELECT i, (i % 1000)+1,
        CASE WHEN i % 9 = 0 THEN NULL ELSE 'Order ' || i END
 FROM generate_series(1,10000) AS i;
 ANALYZE;
+
+CREATE TABLE "completion.names" ("No""tes" text NOT NULL, "列" integer NOT NULL);
+INSERT INTO "completion.names" VALUES ('completion fixture', 42);

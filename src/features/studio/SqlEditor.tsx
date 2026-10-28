@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { EditorState, Compartment } from "@codemirror/state";
 import {
   EditorView,
@@ -21,21 +21,17 @@ import {
   autocompletion,
   closeBrackets,
   closeBracketsKeymap,
-  type Completion,
+  closeCompletion,
 } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import { sql, PostgreSQL, MySQL, StandardSQL } from "@codemirror/lang-sql";
+import { sql } from "@codemirror/lang-sql";
 import type { EngineKind, TableInfo, TableSchema } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
-import type { CompletionItem } from "../../data/completion-index";
+import type { CompletionResponse } from "../../data/completion-protocol";
 import { useStudio } from "../../state/studio";
-import { REDIS_COMMANDS } from "../redis/commands";
-import {
-  catalogCompletions,
-  referencedTables,
-  selectedStatement,
-  tableLookup,
-} from "./sql-context";
+import { selectedStatement } from "./sql-context";
+import { sqlDialect } from "./sql-identifiers";
+import { CompletionSession } from "./completion-session";
 
 export interface EditorHandle {
   selection(): string;
@@ -118,22 +114,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     view = useRef<EditorView | null>(null),
     latest = useRef(props);
   latest.current = props;
-  const completion = useRef<Worker | null>(null),
+  const completion = useRef<CompletionSession | null>(null),
     formatter = useRef<Worker | null>(null),
-    sequence = useRef(0),
-    revision = useRef(0);
-  const pending = useRef(new Map<number, (items: Completion[]) => void>());
+    sequence = useRef(0);
   const formatting = useRef<{ id: number; source: string } | null>(null);
-  const schemaCache = useRef(new Map<string, Promise<TableSchema>>());
-  const lookup = useMemo(
-    () => tableLookup(props.tables, props.database, props.defaultSchema),
-    [props.tables, props.database, props.defaultSchema],
-  );
-  const referenceKey = JSON.stringify(referencedTables(props.value, lookup));
-  const schemaItems = useMemo<CompletionItem[]>(
-    () => catalogCompletions(props.tables, props.database),
-    [props.tables, props.database],
-  );
 
   useImperativeHandle(
     ref,
@@ -194,14 +178,14 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     const worker = new Worker(new URL("../../workers/completion.worker.ts", import.meta.url), {
       type: "module",
     });
-    completion.current = worker;
-    worker.onmessage = ({
-      data,
-    }: MessageEvent<{ type: string; id: number; revision: number; items?: Completion[] }>) => {
-      if (data.type !== "suggestions") return;
-      pending.current.get(data.id)?.(data.revision === revision.current ? (data.items ?? []) : []);
-      pending.current.delete(data.id);
-    };
+    const session = new CompletionSession(
+      (message) => worker.postMessage(message),
+      (sessionId, table) => client.call<TableSchema>("table_schema", { sessionId, table }),
+      (error) => useStudio.getState().notify(messageOf(error)),
+    );
+    completion.current = session;
+    session.configure(latest.current);
+    worker.onmessage = ({ data }: MessageEvent<CompletionResponse>) => session.receive(data);
     const state = EditorState.create({
       doc: latest.current.value,
       extensions: [
@@ -221,26 +205,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           highlighting(latest.current.theme),
         ]),
         autocompletion({
-          override: [
-            async (context) => {
-              const word = context.matchBefore(/[\w.]+/);
-              if (!word || (!context.explicit && word.from === word.to)) return null;
-              const id = ++sequence.current;
-              const items = await new Promise<Completion[]>((resolve) => {
-                pending.current.set(id, resolve);
-                worker.postMessage({
-                  type: "prefix",
-                  id,
-                  prefix: word.text,
-                  revision: revision.current,
-                });
-                setTimeout(() => {
-                  if (pending.current.delete(id)) resolve([]);
-                }, 300);
-              });
-              return { from: word.from, options: items };
-            },
-          ],
+          override: [(context) => session.request(context)],
         }),
         keymap.of([
           {
@@ -265,18 +230,20 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           indentWithTab,
         ]),
         EditorView.updateListener.of((update) => {
+          if (update.docChanged || update.selectionSet) session.update(update.state);
           if (update.docChanged) latest.current.onChange(update.state.doc.toString());
         }),
       ],
     });
     view.current = new EditorView({ state, parent: host.current! });
+    session.update(state);
     return () => {
+      session.dispose();
+      completion.current = null;
       view.current?.destroy();
       view.current = null;
       worker.terminate();
       formatter.current?.terminate();
-      for (const resolve of pending.current.values()) resolve([]);
-      pending.current.clear();
     };
   }, []);
 
@@ -296,89 +263,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     });
   }, [props.engine]);
   useEffect(() => {
-    schemaCache.current.clear();
-  }, [props.sessionId, props.tables]);
-  useEffect(() => {
-    const current = ++revision.current;
-    let cancelled = false;
-    const keywords = [
-      "SELECT",
-      "FROM",
-      "WHERE",
-      "JOIN",
-      "LEFT JOIN",
-      "ORDER BY",
-      "GROUP BY",
-      "LIMIT",
-      "INSERT INTO",
-      "UPDATE",
-      "DELETE FROM",
-      "RETURNING",
-      "WITH",
-      "EXPLAIN",
-    ];
-    const base =
-      props.engine === "redis"
-        ? REDIS_COMMANDS.map((label) => ({ label, type: "keyword" }))
-        : [...schemaItems, ...keywords.map((label) => ({ label, type: "keyword" }))];
-    completion.current?.postMessage({ type: "replace", revision: current, items: base });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    if (props.sessionId && props.engine !== "redis") {
-      const referenced: { table: TableSchema["table"]; aliases: string[] }[] =
-        JSON.parse(referenceKey);
-      timer = setTimeout(() => {
-        void Promise.all(
-          referenced.map(({ table }) => {
-            const key = JSON.stringify(table);
-            let request = schemaCache.current.get(key);
-            if (!request) {
-              request = client.call<TableSchema>("table_schema", {
-                sessionId: props.sessionId,
-                table,
-              });
-              schemaCache.current.set(key, request);
-              request.catch(() => schemaCache.current.delete(key));
-            }
-            return request;
-          }),
-        )
-          .then((schemas) => {
-            if (cancelled || revision.current !== current) return;
-            const columns = schemas.flatMap((schema, i) =>
-              schema.columns.flatMap((column) =>
-                [
-                  column.name,
-                  `${schema.table.name}.${column.name}`,
-                  `${schema.table.schema}.${schema.table.name}.${column.name}`,
-                  ...(props.database
-                    ? [
-                        `${props.database}.${schema.table.schema}.${schema.table.name}.${column.name}`,
-                      ]
-                    : []),
-                  ...referenced[i].aliases.map((alias) => `${alias}.${column.name}`),
-                ].map((label) => ({
-                  label,
-                  type: "property",
-                  detail: `${schema.table.name} · ${column.databaseType}`,
-                })),
-              ),
-            );
-            completion.current?.postMessage({
-              type: "replace",
-              revision: current,
-              items: [...base, ...columns],
-            });
-          })
-          .catch((error) => {
-            if (!cancelled) useStudio.getState().notify(messageOf(error));
-          });
-      }, 100);
+    if (completion.current?.configure(props) && view.current) {
+      closeCompletion(view.current);
+      completion.current.update(view.current.state);
     }
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [schemaItems, props.sessionId, props.engine, props.database, referenceKey]);
+  }, [props.tables, props.sessionId, props.engine, props.database, props.defaultSchema]);
   return <div className="sql-editor" ref={host} />;
 });
 
@@ -394,7 +283,7 @@ function editorLanguage(engine: EngineKind) {
     engine === "redis"
       ? []
       : sql({
-          dialect: engine === "postgres" ? PostgreSQL : engine === "mysql" ? MySQL : StandardSQL,
+          dialect: sqlDialect(engine),
         }),
     EditorView.contentAttributes.of({
       "aria-label": engine === "redis" ? "Redis command editor" : "SQL editor",

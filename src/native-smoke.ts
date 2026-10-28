@@ -3,6 +3,12 @@ import { resultCache } from "./data/result-cache";
 import { useStudio } from "./state/studio";
 import type { ResourceUsage, ResultInfo } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { EditorState } from "@codemirror/state";
+import { CompletionContext } from "@codemirror/autocomplete";
+import { sql } from "@codemirror/lang-sql";
+import { CompletionSession } from "./features/studio/completion-session";
+import { sqlDialect } from "./features/studio/sql-identifiers";
+import type { CompletionResponse } from "./data/completion-protocol";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -87,6 +93,58 @@ export async function runNativeSmoke() {
       { id: 1, sql: "select 1", language: "postgresql" },
     )) as { sql?: string };
     assert(formatted.sql?.includes("SELECT"), "Native SQL formatter failed");
+    const completionWorker = new Worker(
+      new URL("./workers/completion.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    const table = { schema: "public", name: "completion.names" };
+    const completion = new CompletionSession(
+      (message) => completionWorker.postMessage(message),
+      async () => ({
+        table,
+        columns: [{ ...result.columns[0], name: 'No"tes' }],
+        primaryKey: [],
+        foreignKeys: [],
+        editable: false,
+      }),
+      () => {
+        report.completionMetadataError = true;
+      },
+    );
+    try {
+      completionWorker.onmessage = ({ data }: MessageEvent<CompletionResponse>) =>
+        completion.receive(data);
+      completion.configure({
+        engine: "postgres",
+        sessionId: "native-synthetic",
+        tables: [{ table, kind: "BASE TABLE", estimatedRows: null, totalBytes: null }],
+      });
+      const doc = 'SELECT f."No" FROM public."completion.names" f';
+      const position = doc.indexOf('"No"') + 3;
+      const state = EditorState.create({
+        doc,
+        selection: { anchor: position },
+        extensions: [sql({ dialect: sqlDialect("postgres") })],
+      });
+      const suggestion = await completion.request(new CompletionContext(state, position, true));
+      assert(suggestion?.options[0]?.apply === 'f."No""tes"', "Native scoped completion failed");
+      const accepted = state
+        .update({
+          changes: {
+            from: suggestion.from,
+            to: suggestion.to,
+            insert: suggestion.options[0].apply as string,
+          },
+        })
+        .state.doc.toString();
+      assert(
+        accepted === 'SELECT f."No""tes" FROM public."completion.names" f',
+        "Native completion changed surrounding SQL",
+      );
+    } finally {
+      completion.dispose();
+      completionWorker.terminate();
+    }
     const tabId = useStudio
       .getState()
       .openQuery(null, "SELECT exact_integer, null_value, empty_value, unicode;");
@@ -164,6 +222,7 @@ export async function runNativeSmoke() {
       "NULL and empty",
       "Unicode",
       "formatter worker",
+      "scoped completion worker and quoted acceptance",
       "CodeMirror",
       "Canvas grid",
       "native close guard",
