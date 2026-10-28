@@ -411,3 +411,49 @@ This ships validation tooling, excluded from the normal application build.
 Preview.11 remains the app download. Representative total-idle memory, cold
 visible startup and display FPS remain unqualified. Current validation and merge
 evidence is recorded on the private project hub.
+
+
+## Scoped SQL completion repair (local, unmerged)
+
+On 2026-10-28, task branch `fix/scoped-sql-completion` implements the bounded
+SQL-editor repair described in the [DataGrip feature matrix](datagrip-feature-matrix.md)
+and [implementation roadmap](implementation-roadmap.md). The audit baseline is
+`bbba421`; audit/roadmap commit `16a49e3` precedes the application change. This is
+local implementation evidence, not a release or installation. Preview.11 remains
+the existing app download and the private hub remains canonical shipping status.
+
+- CodeMirror token scopes isolate statements, nested queries and set-operation
+  arms, ignore comments/literals and suppress unsupported CTE/derived outputs.
+  Structured identifiers preserve quoting, case, Unicode, embedded dots and
+  escaped delimiters; ambiguous short names require qualification.
+- Per-editor completion lifecycle retains at most eight metadata entries/reads,
+  sends at most 100 suggestions and rejects stale document/caret/context/index
+  responses. Cancelled waiters release old documents even if metadata is slow.
+  Catalog indexing stays stable while typing; successful table metadata survives
+  another table's denial. Existing Rust metadata/execution/Safe Mode paths remain.
+- Passed `pnpm validate`: 59 frontend tests and 83 Rust tests, formatting, types,
+  frontend build, Cargo check and strict Clippy. The full browser suite passed
+  20 workflows; the final completion/Snowflake rerun passed six. Actual accepted
+  SELECTs return expected values on PostgreSQL 18, MySQL 8.4 and MariaDB 11.4;
+  Snowflake is synthetic, with no live account qualification.
+- Three selected ignored Rust fixtures pass: repeated PostgreSQL resource
+  cleanup, MySQL/MariaDB metadata/paging and TLS-through-SSH hostname checks.
+  The full ignored suite was not executed because some fixtures issue DROP SQL;
+  real OS credential-store checks also remain unrun. No production queries.
+- Final-source `pnpm desktop:build`, `pnpm desktop:bundle:mac`,
+  `pnpm desktop:smoke:build` and `pnpm test:native` pass on macOS 27.2 arm64.
+  The macOS app bundle passes strict ad-hoc signature verification. Three hidden
+  native runs pass (30 cleanup cycles total), including the real completion
+  worker's escaped-name acceptance plus existing Arrow/editor/grid/close checks.
+  Builds were made from the task working tree before its implementation commit
+  (`sourceDirty=true`); logs and binary provenance remain in `.cache/`. No
+  installed app was changed, and Developer ID/notarization remain open.
+
+The measured 100,000-name warm index p95 is 0.10 ms. Warm explicit visible popup
+p95 is 55–61 ms, above the blueprint's 50 ms target; CodeMirror 6.20.4 has a fixed
+50 ms explicit-start delay. These are headless Chromium observations, not native
+WebView, cold metadata, startup, total-memory or FPS qualification. The matrix
+records samples and limitations. Live database/schema/search-path/role revisions,
+full CTE/derived/correlated inference and FK JOIN generation remain separate work.
+No dependency replacement, new state manager, privileged IPC command or backend
+authorization change is introduced.

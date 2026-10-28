@@ -229,7 +229,10 @@ source/test comparison, including verified gaps and intentional restrictions.
 The [implementation roadmap](implementation-roadmap.md) adds a dependency-ordered
 delivery sequence without replacing these milestones or the private project
 hub's shipping status. Its first batch repairs SQL completion scope, quoting and
-stale responses; live role/search-path tracking and JOIN generation follow.
+stale responses; the bounded repair is locally implemented and tested (see the
+matrix evidence). Live role/search-path tracking and JOIN generation follow.
+The measured warm lookup target passes, while visible completion latency and
+representative native performance remain open qualification work.
 
 ## SQL Studio and session management
 

@@ -43,7 +43,8 @@ found in the bounded source scope. `INTENTIONALLY_UNSUPPORTED` preserves an
 explicit product restriction. Confidence H/M means high/medium source-evidence
 confidence, independently of verification status.
 
-Each row is a feature record. The evidence keys below provide source files,
+Each row is a feature record. The final section records the implemented batch;
+status rows reflect that bounded evidence, while the baseline table stays historical. The evidence keys below provide source files,
 symbols, existing tests, observed implementation, and limitations. The last
 column names additional required tests and release eligibility: **hold** means
 the whole capability is incomplete/unverified; **existing** means consult the
@@ -63,7 +64,7 @@ Complexity is Low/Medium/High. Priority P0–P3 is separate from blueprint miles
 |---|---|---|
 | C | `src/features/connections/ConnectionDialog.tsx` (`ConnectionDialog`, `ConnectDialog`), `GroupManager.tsx`; `src-tauri/src/execution.rs` (`Studio.connect`, profile/group validation); `secrets.rs`, `ssh.rs` | ConnectionDialog/SshHostTrust tests, `src-tauri/tests/{groups,credential_store,ssh,snowflake_profile}.rs`, `tests/e2e/connections.spec.ts`. One bastion, explicit trust, OS secrets. Native locked-store and external auth qualification open |
 | D | `src-tauri/src/drivers/{mod,postgres,mysql,redis,snowflake}.rs`, engine catalog modules; `domain.rs` (`EngineCapabilities`, `SessionInfo`, `TableSchema`, `ForeignKey`) | `src-tauri/tests/{postgres,mysql,redis,redis_transport}.rs`, Snowflake catalog/lifecycle/compression fixtures. SQL engines and Redis have distinct behavior; Snowflake is read-only. FK records are per-column without constraint identity/ordinal |
-| E | `src/features/studio/SqlEditor.tsx`, `sql-context.ts` (`selectedStatement`, `referencedTables`, `tableLookup`, `catalogCompletions`), `src/data/completion-index.ts`, completion/formatter workers | `sql-context.test.ts`, `completion-index.test.ts`, browser studio/mysql/snowflake specs. Baseline regex scans whole documents; default context is configured, not live SQL-session context |
+| E | `src/features/studio/SqlEditor.tsx`, `sql-context.ts` (`selectedStatement`, `referencedTables`, `tableLookup`, `catalogCompletions`), `completion-session.ts` (`CompletionSession`, `CompletionSchemas`), `sql-identifiers.ts`; `src/data/{completion-index,completion-protocol,sql-identifier}.ts` (`CompletionWorkerIndex`), completion/formatter workers | Context/session/protocol/index unit tests and browser completion/studio/mysql/snowflake specs. Baseline regex defects reproduced and repaired; current token reader and `completion-session.ts` cover bounded direct-base-table scopes. Default context is configured, not live SQL-session context |
 | X | `src-tauri/src/execution.rs` (`prepare_execution`, `store_plan`, `execute_plan`), `safety.rs` (`prepare`, AST visitor); `src/app/App.tsx` (`runSql`, `executePrepared`) | Safety unit tests and engine integration tests. Immutable expiring plans, one-use approval, cancellation quarantine, no replay. Plain EXPLAIN can use SQL; ANALYZE is not assumed read-only |
 | G | `src/features/grid/DatabaseGrid.tsx`, `ValueDialog.tsx`; `src/data/{dirty-store,result-cache,columnar}.ts`; table paging in `src/state/studio.ts`; backend `prepare_changes_batch` and driver `apply` | Dirty/cache/columnar tests and database/browser edit tests. Glide canvas, sparse overlay, primary-key provenance, atomic update plans. No arbitrary-result editing, PK editing, insert/delete grid workflow, sorting/filtering request, or atomic multi-cell paste handler |
 | N | `src/features/connections/Sidebar.tsx`, `src/features/studio/UtilityViews.tsx` (`StructureView`, `ProcessesView`, `HistoryView`) | Browser studio/mysql/snowflake specs. Selected connection's schema/table tree, substring filter, columns/types/PK/FK display. No general object kinds, DDL/dependency API, or graphical plans |
@@ -129,11 +130,11 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 ## SQL editing
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
-| E01 Dialect highlighting/parsing — DG-E | E | PARTIAL / H | PG/MySQL dialects, Snowflake StandardSQL fallback; handle dollar strings and disclose unsupported syntax | P1 / Medium | CodeMirror; PMS (R native console); read | Quoting/comments/procedural boundaries per dialect / hold |
+| E01 Dialect highlighting/parsing — DG-E | E | PARTIAL / H | PG/MySQL dialects plus Snowflake dollar strings; bounded token reader preserves Unicode names. Full procedural/dialect semantics remain open | P1 / Medium | CodeMirror; PMS (R native console); read | Quoting/comments/procedural boundaries per dialect / hold |
 | E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | Catalog/columns exist; live role/search-path/database tracking missing | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
-| E03 Statement/block/alias completion scope — DG-E | E | BROKEN / H | Reproduced references inside comments/strings and alias mixing across statements; restrict to caret block, respect CTE/derived shadows | P1 / Medium | E01; PMS; read | Regression corpus plus accepted browser suggestions / hold |
-| E04 Quoted identifier completion — DG-E | E | BROKEN / H | Reproduced quoted Orders resolving to orders; preserve segments, case, escapes and valid insertion | P1 / Medium | Identifier-aware lookup; PMS; read | Case twins, Unicode, embedded dots/delimiters / hold |
-| E05 Completion invalidation — DG-EC | E | PARTIAL / H | Metadata revision exists; verify document/caret/session/index revisions and bounded request cache | P1 / Medium | E03/E04; PMSR; local | Delayed/out-of-order/error/unmount races / hold |
+| E03 Direct-base-table statement/block/alias scope — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Caret block/UNION arm isolated; comments/strings ignored; CTE/derived shadows suppress physical columns. Advanced output inference remains outside this acceptance | P1 / Medium | E01; PMS; read | 24 context cases plus PM accepted-and-executed SELECTs and synthetic S browser flow; see batch evidence / local candidate, unmerged |
+| E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / local candidate, unmerged |
+| E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / local candidate, unmerged |
 | E06 FK JOIN suggestions — DG-E, DG-FK | D, E | MISSING / H | Add grouped constraint metadata, then explicit JOIN/ON insertion | P1 / High | E03/E04/N03; PM first; read | Composite FKs, aliases, multiple candidate relationships / hold |
 | E07 Syntax diagnostics and execution error locations — DG-I | E, X; AppError has code/message only | MISSING / H | Structured positions and UTF-8/UTF-16 mapping, navigate to offending statement | P1 / High | Error DTOs and adapters; PMS; read | Multibyte text, later-batch errors, driver missing position / hold |
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
@@ -215,11 +216,11 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | I02 Result retention and binary IPC | B | PARTIAL / H | Explicit budgets and binary transport exist; representative transient-copy/plateau measurements open | P0 / High | Native profiling; PMSR; local | Native binary payloads, wide rows, cleanup plateau / hold |
 | I03 Typed command calls | B generated DTOs / generic client.call | PARTIAL / H | Add closed command/request/response map without replacing IPC | P2 / Medium | Rust DTO export; PMSR; gate | Compile-time invalid command/argument cases / hold |
 | I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | Session/table-local caching exists; live role/search-path revisions missing | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
-| I05 Startup, completion and grid performance | Q, E, B | IMPLEMENTED_UNVERIFIED / H | Targets are documented, not demonstrated at representative packaged load | P0 release gate / High | Target hardware, measured scenarios; PMSR; local | p95 startup/completion/display and attributable memory/FPS / hold |
+| I05 Startup, completion and grid performance | Q, E, B | PARTIAL / H | 100k-name warm lookup p95 0.10 ms; explicit visible completion p95 55–61 ms misses 50 ms target. Representative native load, startup and FPS remain unqualified | P0 release gate / High | Target hardware, measured scenarios; PMSR; local | p95 startup/completion/display and attributable memory/FPS / hold |
 | I06 Packaging/signing/updates/platforms | Q | PARTIAL / H | macOS ad-hoc preview exists; signing/notarization, updater and packaged Windows/Linux open | P0 release gate / High | Credentials and platform hosts; PMSR; transport | Installer/update integrity and native runtime checks / hold |
 | I07 Recovery and metadata compatibility | L | PARTIAL / H | Version guards, WAL recovery and undo exist; broader historical upgrades/disk-loss cases open | P0 / High | Versioned persistence; PMSR; local | Migration fixtures, interrupted restore, unsupported stores / hold |
 
-## Reproduced first-slice failures
+## Reproduced first-slice failures (baseline; repaired)
 
 Baseline direct calls to `referencedTables` returned `customers` for
 `SELECT 'FROM customers secret' FROM orders o` and for a `-- FROM customers`
@@ -232,3 +233,80 @@ The selected repair is E03–E05 plus the required E01 lexical correction. It do
 not close E02/I04 live session-context tracking, E06 JOIN completion, or derived
 query-output inference. See [implementation-roadmap.md](implementation-roadmap.md)
 for the dependency order and verification contract.
+
+
+## Implemented batch: scoped completion repair
+
+Work is local on `fix/scoped-sql-completion`, based on fetched `bbba421`.
+The audit/roadmap commit is `16a49e3`. Application push, PR, merge, publication
+and installation are not authorized by this batch; preview.11 remains the
+existing download. **Local candidate** means tested implementation only.
+
+The workflow is: choose the connected SQL console, write a direct base-table
+reference, request a column at the caret, accept it, and execute a harmless
+SELECT. Disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4 return the expected
+value after accepting identifiers containing spaces/dots, mixed case and doubled
+quote delimiters. Snowflake browser responses are synthetic. Redis command
+completion stays on its existing grammar.
+
+`referencedTables` now reads CodeMirror token trees with limits of 65,536 UTF-16
+units per statement, 4,096 tokens and 64 nested groups; synchronous parsing gets
+10 ms. Larger statements/token scopes decline completion; unsupported semantic scopes
+decline contextual columns.
+CodeMirror's ASCII identifier lexer is supplemented only at Unicode error leaves,
+never inside strings/comments. Standard quoted names retain their segments.
+PostgreSQL folds unquoted names down, Snowflake up; MySQL resolves exact spellings
+first and rejects ambiguous folded matches. Short catalog names require an
+unambiguous lookup under the configured default. The reader never infers CTE or
+derived output columns, correlated outer bindings, renamed relation outputs,
+mixed INSERT/SELECT projections, final set-operation ordering, or PostgreSQL
+`U&` identifier escapes. These are explicit future inference work, not guessed
+physical-table bindings. MySQL server case settings and Snowflake session
+identifier parameters are not discovered live.
+
+`CompletionSession` is local to each existing CodeMirror instance. It keeps the
+catalog index stable across ordinary typing and replaces only scoped columns.
+Typed worker messages identify the document, caret, known connection/catalog
+context and actual installed index revision. Every obsolete/aborted/disposed
+request settles; metadata waiters are removed from the pending map on cancellation
+instead of retaining per-query callbacks and old documents. The total completion wait is bounded to two seconds. Metadata
+is prefetched after 100 ms, with at most eight retained entries and eight
+concurrent IPC reads. Retired queued reads are discarded, failed old entries
+cannot evict replacements, and one denied table does not erase other metadata.
+The backend `table_schema` command, privilege checks and Rust execution/Safe Mode
+ownership are unchanged. No credentials, new IPC endpoint or persistence schema
+are introduced. Live role/search-path tracking remains E02/I04.
+
+Current check evidence (2026-10-28, macOS Apple Silicon, local Node 24/Rust tools):
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 59 frontend tests, 83 Rust tests; frontend build, formatting, type checking, native check and strict Clippy |
+| Passed | Full `pnpm test:e2e`: 20 workflows, including new PG/MySQL/MariaDB escaped-name SELECT acceptance, existing editing/Safe Mode/cancellation/recovery/Redis and synthetic Snowflake |
+| Passed | After the final scope-boundary corrections, `pnpm test:e2e tests/e2e/completion.spec.ts tests/e2e/snowflake.spec.ts`: six workflows |
+| Passed | Targeted ignored Rust fixtures: PostgreSQL ten connect/run/release/disconnect cycles; MySQL/MariaDB catalog/keys/paging/read-only tables; PostgreSQL TLS-through-SSH correct-host success and wrong-host rejection |
+| Passed | Final-source `pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature), `pnpm desktop:smoke:build`, `pnpm test:native`: three hidden runs/30 cleanup cycles including actual completion worker acceptance |
+| Failed then repaired | Pre-fix lexical/CTE regressions, ambiguous catalog names, unfinished nested blocks and unsupported projection cases. The intermediate Snowflake browser assertion expected unquoted PUBLIC; it now checks the valid quoted insertion and subsequent suggestions |
+| Skipped | Baseline Rust runner reports 29 ignored tests; three were run separately above. The entire ignored suite was not run: some fixtures issue DROP statements, excluded by the user's test constraint. Real credential-store interactions remain unrun |
+| Blocked by environment | Initial shell-toolchain and Chromium sandbox attempts were resolved; no outstanding environment blocker for this bounded slice |
+| Not executed | Production/account qualification, packaged Windows/Linux runtime, signing/notarization, installed-app update and broad native performance qualification |
+
+The latest local logs are ignored artifacts under `.cache/completion-*.log`.
+Native bundle/smoke outcomes are recorded alongside the final implementation
+entry in `IMPLEMENTATION_STATUS.md`.
+
+Performance evidence is reproducible with `tests/e2e/completion.spec.ts` and saved
+under `.cache/benchmarks/`. Headless Chromium 156, one local machine: 100,000 names,
+1,000 warm prefix samples, p95 **0.10 ms** (5 ms target); index construction
+**9.8 ms**. Twenty warm explicit-popup samples per fixture measured p95
+**60.6 / 54.9 / 57.0 ms** for PostgreSQL/MySQL/MariaDB, missing the 50 ms visible
+target. Installed `@codemirror/autocomplete` 6.20.4 schedules explicit starts
+with a fixed 50 ms timer; no dependency patch or editor replacement was made.
+Automatic typing retains CodeMirror's 100 ms activation delay. These figures
+exclude cold metadata latency from the warm sample and do not establish native
+WebView, large-catalog visible latency, total memory, startup or FPS targets.
+
+Identifier rules were cross-checked against official
+[PostgreSQL lexical documentation](https://www.postgresql.org/docs/current/sql-syntax-lexical.html),
+[MySQL object naming](https://dev.mysql.com/doc/refman/8.4/en/identifiers.html), and
+[Snowflake identifier requirements](https://docs.snowflake.com/en/sql-reference/identifiers-syntax).

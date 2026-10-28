@@ -47,7 +47,32 @@ and resolved. No production access is needed or authorized.
   PostgreSQL/MySQL/Snowflake share the existing architecture; Redis keeps its
   native grammar and command completion.
 
-### Acceptance and test evidence to collect
+### First-slice result (2026-10-28)
+
+The bounded repair is implemented locally. See the matrix's final evidence
+section for scope and outcomes: 59 frontend tests, 83 Rust tests, 20 browser
+workflows and the six-workflow final completion/Snowflake rerun pass. Three
+selected read-only Rust integration workflows additionally verify cleanup,
+metadata paging and TLS hostname checks. Native packaging results are recorded
+in `IMPLEMENTATION_STATUS.md`. No application branch has been pushed or merged.
+
+The 100,000-name index meets the warm 5 ms lookup target in the measured browser
+sample (p95 0.10 ms). Warm explicit visible completion misses the 50 ms target
+(p95 55–61 ms); the installed CodeMirror scheduler adds a fixed 50 ms before
+requesting explicit suggestions. Treat visible scheduling/typing latency as a
+measured follow-up, without patching dependency internals or claiming native
+performance qualification. Keep cold metadata waits and large-catalog visible
+measurements separate.
+
+Next actionable P1 slice: Rust-owned live completion-context identity and
+revision (E02/I04), covering session database, schema/search path, role and
+metadata invalidation before FK JOIN generation. First define the adapter
+contract and fixture tests for SET/USE/role changes, permission failure and
+session replacement; then extend existing IPC and worker configuration.
+Console/session binding remains a separate prerequisite for independent console
+contexts. External release gates are still open and require their own scope.
+
+### Acceptance and verification contract
 
 1. Reproduce and then fix references in comments, strings, dollar quotes and
    separate statements; cover semicolons in literals, CTE/derived shadows, UNION
