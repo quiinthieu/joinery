@@ -17,6 +17,22 @@ concurrency:
 # repository becomes private. Do not add caches, artifact uploads, custom images,
 # larger runners, or external paid services without reviewing the cost policy.
 jobs:
+  commit-identity:
+    if: ${{ github.event.repository.visibility == 'public' }}
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Inspect the real PR head rather than GitHub's synthetic merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: node --test scripts/git-identity.test.mjs
+      - run: node scripts/git-identity.mjs --head
+
   check:
     if: ${{ github.event.repository.visibility == 'public' }}
     timeout-minutes: 45
