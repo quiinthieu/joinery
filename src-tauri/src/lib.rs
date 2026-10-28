@@ -4,6 +4,8 @@ pub mod domain;
 pub mod drivers;
 pub mod execution;
 mod files;
+#[cfg(any(feature = "native-smoke", test))]
+mod native_smoke_config;
 pub mod persistence;
 pub mod results;
 pub mod safety;
@@ -45,12 +47,19 @@ pub fn run() {
             #[cfg(feature = "native-smoke")]
             {
                 let root = std::path::PathBuf::from(std::env::var("JOINERY_NATIVE_SMOKE_ROOT")?);
+                let options = match std::fs::read(root.join("options.json")) {
+                    Ok(bytes) => native_smoke_config::SmokeOptions::parse(&bytes)
+                        .map_err(std::io::Error::other)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => native_smoke_config::SmokeOptions::default(),
+                    Err(error) => return Err(error.into()),
+                };
+                std::fs::write(root.join("startup.json"), serde_json::to_vec(&serde_json::json!({"pid": std::process::id()}))?)?;
                 app.manage(execution::Studio::with_secrets(&root, std::sync::Arc::new(secrets::MemorySecrets::default()))?);
-                app.manage(commands::NativeSmokeState { started, root: root.clone() });
+                app.manage(commands::NativeSmokeState { started, root: root.clone(), options });
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(25)).await;
-                    let _ = std::fs::write(root.join("report.json"), r#"{"passed":false,"error":"Native frontend did not finish within 25 seconds"}"#);
+                    tokio::time::sleep(std::time::Duration::from_secs(options.timeout_seconds())).await;
+                    let _ = std::fs::write(root.join("report.json"), r#"{"passed":false,"error":"Native frontend exceeded its configured test deadline"}"#);
                     handle.exit(1);
                 });
             }

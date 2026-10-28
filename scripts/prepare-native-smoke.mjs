@@ -23,5 +23,33 @@ const build = {
   architecture: process.arch,
   builtAt: new Date().toISOString(),
 };
+if (process.platform === "darwin") {
+  // LaunchServices gives this hidden fixture its own process responsibility.
+  // A directly spawned binary inherits the terminal/app's responsibility and
+  // cannot safely distinguish its WebKit helpers from unrelated WebViews.
+  const bundle = path.join(directory, "Joinery Native Smoke.app");
+  const contents = path.join(bundle, "Contents");
+  await mkdir(path.join(contents, "MacOS"), { recursive: true });
+  await copyFile(binary, path.join(contents, "MacOS", "joinery-smoke"));
+  await writeFile(
+    path.join(contents, "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>joinery-smoke</string>
+<key>CFBundleIdentifier</key><string>com.quiinthieu.joinery.native-smoke</string>
+<key>CFBundleName</key><string>Joinery Native Smoke</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSUIElement</key><true/>
+</dict></plist>
+`,
+  );
+  execFileSync("codesign", ["--force", "--sign", "-", bundle], { stdio: "pipe" });
+  build.bundle = bundle;
+  build.bundleBinarySha256 = createHash("sha256")
+    .update(await readFile(path.join(contents, "MacOS", "joinery-smoke")))
+    .digest("hex");
+}
 await writeFile(path.join(directory, "build.json"), JSON.stringify(build, null, 2));
 process.stdout.write(`Hidden native test executable: ${binary}\n`);

@@ -32,6 +32,7 @@ jobs:
           node-version-file: .nvmrc
       - run: node --test scripts/git-identity.test.mjs
       - run: node scripts/git-identity.mjs --head
+      - run: python3 -m unittest discover -s scripts -p test_runtime_memory.py
 
   check:
     if: ${{ github.event.repository.visibility == 'public' }}
