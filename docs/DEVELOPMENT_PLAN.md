@@ -224,6 +224,13 @@ Separate **execution status** from **result retention status**: a statement can 
 
 # Implementation blueprint
 
+The [DataGrip feature matrix](datagrip-feature-matrix.md) records the current
+source/test comparison, including verified gaps and intentional restrictions.
+The [implementation roadmap](implementation-roadmap.md) adds a dependency-ordered
+delivery sequence without replacing these milestones or the private project
+hub's shipping status. Its first batch repairs SQL completion scope, quoting and
+stale responses; live role/search-path tracking and JOIN generation follow.
+
 ## SQL Studio and session management
 
 ### Execution behavior

@@ -1,0 +1,234 @@
+# DataGrip workflow comparison and Joinery evidence
+
+Audit date: 2026-10-28. Baseline: `bbba42122df2c8303af5a275671144d9337a4454`.
+This is an engineering gap inventory, not a shipping tracker. The owner-private
+[project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site) remains the
+canonical release record. Its version 18 source (`63dd98e3`) was matched to the
+local hub checkout: preview.11 is the application release; later native-memory
+instrumentation is source tooling. Installation and release assets were not
+independently requalified in this audit.
+
+## Method and verification scope
+
+Compared source, generated DTOs, tests, CI, README, and the development blueprint
+with official DataGrip **2026.2** documentation accessed on the audit date. The
+graph project was `Users-billiesilvaner-orca-joinery`, generation
+`2026-10-28T10:10:41Z`. Tier 2 queries, call traces, and coverage checks guided
+discovery. Files marked metadata-changed were read directly. Generated IPC types
+are intentionally excluded from the graph. Fixture SQL parse gaps (MySQL lines
+8–10 and PostgreSQL line 27) were inspected directly. Graph coverage is a
+best-effort signal, not proof that every construct was indexed.
+
+Negative findings are bounded to the checked-in application surfaces, driver
+trait, domain types, commands, and tests at this revision. Generic SQL access does
+not count as a dedicated object editor, plan visualizer, or administration tool.
+Library support alone does not establish an integrated workflow.
+
+| Check | Outcome at baseline |
+|---|---|
+| `pnpm validate` | Passed with `.tools/env.sh`: 29 frontend tests, Rust tests, frontend build, formatting, native compilation and strict Clippy |
+| Initial validation attempt | Blocked by shell configuration: Node 22 and Cargo absent from PATH; resolved using existing local Node 24/Rust toolchains |
+| `pnpm test:e2e tests/e2e/snowflake.spec.ts` | Both synthetic workflows passed; first attempt was blocked before app load by Chromium macOS sandbox process registration |
+| Disposable PostgreSQL/MySQL/MariaDB/Redis integration | Not executed in the initial audit; ignored tests in baseline validation are not passing integration evidence |
+| Native credential-store qualification | Skipped by baseline, explicitly ignored |
+| Native smoke, desktop build and macOS bundle | Not executed in the initial audit |
+| Windows/Linux runtime, live Snowflake accounts, signing, performance targets | Not executed; remain external qualification gates |
+
+`VERIFIED_COMPLETE` means the stated bounded acceptance workflow passed on the
+recorded revision/environment, not DataGrip parity. `IMPLEMENTED_UNVERIFIED`
+means an implementation exists but this audit did not run its complete workflow.
+`PARTIAL` means a required behavior is absent or only a subset exists. `BROKEN`
+requires a reproduced failure. `MISSING` means no integrated implementation was
+found in the bounded source scope. `INTENTIONALLY_UNSUPPORTED` preserves an
+explicit product restriction. Confidence H/M means high/medium source-evidence
+confidence, independently of verification status.
+
+Each row is a feature record. The evidence keys below provide source files,
+symbols, existing tests, observed implementation, and limitations. The last
+column names additional required tests and release eligibility: **hold** means
+the whole capability is incomplete/unverified; **existing** means consult the
+hub for its existing release, without claiming new release qualification;
+**excluded** means outside the supported scope. No new application release is
+authorized by this document.
+
+Engines: **P** PostgreSQL, **M** MySQL/MariaDB, **S** Snowflake, **R** Redis.
+Security: **read** bounded metadata/results only; **gate** mutations must use
+Rust plans/approval; **local** local privacy/persistence; **transport** TLS,
+SSH and authentication; **engine** capability/privilege restrictions.
+Complexity is Low/Medium/High. Priority P0–P3 is separate from blueprint milestones.
+
+## Source and test evidence
+
+| Key | Implementation and important symbols | Existing tests and observed limits |
+|---|---|---|
+| C | `src/features/connections/ConnectionDialog.tsx` (`ConnectionDialog`, `ConnectDialog`), `GroupManager.tsx`; `src-tauri/src/execution.rs` (`Studio.connect`, profile/group validation); `secrets.rs`, `ssh.rs` | ConnectionDialog/SshHostTrust tests, `src-tauri/tests/{groups,credential_store,ssh,snowflake_profile}.rs`, `tests/e2e/connections.spec.ts`. One bastion, explicit trust, OS secrets. Native locked-store and external auth qualification open |
+| D | `src-tauri/src/drivers/{mod,postgres,mysql,redis,snowflake}.rs`, engine catalog modules; `domain.rs` (`EngineCapabilities`, `SessionInfo`, `TableSchema`, `ForeignKey`) | `src-tauri/tests/{postgres,mysql,redis,redis_transport}.rs`, Snowflake catalog/lifecycle/compression fixtures. SQL engines and Redis have distinct behavior; Snowflake is read-only. FK records are per-column without constraint identity/ordinal |
+| E | `src/features/studio/SqlEditor.tsx`, `sql-context.ts` (`selectedStatement`, `referencedTables`, `tableLookup`, `catalogCompletions`), `src/data/completion-index.ts`, completion/formatter workers | `sql-context.test.ts`, `completion-index.test.ts`, browser studio/mysql/snowflake specs. Baseline regex scans whole documents; default context is configured, not live SQL-session context |
+| X | `src-tauri/src/execution.rs` (`prepare_execution`, `store_plan`, `execute_plan`), `safety.rs` (`prepare`, AST visitor); `src/app/App.tsx` (`runSql`, `executePrepared`) | Safety unit tests and engine integration tests. Immutable expiring plans, one-use approval, cancellation quarantine, no replay. Plain EXPLAIN can use SQL; ANALYZE is not assumed read-only |
+| G | `src/features/grid/DatabaseGrid.tsx`, `ValueDialog.tsx`; `src/data/{dirty-store,result-cache,columnar}.ts`; table paging in `src/state/studio.ts`; backend `prepare_changes_batch` and driver `apply` | Dirty/cache/columnar tests and database/browser edit tests. Glide canvas, sparse overlay, primary-key provenance, atomic update plans. No arbitrary-result editing, PK editing, insert/delete grid workflow, sorting/filtering request, or atomic multi-cell paste handler |
+| N | `src/features/connections/Sidebar.tsx`, `src/features/studio/UtilityViews.tsx` (`StructureView`, `ProcessesView`, `HistoryView`) | Browser studio/mysql/snowflake specs. Selected connection's schema/table tree, substring filter, columns/types/PK/FK display. No general object kinds, DDL/dependency API, or graphical plans |
+| W | `src/state/{studio,workspace}.ts`, `src/app/{App,Workbench}.tsx`, `Preferences.tsx`; backend `persistence/workspace.rs` | Workspace/studio/modal/tab unit tests, `tests/e2e/workspace.spec.ts`. Query tabs, fixed commands, themes, layout preferences, opt-in bounded drafts. Frontend maps one session per profile; files/session chooser absent |
+| L | `src-tauri/src/persistence.rs`, `persistence/{workspace,recovery}.rs`, `commands/recovery.rs`; `MetadataRecovery.tsx` | Persistence/recovery tests and `tests/e2e/recovery.spec.ts`. Version/schema guards, WAL crash recovery, bounded snapshots and undo. Does not restore results, sessions, edits or execute SQL |
+| B | `src-tauri/src/results.rs` (`ResultStore`), `commands.rs` (`result_range`), `src/ipc/{client,generated}.ts`, Arrow worker, result cache | Result/cache/columnar unit tests; native smoke fixture. Rust 64 MiB, frontend 32 MiB/512 pages, dirty edits 8 MiB, result 100,000 rows, pages 500 rows/2 MiB, IPC 4 MiB. Generated DTOs but `call<T>(command: string, ...)` is not a closed command map |
+| Q | `scripts/{native-smoke.py,runtime_memory.py,verify-macos-bundle.mjs}`, `src/native-smoke.ts`, `.github/workflows/ci.yml`, `docs/IMPLEMENTATION_STATUS.md` | Python attribution tests, hidden WebView fixture, standard three-platform CI compilation. Hidden DOM readiness and synthetic cleanup are not visible startup, total representative idle memory, or FPS qualification |
+
+## Official DataGrip references
+
+Reference links are the behavior benchmark, not a promise that every engine has
+every feature. Do not copy JetBrains code, icons, or proprietary assets.
+
+- [DG-C: data sources, drivers, authentication and SSH/SSL](https://www.jetbrains.com/help/datagrip/data-sources-and-drivers-dialog.html)
+- [DG-S: sessions and client/session binding](https://www.jetbrains.com/help/datagrip/managing-connection-sessions.html)
+- [DG-N: database explorer and object actions](https://www.jetbrains.com/help/datagrip/database-explorer.html)
+- [DG-E: scoped completion and JOIN generation](https://www.jetbrains.com/help/datagrip/auto-completing-code.html)
+- [DG-EC: search-path and qualification completion settings](https://www.jetbrains.com/help/datagrip/settings-code-completion.html)
+- [DG-I: inspections](https://www.jetbrains.com/help/datagrip/code-inspection.html)
+- [DG-F: SQL formatting](https://www.jetbrains.com/help/datagrip/configure-the-sql-code-style.html)
+- [DG-R: refactoring and rename review](https://www.jetbrains.com/help/datagrip/refactoring-source-code.html)
+- [DG-T: live templates](https://www.jetbrains.com/help/datagrip/using-live-templates.html)
+- [DG-X: execution and script/playground resolution](https://www.jetbrains.com/help/datagrip/run-a-query.html)
+- [DG-P: query parameters](https://www.jetbrains.com/help/datagrip/settings-tools-database-user-parameters.html)
+- [DG-G: data editor](https://www.jetbrains.com/help/datagrip/data-editor-and-viewer.html)
+- [DG-V: rich value viewers](https://www.jetbrains.com/help/datagrip/tables-view-data.html)
+- [DG-FK: foreign keys and navigation](https://www.jetbrains.com/help/datagrip/foreign-keys.html)
+- [DG-IM: import](https://www.jetbrains.com/help/datagrip/import-data.html)
+- [DG-EX: export](https://www.jetbrains.com/help/datagrip/export-data.html)
+- [DG-D: database diagrams](https://www.jetbrains.com/help/datagrip/creating-diagrams.html)
+- [DG-M: schema comparison and migration review](https://www.jetbrains.com/help/datagrip/schema-comparison-and-migration.html)
+- [DG-Q: estimated/actual execution plans, tree/raw/graph views](https://www.jetbrains.com/help/datagrip/query-execution-plan.html)
+- [DG-SE: object, code, data and global search](https://www.jetbrains.com/help/datagrip/search-in-ide.html)
+- [DG-B: bookmarks](https://www.jetbrains.com/help/datagrip/bookmarks.html)
+- [DG-RL: recent locations](https://www.jetbrains.com/help/datagrip/recent-files-and-changes.html)
+- [DG-SQ: saved queries](https://www.jetbrains.com/help/datagrip/store-your-queries.html)
+- [DG-DOC: context documentation](https://www.jetbrains.com/help/datagrip/documentation-tool-window.html)
+
+## Database management
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+|---|---|---|---|---|---|---|
+| M01 Connections and environment profiles — DG-C | C, D | IMPLEMENTED_UNVERIFIED / H | Existing forms/core; rerun connect/test/disconnect on fixture matrix | P0 / Medium | Drivers; PMSR; transport | Engine/browser integration / existing |
+| M02 Authentication and credential storage — DG-C | C | PARTIAL / H | Password/keychain and Snowflake OAuth exist; broader auth and real locked-store cases need qualification | P1 / High | OS stores, engine auth; PMSR; transport | Native denial, token lifecycle and no-secret logging / hold |
+| M03 SSH/TLS and engine security — DG-C | C, D | IMPLEMENTED_UNVERIFIED / H | One-hop tunnels and hostname verification exist; rerun CA/name/trust/drop/cleanup cases | P0 / High | Transport; PMR (S uses HTTPS); transport | SSH/engine integration / existing |
+| M04 Hierarchical connection groups — DG-C | C | IMPLEMENTED_UNVERIFIED / H | Group policy and hierarchy exist; rerun UI moves and policy inheritance | P1 / Low | Profiles; PMSR; gate | Group/browser tests / existing |
+| M05 Multiple databases/schemas — DG-C, DG-EC | D, N, E | PARTIAL / H | Configured database plus discovered schemas; add explicit context selection and invalidation | P1 / High | Session context; PMS; read | Same-name objects across databases/roles / hold |
+| M06 Session management — DG-S | D, W | PARTIAL / H | Rust permits four sessions; UI needs explicit console binding and lifecycle controls | P1 / High | Context identity; PM, restricted S/R; engine | Two-console transaction/cancellation isolation / hold |
+| M07 Driver capabilities/configuration — DG-C | D | PARTIAL / H | Six capability booleans exist; finer object/analysis/auth capabilities need contracts | P2 / Medium | Driver trait/DTOs; PMSR; engine | Unsupported controls disabled and backend rejects / hold |
+
+## Database navigation
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| N01 Hierarchical schema/table/view explorer — DG-N | N, D | PARTIAL / H | Tables/views under selected connection; distinguish object kinds and keyboard tree semantics | P1 / Medium | Catalog; PMS; read | Keyboard traversal and view-specific actions / hold |
+| N02 Object filtering/search — DG-N, DG-SE | N | PARTIAL / H | Substring table filter exists; object-kind filters and cross-connection search missing | P1 / Medium | Object index; PMS; read | Search matches, empty/disconnected/denied states / hold |
+| N03 Columns, PKs and FKs — DG-N, DG-FK | D, N | PARTIAL / H | Basic structure exists; composite FK identity/order and navigation missing | P1 / Medium | Metadata DTOs; PMS; read | Composite constraints, multiple FKs to same target / hold |
+| N04 Indexes and constraints — DG-N | D, N | MISSING / H | Add bounded metadata and inspect definitions before mutation tools | P1 / Medium | Object metadata; PMS by capability; read | Unique/partial/expression indexes and denied metadata / hold |
+| N05 Triggers, functions, procedures, sequences — DG-N | D, N | MISSING / H | Add engine-specific discovery and inspection | P2 / High | Object identity/capabilities; PMS; read | Overloads, quoting and permission restrictions / hold |
+| N06 DDL viewing/object navigation — DG-N | N, D | MISSING / H | Fetch backend-owned definitions and navigate from explorer/editor | P1 / Medium | Object metadata; PMS; read | Quoted definitions and unavailable DDL / hold |
+| N07 Object dependency inspection — DG-N | D, N | MISSING / H | Add bounded dependency edges, cycles and navigation | P2 / High | N05/N06; PMS by capability; read | Cycles, missing objects and partial permissions / hold |
+| N08 Object creation/modification UI — DG-N, DG-M | X only supports explicit SQL | MISSING / H | Generate reviewable engine-aware DDL through existing authorization | P2 / High | N04–N07, plans; PM; gate | Preview/execution match and no automatic destructive operation / hold |
+
+## SQL editing
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| E01 Dialect highlighting/parsing — DG-E | E | PARTIAL / H | PG/MySQL dialects, Snowflake StandardSQL fallback; handle dollar strings and disclose unsupported syntax | P1 / Medium | CodeMirror; PMS (R native console); read | Quoting/comments/procedural boundaries per dialect / hold |
+| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | Catalog/columns exist; live role/search-path/database tracking missing | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
+| E03 Statement/block/alias completion scope — DG-E | E | BROKEN / H | Reproduced references inside comments/strings and alias mixing across statements; restrict to caret block, respect CTE/derived shadows | P1 / Medium | E01; PMS; read | Regression corpus plus accepted browser suggestions / hold |
+| E04 Quoted identifier completion — DG-E | E | BROKEN / H | Reproduced quoted Orders resolving to orders; preserve segments, case, escapes and valid insertion | P1 / Medium | Identifier-aware lookup; PMS; read | Case twins, Unicode, embedded dots/delimiters / hold |
+| E05 Completion invalidation — DG-EC | E | PARTIAL / H | Metadata revision exists; verify document/caret/session/index revisions and bounded request cache | P1 / Medium | E03/E04; PMSR; local | Delayed/out-of-order/error/unmount races / hold |
+| E06 FK JOIN suggestions — DG-E, DG-FK | D, E | MISSING / H | Add grouped constraint metadata, then explicit JOIN/ON insertion | P1 / High | E03/E04/N03; PM first; read | Composite FKs, aliases, multiple candidate relationships / hold |
+| E07 Syntax diagnostics and execution error locations — DG-I | E, X; AppError has code/message only | MISSING / H | Structured positions and UTF-8/UTF-16 mapping, navigate to offending statement | P1 / High | Error DTOs and adapters; PMS; read | Multibyte text, later-batch errors, driver missing position / hold |
+| E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
+| E09 SQL formatting — DG-F | E, formatter.worker.ts | PARTIAL / H | Whole-document worker formatting exists; selection formatting and per-dialect settings missing | P2 / Medium | Editor selections; PMS; local | Comments/literals unchanged and stale formatter results ignored / hold |
+| E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
+| E11 Go to definition and usages — DG-SE | E, N | MISSING / H | Resolve identifiers to metadata/editor locations | P1 / High | E02/N06; PMS; read | Ambiguity and inaccessible objects / hold |
+| E12 Snippets/live templates — DG-T | E | MISSING / H | Local dialect-aware templates with keyboard placeholders | P2 / Medium | Existing editor/persistence; PMS; local | Expansion/undo and no automatic execution / hold |
+| E13 Statement navigation — DG-X | E selectedStatement | PARTIAL / H | Caret/selection execution exists; next/previous statement navigation missing | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, large documents / hold |
+| E14 Multiple consoles/files — DG-S, DG-SQ | W | PARTIAL / H | Query tabs exist; file I/O and explicit session binding absent | P1 / High | M06, native file capability; PMSR; local | Unsaved changes, session isolation, file permissions / hold |
+| E15 Query parameters — DG-P | X; no typed editor parameter workflow | MISSING / H | Bind values through engine adapters and include bindings in reviewed plan | P1 / High | Typed execution request; PMS by capability; gate | Literal/comment exclusion, NULL/types, approval digest / hold |
+| E16 Context documentation — DG-DOC | E, N | MISSING / H | Metadata documentation at caret with permission-aware fallback | P2 / Medium | E11; PMS; read | Correct object, stale/denied metadata / hold |
+
+## Query execution
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| X01 Statement/script execution — DG-X | X, E | IMPLEMENTED_UNVERIFIED / H | Preflight and sequential execution exist; rerun exact statement/selection/batch fixtures | P0 / Medium | Drivers/safety; PMS, R command grammar; gate | Partial failures, comments, unknown SQL / existing |
+| X02 Multiple result sets — DG-X, DG-G | X, B, W | IMPLEMENTED_UNVERIFIED / H | Results/subtabs exist; verify prior results survive later failures | P0 / Medium | Retention; PMS; read | Empty/multiple result sets and later errors / existing |
+| X03 Async execution/cancellation — DG-X | X, D | IMPLEMENTED_UNVERIFIED / H | Owned cancellation/quarantine exist; rerun races and cleanup | P0 / High | Jobs/session lifetime; PMSR; engine | Queued/active/late cancellation, lost acknowledgements / existing |
+| X04 Transactions/session controls — DG-S | X, D, W | PARTIAL / H | Explicit SQL transactions work on PM; UI state and session controls missing; S/R transactions excluded | P1 / High | M06; PM; gate | Transaction isolation and grid/editor separation / hold |
+| X05 Execution metrics — DG-X, DG-Q | QueryEvent, W | PARTIAL / H | Client elapsed/affected rows exist; queue/first-row/server timing missing | P2 / Medium | Driver metrics; PMSR; read | Correct units and no client/server-time conflation / hold |
+| X06 Query history — DG-SQ | N, L, X | IMPLEMENTED_UNVERIFIED / H | Search/reopen and opt-in text exist; rerun privacy and replay paths | P1 / Low | Persistence/plans; PMSR; local | Metadata-only history and explicit rerun authorization / existing |
+| X07 Raw EXPLAIN — DG-Q | X, safety AST visitor | PARTIAL / H | SQL entry point exists; capability-aware action and plan result typing missing | P2 / Medium | A01; PMS by capability; gate | Nested writes and ANALYZE approval / hold |
+| X08 Error reporting/navigation — DG-X | AppError, QueryEvent.Error, W | PARTIAL / H | Error panel exists; statement source ranges/navigation absent | P1 / Medium | E07; PMSR; read | Unicode offsets and missing server positions / hold |
+
+## Data exploration and editing
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| G01 Virtualized tabular browsing — DG-G | G, B | IMPLEMENTED_UNVERIFIED / H | Glide/million-row synthetic grid exists; rerun responsiveness and native evidence | P0 / Medium | Arrow/cache; PMS; read | Fast scrolling, empty/wide values; FPS separate / existing |
+| G02 Pagination — DG-G | G, D | PARTIAL / H | PM keyset paging exists; keyless and S previews intentionally bounded | P1 / High | Stable row identity; PMS; read | Composite keys, evicted pages, changing live rows / hold |
+| G03 Server sorting/filtering — DG-G | Driver.browse has only schema/after | MISSING / H | Typed predicates and sort keys with PK tie-breakers | P1 / High | Paging/provenance; PM first; read | NULL ordering, duplicates, injection and edit identity / hold |
+| G04 Cell editing — DG-G | G, X | IMPLEMENTED_UNVERIFIED / H | Typed table edits exist; rerun write/readback and unsupported-type gates | P0 / High | Provenance/change plans; PM; gate | Constraint/conflict/rollback tests / existing |
+| G05 Multiple-cell paste — DG-G | DatabaseGrid.onCellEdited only | MISSING / H | Validate complete paste before changing the sparse overlay | P1 / Medium | Dirty budget/type validation; PM; gate | Mixed invalid cells, NULL/empty and all-or-nothing local update / hold |
+| G06 Dirty tracking and review/commit/rollback — DG-G | G, X | IMPLEMENTED_UNVERIFIED / H | Sparse edits and atomic server commits exist; verify across retained pages | P0 / High | Original identity; PM; gate | Revert, discard, conflict, lost commit acknowledgement / existing |
+| G07 JSON/array/binary/large-value viewers — DG-V | ValueDialog, columnar, D | PARTIAL / H | Text/JSON and bounded previews exist; dedicated array/binary viewers absent | P2 / Medium | Lossless value metadata; PMSR; read | Fidelity, size caps and unsupported edits / hold |
+| G08 FK data navigation — DG-FK | N displays FK labels only | MISSING / H | Parameterized target browsing from a selected relationship | P1 / Medium | N03/G03; PM first; read | Composite/NULL keys and denied target / hold |
+| G09 Multi-row insert/delete — DG-G | G; backend changes are updates | MISSING / H | Add explicit row mutation kinds and immutable reviewed plans | P2 / High | Defaults/generated values/identity; PM; gate | Atomic batch, returned identities and uncertain outcomes / hold |
+| G10 Column management — DG-G | G | PARTIAL / H | Resize and first-PK freeze exist; hide/reorder/persist configuration missing | P2 / Medium | Stable column identity; PMS; local | Schema refresh and reordered paste alignment / hold |
+| G11 Export — DG-EX | B/G bounded clipboard copy only | MISSING / H | Explicit destination and bounded Rust streaming export | P1 / High | Native file capability/stream ownership; PMS; local | Cancellation, exact values, partial files, no implicit disk retention / hold |
+| G12 Import — DG-IM | X, no import workflow | MISSING / H | Mapping/validation/preview and backend-authorized batches | P2 / High | G09, native file capability; PM; gate | Invalid rows, budgets, rollback and no automatic retries / hold |
+| G13 Data comparison — DG-G | G | MISSING / H | Key-aware bounded comparison with explicit snapshot/live semantics | P2 / High | Identity and streaming; PM first; read | Duplicates, NULL/type differences and bounded memory / hold |
+| G14 Arbitrary SQL result editing | G, X | INTENTIONALLY_UNSUPPORTED / H | Preserve read-only joins/views/aggregates and unsupported keys/types | P3 / High | Future proof of provenance; PMS; gate | Existing rejection regressions / excluded |
+
+## Database design
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| D01 ER diagrams — DG-D | D has basic FK metadata; no diagram UI | MISSING / H | Interactive bounded relationship graph | P2 / High | N03/N07; PMS by capability; read | Large schemas, cycles, keyboard access / hold |
+| D02 Schema snapshots/comparison — DG-M | L snapshots app metadata only | MISSING / H | Engine schema snapshots with version/context and deterministic diff | P2 / High | N04–N07; PM first; read | Reordered metadata, quoted names, unsupported objects / hold |
+| D03 DDL generation — DG-N, DG-M | X executes explicit SQL only | MISSING / H | Generate accurate object definitions and changes in Rust | P2 / High | N06/D02; PM first; gate | Round trips in disposable schemas / hold |
+| D04 Migration review/synchronization — DG-M | X existing plan gateway | MISSING / H | Explicit selection and approval of immutable generated changes | P2 / High | D02/D03; PM; gate | Drift, destructive diffs, implicit commits, no unattended apply / hold |
+| D05 Index/constraint editing — DG-N | D/N lack management workflows | MISSING / H | Preview engine-specific additions/changes and authorize exact DDL | P2 / High | N04/D03; PM; gate | Composite/partial indexes, lock impact and failures / hold |
+
+## Developer productivity
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| P01 Search Everywhere/object symbol search — DG-SE | N substring filter, W command palette | PARTIAL / H | Unified object/action/query navigation with scoped metadata | P1 / Medium | Object identity/index; PMSR; read | Keyboard search and inaccessible/offline scopes / hold |
+| P02 Recent locations/bookmarks — DG-RL, DG-B | W history and tab state only | MISSING / H | Bounded location history and named bookmarks | P2 / Medium | Stable document/object IDs; PMSR; local | Reopen/missing-object and privacy behavior / hold |
+| P03 Saved queries/scratch files — DG-SQ | W opt-in drafts/history | PARTIAL / H | Named saved-query library and explicit file operations | P2 / Medium | E14/persistence; PMSR; local | Opt-in content, overwrite and recovery / hold |
+| P04 Keyboard navigation — DG-SE | W, Modal, tabs helpers | PARTIAL / H | Existing tab/dialog/resize flows; full explorer/grid accessibility open | P1 / Medium | Accessible controls; PMSR; local | Keyboard end-to-end and native assistive tech / hold |
+| P05 Command palette/custom shortcuts — DG-SE | App command list | PARTIAL / H | Fixed actions exist; discoverable contextual actions and rebinding missing | P2 / Medium | Command registry; PMSR; local | Conflicts, focus scopes, disabled capabilities / hold |
+| P06 Workspace layouts/tab management — DG-S | W | PARTIAL / H | One-window panes/tabs and resize exist; richer persisted layout/tab controls absent | P2 / Medium | Existing Zustand/workspace DTO; PMSR; local | Restart, resize, dirty close, session independence / hold |
+| P07 Settings/themes — DG-C, DG-F | W, Preferences | IMPLEMENTED_UNVERIFIED / H | Dark/light/contrast and density exist; rerun persisted UI behavior | P2 / Low | Local metadata; PMSR; local | Restart/theme/editor/grid consistency / existing |
+| P08 Draft/session recovery — DG-SQ | W, L | PARTIAL / H | Opt-in drafts/settings recover; sessions/results/edits intentionally do not | P0 / High | Persistence; PMSR; local | Crash/opt-out/close flush; no connect or execution / existing |
+
+## Advanced tools
+
+| ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| A01 EXPLAIN visualizer — DG-Q | X raw SQL, no plan UI/DTO | MISSING / H | Raw and normalized tree views with explicit engine support | P2 / High | Plan adapters/capabilities; PM first, S separately; gate | Raw/tree consistency, ANALYZE authorization / hold |
+| A02 Query analysis/profiling/plan comparison — DG-Q | X05 basic elapsed metrics | MISSING / H | Estimated/actual metrics and comparable plan snapshots | P2 / High | A01/X05; engine-specific; gate | Units, estimates vs actuals, unknown metrics and budgets / hold |
+| A03 Index/storage statistics — DG-N, DG-Q | TableInfo estimatedRows/totalBytes | PARTIAL / H | Some estimates exist; index utilization/storage tools missing | P2 / Medium | N04, permission-aware stats; PM first; read | No automatic COUNT, stale estimates and permission denial / hold |
+| A04 Session/process monitoring — DG-S | ProcessesView, Driver.processes | PARTIAL / H | PM process listing and guarded PG cancellation exist; broader monitoring not implemented | P2 / High | Stable process identity; PM; gate | Permission denial, reused IDs, own-session races / hold |
+| A05 Lock inspection | D process data only | MISSING / M | Add engine-specific bounded lock/wait inspection; dedicated DataGrip lock-tool equivalence not established by cited docs | P2 / High | Process/lock metadata; PM; read | Blocking chains, races, partial privileges / hold |
+| A06 Engine administration | X explicit SQL; R command allowlist | PARTIAL / H | Dedicated admin workflows absent; benchmark each engine rather than assume uniform DataGrip support | P3 / High | Explicit capabilities/plans; engine-specific; gate | Privilege boundaries and operation-specific rollback limits / hold |
+| A07 Snowflake writes, Redis Cluster/Sentinel/streams/PubSub, external MySQL process kill | D, README restrictions | INTENTIONALLY_UNSUPPORTED / H | Preserve current restrictions; future projects need independent capability/security design | P3 / High | Separate compatibility projects; SMR; engine | Existing rejection tests / excluded |
+
+## Internal architecture and qualification
+
+| ID / feature | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
+| I01 Rust ownership and Safe Mode | X, C, D | IMPLEMENTED_UNVERIFIED / H | Core enforcement exists; retain all bypass and integration checks | P0 / High | Existing gateway; PMSR; gate | All entry points, stale approval, nested writes / existing |
+| I02 Result retention and binary IPC | B | PARTIAL / H | Explicit budgets and binary transport exist; representative transient-copy/plateau measurements open | P0 / High | Native profiling; PMSR; local | Native binary payloads, wide rows, cleanup plateau / hold |
+| I03 Typed command calls | B generated DTOs / generic client.call | PARTIAL / H | Add closed command/request/response map without replacing IPC | P2 / Medium | Rust DTO export; PMSR; gate | Compile-time invalid command/argument cases / hold |
+| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | Session/table-local caching exists; live role/search-path revisions missing | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
+| I05 Startup, completion and grid performance | Q, E, B | IMPLEMENTED_UNVERIFIED / H | Targets are documented, not demonstrated at representative packaged load | P0 release gate / High | Target hardware, measured scenarios; PMSR; local | p95 startup/completion/display and attributable memory/FPS / hold |
+| I06 Packaging/signing/updates/platforms | Q | PARTIAL / H | macOS ad-hoc preview exists; signing/notarization, updater and packaged Windows/Linux open | P0 release gate / High | Credentials and platform hosts; PMSR; transport | Installer/update integrity and native runtime checks / hold |
+| I07 Recovery and metadata compatibility | L | PARTIAL / H | Version guards, WAL recovery and undo exist; broader historical upgrades/disk-loss cases open | P0 / High | Versioned persistence; PMSR; local | Migration fixtures, interrupted restore, unsupported stores / hold |
+
+## Reproduced first-slice failures
+
+Baseline direct calls to `referencedTables` returned `customers` for
+`SELECT 'FROM customers secret' FROM orders o` and for a `-- FROM customers`
+comment. Two statements reusing alias `o` produced both tables in one completion
+index. `WITH orders AS (SELECT 1 AS synthetic) SELECT * FROM orders o` resolved
+the CTE to the physical catalog table. With both `Orders` and `orders` in the
+catalog, `FROM "public"."Orders" x` resolved to lowercase `orders`.
+
+The selected repair is E03–E05 plus the required E01 lexical correction. It does
+not close E02/I04 live session-context tracking, E06 JOIN completion, or derived
+query-output inference. See [implementation-roadmap.md](implementation-roadmap.md)
+for the dependency order and verification contract.
