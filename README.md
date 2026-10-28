@@ -221,6 +221,7 @@ pnpm test:native --runs 3 --cycles 100 --idle-seconds 15 --attributed-memory
 The optional memory mode launches a separate hidden, ad-hoc signed fixture bundle
 through LaunchServices and attributes helpers by process responsibility. Missing
 attribution or unreadable processes remain explicit gaps in the local evidence.
+The fixture disables WebView background suspension so hidden work can finish.
 RSS sums can double-count shared pages; physical footprint is reported separately.
 These samples do not qualify representative idle RAM, cold visible startup or FPS.
 
