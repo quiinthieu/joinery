@@ -68,10 +68,11 @@ measurements separate.
 The PostgreSQL live-context slice shipped in preview.13 (PR #21, `e8f1cec`); see
 [live-completion-context.md](live-completion-context.md) for the actual contract,
 resource bounds and verification scope. E02/I04 remain PARTIAL across all engines.
-The [MySQL/MariaDB live adapter](mysql-live-completion-context.md) is now locally
-implemented and tested on the mode-0 fixtures. Remaining case-mode server
-qualification, then verified Snowflake REST context semantics, follow. External
-metadata changes still require refresh.
+The [MySQL/MariaDB live adapter](mysql-live-completion-context.md) shipped in
+preview.14 (PR #22, `dc220b0`), with mode-0 fixtures and clean-source release
+evidence. A separate local follow-up now verifies mode 1 on both disposable
+engines. Mode 2 needs a case-insensitive filesystem; verified Snowflake REST
+context semantics follow. External metadata changes still require refresh.
 Independent console/session binding and grouped-FK JOIN generation follow.
 External release gates remain open and need their own authorization/scope.
 

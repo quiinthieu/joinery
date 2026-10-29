@@ -201,6 +201,58 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
     }
 }
 
+#[tokio::test]
+#[ignore = "requires disposable case-folded MySQL and MariaDB fixtures"]
+async fn mysql_live_completion_uses_server_case_policy() {
+    for port in [53406, 53407] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let initial = studio.completion_catalog(&session.id).await.unwrap();
+        assert_eq!(initial.identity.case_sensitive_table_names, Some(false));
+        assert_eq!(initial.identity.database, "joinery");
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "SET ROLE completion_reader; USE COMPLETION_ALT",
+            )
+            .await,
+        );
+        let active = studio.completion_catalog(&session.id).await.unwrap();
+        assert_eq!(active.identity.database, "completion_alt");
+        assert_ne!(active.revision, initial.revision);
+        let case_table = active
+            .tables
+            .iter()
+            .find(|t| {
+                t.table.schema.eq_ignore_ascii_case("completion_alt")
+                    && t.table.name.eq_ignore_ascii_case("CaseOnly")
+            })
+            .expect("role-visible case-folded table");
+        assert!(active.unqualified_tables.contains(&case_table.table));
+        let schema = studio
+            .completion_schema(&session.id, &active.revision, &case_table.table)
+            .await
+            .unwrap();
+        assert_eq!(schema.columns[0].name, "case_note");
+        assert!(
+            studio
+                .completion_schema(&session.id, &initial.revision, &case_table.table)
+                .await
+                .is_err()
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "SELECT CASE_NOTE FROM COMPLETION_ALT.CASEONLY LIMIT 1",
+            )
+            .await,
+        );
+        studio.shutdown();
+    }
+}
+
 async fn run(studio: &Arc<Studio>, session: &SessionInfo, sql: &str) -> Vec<QueryEvent> {
     let plan = studio.prepare_execution(&session.id, sql).unwrap();
     execute(studio, &plan).await

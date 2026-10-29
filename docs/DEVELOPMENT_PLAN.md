@@ -232,8 +232,10 @@ hub's shipping status. Its first batch repairs SQL completion scope, quoting and
 stale responses; that bounded repair shipped in preview.12 (see the matrix
 evidence). The PostgreSQL live role/search-path slice shipped in preview.13; see
 [live completion context](live-completion-context.md). The subsequent
-[MySQL/MariaDB live slice](mysql-live-completion-context.md) is locally implemented.
-Snowflake context and JOIN generation follow.
+[MySQL/MariaDB live slice](mysql-live-completion-context.md) shipped in
+preview.14. A local follow-up qualifies case mode 1 on disposable MySQL and
+MariaDB; mode 2 and Snowflake context remain open. Independent console binding
+and JOIN generation follow.
 The measured warm lookup target passes, while visible completion latency and
 representative native performance remain open qualification work.
 

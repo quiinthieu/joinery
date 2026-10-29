@@ -571,3 +571,32 @@ Logs and provenance remain under `.cache/mysql-context-*.log` and native-smoke.
 Warm browser popup p95 is 53.6 / 53.4 / 53.3 ms for PostgreSQL/MySQL/MariaDB;
 the 50 ms target remains missed. These checks do not qualify native performance,
 other packaged platforms or case modes 1/2.
+
+## MySQL/MariaDB live completion release and case-mode follow-up
+
+The preceding local slice shipped in
+[preview.14](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.14).
+PR #22 passed six checks and squash-merged as `dc220b0`, with the same complete
+tree as tested `7697c6e`. All five main jobs passed in
+[run 40817452645](https://github.com/quiinthieu/joinery/actions/runs/40817452645).
+The clean-source macOS bundle and native smoke passed three runs/30 cleanup
+cycles. Published and unauthenticated public assets match local digests; the
+extracted app passes strict ad-hoc signature verification. Executable SHA-256:
+`0bf283f622d6fac400f63043262e407c27d134fcc113ec8036c358f076e7ed55`.
+The prior installed preview.13 remains running with a production Snowflake
+connection; installation of preview.14 awaits safe closure. Release receipts
+are under `.cache/ship-mysql-context/`.
+
+The next task branch adds isolated case-mode-1 MySQL 8.4 and MariaDB 11.4
+fixtures. `mysql_live_completion_uses_server_case_policy` passes on both:
+effective mode, role-visible tables, unqualified resolution, canonical columns,
+old-revision rejection and uppercase SQL. Mode 2 requires a suitable
+case-insensitive filesystem and remains unqualified. Saved SQL profiles
+currently require a nonempty database, so the no-default-database path is
+not an exposed app workflow. The mode-1 fixture containers and network were
+removed after testing.
+
+Follow-up validation passes 63 frontend and 83 standard Rust tests, formatting,
+types, production build, Cargo check and strict Clippy. The new selected ignored
+fixture test passed separately on both engines. No runtime application code
+changes in this follow-up; browser/native checks were not repeated.
