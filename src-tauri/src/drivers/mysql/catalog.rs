@@ -2,6 +2,68 @@ use super::values::{cast, identifier, key_predicate, projection, qualified, quot
 use super::*;
 
 impl Mysql {
+    pub(super) async fn live_completion_catalog(&self) -> AppResult<CompletionRelations> {
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            let rows = fetch_text(&mut conn,"SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,IF(@@lower_case_table_names=0,BINARY TABLE_SCHEMA=BINARY DATABASE(),LOWER(TABLE_SCHEMA)=LOWER(DATABASE())) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN ('mysql','performance_schema','sys') ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001", 10000, 2*1024*1024).await?;
+            let tables:Vec<TableInfo> = rows.iter().map(|r| TableInfo {
+                table: TableRef { schema: cell(r,0).into(),name: cell(r,1).into() },
+                kind: cell(r,2).into(),estimated_rows:None,total_bytes:None,
+            }).collect();
+            let unqualified_tables = rows.iter().zip(&tables).filter(|(r,_)|cell(r,3)=="1").map(|(_,t)|t.table.clone()).collect();
+            Ok(CompletionRelations { tables, unqualified_tables })
+        }).await
+    }
+    pub(super) async fn live_completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        identifier(&table.schema)?;
+        identifier(&table.name)?;
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            // SHOW resolves session-local temporary shadows; INFORMATION_SCHEMA
+            // would describe the permanent table instead. Never execute SELECTs
+            // against user objects to discover their columns.
+            let rows = fetch_text(
+                &mut conn,
+                &format!("SHOW FULL COLUMNS FROM {}", qualified(table)),
+                4096,
+                1024 * 1024,
+            )
+            .await?;
+            let columns: Vec<ColumnInfo> = rows
+                .iter()
+                .filter(|r| {
+                    cell(r, 7)
+                        .split(',')
+                        .any(|p| p.eq_ignore_ascii_case("select"))
+                })
+                .enumerate()
+                .map(|(i, r)| ColumnInfo {
+                    id: format!("c{i}"),
+                    name: cell(r, 0).into(),
+                    database_type: cell(r, 1).into(),
+                    kind: ColumnKind::Unknown,
+                    nullable: cell(r, 3) == "YES",
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: false,
+                })
+                .collect();
+            if columns.is_empty() {
+                return Err(AppError::new(
+                    ErrorCode::PermissionDenied,
+                    "No selectable columns are available in this completion context",
+                ));
+            }
+            Ok(TableSchema {
+                table: table.clone(),
+                columns,
+                primary_key: vec![],
+                foreign_keys: vec![],
+                editable: false,
+            })
+        })
+        .await
+    }
     pub(super) async fn catalog_tables(&self) -> AppResult<Vec<TableInfo>> {
         let rows=self.metadata(|conn|Box::pin(fetch(conn,
             "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,TABLE_ROWS,DATA_LENGTH+INDEX_LENGTH FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME LIMIT 10001",

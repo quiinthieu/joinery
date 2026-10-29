@@ -459,7 +459,7 @@ No dependency replacement, new state manager, privileged IPC command or backend
 authorization change is introduced.
 
 
-## PostgreSQL live completion context (local implementation)
+## PostgreSQL live completion context (shipped in preview.13)
 
 The `feat/live-completion-context` branch extends preview.12's merged `06146bc`
 with effective PostgreSQL completion context. Rust reads database, current role
@@ -519,5 +519,55 @@ executed separately. The entire ignored suite, real credential-store behavior,
 external accounts/platforms/signing and representative performance qualification
 were not run. Warm browser popup p95 remains above the 50 ms target (53.8 / 53.5 /
 53.3 ms for PostgreSQL/MySQL/MariaDB); warm 100,000-name lookup p95 is 0.10 ms.
-Preview.12 remains the installed/published application until a separate release
-is authorized. This phase is a locally tested, unmerged and unreleased candidate.
+This workflow subsequently shipped as preview.13 through PR #21 (`e8f1cec`).
+All six PR checks and all five main validation jobs passed. Clean-commit native
+verification repeated three runs/30 cleanup cycles (sourceDirty=false).
+Unauthenticated public assets, manifest/checksums and strict ad-hoc signature
+verified. The installed executable matches release SHA-256
+`cfb5db5ef905148148c5dabddb081a9c24385771a9a2bc93a8c091a6ae7df6d1` and
+launched from Applications with a visible window. The prior preview.12 bundle
+is retained locally; the owner-private hub records the shipping receipt.
+
+
+## MySQL/MariaDB live completion context (local implementation)
+
+`feat/mysql-live-completion-context` starts from merged preview.13 `e8f1cec`.
+The adapter now reads effective database/account/roles and server table-name case
+rules on the editor connection. The same typed snapshot/revision and worker path
+are reused. SHOW FULL COLUMNS supplies SELECT-granted columns and actual temporary
+shadows of known tables. Arbitrary SQL results and completion metadata remain
+read-only; legacy grid metadata and backend authorization are preserved.
+
+See [the bounded contract](mysql-live-completion-context.md). Initial Unsupported
+was reproduced, then cached prepared metadata retained the original DATABASE()
+after USE while the editor's text query observed the new database. Text-protocol
+live metadata fixes that regression; the existing parameterized grid path shares
+the bounded decoder and retains its established ownership.
+
+`pnpm validate` passes 63 frontend and 83 standard Rust tests, formatting, types,
+production frontend build, Cargo check and strict Clippy. Three selected MySQL
+fixture tests pass on both MySQL 8.4/MariaDB 11.4: new context/grants/transitions,
+legacy keys/paging/read-only metadata and cancellation with busy guards. All 23
+browser workflows pass, including both new accepted-and-executed USE/role/grant
+flows and existing PostgreSQL, Redis, synthetic Snowflake, editing and recovery.
+
+The standard runner reports 33 ignored tests. The full ignored suite was not run
+locally because some fixtures issue destructive SQL; no production connections.
+The fixture qualifies case mode 0. Modes 1/2 have frontend coverage and still need
+real server/platform qualification; temporary-only catalog discovery and external
+DDL/grant subscriptions remain open. Preview.13 remains shipped and installed;
+this MySQL/MariaDB batch is local and unreleased.
+
+Final PostgreSQL context regressions pass all three selected tests on this
+revision, including concurrent snapshots, role/search path, cancellation and
+legacy grid metadata. In total six selected Rust fixture tests passed. Final
+`pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature),
+`pnpm desktop:smoke:build` and `pnpm test:native` pass on macOS arm64; three hidden
+native runs pass 30 cleanup cycles. These are pre-commit working-tree builds
+(sourceDirty=true), native fixture SHA-256
+`3d3cc79c469fa56e16bf47a387189db6bf7d07446471c8df19984ec9eb8f88f3`.
+The task-owned fixture project/volume was removed and user app/processes preserved.
+Logs and provenance remain under `.cache/mysql-context-*.log` and native-smoke.
+Warm browser popup p95 is 53.6 / 53.4 / 53.3 ms for PostgreSQL/MySQL/MariaDB;
+the 50 ms target remains missed. These checks do not qualify native performance,
+other packaged platforms or case modes 1/2.

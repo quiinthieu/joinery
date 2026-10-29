@@ -131,7 +131,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
 | E01 Dialect highlighting/parsing — DG-E | E | PARTIAL / H | PG/MySQL dialects plus Snowflake dollar strings; bounded token reader preserves Unicode names. Full procedural/dialect semantics remain open | P1 / Medium | CodeMirror; PMS (R native console); read | Quoting/comments/procedural boundaries per dialect / hold |
-| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | PostgreSQL now reads live editor-session identity/search order and privilege-bound columns; MySQL/MariaDB/Snowflake live adapters and external metadata monitoring remain open | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
+| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | PostgreSQL live context ships in preview.13; MySQL/MariaDB live database/role/case context is locally tested; Snowflake and external metadata monitoring remain open | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
 | E03 Direct-base-table statement/block/alias scope — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Caret block/UNION arm isolated; comments/strings ignored; CTE/derived shadows suppress physical columns. Advanced output inference remains outside this acceptance | P1 / Medium | E01; PMS; read | 24 context cases plus PM accepted-and-executed SELECTs and synthetic S browser flow; see batch evidence / shipped in preview.12; see hub |
 | E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / shipped in preview.12; see hub |
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
@@ -215,7 +215,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | I01 Rust ownership and Safe Mode | X, C, D | IMPLEMENTED_UNVERIFIED / H | Core enforcement exists; retain all bypass and integration checks | P0 / High | Existing gateway; PMSR; gate | All entry points, stale approval, nested writes / existing |
 | I02 Result retention and binary IPC | B | PARTIAL / H | Explicit budgets and binary transport exist; representative transient-copy/plateau measurements open | P0 / High | Native profiling; PMSR; local | Native binary payloads, wide rows, cleanup plateau / hold |
 | I03 Typed command calls | B generated DTOs / generic client.call | PARTIAL / H | Add closed command/request/response map without replacing IPC | P2 / Medium | Rust DTO export; PMSR; gate | Compile-time invalid command/argument cases / hold |
-| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | PostgreSQL snapshot/column revisions follow effective role/search order and app executions; other live adapters and external change subscriptions remain open | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
+| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | PostgreSQL and local MySQL/MariaDB snapshots follow actual editor identity and app executions; Snowflake context and external change subscriptions remain open | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
 | I05 Startup, completion and grid performance | Q, E, B | PARTIAL / H | 100k-name warm lookup p95 0.10 ms; explicit visible completion p95 55–61 ms misses 50 ms target. Representative native load, startup and FPS remain unqualified | P0 release gate / High | Target hardware, measured scenarios; PMSR; local | p95 startup/completion/display and attributable memory/FPS / hold |
 | I06 Packaging/signing/updates/platforms | Q | PARTIAL / H | macOS ad-hoc preview exists; signing/notarization, updater and packaged Windows/Linux open | P0 release gate / High | Credentials and platform hosts; PMSR; transport | Installer/update integrity and native runtime checks / hold |
 | I07 Recovery and metadata compatibility | L | PARTIAL / H | Version guards, WAL recovery and undo exist; broader historical upgrades/disk-loss cases open | P0 / High | Versioned persistence; PMSR; local | Migration fixtures, interrupted restore, unsupported stores / hold |
@@ -314,8 +314,8 @@ Identifier rules were cross-checked against official
 
 ## PostgreSQL live completion context — 29 October 2026
 
-The PostgreSQL slice of E02/I04 is locally implemented on
-`feat/live-completion-context` from preview.12's merged `06146bc`. The broader
+The PostgreSQL slice of E02/I04 shipped in preview.13 through PR #21 (`e8f1cec`),
+from implementation `c870579` based on preview.12. The broader
 multi-engine capabilities remain PARTIAL. See [the live context contract](live-completion-context.md)
 and [architecture decisions](architecture-decisions.md).
 
@@ -332,7 +332,7 @@ and [architecture decisions](architecture-decisions.md).
 | Security / resources | Same-session grants and column SELECT checks; fixed pg_catalog-qualified SQL; revision validation; completion metadata read-only; 10,000 relations / 2 MiB, 128 schemas, 4,096 columns / 1 MiB; eight frontend reads/cache entries and 100 suggestions. No authorization bypass or replay |
 | Acceptance | SET search_path, SET ROLE, SET LOCAL/ROLLBACK, failed-transaction recovery and temporary schemas reflect the actual connection; denied and stale metadata never supplies old columns; concurrent unchanged readers share a valid revision; metadata cannot block active-query cancellation; existing grid keys/browsing pass |
 | Tests | Three selected Rust fixture tests in postgres.rs; ordered/server-resolved lookup and delayed old-privilege unit tests; completion.spec.ts accepted SELECT/role/rollback workflow; native command guards through Tauri |
-| Release eligibility | Local tested candidate only; unmerged, unpublished and not installed. Preview.12 remains shipped; external/platform/signing/performance gates remain open |
+| Release eligibility | Shipped and installed in preview.13 via PR #21; six PR checks and five main jobs passed. External/platform/signing/performance gates remain open |
 
 | Outcome | Current-batch evidence |
 |---|---|
@@ -353,3 +353,41 @@ the 50 ms target remains missed. Warm 100,000-name lookup p95 was **0.10 ms**
 (1,000 samples; index build 6.8 ms). These are headless Chromium observations,
 not native startup/memory/FPS qualification. No production connections,
 destructive runtime SQL or application release form part of this batch.
+
+
+## MySQL/MariaDB continuation — local batch
+
+E02-MM extends the same typed snapshot/worker contract from preview.13's merged
+`e8f1cec`; the [adapter contract](mysql-live-completion-context.md) records source
+symbols, acceptance and limits. E02/I04 remain PARTIAL across all engines.
+
+| Field | E02-MM bounded workflow |
+|---|---|
+| Feature / scope | Effective database/account/roles, server table-name case policy and column-grant completion; MySQL 8.4 / MariaDB 11.4 mode-0 fixtures |
+| DataGrip reference | DG-E / DG-EC; selected session and database control SQL resolution |
+| State / confidence | VERIFIED_COMPLETE for the bounded mode-0 workflow / High. Modes 1/2 server qualification remains IMPLEMENTED_UNVERIFIED |
+| Sources | drivers/mysql.rs completion_identity/fetch_text/collect_metadata; mysql/catalog.rs live_completion_catalog/live_completion_schema; domain.rs; SqlEditor, CompletionSession, tableLookup |
+| Observed behavior | USE and active role changes refresh context; valid accepted suggestions execute against the current database; UPDATE-only columns are withheld; known temporary shadows use actual columns; USE persists through transaction rollback; busy metadata returns promptly before query cancellation |
+| Missing behavior | Temporary-only object discovery, modes 1/2 runtime qualification, external metadata subscriptions and live Snowflake context |
+| Priority / complexity | P1 / High |
+| Dependencies | Shipped Rust session revision/lane, fixed metadata SQL, CodeMirror worker/cache; no new commands, global state or executor |
+| Security / budgets | Existing Rust Safe Mode unchanged; same-session metadata, escaped identifiers, SELECT column privileges and read-only metadata. Existing 10,000 relations / 2 MiB and 4,096 columns / 1 MiB caps; identity 64 KiB; eight frontend reads/cache entries and 100 suggestions |
+| Acceptance | Actual USE/roles/grants follow the connection; no stale prepared DATABASE(), old-revision columns, wrong-case relation binding or MySQL three-part insertion; existing grid and cancellation remain usable |
+| Tests | mysql_live_completion_tracks_database_roles_and_column_grants plus existing catalog/paging and cancellation fixtures on both engines; strict/folded/path unit test; two new browser acceptance flows |
+| Release eligibility | Local candidate, unmerged/unreleased; preview.13 remains installed. Fixture limits and external/platform/signing/performance gates remain explicit |
+
+Passed: `pnpm validate` (63 frontend, 83 Rust), three selected MySQL fixture tests
+across both engines, and all 23 browser workflows. Failed then repaired: initial
+Unsupported and prepared-statement DATABASE() retaining its original context.
+Existing bound-parameter grid reads share the same collector and still pass.
+Three PostgreSQL context regression tests also passed on this revision, for six
+selected Rust tests total. `pnpm desktop:build`, `pnpm desktop:bundle:mac` with
+strict ad-hoc signature, `pnpm desktop:smoke:build` and `pnpm test:native` pass;
+three hidden runs complete 30 cleanup cycles. Native provenance records the
+pre-commit working tree (sourceDirty=true); no new installation occurred.
+Logs are `.cache/mysql-context-*.log`; detailed native evidence is preserved in
+native-smoke. The task-owned fixture project and volume were removed.
+Skipped: 33 standard-runner ignored tests; selected fixtures are recorded separately.
+Not executed: production/live accounts, destructive local runtime SQL, other
+packaged platforms, real case modes 1/2, signing/notarization and broad performance
+qualification. No environment blocker remains for the tested local workflow.

@@ -26,6 +26,7 @@ interface Configuration {
   defaultSchema?: string;
   searchPath?: string[];
   unqualifiedTables?: TableRef[];
+  caseSensitiveTableNames?: boolean;
   contextRevision?: string;
 }
 interface SchemaEntry {
@@ -156,6 +157,7 @@ export class CompletionSession {
       previous.defaultSchema === config.defaultSchema &&
       previous.searchPath === config.searchPath &&
       previous.unqualifiedTables === config.unqualifiedTables &&
+      previous.caseSensitiveTableNames === config.caseSensitiveTableNames &&
       previous.contextRevision === config.contextRevision
     )
       return false;
@@ -170,6 +172,7 @@ export class CompletionSession {
       config.defaultSchema,
       config.searchPath,
       config.unqualifiedTables,
+      config.caseSensitiveTableNames,
     );
     const items =
       config.engine === "redis"

@@ -27,3 +27,15 @@ CREATE VIEW sample_view AS SELECT id,note FROM sample;
 
 CREATE TABLE `completion names` (`No``tes` TEXT NOT NULL, `列` INTEGER NOT NULL) ENGINE=InnoDB;
 INSERT INTO `completion names` VALUES ('completion fixture', 42);
+
+-- Disposable live completion context fixtures.
+CREATE DATABASE completion_alt;
+CREATE TABLE completion_alt.sample (alt_note TEXT);
+INSERT INTO completion_alt.sample VALUES ('alternate context');
+CREATE TABLE completion_alt.column_grants (visible_note TEXT, private_note TEXT);
+CREATE TABLE completion_alt.`CaseOnly` (case_note TEXT);
+CREATE ROLE completion_reader;
+GRANT SELECT ON completion_alt.sample TO completion_reader;
+GRANT SELECT ON completion_alt.`CaseOnly` TO completion_reader;
+GRANT SELECT (visible_note), UPDATE (private_note) ON completion_alt.column_grants TO completion_reader;
+GRANT completion_reader TO 'joinery'@'%';

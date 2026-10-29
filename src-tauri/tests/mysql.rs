@@ -81,6 +81,126 @@ async fn setup(port: u16, mode: SafeMode) -> (tempfile::TempDir, Arc<Studio>, Se
     (root, studio, session)
 }
 
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB live-context fixtures"]
+async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let initial = studio.completion_catalog(&session.id).await.unwrap();
+        assert_eq!(initial.identity.database, "joinery");
+        assert_eq!(initial.identity.case_sensitive_table_names, Some(true));
+        assert!(
+            !initial
+                .tables
+                .iter()
+                .any(|t| t.table.schema == "completion_alt")
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "SET ROLE completion_reader; USE completion_alt",
+            )
+            .await,
+        );
+        let observed = result(&run(&studio, &session, "SELECT DATABASE()").await);
+        assert_eq!(
+            studio.results.row(&observed.id, 0).unwrap()[0].as_deref(),
+            Some("completion_alt")
+        );
+        let active = studio.completion_catalog(&session.id).await.unwrap();
+        assert_eq!(active.identity.database, "completion_alt");
+        assert!(active.identity.role.contains("completion_reader"));
+        assert_ne!(active.revision, initial.revision);
+        let table = TableRef {
+            schema: "completion_alt".into(),
+            name: "sample".into(),
+        };
+        assert!(
+            studio
+                .completion_schema(&session.id, &initial.revision, &table)
+                .await
+                .is_err()
+        );
+        let columns = studio
+            .completion_schema(&session.id, &active.revision, &table)
+            .await
+            .unwrap();
+        assert_eq!(columns.columns[0].name, "alt_note");
+        assert!(!columns.editable && columns.columns.iter().all(|c| !c.editable));
+        let grants = TableRef {
+            schema: "completion_alt".into(),
+            name: "column_grants".into(),
+        };
+        let visible = studio
+            .completion_schema(&session.id, &active.revision, &grants)
+            .await
+            .unwrap();
+        assert_eq!(
+            visible
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["visible_note"]
+        );
+        completed(&run(&studio, &session, "BEGIN; USE joinery; ROLLBACK").await);
+        // USE is not transaction-local in either engine.
+        assert_eq!(
+            studio
+                .completion_catalog(&session.id)
+                .await
+                .unwrap()
+                .identity
+                .database,
+            "joinery"
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE TEMPORARY TABLE joinery.sample (temp_note TEXT)",
+            )
+            .await,
+        );
+        let temp = studio.completion_catalog(&session.id).await.unwrap();
+        let shadow = studio
+            .completion_schema(
+                &session.id,
+                &temp.revision,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "sample".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            shadow
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["temp_note"]
+        );
+        completed(&run(&studio, &session, "USE completion_alt; SET ROLE NONE").await);
+        let revoked = studio.completion_catalog(&session.id).await.unwrap();
+        assert!(
+            !revoked
+                .tables
+                .iter()
+                .any(|t| t.table.schema == "completion_alt")
+        );
+        assert!(
+            studio
+                .completion_schema(&session.id, &revoked.revision, &table)
+                .await
+                .is_err()
+        );
+        studio.shutdown();
+    }
+}
+
 async fn run(studio: &Arc<Studio>, session: &SessionInfo, sql: &str) -> Vec<QueryEvent> {
     let plan = studio.prepare_execution(&session.id, sql).unwrap();
     execute(studio, &plan).await
@@ -448,6 +568,7 @@ async fn reviewed_edits_are_bound_atomic_conflict_checked_and_separate_from_edit
 async fn cancellation_interrupts_only_the_owned_query_and_quarantines_the_session() {
     for port in [53306, 53307] {
         let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let context = studio.completion_catalog(&session.id).await.unwrap();
         let plan = studio
             .prepare_execution(&session.id, "SELECT SLEEP(20)")
             .unwrap();
@@ -462,6 +583,29 @@ async fn cancellation_interrupts_only_the_owned_query_and_quarantines_the_sessio
         }
         // Include catalog work while the editor is busy; it owns a different connection.
         assert!(!studio.catalog(&session.id).await.unwrap().is_empty());
+        assert_eq!(
+            studio
+                .completion_catalog(&session.id)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            studio
+                .completion_schema(
+                    &session.id,
+                    &context.revision,
+                    &TableRef {
+                        schema: "joinery".into(),
+                        name: "sample".into()
+                    }
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
         studio.cancel(&id).await.unwrap();
         let events = tokio::time::timeout(Duration::from_secs(5), async {
             let mut e = Vec::new();

@@ -61,6 +61,44 @@ test("server resolution preserves system names and inaccessible relation shadows
   );
 });
 
+test("MySQL live table lookup follows server case rules and database.table paths", () => {
+  const tables = [info("CaseOnly", "completion_alt")];
+  const strict = tableLookup(
+    tables,
+    "mysql",
+    "completion_alt",
+    undefined,
+    ["completion_alt"],
+    [tables[0].table],
+    true,
+  );
+  expect(strict.resolve([readIdentifier("caseonly")])).toBeUndefined();
+  expect(strict.resolve([readIdentifier("CaseOnly")])).toEqual(tables[0].table);
+  const folded = tableLookup(
+    tables,
+    "mysql",
+    "completion_alt",
+    undefined,
+    ["completion_alt"],
+    [tables[0].table],
+    false,
+  );
+  expect(folded.resolve([readIdentifier("caseonly")])).toEqual(tables[0].table);
+  expect(folded.resolve([readIdentifier("COMPLETION_ALT"), readIdentifier("CASEONLY")])).toEqual(
+    tables[0].table,
+  );
+  expect(catalogCompletions(tables, folded).every((item) => (item.path?.length ?? 0) <= 2)).toBe(
+    true,
+  );
+  expect(
+    folded.resolve([
+      readIdentifier("completion_alt"),
+      readIdentifier("completion_alt"),
+      readIdentifier("CaseOnly"),
+    ]),
+  ).toBeUndefined();
+});
+
 test("runs only the statement under the cursor and respects quoted semicolons", () => {
   expect(selectedStatement(query("-- context\nSELECT $$hé|llo; there$$; SELECT 2;"))).toBe(
     "SELECT $$héllo; there$$;",

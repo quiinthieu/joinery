@@ -251,6 +251,7 @@ impl Driver for Postgres {
             database: row.get(0),
             role: row.get(1),
             search_path: row.get(2),
+            case_sensitive_table_names: None,
         };
         if identity.search_path.len() > 128 {
             return Err(AppError::new(

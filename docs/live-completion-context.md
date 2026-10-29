@@ -1,8 +1,8 @@
 # Live PostgreSQL completion context
 
 Implemented on `feat/live-completion-context` from merged `06146bc` (preview.12).
-Shipping status remains on the owner-private project hub. This batch is local
-implementation; no new release is claimed here.
+Shipped in preview.13 through PR #21 (`e8f1cec`), with release/installation
+evidence in IMPLEMENTATION_STATUS.md and the owner-private project hub.
 
 ## Workflow and ownership
 
@@ -44,10 +44,11 @@ persistent schema or second execution/state system is introduced.
 - Failed transactions, denied/missing objects, obsolete tokens and disconnected
   sessions return real errors. No configured fallback is presented as live data.
 
-MySQL/MariaDB and Snowflake retain their existing configured completion behavior;
-this live adapter currently supports PostgreSQL. Redis retains native command
-completion. External DDL/grant changes require explicit refresh or a subsequent
-app execution; there is no server-side metadata event subscription. Independent
+This contract describes the shipped PostgreSQL adapter. The subsequent local
+[MySQL/MariaDB adapter](mysql-live-completion-context.md) extends the same lane
+and revisions. Snowflake retains configured completion; Redis retains native
+command completion. External DDL/grant changes require explicit refresh or a
+subsequent app execution; there is no server-side metadata event subscription. Independent
 console/session binding and JOIN generation remain subsequent phases.
 
 ## Source and tests

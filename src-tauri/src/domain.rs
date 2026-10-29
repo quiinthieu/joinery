@@ -530,6 +530,7 @@ pub struct CompletionIdentity {
     pub database: String,
     pub role: String,
     pub search_path: Vec<String>,
+    pub case_sensitive_table_names: Option<bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -537,6 +538,6 @@ pub struct CompletionCatalog {
     pub revision: String,
     pub identity: CompletionIdentity,
     pub tables: Vec<TableInfo>,
-    /// Selectable relations that PostgreSQL actually resolves without qualification.
+    /// Relations that resolve in the current engine's unqualified namespace.
     pub unqualified_tables: Vec<TableRef>,
 }

@@ -338,6 +338,31 @@ impl Driver for Mysql {
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         self.catalog_tables().await
     }
+    async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            let rows = fetch_text(&mut conn, "SELECT COALESCE(DATABASE(),''),CURRENT_USER(),COALESCE(CURRENT_ROLE(),'NONE'),@@lower_case_table_names", 1, 64*1024).await?;
+            let row = rows.first().ok_or_else(|| AppError::internal("Missing session identity"))?;
+            let case_sensitive = match cell(row,3) {
+                "0" => true,
+                "1" | "2" => false,
+                _ => return Err(AppError::new(ErrorCode::Unsupported,"Unknown server identifier case rules")),
+            };
+            let database = cell(row,0).to_owned();
+            Ok(CompletionIdentity {
+                search_path: if database.is_empty() { vec![] } else { vec![database.clone()] },
+                database,
+                role: format!("{} ({})",cell(row,1),cell(row,2)),
+                case_sensitive_table_names: Some(case_sensitive),
+            })
+        }).await
+    }
+    async fn completion_catalog(&self) -> AppResult<CompletionRelations> {
+        self.live_completion_catalog().await
+    }
+    async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        self.live_completion_schema(table).await
+    }
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         self.table_schema(table).await
     }
@@ -408,10 +433,30 @@ async fn fetch(
     max_rows: usize,
     max_bytes: usize,
 ) -> AppResult<Vec<TextRow>> {
-    let mut result = conn
+    let result = conn
         .exec_iter(sql, Params::Positional(params))
         .await
         .map_err(mysql_error)?;
+    collect_metadata(result, max_rows, max_bytes).await
+}
+
+// Prepared statements can retain DATABASE() from their preparation context.
+// Live metadata uses text protocol after USE, role and temporary-table changes.
+async fn fetch_text(
+    conn: &mut Conn,
+    sql: &str,
+    max_rows: usize,
+    max_bytes: usize,
+) -> AppResult<Vec<TextRow>> {
+    let result = conn.query_iter(sql).await.map_err(mysql_error)?;
+    collect_metadata(result, max_rows, max_bytes).await
+}
+
+async fn collect_metadata<P: mysql_async::prelude::Protocol + Send>(
+    mut result: mysql_async::QueryResult<'_, '_, P>,
+    max_rows: usize,
+    max_bytes: usize,
+) -> AppResult<Vec<TextRow>> {
     let mut rows = Vec::new();
     let mut bytes = 0;
     while let Some(row) = result.next().await.map_err(mysql_error)? {

@@ -231,3 +231,63 @@ test("PostgreSQL completion follows effective search path, role and rollback", a
   await expect(context).toContainText("joinery_completion_reader");
   await page.screenshot({ path: ".cache/screenshots/live-context.png" });
 });
+
+for (const [engine, port] of [
+  ["MySQL", 53306],
+  ["MariaDB", 53307],
+] as const) {
+  test(`${engine} live completion follows USE, active roles and column grants`, async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Connect a database" }).click();
+    await page.getByLabel("Database engine").selectOption("mysql");
+    await page.getByLabel("Connection name", { exact: true }).fill(`${engine} live context`);
+    await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
+    await page.getByLabel("Port", { exact: true }).fill(String(port));
+    await page.getByLabel("Database", { exact: true }).fill("joinery");
+    await page.getByLabel("Username", { exact: true }).fill("joinery");
+    await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
+    await page.getByLabel("Require TLS and verify the server certificate").uncheck();
+    await page.getByLabel("Safe Mode", { exact: true }).selectOption("silent");
+    await page.getByRole("button", { name: "Save and connect" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "New query tab" }).click();
+    const editor = page.getByRole("textbox", { name: "SQL editor" });
+    const context = page.locator(".completion-context");
+    const run = async (sql: string) => {
+      await editor.fill(sql);
+      await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+      await expect(page.locator(".status-dot.running")).toHaveCount(0);
+      await expect(context).not.toContainText("Loading");
+      await expect(page.locator(".query-error")).toHaveCount(0);
+    };
+    await expect(context).toContainText("joinery");
+    await run("SET ROLE completion_reader; USE completion_alt");
+    await expect(context).toContainText("completion_alt");
+    await expect(context).toContainText("completion_reader");
+    const source = "SELECT s.alt FROM sample s";
+    await editor.fill(source);
+    await caret(editor, source.indexOf("s.alt") + 5);
+    await editor.press("Control+Space");
+    await page.locator(".cm-tooltip-autocomplete").getByText("s.alt_note", { exact: true }).click();
+    await expect(editor).toHaveText("SELECT s.alt_note FROM sample s");
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    await expect(page.locator(".result-footer")).toContainText("1 rows");
+    const grants = "SELECT g. FROM column_grants g";
+    await editor.fill(grants);
+    await caret(editor, grants.indexOf("g.") + 2);
+    await editor.press("Control+Space");
+    const popup = page.locator(".cm-tooltip-autocomplete");
+    await expect(popup).toContainText("g.visible_note");
+    await expect(popup).not.toContainText("private_note");
+    await run("SET ROLE NONE");
+    await expect(context).toContainText("NONE");
+    await expect(context).not.toContainText("completion_reader");
+    await editor.fill(source);
+    await caret(editor, source.indexOf("s.alt") + 5);
+    await editor.press("Control+Space");
+    await expect(popup.getByText("s.alt_note", { exact: true })).toHaveCount(0);
+    await page.screenshot({ path: `.cache/screenshots/live-context-${engine.toLowerCase()}.png` });
+  });
+}
