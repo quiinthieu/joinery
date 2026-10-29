@@ -2,7 +2,10 @@
 
 Feature E02-SF extends the existing Rust completion snapshot and CodeMirror
 worker. It is a bounded local continuation of E02/I04, not full Snowflake
-qualification. The private hub remains the shipping-status record.
+qualification. The bounded slice shipped in preview.15 through PR #24, merged
+as 799e600 after six PR checks and five main jobs passed. Public assets,
+clean-source native evidence, installed executable digest and native window
+launch verify. The private hub remains the shipping-status record.
 
 ## Workflow
 

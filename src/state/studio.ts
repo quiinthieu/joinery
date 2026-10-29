@@ -46,6 +46,8 @@ export interface StudioTab {
   revision: number;
   metrics: Record<number, { affectedRows: string; elapsedMs: number }>;
   dataSessionId: string | null;
+  querySession: SessionInfo | null;
+  querySessionClosed: boolean;
 }
 
 interface StudioState {
@@ -65,6 +67,8 @@ interface StudioState {
   notify(message: string): void;
   setTheme(theme: StudioState["theme"]): void;
   setSession(session: SessionInfo): void;
+  bindQuerySession(tabId: string, session: SessionInfo): boolean;
+  retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
   refreshCatalog(id: string): Promise<void>;
@@ -111,7 +115,14 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     revision: 0,
     metrics: {},
     dataSessionId: null,
+    querySession: null,
+    querySessionClosed: false,
   };
+}
+export function querySessionForTab(tab: StudioTab, sessions: Record<string, SessionInfo>) {
+  if (tab.kind === "query" && tab.querySession)
+    return tab.querySessionClosed ? undefined : tab.querySession;
+  return tab.connectionId ? sessions[tab.connectionId] : undefined;
 }
 const storedTheme = localStorage.getItem("joinery.theme");
 
@@ -199,6 +210,51 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => ({
       sessions: { ...state.sessions, [session.connectionId]: session },
       selectedConnectionId: session.connectionId,
+    }));
+  },
+  bindQuerySession(tabId, session) {
+    const current = get().tabs.find((t) => t.id === tabId);
+    if (
+      !current ||
+      current.kind !== "query" ||
+      current.connectionId !== session.connectionId ||
+      !["postgres", "mysql"].includes(session.engine) ||
+      ["queued", "running"].includes(current.status) ||
+      (current.querySession && !current.querySessionClosed)
+    ) {
+      void client
+        .call("disconnect", { sessionId: session.id })
+        .catch((error) => get().notify(messageOf(error)));
+      return false;
+    }
+    for (const result of current.results) {
+      resultCache.release(result.id);
+      dirtyStore.clear(result.id);
+      void client.call("release_result", { resultId: result.id }).catch(() => {});
+    }
+    get().updateTab(tabId, {
+      querySession: session,
+      querySessionClosed: false,
+      results: [],
+      activeResultId: null,
+      dataSessionId: null,
+      runId: null,
+      error: null,
+      status: "idle",
+      metrics: {},
+      elapsedMs: 0,
+      revision: current.revision + 1,
+    });
+    return true;
+  },
+  retireSession(sessionId) {
+    set((state) => ({
+      sessions: Object.fromEntries(
+        Object.entries(state.sessions).filter(([, s]) => s.id !== sessionId),
+      ),
+      tabs: state.tabs.map((t) =>
+        t.querySession?.id === sessionId ? { ...t, querySessionClosed: true } : t,
+      ),
     }));
   },
   updateProfile(profile) {
@@ -432,7 +488,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   closeTab(id) {
     const current = get().tabs.find((t) => t.id === id);
     if (!current) return;
-    if (current.runId && ["queued", "running"].includes(current.status))
+    if (current.querySession && !current.querySessionClosed)
+      void client
+        .call("disconnect", { sessionId: current.querySession.id })
+        .catch((error) => get().notify(messageOf(error)));
+    else if (current.runId && ["queued", "running"].includes(current.status))
       void client.call("cancel_run", { runId: current.runId }).catch(() => {});
     for (const result of [...current.results, ...current.pages.map((p) => p.result)]) {
       dirtyStore.clear(result.id);
@@ -466,7 +526,14 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => {
       const sessions = { ...state.sessions };
       delete sessions[connectionId];
-      return { sessions };
+      return {
+        sessions,
+        tabs: state.tabs.map((t) =>
+          t.connectionId === connectionId && t.querySession
+            ? { ...t, querySessionClosed: true }
+            : t,
+        ),
+      };
     });
   },
   resetConnectionResults(connectionId) {
@@ -497,8 +564,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   applyEvents(tabId, events, revision) {
     for (const event of events) {
       if (event.type === "sessionClosed") {
-        const session = Object.values(get().sessions).find((s) => s.id === event.sessionId);
-        if (session) get().disconnected(session.connectionId);
+        get().retireSession(event.sessionId);
         get().notify(event.reason);
       }
       if (event.type === "notice") get().notify(event.message);

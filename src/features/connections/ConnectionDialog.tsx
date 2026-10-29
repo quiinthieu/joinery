@@ -607,9 +607,11 @@ export function ConnectionDialog({
 export function ConnectDialog({
   profile,
   onClose,
+  onConnected,
 }: {
   profile: ConnectionProfile;
   onClose(): void;
+  onConnected?(session: SessionInfo): void;
 }) {
   const [password, setPassword] = useState(""),
     [busy, setBusy] = useState(false),
@@ -631,7 +633,10 @@ export function ConnectDialog({
           keyPassphrase: keyPassphrase || null,
         },
       });
-      completeConnection(profile, session, onClose);
+      if (onConnected) {
+        onConnected(session);
+        onClose();
+      } else completeConnection(profile, session, onClose);
     } catch (error) {
       setError(messageOf(error));
     } finally {
@@ -644,7 +649,7 @@ export function ConnectDialog({
   if (trust.dialog) return trust.dialog;
   return (
     <Modal
-      title={`Connect to ${profile.name}`}
+      title={onConnected ? `New SQL session for ${profile.name}` : `Connect to ${profile.name}`}
       subtitle={`${profile.username}@${profile.host}:${profile.port}/${profile.database}`}
       onClose={onClose}
       busy={busy}

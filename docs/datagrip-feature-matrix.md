@@ -68,7 +68,7 @@ Complexity is Low/Medium/High. Priority P0–P3 is separate from blueprint miles
 | X | `src-tauri/src/execution.rs` (`prepare_execution`, `store_plan`, `execute_plan`), `safety.rs` (`prepare`, AST visitor); `src/app/App.tsx` (`runSql`, `executePrepared`) | Safety unit tests and engine integration tests. Immutable expiring plans, one-use approval, cancellation quarantine, no replay. Plain EXPLAIN can use SQL; ANALYZE is not assumed read-only |
 | G | `src/features/grid/DatabaseGrid.tsx`, `ValueDialog.tsx`; `src/data/{dirty-store,result-cache,columnar}.ts`; table paging in `src/state/studio.ts`; backend `prepare_changes_batch` and driver `apply` | Dirty/cache/columnar tests and database/browser edit tests. Glide canvas, sparse overlay, primary-key provenance, atomic update plans. No arbitrary-result editing, PK editing, insert/delete grid workflow, sorting/filtering request, or atomic multi-cell paste handler |
 | N | `src/features/connections/Sidebar.tsx`, `src/features/studio/UtilityViews.tsx` (`StructureView`, `ProcessesView`, `HistoryView`) | Browser studio/mysql/snowflake specs. Selected connection's schema/table tree, substring filter, columns/types/PK/FK display. No general object kinds, DDL/dependency API, or graphical plans |
-| W | `src/state/{studio,workspace}.ts`, `src/app/{App,Workbench}.tsx`, `Preferences.tsx`; backend `persistence/workspace.rs` | Workspace/studio/modal/tab unit tests, `tests/e2e/workspace.spec.ts`. Query tabs, fixed commands, themes, layout preferences, opt-in bounded drafts. Frontend maps one session per profile; files/session chooser absent |
+| W | `src/state/{studio,workspace}.ts`, `src/app/{App,Workbench}.tsx`, `Preferences.tsx`; backend `persistence/workspace.rs` | Workspace/studio/modal/tab unit tests and browser specs. Shared primary sessions plus local tab-owned SQL sessions; opt-in drafts exclude live bindings. File I/O and named/multi-client session management remain open |
 | L | `src-tauri/src/persistence.rs`, `persistence/{workspace,recovery}.rs`, `commands/recovery.rs`; `MetadataRecovery.tsx` | Persistence/recovery tests and `tests/e2e/recovery.spec.ts`. Version/schema guards, WAL crash recovery, bounded snapshots and undo. Does not restore results, sessions, edits or execute SQL |
 | B | `src-tauri/src/results.rs` (`ResultStore`), `commands.rs` (`result_range`), `src/ipc/{client,generated}.ts`, Arrow worker, result cache | Result/cache/columnar unit tests; native smoke fixture. Rust 64 MiB, frontend 32 MiB/512 pages, dirty edits 8 MiB, result 100,000 rows, pages 500 rows/2 MiB, IPC 4 MiB. Generated DTOs but `call<T>(command: string, ...)` is not a closed command map |
 | Q | `scripts/{native-smoke.py,runtime_memory.py,verify-macos-bundle.mjs}`, `src/native-smoke.ts`, `.github/workflows/ci.yml`, `docs/IMPLEMENTATION_STATUS.md` | Python attribution tests, hidden WebView fixture, standard three-platform CI compilation. Hidden DOM readiness and synthetic cleanup are not visible startup, total representative idle memory, or FPS qualification |
@@ -112,7 +112,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | M03 SSH/TLS and engine security — DG-C | C, D | IMPLEMENTED_UNVERIFIED / H | One-hop tunnels and hostname verification exist; rerun CA/name/trust/drop/cleanup cases | P0 / High | Transport; PMR (S uses HTTPS); transport | SSH/engine integration / existing |
 | M04 Hierarchical connection groups — DG-C | C | IMPLEMENTED_UNVERIFIED / H | Group policy and hierarchy exist; rerun UI moves and policy inheritance | P1 / Low | Profiles; PMSR; gate | Group/browser tests / existing |
 | M05 Multiple databases/schemas — DG-C, DG-EC | D, N, E | PARTIAL / H | Configured database plus discovered schemas; add explicit context selection and invalidation | P1 / High | Session context; PMS; read | Same-name objects across databases/roles / hold |
-| M06 Session management — DG-S | D, W | PARTIAL / H | Rust permits four sessions; UI needs explicit console binding and lifecycle controls | P1 / High | Context identity; PM, restricted S/R; engine | Two-console transaction/cancellation isolation / hold |
+| M06 Session management — DG-S | D, W | PARTIAL / H | Local PM isolated-tab ownership uses existing four-session limit; named sessions, multi-client attachment and broader controls remain open | P1 / High | Context identity; PM, restricted S/R; engine | Targeted isolation/cancellation/close flows pass; final regression/native gates blocked / hold |
 | M07 Driver capabilities/configuration — DG-C | D | PARTIAL / H | Six capability booleans exist; finer object/analysis/auth capabilities need contracts | P2 / Medium | Driver trait/DTOs; PMSR; engine | Unsupported controls disabled and backend rejects / hold |
 
 ## Database navigation
@@ -131,7 +131,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
 | E01 Dialect highlighting/parsing — DG-E | E | PARTIAL / H | PG/MySQL dialects plus Snowflake dollar strings; bounded token reader preserves Unicode names. Full procedural/dialect semantics remain open | P1 / Medium | CodeMirror; PMS (R native console); read | Quoting/comments/procedural boundaries per dialect / hold |
-| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | PostgreSQL context ships in preview.13 and MySQL/MariaDB in preview.14; bounded Snowflake request context is locally fixture/browser tested; broader path/policy support and external metadata monitoring remain open | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
+| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | PostgreSQL context ships in preview.13, MySQL/MariaDB in preview.14 and bounded Snowflake request context in preview.15; broader path/policy support and external metadata monitoring remain open | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
 | E03 Direct-base-table statement/block/alias scope — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Caret block/UNION arm isolated; comments/strings ignored; CTE/derived shadows suppress physical columns. Advanced output inference remains outside this acceptance | P1 / Medium | E01; PMS; read | 24 context cases plus PM accepted-and-executed SELECTs and synthetic S browser flow; see batch evidence / shipped in preview.12; see hub |
 | E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / shipped in preview.12; see hub |
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
@@ -143,7 +143,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E11 Go to definition and usages — DG-SE | E, N | MISSING / H | Resolve identifiers to metadata/editor locations | P1 / High | E02/N06; PMS; read | Ambiguity and inaccessible objects / hold |
 | E12 Snippets/live templates — DG-T | E | MISSING / H | Local dialect-aware templates with keyboard placeholders | P2 / Medium | Existing editor/persistence; PMS; local | Expansion/undo and no automatic execution / hold |
 | E13 Statement navigation — DG-X | E selectedStatement | PARTIAL / H | Caret/selection execution exists; next/previous statement navigation missing | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, large documents / hold |
-| E14 Multiple consoles/files — DG-S, DG-SQ | W | PARTIAL / H | Query tabs exist; file I/O and explicit session binding absent | P1 / High | M06, native file capability; PMSR; local | Unsaved changes, session isolation, file permissions / hold |
+| E14 Multiple consoles/files — DG-S, DG-SQ | W | PARTIAL / H | Query tabs plus local PM tab-owned sessions; file I/O and named session attachment remain open | P1 / High | M06, native file capability; PMSR; local | Unsaved changes, session isolation, file permissions / hold |
 | E15 Query parameters — DG-P | X; no typed editor parameter workflow | MISSING / H | Bind values through engine adapters and include bindings in reviewed plan | P1 / High | Typed execution request; PMS by capability; gate | Literal/comment exclusion, NULL/types, approval digest / hold |
 | E16 Context documentation — DG-DOC | E, N | MISSING / H | Metadata documentation at caret with permission-aware fallback | P2 / Medium | E11; PMS; read | Correct object, stale/denied metadata / hold |
 
@@ -153,7 +153,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | X01 Statement/script execution — DG-X | X, E | IMPLEMENTED_UNVERIFIED / H | Preflight and sequential execution exist; rerun exact statement/selection/batch fixtures | P0 / Medium | Drivers/safety; PMS, R command grammar; gate | Partial failures, comments, unknown SQL / existing |
 | X02 Multiple result sets — DG-X, DG-G | X, B, W | IMPLEMENTED_UNVERIFIED / H | Results/subtabs exist; verify prior results survive later failures | P0 / Medium | Retention; PMS; read | Empty/multiple result sets and later errors / existing |
 | X03 Async execution/cancellation — DG-X | X, D | IMPLEMENTED_UNVERIFIED / H | Owned cancellation/quarantine exist; rerun races and cleanup | P0 / High | Jobs/session lifetime; PMSR; engine | Queued/active/late cancellation, lost acknowledgements / existing |
-| X04 Transactions/session controls — DG-S | X, D, W | PARTIAL / H | Explicit SQL transactions work on PM; UI state and session controls missing; S/R transactions excluded | P1 / High | M06; PM; gate | Transaction isolation and grid/editor separation / hold |
+| X04 Transactions/session controls — DG-S | X, D, W | PARTIAL / H | Explicit SQL transactions work on PM; local isolated session actions and close warnings exist; server transaction state/autocommit/savepoint UI remain absent; S/R transactions excluded | P1 / High | M06; PM; gate | Targeted two-console state/concurrency/cancellation/close tests pass; final regression/native gates blocked / hold |
 | X05 Execution metrics — DG-X, DG-Q | QueryEvent, W | PARTIAL / H | Client elapsed/affected rows exist; queue/first-row/server timing missing | P2 / Medium | Driver metrics; PMSR; read | Correct units and no client/server-time conflation / hold |
 | X06 Query history — DG-SQ | N, L, X | IMPLEMENTED_UNVERIFIED / H | Search/reopen and opt-in text exist; rerun privacy and replay paths | P1 / Low | Persistence/plans; PMSR; local | Metadata-only history and explicit rerun authorization / existing |
 | X07 Raw EXPLAIN — DG-Q | X, safety AST visitor | PARTIAL / H | SQL entry point exists; capability-aware action and plan result typing missing | P2 / Medium | A01; PMS by capability; gate | Nested writes and ANALYZE approval / hold |
@@ -215,7 +215,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | I01 Rust ownership and Safe Mode | X, C, D | IMPLEMENTED_UNVERIFIED / H | Core enforcement exists; retain all bypass and integration checks | P0 / High | Existing gateway; PMSR; gate | All entry points, stale approval, nested writes / existing |
 | I02 Result retention and binary IPC | B | PARTIAL / H | Explicit budgets and binary transport exist; representative transient-copy/plateau measurements open | P0 / High | Native profiling; PMSR; local | Native binary payloads, wide rows, cleanup plateau / hold |
 | I03 Typed command calls | B generated DTOs / generic client.call | PARTIAL / H | Add closed command/request/response map without replacing IPC | P2 / Medium | Rust DTO export; PMSR; gate | Compile-time invalid command/argument cases / hold |
-| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | Shipped PostgreSQL/MySQL snapshots follow actual editor identity and app executions; local Snowflake snapshots verify request context; external change subscriptions and broader policies remain open | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
+| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | Shipped PostgreSQL/MySQL/Snowflake snapshots follow actual session/request context; local isolated-console metadata epochs use actual session IDs; external subscriptions and broader policies remain open | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
 | I05 Startup, completion and grid performance | Q, E, B | PARTIAL / H | 100k-name warm lookup p95 0.10 ms; explicit visible completion p95 55–61 ms misses 50 ms target. Representative native load, startup and FPS remain unqualified | P0 release gate / High | Target hardware, measured scenarios; PMSR; local | p95 startup/completion/display and attributable memory/FPS / hold |
 | I06 Packaging/signing/updates/platforms | Q | PARTIAL / H | macOS ad-hoc preview exists; signing/notarization, updater and packaged Windows/Linux open | P0 release gate / High | Credentials and platform hosts; PMSR; transport | Installer/update integrity and native runtime checks / hold |
 | I07 Recovery and metadata compatibility | L | PARTIAL / H | Version guards, WAL recovery and undo exist; broader historical upgrades/disk-loss cases open | P0 / High | Versioned persistence; PMSR; local | Migration fixtures, interrupted restore, unsupported stores / hold |
@@ -409,7 +409,7 @@ Not executed: production/live accounts, destructive local runtime SQL, other
 packaged platforms, real case mode 2, signing/notarization and broad performance
 qualification. No environment blocker remains for the tested local workflow.
 
-## Snowflake request-context continuation — local slice
+## Snowflake request-context continuation — preview.15
 
 E02-SF uses the existing E02/I04 snapshot and worker. The overall capability
 remains PARTIAL; this scope does not qualify a live account or full search-path
@@ -428,7 +428,7 @@ resolution. See [the bounded contract](snowflake-completion-context.md).
 | Security / bounds | Safe Mode and Snowflake read-only restrictions retained; fixed bounded context SQL, one row / 64 KiB each; existing catalog/column/result limits; no reconnect/replay |
 | Acceptance | Verified role/database/schema/warehouse; request fields match execution; conservative unqualified binding; qualified/alias lazy columns; visible error and refresh recovery; old revisions rejected by existing Studio path |
 | Tests | Three Rust HTTP tests for context/request fields/path scope/quoted policy/malformed data/byte limits; browser context display/failure/recovery/revision-bound completion; existing database/browser regressions |
-| Release eligibility | Local implementation only; shipping remains preview.14 plus source-only mode-1 qualification in PR #23. Live, platform, signing and performance gates remain open |
+| Release eligibility | Shipped and installed in preview.15 via PR #24 after six PR checks/five main jobs, clean-source native evidence and public asset verification. Live, platform, signing and performance gates remain open |
 
 Passed on the current slice: `pnpm validate` (63 frontend, 86 standard Rust),
 three new HTTP fixture tests, all 23 browser workflows in the final fixed-file
@@ -436,4 +436,22 @@ run, desktop build, macOS bundle/strict ad-hoc signature and three native
 runs/30 cleanup cycles. The initial browser run had 22 passes and a Redis form
 timeout during page reloads; the trace and final rerun are recorded separately
 in IMPLEMENTATION_STATUS.md. Native provenance is pre-commit sourceDirty=true;
-this slice is not released or installed. The fixture project was removed.
+that local build was not release provenance. The slice subsequently shipped and
+installed in preview.15 from an identical clean source tree. The fixture project
+was removed.
+
+## Isolated query sessions — local M06-Q slice
+
+| Field | M06-Q bounded workflow |
+|---|---|
+| Feature / reference | Explicit tab-owned SQL session, shared/default session preserved; DG-S |
+| State / confidence | IMPLEMENTED_UNVERIFIED for final regression/native qualification / High source and targeted workflow evidence. Broader M06/E14/X04 remain PARTIAL |
+| Sources | studio.ts querySessionForTab/bindQuerySession/retireSession/closeTab; App runSql/executePrepared/health/close; Workbench session controls and scoped completion epoch; ConnectDialog handoff; existing Rust connect/disconnect |
+| Observed behavior | PM/MariaDB state stays isolated; shared query completes while isolated query runs; owned cancellation retires only that socket; explicit reconnect, close confirmation and backend session cleanup pass. Changed-session prepared response is never submitted |
+| Missing behavior | Named/reused multi-client sessions, session/transaction recovery, transaction status/autocommit/savepoint controls; no new SQL-session semantics for Snowflake/Redis |
+| Priority / complexity | P1 / Medium, reusing existing backend capacity and credential flow |
+| Dependencies / engines | Existing Rust-owned four-session limit, typed connect/disconnect, Safe Mode, completion revisions; PostgreSQL/MySQL/MariaDB |
+| Security / limits | No credential cloning/persistence, automatic reconnect/replay or closed-session fallback. Exact-ID retirement and stale-plan guard. Existing result budgets, engine authorization and grid metadata retained |
+| Acceptance | Two-console state/concurrency isolation; cancel/reconnect affects owned tab; late responses cannot rebind or execute; close releases session and preserves siblings; drafts contain SQL without live IDs |
+| Tests | Eight new frontend units; three actual engine/browser flows; final pnpm validate 71 frontend/86 Rust passes. Full browser attempts 25/26 with separate network interruption and value-viewer keyboard helper issue; corrected final keyboard/full retry and native gates blocked by host load above 100/126 |
+| Release eligibility | Local, unreleased. Finish clean full-regression and native gates on an available host before shipping; see isolated-query-sessions.md |

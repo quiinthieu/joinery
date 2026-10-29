@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import type { ConnectionProfile, SessionInfo, TableInfo } from "../ipc/generated";
 import type { StudioTab } from "../state/studio";
-import { useStudio } from "../state/studio";
+import { useStudio, querySessionForTab } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
@@ -42,6 +42,7 @@ interface Props {
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
+  onNewSession(): void;
 }
 
 export function Workbench({
@@ -54,6 +55,7 @@ export function Workbench({
   onConfirm,
   onSelect,
   onOpenValue,
+  onNewSession,
 }: Props) {
   const state = useStudio(),
     [editorSize, setEditorSize] = useState(290),
@@ -63,21 +65,36 @@ export function Workbench({
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const edits = tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
   function changeConnection(connectionId: string) {
-    for (const result of tab.results) {
-      resultCache.release(result.id);
-      void client.call("release_result", { resultId: result.id }).catch(() => {});
-    }
-    state.updateTab(tab.id, {
-      connectionId: connectionId || null,
-      results: [],
-      activeResultId: null,
-      status: "idle",
-      error: null,
-      metrics: {},
-      dataSessionId: null,
-      revision: tab.revision + 1,
-    });
-    onSelect(null);
+    const apply = () => {
+      if (tab.querySession && !tab.querySessionClosed)
+        void client
+          .call("disconnect", { sessionId: tab.querySession.id })
+          .catch((error) => state.notify(messageOf(error)));
+      for (const result of tab.results) {
+        resultCache.release(result.id);
+        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
+      state.updateTab(tab.id, {
+        connectionId: connectionId || null,
+        results: [],
+        activeResultId: null,
+        status: "idle",
+        error: null,
+        metrics: {},
+        dataSessionId: null,
+        querySession: null,
+        querySessionClosed: false,
+        revision: tab.revision + 1,
+      });
+      onSelect(null);
+    };
+    if (tab.querySession && !tab.querySessionClosed)
+      onConfirm(
+        "Change query connection?",
+        "This closes the isolated SQL session and rolls back its open transactions.",
+        apply,
+      );
+    else apply();
   }
   useEffect(() => {
     if (!running) return;
@@ -150,6 +167,32 @@ export function Workbench({
                   ? "Local session"
                   : "Safe Mode"}
             </span>
+          )}
+          {tab.kind === "query" && profile && ["postgres", "mysql"].includes(profile.engine) && (
+            <>
+              <span className="query-session" aria-live="polite">
+                {tab.querySession
+                  ? tab.querySessionClosed
+                    ? "Isolated session · disconnected"
+                    : "Isolated session"
+                  : session
+                    ? "Shared session"
+                    : "Disconnected"}
+              </span>
+              {(!tab.querySession || tab.querySessionClosed) && (
+                <button
+                  className="button ghost small"
+                  disabled={running || !tab.connectionId}
+                  aria-label={
+                    tab.querySession ? "Reconnect isolated session" : "New isolated session"
+                  }
+                  title="Open a separate SQL session for this tab. Maximum four sessions per connection."
+                  onClick={onNewSession}
+                >
+                  {tab.querySession ? "Reconnect" : "New session"}
+                </button>
+              )}
+            </>
           )}
         </div>
         <div className="query-actions">
@@ -276,7 +319,9 @@ export function Workbench({
                 }
                 contextEpoch={JSON.stringify(
                   state.tabs
-                    .filter((t) => t.connectionId === tab.connectionId)
+                    .filter(
+                      (t) => session && querySessionForTab(t, state.sessions)?.id === session.id,
+                    )
                     .map((t) => [t.id, t.status, t.revision]),
                 )}
                 theme={state.theme}
