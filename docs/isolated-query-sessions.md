@@ -2,8 +2,8 @@
 
 M06-Q is a local implementation of bounded console/session ownership for
 PostgreSQL and MySQL/MariaDB. Broader M06/E14/X04 remain PARTIAL. The private hub
-remains canonical shipping status; this slice is unreleased and its final
-regression/native gates are blocked by host resources.
+remains canonical shipping status; this bounded local workflow is verified
+and unreleased. External account/auth/platform qualification remains open.
 
 ## Workflow and ownership
 
@@ -65,23 +65,30 @@ limit are reused unchanged.
   setup issues, not application gaps.
 - Final pnpm validate passes 71 frontend and 86 standard Rust tests, formatting,
   types, frontend build, Cargo check and strict Clippy.
-- Full browser attempts each passed 25/26: one page had ERR_NETWORK_CHANGED
-  during module loading; another test's repeated clicks opened the read-only
-  viewer before its keyboard assertion. That test now explicitly returns to the
-  grid with Escape. The subsequent full and targeted retries were interrupted
-  when host load rose above 100/126 and free memory was low. A clean final full
-  suite and the corrected keyboard retry remain unverified.
-- Desktop build, macOS bundle and native smoke for this slice were not reached
-  because the pipeline stopped at the browser gate. They remain blocked, not
-  passing. Preview.15's earlier clean native evidence does not qualify this code.
+- The final fixed-file full browser run passes all 26 workflows, including the
+  grid keyboard assertion and the three new engine flows. Formatting also passes.
+- Earlier full attempts each passed 25/26: a module-loading network interruption,
+  then a repeated-click value-viewer issue in the existing keyboard helper.
+  Retries were interrupted at host load above 100/126 and low free memory.
+  After resources recovered, an unconditional Escape helper also failed by
+  clearing a normal grid selection. The final helper dismisses only an open
+  Glide overlay and verifies the selection before ArrowRight. The final suite
+  passes without application changes for those failures.
+- Desktop build, macOS bundle with strict ad-hoc signature, native smoke build
+  and three hidden native runs/30 cleanup cycles pass. Native elapsed times:
+  3662/3237/3423 ms. Build sourceRevision=f556518, sourceDirty=true because the
+  final test-helper change preceded its commit. Native SHA-256:
+  `a2d918af11f6910185f863ac9732c56de864b62bde02e5abbff47b562b5f953b`.
+  Evidence: .cache/isolated-native-runs.json. This is local qualification, not
+  clean-source release provenance or representative performance qualification.
 
 Logs use .cache/isolated-*; fixtures are disposable. No production queries or
 destructive runtime SQL are part of these tests.
 
 ## Official comparison
 
-DataGrip supports shared or separate console sessions and attaching consoles
-to existing sessions. Joinery's bounded slice currently supports shared or
+DataGrip 2026.2 documentation (reviewed 29 October 2026) supports shared or
+separate console sessions and attaching consoles to existing sessions. Joinery's bounded slice currently supports shared or
 tab-owned sessions, with explicit sign-in and ownership.
 
 - [Query consoles](https://www.jetbrains.com/help/datagrip/query-consoles.html)

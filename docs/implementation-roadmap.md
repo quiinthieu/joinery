@@ -76,9 +76,10 @@ Mode 2 needs a case-insensitive filesystem. The bounded
 preview.15; broader search-path/quoted-policy support and live qualification remain
 open. External metadata changes still require refresh.
 The [isolated query-session slice](isolated-query-sessions.md) is implemented
-locally for PostgreSQL/MySQL/MariaDB using existing Rust sessions. Its targeted
-flows pass; final full-regression/native gates await a host with available
-resources. Finish those gates before grouped-FK JOIN generation.
+locally for PostgreSQL/MySQL/MariaDB using existing Rust sessions. Standard
+validation, all 26 browser workflows, desktop build/bundle and three native
+runs/30 cleanup cycles pass after host resources recovered. It is unreleased;
+review/shipping and then grouped-FK metadata/JOIN generation follow.
 External release gates remain open and need their own authorization/scope.
 
 ### Acceptance and verification contract

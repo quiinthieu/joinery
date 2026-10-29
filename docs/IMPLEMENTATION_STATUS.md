@@ -662,7 +662,7 @@ AppKit verified Applications path, finished launch and one visible window.
 Receipt: .cache/ship-sf-context/receipt.json. Live account, signing/platform and
 performance gates remain open.
 
-## Isolated query-tab sessions (local; final gates blocked)
+## Isolated query-tab sessions (locally verified; unreleased)
 
 M06-Q reuses the existing Rust-owned connect/disconnect operations, engine
 adapters, Safe Mode and four-session profile cap. The existing sign-in dialog
@@ -692,10 +692,11 @@ and PostgreSQL-only keyboard retry were interrupted when host load rose above
 100 and then 126 with low free memory. They do not establish product failures
 or a clean final full-suite pass.
 
-Blocked/not reached: desktop:build, desktop:bundle:mac, desktop:smoke:build and
-test:native for this slice. The pipeline stopped at the browser gate. Earlier
-preview.15 native evidence applies only to its released tree. Current native and
-clean full-regression qualification remain open; this slice is not released.
+Initial blocked/not-reached checks: desktop:build, desktop:bundle:mac,
+desktop:smoke:build and test:native for this slice. The pipeline stopped at the browser gate. Earlier
+preview.15 native evidence applies only to its released tree. Native and
+clean full-regression qualification were open at that point; see the successful
+continuation below. This slice is not released.
 No production queries, destructive runtime SQL, locked-store interaction or
 new SSH/production account qualification was performed. Ordinary validation
 skips 34 ignored tests; the full ignored suite was not rerun locally.
@@ -707,3 +708,23 @@ The screenshot review preserved Joinery's existing layout and visible ownership
 label; no proprietary assets were used. Only task-owned test processes and
 fixture containers were stopped; user workloads and installed preview.15 were
 preserved.
+
+After host resources recovered, the final fixed-file browser suite passed all
+26 workflows, including all three new session flows. The first recovered run
+was 25/26 because the unconditional Escape helper cleared a normal grid
+selection. The corrected helper dismisses only an open Glide overlay and
+verifies the selected column before ArrowRight; the final full suite passes.
+No application change was needed for these helper/network failures.
+
+Passed continuation: desktop:build, desktop:bundle:mac with strict ad-hoc
+signature, desktop:smoke:build and three native runs/30 cleanup cycles.
+Native elapsed times: 3662/3237/3423 ms. Build sourceRevision=f556518,
+sourceDirty=true (final test-helper edit before its commit); binary SHA-256
+`a2d918af11f6910185f863ac9732c56de864b62bde02e5abbff47b562b5f953b`.
+This is local candidate evidence, not clean-source release provenance.
+Logs: .cache/isolated-browser-qualified.log, isolated-format-recovered.log,
+isolated-desktop.log, isolated-bundle.log, isolated-native-build.log and
+isolated-native-runs.log/json. The retry's containers, network and volume were
+removed. The prior host-resource hold is resolved for these local checks.
+External auth/account, packaged platform, signing and representative performance
+gates remain open. Preview.15 remains installed; this phase is unreleased.

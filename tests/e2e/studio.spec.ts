@@ -134,7 +134,11 @@ test("connects and runs SQL with separate binary-backed result tabs", async ({ p
   }).toPass();
   // Retried cell selection can open the read-only value viewer. Return to
   // the grid before asserting its keyboard navigation.
-  await page.keyboard.press("Escape");
+  if (await page.locator(".gdg-clip-region").isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".gdg-clip-region")).toHaveCount(0);
+  }
+  await expect(page.locator(".inspector h3")).toHaveText("exact_integer");
   await page.keyboard.press("ArrowRight");
   await expect(page.locator(".inspector h3")).toHaveText("absent");
   await expect(page.locator(".inspector-value")).toHaveText("NULL");

@@ -112,7 +112,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | M03 SSH/TLS and engine security — DG-C | C, D | IMPLEMENTED_UNVERIFIED / H | One-hop tunnels and hostname verification exist; rerun CA/name/trust/drop/cleanup cases | P0 / High | Transport; PMR (S uses HTTPS); transport | SSH/engine integration / existing |
 | M04 Hierarchical connection groups — DG-C | C | IMPLEMENTED_UNVERIFIED / H | Group policy and hierarchy exist; rerun UI moves and policy inheritance | P1 / Low | Profiles; PMSR; gate | Group/browser tests / existing |
 | M05 Multiple databases/schemas — DG-C, DG-EC | D, N, E | PARTIAL / H | Configured database plus discovered schemas; add explicit context selection and invalidation | P1 / High | Session context; PMS; read | Same-name objects across databases/roles / hold |
-| M06 Session management — DG-S | D, W | PARTIAL / H | Local PM isolated-tab ownership uses existing four-session limit; named sessions, multi-client attachment and broader controls remain open | P1 / High | Context identity; PM, restricted S/R; engine | Targeted isolation/cancellation/close flows pass; final regression/native gates blocked / hold |
+| M06 Session management — DG-S | D, W | PARTIAL / H | Local PM isolated-tab ownership uses existing four-session limit; named sessions, multi-client attachment and broader controls remain open | P1 / High | Context identity; PM, restricted S/R; engine | Isolation/cancellation/close, full browser and native gates pass locally; named-session controls remain open / hold |
 | M07 Driver capabilities/configuration — DG-C | D | PARTIAL / H | Six capability booleans exist; finer object/analysis/auth capabilities need contracts | P2 / Medium | Driver trait/DTOs; PMSR; engine | Unsupported controls disabled and backend rejects / hold |
 
 ## Database navigation
@@ -445,7 +445,7 @@ was removed.
 | Field | M06-Q bounded workflow |
 |---|---|
 | Feature / reference | Explicit tab-owned SQL session, shared/default session preserved; DG-S |
-| State / confidence | IMPLEMENTED_UNVERIFIED for final regression/native qualification / High source and targeted workflow evidence. Broader M06/E14/X04 remain PARTIAL |
+| State / confidence | VERIFIED_COMPLETE for the bounded local workflow / High. External auth/platform qualification is unverified; broader M06/E14/X04 remain PARTIAL |
 | Sources | studio.ts querySessionForTab/bindQuerySession/retireSession/closeTab; App runSql/executePrepared/health/close; Workbench session controls and scoped completion epoch; ConnectDialog handoff; existing Rust connect/disconnect |
 | Observed behavior | PM/MariaDB state stays isolated; shared query completes while isolated query runs; owned cancellation retires only that socket; explicit reconnect, close confirmation and backend session cleanup pass. Changed-session prepared response is never submitted |
 | Missing behavior | Named/reused multi-client sessions, session/transaction recovery, transaction status/autocommit/savepoint controls; no new SQL-session semantics for Snowflake/Redis |
@@ -453,5 +453,5 @@ was removed.
 | Dependencies / engines | Existing Rust-owned four-session limit, typed connect/disconnect, Safe Mode, completion revisions; PostgreSQL/MySQL/MariaDB |
 | Security / limits | No credential cloning/persistence, automatic reconnect/replay or closed-session fallback. Exact-ID retirement and stale-plan guard. Existing result budgets, engine authorization and grid metadata retained |
 | Acceptance | Two-console state/concurrency isolation; cancel/reconnect affects owned tab; late responses cannot rebind or execute; close releases session and preserves siblings; drafts contain SQL without live IDs |
-| Tests | Eight new frontend units; three actual engine/browser flows; final pnpm validate 71 frontend/86 Rust passes. Full browser attempts 25/26 with separate network interruption and value-viewer keyboard helper issue; corrected final keyboard/full retry and native gates blocked by host load above 100/126 |
-| Release eligibility | Local, unreleased. Finish clean full-regression and native gates on an available host before shipping; see isolated-query-sessions.md |
+| Tests | Eight new frontend units; three actual engine/browser flows; final pnpm validate 71 frontend/86 Rust passes. Final full browser suite 26/26, desktop build/bundle and three native runs/30 cleanup cycles pass. Earlier network, helper and host-pressure failures are recorded separately |
+| Release eligibility | Locally verified, unreleased. Review and clean-source release provenance remain before shipping; see isolated-query-sessions.md |
