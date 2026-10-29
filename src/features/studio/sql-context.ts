@@ -30,7 +30,10 @@ export function tableLookup(
   defaultSchema?: string,
   searchPath?: string[],
   unqualifiedTables?: TableRef[],
+  caseSensitiveTableNames?: boolean,
 ) {
+  // MySQL uses database.table, never database.schema.table.
+  if (engine === "mysql") database = undefined;
   const unqualified =
     unqualifiedTables &&
     new Set(unqualifiedTables.map((table) => JSON.stringify([table.schema, table.name])));
@@ -57,6 +60,8 @@ export function tableLookup(
     resolve(parts: Identifier[]) {
       const names = parts.map((p) => identifierValue(p, engine));
       let candidates = exact.get(JSON.stringify(names)) ?? [];
+      if (engine === "mysql" && caseSensitiveTableNames === false)
+        candidates = folded.get(JSON.stringify(names.map((p) => p.toLowerCase()))) ?? [];
       if (parts.length === 1 && unqualified) {
         candidates = candidates.filter((table) =>
           unqualified.has(JSON.stringify([table.schema, table.name])),
@@ -72,7 +77,7 @@ export function tableLookup(
       }
       // lower_case_table_names varies by MySQL server/platform. Never collapse
       // case twins; prefer exact spelling, then a unique folded candidate.
-      if (!candidates.length && engine === "mysql")
+      if (!candidates.length && engine === "mysql" && caseSensitiveTableNames === undefined)
         candidates = folded.get(JSON.stringify(names.map((p) => p.toLowerCase()))) ?? [];
       if (parts.length === 1 && candidates.length > 1) {
         const schema = defaultSchema ?? (engine === "postgres" ? "public" : undefined);

@@ -230,9 +230,10 @@ The [implementation roadmap](implementation-roadmap.md) adds a dependency-ordere
 delivery sequence without replacing these milestones or the private project
 hub's shipping status. Its first batch repairs SQL completion scope, quoting and
 stale responses; that bounded repair shipped in preview.12 (see the matrix
-evidence). The subsequent PostgreSQL live role/search-path slice is locally
-implemented and tested; see [live completion context](live-completion-context.md).
-Other live adapters and JOIN generation follow.
+evidence). The PostgreSQL live role/search-path slice shipped in preview.13; see
+[live completion context](live-completion-context.md). The subsequent
+[MySQL/MariaDB live slice](mysql-live-completion-context.md) is locally implemented.
+Snowflake context and JOIN generation follow.
 The measured warm lookup target passes, while visible completion latency and
 representative native performance remain open qualification work.
 

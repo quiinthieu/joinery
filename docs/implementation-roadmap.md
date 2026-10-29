@@ -65,11 +65,13 @@ measured follow-up, without patching dependency internals or claiming native
 performance qualification. Keep cold metadata waits and large-catalog visible
 measurements separate.
 
-The next PostgreSQL live-context slice is now locally implemented; see
+The PostgreSQL live-context slice shipped in preview.13 (PR #21, `e8f1cec`); see
 [live-completion-context.md](live-completion-context.md) for the actual contract,
 resource bounds and verification scope. E02/I04 remain PARTIAL across all engines.
-Next adapters are MySQL/MariaDB session database/role/case rules, then verified
-Snowflake REST context semantics. External metadata changes still require refresh.
+The [MySQL/MariaDB live adapter](mysql-live-completion-context.md) is now locally
+implemented and tested on the mode-0 fixtures. Remaining case-mode server
+qualification, then verified Snowflake REST context semantics, follow. External
+metadata changes still require refresh.
 Independent console/session binding and grouped-FK JOIN generation follow.
 External release gates remain open and need their own authorization/scope.
 
