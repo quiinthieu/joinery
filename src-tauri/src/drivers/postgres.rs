@@ -261,7 +261,10 @@ impl Driver for Postgres {
         }
         Ok(identity)
     }
-    async fn completion_catalog(&self) -> AppResult<super::CompletionRelations> {
+    async fn completion_catalog(
+        &self,
+        _identity: &CompletionIdentity,
+    ) -> AppResult<super::CompletionRelations> {
         let rows = self.client.query("SELECT n.nspname,c.relname,c.relkind::pg_catalog.text,pg_catalog.pg_table_is_visible(c.oid) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m') AND (n.nspname NOT LIKE 'pg\\_%' OR n.nspname='pg_catalog' OR n.oid=pg_catalog.pg_my_temp_schema()) AND pg_catalog.has_schema_privilege(n.oid,'USAGE') AND (pg_catalog.has_table_privilege(c.oid,'SELECT') OR pg_catalog.has_any_column_privilege(c.oid,'SELECT')) ORDER BY n.nspname,c.relname LIMIT 10001", &[]).await.map_err(pg_error)?;
         if rows.len() > 10000 {
             return Err(AppError::new(

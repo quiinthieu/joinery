@@ -114,7 +114,7 @@ steps below. Rust integration tests marked ignored do not run in `pnpm validate`
 
 ```sh
 python3 scripts/mysql-tls-fixture.py
-docker compose --profile mysql --profile redis up -d --wait
+docker compose --profile mysql --profile mysql-folded --profile redis up -d --wait
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test redis -- --ignored --test-threads=1
 pnpm exec playwright install chromium --only-shell
 pnpm test:e2e
@@ -129,6 +129,11 @@ select **MySQL / MariaDB**, choose Local, and either disable TLS or select
 `.cache/mysql-fixture-tls/ca.pem` as the custom CA. Never reuse these fixture
 credentials or keys outside local tests. Stop just these services with
 `docker compose --profile mysql stop mysql mariadb`.
+
+The `mysql-folded` profile adds separately initialized case-mode-1 MySQL and
+MariaDB fixtures on ports 53406 and 53407. Include it when running the full
+ignored MySQL suite; the targeted command and cleanup are documented in
+[the completion contract](docs/mysql-live-completion-context.md).
 
 Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. PostgreSQL, MySQL, MariaDB, and Redis browser tests exercise the actual Rust service and disposable databases. The Snowflake browser workflow intercepts that API boundary with synthetic responses and Arrow data; separate Rust tests exercise the Snowflake adapter against a loopback HTTP fixture. Neither Snowflake test path signs in or queries a production account.
 

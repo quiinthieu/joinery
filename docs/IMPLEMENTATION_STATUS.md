@@ -1,6 +1,6 @@
 # Implementation and release status
 
-Updated 2026-10-26. The source includes PostgreSQL, MySQL/MariaDB,
+Updated 2026-10-29. The source includes PostgreSQL, MySQL/MariaDB,
 standalone Redis and the read-only Snowflake SQL/catalog pilot. Preview.6 added
 metadata startup/version protection. The current hardening slice adds Snowflake
 OAuth/cancellation/disconnect fixes, dialog keyboard fixes and process-crash
@@ -583,9 +583,11 @@ The clean-source macOS bundle and native smoke passed three runs/30 cleanup
 cycles. Published and unauthenticated public assets match local digests; the
 extracted app passes strict ad-hoc signature verification. Executable SHA-256:
 `0bf283f622d6fac400f63043262e407c27d134fcc113ec8036c358f076e7ed55`.
-The prior installed preview.13 remains running with a production Snowflake
-connection; installation of preview.14 awaits safe closure. Release receipts
-are under `.cache/ship-mysql-context/`.
+Preview.14 was installed after the prior app exited. The installed executable
+matches the published digest; AppKit verified launch from Applications and one
+visible window. The same PID remained running during follow-up; its window was
+later offscreen/hidden and user state was preserved. The prior bundle is retained
+as a backup. Release receipts are under `.cache/ship-mysql-context/`.
 
 The next task branch adds isolated case-mode-1 MySQL 8.4 and MariaDB 11.4
 fixtures. `mysql_live_completion_uses_server_case_policy` passes on both:
@@ -600,3 +602,49 @@ Follow-up validation passes 63 frontend and 83 standard Rust tests, formatting,
 types, production build, Cargo check and strict Clippy. The new selected ignored
 fixture test passed separately on both engines. No runtime application code
 changes in this follow-up; browser/native checks were not repeated.
+
+The mode-1 follow-up shipped in source through PR #23 as `dec8f2b`, with
+the same full tree as tested `b67a0fd`. All six PR checks and all five main jobs
+passed ([main run 40821915951](https://github.com/quiinthieu/joinery/actions/runs/40821915951)).
+Integration now starts and cleans up the folded-case fixtures and runs their
+ignored test. This changes qualification infrastructure; preview.14 remains
+the binary download.
+
+## Snowflake completion request context (local implementation)
+
+The [bounded contract](snowflake-completion-context.md) extends the existing
+Rust snapshot, revision checks and CodeMirror worker. Fixed, bounded metadata
+requests verify effective identity/search path and quoted-name policy under the
+same database/schema/role/warehouse fields as execution. Known first-schema
+tables bind unqualified; later-schema fallback is withheld because catalog
+visibility cannot rule out inaccessible earlier shadows. Qualified lookup
+remains available in the configured database. Unsupported quoted-name policy
+produces a visible error with explicit refresh recovery.
+
+`pnpm validate` passes 63 frontend and 86 standard Rust tests, formatting,
+types, build, Cargo check and strict Clippy. Three new synthetic Rust HTTP
+tests cover identity, request fields, path scope, malformed responses, quoted
+policy and byte limits. The initial browser run passed 22/23; Redis form setup
+was interrupted by page reloads observed in its trace while documentation
+edits overlapped the live Vite run. With files held fixed, the complete rerun
+passed all 23 workflows, including Redis and Snowflake context failure/refresh
+and lazy revision-bound column completion. No application fix was required for
+that reload. Logs: `.cache/sf-context-validate.log`, `-rust.log`,
+`-browser.log` and `-browser-final.log`.
+
+The slice remains local and unreleased. Live Snowflake accounts, actual inherited
+defaults/grants, broader search paths/quoted policies and representative metadata
+latency remain unqualified. Thirty-four ignored tests are skipped by ordinary
+validation; no full ignored or destructive runtime SQL suite was run locally in
+this batch. All database effects used disposable fixtures. No production query,
+automatic reconnect/replay or Safe Mode change was introduced.
+
+Final `pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature),
+`pnpm desktop:smoke:build` and `pnpm test:native --runs 3 --cycles 10` all pass.
+Three hidden runs complete 30 cleanup cycles. Native fixture SHA-256:
+`446ba9cbd3ae8065dd0b0ca210fae0810f86a19e2bddf8742738251d75fc1c52`.
+This is a pre-commit working-tree build based on `dec8f2b` (sourceDirty=true),
+not release provenance. Native JSON is preserved in
+`.cache/sf-context-native-runs.json`; build/bundle/native logs use the
+`.cache/sf-context-` prefix. Task-owned database containers, network and volume
+were removed. The installed preview.14 was preserved during development.

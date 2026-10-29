@@ -51,8 +51,8 @@ active execution returns busy before reading metadata. Session errors are real
 errors, never a login-configured fallback or automatic reconnect.
 
 The original fixture qualifies MySQL 8.4 and MariaDB 11.4 with case mode 0.
-The follow-up `mysql-folded` profile and Rust regression qualify mode 1 on
-both engines using separately initialized disposable servers. Mode 2 remains
+The follow-up `mysql-folded` profile and Rust regression in PR #23 qualify mode 1
+on both engines using separately initialized disposable servers. Mode 2 remains
 unqualified on a suitable case-insensitive filesystem. The app currently
 requires a nonempty database in saved SQL profiles, so a no-default-database
 connection is not an exposed workflow; the empty-namespace code path remains

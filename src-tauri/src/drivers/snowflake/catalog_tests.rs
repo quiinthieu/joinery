@@ -85,6 +85,102 @@ fn description() -> Value {
     ],"partitionInfo":[{}]},"data":[]})
 }
 
+fn completion_context(path: Value) -> Value {
+    json!({"resultSetMetaData":{"numRows":1},"data":[["FIXTURE","READ_ONLY","DB","PUBLIC","WH",path.to_string()]]})
+}
+
+fn quoted_case(value: &str) -> Value {
+    json!({"resultSetMetaData":{"numRows":1},"data":[["QUOTED_IDENTIFIERS_IGNORE_CASE",value]]})
+}
+
+#[tokio::test]
+async fn completion_verifies_request_context_and_binds_only_the_first_schema() {
+    let (driver, server) = fixture(vec![
+        completion_context(json!(["DB.PRIVATE", "DB.PUBLIC"])),
+        quoted_case("false"),
+        json!({"resultSetMetaData":{"numRows":2},"data":[
+            ["PRIVATE","ORDERS","BASE TABLE",null,null],
+            ["PUBLIC","ORDERS","BASE TABLE",null,null]
+        ]}),
+    ])
+    .await;
+    let identity = driver.completion_identity().await.unwrap();
+    assert_eq!(identity.database, "DB");
+    assert_eq!(identity.role, "FIXTURE (READ_ONLY)");
+    assert_eq!(identity.search_path, ["DB.PRIVATE", "DB.PUBLIC"]);
+    let catalog = driver.completion_catalog(&identity).await.unwrap();
+    assert_eq!(catalog.tables.len(), 2);
+    assert_eq!(
+        catalog.unqualified_tables,
+        vec![TableRef {
+            schema: "PRIVATE".into(),
+            name: "ORDERS".into()
+        }]
+    );
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[0].1["statement"]
+            .as_str()
+            .unwrap()
+            .contains("CURRENT_SCHEMAS()")
+    );
+    assert!(
+        requests[1].1["statement"]
+            .as_str()
+            .unwrap()
+            .starts_with("SHOW PARAMETERS")
+    );
+    for (_, request) in requests {
+        assert_eq!(request["database"], "DB");
+        assert_eq!(request["schema"], "PUBLIC");
+        assert_eq!(request["warehouse"], "WH");
+        assert_eq!(request["role"], "READ_ONLY");
+        assert_eq!(request["parameters"]["QUERY_TAG"], "Joinery/catalog-test");
+    }
+}
+
+#[tokio::test]
+async fn completion_keeps_qualified_names_when_the_search_path_is_out_of_scope() {
+    for path in [
+        json!(["OTHER.PUBLIC", "DB.PUBLIC"]),
+        json!(["DB.\"Mixed Schema\""]),
+        json!([]),
+    ] {
+        let (driver, server) = fixture(vec![
+            completion_context(path), quoted_case("false"),
+            json!({"resultSetMetaData":{"numRows":1},"data":[["PUBLIC","ORDERS","BASE TABLE",null,null]]}),
+        ]).await;
+        let identity = driver.completion_identity().await.unwrap();
+        let catalog = driver.completion_catalog(&identity).await.unwrap();
+        assert_eq!(catalog.tables.len(), 1);
+        assert!(catalog.unqualified_tables.is_empty());
+        assert_eq!(server.await.unwrap().len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn completion_rejects_unverified_or_unsupported_snowflake_context() {
+    let mut wrong_role = completion_context(json!(["DB.PUBLIC"]));
+    wrong_role["data"][0][1] = json!("OTHER_ROLE");
+    let mut malformed_path = completion_context(json!([]));
+    malformed_path["data"][0][5] = json!("not JSON");
+    for responses in [
+        vec![wrong_role],
+        vec![malformed_path],
+        vec![
+            completion_context(json!(["DB.PUBLIC"])),
+            quoted_case("true"),
+        ],
+        vec![json!({"resultSetMetaData":{"numRows":1},"data":[["x".repeat(70*1024)]]})],
+    ] {
+        let expected = responses.len();
+        let (driver, server) = fixture(responses).await;
+        assert!(driver.completion_identity().await.is_err());
+        assert_eq!(server.await.unwrap().len(), expected);
+    }
+}
+
 #[tokio::test]
 async fn catalog_discovers_tables_across_partitions_without_touching_query_cancellation() {
     let handle = uuid::Uuid::new_v4().to_string();

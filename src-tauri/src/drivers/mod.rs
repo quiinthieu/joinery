@@ -47,7 +47,10 @@ pub trait Driver: Send + Sync {
             "Live completion context is unavailable for this engine",
         ))
     }
-    async fn completion_catalog(&self) -> AppResult<CompletionRelations> {
+    async fn completion_catalog(
+        &self,
+        _identity: &CompletionIdentity,
+    ) -> AppResult<CompletionRelations> {
         Err(AppError::new(
             ErrorCode::Unsupported,
             "Live completion metadata is unavailable for this engine",

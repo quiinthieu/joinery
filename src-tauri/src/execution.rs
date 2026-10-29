@@ -1003,7 +1003,7 @@ impl Studio {
             })?;
         let previous = session.completion.lock().take();
         let identity = session.driver.completion_identity().await?;
-        let relations = session.driver.completion_catalog().await?;
+        let relations = session.driver.completion_catalog(&identity).await?;
         let tables = relations.tables;
         let unqualified_tables = relations.unqualified_tables;
         let revision = previous

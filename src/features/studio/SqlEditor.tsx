@@ -118,7 +118,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const configure = () => {
     const config = latest.current;
     const snapshot = liveRef.current;
-    if (config.engine !== "postgres" && config.engine !== "mysql") return config;
+    if (config.engine === "redis") return config;
     return {
       ...config,
       tables: snapshot?.tables ?? [],
@@ -300,7 +300,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     liveRef.current = null;
     setLive(null);
     setContextError(null);
-    if (props.engine !== "postgres" && props.engine !== "mysql") return;
+    if (props.engine === "redis") return;
     completion.current?.configure(configure());
     if (view.current) closeCompletion(view.current);
     if (props.sessionId)
@@ -321,7 +321,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   }, [props.engine, props.sessionId, props.tables, props.contextEpoch, refresh]);
   return (
     <div className="sql-editor" style={{ display: "flex", flexDirection: "column" }}>
-      {(props.engine === "postgres" || props.engine === "mysql") && props.sessionId && (
+      {props.engine !== "redis" && props.sessionId && (
         <div
           aria-live="polite"
           aria-atomic="true"
@@ -342,7 +342,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             {contextError
               ? `Completion unavailable: ${contextError}`
               : live
-                ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine === "postgres" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
                 : "Loading completion context…"}
           </span>
           <button

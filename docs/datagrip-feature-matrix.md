@@ -131,7 +131,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
 | E01 Dialect highlighting/parsing — DG-E | E | PARTIAL / H | PG/MySQL dialects plus Snowflake dollar strings; bounded token reader preserves Unicode names. Full procedural/dialect semantics remain open | P1 / Medium | CodeMirror; PMS (R native console); read | Quoting/comments/procedural boundaries per dialect / hold |
-| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | PostgreSQL live context ships in preview.13; MySQL/MariaDB live database/role/case context is locally tested; Snowflake and external metadata monitoring remain open | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
+| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | PostgreSQL context ships in preview.13 and MySQL/MariaDB in preview.14; bounded Snowflake request context is locally fixture/browser tested; broader path/policy support and external metadata monitoring remain open | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
 | E03 Direct-base-table statement/block/alias scope — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Caret block/UNION arm isolated; comments/strings ignored; CTE/derived shadows suppress physical columns. Advanced output inference remains outside this acceptance | P1 / Medium | E01; PMS; read | 24 context cases plus PM accepted-and-executed SELECTs and synthetic S browser flow; see batch evidence / shipped in preview.12; see hub |
 | E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / shipped in preview.12; see hub |
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
@@ -215,7 +215,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | I01 Rust ownership and Safe Mode | X, C, D | IMPLEMENTED_UNVERIFIED / H | Core enforcement exists; retain all bypass and integration checks | P0 / High | Existing gateway; PMSR; gate | All entry points, stale approval, nested writes / existing |
 | I02 Result retention and binary IPC | B | PARTIAL / H | Explicit budgets and binary transport exist; representative transient-copy/plateau measurements open | P0 / High | Native profiling; PMSR; local | Native binary payloads, wide rows, cleanup plateau / hold |
 | I03 Typed command calls | B generated DTOs / generic client.call | PARTIAL / H | Add closed command/request/response map without replacing IPC | P2 / Medium | Rust DTO export; PMSR; gate | Compile-time invalid command/argument cases / hold |
-| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | PostgreSQL and local MySQL/MariaDB snapshots follow actual editor identity and app executions; Snowflake context and external change subscriptions remain open | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
+| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | Shipped PostgreSQL/MySQL snapshots follow actual editor identity and app executions; local Snowflake snapshots verify request context; external change subscriptions and broader policies remain open | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
 | I05 Startup, completion and grid performance | Q, E, B | PARTIAL / H | 100k-name warm lookup p95 0.10 ms; explicit visible completion p95 55–61 ms misses 50 ms target. Representative native load, startup and FPS remain unqualified | P0 release gate / High | Target hardware, measured scenarios; PMSR; local | p95 startup/completion/display and attributable memory/FPS / hold |
 | I06 Packaging/signing/updates/platforms | Q | PARTIAL / H | macOS ad-hoc preview exists; signing/notarization, updater and packaged Windows/Linux open | P0 release gate / High | Credentials and platform hosts; PMSR; transport | Installer/update integrity and native runtime checks / hold |
 | I07 Recovery and metadata compatibility | L | PARTIAL / H | Version guards, WAL recovery and undo exist; broader historical upgrades/disk-loss cases open | P0 / High | Versioned persistence; PMSR; local | Migration fixtures, interrupted restore, unsupported stores / hold |
@@ -374,7 +374,7 @@ symbols, acceptance and limits. E02/I04 remain PARTIAL across all engines.
 | Security / budgets | Existing Rust Safe Mode unchanged; same-session metadata, escaped identifiers, SELECT column privileges and read-only metadata. Existing 10,000 relations / 2 MiB and 4,096 columns / 1 MiB caps; identity 64 KiB; eight frontend reads/cache entries and 100 suggestions |
 | Acceptance | Actual USE/roles/grants follow the connection; no stale prepared DATABASE(), old-revision columns, wrong-case relation binding or MySQL three-part insertion; existing grid and cancellation remain usable |
 | Tests | mysql_live_completion_tracks_database_roles_and_column_grants plus existing catalog/paging and cancellation fixtures on both engines; strict/folded/path unit test; two browser acceptance flows. Follow-up mysql_live_completion_uses_server_case_policy runs on case-mode-1 fixtures |
-| Release eligibility | Initial slice shipped as preview.14 after PR #22 and five main jobs; public assets, clean-source native evidence and ad-hoc signature verified. Mode-1 qualification is a separate local follow-up. Installed-app update awaits the running preview.13 session's safe closure |
+| Release eligibility | Initial slice shipped and installed as preview.14 after PR #22 and five main jobs; public assets, clean-source native evidence and ad-hoc signature verified. Mode-1 qualification merged separately through PR #23 |
 
 Passed: `pnpm validate` (63 frontend, 83 Rust), three selected MySQL fixture tests
 across both engines, and all 23 browser workflows. Failed then repaired: initial
@@ -395,8 +395,9 @@ with an identical source tree to tested `7697c6e`. All five main jobs passed
 [Preview.14](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.14)
 assets, checksums, public download, extracted app and strict ad-hoc signature
 verify. Clean-source native evidence passed three runs/30 cleanup cycles.
-The installed preview.13 was observed running with a production Snowflake
-connection and was preserved pending safe closure.
+The installed preview.14 executable matches its release digest and launched
+with a visible native window after the prior app exited. No production SQL or
+automatic reconnect was performed during installation verification.
 
 The separate mode-1 follow-up uses disposable MySQL 8.4 and MariaDB 11.4
 servers initialized with lower_case_table_names=1. Both engines passed the
@@ -407,3 +408,32 @@ qualify it. The fixture project was removed after the test.
 Not executed: production/live accounts, destructive local runtime SQL, other
 packaged platforms, real case mode 2, signing/notarization and broad performance
 qualification. No environment blocker remains for the tested local workflow.
+
+## Snowflake request-context continuation — local slice
+
+E02-SF uses the existing E02/I04 snapshot and worker. The overall capability
+remains PARTIAL; this scope does not qualify a live account or full search-path
+resolution. See [the bounded contract](snowflake-completion-context.md).
+
+| Field | E02-SF bounded workflow |
+|---|---|
+| DataGrip reference | DG-E / DG-EC; selected context drives name resolution |
+| State / confidence | PARTIAL / High source and synthetic evidence; live account behavior IMPLEMENTED_UNVERIFIED |
+| Sources | snowflake/completion.rs live_completion_identity/live_completion_catalog; catalog.rs context_rows; Driver/Studio completion_catalog; SqlEditor |
+| Observed behavior | Server identity/path and quoted policy are read under the same request fields as SQL; first-schema table names bind; qualified names remain; unsupported policy and failed context show errors and withhold stale metadata |
+| Missing behavior | Later-schema fallback, complex/other-database path discovery, case-insensitive quoted policy and live-account qualification |
+| Priority / complexity | P1 / Medium |
+| Dependencies | Existing Rust session lane/revision, SQL API authentication, read-only metadata adapter and completion worker |
+| Database scope | Snowflake configured database, explicit request role/schema/warehouse; primary user read from the server |
+| Security / bounds | Safe Mode and Snowflake read-only restrictions retained; fixed bounded context SQL, one row / 64 KiB each; existing catalog/column/result limits; no reconnect/replay |
+| Acceptance | Verified role/database/schema/warehouse; request fields match execution; conservative unqualified binding; qualified/alias lazy columns; visible error and refresh recovery; old revisions rejected by existing Studio path |
+| Tests | Three Rust HTTP tests for context/request fields/path scope/quoted policy/malformed data/byte limits; browser context display/failure/recovery/revision-bound completion; existing database/browser regressions |
+| Release eligibility | Local implementation only; shipping remains preview.14 plus source-only mode-1 qualification in PR #23. Live, platform, signing and performance gates remain open |
+
+Passed on the current slice: `pnpm validate` (63 frontend, 86 standard Rust),
+three new HTTP fixture tests, all 23 browser workflows in the final fixed-file
+run, desktop build, macOS bundle/strict ad-hoc signature and three native
+runs/30 cleanup cycles. The initial browser run had 22 passes and a Redis form
+timeout during page reloads; the trace and final rerun are recorded separately
+in IMPLEMENTATION_STATUS.md. Native provenance is pre-commit sourceDirty=true;
+this slice is not released or installed. The fixture project was removed.
