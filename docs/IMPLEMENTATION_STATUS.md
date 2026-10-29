@@ -457,3 +457,67 @@ records samples and limitations. Live database/schema/search-path/role revisions
 full CTE/derived/correlated inference and FK JOIN generation remain separate work.
 No dependency replacement, new state manager, privileged IPC command or backend
 authorization change is introduced.
+
+
+## PostgreSQL live completion context (local implementation)
+
+The `feat/live-completion-context` branch extends preview.12's merged `06146bc`
+with effective PostgreSQL completion context. Rust reads database, current role
+and ordered schemas on the editor connection and execution lane; column metadata
+requires a matching opaque snapshot revision and visible table/column grants.
+Every app execution invalidates the old snapshot. The editor clears obsolete
+metadata while refreshing and offers explicit unavailable/error/refresh states.
+Temporary tables and transaction-local search paths use their actual session.
+
+See [the contract and bounds](live-completion-context.md) and
+[architecture decision](architecture-decisions.md). This is PostgreSQL first;
+other engines retain configured completion behavior. External DDL/grant changes
+need refresh or a subsequent app execution. SQL console/session binding, the
+remaining live adapters and FK JOIN generation remain open.
+
+Current-source verification passes: `pnpm validate` includes 62 frontend and
+83 standard Rust tests, formatting, types, production frontend build, Cargo check
+and strict Clippy. Three selected PostgreSQL fixture tests pass, including search
+path/role/rollback, failed-transaction recovery, temporary/system relations,
+read-only completion metadata, column grants, inaccessible-name shadows, stable
+concurrent revisions, cancellation, and legacy grid keys/browsing. The full
+browser suite passes all 21 workflows, including accepted-and-executed completion,
+role/rollback changes and existing supported-engine editing/recovery/Safe Mode.
+New native commands are registered in the command manifest, capability allowlist
+and generated DTOs.
+
+Final-source `pnpm desktop:build`, `pnpm desktop:bundle:mac`,
+`pnpm desktop:smoke:build` and `pnpm test:native` pass on macOS arm64. The app
+bundle passes strict ad-hoc signature verification. Three hidden native runs
+pass 30 cleanup cycles, including actual IPC calls reaching Rust's disconnected-
+session guards, completion-worker acceptance, Arrow/editor/grid/close checks.
+Native fixture binary SHA-256 is
+`86491f9e300eb6723cf1e9b0a5358b665f1aaeb6f8a2fba0f3a7347aa7dd3116`.
+
+Reproduced and repaired during this batch: initial overlapping metadata reads
+reported busy; bounded metadata serialization resolved this. Unchanged concurrent
+readers invalidated each other's tokens; they now share a revision. Qualifying
+multi-array unnest broke grid foreign-key metadata; qualified ROWS FROM plus a
+regression preserves it. Missing implicit system relations were reproduced; the
+adapter now supplies server-resolved names and declines an accessible later table
+when an inaccessible earlier one shadows it. The cancellation fixture now waits
+for actual query activity before cancelling.
+
+Earlier verification interruptions are separate: Vite root/module requests
+stalled during concurrent build/contract regeneration, while harness health stayed
+HTTP 200. Final build and browser checks ran sequentially. On resumption, stopped
+fixture databases caused connection failures; restarting the exact task project
+and verifying health preceded the passing full rerun. Exact orphan test servers
+were stopped. The task fixture project and volume were removed after verification;
+unrelated user processes and the installed app were preserved.
+
+Source builds use the pre-commit working tree (sourceDirty=true), with
+logs/provenance under `.cache/live-context-*-final.log` and `.cache/native-smoke/`.
+No production queries or destructive runtime SQL fixture commands were executed.
+The standard Rust runner reports 32 ignored tests; three selected fixtures were
+executed separately. The entire ignored suite, real credential-store behavior,
+external accounts/platforms/signing and representative performance qualification
+were not run. Warm browser popup p95 remains above the 50 ms target (53.8 / 53.5 /
+53.3 ms for PostgreSQL/MySQL/MariaDB); warm 100,000-name lookup p95 is 0.10 ms.
+Preview.12 remains the installed/published application until a separate release
+is authorized. This phase is a locally tested, unmerged and unreleased candidate.

@@ -30,6 +30,37 @@ const catalog = [info("orders"), info("customers")];
 const lookup = tableLookup(catalog, "postgres");
 const refs = (text: string) => referencedTables(query(text), lookup).references;
 
+test("live schema order wins and never falls back outside the effective path", () => {
+  const tables = [info("orders"), info("orders", "alternate"), info("private", "hidden")];
+  const lookup = tableLookup(tables, "postgres", "joinery", undefined, [
+    "pg_catalog",
+    "alternate",
+    "public",
+  ]);
+  expect(lookup.resolve([readIdentifier("orders")])).toEqual(tables[1].table);
+  expect(lookup.resolve([readIdentifier("private")])).toBeUndefined();
+  expect(lookup.resolve([readIdentifier("public"), readIdentifier("orders")])).toEqual(
+    tables[0].table,
+  );
+});
+
+test("server resolution preserves system names and inaccessible relation shadows", () => {
+  const tables = [info("pg_type"), info("pg_type", "pg_catalog"), info("orders", "alternate")];
+  const lookup = tableLookup(
+    tables,
+    "postgres",
+    undefined,
+    undefined,
+    ["pg_catalog", "public", "alternate"],
+    [tables[1].table],
+  );
+  expect(lookup.resolve([readIdentifier("pg_type")])).toEqual(tables[1].table);
+  expect(lookup.resolve([readIdentifier("orders")])).toBeUndefined();
+  expect(lookup.resolve([readIdentifier("alternate"), readIdentifier("orders")])).toEqual(
+    tables[2].table,
+  );
+});
+
 test("runs only the statement under the cursor and respects quoted semicolons", () => {
   expect(selectedStatement(query("-- context\nSELECT $$hé|llo; there$$; SELECT 2;"))).toBe(
     "SELECT $$héllo; there$$;",

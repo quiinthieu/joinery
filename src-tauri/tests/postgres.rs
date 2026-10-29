@@ -620,3 +620,263 @@ async fn closed_viewers_and_full_result_budgets_do_not_misreport_committed_write
     run(&studio, &session, &format!("DROP TABLE public.\"{name}\"")).await;
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable live-context PostgreSQL fixtures"]
+async fn live_completion_tracks_search_path_role_rollback_and_permissions() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let initial = studio.completion_catalog(&session.id).await.unwrap();
+    assert!(
+        initial
+            .tables
+            .iter()
+            .any(|t| t.table.schema == "pg_catalog" && t.table.name == "pg_type"),
+        "implicit system relations must participate in name resolution"
+    );
+    let (first, second) = tokio::join!(
+        studio.completion_catalog(&session.id),
+        studio.completion_catalog(&session.id)
+    );
+    assert_eq!(
+        first.unwrap().revision,
+        second.unwrap().revision,
+        "unchanged concurrent readers must share a valid context revision"
+    );
+    assert!(initial.identity.search_path.contains(&"public".to_string()));
+    let public = TableRef {
+        schema: "public".into(),
+        name: "orders".into(),
+    };
+    assert!(
+        studio
+            .completion_schema(&session.id, &initial.revision, &public)
+            .await
+            .unwrap()
+            .columns
+            .iter()
+            .any(|c| c.name == "notes")
+    );
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "SET search_path TO completion_alt,public"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    assert!(
+        studio
+            .completion_schema(&session.id, &initial.revision, &public)
+            .await
+            .is_err()
+    );
+    let changed = studio.completion_catalog(&session.id).await.unwrap();
+    assert_ne!(initial.revision, changed.revision);
+    assert!(
+        changed
+            .identity
+            .search_path
+            .iter()
+            .position(|s| s == "completion_alt")
+            .unwrap()
+            < changed
+                .identity
+                .search_path
+                .iter()
+                .position(|s| s == "public")
+                .unwrap()
+    );
+    assert_eq!(
+        status(&run(&studio, &session, "BEGIN; SET LOCAL search_path TO public").await),
+        RunStatus::Completed
+    );
+    let local = studio.completion_catalog(&session.id).await.unwrap();
+    assert!(
+        !local
+            .identity
+            .search_path
+            .contains(&"completion_alt".into())
+    );
+    assert_eq!(
+        status(&run(&studio, &session, "ROLLBACK").await),
+        RunStatus::Completed
+    );
+    let restored = studio.completion_catalog(&session.id).await.unwrap();
+    assert_eq!(restored.identity, changed.identity);
+    assert_ne!(restored.revision, local.revision);
+    assert_eq!(
+        status(&run(&studio, &session, "SET ROLE joinery_completion_reader").await),
+        RunStatus::Completed
+    );
+    let restricted = studio.completion_catalog(&session.id).await.unwrap();
+    assert_eq!(restricted.identity.role, "joinery_completion_reader");
+    assert!(
+        !restricted
+            .tables
+            .iter()
+            .any(|t| t.table.schema == "public" && t.table.name == "orders")
+    );
+    assert!(
+        studio
+            .completion_schema(&session.id, &restricted.revision, &public)
+            .await
+            .is_err()
+    );
+    let alt = TableRef {
+        schema: "completion_alt".into(),
+        name: "orders".into(),
+    };
+    assert_eq!(
+        studio
+            .completion_schema(&session.id, &restricted.revision, &alt)
+            .await
+            .unwrap()
+            .columns[0]
+            .name,
+        "alt_note"
+    );
+    let column_table = TableRef {
+        schema: "completion_alt".into(),
+        name: "column_grants".into(),
+    };
+    let visible = studio
+        .completion_schema(&session.id, &restricted.revision, &column_table)
+        .await
+        .unwrap();
+    assert_eq!(
+        visible
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["visible_note"]
+    );
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "SET search_path TO public,completion_alt"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let shadowed = studio.completion_catalog(&session.id).await.unwrap();
+    assert!(
+        shadowed
+            .tables
+            .iter()
+            .any(|t| t.table.schema == "completion_alt" && t.table.name == "orders")
+    );
+    assert!(
+        !shadowed
+            .unqualified_tables
+            .iter()
+            .any(|t| t.name == "orders"),
+        "a denied relation must still shadow an accessible later name"
+    );
+    assert_eq!(
+        status(&run(&studio, &session, "RESET ROLE; BEGIN; SELECT 1/0").await),
+        RunStatus::Failed
+    );
+    assert!(studio.completion_catalog(&session.id).await.is_err());
+    assert_eq!(
+        status(&run(&studio, &session, "ROLLBACK").await),
+        RunStatus::Completed
+    );
+    assert!(studio.completion_catalog(&session.id).await.is_ok());
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "CREATE TEMP TABLE orders (temp_note text)"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let temporary = studio.completion_catalog(&session.id).await.unwrap();
+    let table = temporary
+        .tables
+        .iter()
+        .find(|t| t.table.name == "orders" && t.table.schema.starts_with("pg_temp_"))
+        .unwrap();
+    assert!(temporary.identity.search_path.contains(&table.table.schema));
+    let schema = studio
+        .completion_schema(&session.id, &temporary.revision, &table.table)
+        .await
+        .unwrap();
+    assert_eq!(schema.columns[0].name, "temp_note");
+    assert!(!schema.editable && schema.columns.iter().all(|c| !c.editable));
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn live_completion_busy_reads_do_not_block_query_cancellation() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let plan = studio
+        .prepare_execution(&session.id, "SELECT pg_sleep(10)")
+        .unwrap();
+    let (id, mut rx) = start(&studio, &plan, None);
+    while let Some(event) = rx.recv().await {
+        if matches!(event, QueryEvent::StatementStarted { .. }) {
+            break;
+        }
+    }
+    let error = studio.completion_catalog(&session.id).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if studio
+                .processes(&session.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|p| {
+                    p.own_session
+                        && p.state == "active"
+                        && p.query.as_deref() == Some("SELECT pg_sleep(10)")
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("sleep query must be executing before cancellation");
+    studio.cancel(&id).await.unwrap();
+    let events = finish(rx).await;
+    assert_eq!(status(&events), RunStatus::Cancelled);
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn live_context_preserves_legacy_grid_foreign_keys() {
+    let (_root, studio, session) = setup(SafeMode::ReadOnly).await;
+    let table = TableRef {
+        schema: "public".into(),
+        name: "orders".into(),
+    };
+    let schema = studio.schema(&session.id, &table).await.unwrap();
+    assert_eq!(schema.primary_key, vec!["id"]);
+    assert!(
+        schema
+            .foreign_keys
+            .iter()
+            .any(|key| key.column == "customer_id"
+                && key.target.name == "customers"
+                && key.target_column == "id")
+    );
+    assert!(!schema.editable);
+    let page = studio.browse(&session.id, &table, None).await.unwrap();
+    assert_eq!(page.result.retained_rows, 500);
+    studio.shutdown();
+}

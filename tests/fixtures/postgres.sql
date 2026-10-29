@@ -28,3 +28,14 @@ ANALYZE;
 
 CREATE TABLE "completion.names" ("No""tes" text NOT NULL, "列" integer NOT NULL);
 INSERT INTO "completion.names" VALUES ('completion fixture', 42);
+
+-- Disposable live-context fixtures; no runtime test needs destructive DDL.
+CREATE SCHEMA completion_alt;
+CREATE TABLE completion_alt.orders (alt_note text);
+INSERT INTO completion_alt.orders VALUES ('alternate context');
+CREATE ROLE joinery_completion_reader NOLOGIN;
+GRANT joinery_completion_reader TO joinery;
+GRANT USAGE ON SCHEMA completion_alt TO joinery_completion_reader;
+GRANT SELECT ON completion_alt.orders TO joinery_completion_reader;
+CREATE TABLE completion_alt.column_grants (visible_note text, private_note text);
+GRANT SELECT (visible_note) ON completion_alt.column_grants TO joinery_completion_reader;

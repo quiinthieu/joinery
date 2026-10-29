@@ -156,6 +156,8 @@ async fn rpc(
             }
             "redis_scan" => json!(studio.redis_scan(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"pattern")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
             "redis_inspect" => json!(studio.redis_inspect(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"argument")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
+            "completion_catalog" => json!(studio.completion_catalog(&arg::<String>(&args, "sessionId")?).await?),
+            "completion_schema" => json!(studio.completion_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
             "table_schema" => json!(
                 studio

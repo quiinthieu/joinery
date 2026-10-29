@@ -45,6 +45,7 @@ struct Session {
     active_run: Mutex<Option<String>>,
     closed: AtomicBool,
     tunnel: Option<Arc<Tunnel>>,
+    completion: Mutex<Option<CompletionCatalog>>,
 }
 
 enum Action {
@@ -479,6 +480,7 @@ impl Studio {
                 profile,
                 driver,
                 lane: tokio::sync::Mutex::new(()),
+                completion: Mutex::new(None),
                 cancellation_gate: tokio::sync::Mutex::new(()),
                 active_run: Mutex::new(None),
                 closed: AtomicBool::new(false),
@@ -777,6 +779,7 @@ impl Studio {
             None
         };
         if serialized {
+            *session.completion.lock() = None;
             let _gate = session.cancellation_gate.lock().await;
             *session.active_run.lock() = Some(run_id.clone());
         }
@@ -981,6 +984,140 @@ impl Studio {
         session.driver.cancel().await
     }
 
+    /// Read a bounded context snapshot on the existing editor execution lane.
+    pub async fn completion_catalog(&self, session_id: &str) -> AppResult<CompletionCatalog> {
+        let session = self.session(session_id)?;
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "The session is busy; retry after execution finishes",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_millis(1500), session.lane.lock())
+            .await
+            .map_err(|_| {
+                AppError::new(
+                    ErrorCode::Conflict,
+                    "The session is busy; retry suggestions",
+                )
+            })?;
+        let previous = session.completion.lock().take();
+        let identity = session.driver.completion_identity().await?;
+        let relations = session.driver.completion_catalog().await?;
+        let tables = relations.tables;
+        let unqualified_tables = relations.unqualified_tables;
+        let revision = previous
+            .filter(|old| {
+                old.identity == identity
+                    && old.unqualified_tables.len() == unqualified_tables.len()
+                    && old
+                        .unqualified_tables
+                        .iter()
+                        .zip(&unqualified_tables)
+                        .all(|(a, b)| a.schema == b.schema && a.name == b.name)
+                    && old.tables.len() == tables.len()
+                    && old.tables.iter().zip(&tables).all(|(a, b)| {
+                        a.table.schema == b.table.schema
+                            && a.table.name == b.table.name
+                            && a.kind == b.kind
+                    })
+            })
+            .map(|old| old.revision)
+            .unwrap_or_else(new_id);
+        let snapshot = CompletionCatalog {
+            revision,
+            identity,
+            tables,
+            unqualified_tables,
+        };
+        if serde_json::to_vec(&snapshot)
+            .map_err(|_| AppError::internal("Cannot encode completion metadata"))?
+            .len()
+            > 2 * 1024 * 1024
+        {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "Completion metadata exceeds its byte budget",
+            ));
+        }
+        if session.closed.load(Ordering::Acquire) {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "The session closed",
+            ));
+        }
+        *session.completion.lock() = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+    pub async fn completion_schema(
+        &self,
+        session_id: &str,
+        revision: &str,
+        table: &TableRef,
+    ) -> AppResult<TableSchema> {
+        let session = self.session(session_id)?;
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "The session is busy; retry after execution finishes",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_millis(1500), session.lane.lock())
+            .await
+            .map_err(|_| {
+                AppError::new(
+                    ErrorCode::Conflict,
+                    "The session is busy; retry suggestions",
+                )
+            })?;
+        let snapshot = session
+            .completion
+            .lock()
+            .clone()
+            .filter(|s| s.revision == revision)
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::Conflict,
+                    "Completion context changed; refresh suggestions",
+                )
+            })?;
+        if session.driver.completion_identity().await? != snapshot.identity {
+            *session.completion.lock() = None;
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Completion context changed; refresh suggestions",
+            ));
+        }
+        if !snapshot
+            .tables
+            .iter()
+            .any(|t| t.table.schema == table.schema && t.table.name == table.name)
+        {
+            return Err(AppError::new(
+                ErrorCode::PermissionDenied,
+                "The table is not visible in this completion context",
+            ));
+        }
+        let schema = session.driver.completion_schema(table).await?;
+        if schema.columns.len() > 4096
+            || serde_json::to_vec(&schema)
+                .map_err(|_| AppError::internal("Cannot encode completion columns"))?
+                .len()
+                > 1024 * 1024
+        {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "Completion columns exceed their budget",
+            ));
+        }
+        if session.closed.load(Ordering::Acquire) {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "The session closed",
+            ));
+        }
+        Ok(schema)
+    }
     pub async fn catalog(&self, session_id: &str) -> AppResult<Vec<TableInfo>> {
         self.session(session_id)?.driver.catalog().await
     }

@@ -22,6 +22,8 @@ fn main() {
             "authorize_plan",
             "execute_plan",
             "cancel_run",
+            "completion_catalog",
+            "completion_schema",
             "catalog",
             "redis_scan",
             "redis_inspect",

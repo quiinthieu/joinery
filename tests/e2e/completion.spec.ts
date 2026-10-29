@@ -177,3 +177,57 @@ test("measures bounded prefix lookup with a 100,000-name catalog", async ({ page
     contentType: "application/json",
   });
 });
+
+test("PostgreSQL completion follows effective search path, role and rollback", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Connect a database" }).click();
+  await page.getByLabel("Connection name", { exact: true }).fill("Live context fixture");
+  await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
+  await page.getByLabel("Port", { exact: true }).fill("55432");
+  await page.getByLabel("Database", { exact: true }).fill("joinery");
+  await page.getByLabel("Username", { exact: true }).fill("joinery");
+  await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
+  await page.getByLabel("Require TLS and verify the server certificate").uncheck();
+  await page.getByLabel("Safe Mode", { exact: true }).selectOption("silent");
+  await page.getByRole("button", { name: "Save and connect" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "New query tab" }).click();
+  const editor = page.getByRole("textbox", { name: "SQL editor" });
+  const context = page.locator(".completion-context");
+  const run = async (sql: string) => {
+    await editor.fill(sql);
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    await expect(page.locator(".status-dot.running")).toHaveCount(0);
+    await expect(context).not.toContainText("Loading");
+    await expect(page.locator(".query-error")).toHaveCount(0);
+  };
+  await expect(context).toContainText("joinery");
+  await run("SET search_path TO completion_alt,public");
+  await expect(context).toContainText("completion_alt");
+  const source = "SELECT o.alt FROM orders o";
+  await editor.fill(source);
+  await caret(editor, source.indexOf("o.alt") + 5);
+  await editor.press("Control+Space");
+  const option = page.locator(".cm-tooltip-autocomplete").getByText("o.alt_note", { exact: true });
+  await expect(option).toBeVisible();
+  await option.click();
+  await expect(editor).toHaveText("SELECT o.alt_note FROM orders o");
+  await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+  await expect(page.locator(".result-footer")).toContainText("1 rows");
+  await run("BEGIN; SET LOCAL search_path TO public");
+  await expect(context).not.toContainText("completion_alt");
+  await run("ROLLBACK");
+  await expect(context).toContainText("completion_alt");
+  await run("SET ROLE joinery_completion_reader");
+  await expect(context).toContainText("joinery_completion_reader");
+  await editor.fill("SELECT o.no FROM public.orders o");
+  await caret(editor, 11);
+  await editor.press("Control+Space");
+  // An inaccessible table must not reuse metadata from the original login role.
+  await expect(
+    page.locator(".cm-tooltip-autocomplete").getByText("o.notes", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Refresh completion context" }).click();
+  await expect(context).toContainText("joinery_completion_reader");
+  await page.screenshot({ path: ".cache/screenshots/live-context.png" });
+});

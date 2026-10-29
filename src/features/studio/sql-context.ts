@@ -28,7 +28,12 @@ export function tableLookup(
   engine: EngineKind,
   database?: string,
   defaultSchema?: string,
+  searchPath?: string[],
+  unqualifiedTables?: TableRef[],
 ) {
+  const unqualified =
+    unqualifiedTables &&
+    new Set(unqualifiedTables.map((table) => JSON.stringify([table.schema, table.name])));
   const exact = new Map<string, TableRef[]>(),
     folded = new Map<string, TableRef[]>();
   const add = (parts: string[], table: TableRef) => {
@@ -52,6 +57,19 @@ export function tableLookup(
     resolve(parts: Identifier[]) {
       const names = parts.map((p) => identifierValue(p, engine));
       let candidates = exact.get(JSON.stringify(names)) ?? [];
+      if (parts.length === 1 && unqualified) {
+        candidates = candidates.filter((table) =>
+          unqualified.has(JSON.stringify([table.schema, table.name])),
+        );
+        return candidates.length === 1 ? candidates[0] : undefined;
+      }
+      if (parts.length === 1 && searchPath) {
+        for (const schema of searchPath) {
+          const matches = candidates.filter((t) => t.schema === schema);
+          if (matches.length === 1) return matches[0];
+        }
+        return undefined;
+      }
       // lower_case_table_names varies by MySQL server/platform. Never collapse
       // case twins; prefer exact spelling, then a unique folded candidate.
       if (!candidates.length && engine === "mysql")

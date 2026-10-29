@@ -274,6 +274,11 @@ export function Workbench({
                 defaultSchema={
                   profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined
                 }
+                contextEpoch={JSON.stringify(
+                  state.tabs
+                    .filter((t) => t.connectionId === tab.connectionId)
+                    .map((t) => [t.id, t.status, t.revision]),
+                )}
                 theme={state.theme}
               />
             </Suspense>

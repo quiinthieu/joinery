@@ -405,3 +405,22 @@ pub async fn redis_inspect(
         .redis_inspect(&session_id, &argument, cursor.as_deref())
         .await
 }
+
+#[tauri::command]
+pub async fn completion_catalog(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<CompletionCatalog> {
+    studio.completion_catalog(&session_id).await
+}
+#[tauri::command]
+pub async fn completion_schema(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    revision: String,
+    table: TableRef,
+) -> AppResult<TableSchema> {
+    studio
+        .completion_schema(&session_id, &revision, &table)
+        .await
+}

@@ -522,3 +522,21 @@ pub struct RedisValueEntry {
     pub field_binary: bool,
     pub value_binary: bool,
 }
+
+/// Effective identity observed on the editor connection, never saved settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionIdentity {
+    pub database: String,
+    pub role: String,
+    pub search_path: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionCatalog {
+    pub revision: String,
+    pub identity: CompletionIdentity,
+    pub tables: Vec<TableInfo>,
+    /// Selectable relations that PostgreSQL actually resolves without qualification.
+    pub unqualified_tables: Vec<TableRef>,
+}

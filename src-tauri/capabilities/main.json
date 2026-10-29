@@ -29,6 +29,8 @@
     "allow-execute-plan",
     "allow-cancel-run",
     "allow-catalog",
+    "allow-completion-catalog",
+    "allow-completion-schema",
     "allow-redis-scan",
     "allow-redis-inspect",
     "allow-table-schema",

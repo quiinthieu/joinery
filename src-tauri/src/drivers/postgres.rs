@@ -238,6 +238,64 @@ impl Driver for Postgres {
         token.cancel_query(self.tls.clone()).await.map_err(pg_error)
     }
 
+    async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
+        let row = self
+            .client
+            .query_one(
+                "SELECT pg_catalog.current_database()::pg_catalog.text,current_user::pg_catalog.text,pg_catalog.current_schemas(true)::pg_catalog.text[]",
+                &[],
+            )
+            .await
+            .map_err(pg_error)?;
+        let identity = CompletionIdentity {
+            database: row.get(0),
+            role: row.get(1),
+            search_path: row.get(2),
+        };
+        if identity.search_path.len() > 128 {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "The schema search path exceeds the completion budget",
+            ));
+        }
+        Ok(identity)
+    }
+    async fn completion_catalog(&self) -> AppResult<super::CompletionRelations> {
+        let rows = self.client.query("SELECT n.nspname,c.relname,c.relkind::pg_catalog.text,pg_catalog.pg_table_is_visible(c.oid) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m') AND (n.nspname NOT LIKE 'pg\\_%' OR n.nspname='pg_catalog' OR n.oid=pg_catalog.pg_my_temp_schema()) AND pg_catalog.has_schema_privilege(n.oid,'USAGE') AND (pg_catalog.has_table_privilege(c.oid,'SELECT') OR pg_catalog.has_any_column_privilege(c.oid,'SELECT')) ORDER BY n.nspname,c.relname LIMIT 10001", &[]).await.map_err(pg_error)?;
+        if rows.len() > 10000 {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "The catalog exceeds the live completion budget",
+            ));
+        }
+        let unqualified_tables = rows
+            .iter()
+            .filter(|r| r.get::<_, bool>(3))
+            .map(|r| TableRef {
+                schema: r.get(0),
+                name: r.get(1),
+            })
+            .collect();
+        let tables = rows
+            .iter()
+            .map(|r| TableInfo {
+                table: TableRef {
+                    schema: r.get(0),
+                    name: r.get(1),
+                },
+                kind: r.get(2),
+                estimated_rows: None,
+                total_bytes: None,
+            })
+            .collect();
+        Ok(super::CompletionRelations {
+            tables,
+            unqualified_tables,
+        })
+    }
+    async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        schema_on(&self.client, table, true).await
+    }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         let rows=self.metadata().await?.query(
             "SELECT n.nspname,c.relname,c.relkind::text,c.reltuples::float8,pg_total_relation_size(c.oid)::float8
@@ -262,74 +320,7 @@ impl Driver for Postgres {
     }
 
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
-        let qualified = qualified(table);
-        let client = self.metadata().await?;
-        let rows=client.query(
-            "SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),t.typname,a.attnotnull,a.attgenerated::text,a.attidentity::text,
-              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='p' AND a.attnum=ANY(k.conkey)),
-              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::text
-             FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
-             WHERE a.attrelid=to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum",&[&qualified]).await.map_err(pg_error)?;
-        if rows.is_empty() {
-            return Err(AppError::new(
-                ErrorCode::NotFound,
-                "The table is missing or its schema is unavailable",
-            ));
-        }
-        let physical = matches!(rows[0].get::<_, String>(8).as_str(), "r" | "p");
-        let columns: Vec<ColumnInfo> = rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let mut c = column(i, r.get::<_, &str>(0), r.get::<_, &str>(2));
-                c.database_type = r.get(1);
-                c.nullable = !r.get::<_, bool>(3);
-                c.primary_key = r.get(6);
-                c.foreign_key = r.get(7);
-                c.editable = physical
-                    && !c.primary_key
-                    && r.get::<_, String>(4).is_empty()
-                    && r.get::<_, String>(5).is_empty()
-                    && cast_type(&c).is_some();
-                c
-            })
-            .collect();
-        let primary_key = columns
-            .iter()
-            .filter(|c| c.primary_key)
-            .map(|c| c.name.clone())
-            .collect::<Vec<_>>();
-        let foreign=client.query(
-            "SELECT a.attname,n.nspname,c.relname,b.attname FROM pg_catalog.pg_constraint k
-             CROSS JOIN LATERAL unnest(k.conkey,k.confkey) AS x(src,dst)
-             JOIN pg_catalog.pg_attribute a ON a.attrelid=k.conrelid AND a.attnum=x.src
-             JOIN pg_catalog.pg_class c ON c.oid=k.confrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-             JOIN pg_catalog.pg_attribute b ON b.attrelid=k.confrelid AND b.attnum=x.dst
-             WHERE k.contype='f' AND k.conrelid=to_regclass($1)",&[&qualified]).await.map_err(pg_error)?;
-        let foreign_keys = foreign
-            .iter()
-            .map(|r| ForeignKey {
-                column: r.get(0),
-                target: TableRef {
-                    schema: r.get(1),
-                    name: r.get(2),
-                },
-                target_column: r.get(3),
-            })
-            .collect();
-        let editable = physical
-            && !primary_key.is_empty()
-            && columns
-                .iter()
-                .filter(|c| c.primary_key)
-                .all(|c| cast_type(c).is_some());
-        Ok(TableSchema {
-            table: table.clone(),
-            columns,
-            primary_key,
-            foreign_keys,
-            editable,
-        })
+        schema_on(self.metadata().await?, table, false).await
     }
 
     async fn browse(
@@ -736,4 +727,84 @@ fn pg_error(error: tokio_postgres::Error) -> AppError {
             format!("Could not communicate with PostgreSQL: {error}"),
         )
     }
+}
+
+async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppResult<TableSchema> {
+    let qualified = qualified(table);
+    let rows=client.query(
+            "SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),t.typname,a.attnotnull,a.attgenerated::pg_catalog.text,a.attidentity::pg_catalog.text,
+              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='p' AND a.attnum=ANY(k.conkey)),
+              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text
+             FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+             WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion]).await.map_err(pg_error)?;
+    if rows.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The table is missing or its schema is unavailable",
+        ));
+    }
+    let physical = matches!(rows[0].get::<_, String>(8).as_str(), "r" | "p");
+    let columns: Vec<ColumnInfo> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let mut c = column(i, r.get::<_, &str>(0), r.get::<_, &str>(2));
+            c.database_type = r.get(1);
+            c.nullable = !r.get::<_, bool>(3);
+            c.primary_key = r.get(6);
+            c.foreign_key = r.get(7);
+            c.editable = !completion
+                && physical
+                && !c.primary_key
+                && r.get::<_, String>(4).is_empty()
+                && r.get::<_, String>(5).is_empty()
+                && cast_type(&c).is_some();
+            c
+        })
+        .collect();
+    let primary_key = columns
+        .iter()
+        .filter(|c| c.primary_key)
+        .map(|c| c.name.clone())
+        .collect::<Vec<_>>();
+    if completion {
+        return Ok(TableSchema {
+            table: table.clone(),
+            columns,
+            primary_key,
+            foreign_keys: vec![],
+            editable: false,
+        });
+    }
+    let foreign=client.query(
+            "SELECT a.attname,n.nspname,c.relname,b.attname FROM pg_catalog.pg_constraint k
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey),pg_catalog.unnest(k.confkey)) AS x(src,dst)
+             JOIN pg_catalog.pg_attribute a ON a.attrelid=k.conrelid AND a.attnum=x.src
+             JOIN pg_catalog.pg_class c ON c.oid=k.confrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+             JOIN pg_catalog.pg_attribute b ON b.attrelid=k.confrelid AND b.attnum=x.dst
+             WHERE k.contype='f' AND k.conrelid=pg_catalog.to_regclass($1)",&[&qualified]).await.map_err(pg_error)?;
+    let foreign_keys = foreign
+        .iter()
+        .map(|r| ForeignKey {
+            column: r.get(0),
+            target: TableRef {
+                schema: r.get(1),
+                name: r.get(2),
+            },
+            target_column: r.get(3),
+        })
+        .collect();
+    let editable = physical
+        && !primary_key.is_empty()
+        && columns
+            .iter()
+            .filter(|c| c.primary_key)
+            .all(|c| cast_type(c).is_some());
+    Ok(TableSchema {
+        table: table.clone(),
+        columns,
+        primary_key,
+        foreign_keys,
+        editable,
+    })
 }
