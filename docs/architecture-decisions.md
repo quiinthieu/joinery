@@ -46,6 +46,22 @@ shadows and filters SELECT privileges, avoiding execution of user objects just t
 infer columns. All completion metadata is read-only, independent of the proven
 grid's edit metadata. No additional execution or state-management system is added.
 
-The catalog cannot discover temporary-only names. Case mode 0 is fixture-tested;
-modes 1/2 have unit coverage and still need server/platform qualification. These
+The catalog cannot discover temporary-only names. Case modes 0/1 are fixture-tested
+(mode 1 follows through PR #23); mode 2 still needs platform qualification. These
 limits remain explicit rather than being presented as full DataGrip parity.
+
+## 2026-10-29: Snowflake completion uses verified request context
+
+Snowflake SQL API submissions carry explicit database/schema/role/warehouse
+fields, while inherited search-path and quoted-identifier defaults can affect
+name resolution. Reuse the existing completion snapshot and pass its identity
+into Driver completion_catalog; do not introduce an adapter context cache.
+PostgreSQL/MySQL continue reading their actual socket session.
+
+Snowflake verifies fixed metadata statements under the same request fields.
+Unqualified binding is restricted to known first-schema tables; later-schema
+fallback is withheld because visible catalog entries cannot prove that an
+inaccessible earlier table is absent. Qualified lookup remains available.
+Unsupported quoted-name policy fails with a visible error. This trades broader
+inference for explicit, bounded correctness; live-account qualification and
+additional identifier policies remain separate work.

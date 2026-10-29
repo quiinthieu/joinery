@@ -5,6 +5,7 @@ import type { ConnectionProfile, TableSchema } from "../../src/ipc/generated";
 test("Snowflake catalog, lazy completion and read-only preview work together", async ({ page }) => {
   const errors: string[] = [];
   const calls: string[] = [];
+  let completionUnavailable = false;
   page.on("pageerror", (error) => errors.push(error.message));
   const table = { schema: "PUBLIC", name: "ORDERS" };
   const schema: TableSchema = {
@@ -69,6 +70,31 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
         result = [{ table, kind: "BASE TABLE", estimatedRows: 9000, totalBytes: 4000 }];
         break;
       case "table_schema":
+        result = schema;
+        break;
+      case "completion_catalog":
+        if (completionUnavailable) {
+          await route.fulfill({
+            json: {
+              error: { code: "unsupported", message: "Unsupported quoted identifier policy" },
+            },
+          });
+          return;
+        }
+        result = {
+          revision: "sf-context",
+          identity: {
+            database: "DB",
+            role: "FIXTURE (READ_ONLY)",
+            searchPath: ["DB.PUBLIC"],
+            caseSensitiveTableNames: null,
+          },
+          tables: [{ table, kind: "BASE TABLE", estimatedRows: null, totalBytes: null }],
+          unqualifiedTables: [table],
+        };
+        break;
+      case "completion_schema":
+        expect(route.request().postDataJSON().revision).toBe("sf-context");
         result = schema;
         break;
       case "browse_table":
@@ -151,6 +177,15 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
   await page.getByRole("button", { name: "New query tab" }).click();
   const editor = page.getByRole("textbox", { name: "SQL editor" });
   await expect(editor).toContainText("CURRENT_VERSION()");
+  await expect(page.locator(".completion-context")).toContainText("FIXTURE (READ_ONLY)");
+  completionUnavailable = true;
+  await page.getByRole("button", { name: "Refresh completion context" }).click();
+  await expect(page.locator(".completion-context")).toContainText(
+    "Unsupported quoted identifier policy",
+  );
+  completionUnavailable = false;
+  await page.getByRole("button", { name: "Refresh completion context" }).click();
+  await expect(page.locator(".completion-context")).toContainText("FIXTURE (READ_ONLY)");
   await editor.fill("SELECT * FROM ");
   await editor.press("End");
   await page.keyboard.type("PUB");
@@ -166,7 +201,7 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
   await page.keyboard.type("OR");
   await expect(page.locator(".cm-tooltip-autocomplete")).toContainText('DB."PUBLIC".ORDERS');
   await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
-  await expect.poll(() => calls.filter((c) => c === "table_schema").length).toBeGreaterThan(1);
+  await expect.poll(() => calls.filter((c) => c === "completion_schema").length).toBeGreaterThan(0);
   await editor.press("Home");
   for (let i = 0; i < 9; i++) await editor.press("ArrowRight");
   await page.keyboard.type("N");

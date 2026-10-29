@@ -21,6 +21,9 @@ fn limit_error() -> AppError {
 }
 
 impl Snowflake {
+    pub(super) async fn context_rows(&self, sql: &str) -> AppResult<Vec<TextRow>> {
+        Ok(self.metadata_result(sql, 1, 64 * 1024, false).await?.rows)
+    }
     pub(super) async fn query_rows(&self, sql: &str, max_rows: usize) -> AppResult<Vec<TextRow>> {
         Ok(self
             .metadata_result(sql, max_rows, 8 * 1024 * 1024, false)

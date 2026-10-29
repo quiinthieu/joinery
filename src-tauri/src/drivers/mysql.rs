@@ -357,7 +357,10 @@ impl Driver for Mysql {
             })
         }).await
     }
-    async fn completion_catalog(&self) -> AppResult<CompletionRelations> {
+    async fn completion_catalog(
+        &self,
+        _identity: &CompletionIdentity,
+    ) -> AppResult<CompletionRelations> {
         self.live_completion_catalog().await
     }
     async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {

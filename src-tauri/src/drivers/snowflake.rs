@@ -1,4 +1,4 @@
-use super::{BrowseRows, Driver, QuerySink, RowMutation};
+use super::{BrowseRows, CompletionRelations, Driver, QuerySink, RowMutation};
 use crate::domain::*;
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -21,6 +21,7 @@ const MAX_PARTITIONS: usize = 64;
 mod catalog;
 #[cfg(test)]
 mod catalog_tests;
+mod completion;
 #[cfg(test)]
 mod compression_tests;
 #[cfg(test)]
@@ -578,6 +579,18 @@ impl Driver for Snowflake {
     }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         self.catalog_tables().await
+    }
+    async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
+        self.live_completion_identity().await
+    }
+    async fn completion_catalog(
+        &self,
+        identity: &CompletionIdentity,
+    ) -> AppResult<CompletionRelations> {
+        self.live_completion_catalog(identity).await
+    }
+    async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        self.table_schema(table).await
     }
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         self.table_schema(table).await
