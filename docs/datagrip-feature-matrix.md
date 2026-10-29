@@ -355,7 +355,7 @@ not native startup/memory/FPS qualification. No production connections,
 destructive runtime SQL or application release form part of this batch.
 
 
-## MySQL/MariaDB continuation — local batch
+## MySQL/MariaDB continuation — preview.14 and case-mode follow-up
 
 E02-MM extends the same typed snapshot/worker contract from preview.13's merged
 `e8f1cec`; the [adapter contract](mysql-live-completion-context.md) records source
@@ -363,18 +363,18 @@ symbols, acceptance and limits. E02/I04 remain PARTIAL across all engines.
 
 | Field | E02-MM bounded workflow |
 |---|---|
-| Feature / scope | Effective database/account/roles, server table-name case policy and column-grant completion; MySQL 8.4 / MariaDB 11.4 mode-0 fixtures |
+| Feature / scope | Effective database/account/roles, server table-name case policy and column-grant completion; MySQL 8.4 / MariaDB 11.4 mode-0 and mode-1 fixtures |
 | DataGrip reference | DG-E / DG-EC; selected session and database control SQL resolution |
-| State / confidence | VERIFIED_COMPLETE for the bounded mode-0 workflow / High. Modes 1/2 server qualification remains IMPLEMENTED_UNVERIFIED |
+| State / confidence | VERIFIED_COMPLETE for the bounded mode-0 workflow / High. Mode 1 server qualification passes on both disposable engines in the follow-up; mode 2 remains IMPLEMENTED_UNVERIFIED |
 | Sources | drivers/mysql.rs completion_identity/fetch_text/collect_metadata; mysql/catalog.rs live_completion_catalog/live_completion_schema; domain.rs; SqlEditor, CompletionSession, tableLookup |
 | Observed behavior | USE and active role changes refresh context; valid accepted suggestions execute against the current database; UPDATE-only columns are withheld; known temporary shadows use actual columns; USE persists through transaction rollback; busy metadata returns promptly before query cancellation |
-| Missing behavior | Temporary-only object discovery, modes 1/2 runtime qualification, external metadata subscriptions and live Snowflake context |
+| Missing behavior | Temporary-only object discovery, mode-2 runtime qualification, external metadata subscriptions and live Snowflake context; saved SQL profiles require a default database |
 | Priority / complexity | P1 / High |
 | Dependencies | Shipped Rust session revision/lane, fixed metadata SQL, CodeMirror worker/cache; no new commands, global state or executor |
 | Security / budgets | Existing Rust Safe Mode unchanged; same-session metadata, escaped identifiers, SELECT column privileges and read-only metadata. Existing 10,000 relations / 2 MiB and 4,096 columns / 1 MiB caps; identity 64 KiB; eight frontend reads/cache entries and 100 suggestions |
 | Acceptance | Actual USE/roles/grants follow the connection; no stale prepared DATABASE(), old-revision columns, wrong-case relation binding or MySQL three-part insertion; existing grid and cancellation remain usable |
-| Tests | mysql_live_completion_tracks_database_roles_and_column_grants plus existing catalog/paging and cancellation fixtures on both engines; strict/folded/path unit test; two new browser acceptance flows |
-| Release eligibility | Local candidate, unmerged/unreleased; preview.13 remains installed. Fixture limits and external/platform/signing/performance gates remain explicit |
+| Tests | mysql_live_completion_tracks_database_roles_and_column_grants plus existing catalog/paging and cancellation fixtures on both engines; strict/folded/path unit test; two browser acceptance flows. Follow-up mysql_live_completion_uses_server_case_policy runs on case-mode-1 fixtures |
+| Release eligibility | Initial slice shipped as preview.14 after PR #22 and five main jobs; public assets, clean-source native evidence and ad-hoc signature verified. Mode-1 qualification is a separate local follow-up. Installed-app update awaits the running preview.13 session's safe closure |
 
 Passed: `pnpm validate` (63 frontend, 83 Rust), three selected MySQL fixture tests
 across both engines, and all 23 browser workflows. Failed then repaired: initial
@@ -388,6 +388,22 @@ pre-commit working tree (sourceDirty=true); no new installation occurred.
 Logs are `.cache/mysql-context-*.log`; detailed native evidence is preserved in
 native-smoke. The task-owned fixture project and volume were removed.
 Skipped: 33 standard-runner ignored tests; selected fixtures are recorded separately.
+
+Release evidence: PR #22 passed six checks and squash-merged as `dc220b0`,
+with an identical source tree to tested `7697c6e`. All five main jobs passed
+([run 40817452645](https://github.com/quiinthieu/joinery/actions/runs/40817452645)).
+[Preview.14](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.14)
+assets, checksums, public download, extracted app and strict ad-hoc signature
+verify. Clean-source native evidence passed three runs/30 cleanup cycles.
+The installed preview.13 was observed running with a production Snowflake
+connection and was preserved pending safe closure.
+
+The separate mode-1 follow-up uses disposable MySQL 8.4 and MariaDB 11.4
+servers initialized with lower_case_table_names=1. Both engines passed the
+same Rust test for case policy, role-visible catalog, unqualified names,
+canonical columns, stale revision rejection and uppercase SQL. Mode 2 needs
+a suitable case-insensitive filesystem; the current Linux containers do not
+qualify it. The fixture project was removed after the test.
 Not executed: production/live accounts, destructive local runtime SQL, other
-packaged platforms, real case modes 1/2, signing/notarization and broad performance
+packaged platforms, real case mode 2, signing/notarization and broad performance
 qualification. No environment blocker remains for the tested local workflow.

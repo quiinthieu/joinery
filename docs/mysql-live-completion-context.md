@@ -1,9 +1,8 @@
 # MySQL and MariaDB live completion context
 
-Feature E02-MM extends E02/I04 on `feat/mysql-live-completion-context`, based on
-preview.13's merged `e8f1cec`. This is local implementation, separate from the
-published PostgreSQL workflow. The private project hub remains canonical shipping
-status. Broader multi-engine completion remains PARTIAL.
+Feature E02-MM extends E02/I04. The initial slice merged as `dc220b0` through
+PR #22 and shipped in preview.14. The private project hub remains canonical
+shipping status. Broader multi-engine completion remains PARTIAL.
 
 ## Workflow and acceptance
 
@@ -51,9 +50,13 @@ bounded at 64 KiB, metadata uses the adapter's 65-second operation deadline, and
 active execution returns busy before reading metadata. Session errors are real
 errors, never a login-configured fallback or automatic reconnect.
 
-This fixture qualifies MySQL 8.4 and MariaDB 11.4 with case mode 0. Modes 1/2 have
-frontend folding coverage; real server/platform qualification remains open.
-A no-default-database transition was not runtime-qualified in this batch.
+The original fixture qualifies MySQL 8.4 and MariaDB 11.4 with case mode 0.
+The follow-up `mysql-folded` profile and Rust regression qualify mode 1 on
+both engines using separately initialized disposable servers. Mode 2 remains
+unqualified on a suitable case-insensitive filesystem. The app currently
+requires a nonempty database in saved SQL profiles, so a no-default-database
+connection is not an exposed workflow; the empty-namespace code path remains
+unverified.
 New temporary-only names are not discoverable from the catalog; existing known
 names resolve their actual temporary columns. Catalog visibility can include
 objects with non-SELECT privileges; their columns are withheld unless SELECT is
@@ -72,6 +75,9 @@ remain separate slices. Arbitrary SQL results remain read-only.
   table and SELECT-versus-UPDATE column grants.
 - mysql.rs fixture test covers the live transitions on both engines; existing
   catalog/paging and cancellation tests cover legacy metadata and busy guards.
+- The mode-1 fixture test verifies folded database/table names, the server case
+  policy, role-visible catalog, unqualified names, accepted uppercase SQL and
+  old-revision rejection on MySQL 8.4 and MariaDB 11.4.
 - sql-context.test.ts checks strict/folded lookup and two-part names.
 - completion.spec.ts accepts and executes suggestions after USE on both engines,
   then verifies column grants and removal of old role metadata.
@@ -85,10 +91,27 @@ Final command outcomes and release eligibility are recorded in the feature matri
 and IMPLEMENTATION_STATUS.md. Production accounts and destructive runtime SQL are
 outside this local fixture scope.
 
+### Reproduce the case-mode-1 qualification
+
+Use a fresh disposable project so the mode is set before database initialization:
+
+```sh
+docker compose -p joinery-mysql-folded --profile mysql-folded up -d --wait mysql-folded mariadb-folded
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test mysql mysql_live_completion_uses_server_case_policy -- --ignored --test-threads=1
+docker compose -p joinery-mysql-folded --profile mysql-folded down -v --remove-orphans
+```
+
+The selected test passed on both engines. Follow-up `pnpm validate` passed
+63 frontend and 83 standard Rust tests, formatting, types, build, Cargo check
+and strict Clippy. The additional ignored test runs separately; this fixture-only
+follow-up changes no application runtime code. Browser/native release evidence
+belongs to preview.14 above, rather than a new run of this follow-up.
+
 ## Official references
 
 - [MySQL information functions](https://dev.mysql.com/doc/refman/8.4/en/information-functions.html)
 - [MySQL identifier case rules](https://dev.mysql.com/doc/refman/8.4/en/identifier-case-sensitivity.html)
+- [MariaDB identifier case rules](https://mariadb.com/docs/server/reference/sql-structure/sql-language-structure/identifier-case-sensitivity)
 - [MySQL SHOW COLUMNS](https://dev.mysql.com/doc/refman/8.4/en/show-columns.html)
 - [MariaDB CURRENT_ROLE](https://mariadb.com/docs/server/reference/sql-functions/secondary-functions/information-functions/current_role)
 - [MariaDB SHOW COLUMNS](https://mariadb.com/docs/server/reference/sql-statements/administrative-sql-statements/show/show-columns)
