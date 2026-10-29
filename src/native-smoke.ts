@@ -38,6 +38,23 @@ export async function runNativeSmoke() {
   try {
     await useStudio.getState().initialize();
     assert(useStudio.getState().bootstrap, "Native bootstrap failed");
+    for (const command of ["completion_catalog", "completion_schema"]) {
+      let denied = false;
+      try {
+        await client.call(command, {
+          sessionId: "missing-native-fixture",
+          revision: "obsolete",
+          table: { schema: "public", name: "missing" },
+        });
+      } catch (error) {
+        denied =
+          !!error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "connectionClosed";
+      }
+      assert(denied, `Native ${command} must reach the Rust disconnected-session guard`);
+    }
     report.bootstrapMs = performance.now() - started;
     const shellDeadline = performance.now() + 3000;
     while (
@@ -216,6 +233,7 @@ export async function runNativeSmoke() {
     report.passed = true;
     report.checks = [
       "native bootstrap",
+      "completion IPC disconnected-session guards",
       "raw binary channel",
       "Arrow worker",
       "exact integer",

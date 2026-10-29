@@ -131,10 +131,10 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
 | E01 Dialect highlighting/parsing — DG-E | E | PARTIAL / H | PG/MySQL dialects plus Snowflake dollar strings; bounded token reader preserves Unicode names. Full procedural/dialect semantics remain open | P1 / Medium | CodeMirror; PMS (R native console); read | Quoting/comments/procedural boundaries per dialect / hold |
-| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | Catalog/columns exist; live role/search-path/database tracking missing | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
-| E03 Direct-base-table statement/block/alias scope — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Caret block/UNION arm isolated; comments/strings ignored; CTE/derived shadows suppress physical columns. Advanced output inference remains outside this acceptance | P1 / Medium | E01; PMS; read | 24 context cases plus PM accepted-and-executed SELECTs and synthetic S browser flow; see batch evidence / local candidate, unmerged |
-| E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / local candidate, unmerged |
-| E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / local candidate, unmerged |
+| E02 Schema-aware autocomplete — DG-E, DG-EC | E, D | PARTIAL / H | PostgreSQL now reads live editor-session identity/search order and privilege-bound columns; MySQL/MariaDB/Snowflake live adapters and external metadata monitoring remain open | P1 / High | M05/M06; PMS; read | Context changes and stale schema refresh / hold |
+| E03 Direct-base-table statement/block/alias scope — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Caret block/UNION arm isolated; comments/strings ignored; CTE/derived shadows suppress physical columns. Advanced output inference remains outside this acceptance | P1 / Medium | E01; PMS; read | 24 context cases plus PM accepted-and-executed SELECTs and synthetic S browser flow; see batch evidence / shipped in preview.12; see hub |
+| E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / shipped in preview.12; see hub |
+| E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
 | E06 FK JOIN suggestions — DG-E, DG-FK | D, E | MISSING / H | Add grouped constraint metadata, then explicit JOIN/ON insertion | P1 / High | E03/E04/N03; PM first; read | Composite FKs, aliases, multiple candidate relationships / hold |
 | E07 Syntax diagnostics and execution error locations — DG-I | E, X; AppError has code/message only | MISSING / H | Structured positions and UTF-8/UTF-16 mapping, navigate to offending statement | P1 / High | Error DTOs and adapters; PMS; read | Multibyte text, later-batch errors, driver missing position / hold |
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
@@ -215,7 +215,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | I01 Rust ownership and Safe Mode | X, C, D | IMPLEMENTED_UNVERIFIED / H | Core enforcement exists; retain all bypass and integration checks | P0 / High | Existing gateway; PMSR; gate | All entry points, stale approval, nested writes / existing |
 | I02 Result retention and binary IPC | B | PARTIAL / H | Explicit budgets and binary transport exist; representative transient-copy/plateau measurements open | P0 / High | Native profiling; PMSR; local | Native binary payloads, wide rows, cleanup plateau / hold |
 | I03 Typed command calls | B generated DTOs / generic client.call | PARTIAL / H | Add closed command/request/response map without replacing IPC | P2 / Medium | Rust DTO export; PMSR; gate | Compile-time invalid command/argument cases / hold |
-| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | Session/table-local caching exists; live role/search-path revisions missing | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
+| I04 Metadata cache ownership/invalidation | E, D | PARTIAL / H | PostgreSQL snapshot/column revisions follow effective role/search order and app executions; other live adapters and external change subscriptions remain open | P1 / High | M05/M06; PMS; read | Role/session changes, DDL and external refresh / hold |
 | I05 Startup, completion and grid performance | Q, E, B | PARTIAL / H | 100k-name warm lookup p95 0.10 ms; explicit visible completion p95 55–61 ms misses 50 ms target. Representative native load, startup and FPS remain unqualified | P0 release gate / High | Target hardware, measured scenarios; PMSR; local | p95 startup/completion/display and attributable memory/FPS / hold |
 | I06 Packaging/signing/updates/platforms | Q | PARTIAL / H | macOS ad-hoc preview exists; signing/notarization, updater and packaged Windows/Linux open | P0 release gate / High | Credentials and platform hosts; PMSR; transport | Installer/update integrity and native runtime checks / hold |
 | I07 Recovery and metadata compatibility | L | PARTIAL / H | Version guards, WAL recovery and undo exist; broader historical upgrades/disk-loss cases open | P0 / High | Versioned persistence; PMSR; local | Migration fixtures, interrupted restore, unsupported stores / hold |
@@ -310,3 +310,46 @@ Identifier rules were cross-checked against official
 [PostgreSQL lexical documentation](https://www.postgresql.org/docs/current/sql-syntax-lexical.html),
 [MySQL object naming](https://dev.mysql.com/doc/refman/8.4/en/identifiers.html), and
 [Snowflake identifier requirements](https://docs.snowflake.com/en/sql-reference/identifiers-syntax).
+
+
+## PostgreSQL live completion context — 29 October 2026
+
+The PostgreSQL slice of E02/I04 is locally implemented on
+`feat/live-completion-context` from preview.12's merged `06146bc`. The broader
+multi-engine capabilities remain PARTIAL. See [the live context contract](live-completion-context.md)
+and [architecture decisions](architecture-decisions.md).
+
+| Field | E02-PG bounded workflow |
+|---|---|
+| Feature | PostgreSQL live session-aware schema/column completion |
+| DataGrip reference | DG-E / DG-EC above; SQL resolution follows the selected session context |
+| State / confidence | VERIFIED_COMPLETE for the bounded fixture workflow / High; multi-engine E02/I04 remain PARTIAL |
+| Sources / symbols | `drivers/postgres.rs`: completion_identity/catalog/schema, schema_on; `execution.rs`: Studio.completion_catalog/completion_schema, Session.completion, run_plan invalidation; `domain.rs`: CompletionIdentity/CompletionCatalog; SqlEditor, CompletionSession, tableLookup and Workbench contextEpoch |
+| Observed behavior | Shows actual database/effective role/ordered schemas; refreshes after execution and explicit refresh; accepts and executes an alternate-schema column; clears obsolete responses; uses server-resolved unqualified identities, including system/temporary objects and inaccessible earlier-name shadows |
+| Missing behavior | Other live adapters, independent console binding, server-pushed external DDL/grant invalidation and advanced projection inference |
+| Priority / complexity | P1 / High |
+| Dependencies / scope | Existing Rust editor connection/execution lane, typed IPC, CodeMirror worker and bounded cache; PostgreSQL 18.6 disposable fixture |
+| Security / resources | Same-session grants and column SELECT checks; fixed pg_catalog-qualified SQL; revision validation; completion metadata read-only; 10,000 relations / 2 MiB, 128 schemas, 4,096 columns / 1 MiB; eight frontend reads/cache entries and 100 suggestions. No authorization bypass or replay |
+| Acceptance | SET search_path, SET ROLE, SET LOCAL/ROLLBACK, failed-transaction recovery and temporary schemas reflect the actual connection; denied and stale metadata never supplies old columns; concurrent unchanged readers share a valid revision; metadata cannot block active-query cancellation; existing grid keys/browsing pass |
+| Tests | Three selected Rust fixture tests in postgres.rs; ordered/server-resolved lookup and delayed old-privilege unit tests; completion.spec.ts accepted SELECT/role/rollback workflow; native command guards through Tauri |
+| Release eligibility | Local tested candidate only; unmerged, unpublished and not installed. Preview.12 remains shipped; external/platform/signing/performance gates remain open |
+
+| Outcome | Current-batch evidence |
+|---|---|
+| Passed | `pnpm validate`: 62 frontend tests, 83 standard Rust tests, formatting/types/build/Cargo check/strict Clippy |
+| Passed | `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres live_ -- --ignored --test-threads=1`: all three PostgreSQL workflows |
+| Passed | Full `pnpm test:e2e`: 21 workflows, including completion, legacy grid edits, Safe Mode, cancellation, recovery, MySQL/MariaDB, Redis and synthetic Snowflake |
+| Passed | `pnpm desktop:build`, `pnpm desktop:bundle:mac` with strict ad-hoc signature verification, `pnpm desktop:smoke:build` and `pnpm test:native`: three hidden runs / 30 cleanup cycles, including actual Tauri command guards |
+| Failed then repaired | Overlapping metadata reads initially reported busy; bounded metadata serialization fixes this. Distinct tokens invalidated unchanged concurrent readers; they now share a revision. Qualified multi-array unnest broke legacy grid FK reads; qualified ROWS FROM plus a regression fixes it. A new assertion reproduced missing implicit system relations; server-resolved names now also prevent denied-table shadows from binding later tables. The cancellation test now waits for actual query activity |
+| Environment interruption | An earlier full run stopped after Vite root/module requests stalled during concurrent contract/native builds. Final checks run sequentially. After resumption, stopped fixture databases caused connection failures; the task-owned fixture project was restarted and its healthy state verified before the passing rerun. Exact orphan test servers were stopped; user servers and installed app were preserved |
+| Skipped | Standard Rust runner reports 32 ignored tests; three selected non-destructive fixtures were executed separately. The entire ignored suite was not run because some fixtures issue DROP; real credential-store tests remain unrun |
+| Blocked by environment | No outstanding blocker for this bounded local workflow |
+| Not executed | Production/live account qualification, Windows/Linux packaged runtime, Developer ID/notarization, new release/install and representative native performance qualification |
+
+Final native packaging outcomes are recorded in `IMPLEMENTATION_STATUS.md`.
+Local logs are `.cache/live-context-*-final.log`. The passing browser rerun measured
+warm explicit-popup p95 **53.8 / 53.5 / 53.3 ms** for PostgreSQL/MySQL/MariaDB;
+the 50 ms target remains missed. Warm 100,000-name lookup p95 was **0.10 ms**
+(1,000 samples; index build 6.8 ms). These are headless Chromium observations,
+not native startup/memory/FPS qualification. No production connections,
+destructive runtime SQL or application release form part of this batch.

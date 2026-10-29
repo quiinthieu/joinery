@@ -24,6 +24,9 @@ interface Configuration {
   tables: TableInfo[];
   database?: string;
   defaultSchema?: string;
+  searchPath?: string[];
+  unqualifiedTables?: TableRef[];
+  contextRevision?: string;
 }
 interface SchemaEntry {
   start(): Promise<TableSchema>;
@@ -134,7 +137,11 @@ export class CompletionSession {
 
   constructor(
     private send: (message: CompletionRequest) => void,
-    private load: (sessionId: string, table: TableRef) => Promise<TableSchema>,
+    private load: (
+      sessionId: string,
+      table: TableRef,
+      contextRevision?: string,
+    ) => Promise<TableSchema>,
     private notify: (error: unknown) => void,
   ) {}
 
@@ -146,14 +153,24 @@ export class CompletionSession {
       previous.sessionId === config.sessionId &&
       previous.tables === config.tables &&
       previous.database === config.database &&
-      previous.defaultSchema === config.defaultSchema
+      previous.defaultSchema === config.defaultSchema &&
+      previous.searchPath === config.searchPath &&
+      previous.unqualifiedTables === config.unqualifiedTables &&
+      previous.contextRevision === config.contextRevision
     )
       return false;
     this.configuration = config;
     this.context++;
     this.cancel();
     this.schemas.retain([]);
-    this.lookup = tableLookup(config.tables, config.engine, config.database, config.defaultSchema);
+    this.lookup = tableLookup(
+      config.tables,
+      config.engine,
+      config.database,
+      config.defaultSchema,
+      config.searchPath,
+      config.unqualifiedTables,
+    );
     const items =
       config.engine === "redis"
         ? REDIS_COMMANDS.map((label) => ({ label, type: "keyword" }))
@@ -198,7 +215,7 @@ export class CompletionSession {
         scope.references.map(({ table }) =>
           this.schemas.get(
             JSON.stringify(table),
-            () => this.load(sessionId, table),
+            () => this.load(sessionId, table, config.contextRevision),
             (error) => {
               if (!this.disposed && this.context === current) this.notify(error);
             },

@@ -18,6 +18,8 @@ fn main() {
         ConnectionProfile::decl(),
         SnowflakeConfig::decl(),
         ConnectionSecrets::decl(),
+        CompletionCatalog::decl(),
+        CompletionIdentity::decl(),
         SessionInfo::decl(),
         EngineCapabilities::decl(),
         StatementKind::decl(),

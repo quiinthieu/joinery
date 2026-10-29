@@ -27,6 +27,11 @@ pub struct BrowseRows {
     pub truncated: bool,
 }
 
+pub struct CompletionRelations {
+    pub tables: Vec<TableInfo>,
+    pub unqualified_tables: Vec<TableRef>,
+}
+
 #[async_trait]
 pub trait Driver: Send + Sync {
     async fn execute(
@@ -36,6 +41,24 @@ pub trait Driver: Send + Sync {
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64>;
     async fn cancel(&self) -> AppResult<()>;
+    async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Live completion context is unavailable for this engine",
+        ))
+    }
+    async fn completion_catalog(&self) -> AppResult<CompletionRelations> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Live completion metadata is unavailable for this engine",
+        ))
+    }
+    async fn completion_schema(&self, _table: &TableRef) -> AppResult<TableSchema> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Live completion metadata is unavailable for this engine",
+        ))
+    }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>>;
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema>;
     async fn browse(

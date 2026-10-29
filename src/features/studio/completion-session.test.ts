@@ -58,6 +58,36 @@ function request(session: CompletionSession, editor: EditorState) {
 }
 afterEach(() => vi.useRealTimers());
 
+test("context revisions bind metadata requests and discard old privilege results", async () => {
+  vi.useFakeTimers();
+  const old = deferred<TableSchema>();
+  const load = vi
+    .fn()
+    .mockImplementationOnce(() => old.promise)
+    .mockResolvedValue(schema("orders", "new_column"));
+  const { session, messages } = setup(load);
+  session.configure({ ...config, contextRevision: "role-before", searchPath: ["public"] });
+  const first = request(session, state("SELECT o.| FROM orders o"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(load).toHaveBeenCalledWith("fixture", tables[0].table, "role-before");
+  session.configure({ ...config, contextRevision: "role-after", searchPath: ["public"] });
+  const second = request(session, state("SELECT o.| FROM orders o"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(load).toHaveBeenLastCalledWith("fixture", tables[0].table, "role-after");
+  expect((await second)?.options.map((item) => item.apply)).toEqual(["o.new_column"]);
+  old.resolve(schema("orders", "old_privilege_column"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(await first).toBeNull();
+  expect(
+    messages.some(
+      (message) =>
+        message.type === "replace" &&
+        message.items.some((item) => item.label.includes("old_privilege")),
+    ),
+  ).toBe(false);
+  session.dispose();
+});
+
 test("loads scoped columns and preserves successful metadata when another table is denied", async () => {
   vi.useFakeTimers();
   const load = vi.fn(async (_session: string, table: { name: string }) => {

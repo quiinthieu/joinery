@@ -93,6 +93,8 @@ pub fn run() {
             commands::authorize_plan,
             commands::execute_plan,
             commands::cancel_run,
+            commands::completion_catalog,
+            commands::completion_schema,
             commands::catalog,
             commands::redis_scan,
             commands::redis_inspect,

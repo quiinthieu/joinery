@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { EditorState, Compartment } from "@codemirror/state";
 import {
   EditorView,
@@ -25,7 +25,7 @@ import {
 } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { sql } from "@codemirror/lang-sql";
-import type { EngineKind, TableInfo, TableSchema } from "../../ipc/generated";
+import type { CompletionCatalog, EngineKind, TableInfo, TableSchema } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import type { CompletionResponse } from "../../data/completion-protocol";
 import { useStudio } from "../../state/studio";
@@ -48,6 +48,7 @@ interface Props {
   database?: string;
   defaultSchema?: string;
   theme: string;
+  contextEpoch?: string;
 }
 const themeCompartment = new Compartment(),
   languageCompartment = new Compartment();
@@ -110,6 +111,24 @@ function highlighting(theme: string) {
 }
 
 export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(props, ref) {
+  const [live, setLive] = useState<CompletionCatalog | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const liveRef = useRef<CompletionCatalog | null>(null);
+  const configure = () => {
+    const config = latest.current;
+    const snapshot = liveRef.current;
+    if (config.engine !== "postgres") return config;
+    return {
+      ...config,
+      tables: snapshot?.tables ?? [],
+      sessionId: snapshot ? config.sessionId : null,
+      database: snapshot?.identity.database,
+      searchPath: snapshot?.identity.searchPath,
+      unqualifiedTables: snapshot?.unqualifiedTables,
+      contextRevision: snapshot?.revision,
+    };
+  };
   const host = useRef<HTMLDivElement>(null),
     view = useRef<EditorView | null>(null),
     latest = useRef(props);
@@ -180,11 +199,18 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     });
     const session = new CompletionSession(
       (message) => worker.postMessage(message),
-      (sessionId, table) => client.call<TableSchema>("table_schema", { sessionId, table }),
+      (sessionId, table, contextRevision) =>
+        contextRevision
+          ? client.call<TableSchema>("completion_schema", {
+              sessionId,
+              table,
+              revision: contextRevision,
+            })
+          : client.call<TableSchema>("table_schema", { sessionId, table }),
       (error) => useStudio.getState().notify(messageOf(error)),
     );
     completion.current = session;
-    session.configure(latest.current);
+    session.configure(configure());
     worker.onmessage = ({ data }: MessageEvent<CompletionResponse>) => session.receive(data);
     const state = EditorState.create({
       doc: latest.current.value,
@@ -263,12 +289,74 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     });
   }, [props.engine]);
   useEffect(() => {
-    if (completion.current?.configure(props) && view.current) {
+    if (completion.current?.configure(configure()) && view.current) {
       closeCompletion(view.current);
       completion.current.update(view.current.state);
     }
-  }, [props.tables, props.sessionId, props.engine, props.database, props.defaultSchema]);
-  return <div className="sql-editor" ref={host} />;
+  }, [props.tables, props.sessionId, props.engine, props.database, props.defaultSchema, live]);
+  useEffect(() => {
+    let cancelled = false;
+    liveRef.current = null;
+    setLive(null);
+    setContextError(null);
+    if (props.engine !== "postgres") return;
+    completion.current?.configure(configure());
+    if (view.current) closeCompletion(view.current);
+    if (props.sessionId)
+      void client
+        .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
+        .then((snapshot) => {
+          if (!cancelled) {
+            liveRef.current = snapshot;
+            setLive(snapshot);
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) setContextError(messageOf(error));
+        });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.engine, props.sessionId, props.tables, props.contextEpoch, refresh]);
+  return (
+    <div className="sql-editor" style={{ display: "flex", flexDirection: "column" }}>
+      {props.engine === "postgres" && props.sessionId && (
+        <div
+          aria-live="polite"
+          aria-atomic="true"
+          className="completion-context"
+          style={{
+            fontSize: 11,
+            padding: "4px 12px",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            minWidth: 0,
+          }}
+        >
+          <span
+            style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
+            title={contextError ?? live?.identity.searchPath.join(", ")}
+          >
+            {contextError
+              ? `Completion unavailable: ${contextError}`
+              : live
+                ? `${live.identity.database} · ${live.identity.role} · ${live.identity.searchPath.join(", ")}`
+                : "Loading completion context…"}
+          </span>
+          <button
+            className="button ghost small"
+            style={{ flexShrink: 0 }}
+            aria-label="Refresh completion context"
+            onClick={() => setRefresh((n) => n + 1)}
+          >
+            Refresh
+          </button>
+        </div>
+      )}
+      <div ref={host} style={{ flex: 1, minHeight: 0 }} />
+    </div>
+  );
 });
 
 function redisSelection(state: EditorState) {

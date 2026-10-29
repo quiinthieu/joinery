@@ -54,7 +54,8 @@ section for scope and outcomes: 59 frontend tests, 83 Rust tests, 20 browser
 workflows and the six-workflow final completion/Snowflake rerun pass. Three
 selected read-only Rust integration workflows additionally verify cleanup,
 metadata paging and TLS hostname checks. Native packaging results are recorded
-in `IMPLEMENTATION_STATUS.md`. No application branch has been pushed or merged.
+in `IMPLEMENTATION_STATUS.md`. That repair subsequently shipped in preview.12
+through PR #20 (`06146bc`); its original local evidence remains historical.
 
 The 100,000-name index meets the warm 5 ms lookup target in the measured browser
 sample (p95 0.10 ms). Warm explicit visible completion misses the 50 ms target
@@ -64,13 +65,13 @@ measured follow-up, without patching dependency internals or claiming native
 performance qualification. Keep cold metadata waits and large-catalog visible
 measurements separate.
 
-Next actionable P1 slice: Rust-owned live completion-context identity and
-revision (E02/I04), covering session database, schema/search path, role and
-metadata invalidation before FK JOIN generation. First define the adapter
-contract and fixture tests for SET/USE/role changes, permission failure and
-session replacement; then extend existing IPC and worker configuration.
-Console/session binding remains a separate prerequisite for independent console
-contexts. External release gates are still open and require their own scope.
+The next PostgreSQL live-context slice is now locally implemented; see
+[live-completion-context.md](live-completion-context.md) for the actual contract,
+resource bounds and verification scope. E02/I04 remain PARTIAL across all engines.
+Next adapters are MySQL/MariaDB session database/role/case rules, then verified
+Snowflake REST context semantics. External metadata changes still require refresh.
+Independent console/session binding and grouped-FK JOIN generation follow.
+External release gates remain open and need their own authorization/scope.
 
 ### Acceptance and verification contract
 
@@ -114,12 +115,13 @@ private hub after implementation/verification; record local-only implementation
 as unmerged and unreleased. Keep hub access owner-private.
 
 No new state manager, execution system, editor, grid or adapter architecture is
-introduced. First-slice decisions fit the blueprint, so no competing architecture
-decision file is created. Future interface changes must preserve Rust validation,
+introduced. The scoped repair fits the blueprint; the subsequent live context
+contract is recorded in [architecture-decisions.md](architecture-decisions.md).
+Future interface changes must preserve Rust validation,
 one-use approvals and explicit memory budgets. No live credentials, production
 tables, signing setup or external accounts are prerequisites for the first slice.
 
 Snowflake remains read-only; Redis Cluster/Sentinel/streams/PubSub and external
 MySQL process killing remain unsupported. Arbitrary SQL results remain read-only.
-Full derived/CTE output inference, live session-context tracking and JOIN generation
-remain open even after the first bounded completion workflow passes.
+Full derived/CTE output inference, live session-context tracking for remaining
+engines and JOIN generation remain open after the PostgreSQL context workflow.
