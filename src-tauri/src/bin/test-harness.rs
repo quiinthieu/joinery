@@ -166,10 +166,11 @@ async fn rpc(
             ),
             "browse_table" => json!(
                 studio
-                    .browse(
+                    .browse_with(
                         &arg::<String>(&args, "sessionId")?,
                         &arg(&args, "table")?,
-                        arg(&args, "after")?
+                        arg(&args, "after")?,
+                        &arg::<Option<BrowseQuery>>(&args, "query")?.unwrap_or_default()
                     )
                     .await?
             ),

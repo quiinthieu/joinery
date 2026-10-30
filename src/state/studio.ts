@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type {
   AppError,
   Bootstrap,
+  BrowseQuery,
   ConnectionProfile,
   QueryEvent,
   ResultInfo,
@@ -13,6 +14,7 @@ import type {
 import { client, messageOf } from "../ipc/client";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
+import { EMPTY_QUERY, isEmptyQuery, sameQuery, tableTabTitle } from "../features/grid/table-query";
 
 export type TabKind = "query" | "table" | "benchmark" | "history" | "processes";
 export type TabStatus =
@@ -35,6 +37,8 @@ export interface StudioTab {
   elapsedMs: number;
   error: AppError | null;
   table: TableRef | null;
+  /** Server-side sort/filter for table tabs; never persisted. */
+  query: BrowseQuery;
   schema: TableSchema | null;
   pages: TablePageState[];
   pageKeys: Record<number, (string | null)[] | null>;
@@ -74,7 +78,9 @@ interface StudioState {
   refreshCatalog(id: string): Promise<void>;
   openQuery(connectionId?: string | null, sql?: string): string;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
-  openTable(connectionId: string, table: TableRef): Promise<void>;
+  openTable(connectionId: string, table: TableRef, query?: BrowseQuery): Promise<void>;
+  /** Applies a new sort/filter; returns a reason when refused. */
+  setTableQuery(id: string, query: BrowseQuery): Promise<string | null>;
   loadNextPage(id: string): Promise<void>;
   ensureTablePage(id: string, row: number): Promise<void>;
   refreshTable(id: string): Promise<void>;
@@ -104,6 +110,7 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     elapsedMs: 0,
     error: null,
     table: null,
+    query: EMPTY_QUERY,
     schema: null,
     pages: [],
     pageKeys: {},
@@ -309,22 +316,34 @@ export const useStudio = create<StudioState>((set, get) => ({
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
-  async openTable(connectionId, table) {
+  async openTable(connectionId, table, query = EMPTY_QUERY) {
     const existing = get().tabs.find(
       (t) =>
         t.kind === "table" &&
         t.connectionId === connectionId &&
         t.table?.schema === table.schema &&
-        t.table.name === table.name,
+        t.table.name === table.name &&
+        sameQuery(t.query, query),
     );
     if (existing) {
       set({ activeTabId: existing.id });
       return;
     }
-    const next = tab("table", table.name, connectionId);
+    const next = tab("table", tableTabTitle(table.name, query), connectionId);
     next.table = table;
+    next.query = query;
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     await get().refreshTable(next.id);
+  },
+  async setTableQuery(id, query) {
+    const current = get().tabs.find((t) => t.id === id);
+    if (!current?.table) return "This tab does not browse a table";
+    if (current.pages.some((page) => dirtyStore.hasResult(page.result.id)))
+      return "Review or discard pending edits before changing sort or filters";
+    if (sameQuery(current.query, query)) return null;
+    get().updateTab(id, { query });
+    await get().refreshTable(id);
+    return null;
   },
   async refreshTable(id) {
     const current = get().tabs.find((t) => t.id === id),
@@ -386,6 +405,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         sessionId: session.id,
         table: current.table,
         after,
+        query: isEmptyQuery(current.query) ? null : current.query,
       });
       if (
         !get().tabs.some((t) => t.id === id && t.revision === current.revision) ||
@@ -448,6 +468,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         sessionId: session.id,
         table: current.table,
         after: current.pageKeys[start],
+        query: isEmptyQuery(current.query) ? null : current.query,
       });
       const latest = get().tabs.find((t) => t.id === id);
       if (!latest || latest.revision !== current.revision) {

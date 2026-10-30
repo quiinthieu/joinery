@@ -364,7 +364,15 @@ export function StructureView({ schema }: { schema: TableSchema | null }) {
         </thead>
         <tbody>
           {schema.columns.map((column) => {
-            const fk = schema.foreignKeys.find((key) => key.column === column.name);
+            const references = schema.foreignKeys.flatMap((key) => {
+              const index = key.columns.indexOf(column.name);
+              return index < 0
+                ? []
+                : [
+                    `${key.target.schema}.${key.target.name}.${key.targetColumns[index]}` +
+                      (key.columns.length > 1 ? ` (${key.name})` : ""),
+                  ];
+            });
             return (
               <tr key={column.id}>
                 <td className="mono">{column.name}</td>
@@ -381,14 +389,34 @@ export function StructureView({ schema }: { schema: TableSchema | null }) {
                     "—"
                   )}
                 </td>
-                <td className="mono">
-                  {fk ? `${fk.target.schema}.${fk.target.name}.${fk.targetColumn}` : "—"}
-                </td>
+                <td className="mono">{references.length ? references.join(", ") : "—"}</td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      {schema.foreignKeys.length > 0 && (
+        <table className="structure-table" aria-label="Foreign keys">
+          <thead>
+            <tr>
+              <th>Foreign key</th>
+              <th>Columns</th>
+              <th>References</th>
+            </tr>
+          </thead>
+          <tbody>
+            {schema.foreignKeys.map((key) => (
+              <tr key={`${key.name}:${key.columns.join(",")}`}>
+                <td className="mono">{key.name}</td>
+                <td className="mono">{key.columns.join(", ")}</td>
+                <td className="mono">
+                  {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

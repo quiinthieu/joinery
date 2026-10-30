@@ -463,6 +463,28 @@ async fn catalog_keys_paging_and_read_only_tables_work_on_both_engines() {
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB services"]
+async fn read_only_profiles_can_browse_editable_tables() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "sample".into(),
+        };
+        let schema = studio.schema(&session.id, &table).await.unwrap();
+        assert!(!schema.editable && schema.columns.iter().all(|c| !c.editable));
+        let first = studio.browse(&session.id, &table, None).await.unwrap();
+        assert_eq!(first.result.retained_rows, 500, "port {port}");
+        let second = studio
+            .browse(&session.id, &table, first.next_key)
+            .await
+            .unwrap();
+        assert_eq!(second.result.retained_rows, 500, "port {port}");
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
 async fn reviewed_edits_are_bound_atomic_conflict_checked_and_separate_from_editor_transactions() {
     for port in [53306, 53307] {
         let (_root, studio, session) = setup(port, SafeMode::Silent).await;
@@ -1031,6 +1053,164 @@ async fn a_full_result_registry_cannot_misreport_a_write_as_failed() {
             .await,
         );
         observer.shutdown();
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn foreign_keys_group_composite_constraints_on_both_engines() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        let schema = studio
+            .schema(
+                &session.id,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "line_notes".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(schema.foreign_keys.len(), 2, "port {port}");
+        let line = &schema.foreign_keys[0];
+        assert_eq!(line.name, "line_notes_line_fk");
+        assert_eq!(line.columns, ["note_order", "note_line"]);
+        assert_eq!(line.target.name, "order_lines");
+        assert_eq!(line.target_columns, ["order_id", "line_no"]);
+        let order = &schema.foreign_keys[1];
+        assert_eq!(order.name, "line_notes_order_fk");
+        assert_eq!(order.columns, ["note_order"]);
+        assert_eq!(order.target_columns, ["id"]);
+        studio.shutdown();
+    }
+}
+
+async fn browse_ids(
+    studio: &Arc<Studio>,
+    session: &SessionInfo,
+    table: &TableRef,
+    query: &BrowseQuery,
+) -> (Vec<String>, usize) {
+    let mut ids = Vec::new();
+    let mut after = None;
+    let mut pages = 0;
+    loop {
+        let page = studio
+            .browse_with(&session.id, table, after, query)
+            .await
+            .unwrap();
+        pages += 1;
+        for i in 0..page.result.retained_rows {
+            ids.push(
+                studio.results.row(&page.result.id, i).unwrap()[0]
+                    .clone()
+                    .unwrap(),
+            );
+        }
+        studio.release_result(&page.result.id);
+        if !page.has_more {
+            break;
+        }
+        after = page.next_key;
+    }
+    (ids, pages)
+}
+
+async fn reference_ids(studio: &Arc<Studio>, session: &SessionInfo, sql: &str) -> Vec<String> {
+    let events = run(studio, session, sql).await;
+    completed(&events);
+    let retained = result(&events);
+    let ids = (0..retained.retained_rows)
+        .map(|i| {
+            studio.results.row(&retained.id, i).unwrap()[0]
+                .clone()
+                .unwrap()
+        })
+        .collect();
+    studio.release_result(&retained.id);
+    ids
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn browse_sorted_filtered_pages_match_reference_on_both_engines() {
+    let sort = |column: &str, descending| SortKey {
+        column: column.into(),
+        descending,
+    };
+    let filter = |column: &str, op, value: Option<&str>| ColumnFilter {
+        column: column.into(),
+        op,
+        value: value.map(str::to_owned),
+    };
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "browse_sort".into(),
+        };
+        let cases = [
+            (
+                BrowseQuery {
+                    sort: vec![sort("bucket", true), sort("label", false)],
+                    filters: vec![],
+                },
+                "SELECT id FROM browse_sort ORDER BY bucket IS NULL DESC, bucket DESC, label IS NULL, label, id",
+            ),
+            (
+                BrowseQuery {
+                    sort: vec![sort("label", true), sort("bucket", false)],
+                    filters: vec![filter("bucket", FilterOp::NotEq, Some("3"))],
+                },
+                "SELECT id FROM browse_sort WHERE bucket <> 3 ORDER BY label IS NULL DESC, label DESC, bucket IS NULL, bucket, id",
+            ),
+            (
+                BrowseQuery {
+                    sort: vec![],
+                    filters: vec![filter("label", FilterOp::Contains, Some("_%"))],
+                },
+                "SELECT id FROM browse_sort WHERE label LIKE '%!_!%%' ESCAPE '!' ORDER BY id",
+            ),
+            (
+                BrowseQuery {
+                    sort: vec![sort("bucket", false)],
+                    filters: vec![filter("label", FilterOp::IsNull, None)],
+                },
+                "SELECT id FROM browse_sort WHERE label IS NULL ORDER BY bucket IS NULL, bucket, id",
+            ),
+            (
+                BrowseQuery {
+                    sort: vec![],
+                    filters: vec![filter("label", FilterOp::StartsWith, Some("ALP"))],
+                },
+                "SELECT id FROM browse_sort WHERE label LIKE 'ALP%' ORDER BY id",
+            ),
+        ];
+        for (query, reference) in cases {
+            let (ids, pages) = browse_ids(&studio, &session, &table, &query).await;
+            let expected = reference_ids(&studio, &session, reference).await;
+            assert!(!expected.is_empty(), "port {port}: {reference}");
+            assert_eq!(ids, expected, "port {port}: {query:?}");
+            if expected.len() > 500 {
+                assert!(pages > 1, "port {port}: {query:?} should page");
+            }
+        }
+        let hostile = BrowseQuery {
+            sort: vec![],
+            filters: vec![filter(
+                "label",
+                FilterOp::Eq,
+                Some("' OR 1=1; DROP TABLE browse_sort; -- "),
+            )],
+        };
+        assert!(
+            browse_ids(&studio, &session, &table, &hostile)
+                .await
+                .0
+                .is_empty()
+        );
+        assert_eq!(studio.usage().retained_bytes, 0);
         studio.shutdown();
     }
 }

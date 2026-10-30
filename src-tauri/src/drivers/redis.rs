@@ -113,6 +113,7 @@ impl Redis {
                 cancellation: true,
                 table_browsing: false,
                 table_editing: false,
+                table_filtering: false,
                 processes: false,
             },
         };
