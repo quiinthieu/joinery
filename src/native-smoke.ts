@@ -1,7 +1,7 @@
 import { client, messageOf } from "./ipc/client";
 import { resultCache } from "./data/result-cache";
 import { useStudio } from "./state/studio";
-import type { ResourceUsage, ResultInfo } from "./ipc/generated";
+import type { BrowseQuery, ResourceUsage, ResultInfo, TableChanges } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
@@ -67,14 +67,24 @@ export async function runNativeSmoke() {
         {
           sessionId: "missing-native-fixture",
           table: { schema: "public", name: "missing" },
-          query: { sort: [], filters: [], rawWhere: "1 = 1", rawOrderBy: null },
+          query: {
+            sort: [],
+            filters: [],
+            whereClause: "1 = 1",
+            orderClause: null,
+          } satisfies BrowseQuery,
         },
       ],
       [
         "prepare_table_changes",
         {
           sessionId: "missing-native-fixture",
-          changes: { resultId: "missing-result", updates: [], deletes: [], inserts: [] },
+          changes: {
+            resultId: "missing-result",
+            updates: [],
+            deletes: [],
+            inserts: [],
+          } satisfies TableChanges,
         },
       ],
     ] as const) {
