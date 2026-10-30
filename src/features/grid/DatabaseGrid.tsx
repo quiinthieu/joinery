@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import DataEditor, {
   GridCellKind,
   CompactSelection,
@@ -16,6 +16,7 @@ import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
 import { useStudio, type StudioTab } from "../../state/studio";
+import { parseTsvClipboard, validatePasteMatrix } from "./paste";
 import {
   clampColumnWidth,
   defaultColumnWidth,
@@ -355,6 +356,85 @@ export default function DatabaseGrid({
     [targetAt],
   );
 
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
+  const applyPaste = useCallback(
+    (anchor: Item, values: readonly (readonly string[])[]) => {
+      const currentTab = model.current.tab;
+      const tableEditable =
+        connected &&
+        currentTab.kind === "table" &&
+        !!currentTab.schema?.editable &&
+        !["outcomeUnknown", "queued", "running"].includes(currentTab.status);
+      const outcome = validatePasteMatrix({
+        anchor,
+        values,
+        visibleColumns,
+        tableEditable,
+        resolveRow: (visualRow) => {
+          if (currentTab.kind !== "table" || visualRow < 0) return { kind: "outOfBounds" };
+          const totalRows = currentTab.loadedRows + (currentTab.hasMore ? 1 : 0);
+          if (visualRow >= totalRows) return { kind: "outOfBounds" };
+          if (visualRow >= currentTab.loadedRows) return { kind: "unloaded" };
+          const source = locate(visualRow);
+          if (!source) return { kind: "unloaded" };
+          return {
+            kind: "existing",
+            resultId: source.result.id,
+            row: source.row,
+            readOriginal: (columnId) =>
+              resultCache.read(source.result.id, columnId, source.row, true)?.value,
+          };
+        },
+      });
+      if (!outcome.ok) {
+        useStudio.getState().notify(outcome.error);
+        return;
+      }
+      try {
+        dirtyStore.setBatch(outcome.cells);
+        const activeCell = selectionRef.current.current?.cell;
+        if (activeCell) onSelect(targetAt(activeCell, true));
+      } catch (error) {
+        useStudio
+          .getState()
+          .notify(error instanceof Error ? error.message : "Could not paste these cells");
+      }
+    },
+    [connected, locate, onSelect, targetAt, visibleColumns],
+  );
+
+  const applyPasteRef = useRef(applyPaste);
+  applyPasteRef.current = applyPaste;
+
+  useLayoutEffect(() => {
+    const onWindowPaste = (event: ClipboardEvent) => {
+      if (!host.current?.contains(document.activeElement)) return;
+      if (
+        document.activeElement instanceof HTMLInputElement ||
+        document.activeElement instanceof HTMLTextAreaElement
+      )
+        return;
+      const sel = selectionRef.current;
+      const anchor: Item | null = sel.current
+        ? [sel.current.range.x, sel.current.range.y]
+        : sel.columns.length === 1
+          ? [sel.columns.first() ?? 0, 0]
+          : sel.rows.length === 1
+            ? [0, sel.rows.first() ?? 0]
+            : null;
+      if (!anchor || !event.clipboardData) return;
+      if (!event.clipboardData.types.includes("text/plain")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const raw = event.clipboardData.getData("text/plain");
+      applyPasteRef.current(anchor, parseTsvClipboard(raw));
+    };
+    window.addEventListener("paste", onWindowPaste, true);
+    return () => window.removeEventListener("paste", onWindowPaste, true);
+  }, []);
+
   return (
     <div className="grid-host" ref={host}>
       {columns.length ? (
@@ -416,6 +496,10 @@ export default function DatabaseGrid({
               : undefined
           }
           onCellEdited={edit}
+          onPaste={(target, values) => {
+            applyPaste(target, values);
+            return false;
+          }}
           onHeaderClicked={(col, event) => {
             const column = visibleColumns[col];
             if (!onSort || !column || !canOrder(column)) return;

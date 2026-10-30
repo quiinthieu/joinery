@@ -45,6 +45,42 @@ export class DirtyStore {
     this.bytes += after - before;
     this.changed();
   }
+  setBatch(cells: DirtyCell[]) {
+    if (!cells.length) return;
+    const collapsed = new Map<string, DirtyCell>();
+    const firstOriginals = new Map<string, string | null>();
+    for (const cell of cells) {
+      const key = this.key(cell.resultId, cell.row, cell.column);
+      if (!firstOriginals.has(key)) firstOriginals.set(key, cell.original);
+      collapsed.set(key, cell);
+    }
+    const staged = new Map<string, DirtyCell | null>();
+    let delta = 0;
+    for (const [key, cell] of collapsed) {
+      const previous = this.cells.get(key);
+      const original = previous ? previous.original : firstOriginals.get(key)!;
+      const next: DirtyCell = { ...cell, original };
+      const before = previous ? this.size(previous) : 0;
+      const after = next.original === next.value ? 0 : this.size(next);
+      delta += after - before;
+      staged.set(key, after ? next : null);
+    }
+    if (this.bytes + delta > this.budget)
+      throw new Error("Pending edits exceed 8 MiB. Apply or discard some edits first.");
+    let mutated = false;
+    for (const [key, next] of staged) {
+      const previous = this.cells.get(key);
+      if (next) {
+        if (!previous || previous.value !== next.value) mutated = true;
+        this.cells.set(key, next);
+      } else if (previous) {
+        mutated = true;
+        this.cells.delete(key);
+      }
+    }
+    this.bytes += delta;
+    if (mutated) this.changed();
+  }
   forResult(id: string) {
     return [...this.cells.values()].filter((cell) => cell.resultId === id);
   }

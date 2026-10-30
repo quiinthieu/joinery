@@ -351,3 +351,70 @@ test("reorders, hides, and resizes table columns with persistence across reload"
   await expect.poll(() => cellText(page, 55, 0)).toBe("1");
   expect(errors).toEqual([]);
 });
+
+async function dispatchPaste(page: Page, tsv: string) {
+  await page.evaluate((payload) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", payload);
+    const event = new ClipboardEvent("paste", {
+      clipboardData: dt,
+      bubbles: true,
+      cancelable: true,
+    });
+    (document.activeElement ?? window).dispatchEvent(event);
+  }, tsv);
+}
+
+test("validates and applies multi-cell TSV paste atomically across reordered columns", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await connect(page, `Atomic paste ${Date.now()}`);
+  await openTable(page, "customers");
+  await expect(page.locator(".result-footer")).toContainText("500 rows loaded");
+
+  // Hide read-only id and created_at, and move email ahead of name so visible columns are:
+  // [email (230px), name (200px), active (200px), metadata (200px)].
+  await page.getByRole("button", { name: "Columns", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Table columns" });
+  await dialog.getByLabel("Show id").uncheck();
+  await dialog.getByLabel("Show created_at").uncheck();
+  await dialog.getByLabel("Move email up").click();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // Select visual [0, 0] (email on row 1) and test an atomic rejection first:
+  // row 1 is valid, row 2 attempts NULL (\N) in NOT NULL "name".
+  await expect.poll(() => cellText(page, 80, 0)).toBe("customer1@example.test");
+  await dispatchPaste(page, "valid.first@example.test\tAria Chen\nsecond@example.test\t\\N\n");
+  await expect(page.getByRole("status")).toContainText('Row 2, column "name" does not allow NULL.');
+  await expect(page.getByRole("button", { name: /^Review / })).toHaveCount(0);
+  await expect(page.locator(".inspector-value")).toHaveText("customer1@example.test");
+
+  // Also reject invalid JSON in row 2 without mutating row 1.
+  await dispatchPaste(
+    page,
+    'valid.first@example.test\tAria Chen\tfalse\t{"tier":"pro"}\n\\N\tBram Ortiz\ttrue\t{broken\n',
+  );
+  await expect(page.getByRole("status")).toContainText(
+    'Row 2, column "metadata" expects valid JSON.',
+  );
+  await expect(page.getByRole("button", { name: /^Review / })).toHaveCount(0);
+  await expect(page.locator(".inspector-value")).toHaveText("customer1@example.test");
+
+  // Now paste a valid 2x4 TSV matrix including \N NULL, boolean literals, and JSON.
+  await dispatchPaste(
+    page,
+    'aria.chen@example.test\tAria Chen\t0\t{"tier":"enterprise"}\n\\N\tBram Ortiz\t0\t{"tier":"pro"}\n',
+  );
+  await expect(page.getByRole("button", { name: "Review 8 edits", exact: true })).toBeVisible();
+  await expect(page.locator(".inspector-value")).toHaveText("aria.chen@example.test");
+  await expect.poll(() => cellText(page, 230 + 80, 0)).toBe("Aria Chen");
+  await expect.poll(() => cellText(page, 80, 1)).toBe("NULL");
+  await expect.poll(() => cellText(page, 230 + 80, 1)).toBe("Bram Ortiz");
+
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Review / })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
