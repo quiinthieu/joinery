@@ -101,6 +101,9 @@ export default function DatabaseGrid({
       : tab.kind === "table"
         ? (tab.schema?.columns ?? [])
         : (result?.columns ?? []);
+  const freezeColumns = columnsInfo[0]?.primaryKey ? 1 : 0;
+  const frozen = useRef(freezeColumns);
+  frozen.current = freezeColumns;
   const columns = useMemo<GridColumn[]>(
     () =>
       columnsInfo.map((column) => ({
@@ -176,8 +179,13 @@ export default function DatabaseGrid({
   const redraw = useCallback(() => {
     const range = visible.current,
       cells: { cell: Item }[] = [];
+    // Glide's visible region starts after frozen columns, which also need
+    // repainting once their page arrives.
+    const columns = new Set<number>();
+    for (let x = 0; x < frozen.current; x++) columns.add(x);
+    for (let x = range.x; x < range.x + range.width; x++) columns.add(x);
     for (let y = range.y; y < range.y + range.height + 1; y++)
-      for (let x = range.x; x < range.x + range.width; x++) cells.push({ cell: [x, y] });
+      for (const x of columns) cells.push({ cell: [x, y] });
     grid.current?.updateCells(cells);
   }, []);
   useEffect(() => resultCache.subscribe(redraw), [redraw]);
@@ -337,7 +345,7 @@ export default function DatabaseGrid({
           smoothScrollX
           smoothScrollY
           theme={theme}
-          freezeColumns={columnsInfo[0]?.primaryKey ? 1 : 0}
+          freezeColumns={freezeColumns}
           onColumnResize={(column, width) => {
             if (column.id) setWidths((old) => ({ ...old, [column.id!]: width }));
           }}

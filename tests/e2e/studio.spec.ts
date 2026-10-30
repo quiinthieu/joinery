@@ -233,3 +233,45 @@ test("manages nested groups and reads local audit entries", async ({ page }) => 
   await expect(page.locator(".audit-table")).toContainText("Completed");
   await page.screenshot({ path: ".cache/screenshots/audit-log.png", fullPage: true });
 });
+
+test("repaints the frozen primary-key column when pages load after scrolling", async ({ page }) => {
+  await connect(page, "Frozen key fixture");
+  await page.getByRole("button", { name: /^public/ }).click();
+  await page.getByRole("button", { name: "orders", exact: true }).click();
+  const footer = page.locator(".result-footer");
+  await expect(footer).toContainText("500 rows loaded");
+  const grid = page.locator(".grid-host");
+  const box = (await grid.boundingBox())!;
+  // Scrolling reports a visible region that starts after the frozen column;
+  // pages that arrive afterwards are repainted from that region.
+  await page.mouse.move(box.x + 400, box.y + 200);
+  for (let i = 0; i < 8 && !(await footer.textContent())?.includes("2,500 rows"); i++)
+    await page.mouse.wheel(0, 20000);
+  await expect(footer).toContainText("2,500 rows loaded");
+  // Rows whose status cell has text but whose frozen id cell has none.
+  const unpainted = () =>
+    grid
+      .locator("canvas")
+      .first()
+      .evaluate((canvas: HTMLCanvasElement) => {
+        const ratio = canvas.width / canvas.getBoundingClientRect().width;
+        const context = canvas.getContext("2d")!;
+        const height = canvas.getBoundingClientRect().height;
+        const ink = (x: number, y: number, width: number) => {
+          const data = context.getImageData(x * ratio, y * ratio, width * ratio, 20 * ratio).data;
+          const [r, g, b] = [data[0], data[1], data[2]];
+          let count = 0;
+          for (let i = 0; i < data.length; i += 4)
+            if (Math.abs(data[i] - r) + Math.abs(data[i + 1] - g) + Math.abs(data[i + 2] - b) > 120)
+              count++;
+          return count;
+        };
+        let missing = 0;
+        // 44 px row markers, 37 px header, 36 px rows; id and customer_id are
+        // 110 px each, so status starts at 264 px.
+        for (let y = 37 + 8; y + 28 < height; y += 36)
+          if (ink(264 + 6, y, 90) > 10 && ink(44 + 6, y, 90) < 3) missing++;
+        return missing;
+      });
+  await expect.poll(unpainted, { timeout: 5000 }).toBe(0);
+});
