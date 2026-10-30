@@ -164,6 +164,14 @@ async fn rpc(
                     .schema(&arg::<String>(&args, "sessionId")?, &arg(&args, "table")?)
                     .await?
             ),
+            "referencing_foreign_keys" => json!(
+                studio
+                    .referencing_foreign_keys(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg(&args, "table")?
+                    )
+                    .await?
+            ),
             "prepare_browse_table" => json!(
                 studio
                     .prepare_browse(

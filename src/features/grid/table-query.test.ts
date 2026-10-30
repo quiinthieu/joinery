@@ -1,14 +1,16 @@
 import { expect, test } from "vitest";
-import type { ColumnInfo, ForeignKey } from "../../ipc/generated";
+import type { ColumnInfo, ForeignKey, InboundForeignKey } from "../../ipc/generated";
 import {
   EMPTY_QUERY,
   allowedOperators,
   cycleSort,
   describeFilter,
   hasRawClauses,
+  inboundConstraintsForCell,
   isEmptyQuery,
   normalizeQuery,
   referencedRowsQuery,
+  referencingRowsQuery,
   sameQuery,
   sortIndicator,
   tableTabTitle,
@@ -71,6 +73,38 @@ test("referenced rows pair composite columns by ordinal and refuse NULL keys", (
   });
   row.note_line = null;
   expect(referencedRowsQuery(key, (column) => row[column])).toBeNull();
+});
+
+test("referencing rows map target columns to source filters and narrow by selected column", () => {
+  const composite: InboundForeignKey = {
+    name: "line_notes_line_fk",
+    source: { schema: "public", name: "line_notes" },
+    columns: ["note_order", "note_line"],
+    targetColumns: ["order_id", "line_no"],
+  };
+  const slugKey: InboundForeignKey = {
+    name: "line_tags_sku_fk",
+    source: { schema: "public", name: "line_tags" },
+    columns: ["line_sku"],
+    targetColumns: ["sku"],
+  };
+  expect(inboundConstraintsForCell([composite, slugKey], "sku")).toEqual([slugKey]);
+  expect(inboundConstraintsForCell([composite, slugKey], "created_at")).toEqual([
+    composite,
+    slugKey,
+  ]);
+  const row: Record<string, string | null> = { order_id: "7", line_no: "2", sku: "SKU-7-2" };
+  expect(referencingRowsQuery(composite, (column) => row[column])).toEqual({
+    sort: [],
+    filters: [
+      { column: "note_order", op: "eq", value: "7" },
+      { column: "note_line", op: "eq", value: "2" },
+    ],
+    whereClause: null,
+    orderClause: null,
+  });
+  row.line_no = null;
+  expect(referencingRowsQuery(composite, (column) => row[column])).toBeNull();
 });
 
 test("table titles summarize at most two filters", () => {

@@ -1292,3 +1292,76 @@ async fn raw_browse_clauses_enforce_safety_gates_on_mysql_and_mariadb() {
         rw_studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn referencing_foreign_keys_group_composite_inbound_constraints_on_mysql_and_mariadb() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        let note_orders = TableRef {
+            schema: "joinery".into(),
+            name: "note_orders".into(),
+        };
+        let order_lines = TableRef {
+            schema: "joinery".into(),
+            name: "order_lines".into(),
+        };
+        let browse_sort = TableRef {
+            schema: "joinery".into(),
+            name: "browse_sort".into(),
+        };
+
+        let inbound_orders = studio
+            .referencing_foreign_keys(&session.id, &note_orders)
+            .await
+            .unwrap();
+        assert_eq!(inbound_orders.len(), 2, "port {port}");
+        assert_eq!(inbound_orders[0].source.name, "line_notes");
+        assert_eq!(inbound_orders[0].columns, ["note_order"]);
+        assert_eq!(inbound_orders[0].target_columns, ["id"]);
+        assert_eq!(inbound_orders[1].source.name, "order_lines");
+        assert_eq!(inbound_orders[1].columns, ["order_id"]);
+        assert_eq!(inbound_orders[1].target_columns, ["id"]);
+
+        let inbound_lines = studio
+            .referencing_foreign_keys(&session.id, &order_lines)
+            .await
+            .unwrap();
+        assert_eq!(
+            inbound_lines,
+            vec![InboundForeignKey {
+                name: "line_notes_line_fk".into(),
+                source: TableRef {
+                    schema: "joinery".into(),
+                    name: "line_notes".into(),
+                },
+                columns: vec!["note_order".into(), "note_line".into()],
+                target_columns: vec!["order_id".into(), "line_no".into()],
+            }],
+            "port {port}"
+        );
+
+        assert!(
+            studio
+                .referencing_foreign_keys(&session.id, &browse_sort)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            studio
+                .referencing_foreign_keys(
+                    &session.id,
+                    &TableRef {
+                        schema: "joinery".into(),
+                        name: "missing_table".into(),
+                    }
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+        studio.shutdown();
+    }
+}

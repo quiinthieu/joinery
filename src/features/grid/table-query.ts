@@ -4,6 +4,7 @@ import type {
   ColumnInfo,
   FilterOp,
   ForeignKey,
+  InboundForeignKey,
   SortKey,
   TableSchema,
 } from "../../ipc/generated";
@@ -143,6 +144,38 @@ export function referencedRowsQuery(
     const current = value(key.columns[i]);
     if (current === null || current === undefined) return null;
     filters.push({ column: key.targetColumns[i], op: "eq", value: current });
+  }
+  return { sort: [], filters, whereClause: null, orderClause: null };
+}
+
+/**
+ * Narrows inbound foreign-key constraints to those targeting `columnName` when
+ * the selected cell is one of the referenced columns, otherwise returns all
+ * inbound constraints referencing the table.
+ */
+export function inboundConstraintsForCell(
+  keys: InboundForeignKey[],
+  columnName: string,
+): InboundForeignKey[] {
+  const matching = keys.filter((key) => key.targetColumns.includes(columnName));
+  return matching.length ? matching : keys;
+}
+
+/**
+ * Equality filters on `key.source` selecting rows that reference the current
+ * row via `key`. Returns null if any referenced column on the current row is
+ * NULL, since SQL foreign keys cannot match NULL via equality.
+ */
+export function referencingRowsQuery(
+  key: InboundForeignKey,
+  value: (column: string) => string | null | undefined,
+): BrowseQuery | null {
+  if (!key.columns.length || key.columns.length !== key.targetColumns.length) return null;
+  const filters: ColumnFilter[] = [];
+  for (let i = 0; i < key.columns.length; i++) {
+    const current = value(key.targetColumns[i]);
+    if (current === null || current === undefined) return null;
+    filters.push({ column: key.columns[i], op: "eq", value: current });
   }
   return { sort: [], filters, whereClause: null, orderClause: null };
 }

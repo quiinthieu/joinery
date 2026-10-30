@@ -30,6 +30,7 @@ fn main() {
         TableRef::decl(),
         TableInfo::decl(),
         ForeignKey::decl(),
+        InboundForeignKey::decl(),
         TableSchema::decl(),
         SortKey::decl(),
         FilterOp::decl(),

@@ -94,6 +94,16 @@ impl Mysql {
         self.metadata(move |conn| Box::pin(async move { schema_on(conn, &table).await }))
             .await
     }
+    pub(super) async fn referencing_foreign_keys(
+        &self,
+        table: &TableRef,
+    ) -> AppResult<Vec<InboundForeignKey>> {
+        identifier(&table.schema)?;
+        identifier(&table.name)?;
+        let table = table.clone();
+        self.metadata(move |conn| Box::pin(async move { referencing_keys_on(conn, &table).await }))
+            .await
+    }
     pub(super) async fn browse_rows(
         &self,
         schema: &TableSchema,
@@ -215,6 +225,57 @@ fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
     } else {
         Ok(())
     }
+}
+
+async fn referencing_keys_on(
+    conn: &mut Conn,
+    table: &TableRef,
+) -> AppResult<Vec<InboundForeignKey>> {
+    identifier(&table.schema)?;
+    identifier(&table.name)?;
+    let params = || {
+        vec![
+            bind(Some(table.schema.clone())),
+            bind(Some(table.name.clone())),
+        ]
+    };
+    let metadata = fetch(
+        conn,
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?",
+        params(),
+        1,
+        1024,
+    )
+    .await?;
+    if metadata.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The table is missing or its metadata is unavailable",
+        ));
+    }
+    let rows = fetch(
+        conn,
+        "SELECT CONSTRAINT_NAME, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, REFERENCED_COLUMN_NAME
+         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+         WHERE REFERENCED_TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME = ?
+         ORDER BY TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION
+         LIMIT 500",
+        params(),
+        500,
+        2 * 1024 * 1024,
+    )
+    .await?;
+    Ok(InboundForeignKey::group(rows.iter().map(|r| {
+        (
+            cell(r, 0).into(),
+            TableRef {
+                schema: cell(r, 1).into(),
+                name: cell(r, 2).into(),
+            },
+            cell(r, 3).into(),
+            cell(r, 4).into(),
+        )
+    })))
 }
 
 async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> {

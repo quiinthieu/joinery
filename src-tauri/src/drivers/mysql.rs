@@ -372,6 +372,9 @@ impl Driver for Mysql {
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         self.table_schema(table).await
     }
+    async fn referencing_keys(&self, table: &TableRef) -> AppResult<Vec<InboundForeignKey>> {
+        self.referencing_foreign_keys(table).await
+    }
     async fn browse(
         &self,
         schema: &TableSchema,

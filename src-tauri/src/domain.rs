@@ -339,6 +339,41 @@ impl ForeignKey {
     }
 }
 
+/// One inbound foreign-key constraint referencing a target table.
+/// `columns[i]` on `source` references `target_columns[i]` on the current table,
+/// in constraint ordinal order, so composite keys keep their pairing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InboundForeignKey {
+    pub name: String,
+    pub source: TableRef,
+    pub columns: Vec<String>,
+    pub target_columns: Vec<String>,
+}
+
+impl InboundForeignKey {
+    /// Folds per-column catalog rows `(constraint, source, source column, target column)`
+    /// into constraints. Rows must be ordered by source table, constraint, and ordinal position.
+    pub fn group(rows: impl IntoIterator<Item = (String, TableRef, String, String)>) -> Vec<Self> {
+        let mut keys: Vec<Self> = Vec::new();
+        for (name, source, column, target_column) in rows {
+            match keys.last_mut() {
+                Some(key) if key.name == name && key.source == source => {
+                    key.columns.push(column);
+                    key.target_columns.push(target_column);
+                }
+                _ => keys.push(Self {
+                    name,
+                    source,
+                    columns: vec![column],
+                    target_columns: vec![target_column],
+                }),
+            }
+        }
+        keys
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSchema {
@@ -703,5 +738,42 @@ mod tests {
             row("fk", "b", "right_table", "id"),
         ]);
         assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn inbound_foreign_keys_group_by_source_and_constraint_in_ordinal_order() {
+        let line_notes = TableRef {
+            schema: "public".into(),
+            name: "line_notes".into(),
+        };
+        let other_notes = TableRef {
+            schema: "alt".into(),
+            name: "line_notes".into(),
+        };
+        let keys = InboundForeignKey::group([
+            (
+                "line_notes_line_fk".into(),
+                line_notes.clone(),
+                "note_order".into(),
+                "order_id".into(),
+            ),
+            (
+                "line_notes_line_fk".into(),
+                line_notes.clone(),
+                "note_line".into(),
+                "line_no".into(),
+            ),
+            (
+                "line_notes_line_fk".into(),
+                other_notes.clone(),
+                "note_order".into(),
+                "order_id".into(),
+            ),
+        ]);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].source, line_notes);
+        assert_eq!(keys[0].columns, ["note_order", "note_line"]);
+        assert_eq!(keys[0].target_columns, ["order_id", "line_no"]);
+        assert_eq!(keys[1].source, other_notes);
     }
 }

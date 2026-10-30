@@ -1191,3 +1191,133 @@ async fn raw_browse_clauses_preserve_types_and_enforce_safety_gates() {
     );
     rw_studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn referencing_foreign_keys_preserve_composite_ordinals_and_filter_unreadable_tables() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let orders = TableRef {
+        schema: "public".into(),
+        name: "orders".into(),
+    };
+    let order_lines = TableRef {
+        schema: "public".into(),
+        name: "order_lines".into(),
+    };
+    let browse_sort = TableRef {
+        schema: "public".into(),
+        name: "browse_sort".into(),
+    };
+
+    let inbound_orders = studio
+        .referencing_foreign_keys(&session.id, &orders)
+        .await
+        .unwrap();
+    assert_eq!(
+        inbound_orders,
+        vec![
+            InboundForeignKey {
+                name: "line_notes_order_fk".into(),
+                source: TableRef {
+                    schema: "public".into(),
+                    name: "line_notes".into(),
+                },
+                columns: vec!["note_order".into()],
+                target_columns: vec!["id".into()],
+            },
+            InboundForeignKey {
+                name: "order_lines_order_id_fkey".into(),
+                source: order_lines.clone(),
+                columns: vec!["order_id".into()],
+                target_columns: vec!["id".into()],
+            },
+        ]
+    );
+
+    let inbound_lines = studio
+        .referencing_foreign_keys(&session.id, &order_lines)
+        .await
+        .unwrap();
+    assert_eq!(
+        inbound_lines,
+        vec![InboundForeignKey {
+            name: "line_notes_line_fk".into(),
+            source: TableRef {
+                schema: "public".into(),
+                name: "line_notes".into(),
+            },
+            columns: vec!["note_order".into(), "note_line".into()],
+            target_columns: vec!["order_id".into(), "line_no".into()],
+        }]
+    );
+
+    assert!(
+        studio
+            .referencing_foreign_keys(&session.id, &browse_sort)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        studio
+            .referencing_foreign_keys(
+                &session.id,
+                &TableRef {
+                    schema: "public".into(),
+                    name: "missing_table".into(),
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+
+    // Non-superuser role without SELECT on line_notes only sees order_lines referencing orders.
+    run(
+        &studio,
+        &session,
+        "DROP ROLE IF EXISTS joinery_inbound_limited;
+         CREATE ROLE joinery_inbound_limited LOGIN PASSWORD 'joinery-limited-only';
+         GRANT CONNECT ON DATABASE joinery TO joinery_inbound_limited;
+         GRANT USAGE ON SCHEMA public TO joinery_inbound_limited;
+         GRANT SELECT ON public.orders, public.order_lines TO joinery_inbound_limited;",
+    )
+    .await;
+
+    let mut limited_profile = studio.bootstrap().unwrap().profiles[0].clone();
+    limited_profile.id = new_id();
+    limited_profile.name = "Inbound limited".into();
+    limited_profile.username = "joinery_inbound_limited".into();
+    limited_profile.safe_mode = SafeMode::ReadOnly;
+    let saved = studio.save_profile(limited_profile, None).unwrap();
+    let limited_session = studio
+        .connect(
+            &saved.id,
+            ConnectionSecrets {
+                password: Some("joinery-limited-only".into()),
+                ssh_password: None,
+                key_passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+    let visible = studio
+        .referencing_foreign_keys(&limited_session.id, &orders)
+        .await
+        .unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].source, order_lines);
+    studio.disconnect(&limited_session.id);
+
+    run(
+        &studio,
+        &session,
+        "REVOKE ALL PRIVILEGES ON public.orders, public.order_lines FROM joinery_inbound_limited;
+         REVOKE USAGE ON SCHEMA public FROM joinery_inbound_limited;
+         REVOKE CONNECT ON DATABASE joinery FROM joinery_inbound_limited;
+         DROP ROLE joinery_inbound_limited;",
+    )
+    .await;
+    studio.shutdown();
+}

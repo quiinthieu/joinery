@@ -1139,6 +1139,16 @@ impl Studio {
         let session = self.session(session_id)?;
         self.schema_for_session(&session, table).await
     }
+    pub async fn referencing_foreign_keys(
+        &self,
+        session_id: &str,
+        table: &TableRef,
+    ) -> AppResult<Vec<InboundForeignKey>> {
+        self.session(session_id)?
+            .driver
+            .referencing_keys(table)
+            .await
+    }
     async fn schema_for_session(
         &self,
         session: &Session,

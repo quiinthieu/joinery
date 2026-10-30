@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
+  ArrowDownLeft,
   ArrowUpDown,
   ArrowUpRight,
   Check,
@@ -36,6 +37,7 @@ import type {
   ChangePreview,
   ConnectionProfile,
   ForeignKey,
+  InboundForeignKey,
   PreparedPlan,
   ProcessInfo,
   ResourceUsage,
@@ -49,7 +51,9 @@ import {
   canOrder,
   constraintsForColumn,
   hasRawClauses,
+  inboundConstraintsForCell,
   referencedRowsQuery,
+  referencingRowsQuery,
   withFilter,
 } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
@@ -73,7 +77,8 @@ type Dialog =
       onApprove?(approval: string): Promise<void>;
     }
   | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
-  | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string };
+  | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
+  | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
   return tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
 }
@@ -133,6 +138,44 @@ export function App() {
     else
       setDialog({ kind: "references", keys: selectedKeys, target: tableColumn, tabId: current.id });
   }
+  function followReferencingKey(tab: StudioTab, key: InboundForeignKey, target: CellTarget) {
+    const query = referencingRowsQuery(key, (name) => {
+      const column = tab.schema?.columns.find((c) => c.name === name);
+      return column ? resultCache.read(target.resultId, column.id, target.row, true)?.value : null;
+    });
+    if (!query || !tab.connectionId) {
+      state.notify("This row's referenced key contains NULL, so no rows can reference it.");
+      return;
+    }
+    void state.openTable(tab.connectionId, key.source, query);
+  }
+  async function goToReferencing() {
+    if (!current || current.kind !== "table" || !current.table || !tableColumn || !session) {
+      state.notify("Select a row in a table to open rows that reference it.");
+      return;
+    }
+    try {
+      const all = await client.call<InboundForeignKey[]>("referencing_foreign_keys", {
+        sessionId: session.id,
+        table: current.table,
+      });
+      if (!all.length) {
+        state.notify(`No visible tables reference ${current.table.schema}.${current.table.name}.`);
+        return;
+      }
+      const relevant = inboundConstraintsForCell(all, tableColumn.column.name);
+      if (relevant.length === 1) followReferencingKey(current, relevant[0], tableColumn);
+      else
+        setDialog({
+          kind: "referencing",
+          keys: relevant,
+          target: tableColumn,
+          tabId: current.id,
+        });
+    } catch (error) {
+      state.notify(messageOf(error));
+    }
+  }
   async function applyTableQuery(tabId: string, query: BrowseQuery, options?: { force?: boolean }) {
     const outcome = await state.setTableQuery(tabId, query, options);
     if (outcome.kind === "refused") {
@@ -173,6 +216,16 @@ export function App() {
             icon: ArrowUpRight,
             action: () => current && tableColumn && followKey(current, key, tableColumn),
           })),
+          ...(tableColumn
+            ? [
+                {
+                  label: "Go to referencing rows",
+                  shortcut: "⇧⌘ G",
+                  icon: ArrowDownLeft,
+                  action: () => void goToReferencing(),
+                },
+              ]
+            : []),
           ...(tableColumn && canOrder(tableColumn.column)
             ? [false, true].map((descending) => ({
                 label: `Sort ${descending ? "descending" : "ascending"} by ${tableColumn.column.name}`,
@@ -518,8 +571,8 @@ export function App() {
       });
     else void action().catch((error) => state.notify(messageOf(error)));
   }
-  const actions = useRef({ runSql, reviewEdits, goToReferenced });
-  actions.current = { runSql, reviewEdits, goToReferenced };
+  const actions = useRef({ runSql, reviewEdits, goToReferenced, goToReferencing });
+  actions.current = { runSql, reviewEdits, goToReferenced, goToReferencing };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || references.current.dialog) return;
@@ -537,6 +590,9 @@ export function App() {
       } else if (key === "b" && event.shiftKey) {
         event.preventDefault();
         actions.current.goToReferenced();
+      } else if (key === "g" && event.shiftKey) {
+        event.preventDefault();
+        void actions.current.goToReferencing();
       } else if (key === "b") {
         event.preventDefault();
         useStudio.setState((state) => ({ sidebarVisible: !state.sidebarVisible }));
@@ -783,6 +839,12 @@ export function App() {
                       Go to referenced row
                     </button>
                   )}
+                  {tableColumn && (
+                    <button className="button ghost small" onClick={() => void goToReferencing()}>
+                      <ArrowDownLeft size={12} />
+                      Go to referencing rows
+                    </button>
+                  )}
                 </>
               ) : (
                 <div className="inspector-empty">
@@ -917,6 +979,32 @@ export function App() {
                 <span>
                   {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
                 </span>
+                <kbd>{key.name}</kbd>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
+      {dialog?.kind === "referencing" && (
+        <Modal
+          title="Go to referencing rows"
+          subtitle={`More than one foreign key references ${
+            state.tabs.find((t) => t.id === dialog.tabId)?.table?.name ?? "this table"
+          }`}
+          onClose={() => setDialog(null)}
+        >
+          <div className="palette-commands">
+            {dialog.keys.map((key) => (
+              <button
+                key={`${key.source.schema}.${key.source.name}:${key.name}`}
+                onClick={() => {
+                  setDialog(null);
+                  const tab = useStudio.getState().tabs.find((t) => t.id === dialog.tabId);
+                  if (tab) followReferencingKey(tab, key, dialog.target);
+                }}
+              >
+                <ArrowDownLeft size={16} />
+                <span>{`${key.source.schema}.${key.source.name} (${key.columns.join(", ")})`}</span>
                 <kbd>{key.name}</kbd>
               </button>
             ))}

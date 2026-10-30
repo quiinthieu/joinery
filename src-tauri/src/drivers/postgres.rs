@@ -328,6 +328,10 @@ impl Driver for Postgres {
         schema_on(self.metadata().await?, table, false).await
     }
 
+    async fn referencing_keys(&self, table: &TableRef) -> AppResult<Vec<InboundForeignKey>> {
+        referencing_keys_on(self.metadata().await?, table).await
+    }
+
     async fn browse(
         &self,
         schema: &TableSchema,
@@ -827,4 +831,75 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         foreign_keys,
         editable,
     })
+}
+
+async fn referencing_keys_on(
+    client: &Client,
+    table: &TableRef,
+) -> AppResult<Vec<InboundForeignKey>> {
+    let exists = client
+        .query(
+            "SELECT 1 FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relname = $2
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')",
+            &[&table.schema, &table.name],
+        )
+        .await
+        .map_err(pg_error)?;
+    if exists.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The table is missing or its schema is unavailable",
+        ));
+    }
+    let rows = client
+        .query(
+            "SELECT k.conname::pg_catalog.text, n.nspname, c.relname, a.attname, b.attname,
+                    pg_catalog.cardinality(k.conkey)::pg_catalog.int4
+             FROM pg_catalog.pg_constraint k
+             JOIN pg_catalog.pg_class t ON t.oid = k.confrelid
+             JOIN pg_catalog.pg_namespace tn ON tn.oid = t.relnamespace
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey), pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src, dst, ord)
+             JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = x.src AND NOT a.attisdropped
+             JOIN pg_catalog.pg_attribute b ON b.attrelid = k.confrelid AND b.attnum = x.dst AND NOT b.attisdropped
+             WHERE k.contype = 'f'
+               AND tn.nspname = $1 AND t.relname = $2
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+               AND pg_catalog.has_table_privilege(c.oid, 'SELECT')
+             ORDER BY n.nspname, c.relname, k.conname, k.oid, x.ord
+             LIMIT 500",
+            &[&table.schema, &table.name],
+        )
+        .await
+        .map_err(pg_error)?;
+    let mut widths: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    let grouped = InboundForeignKey::group(rows.iter().map(|r| {
+        let name: String = r.get(0);
+        let source = TableRef {
+            schema: r.get(1),
+            name: r.get(2),
+        };
+        let expected: i32 = r.get(5);
+        widths.insert(
+            (source.schema.clone(), source.name.clone(), name.clone()),
+            expected.max(0) as usize,
+        );
+        (name, source, r.get(3), r.get(4))
+    }));
+    Ok(grouped
+        .into_iter()
+        .filter(|key| {
+            widths
+                .get(&(
+                    key.source.schema.clone(),
+                    key.source.name.clone(),
+                    key.name.clone(),
+                ))
+                .is_none_or(|&w| key.columns.len() == w)
+        })
+        .collect())
 }

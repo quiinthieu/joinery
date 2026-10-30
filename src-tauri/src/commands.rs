@@ -181,6 +181,15 @@ pub async fn table_schema(
 }
 
 #[tauri::command]
+pub async fn referencing_foreign_keys(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    table: TableRef,
+) -> AppResult<Vec<InboundForeignKey>> {
+    studio.referencing_foreign_keys(&session_id, &table).await
+}
+
+#[tauri::command]
 pub async fn prepare_browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

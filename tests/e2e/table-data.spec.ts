@@ -237,3 +237,52 @@ test("classifies raw table WHERE and ORDER BY clauses through Safe Mode gates", 
   await expect(footer).toContainText("2 rows loaded");
   expect(errors).toEqual([]);
 });
+
+test("navigates inbound referencing rows across single, multi-constraint, and composite keys", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await connect(page, "Inbound FK fixture");
+  const tabs = page.getByRole("tablist", { name: "Workspaces" });
+  const footer = page.locator(".result-footer");
+
+  // Single inbound FK: customers.id = 2 is referenced by 10 orders.
+  await openTable(page, "customers");
+  await expect(footer).toContainText("500 rows loaded");
+  await expect.poll(() => cellText(page, 55, 1)).toBe("2");
+  await page.keyboard.press("ControlOrMeta+Shift+G");
+  await expect(tabs.getByRole("tab", { name: "orders · customer_id = 2" })).toBeVisible();
+  await expect(footer).toContainText("10 rows loaded");
+
+  // Multiple inbound FKs: orders.id = 7 is referenced by both line_notes and order_lines.
+  await page.getByRole("button", { name: "orders", exact: true }).click();
+  await expect(footer).toContainText("500 rows loaded");
+  await expect.poll(() => cellText(page, 55, 6)).toBe("7");
+  await page.getByRole("button", { name: "Go to referencing rows", exact: true }).click();
+  const chooser = page.getByRole("dialog", { name: "Go to referencing rows" });
+  await expect(chooser).toContainText("public.line_notes (note_order)");
+  await expect(chooser).toContainText("public.order_lines (order_id)");
+  await chooser.getByRole("button", { name: /public\.order_lines \(order_id\)/ }).click();
+  await expect(tabs.getByRole("tab", { name: "order_lines · order_id = 7" })).toBeVisible();
+  await expect(footer).toContainText("3 rows loaded");
+
+  // Composite inbound FK: order_lines (7, 2) is referenced by line_notes row 1.
+  await expect.poll(() => cellText(page, 220 + 100, 1)).toBe("SKU-7-2");
+  await page.keyboard.press("ControlOrMeta+Shift+G");
+  await expect(
+    tabs.getByRole("tab", { name: "line_notes · note_order = 7, note_line = 2" }),
+  ).toBeVisible();
+  await expect(footer).toContainText("1 rows loaded");
+  await expect.poll(() => cellText(page, 330 + 100, 0)).toBe("composite target");
+
+  // Table with no inbound foreign keys reports cleanly.
+  await page.getByRole("button", { name: "browse_sort", exact: true }).click();
+  await expect(footer).toContainText("500 rows loaded");
+  await expect.poll(() => cellText(page, 55, 0)).toBe("1");
+  await page.keyboard.press("ControlOrMeta+Shift+G");
+  await expect(page.getByRole("status")).toContainText(
+    "No visible tables reference public.browse_sort.",
+  );
+  expect(errors).toEqual([]);
+});
