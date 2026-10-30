@@ -176,14 +176,8 @@ impl FileDialogProvider for SandboxFileDialog {
 }
 
 enum GrantKind {
-    Write {
-        path: PathBuf,
-    },
-    #[allow(dead_code)]
-    Read {
-        path: PathBuf,
-        max_bytes: u64,
-    },
+    Write { path: PathBuf },
+    Read { path: PathBuf, max_bytes: u64 },
 }
 
 struct StoredGrant {
@@ -282,12 +276,10 @@ impl FileCapabilities {
         }
     }
 
-    #[allow(dead_code)]
     pub fn mint_read_grant(&self, path: PathBuf, max_bytes: u64) -> AppResult<FileSelection> {
         self.mint_read_grant_with_ttl(path, max_bytes, FILE_GRANT_TTL)
     }
 
-    #[allow(dead_code)]
     pub fn mint_read_grant_with_ttl(
         &self,
         path: PathBuf,
@@ -304,7 +296,6 @@ impl FileCapabilities {
         })
     }
 
-    #[allow(dead_code)]
     pub fn resolve_read_grant(&self, token: &str) -> AppResult<(PathBuf, u64)> {
         let now = Instant::now();
         let (path, max_bytes) = {

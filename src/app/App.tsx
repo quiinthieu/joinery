@@ -23,6 +23,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Upload,
   Wifi,
   X,
   ChevronRight,
@@ -33,6 +34,7 @@ import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
 import { ExportDialog } from "../features/grid/ExportDialog";
+import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
 import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
@@ -88,6 +90,7 @@ type Dialog =
   | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
   | { kind: "columns"; tabId: string }
   | { kind: "export"; tabId: string }
+  | { kind: "importCsv"; tabId: string }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -273,7 +276,27 @@ export function App() {
     (current?.kind === "table" &&
       current.view === "data" &&
       (current.schema?.columns.length ?? 0) > 0);
+  const hasImportableTable =
+    current?.kind === "table" &&
+    current.view === "data" &&
+    !!current.table &&
+    !!current.schema?.editable &&
+    current.schema.columns.some((col) => col.insertable) &&
+    !!session &&
+    current.dataSessionId === session.id &&
+    profile?.safeMode !== "readOnly" &&
+    (profile?.engine === "postgres" || profile?.engine === "mysql");
   const copyCommands = [
+    ...(hasImportableTable && current
+      ? [
+          {
+            label: "Import CSV into table…",
+            shortcut: "Reviewed batches",
+            icon: Upload,
+            action: () => setDialog({ kind: "importCsv", tabId: current.id }),
+          },
+        ]
+      : []),
     ...(hasExportableData && current
       ? [
           {
@@ -898,6 +921,7 @@ export function App() {
                 onOpenValue={(target) => setDialog({ kind: "value", target })}
                 onOpenColumns={() => setDialog({ kind: "columns", tabId: current.id })}
                 onOpenExport={() => setDialog({ kind: "export", tabId: current.id })}
+                onOpenImport={() => setDialog({ kind: "importCsv", tabId: current.id })}
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
@@ -1141,6 +1165,44 @@ export function App() {
               allColumns={allCols}
               result={targetResult}
               onClose={() => setDialog(null)}
+            />
+          );
+        })()}
+      {dialog?.kind === "importCsv" &&
+        (() => {
+          const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
+          if (!targetTab || targetTab.kind !== "table" || !targetTab.table || !targetTab.schema) {
+            return null;
+          }
+          const targetProfile = state.bootstrap?.profiles.find(
+            (p) => p.id === (targetTab.connectionId ?? state.selectedConnectionId),
+          );
+          const targetSession = targetProfile ? state.sessions[targetProfile.id] : undefined;
+          let needsRawRefreshOnClose = false;
+          return (
+            <ImportCsvDialog
+              table={targetTab.table}
+              schema={targetTab.schema}
+              profile={targetProfile}
+              session={targetSession}
+              onImported={() => {
+                const latestTab = useStudio.getState().tabs.find((t) => t.id === targetTab.id);
+                if (!latestTab) return;
+                if (hasRawClauses(latestTab.query)) {
+                  needsRawRefreshOnClose = true;
+                } else {
+                  void state.refreshTable(targetTab.id);
+                }
+              }}
+              onClose={() => {
+                setDialog(null);
+                if (needsRawRefreshOnClose) {
+                  const latestTab = useStudio.getState().tabs.find((t) => t.id === targetTab.id);
+                  if (latestTab) {
+                    void applyTableQuery(targetTab.id, latestTab.query, { force: true });
+                  }
+                }
+              }}
             />
           );
         })()}

@@ -290,6 +290,30 @@ async fn rpc(
                 studio.cancel_export(&arg::<String>(&args, "exportId")?)?;
                 Value::Null
             }
+            "pick_import_source" => json!(studio.pick_import_source().await?),
+            "preview_csv_import" => json!(
+                studio
+                    .preview_csv_import(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg::<String>(&args, "sourceToken")?,
+                        &arg(&args, "table")?,
+                        arg(&args, "options")?,
+                        arg(&args, "mappings")?
+                    )
+                    .await?
+            ),
+            "prepare_csv_import_batch" => json!(
+                studio
+                    .prepare_csv_import_batch(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg::<String>(&args, "sourceToken")?,
+                        &arg(&args, "table")?,
+                        arg(&args, "options")?,
+                        arg(&args, "mappings")?,
+                        arg(&args, "batchIndex")?
+                    )
+                    .await?
+            ),
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
             "test_queue_save_file" => {
                 let file_name: Option<String> = arg(&args, "fileName")?;

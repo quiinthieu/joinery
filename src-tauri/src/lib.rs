@@ -6,6 +6,7 @@ pub mod execution;
 pub mod export;
 pub mod file_capability;
 mod files;
+pub mod import;
 #[cfg(any(feature = "native-smoke", test))]
 mod native_smoke_config;
 pub mod persistence;
@@ -126,6 +127,9 @@ pub fn run() {
             commands::pick_export_destination,
             commands::start_export,
             commands::cancel_export,
+            commands::pick_import_source,
+            commands::preview_csv_import,
+            commands::prepare_csv_import_batch,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

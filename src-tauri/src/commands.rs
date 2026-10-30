@@ -492,3 +492,46 @@ pub async fn start_export(
 pub async fn cancel_export(studio: State<'_, Arc<Studio>>, export_id: String) -> AppResult<()> {
     studio.cancel_export(&export_id)
 }
+
+#[tauri::command]
+pub async fn pick_import_source(
+    studio: State<'_, Arc<Studio>>,
+) -> AppResult<Option<FileSelection>> {
+    studio.pick_import_source().await
+}
+
+#[tauri::command]
+pub async fn preview_csv_import(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    source_token: String,
+    table: TableRef,
+    options: CsvImportOptions,
+    mappings: Vec<CsvColumnMapping>,
+) -> AppResult<CsvImportPreview> {
+    studio
+        .preview_csv_import(&session_id, &source_token, &table, options, mappings)
+        .await
+}
+
+#[tauri::command]
+pub async fn prepare_csv_import_batch(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    source_token: String,
+    table: TableRef,
+    options: CsvImportOptions,
+    mappings: Vec<CsvColumnMapping>,
+    batch_index: usize,
+) -> AppResult<ChangePreview> {
+    studio
+        .prepare_csv_import_batch(
+            &session_id,
+            &source_token,
+            &table,
+            options,
+            mappings,
+            batch_index,
+        )
+        .await
+}

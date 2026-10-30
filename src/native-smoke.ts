@@ -127,6 +127,32 @@ export async function runNativeSmoke() {
         "notFound",
         () => client.call("cancel_export", { exportId: "missing-native-smoke-export" }),
       ],
+      ["pick_import_source", "invalidInput", () => client.call("pick_import_source")],
+      [
+        "preview_csv_import",
+        "connectionClosed",
+        () =>
+          client.call("preview_csv_import", {
+            sessionId: "missing-native-fixture",
+            sourceToken: "missing-import-token",
+            table: { schema: "public", name: "missing" },
+            options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
+            mappings: [],
+          }),
+      ],
+      [
+        "prepare_csv_import_batch",
+        "connectionClosed",
+        () =>
+          client.call("prepare_csv_import_batch", {
+            sessionId: "missing-native-fixture",
+            sourceToken: "missing-import-token",
+            table: { schema: "public", name: "missing" },
+            options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
+            mappings: [],
+            batchIndex: 0,
+          }),
+      ],
     ] as const) {
       let matched = false;
       try {

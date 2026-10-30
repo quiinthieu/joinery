@@ -2237,6 +2237,155 @@ impl Studio {
         Ok(())
     }
 
+    pub async fn pick_import_source(&self) -> AppResult<Option<FileSelection>> {
+        let Some(path) = self.file_dialog.pick_open_csv().await? else {
+            return Ok(None);
+        };
+        self.file_capabilities
+            .mint_read_grant(path, crate::import::MAX_IMPORT_BYTES)
+            .map(Some)
+    }
+
+    async fn verify_import_target(
+        &self,
+        session_id: &str,
+        table: &TableRef,
+    ) -> AppResult<(Arc<Session>, TableSchema)> {
+        let session = self.session(session_id)?;
+        if safety::effective_mode(&session.profile) == SafeMode::ReadOnly {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "This connection is read-only. CSV import is blocked.",
+            ));
+        }
+        if !matches!(
+            session.profile.engine,
+            EngineKind::Postgres | EngineKind::Mysql
+        ) {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "CSV import is only available for writable PostgreSQL and MySQL/MariaDB tables",
+            ));
+        }
+        let schema = self.schema_for_session(&session, table).await?;
+        if !schema.editable || !schema.columns.iter().any(|c| c.insertable) {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "CSV import requires a writable transactional table with a primary key",
+            ));
+        }
+        Ok((session, schema))
+    }
+
+    pub async fn preview_csv_import(
+        &self,
+        session_id: &str,
+        source_token: &str,
+        table: &TableRef,
+        options: CsvImportOptions,
+        mappings: Vec<CsvColumnMapping>,
+    ) -> AppResult<CsvImportPreview> {
+        let (session, schema) = self.verify_import_target(session_id, table).await?;
+        let (path, max_bytes) = self.file_capabilities.resolve_read_grant(source_token)?;
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("import.csv")
+            .to_owned();
+        let engine = session.profile.engine;
+        tokio::task::spawn_blocking(move || {
+            crate::import::build_csv_import_preview(
+                &path, max_bytes, file_name, engine, &schema, &options, &mappings,
+            )
+        })
+        .await
+        .map_err(|_| AppError::internal("CSV import preview task could not complete"))?
+    }
+
+    pub async fn prepare_csv_import_batch(
+        &self,
+        session_id: &str,
+        source_token: &str,
+        table: &TableRef,
+        options: CsvImportOptions,
+        mappings: Vec<CsvColumnMapping>,
+        batch_index: usize,
+    ) -> AppResult<ChangePreview> {
+        let (session, schema) = self.verify_import_target(session_id, table).await?;
+        let (path, max_bytes) = self.file_capabilities.resolve_read_grant(source_token)?;
+        let engine = session.profile.engine;
+        let schema_for_parse = schema.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            crate::import::prepare_csv_batch_mutations(
+                &path,
+                max_bytes,
+                engine,
+                &schema_for_parse,
+                &options,
+                &mappings,
+                batch_index,
+            )
+        })
+        .await
+        .map_err(|_| AppError::internal("CSV import preparation task could not complete"))??;
+
+        let generated = prepared
+            .mutations
+            .iter()
+            .map(|m| {
+                if engine == EngineKind::Mysql {
+                    crate::drivers::mysql::mutation_sql(&schema, m)
+                } else {
+                    mutation_sql(&schema, m)
+                }
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let sql = generated
+            .iter()
+            .map(|(stmt, _)| stmt.clone())
+            .collect::<Vec<_>>();
+        let bindings = generated
+            .into_iter()
+            .map(|(_, values)| values)
+            .collect::<Vec<_>>();
+        let statements = sql
+            .iter()
+            .map(|stmt| StatementPlan {
+                sql: stmt.clone(),
+                kind: StatementKind::Write,
+                missing_where: false,
+            })
+            .collect();
+
+        let mut plan = safety::plan_for_statements(session_id, &session.profile, statements)?;
+        plan.requires_approval = true;
+        let row_count = prepared.mutations.len();
+        plan.warnings.push(format!(
+            "CSV import batch {} of {} ({} row{} in one transaction). Any constraint error rolls back this batch atomically without automatic retries.",
+            batch_index + 1,
+            prepared.batch_count,
+            row_count,
+            if row_count == 1 { "" } else { "s" }
+        ));
+        let total_bytes = prepared
+            .approx_bytes
+            .saturating_add(sql.iter().map(String::len).sum::<usize>());
+        let plan = self.store_plan(
+            plan,
+            Action::Changes {
+                schema,
+                rows: prepared.mutations,
+            },
+            total_bytes,
+        )?;
+        Ok(ChangePreview {
+            plan,
+            row_count,
+            sql,
+            bindings,
+        })
+    }
+
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         ResourceUsage {

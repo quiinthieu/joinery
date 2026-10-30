@@ -63,6 +63,11 @@ fn main() {
         ExportSource::decl(),
         ExportRequest::decl(),
         ExportEvent::decl(),
+        CsvDelimiter::decl(),
+        CsvImportOptions::decl(),
+        CsvColumnMapping::decl(),
+        CsvImportIssue::decl(),
+        CsvImportPreview::decl(),
         ErrorCode::decl(),
         AppError::decl(),
     ];

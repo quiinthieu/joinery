@@ -52,6 +52,9 @@
     "allow-trust-ssh-key",
     "allow-pick-export-destination",
     "allow-start-export",
-    "allow-cancel-export"
+    "allow-cancel-export",
+    "allow-pick-import-source",
+    "allow-preview-csv-import",
+    "allow-prepare-csv-import-batch"
   ]
 }

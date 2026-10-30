@@ -25,6 +25,7 @@ import {
   Square,
   Table2,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import type { ConnectionProfile, SessionInfo, TableInfo } from "../ipc/generated";
@@ -61,6 +62,7 @@ interface Props {
   onOpenValue(target: CellTarget): void;
   onOpenColumns(): void;
   onOpenExport(): void;
+  onOpenImport(): void;
   onNewSession(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
@@ -78,6 +80,7 @@ export function Workbench({
   onOpenValue,
   onOpenColumns,
   onOpenExport,
+  onOpenImport,
   onNewSession,
   onQueryChange,
 }: Props) {
@@ -104,6 +107,11 @@ export function Workbench({
     !!tab.schema?.editable &&
     !!session &&
     tab.dataSessionId === session.id;
+  const tableImportable =
+    tableEditable &&
+    profile?.safeMode !== "readOnly" &&
+    (profile?.engine === "postgres" || profile?.engine === "mysql") &&
+    tab.schema!.columns.some((col) => col.insertable);
   const mutatingDisabled = running || tab.loadingPage || tab.status === "outcomeUnknown";
   const selectedDraftIds: string[] = [];
   const selectedExisting: { resultId: string; row: number }[] = [];
@@ -593,6 +601,17 @@ export function Workbench({
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
                 <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
+                {tableImportable ? (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    disabled={mutatingDisabled}
+                    onClick={onOpenImport}
+                  >
+                    <Upload size={12} />
+                    Import CSV…
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="button ghost small"

@@ -1820,3 +1820,219 @@ async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_import_csv_batches_enforce_read_only_and_rollback_conflicts() {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    for port in [53306, 53307] {
+        let root = tempfile::tempdir().unwrap();
+        let sandbox = SandboxFileDialog::new(&root.path().join("mysql-imports")).unwrap();
+        let studio = Studio::with_secrets_and_dialog(
+            root.path(),
+            Arc::new(MemorySecrets::default()),
+            sandbox.clone(),
+        )
+        .unwrap();
+
+        let rw_p = studio
+            .save_profile(profile(port, SafeMode::Silent), None)
+            .unwrap();
+        let ro_p = studio
+            .save_profile(profile(port, SafeMode::ReadOnly), None)
+            .unwrap();
+        let make_secrets = || ConnectionSecrets {
+            password: Some("joinery-local-only".into()),
+            ..Default::default()
+        };
+        let session = studio.connect(&rw_p.id, make_secrets()).await.unwrap();
+        let ro_session = studio.connect(&ro_p.id, make_secrets()).await.unwrap();
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_mysql_import;
+                 CREATE TABLE joinery_r2_mysql_import (
+                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                   sku VARCHAR(64) NOT NULL UNIQUE,
+                   big_val BIGINT NOT NULL,
+                   price DECIMAL(14,4) NOT NULL,
+                   note VARCHAR(128) NULL,
+                   active TINYINT(1) NOT NULL,
+                   origin VARCHAR(32) NOT NULL DEFAULT 'csv-default'
+                 ) ENGINE=InnoDB;",
+            )
+            .await,
+        );
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "joinery_r2_mysql_import".into(),
+        };
+
+        // Invalid precision decimal rejected upfront
+        let bad_csv = "sku,big_val,price,note,active\nSKU-1,10,12.12345,,true\n";
+        std::fs::write(sandbox.root().join("bad-mysql.csv"), bad_csv.as_bytes()).unwrap();
+        sandbox.queue_open(Some("bad-mysql.csv")).unwrap();
+        let bad_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+        assert_eq!(
+            studio
+                .preview_csv_import(
+                    &ro_session.id,
+                    &bad_grant.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    Vec::new(),
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked,
+            "port {port}"
+        );
+
+        let bad_preview = studio
+            .preview_csv_import(
+                &session.id,
+                &bad_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!bad_preview.can_prepare, "port {port}");
+        assert_eq!(bad_preview.issues.len(), 1);
+        assert_eq!(bad_preview.issues[0].column.as_deref(), Some("price"));
+
+        // Valid CSV with TINYINT(1) boolean coercion ("true"/"false"), NULL vs "" vs "\N", and <default> columns
+        let valid_csv = "sku,big_val,price,note,active\nSKU-A,9223372036854775807,999.1234,,true\nSKU-B,-9223372036854775808,0.5000,\"\",false\nSKU-C,42,10.0000,\"\\N\",1\n";
+        std::fs::write(sandbox.root().join("good-mysql.csv"), valid_csv.as_bytes()).unwrap();
+        sandbox.queue_open(Some("good-mysql.csv")).unwrap();
+        let good_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+        let preview = studio
+            .preview_csv_import(
+                &session.id,
+                &good_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert!(preview.can_prepare, "port {port}: {:?}", preview.issues);
+        assert_eq!(preview.unmapped_defaults, vec!["id", "origin"]);
+
+        let batch = studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &good_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                preview.mappings.clone(),
+                0,
+            )
+            .await
+            .unwrap();
+        let token = studio
+            .authorize(
+                &batch.plan.id,
+                None,
+                batch.plan.confirmation_text.as_deref(),
+            )
+            .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        studio
+            .execute(
+                &batch.plan.id,
+                Some(&token),
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&events);
+
+        // Mid-batch duplicate UNIQUE key rolls back atomically on InnoDB
+        let conflict_csv = "sku,big_val,price,note,active\nSKU-ROLLBACK,7,1.0000,first,true\nSKU-A,8,2.0000,dup,false\n";
+        std::fs::write(
+            sandbox.root().join("conflict-mysql.csv"),
+            conflict_csv.as_bytes(),
+        )
+        .unwrap();
+        sandbox.queue_open(Some("conflict-mysql.csv")).unwrap();
+        let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+        let conflict_batch = studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &conflict_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                preview.mappings,
+                0,
+            )
+            .await
+            .unwrap();
+        let conflict_token = studio
+            .authorize(
+                &conflict_batch.plan.id,
+                None,
+                conflict_batch.plan.confirmation_text.as_deref(),
+            )
+            .unwrap();
+        let (ctx, mut crx) = mpsc::unbounded_channel();
+        studio
+            .execute(
+                &conflict_batch.plan.id,
+                Some(&conflict_token),
+                Arc::new(move |e| ctx.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut cevents = Vec::new();
+        while let Some(ev) = crx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            cevents.push(ev);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            cevents.iter().any(|e| matches!(
+                e,
+                QueryEvent::Finished {
+                    status: RunStatus::Failed,
+                    ..
+                }
+            )),
+            "port {port}: {cevents:?}"
+        );
+
+        let page = studio.browse(&session.id, &table, None).await.unwrap();
+        assert_eq!(page.result.retained_rows, 3, "port {port}");
+        let r0 = studio.results.row(&page.result.id, 0).unwrap();
+        let r1 = studio.results.row(&page.result.id, 1).unwrap();
+        let r2 = studio.results.row(&page.result.id, 2).unwrap();
+        assert_eq!(r0[1].as_deref(), Some("SKU-A"));
+        assert_eq!(r0[2].as_deref(), Some("9223372036854775807"));
+        assert_eq!(r0[4], None);
+        assert_eq!(r0[5].as_deref(), Some("1"));
+        assert_eq!(r0[6].as_deref(), Some("csv-default"));
+        assert_eq!(r1[4].as_deref(), Some(""));
+        assert_eq!(r1[5].as_deref(), Some("0"));
+        assert_eq!(r2[4].as_deref(), Some("\\N"));
+        studio.release_result(&page.result.id);
+
+        completed(&run(&studio, &session, "DROP TABLE joinery_r2_mysql_import").await);
+        studio.shutdown();
+    }
+}

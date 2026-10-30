@@ -1983,3 +1983,316 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_rolls_back_failed_batches()
+ {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    let root = tempfile::tempdir().unwrap();
+    let sandbox = SandboxFileDialog::new(&root.path().join("imports")).unwrap();
+    let studio = Studio::with_secrets_and_dialog(
+        root.path(),
+        Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
+    )
+    .unwrap();
+    let port: u16 = std::env::var("JOINERY_TEST_PORT")
+        .unwrap_or_else(|_| "55432".into())
+        .parse()
+        .unwrap();
+
+    let rw_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Import Writable".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Confirm,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: true,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+    let ro_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Import ReadOnly".into(),
+                safe_mode: SafeMode::ReadOnly,
+                ..rw_profile.clone()
+            },
+            None,
+        )
+        .unwrap();
+
+    let make_secrets = || ConnectionSecrets {
+        password: Some("joinery-local-only".into()),
+        ..Default::default()
+    };
+    let session = studio
+        .connect(&rw_profile.id, make_secrets())
+        .await
+        .unwrap();
+    let ro_session = studio
+        .connect(&ro_profile.id, make_secrets())
+        .await
+        .unwrap();
+
+    // Setup via Silent helper profile or approve DDL on Confirm session
+    let setup_plan = studio
+        .prepare_execution(
+            &session.id,
+            "DROP TABLE IF EXISTS joinery_r2_csv_import;
+             CREATE TABLE joinery_r2_csv_import (
+               id BIGSERIAL PRIMARY KEY,
+               code TEXT NOT NULL UNIQUE,
+               big_ref BIGINT NOT NULL,
+               amount NUMERIC(16,4) NOT NULL,
+               note TEXT,
+               tag TEXT NOT NULL DEFAULT 'default-tag',
+               active BOOLEAN NOT NULL
+             )",
+        )
+        .unwrap();
+    let setup_token = studio
+        .authorize(
+            &setup_plan.id,
+            None,
+            setup_plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &setup_plan, Some(&setup_token)).1).await),
+        RunStatus::Completed
+    );
+
+    let table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_csv_import".into(),
+    };
+
+    // 1. Invalid CSV row is caught upfront and cannot prepare a batch
+    let bad_csv = "external_code,big_ref,amount,note,active,ignored_col\nC-1,9223372036854775807,10.2500,,true,x\nC-2,not-an-int,20.5000,\"\",false,y\n";
+    std::fs::write(sandbox.root().join("invalid.csv"), bad_csv.as_bytes()).unwrap();
+    sandbox.queue_open(Some("invalid.csv")).unwrap();
+    let bad_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+    let remapped = vec![
+        CsvColumnMapping {
+            csv_index: 0,
+            target_column: Some("code".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 1,
+            target_column: Some("big_ref".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 2,
+            target_column: Some("amount".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 3,
+            target_column: Some("note".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 4,
+            target_column: Some("active".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 5,
+            target_column: None,
+        },
+    ];
+
+    // ReadOnly session blocks CSV import preview and preparation
+    assert_eq!(
+        studio
+            .preview_csv_import(
+                &ro_session.id,
+                &bad_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                remapped.clone(),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
+    );
+
+    let bad_preview = studio
+        .preview_csv_import(
+            &session.id,
+            &bad_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(!bad_preview.can_prepare);
+    assert_eq!(bad_preview.issues.len(), 1);
+    assert_eq!(bad_preview.issues[0].line, 3);
+    assert_eq!(bad_preview.issues[0].column.as_deref(), Some("big_ref"));
+    assert_eq!(
+        studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &bad_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                remapped.clone(),
+                0,
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+
+    // 2. Valid 520-row CSV (2 reviewed batches: 500 + 20) with column remapping, <default> columns, and NULL vs "" vs "\N"
+    let mut valid_csv = String::from("external_code,big_ref,amount,note,active,ignored_col\n");
+    for idx in 0..520 {
+        let note_cell = match idx % 3 {
+            0 => "",        // unquoted empty -> SQL NULL
+            1 => "\"\"",    // quoted empty -> ""
+            _ => "\"\\N\"", // quoted \N -> literal "\N"
+        };
+        let big = if idx == 0 {
+            9_223_372_036_854_775_807i64
+        } else {
+            idx as i64
+        };
+        valid_csv.push_str(&format!(
+            "CODE-{idx:04},{big},12345.6789,{note_cell},{},skip-{idx}\n",
+            idx % 2 == 0
+        ));
+    }
+    std::fs::write(sandbox.root().join("valid-520.csv"), valid_csv.as_bytes()).unwrap();
+    sandbox.queue_open(Some("valid-520.csv")).unwrap();
+    let valid_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+    let preview = studio
+        .preview_csv_import(
+            &session.id,
+            &valid_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(preview.can_prepare, "issues: {:?}", preview.issues);
+    assert_eq!(preview.total_rows, 520);
+    assert_eq!(preview.batch_count, 2);
+    assert_eq!(preview.unmapped_defaults, vec!["id", "tag"]);
+
+    for (batch_idx, expected_rows) in [(0usize, 500usize), (1usize, 20usize)] {
+        let batch_preview = studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &valid_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                remapped.clone(),
+                batch_idx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(batch_preview.row_count, expected_rows);
+        assert!(batch_preview.plan.requires_approval);
+        let token = studio
+            .authorize(
+                &batch_preview.plan.id,
+                None,
+                batch_preview.plan.confirmation_text.as_deref(),
+            )
+            .unwrap();
+        assert_eq!(
+            status(&finish(start(&studio, &batch_preview.plan, Some(&token)).1).await),
+            RunStatus::Completed
+        );
+    }
+
+    // 3. Mid-batch unique constraint conflict rolls back the entire batch atomically
+    let conflict_csv = "external_code,big_ref,amount,note,active,ignored_col\nNEW-BEFORE-CONFLICT,42,1.0000,should-rollback,true,a\nCODE-0005,43,2.0000,duplicate-code,false,b\n";
+    std::fs::write(sandbox.root().join("conflict.csv"), conflict_csv.as_bytes()).unwrap();
+    sandbox.queue_open(Some("conflict.csv")).unwrap();
+    let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+    let conflict_batch = studio
+        .prepare_csv_import_batch(
+            &session.id,
+            &conflict_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped,
+            0,
+        )
+        .await
+        .unwrap();
+    let conflict_token = studio
+        .authorize(
+            &conflict_batch.plan.id,
+            None,
+            conflict_batch.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    let conflict_events =
+        finish(start(&studio, &conflict_batch.plan, Some(&conflict_token)).1).await;
+    assert_eq!(status(&conflict_events), RunStatus::Failed);
+
+    // Verify exact row count = 520 (NEW-BEFORE-CONFLICT rolled back!) and exact values
+    let verify_plan = studio
+        .prepare_execution(
+            &session.id,
+            "SELECT count(*)::text,
+                    (SELECT big_ref::text FROM joinery_r2_csv_import WHERE code = 'CODE-0000'),
+                    (SELECT note FROM joinery_r2_csv_import WHERE code = 'CODE-0000'),
+                    (SELECT note FROM joinery_r2_csv_import WHERE code = 'CODE-0001'),
+                    (SELECT note FROM joinery_r2_csv_import WHERE code = 'CODE-0002'),
+                    (SELECT tag FROM joinery_r2_csv_import WHERE code = 'CODE-0000')
+             FROM joinery_r2_csv_import",
+        )
+        .unwrap();
+    let verify_events = finish(start(&studio, &verify_plan, None).1).await;
+    let verify_result_id = result(&verify_events).id;
+    let row = studio.results.row(&verify_result_id, 0).unwrap();
+    assert_eq!(row[0].as_deref(), Some("520"));
+    assert_eq!(row[1].as_deref(), Some("9223372036854775807"));
+    assert_eq!(row[2], None);
+    assert_eq!(row[3].as_deref(), Some(""));
+    assert_eq!(row[4].as_deref(), Some("\\N"));
+    assert_eq!(row[5].as_deref(), Some("default-tag"));
+    studio.release_result(&verify_result_id);
+
+    // Zero CSV paths or imported values in SQLite audit_log
+    let audit_dump = serde_json::to_string(&studio.audit_log().unwrap()).unwrap();
+    assert!(!audit_dump.contains("valid-520.csv"));
+    assert!(!audit_dump.contains("CODE-0000"));
+
+    let drop_plan = studio
+        .prepare_execution(&session.id, "DROP TABLE joinery_r2_csv_import")
+        .unwrap();
+    let drop_token = studio
+        .authorize(&drop_plan.id, None, drop_plan.confirmation_text.as_deref())
+        .unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &drop_plan, Some(&drop_token)).1).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

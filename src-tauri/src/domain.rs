@@ -864,6 +864,91 @@ pub enum ExportEvent {
     },
 }
 
+fn default_null_token() -> String {
+    "\\N".into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CsvDelimiter {
+    Comma,
+    Tab,
+    Semicolon,
+    Pipe,
+}
+
+impl CsvDelimiter {
+    pub fn byte(self) -> u8 {
+        match self {
+            Self::Comma => b',',
+            Self::Tab => b'\t',
+            Self::Semicolon => b';',
+            Self::Pipe => b'|',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comma => "Comma (,)",
+            Self::Tab => "Tab (\\t)",
+            Self::Semicolon => "Semicolon (;)",
+            Self::Pipe => "Pipe (|)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvImportOptions {
+    pub delimiter: CsvDelimiter,
+    #[serde(default = "default_true")]
+    pub has_header: bool,
+    #[serde(default = "default_null_token")]
+    pub null_token: String,
+}
+
+impl Default for CsvImportOptions {
+    fn default() -> Self {
+        Self {
+            delimiter: CsvDelimiter::Comma,
+            has_header: true,
+            null_token: default_null_token(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvColumnMapping {
+    pub csv_index: usize,
+    pub target_column: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvImportIssue {
+    pub line: usize,
+    pub column: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvImportPreview {
+    pub file_name: String,
+    pub headers: Vec<String>,
+    pub mappings: Vec<CsvColumnMapping>,
+    pub unmapped_defaults: Vec<String>,
+    pub unmapped_nulls: Vec<String>,
+    pub sample_rows: Vec<Vec<Option<String>>>,
+    pub total_rows: usize,
+    pub batch_size: usize,
+    pub batch_count: usize,
+    pub issues: Vec<CsvImportIssue>,
+    pub total_issues: usize,
+    pub can_prepare: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
