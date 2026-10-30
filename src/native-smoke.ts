@@ -38,14 +38,49 @@ export async function runNativeSmoke() {
   try {
     await useStudio.getState().initialize();
     assert(useStudio.getState().bootstrap, "Native bootstrap failed");
-    for (const command of ["completion_catalog", "completion_schema"]) {
-      let denied = false;
-      try {
-        await client.call(command, {
+    for (const [command, args] of [
+      [
+        "completion_catalog",
+        {
           sessionId: "missing-native-fixture",
           revision: "obsolete",
           table: { schema: "public", name: "missing" },
-        });
+        },
+      ],
+      [
+        "completion_schema",
+        {
+          sessionId: "missing-native-fixture",
+          revision: "obsolete",
+          table: { schema: "public", name: "missing" },
+        },
+      ],
+      [
+        "referencing_foreign_keys",
+        {
+          sessionId: "missing-native-fixture",
+          table: { schema: "public", name: "missing" },
+        },
+      ],
+      [
+        "prepare_browse_table",
+        {
+          sessionId: "missing-native-fixture",
+          table: { schema: "public", name: "missing" },
+          query: { sort: [], filters: [], rawWhere: "1 = 1", rawOrderBy: null },
+        },
+      ],
+      [
+        "prepare_table_changes",
+        {
+          sessionId: "missing-native-fixture",
+          changes: { resultId: "missing-result", updates: [], deletes: [], inserts: [] },
+        },
+      ],
+    ] as const) {
+      let denied = false;
+      try {
+        await client.call(command, args);
       } catch (error) {
         denied =
           !!error &&
