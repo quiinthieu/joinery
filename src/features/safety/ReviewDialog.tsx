@@ -77,12 +77,14 @@ export function ReviewDialog({
                 <div key={i}>
                   <span>Row {i + 1}</span>
                   <code>
-                    {values
-                      .map(
-                        (value, j) =>
-                          `$${j + 1} = ${value === null ? "NULL" : JSON.stringify(value)}`,
-                      )
-                      .join("  ·  ")}
+                    {values.length
+                      ? values
+                          .map(
+                            (value, j) =>
+                              `$${j + 1} = ${value === null ? "NULL" : JSON.stringify(value)}`,
+                          )
+                          .join("  ·  ")
+                      : "(default values)"}
                   </code>
                 </div>
               ))}

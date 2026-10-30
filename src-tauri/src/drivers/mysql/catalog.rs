@@ -46,6 +46,8 @@ impl Mysql {
                     primary_key: false,
                     foreign_key: false,
                     editable: false,
+                    insertable: false,
+                    has_default: false,
                 })
                 .collect();
             if columns.is_empty() {
@@ -206,9 +208,11 @@ fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
     let columns = expected.columns.len() == current.columns.len()
         && expected.columns.iter().zip(&current.columns).all(|(e, c)| {
             narrowed(e.editable, c.editable)
+                && narrowed(e.insertable, c.insertable)
                 && *e
                     == ColumnInfo {
                         editable: e.editable,
+                        insertable: e.insertable,
                         ..c.clone()
                     }
         });
@@ -296,7 +300,7 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
     })?;
     let transactional =
         cell(table_info, 0) == "BASE TABLE" && cell(table_info, 1).eq_ignore_ascii_case("InnoDB");
-    let rows=fetch(conn,"SELECT COLUMN_NAME,COLUMN_TYPE,DATA_TYPE,IS_NULLABLE,EXTRA,COLLATION_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
+    let rows=fetch(conn,"SELECT COLUMN_NAME,COLUMN_TYPE,DATA_TYPE,IS_NULLABLE,EXTRA,COLLATION_NAME,CASE WHEN COLUMN_DEFAULT IS NOT NULL AND (IS_NULLABLE='NO' OR COLUMN_DEFAULT<>'NULL') THEN '1' ELSE '0' END FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
     if rows.is_empty() {
         return Err(AppError::new(
             ErrorCode::NotFound,
@@ -326,6 +330,10 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
             .map(|(i, r)| {
                 let name = cell(r, 0);
                 let typ = cell(r, 2).to_ascii_lowercase();
+                let extra = cell(r, 4).to_ascii_lowercase();
+                let generated =
+                    extra.contains("virtual generated") || extra.contains("stored generated");
+                let auto_increment = extra.contains("auto_increment");
                 let kind = match typ.as_str() {
                     "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint"
                     | "year" => ColumnKind::Integer,
@@ -353,12 +361,13 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
                         .iter()
                         .any(|f| f.columns.iter().any(|c| c == name)),
                     editable: false,
+                    insertable: false,
+                    has_default: cell(r, 6) == "1" || auto_increment || generated,
                 };
-                c.editable = transactional
-                    && !c.primary_key
-                    && !cell(r, 4).to_ascii_lowercase().contains("generated")
-                    && !cell(r, 4).contains("auto_increment")
-                    && cast(&c).is_some();
+                let castable = cast(&c).is_some();
+                c.editable =
+                    transactional && !c.primary_key && !generated && !auto_increment && castable;
+                c.insertable = transactional && !generated && castable;
                 c
             })
             .collect::<Vec<_>>();
@@ -371,6 +380,7 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
     if !editable {
         for c in &mut columns {
             c.editable = false;
+            c.insertable = false;
         }
     }
     Ok(TableSchema {
@@ -415,26 +425,28 @@ async fn apply_on(
                     "The edits were cancelled and rolled back",
                 ));
             }
-            let (predicate, keys) = key_predicate(schema, &row.original)?;
-            let locked = fetch(
-                conn,
-                &format!(
-                    "SELECT {} FROM {} WHERE {predicate} LIMIT 2 FOR UPDATE",
-                    projection(schema),
-                    qualified(&schema.table)
-                ),
-                keys.into_iter().map(bind).collect(),
-                2,
-                2 * 1024 * 1024,
-            )
-            .await?;
-            if locked.len() != 1 || locked[0] != row.original {
-                return Err(AppError::new(
-                    ErrorCode::Conflict,
-                    "A target row changed or was deleted. No edits were committed.",
-                ));
+            if let RowMutation::Update { original, .. } | RowMutation::Delete { original } = row {
+                let (predicate, keys) = key_predicate(schema, original)?;
+                let locked = fetch(
+                    conn,
+                    &format!(
+                        "SELECT {} FROM {} WHERE {predicate} LIMIT 2 FOR UPDATE",
+                        projection(schema),
+                        qualified(&schema.table)
+                    ),
+                    keys.into_iter().map(bind).collect(),
+                    2,
+                    2 * 1024 * 1024,
+                )
+                .await?;
+                if locked.len() != 1 || &locked[0] != original {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A target row changed or was deleted. No edits were committed.",
+                    ));
+                }
             }
-            let (sql, values) = update_sql(schema, row)?;
+            let (sql, values) = mutation_sql(schema, row)?;
             conn.exec_drop(
                 sql,
                 Params::Positional(values.into_iter().map(bind).collect()),
@@ -444,7 +456,7 @@ async fn apply_on(
             if conn.affected_rows() != 1 {
                 return Err(AppError::new(
                     ErrorCode::Conflict,
-                    "An update did not match exactly one row. No edits were committed.",
+                    "A table change did not affect exactly one row. No edits were committed.",
                 ));
             }
             if conn.get_warnings() != 0 {

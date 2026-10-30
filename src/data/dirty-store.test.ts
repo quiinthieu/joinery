@@ -59,4 +59,35 @@ describe("dirty cell tracking", () => {
     expect(store.get("r", 1, "c0")?.value).toBe("n");
     expect(notifications).toBe(2);
   });
+
+  it("tracks staged row deletes disjoint from cell updates and manages draft insert rows", () => {
+    const store = new DirtyStore();
+    store.set({ resultId: "p1", row: 2, column: "c1", original: "old", value: "edited" });
+    expect(store.pendingCountForTab("tab-1", ["p1"])).toBe(1);
+
+    // Deleting row 2 drops its cell edit and blocks further edits until undeleted.
+    store.setDeleted("p1", [2, 0], true);
+    expect(store.get("p1", 2, "c1")).toBeUndefined();
+    expect(store.deletesForResult("p1")).toEqual([0, 2]);
+    expect(store.hasResult("p1")).toBe(true);
+    expect(() =>
+      store.set({ resultId: "p1", row: 2, column: "c1", original: "old", value: "blocked" }),
+    ).toThrow(/Undo deletion/);
+
+    store.setDeleted("p1", [2], false);
+    expect(store.deletesForResult("p1")).toEqual([0]);
+
+    // Draft insert rows support explicit values, NULL, and reverting to <default> (undefined).
+    const draft = store.addInsertRow("tab-1");
+    store.setInsertCell("tab-1", draft.id, "c0", "1001");
+    store.setInsertCell("tab-1", draft.id, "c2", null);
+    expect(store.insertsForTab("tab-1")[0].values).toEqual({ c0: "1001", c2: null });
+    store.setInsertCell("tab-1", draft.id, "c2", undefined);
+    expect("c2" in store.insertsForTab("tab-1")[0].values).toBe(false);
+    expect(store.pendingCountForTab("tab-1", ["p1"])).toBe(2);
+
+    store.clearTab("tab-1", ["p1"]);
+    expect(store.pendingCountForTab("tab-1", ["p1"])).toBe(0);
+    expect(store.count).toBe(0);
+  });
 });

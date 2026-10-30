@@ -6,7 +6,12 @@ function col(
   id: string,
   name: string,
   kind: ColumnInfo["kind"],
-  options?: { nullable?: boolean; editable?: boolean },
+  options?: {
+    nullable?: boolean;
+    editable?: boolean;
+    insertable?: boolean;
+    hasDefault?: boolean;
+  },
 ): ColumnInfo {
   return {
     id,
@@ -17,6 +22,8 @@ function col(
     primaryKey: false,
     foreignKey: false,
     editable: options?.editable ?? true,
+    insertable: options?.insertable ?? options?.editable ?? true,
+    hasDefault: options?.hasDefault ?? false,
   };
 }
 
@@ -157,6 +164,35 @@ describe("paste", () => {
     ).toEqual({
       ok: false,
       error: "Paste is limited to 5,000 cells at once.",
+    });
+  });
+
+  it("allows pasting insertable primary keys and default placeholders onto draft insert rows", () => {
+    const insertCols: ColumnInfo[] = [
+      col("c0", "id", "integer", {
+        nullable: false,
+        editable: false,
+        insertable: true,
+        hasDefault: false,
+      }),
+      col("c1", "name", "text", { nullable: false }),
+      col("c3", "active", "boolean", { nullable: false, hasDefault: true }),
+    ];
+    const outcome = validatePasteMatrix({
+      anchor: [0, 0],
+      values: [["1001", "Ada Lovelace", ""]],
+      visibleColumns: insertCols,
+      tableEditable: true,
+      resolveRow: () => ({ kind: "draftInsert", tabId: "tab-1", insertId: "ins-1" }),
+    });
+    expect(outcome).toEqual({
+      ok: true,
+      cells: [],
+      insertCells: [
+        { tabId: "tab-1", insertId: "ins-1", column: "c0", value: "1001" },
+        { tabId: "tab-1", insertId: "ins-1", column: "c1", value: "Ada Lovelace" },
+        { tabId: "tab-1", insertId: "ins-1", column: "c3", value: undefined },
+      ],
     });
   });
 });

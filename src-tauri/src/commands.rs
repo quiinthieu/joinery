@@ -262,6 +262,15 @@ pub async fn prepare_changes_batch(
 }
 
 #[tauri::command]
+pub async fn prepare_table_changes(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    changes: TableChanges,
+) -> AppResult<ChangePreview> {
+    studio.prepare_table_changes(&session_id, changes)
+}
+
+#[tauri::command]
 pub async fn processes(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
@@ -332,6 +341,8 @@ pub async fn native_smoke_fixture(studio: State<'_, Arc<Studio>>) -> AppResult<R
             primary_key: false,
             foreign_key: false,
             editable: false,
+            insertable: false,
+            has_default: false,
         })
         .collect();
     let result = studio.results.create("native-smoke", 0, columns, None)?;

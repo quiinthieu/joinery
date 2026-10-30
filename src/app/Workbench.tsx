@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useRef, useState, type RefObject } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type RefObject,
+} from "react";
 import {
   ArrowRight,
   Check,
@@ -15,6 +23,7 @@ import {
   ShieldCheck,
   Square,
   Table2,
+  Trash2,
   X,
 } from "lucide-react";
 import type { ConnectionProfile, SessionInfo, TableInfo } from "../ipc/generated";
@@ -69,22 +78,92 @@ export function Workbench({
   const state = useStudio(),
     [editorSize, setEditorSize] = useState(290),
     [runningTime, setRunningTime] = useState(0),
+    [selectedRows, setSelectedRows] = useState<number[]>([]),
+    [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
     editorHeight = useRef(290);
+  useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const running = tab.status === "running" || tab.status === "queued";
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
-  const edits = tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
+  const resultIds = tab.pages.map((page) => page.result.id);
+  const pendingCount = tab.kind === "table" ? dirtyStore.pendingCountForTab(tab.id, resultIds) : 0;
+  const draftInserts = tab.kind === "table" ? dirtyStore.insertsForTab(tab.id) : [];
   const tableColumns = tab.kind === "table" ? (tab.schema?.columns ?? []) : [];
   const tableLayout =
     tab.kind === "table" ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table) : null;
   const resolvedLayout = resolveTableLayout(tableColumns, tableLayout);
   const filtering = tab.kind === "table" && !!session?.capabilities.tableFiltering;
+  const tableEditable =
+    tab.kind === "table" &&
+    tab.view === "data" &&
+    !!tab.schema?.editable &&
+    !!session &&
+    tab.dataSessionId === session.id;
+  const mutatingDisabled = running || tab.loadingPage || tab.status === "outcomeUnknown";
+  const selectedDraftIds: string[] = [];
+  const selectedExisting: { resultId: string; row: number }[] = [];
+  if (tab.kind === "table") {
+    for (const visualRow of selectedRows) {
+      if (visualRow >= tab.loadedRows) {
+        const draft = draftInserts[visualRow - tab.loadedRows];
+        if (draft) selectedDraftIds.push(draft.id);
+      } else if (visualRow >= 0) {
+        const page = tab.pages.find(
+          (entry) =>
+            visualRow >= entry.start && visualRow < entry.start + entry.result.retainedRows,
+        );
+        if (page) selectedExisting.push({ resultId: page.result.id, row: visualRow - page.start });
+      }
+    }
+  }
+  const onlyDraftsSelected = selectedDraftIds.length > 0 && selectedExisting.length === 0;
+  const allExistingDeleted =
+    selectedExisting.length > 0 &&
+    selectedDraftIds.length === 0 &&
+    selectedExisting.every((entry) => dirtyStore.isDeleted(entry.resultId, entry.row));
+  const undeletedExisting = selectedExisting.filter(
+    (entry) => !dirtyStore.isDeleted(entry.resultId, entry.row),
+  );
+  const deleteTargetCount = undeletedExisting.length + selectedDraftIds.length;
   const queryLock = !session
     ? "Connect to change sort or filters"
     : tab.dataSessionId !== session.id
       ? "Refresh after reconnecting"
-      : edits.length
+      : pendingCount
         ? "Review or discard pending edits to change sort or filters"
         : null;
+  function stageInsertRow() {
+    try {
+      dirtyStore.addInsertRow(tab.id);
+      const nextRow = tab.loadedRows + dirtyStore.insertsForTab(tab.id).length - 1;
+      setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
+    } catch (error) {
+      state.notify(error instanceof Error ? error.message : "Could not stage inserted row");
+    }
+  }
+  function handleDeleteSelection() {
+    try {
+      if (onlyDraftsSelected) {
+        dirtyStore.removeInsertRows(tab.id, selectedDraftIds);
+        return;
+      }
+      if (allExistingDeleted) {
+        const byResult = new Map<string, number[]>();
+        for (const entry of selectedExisting) {
+          byResult.set(entry.resultId, [...(byResult.get(entry.resultId) ?? []), entry.row]);
+        }
+        for (const [resultId, rows] of byResult) dirtyStore.setDeleted(resultId, rows, false);
+        return;
+      }
+      if (selectedDraftIds.length) dirtyStore.removeInsertRows(tab.id, selectedDraftIds);
+      const byResult = new Map<string, number[]>();
+      for (const entry of undeletedExisting) {
+        byResult.set(entry.resultId, [...(byResult.get(entry.resultId) ?? []), entry.row]);
+      }
+      for (const [resultId, rows] of byResult) dirtyStore.setDeleted(resultId, rows, true);
+    } catch (error) {
+      state.notify(error instanceof Error ? error.message : "Could not update row deletion");
+    }
+  }
   function applyQuery(query: StudioTab["query"]) {
     onQueryChange(query);
   }
@@ -272,11 +351,11 @@ export function Workbench({
                 disabled={tab.loadingPage || running}
                 onClick={() => {
                   const reload = () => {
-                    for (const page of tab.pages) dirtyStore.clear(page.result.id);
+                    dirtyStore.clearTab(tab.id, resultIds);
                     if (hasRawClauses(tab.query)) onQueryChange(tab.query, { force: true });
                     else void state.refreshTable(tab.id);
                   };
-                  if (edits.length)
+                  if (pendingCount)
                     onConfirm(
                       "Refresh and discard edits?",
                       "This reloads current database values and discards pending cell edits.",
@@ -288,14 +367,12 @@ export function Workbench({
                 <RefreshCw size={13} className={tab.loadingPage ? "spin" : ""} />
                 Refresh
               </button>
-              {edits.length > 0 && (
+              {pendingCount > 0 && (
                 <>
                   <button
                     className="button ghost small"
                     disabled={running}
-                    onClick={() => {
-                      for (const page of tab.pages) dirtyStore.clear(page.result.id);
-                    }}
+                    onClick={() => dirtyStore.clearTab(tab.id, resultIds)}
                   >
                     Discard
                   </button>
@@ -310,7 +387,7 @@ export function Workbench({
                     onClick={onReview}
                   >
                     <Check size={13} />
-                    Review {edits.length} edit{edits.length === 1 ? "" : "s"}
+                    Review {pendingCount} edit{pendingCount === 1 ? "" : "s"}
                   </button>
                 </>
               )}
@@ -456,6 +533,41 @@ export function Workbench({
             </button>
           </div>
           <div className="table-view-actions">
+            {tableEditable && (
+              <>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={mutatingDisabled}
+                  onClick={stageInsertRow}
+                >
+                  <Plus size={12} />
+                  Insert row
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={
+                    mutatingDisabled ||
+                    (!onlyDraftsSelected && !allExistingDeleted && deleteTargetCount === 0)
+                  }
+                  onClick={handleDeleteSelection}
+                >
+                  {allExistingDeleted ? <RotateCcw size={12} /> : <Trash2 size={12} />}
+                  {onlyDraftsSelected
+                    ? selectedDraftIds.length === 1
+                      ? "Remove insert"
+                      : `Remove ${selectedDraftIds.length} inserts`
+                    : allExistingDeleted
+                      ? selectedExisting.length === 1
+                        ? "Undo delete"
+                        : `Undo ${selectedExisting.length} deletes`
+                      : deleteTargetCount > 1
+                        ? `Delete ${deleteTargetCount} rows`
+                        : "Delete row"}
+                </button>
+              </>
+            )}
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
                 <button type="button" className="button ghost small" onClick={onOpenColumns}>
@@ -551,6 +663,8 @@ export function Workbench({
               theme={state.theme}
               onSelect={onSelect}
               onOpenValue={onOpenValue}
+              onSelectedRowsChange={setSelectedRows}
+              focusRowRequest={focusRowRequest}
               onSort={
                 filtering
                   ? (column, additive) =>
@@ -597,10 +711,10 @@ export function Workbench({
           )}
         </div>
         <div>
-          {edits.length > 0 && (
+          {pendingCount > 0 && (
             <span className="dirty-count">
               <i className="dirty-dot" />
-              {edits.length} pending
+              {pendingCount} pending
             </span>
           )}
           <span>{tab.kind === "benchmark" ? "Synthetic data" : "Results stay in memory"}</span>

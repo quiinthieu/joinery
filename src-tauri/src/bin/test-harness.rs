@@ -205,6 +205,10 @@ async fn rpc(
                 &arg::<String>(&args, "sessionId")?,
                 arg(&args, "inputs")?
             )?),
+            "prepare_table_changes" => json!(studio.prepare_table_changes(
+                &arg::<String>(&args, "sessionId")?,
+                arg(&args, "changes")?
+            )?),
             "processes" => json!(
                 studio
                     .processes(&arg::<String>(&args, "sessionId")?)

@@ -44,6 +44,7 @@ import type {
   PreparedPlan,
   ProcessInfo,
   ResourceUsage,
+  TableChanges,
 } from "../ipc/generated";
 import { useStudio, beginEventBatch, querySessionForTab, type StudioTab } from "../state/studio";
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
@@ -87,6 +88,14 @@ type Dialog =
 export function dirtyFor(tab: StudioTab) {
   return tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
 }
+export function pendingCountFor(tab: StudioTab) {
+  return tab.kind === "table"
+    ? dirtyStore.pendingCountForTab(
+        tab.id,
+        tab.pages.map((page) => page.result.id),
+      )
+    : 0;
+}
 
 export function App() {
   const state = useStudio(),
@@ -111,6 +120,7 @@ export function App() {
     current?.kind === "table" &&
     session?.capabilities.tableFiltering &&
     selectedCell &&
+    !selectedCell.insert &&
     current.pages.some((page) => page.result.id === selectedCell.resultId) &&
     current.schema?.columns.some((column) => column.id === selectedCell.column.id)
       ? selectedCell
@@ -345,7 +355,7 @@ export function App() {
         .getState()
         .tabs.some(
           (tab) =>
-            dirtyFor(tab).length ||
+            pendingCountFor(tab) > 0 ||
             ["queued", "running"].includes(tab.status) ||
             (tab.querySession && !tab.querySessionClosed),
         );
@@ -516,8 +526,8 @@ export function App() {
       state.notify("This page belongs to an earlier session. Refresh the table before editing.");
       return;
     }
-    const changes = dirtyFor(active);
-    if (!changes.length) {
+    const resultIds = active.pages.map((page) => page.result.id);
+    if (!dirtyStore.pendingCountForTab(active.id, resultIds)) {
       state.notify("There are no pending edits.");
       return;
     }
@@ -526,15 +536,32 @@ export function App() {
       return;
     }
     try {
-      const grouped = new Map<string, typeof changes>();
-      for (const change of changes)
+      const cellUpdates = dirtyFor(active);
+      const grouped = new Map<string, typeof cellUpdates>();
+      for (const change of cellUpdates)
         grouped.set(change.resultId, [...(grouped.get(change.resultId) ?? []), change]);
-      const preview = await client.call<ChangePreview>("prepare_changes_batch", {
-        sessionId: session.id,
-        inputs: [...grouped].map(([resultId, changes]) => ({
+      const deletes = resultIds
+        .map((resultId) => ({ resultId, rows: dirtyStore.deletesForResult(resultId) }))
+        .filter((entry) => entry.rows.length > 0);
+      const schemaColumns = active.schema?.columns ?? [];
+      const columnOrder = new Map(schemaColumns.map((column, index) => [column.id, index]));
+      const inserts = dirtyStore.insertsForTab(active.id).map((draft) => ({
+        values: Object.entries(draft.values)
+          .sort(([a], [b]) => (columnOrder.get(a) ?? 999999) - (columnOrder.get(b) ?? 999999))
+          .map(([column, value]) => ({ column, value })),
+      }));
+      const changes: TableChanges = {
+        resultId: active.pages[0]?.result.id ?? null,
+        updates: [...grouped].map(([resultId, items]) => ({
           resultId,
-          changes: changes.map(({ row, column, value }) => ({ row, column, value })),
+          changes: items.map(({ row, column, value }) => ({ row, column, value })),
         })),
+        deletes,
+        inserts,
+      };
+      const preview = await client.call<ChangePreview>("prepare_table_changes", {
+        sessionId: session.id,
+        changes,
       });
       setDialog({
         kind: "review",
@@ -543,9 +570,15 @@ export function App() {
         profile,
         tabId: active.id,
         onSuccess: () => {
-          for (const page of active.pages) dirtyStore.clear(page.result.id);
+          const latestTab = useStudio.getState().tabs.find((t) => t.id === active.id);
+          dirtyStore.clearTab(
+            active.id,
+            (latestTab ?? active).pages.map((page) => page.result.id),
+          );
           setSelectedCell(null);
-          void state.refreshTable(active.id);
+          if (latestTab && hasRawClauses(latestTab.query))
+            void applyTableQuery(active.id, latestTab.query, { force: true });
+          else void state.refreshTable(active.id);
           state.notify("Changes committed");
         },
       });
@@ -555,7 +588,7 @@ export function App() {
   }
   function confirmDiscard(active: StudioTab, action: () => void) {
     if (
-      dirtyFor(active).length ||
+      pendingCountFor(active) > 0 ||
       ["queued", "running"].includes(active.status) ||
       (active.querySession && !active.querySessionClosed)
     )
@@ -596,7 +629,7 @@ export function App() {
       state.tabs.some(
         (tab) =>
           tab.connectionId === profile.id &&
-          (dirtyFor(tab).length ||
+          (pendingCountFor(tab) > 0 ||
             ["queued", "running"].includes(tab.status) ||
             (tab.querySession && !tab.querySessionClosed)),
       )
@@ -681,7 +714,9 @@ export function App() {
           onNew={(groupId) => setDialog({ kind: "connection", groupId })}
           onConnect={(profile) => setDialog({ kind: "connect", profile })}
           onEdit={(profile) => {
-            if (state.tabs.some((tab) => tab.connectionId === profile.id && dirtyFor(tab).length))
+            if (
+              state.tabs.some((tab) => tab.connectionId === profile.id && pendingCountFor(tab) > 0)
+            )
               setDialog({
                 kind: "confirm",
                 title: "Discard pending edits?",
@@ -765,7 +800,7 @@ export function App() {
                   <Gauge size={13} />
                 )}
                 <span title={tab.title}>{tab.title}</span>
-                {tab.kind === "table" && dirtyFor(tab).length > 0 && <i className="dirty-dot" />}
+                {tab.kind === "table" && pendingCountFor(tab) > 0 && <i className="dirty-dot" />}
                 {["queued", "running"].includes(tab.status) && (
                   <span className="tab-running">●</span>
                 )}
@@ -859,9 +894,25 @@ export function App() {
                           ? "Foreign key"
                           : "—"}
                     </dd>
+                    {selectedCell.deleted && (
+                      <>
+                        <dt>Row</dt>
+                        <dd>Marked for deletion</dd>
+                      </>
+                    )}
+                    {selectedCell.insert && (
+                      <>
+                        <dt>Row</dt>
+                        <dd>Staged insert</dd>
+                      </>
+                    )}
                   </dl>
                   <div className="inspector-value">
-                    {selectedCell.value === null ? (
+                    {selectedCell.insert?.usingDefault ? (
+                      <em>&lt;default&gt;</em>
+                    ) : selectedCell.insert?.unfilledRequired ? (
+                      <em>&lt;required&gt;</em>
+                    ) : selectedCell.value === null ? (
                       <em>NULL</em>
                     ) : (
                       <pre>{selectedCell.value.slice(0, 4000)}</pre>

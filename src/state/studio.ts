@@ -393,7 +393,12 @@ export const useStudio = create<StudioState>((set, get) => ({
   async setTableQuery(id, rawQuery, options) {
     const current = get().tabs.find((t) => t.id === id);
     if (!current?.table) return { kind: "refused", reason: "This tab does not browse a table" };
-    if (current.pages.some((page) => dirtyStore.hasResult(page.result.id)))
+    if (
+      dirtyStore.pendingCountForTab(
+        current.id,
+        current.pages.map((page) => page.result.id),
+      ) > 0
+    )
       return {
         kind: "refused",
         reason: "Review or discard pending edits before changing sort or filters",
@@ -424,6 +429,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const current = get().tabs.find((t) => t.id === id),
       session = current?.connectionId ? get().sessions[current.connectionId] : null;
     if (!current?.table || !session) return;
+    dirtyStore.clearInserts(current.id);
     for (const page of current.pages) {
       resultCache.release(page.result.id);
       dirtyStore.clear(page.result.id);
@@ -591,6 +597,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         .catch((error) => get().notify(messageOf(error)));
     else if (current.runId && ["queued", "running"].includes(current.status))
       void client.call("cancel_run", { runId: current.runId }).catch(() => {});
+    dirtyStore.clearInserts(current.id);
     for (const result of [...current.results, ...current.pages.map((p) => p.result)]) {
       dirtyStore.clear(result.id);
       resultCache.release(result.id);
@@ -637,6 +644,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   resetConnectionResults(connectionId) {
     get().disconnected(connectionId);
     for (const tab of get().tabs.filter((t) => t.connectionId === connectionId)) {
+      dirtyStore.clearInserts(tab.id);
       for (const result of [...tab.results, ...tab.pages.map((p) => p.result)]) {
         resultCache.release(result.id);
         dirtyStore.clear(result.id);

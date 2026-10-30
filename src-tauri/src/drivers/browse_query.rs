@@ -435,6 +435,8 @@ mod tests {
             primary_key,
             foreign_key: false,
             editable: false,
+            insertable: false,
+            has_default: false,
         }
     }
 

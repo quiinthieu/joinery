@@ -418,3 +418,109 @@ test("validates and applies multi-cell TSV paste atomically across reordered col
   await expect(page.getByRole("button", { name: /^Review / })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test("stages, reviews, and commits row inserts and deletes in one transaction", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await connect(page, `Row mutations ${Date.now()}`);
+  await openTable(page, "customers");
+  const footer = page.locator(".result-footer");
+  await expect(footer).toContainText("500 rows loaded");
+
+  // Filter to an empty key range so inserted test rows are isolated from fixture rows 1..1000.
+  const filters = page.getByRole("toolbar", { name: "Table filters" });
+  await filters.getByRole("button", { name: "Add filter" }).click();
+  await filters.getByLabel("Filter column").selectOption("id");
+  await filters.getByLabel("Filter operator").selectOption("gte");
+  await filters.getByLabel("Filter value").fill("9000");
+  await filters.getByRole("button", { name: "Apply" }).click();
+  await expect(footer).toContainText("0 rows loaded");
+
+  // Stage an insert row on an empty result: required columns show <required>, defaults show <default>.
+  await page.getByRole("button", { name: "Insert row", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Review 1 edit", exact: true })).toBeVisible();
+  await expect(page.locator(".inspector")).toContainText("Staged insert");
+  await expect(page.locator(".inspector-value")).toHaveText("<required>");
+  await expect.poll(() => cellText(page, 640, 0)).toBe("<default>");
+
+  // Add a second draft row and remove it before review.
+  await page.getByRole("button", { name: "Insert row", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Review 2 edits", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Remove insert", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Review 1 edit", exact: true })).toBeVisible();
+
+  // Review refuses unfilled required columns without defaults.
+  await page.getByRole("button", { name: "Review 1 edit", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    'Column "id" requires a value (NOT NULL without a default)',
+  );
+
+  // Populate draft row 1 via TSV paste while leaving `active` and `created_at` on <default>.
+  await expect.poll(() => cellText(page, 55, 0)).toBe("<required>");
+  await dispatchPaste(page, "9001\tInserted One\tinserted1@example.test");
+  await expect(page.locator(".inspector-value")).toHaveText("9001");
+  await expect.poll(() => cellText(page, 640, 0)).toBe("<default>");
+
+  // Stage a second draft row and populate it immediately after Insert row focuses the grid.
+  await page.getByRole("button", { name: "Insert row", exact: true }).click();
+  await dispatchPaste(page, "9002\tInserted Two\t\\N");
+  await expect(page.getByRole("button", { name: "Review 2 edits", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Review 2 edits", exact: true }).click();
+  const insertReview = page.getByRole("dialog", { name: "Review pending changes" });
+  await expect(insertReview).toContainText("2 rows · one transaction");
+  await expect(insertReview.locator(".sql-preview")).toContainText(
+    'INSERT INTO "public"."customers" ("id", "name", "email")',
+  );
+  await insertReview.getByRole("button", { name: "Apply changes", exact: true }).click();
+  await expect(insertReview).toHaveCount(0);
+  await expect(footer).toContainText("2 rows loaded");
+  await expect.poll(() => cellText(page, 640, 0)).toBe("true");
+
+  // Stage a delete on row 2 (9002), exercise Undo delete, then re-delete alongside an update + insert.
+  await expect.poll(() => cellText(page, 55, 1)).toBe("9002");
+  await page.getByRole("button", { name: "Delete row", exact: true }).click();
+  await expect(page.locator(".inspector")).toContainText("Marked for deletion");
+  await page.getByRole("button", { name: "Undo delete", exact: true }).click();
+  await expect(page.locator(".inspector")).not.toContainText("Marked for deletion");
+  await page.getByRole("button", { name: "Delete row", exact: true }).click();
+  await expect(page.locator(".inspector")).toContainText("Marked for deletion");
+
+  await expect.poll(() => cellText(page, 210, 0)).toBe("Inserted One");
+  await dispatchPaste(page, "Updated One");
+  await page.getByRole("button", { name: "Insert row", exact: true }).click();
+  await dispatchPaste(page, "9003\tInserted Three\tinserted3@example.test");
+  await expect(page.getByRole("button", { name: "Review 3 edits", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Review 3 edits", exact: true }).click();
+  const mixedReview = page.getByRole("dialog", { name: "Review pending changes" });
+  await expect(mixedReview).toContainText("3 rows · one transaction");
+  await expect(mixedReview.locator(".sql-preview")).toContainText(
+    'DELETE FROM "public"."customers"',
+  );
+  await expect(mixedReview.locator(".sql-preview")).toContainText('UPDATE "public"."customers"');
+  await expect(mixedReview.locator(".sql-preview")).toContainText(
+    'INSERT INTO "public"."customers"',
+  );
+  await mixedReview.getByRole("button", { name: "Apply changes", exact: true }).click();
+  await expect(mixedReview).toHaveCount(0);
+  await expect(footer).toContainText("2 rows loaded");
+  await expect.poll(() => cellText(page, 210, 0)).toBe("Updated One");
+  await expect.poll(() => cellText(page, 55, 1)).toBe("9003");
+
+  // Clean up both inserted rows with multi-row selection so shared fixture state stays untouched.
+  const box = (await page.locator(".grid-host").boundingBox())!;
+  await page.mouse.click(box.x + ROW_MARKERS + 55, box.y + HEADER + 18);
+  await page.keyboard.down("Shift");
+  await page.mouse.click(box.x + ROW_MARKERS + 55, box.y + HEADER + 18 + 36);
+  await page.keyboard.up("Shift");
+  await page.getByRole("button", { name: "Delete 2 rows", exact: true }).click();
+  await page.getByRole("button", { name: "Review 2 edits", exact: true }).click();
+  const cleanupReview = page.getByRole("dialog", { name: "Review pending changes" });
+  await cleanupReview.getByRole("button", { name: "Apply changes", exact: true }).click();
+  await expect(cleanupReview).toHaveCount(0);
+  await expect(footer).toContainText("0 rows loaded");
+  expect(errors).toEqual([]);
+});

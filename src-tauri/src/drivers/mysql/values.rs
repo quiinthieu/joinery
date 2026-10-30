@@ -72,6 +72,8 @@ pub(super) fn column(index: usize, c: &Column) -> ColumnInfo {
         primary_key: false,
         foreign_key: false,
         editable: false,
+        insertable: false,
+        has_default: false,
     }
 }
 
@@ -238,46 +240,102 @@ pub(super) fn key_predicate(
     }
     Ok((parts.join(" AND "), values))
 }
-pub fn update_sql(
+pub fn mutation_sql(
     schema: &TableSchema,
     row: &RowMutation,
 ) -> AppResult<(String, Vec<Option<String>>)> {
-    if !schema.editable || row.changes.is_empty() {
+    if !schema.editable {
         return Err(AppError::new(
             ErrorCode::PolicyBlocked,
             "This table cannot be edited safely",
         ));
     }
-    let mut parts = Vec::new();
-    let mut values = Vec::new();
-    for (i, value) in &row.changes {
-        let c = schema
-            .columns
-            .get(*i)
-            .ok_or_else(|| AppError::invalid("Invalid edited column"))?;
-        if !c.editable || c.primary_key {
-            return Err(AppError::new(
-                ErrorCode::PolicyBlocked,
-                "This column is read-only",
-            ));
+    match row {
+        RowMutation::Update { original, changes } => {
+            if changes.is_empty() {
+                return Err(AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    "This table cannot be edited safely",
+                ));
+            }
+            let mut parts = Vec::new();
+            let mut values = Vec::new();
+            for (i, value) in changes {
+                let c = schema
+                    .columns
+                    .get(*i)
+                    .ok_or_else(|| AppError::invalid("Invalid edited column"))?;
+                if !c.editable || c.primary_key {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        "This column is read-only",
+                    ));
+                }
+                validate(c, value.as_deref())?;
+                let t = cast(c).ok_or_else(|| {
+                    AppError::new(ErrorCode::Unsupported, "This data type cannot be edited")
+                })?;
+                parts.push(format!("{}=CAST(? AS {t})", quote(&c.name)));
+                values.push(value.clone());
+            }
+            let (predicate, keys) = key_predicate(schema, original)?;
+            values.extend(keys);
+            Ok((
+                format!(
+                    "UPDATE {} SET {} WHERE {predicate}",
+                    qualified(&schema.table),
+                    parts.join(", ")
+                ),
+                values,
+            ))
         }
-        validate(c, value.as_deref())?;
-        let t = cast(c).ok_or_else(|| {
-            AppError::new(ErrorCode::Unsupported, "This data type cannot be edited")
-        })?;
-        parts.push(format!("{}=CAST(? AS {t})", quote(&c.name)));
-        values.push(value.clone());
+        RowMutation::Delete { original } => {
+            let (predicate, keys) = key_predicate(schema, original)?;
+            Ok((
+                format!("DELETE FROM {} WHERE {predicate}", qualified(&schema.table)),
+                keys,
+            ))
+        }
+        RowMutation::Insert { values } => {
+            if values.is_empty() {
+                return Ok((
+                    format!("INSERT INTO {} () VALUES ()", qualified(&schema.table)),
+                    Vec::new(),
+                ));
+            }
+            let mut columns = Vec::new();
+            let mut expressions = Vec::new();
+            let mut binds = Vec::new();
+            for (i, value) in values {
+                let c = schema
+                    .columns
+                    .get(*i)
+                    .ok_or_else(|| AppError::invalid("Invalid inserted column"))?;
+                if !c.insertable {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        "This column cannot be set on insert",
+                    ));
+                }
+                validate(c, value.as_deref())?;
+                let t = cast(c).ok_or_else(|| {
+                    AppError::new(ErrorCode::Unsupported, "This data type cannot be inserted")
+                })?;
+                columns.push(quote(&c.name));
+                expressions.push(format!("CAST(? AS {t})"));
+                binds.push(value.clone());
+            }
+            Ok((
+                format!(
+                    "INSERT INTO {} ({}) VALUES ({})",
+                    qualified(&schema.table),
+                    columns.join(", "),
+                    expressions.join(", ")
+                ),
+                binds,
+            ))
+        }
     }
-    let (predicate, keys) = key_predicate(schema, &row.original)?;
-    values.extend(keys);
-    Ok((
-        format!(
-            "UPDATE {} SET {} WHERE {predicate}",
-            qualified(&schema.table),
-            parts.join(", ")
-        ),
-        values,
-    ))
 }
 
 fn validate(column: &ColumnInfo, value: Option<&str>) -> AppResult<()> {

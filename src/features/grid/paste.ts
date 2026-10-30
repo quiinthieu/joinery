@@ -1,5 +1,5 @@
 import type { ColumnInfo } from "../../ipc/generated";
-import type { DirtyCell } from "../../data/dirty-store";
+import type { DirtyCell, DraftInsertCell } from "../../data/dirty-store";
 
 export const MAX_PASTE_CELLS = 5000;
 
@@ -8,12 +8,19 @@ export type PasteRowTarget =
       kind: "existing";
       resultId: string;
       row: number;
+      deleted?: boolean;
       readOriginal(columnId: string): string | null | undefined;
+    }
+  | {
+      kind: "draftInsert";
+      tabId: string;
+      insertId: string;
     }
   | { kind: "unloaded" }
   | { kind: "outOfBounds" };
 
-export type PasteOutcome = { ok: true; cells: DirtyCell[] } | { ok: false; error: string };
+export type PasteOutcome =
+  { ok: true; cells: DirtyCell[]; insertCells: DraftInsertCell[] } | { ok: false; error: string };
 
 /**
  * Parses TSV clipboard text (supporting quoted fields with embedded tabs/newlines
@@ -167,6 +174,7 @@ export function validatePasteMatrix(options: {
   }
 
   const cells: DirtyCell[] = [];
+  const insertCells: DraftInsertCell[] = [];
   for (let dy = 0; dy < values.length; dy++) {
     const line = values[dy];
     const visualRow = startRow + dy;
@@ -183,6 +191,12 @@ export function validatePasteMatrix(options: {
         error: `Row ${visualRow + 1} is not loaded yet. Scroll to load target rows before pasting.`,
       };
     }
+    if (rowTarget.kind === "existing" && rowTarget.deleted) {
+      return {
+        ok: false,
+        error: `Row ${visualRow + 1} is marked for deletion.`,
+      };
+    }
     for (let dx = 0; dx < line.length; dx++) {
       const visualCol = startCol + dx;
       if (visualCol < 0 || visualCol >= visibleColumns.length) {
@@ -192,6 +206,43 @@ export function validatePasteMatrix(options: {
         };
       }
       const column = visibleColumns[visualCol];
+      if (rowTarget.kind === "draftInsert") {
+        if (!column.insertable) {
+          return {
+            ok: false,
+            error: `Row ${visualRow + 1}, column "${column.name}" cannot be set on insert.`,
+          };
+        }
+        const rawCell = line[dx];
+        if (
+          rawCell === "" &&
+          column.hasDefault &&
+          column.kind !== "text" &&
+          column.kind !== "unknown"
+        ) {
+          insertCells.push({
+            tabId: rowTarget.tabId,
+            insertId: rowTarget.insertId,
+            column: column.id,
+            value: undefined,
+          });
+          continue;
+        }
+        const coerced = coercePastedValue(rawCell, column);
+        if (!coerced.ok) {
+          return {
+            ok: false,
+            error: `Row ${visualRow + 1}, column "${column.name}" ${coerced.reason}.`,
+          };
+        }
+        insertCells.push({
+          tabId: rowTarget.tabId,
+          insertId: rowTarget.insertId,
+          column: column.id,
+          value: coerced.value,
+        });
+        continue;
+      }
       if (!column.editable) {
         return {
           ok: false,
@@ -221,5 +272,5 @@ export function validatePasteMatrix(options: {
       });
     }
   }
-  return { ok: true, cells };
+  return { ok: true, cells, insertCells };
 }

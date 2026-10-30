@@ -14,7 +14,7 @@ mod catalog;
 mod values;
 pub(crate) use catalog::browse_sql;
 pub(crate) use values::MysqlDialect;
-pub use values::update_sql;
+pub use values::mutation_sql;
 use values::{column, text_row};
 
 // Conn's normal Drop drains pending results in a background task. Explicit

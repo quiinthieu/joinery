@@ -5,12 +5,39 @@ import { resultCache } from "../../data/result-cache";
 import type { CellTarget } from "./DatabaseGrid";
 
 export function ValueDialog({ target, onClose }: { target: CellTarget; onClose(): void }) {
-  const [value, setValue] = useState(target.value ?? ""),
-    [isNull, setNull] = useState(target.value === null),
+  const canUseDefault = !!target.insert && target.column.hasDefault && target.column.editable;
+  const [usingDefault, setUsingDefault] = useState(canUseDefault && !!target.insert?.usingDefault),
+    [value, setValue] = useState(target.value ?? ""),
+    [isNull, setNull] = useState(
+      target.insert ? target.insert.explicitNull : target.value === null,
+    ),
     [error, setError] = useState<string | null>(null);
   function save(event: FormEvent) {
     event.preventDefault();
     try {
+      if (target.insert) {
+        if (usingDefault) {
+          dirtyStore.setInsertCell(
+            target.insert.tabId,
+            target.insert.insertId,
+            target.column.id,
+            undefined,
+          );
+          onClose();
+          return;
+        }
+        if (!isNull && target.column.kind === "json") JSON.parse(value);
+        if (!isNull && target.column.kind === "integer" && !/^[+-]?\d+$/.test(value))
+          throw new Error("Enter a whole number without losing precision");
+        dirtyStore.setInsertCell(
+          target.insert.tabId,
+          target.insert.insertId,
+          target.column.id,
+          isNull ? null : value,
+        );
+        onClose();
+        return;
+      }
       if (!isNull && target.column.kind === "json") JSON.parse(value);
       if (!isNull && target.column.kind === "integer" && !/^[+-]?\d+$/.test(value))
         throw new Error("Enter a whole number without losing precision");
@@ -36,22 +63,46 @@ export function ValueDialog({ target, onClose }: { target: CellTarget; onClose()
     >
       <form onSubmit={save}>
         <div className="modal-body">
+          {canUseDefault && (
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={usingDefault}
+                onChange={(e) => {
+                  setUsingDefault(e.target.checked);
+                  if (e.target.checked) setNull(false);
+                }}
+              />
+              Use database default
+            </label>
+          )}
           {target.column.editable && target.column.nullable && (
             <label className="checkbox-label">
-              <input type="checkbox" checked={isNull} onChange={(e) => setNull(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={!usingDefault && isNull}
+                disabled={usingDefault}
+                onChange={(e) => {
+                  setNull(e.target.checked);
+                  if (e.target.checked) setUsingDefault(false);
+                }}
+              />
               Set to NULL
             </label>
           )}
-          {target.column.editable && target.column.databaseType === "date" && !isNull ? (
+          {target.column.editable &&
+          target.column.databaseType === "date" &&
+          !isNull &&
+          !usingDefault ? (
             <input type="date" value={value} onChange={(e) => setValue(e.target.value)} />
           ) : (
             <textarea
               className="value-editor"
               aria-label="Cell value"
               autoFocus
-              value={isNull ? "NULL" : value}
+              value={usingDefault ? "<default>" : isNull ? "NULL" : value}
               onChange={(e) => setValue(e.target.value)}
-              readOnly={!target.column.editable || isNull}
+              readOnly={!target.column.editable || isNull || usingDefault}
               spellCheck={false}
             />
           )}

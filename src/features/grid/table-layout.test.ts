@@ -22,6 +22,8 @@ function column(name: string, index: number, kind: ColumnInfo["kind"] = "text"):
     primaryKey: index === 0,
     foreignKey: false,
     editable: index !== 0,
+    insertable: true,
+    hasDefault: false,
   };
 }
 

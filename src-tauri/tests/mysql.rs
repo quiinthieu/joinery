@@ -1365,3 +1365,263 @@ async fn referencing_foreign_keys_group_composite_inbound_constraints_on_mysql_a
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn table_changes_insert_update_delete_atomically_and_conflict_check_deletes_on_both_engines()
+{
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_batch2_mutations, joinery_batch2_defaults;
+                 CREATE TABLE joinery_batch2_mutations (
+                   id INT AUTO_INCREMENT PRIMARY KEY,
+                   label VARCHAR(64) NOT NULL DEFAULT 'from-default',
+                   amount DECIMAL(8,2) NOT NULL,
+                   doubled DECIMAL(9,2) AS (amount * 2) STORED,
+                   note VARCHAR(64)
+                 ) ENGINE=InnoDB;
+                 INSERT INTO joinery_batch2_mutations (label, amount, note)
+                 VALUES ('alpha', 10.00, 'keep'), ('beta', 20.00, 'delete-me');
+                 CREATE TABLE joinery_batch2_defaults (
+                   id INT AUTO_INCREMENT PRIMARY KEY,
+                   tag VARCHAR(32) NOT NULL DEFAULT 'auto'
+                 ) ENGINE=InnoDB;",
+            )
+            .await,
+        );
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "joinery_batch2_mutations".into(),
+        };
+        let schema = studio.schema(&session.id, &table).await.unwrap();
+        let col = |name: &str| schema.columns.iter().find(|c| c.name == name).unwrap();
+        assert!(
+            !col("id").editable && col("id").insertable && col("id").has_default,
+            "port {port}"
+        );
+        assert!(
+            col("label").editable && col("label").insertable && col("label").has_default,
+            "port {port}"
+        );
+        assert!(
+            col("amount").editable && col("amount").insertable && !col("amount").has_default,
+            "port {port}"
+        );
+        assert!(
+            !col("doubled").editable && !col("doubled").insertable && col("doubled").has_default,
+            "port {port}"
+        );
+        assert!(
+            col("note").editable && col("note").insertable && !col("note").has_default,
+            "port {port}"
+        );
+
+        // ReadOnly profiles mask insertable=false without triggering false schema-drift conflicts on browse.
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let ro_schema = ro_studio.schema(&ro_session.id, &table).await.unwrap();
+        assert!(
+            !ro_schema.editable
+                && ro_schema
+                    .columns
+                    .iter()
+                    .all(|c| !c.editable && !c.insertable),
+            "port {port}"
+        );
+        let ro_page = ro_studio
+            .browse(&ro_session.id, &table, None)
+            .await
+            .unwrap();
+        assert_eq!(ro_page.result.retained_rows, 2, "port {port}");
+        ro_studio.release_result(&ro_page.result.id);
+        ro_studio.shutdown();
+
+        let page = studio.browse(&session.id, &table, None).await.unwrap();
+        assert_eq!(page.result.retained_rows, 2, "port {port}");
+
+        // Lossy decimal precision on insert is rejected before preparing SQL.
+        assert_eq!(
+            studio
+                .prepare_table_changes(
+                    &session.id,
+                    TableChanges {
+                        result_id: Some(page.result.id.clone()),
+                        updates: vec![],
+                        deletes: vec![],
+                        inserts: vec![RowInsert {
+                            values: vec![InsertValue {
+                                column: "c2".into(),
+                                value: Some("10.009".into()),
+                            }],
+                        }],
+                    },
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput,
+            "port {port}"
+        );
+
+        // Mixed atomic batch: update row 0, delete row 1, insert 1 row relying on AUTO_INCREMENT + DEFAULT.
+        let preview = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(page.result.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: page.result.id.clone(),
+                        changes: vec![CellChange {
+                            row: 0,
+                            column: "c2".into(),
+                            value: Some("15.50".into()),
+                        }],
+                    }],
+                    deletes: vec![ResultDeletes {
+                        result_id: page.result.id.clone(),
+                        rows: vec![1],
+                    }],
+                    inserts: vec![RowInsert {
+                        values: vec![InsertValue {
+                            column: "c2".into(),
+                            value: Some("30.25".into()),
+                        }],
+                    }],
+                },
+            )
+            .unwrap();
+        assert_eq!(preview.row_count, 3, "port {port}");
+        completed(&execute(&studio, &preview.plan).await);
+        studio.release_result(&page.result.id);
+
+        let after = studio.browse(&session.id, &table, None).await.unwrap();
+        assert_eq!(after.result.retained_rows, 2, "port {port}");
+        let r0 = studio.results.row(&after.result.id, 0).unwrap();
+        assert_eq!(r0[0].as_deref(), Some("1"));
+        assert_eq!(r0[2].as_deref(), Some("15.50"));
+        assert_eq!(r0[3].as_deref(), Some("31.00"));
+        let r1 = studio.results.row(&after.result.id, 1).unwrap();
+        assert_eq!(r1[1].as_deref(), Some("from-default"));
+        assert_eq!(r1[2].as_deref(), Some("30.25"));
+        assert_eq!(r1[3].as_deref(), Some("60.50"));
+        assert_eq!(r1[4], None);
+
+        // Empty-table insert with 0 explicit values generates INSERT INTO ... () VALUES ().
+        let defaults_table = TableRef {
+            schema: "joinery".into(),
+            name: "joinery_batch2_defaults".into(),
+        };
+        let empty_page = studio
+            .browse(&session.id, &defaults_table, None)
+            .await
+            .unwrap();
+        assert_eq!(empty_page.result.retained_rows, 0, "port {port}");
+        let defaults_preview = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(empty_page.result.id.clone()),
+                    updates: vec![],
+                    deletes: vec![],
+                    inserts: vec![RowInsert { values: vec![] }],
+                },
+            )
+            .unwrap();
+        assert!(
+            defaults_preview.sql[0].contains("() VALUES ()"),
+            "port {port}: {}",
+            defaults_preview.sql[0]
+        );
+        completed(&execute(&studio, &defaults_preview.plan).await);
+        studio.release_result(&empty_page.result.id);
+        let defaults_after = studio
+            .browse(&session.id, &defaults_table, None)
+            .await
+            .unwrap();
+        assert_eq!(defaults_after.result.retained_rows, 1, "port {port}");
+        assert_eq!(
+            studio.results.row(&defaults_after.result.id, 0).unwrap()[1].as_deref(),
+            Some("auto"),
+            "port {port}"
+        );
+        studio.release_result(&defaults_after.result.id);
+
+        // Concurrent modification causes FOR UPDATE conflict on Delete and rolls back the whole batch.
+        completed(
+            &run(
+                &studio,
+                &session,
+                "UPDATE joinery_batch2_mutations SET note = 'concurrent-touch' WHERE id = 3",
+            )
+            .await,
+        );
+        let stale_batch = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(after.result.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: after.result.id.clone(),
+                        changes: vec![CellChange {
+                            row: 0,
+                            column: "c2".into(),
+                            value: Some("999.00".into()),
+                        }],
+                    }],
+                    deletes: vec![ResultDeletes {
+                        result_id: after.result.id.clone(),
+                        rows: vec![1],
+                    }],
+                    inserts: vec![RowInsert {
+                        values: vec![InsertValue {
+                            column: "c2".into(),
+                            value: Some("50.00".into()),
+                        }],
+                    }],
+                },
+            )
+            .unwrap();
+        let conflict_events = execute(&studio, &stale_batch.plan).await;
+        assert!(
+            conflict_events.iter().any(|e| matches!(
+                e,
+                QueryEvent::Error {
+                    error: AppError {
+                        code: ErrorCode::Conflict,
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "port {port}: {conflict_events:?}"
+        );
+        studio.release_result(&after.result.id);
+
+        let rolled_back = studio.browse(&session.id, &table, None).await.unwrap();
+        assert_eq!(rolled_back.result.retained_rows, 2, "port {port}");
+        assert_eq!(
+            studio.results.row(&rolled_back.result.id, 0).unwrap()[2].as_deref(),
+            Some("15.50"),
+            "port {port}"
+        );
+        assert_eq!(
+            studio.results.row(&rolled_back.result.id, 1).unwrap()[4].as_deref(),
+            Some("concurrent-touch"),
+            "port {port}"
+        );
+        studio.release_result(&rolled_back.result.id);
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE joinery_batch2_mutations, joinery_batch2_defaults",
+            )
+            .await,
+        );
+        studio.disconnect(&session.id);
+    }
+}

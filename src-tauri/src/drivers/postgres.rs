@@ -486,21 +486,52 @@ impl Postgres {
         rows: &[RowMutation],
     ) -> AppResult<()> {
         client.batch_execute("BEGIN").await.map_err(pg_error)?;
-        let result=async {
+        let result = async {
             for row in rows {
-                let (predicate,keys)=key_predicate(schema,&row.original,1)?;
-                let params=keys.iter().map(|v|v as &(dyn ToSql+Sync)).collect::<Vec<_>>();
-                let sql=format!("SELECT {} FROM {} WHERE {predicate} FOR UPDATE",projection(schema),qualified(&schema.table));
-                let locked=client.query(&sql,&params).await.map_err(pg_error)?;
-                if locked.len()!=1 { return Err(AppError::new(ErrorCode::Conflict,"A target row was deleted or its key changed. Refresh before applying edits.")); }
-                let actual=(0..locked[0].len()).map(|i|locked[0].get::<_,Option<String>>(i)).collect::<TextRow>();
-                if actual!=row.original { return Err(AppError::new(ErrorCode::Conflict,"A row changed since it was loaded. No edits were committed.")); }
-                let (sql,values)=update_sql(schema,row)?;
-                let params=values.iter().map(|v|v as &(dyn ToSql+Sync)).collect::<Vec<_>>();
-                if client.execute(&sql,&params).await.map_err(pg_error)?!=1 { return Err(AppError::new(ErrorCode::Conflict,"An update did not match exactly one row. No edits were committed.")); }
+                if let RowMutation::Update { original, .. } | RowMutation::Delete { original } = row
+                {
+                    let (predicate, keys) = key_predicate(schema, original, 1)?;
+                    let params = keys
+                        .iter()
+                        .map(|v| v as &(dyn ToSql + Sync))
+                        .collect::<Vec<_>>();
+                    let sql = format!(
+                        "SELECT {} FROM {} WHERE {predicate} FOR UPDATE",
+                        projection(schema),
+                        qualified(&schema.table)
+                    );
+                    let locked = client.query(&sql, &params).await.map_err(pg_error)?;
+                    if locked.len() != 1 {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "A target row was deleted or its key changed. Refresh before applying edits.",
+                        ));
+                    }
+                    let actual = (0..locked[0].len())
+                        .map(|i| locked[0].get::<_, Option<String>>(i))
+                        .collect::<TextRow>();
+                    if &actual != original {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "A row changed since it was loaded. No edits were committed.",
+                        ));
+                    }
+                }
+                let (sql, values) = mutation_sql(schema, row)?;
+                let params = values
+                    .iter()
+                    .map(|v| v as &(dyn ToSql + Sync))
+                    .collect::<Vec<_>>();
+                if client.execute(&sql, &params).await.map_err(pg_error)? != 1 {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A table change did not affect exactly one row. No edits were committed.",
+                    ));
+                }
             }
             Ok(())
-        }.await;
+        }
+        .await;
         if let Err(error) = result {
             if client.batch_execute("ROLLBACK").await.is_err() {
                 self.close();
@@ -668,43 +699,107 @@ fn key_predicate(
     Ok((parts.join(" AND "), values))
 }
 
-pub fn update_sql(
+pub fn mutation_sql(
     schema: &TableSchema,
     row: &RowMutation,
 ) -> AppResult<(String, Vec<Option<String>>)> {
-    let mut assignments = Vec::new();
-    let mut values = Vec::new();
-    for (index, value) in &row.changes {
-        let column = schema
-            .columns
-            .get(*index)
-            .ok_or_else(|| AppError::invalid("Invalid edited column"))?;
-        if !column.editable {
-            return Err(AppError::new(
-                ErrorCode::PolicyBlocked,
-                "This column is read-only",
-            ));
-        }
-        let cast = cast_type(column).ok_or_else(|| {
-            AppError::new(ErrorCode::Unsupported, "This data type cannot be edited")
-        })?;
-        assignments.push(format!(
-            "{}=(${}::text)::{cast}",
-            quote_identifier(&column.name),
-            values.len() + 1
+    if !schema.editable {
+        return Err(AppError::new(
+            ErrorCode::PolicyBlocked,
+            "This table cannot be edited safely",
         ));
-        values.push(value.clone());
     }
-    let (predicate, keys) = key_predicate(schema, &row.original, values.len() + 1)?;
-    values.extend(keys);
-    Ok((
-        format!(
-            "UPDATE {} SET {} WHERE {predicate}",
-            qualified(&schema.table),
-            assignments.join(", ")
-        ),
-        values,
-    ))
+    match row {
+        RowMutation::Update { original, changes } => {
+            if changes.is_empty() {
+                return Err(AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    "This table cannot be edited safely",
+                ));
+            }
+            let mut assignments = Vec::new();
+            let mut values = Vec::new();
+            for (index, value) in changes {
+                let column = schema
+                    .columns
+                    .get(*index)
+                    .ok_or_else(|| AppError::invalid("Invalid edited column"))?;
+                if !column.editable {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        "This column is read-only",
+                    ));
+                }
+                let cast = cast_type(column).ok_or_else(|| {
+                    AppError::new(ErrorCode::Unsupported, "This data type cannot be edited")
+                })?;
+                assignments.push(format!(
+                    "{}=(${}::text)::{cast}",
+                    quote_identifier(&column.name),
+                    values.len() + 1
+                ));
+                values.push(value.clone());
+            }
+            let (predicate, keys) = key_predicate(schema, original, values.len() + 1)?;
+            values.extend(keys);
+            Ok((
+                format!(
+                    "UPDATE {} SET {} WHERE {predicate}",
+                    qualified(&schema.table),
+                    assignments.join(", ")
+                ),
+                values,
+            ))
+        }
+        RowMutation::Delete { original } => {
+            let (predicate, keys) = key_predicate(schema, original, 1)?;
+            Ok((
+                format!("DELETE FROM {} WHERE {predicate}", qualified(&schema.table)),
+                keys,
+            ))
+        }
+        RowMutation::Insert { values } => {
+            if values.is_empty() {
+                return Ok((
+                    format!("INSERT INTO {} DEFAULT VALUES", qualified(&schema.table)),
+                    Vec::new(),
+                ));
+            }
+            let mut columns = Vec::new();
+            let mut expressions = Vec::new();
+            let mut binds = Vec::new();
+            for (index, value) in values {
+                let column = schema
+                    .columns
+                    .get(*index)
+                    .ok_or_else(|| AppError::invalid("Invalid inserted column"))?;
+                if !column.insertable {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        "This column cannot be set on insert",
+                    ));
+                }
+                if !column.nullable && value.is_none() {
+                    return Err(AppError::invalid("This column does not allow NULL"));
+                }
+                let cast = cast_type(column).ok_or_else(|| {
+                    AppError::new(ErrorCode::Unsupported, "This data type cannot be inserted")
+                })?;
+                columns.push(quote_identifier(&column.name));
+                expressions.push(format!("(${}::text)::{cast}", binds.len() + 1));
+                binds.push(value.clone());
+            }
+            Ok((
+                format!(
+                    "INSERT INTO {} ({}) VALUES ({})",
+                    qualified(&schema.table),
+                    columns.join(", "),
+                    expressions.join(", ")
+                ),
+                binds,
+            ))
+        }
+    }
 }
 
 fn column(index: usize, name: &str, type_name: &str) -> ColumnInfo {
@@ -729,6 +824,8 @@ fn column(index: usize, name: &str, type_name: &str) -> ColumnInfo {
         primary_key: false,
         foreign_key: false,
         editable: false,
+        insertable: false,
+        has_default: false,
     }
 }
 
@@ -758,7 +855,8 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
     let rows=client.query(
             "SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),t.typname,a.attnotnull,a.attgenerated::pg_catalog.text,a.attidentity::pg_catalog.text,
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='p' AND a.attnum=ANY(k.conkey)),
-              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text
+              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text,
+              a.atthasdef
              FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
              WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion]).await.map_err(pg_error)?;
     if rows.is_empty() {
@@ -768,20 +866,29 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         ));
     }
     let physical = matches!(rows[0].get::<_, String>(8).as_str(), "r" | "p");
-    let columns: Vec<ColumnInfo> = rows
+    let mut columns: Vec<ColumnInfo> = rows
         .iter()
         .enumerate()
         .map(|(i, r)| {
             let mut c = column(i, r.get::<_, &str>(0), r.get::<_, &str>(2));
+            let generated = r.get::<_, String>(4);
+            let identity = r.get::<_, String>(5);
+            let has_def: bool = r.get(9);
             c.database_type = r.get(1);
             c.nullable = !r.get::<_, bool>(3);
             c.primary_key = r.get(6);
             c.foreign_key = r.get(7);
+            c.has_default = has_def || !identity.is_empty() || !generated.is_empty();
             c.editable = !completion
                 && physical
                 && !c.primary_key
-                && r.get::<_, String>(4).is_empty()
-                && r.get::<_, String>(5).is_empty()
+                && generated.is_empty()
+                && identity.is_empty()
+                && cast_type(&c).is_some();
+            c.insertable = !completion
+                && physical
+                && generated.is_empty()
+                && identity != "a"
                 && cast_type(&c).is_some();
             c
         })
@@ -824,6 +931,12 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
             .iter()
             .filter(|c| c.primary_key)
             .all(|c| cast_type(c).is_some());
+    if !editable {
+        for c in &mut columns {
+            c.editable = false;
+            c.insertable = false;
+        }
+    }
     Ok(TableSchema {
         table: table.clone(),
         columns,

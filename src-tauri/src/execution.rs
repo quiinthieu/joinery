@@ -3,7 +3,7 @@ use crate::{
     drivers::{
         Driver, QuerySink, RowMutation,
         mysql::Mysql,
-        postgres::{Postgres, update_sql},
+        postgres::{Postgres, mutation_sql},
         redis::Redis,
         snowflake::Snowflake,
     },
@@ -1159,6 +1159,7 @@ impl Studio {
             schema.editable = false;
             for c in &mut schema.columns {
                 c.editable = false;
+                c.insertable = false;
             }
         }
         Ok(schema)
@@ -1390,42 +1391,120 @@ impl Studio {
         session_id: &str,
         inputs: Vec<ResultChanges>,
     ) -> AppResult<ChangePreview> {
+        self.prepare_table_changes(
+            session_id,
+            TableChanges {
+                result_id: inputs.first().map(|input| input.result_id.clone()),
+                updates: inputs,
+                deletes: Vec::new(),
+                inserts: Vec::new(),
+            },
+        )
+    }
+
+    fn verify_result_provenance(
+        &self,
+        session_id: &str,
+        result_id: &str,
+        expected: &TableSchema,
+    ) -> AppResult<()> {
+        if self
+            .result_sessions
+            .lock()
+            .get(result_id)
+            .map(String::as_str)
+            != Some(session_id)
+        {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "This result belongs to a different session",
+            ));
+        }
+        let source = self.results.provenance(result_id)?;
+        if source.table != expected.table
+            || serde_json::to_string(&source.columns).ok()
+                != serde_json::to_string(&expected.columns).ok()
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "All edits must belong to the same unchanged table schema",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn prepare_table_changes(
+        &self,
+        session_id: &str,
+        changes: TableChanges,
+    ) -> AppResult<ChangePreview> {
         let session = self.session(session_id)?;
-        let first = inputs
-            .first()
+        let anchor_id = changes
+            .result_id
+            .as_deref()
+            .or_else(|| changes.updates.first().map(|u| u.result_id.as_str()))
+            .or_else(|| changes.deletes.first().map(|d| d.result_id.as_str()))
             .ok_or_else(|| AppError::invalid("There are no pending edits"))?;
-        let schema = self.results.provenance(&first.result_id)?;
-        let cell_count = inputs.iter().map(|i| i.changes.len()).sum::<usize>();
-        if !schema.editable || cell_count == 0 || cell_count > 5000 {
+        if self
+            .result_sessions
+            .lock()
+            .get(anchor_id)
+            .map(String::as_str)
+            != Some(session_id)
+        {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "This result belongs to a different session",
+            ));
+        }
+        let schema = self.results.provenance(anchor_id)?;
+        let update_cells = changes
+            .updates
+            .iter()
+            .map(|i| i.changes.len())
+            .sum::<usize>();
+        let delete_rows = changes.deletes.iter().map(|d| d.rows.len()).sum::<usize>();
+        let insert_cells = changes
+            .inserts
+            .iter()
+            .map(|r| r.values.len())
+            .sum::<usize>();
+        let total_cells = update_cells + insert_cells;
+        if !schema.editable
+            || (update_cells == 0 && delete_rows == 0 && changes.inserts.is_empty())
+            || total_cells > 5000
+        {
             return Err(AppError::invalid(
                 "Select editable cells in a table with a primary key",
             ));
         }
-        let mut mutations = Vec::new();
+
+        let mut keyed_mutations: Vec<(TextRow, RowMutation)> = Vec::new();
         let mut bytes = 0usize;
-        for input in inputs {
-            if self
-                .result_sessions
-                .lock()
-                .get(&input.result_id)
-                .map(String::as_str)
-                != Some(session_id)
-            {
-                return Err(AppError::new(
-                    ErrorCode::PolicyBlocked,
-                    "This result belongs to a different session",
-                ));
+
+        for input in changes.deletes {
+            self.verify_result_provenance(session_id, &input.result_id, &schema)?;
+            let mut seen_rows = std::collections::HashSet::new();
+            for row_index in input.rows {
+                if !seen_rows.insert(row_index) {
+                    return Err(AppError::invalid(
+                        "A row was marked for deletion twice in one change set",
+                    ));
+                }
+                let original = self.results.row(&input.result_id, row_index)?;
+                bytes += original.iter().flatten().map(String::len).sum::<usize>();
+                if bytes > 8 * 1024 * 1024 {
+                    return Err(AppError::new(
+                        ErrorCode::ResultLimitReached,
+                        "This change set exceeds the 8 MiB review budget",
+                    ));
+                }
+                keyed_mutations.push((original.clone(), RowMutation::Delete { original }));
             }
-            let source = self.results.provenance(&input.result_id)?;
-            if source.table != schema.table
-                || serde_json::to_string(&source.columns).ok()
-                    != serde_json::to_string(&schema.columns).ok()
-            {
-                return Err(AppError::new(
-                    ErrorCode::Conflict,
-                    "All edits must belong to the same unchanged table schema",
-                ));
-            }
+        }
+
+        for input in changes.updates {
+            self.verify_result_provenance(session_id, &input.result_id, &schema)?;
             let mut rows: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
             for change in input.changes {
                 if change.value.as_ref().is_some_and(|v| v.len() > 1024 * 1024) {
@@ -1463,10 +1542,10 @@ impl Studio {
                 }
                 cells.push((index, change.value));
             }
-            for (index, changes) in rows {
+            for (index, row_changes) in rows {
                 let original = self.results.row(&input.result_id, index)?;
                 bytes += original.iter().flatten().map(String::len).sum::<usize>()
-                    + changes
+                    + row_changes
                         .iter()
                         .filter_map(|(_, v)| v.as_ref())
                         .map(String::len)
@@ -1477,40 +1556,108 @@ impl Studio {
                         "This change set exceeds the 8 MiB review budget",
                     ));
                 }
-                mutations.push(RowMutation { original, changes });
+                keyed_mutations.push((
+                    original.clone(),
+                    RowMutation::Update {
+                        original,
+                        changes: row_changes,
+                    },
+                ));
             }
         }
-        if mutations.len() > 500 {
-            return Err(AppError::invalid("Apply at most 500 edited rows at a time"));
-        }
+
         let key_indices = schema
             .primary_key
             .iter()
             .filter_map(|key| schema.columns.iter().position(|c| &c.name == key))
             .collect::<Vec<_>>();
-        mutations.sort_by(|a, b| {
+        keyed_mutations.sort_by(|a, b| {
             key_indices
                 .iter()
-                .map(|i| &a.original[*i])
-                .cmp(key_indices.iter().map(|i| &b.original[*i]))
+                .map(|i| &a.0[*i])
+                .cmp(key_indices.iter().map(|i| &b.0[*i]))
         });
-        for pair in mutations.windows(2) {
-            if key_indices
-                .iter()
-                .all(|i| pair[0].original[*i] == pair[1].original[*i])
-            {
+        for pair in keyed_mutations.windows(2) {
+            if key_indices.iter().all(|i| pair[0].0[*i] == pair[1].0[*i]) {
                 return Err(AppError::invalid(
                     "A primary key was included twice in this change set",
                 ));
             }
         }
+
+        let mut mutations: Vec<RowMutation> = keyed_mutations.into_iter().map(|(_, m)| m).collect();
+
+        for row in changes.inserts {
+            let mut cols: Vec<(usize, Option<String>)> = Vec::new();
+            for entry in row.values {
+                if entry.value.as_ref().is_some_and(|v| v.len() > 1024 * 1024) {
+                    return Err(AppError::invalid(
+                        "An edited value must be smaller than 1 MiB",
+                    ));
+                }
+                let index = schema
+                    .columns
+                    .iter()
+                    .position(|c| c.id == entry.column)
+                    .ok_or_else(|| AppError::invalid("Unknown inserted column"))?;
+                let column = &schema.columns[index];
+                if !column.insertable {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        format!("Column \"{}\" cannot be set on insert", column.name),
+                    ));
+                }
+                if !column.nullable && entry.value.is_none() {
+                    return Err(AppError::invalid(format!(
+                        "Column \"{}\" does not allow NULL",
+                        column.name
+                    )));
+                }
+                if column.kind == ColumnKind::Json
+                    && let Some(value) = &entry.value
+                {
+                    serde_json::from_str::<serde_json::Value>(value).map_err(|_| {
+                        AppError::invalid("Enter valid JSON before applying this insert")
+                    })?;
+                }
+                if cols.iter().any(|(i, _)| *i == index) {
+                    return Err(AppError::invalid(
+                        "A column was included twice in one inserted row",
+                    ));
+                }
+                bytes += entry.value.as_ref().map_or(0, String::len);
+                if bytes > 8 * 1024 * 1024 {
+                    return Err(AppError::new(
+                        ErrorCode::ResultLimitReached,
+                        "This change set exceeds the 8 MiB review budget",
+                    ));
+                }
+                cols.push((index, entry.value));
+            }
+            cols.sort_by_key(|(i, _)| *i);
+            for (index, column) in schema.columns.iter().enumerate() {
+                if !column.nullable && !column.has_default && !cols.iter().any(|(i, _)| *i == index)
+                {
+                    return Err(AppError::invalid(format!(
+                        "Column \"{}\" requires a value (NOT NULL without a default)",
+                        column.name
+                    )));
+                }
+            }
+            mutations.push(RowMutation::Insert { values: cols });
+        }
+
+        if mutations.len() > 500 {
+            return Err(AppError::invalid("Apply at most 500 edited rows at a time"));
+        }
+
         let generated = mutations
             .iter()
             .map(|m| {
                 if session.profile.engine == EngineKind::Mysql {
-                    crate::drivers::mysql::update_sql(&schema, m)
+                    crate::drivers::mysql::mutation_sql(&schema, m)
                 } else {
-                    update_sql(&schema, m)
+                    mutation_sql(&schema, m)
                 }
             })
             .collect::<AppResult<Vec<_>>>()?;
@@ -1522,8 +1669,7 @@ impl Studio {
             .into_iter()
             .map(|(_, values)| values)
             .collect::<Vec<_>>();
-        let mut plan = safety::prepare(session_id, &session.profile, &sql[0])?;
-        plan.statements = sql
+        let statements = sql
             .iter()
             .map(|sql| StatementPlan {
                 sql: sql.clone(),
@@ -1531,6 +1677,7 @@ impl Studio {
                 missing_where: false,
             })
             .collect();
+        let mut plan = safety::plan_for_statements(session_id, &session.profile, statements)?;
         plan.requires_approval = true;
         plan.warnings.push("Grid edits use the login role in a separate transaction. SQL-editor transactions and session settings are independent.".into());
         bytes += sql.iter().map(String::len).sum::<usize>();
@@ -1809,6 +1956,8 @@ mod browse_classification_tests {
                     primary_key: true,
                     foreign_key: false,
                     editable: false,
+                    insertable: true,
+                    has_default: false,
                 },
                 ColumnInfo {
                     id: "c1".into(),
@@ -1819,6 +1968,8 @@ mod browse_classification_tests {
                     primary_key: false,
                     foreign_key: false,
                     editable: true,
+                    insertable: true,
+                    has_default: false,
                 },
                 ColumnInfo {
                     id: "c2".into(),
@@ -1829,6 +1980,8 @@ mod browse_classification_tests {
                     primary_key: false,
                     foreign_key: false,
                     editable: true,
+                    insertable: true,
+                    has_default: false,
                 },
             ],
             primary_key: vec!["id".into()],

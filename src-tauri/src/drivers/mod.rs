@@ -16,9 +16,17 @@ pub trait QuerySink: Send {
 }
 
 #[derive(Clone, serde::Serialize)]
-pub struct RowMutation {
-    pub original: TextRow,
-    pub changes: Vec<(usize, Option<String>)>,
+pub enum RowMutation {
+    Update {
+        original: TextRow,
+        changes: Vec<(usize, Option<String>)>,
+    },
+    Delete {
+        original: TextRow,
+    },
+    Insert {
+        values: Vec<(usize, Option<String>)>,
+    },
 }
 
 pub struct BrowseRows {

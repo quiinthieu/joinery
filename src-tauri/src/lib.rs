@@ -106,6 +106,7 @@ pub fn run() {
             commands::release_result,
             commands::prepare_changes,
             commands::prepare_changes_batch,
+            commands::prepare_table_changes,
             commands::processes,
             commands::prepare_process_cancel,
             commands::health,

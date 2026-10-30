@@ -40,6 +40,8 @@ function schema(name: string): TableSchema {
         primaryKey: false,
         foreignKey: false,
         editable: false,
+        insertable: false,
+        hasDefault: false,
       },
     ],
     primaryKey: [],

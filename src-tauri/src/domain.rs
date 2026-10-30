@@ -287,6 +287,10 @@ pub struct ColumnInfo {
     pub primary_key: bool,
     pub foreign_key: bool,
     pub editable: bool,
+    #[serde(default)]
+    pub insertable: bool,
+    #[serde(default)]
+    pub has_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
@@ -479,6 +483,39 @@ pub struct CellChange {
 pub struct ResultChanges {
     pub result_id: String,
     pub changes: Vec<CellChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultDeletes {
+    pub result_id: String,
+    pub rows: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InsertValue {
+    pub column: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RowInsert {
+    pub values: Vec<InsertValue>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TableChanges {
+    #[serde(default)]
+    pub result_id: Option<String>,
+    #[serde(default)]
+    pub updates: Vec<ResultChanges>,
+    #[serde(default)]
+    pub deletes: Vec<ResultDeletes>,
+    #[serde(default)]
+    pub inserts: Vec<RowInsert>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
