@@ -34,6 +34,7 @@ import {
   resolveTableLayout,
 } from "./table-layout";
 import { canOrder, sortIndicator } from "./table-query";
+import { opensInValueDialog } from "./value-format";
 
 export interface CellTarget {
   resultId: string;
@@ -430,7 +431,7 @@ export default function DatabaseGrid({
           kind: GridCellKind.Text,
           data: hasExplicit && explicitValue !== null ? explicitValue : "",
           displayData,
-          allowOverlay: editable,
+          allowOverlay: editable && !opensInValueDialog(column),
           readonly: !editable,
           style: !hasExplicit || explicitValue === null ? "faded" : "normal",
           themeOverride: override,
@@ -491,7 +492,7 @@ export default function DatabaseGrid({
         kind: GridCellKind.Text,
         data: value ?? "",
         displayData: value === null ? "NULL" : value,
-        allowOverlay: !cached.large && !deleted,
+        allowOverlay: !cached.large && !deleted && !opensInValueDialog(column),
         readonly: !editable,
         style: deleted || value === null ? "faded" : "normal",
         themeOverride: override,
@@ -782,11 +783,7 @@ export default function DatabaseGrid({
           }}
           onCellActivated={(cell) => {
             const target = targetAt(cell, true);
-            if (
-              target &&
-              (target.large || target.column.kind === "json" || target.column.kind === "temporal")
-            )
-              onOpenValue(target);
+            if (target && (target.large || opensInValueDialog(target.column))) onOpenValue(target);
           }}
           onVisibleRegionChanged={(range) => {
             visible.current = range;

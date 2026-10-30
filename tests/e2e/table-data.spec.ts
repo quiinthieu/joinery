@@ -524,3 +524,166 @@ test("stages, reviews, and commits row inserts and deletes in one transaction", 
   await expect(footer).toContainText("0 rows loaded");
   expect(errors).toEqual([]);
 });
+
+test("inspects binary hex/ASCII dumps, indexed PostgreSQL arrays, and formatted JSON values", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const tableName = "viewer_types_e2e";
+  await connect(page, `Value viewers ${Date.now()}`, "silent");
+
+  await page.getByRole("button", { name: "New query tab", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "SQL editor" });
+  try {
+    await editor.fill(
+      `DROP TABLE IF EXISTS public.${tableName};
+      CREATE TABLE public.${tableName} (
+        id bigint PRIMARY KEY,
+        payload bytea NOT NULL,
+        tags text[] NOT NULL,
+        matrix integer[] NOT NULL,
+        doc jsonb NOT NULL
+      );
+      INSERT INTO public.${tableName} VALUES (
+        1,
+        decode('89504e470d0a1a0a48656c6c6f00ff214a6f696e657279', 'hex'),
+        ARRAY['alpha', 'beta, gamma', NULL, 'NULL', ''],
+        ARRAY[[10, 20], [30, NULL]],
+        '{"service":"joinery","maxId":9223372036854775807,"nested":{"items":[true,null]}}'::jsonb
+      );`,
+    );
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    await expect(page.getByRole("tablist", { name: "Query results" }).getByRole("tab")).toHaveCount(
+      3,
+    );
+    await expect(page.locator(".query-error")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
+    await openTable(page, tableName);
+    await expect(page.locator(".result-footer")).toContainText("1 rows loaded");
+    const box = (await page.locator(".grid-host").boundingBox())!;
+
+    // 1. Binary viewer: 16-byte-per-row hex + printable ASCII dump + exact byte count + Raw toggle.
+    await expect(async () => {
+      await page.mouse.dblclick(box.x + ROW_MARKERS + 210, box.y + HEADER + 18);
+      await expect(page.getByRole("dialog", { name: "payload" })).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 10000 });
+    const binaryDialog = page.getByRole("dialog", { name: "payload" });
+    await expect(page.locator("#portal textarea, #portal input")).toHaveCount(0);
+    await expect(binaryDialog).toContainText("23 bytes");
+    const hexTab = binaryDialog.getByRole("tab", { name: "Hex / ASCII", exact: true });
+    await expect(hexTab).toHaveAttribute("aria-selected", "true");
+    await expect(binaryDialog.getByTestId("binary-hex-viewer")).toContainText(
+      "00000000  89 50 4e 47 0d 0a 1a 0a  48 65 6c 6c 6f 00 ff 21  |.PNG....Hello..!|",
+    );
+    await expect(binaryDialog.getByTestId("binary-hex-viewer")).toContainText("|Joinery|");
+    await hexTab.focus();
+    await hexTab.press("ArrowRight");
+    await expect(binaryDialog.getByRole("tab", { name: "Raw", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(binaryDialog.getByLabel("Cell value")).toHaveValue(
+      "\\x89504e470d0a1a0a48656c6c6f00ff214a6f696e657279",
+    );
+    await binaryDialog.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(binaryDialog).toHaveCount(0);
+
+    // 2. PostgreSQL 1D array viewer: 1-based indexes distinguishing SQL NULL from string "NULL" and "".
+    await expect(async () => {
+      await page.mouse.dblclick(box.x + ROW_MARKERS + 410, box.y + HEADER + 18);
+      await expect(page.getByRole("dialog", { name: "tags" })).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 10000 });
+    const tagsDialog = page.getByRole("dialog", { name: "tags" });
+    await expect(tagsDialog).toContainText("5 elements");
+    const tagRows = tagsDialog.getByRole("table", { name: "Array elements" }).locator("tbody tr");
+    await expect(tagRows).toHaveCount(5);
+    await expect(tagRows.nth(0)).toContainText("[1]");
+    await expect(tagRows.nth(0)).toContainText("alpha");
+    await expect(tagRows.nth(1)).toContainText("[2]");
+    await expect(tagRows.nth(1)).toContainText("beta, gamma");
+    await expect(tagRows.nth(2)).toContainText("[3]");
+    await expect(tagRows.nth(2)).toContainText("SQL NULL");
+    await expect(tagRows.nth(3)).toContainText("[4]");
+    await expect(tagRows.nth(3)).toContainText('"NULL"');
+    await expect(tagRows.nth(3)).toContainText("string");
+    await expect(tagRows.nth(4)).toContainText("[5]");
+    await expect(tagRows.nth(4)).toContainText("empty string");
+    await tagsDialog.getByRole("tab", { name: "Raw", exact: true }).click();
+    await expect(tagsDialog.getByLabel("Cell value")).toHaveValue(
+      '{alpha,"beta, gamma",NULL,"NULL",""}',
+    );
+    await tagsDialog.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(tagsDialog).toHaveCount(0);
+
+    // 3. PostgreSQL 2D array viewer: nested 1-based paths [1][1] .. [2][2].
+    await expect(async () => {
+      await page.mouse.dblclick(box.x + ROW_MARKERS + 610, box.y + HEADER + 18);
+      await expect(page.getByRole("dialog", { name: "matrix" })).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 10000 });
+    const matrixDialog = page.getByRole("dialog", { name: "matrix" });
+    await expect(matrixDialog).toContainText("4 elements · 2D");
+    const matrixRows = matrixDialog
+      .getByRole("table", { name: "Array elements" })
+      .locator("tbody tr");
+    await expect(matrixRows).toHaveCount(4);
+    await expect(matrixRows.nth(0)).toContainText("[1][1]");
+    await expect(matrixRows.nth(0)).toContainText("10");
+    await expect(matrixRows.nth(3)).toContainText("[2][2]");
+    await expect(matrixRows.nth(3)).toContainText("SQL NULL");
+    await matrixDialog.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(matrixDialog).toHaveCount(0);
+
+    // 4. JSON viewer: lossless Formatted preview + Format JSON action on editable JSONB cell.
+    await expect(async () => {
+      await page.mouse.dblclick(box.x + ROW_MARKERS + 810, box.y + HEADER + 18);
+      await expect(page.getByRole("dialog", { name: "Edit doc" })).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 10000 });
+    const jsonDialog = page.getByRole("dialog", { name: "Edit doc" });
+    await expect(jsonDialog.getByRole("tab", { name: "Formatted", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(jsonDialog.getByTestId("json-formatted-viewer")).toContainText(
+      '"maxId": 9223372036854775807',
+    );
+    await jsonDialog.getByRole("tab", { name: "Raw", exact: true }).click();
+    await jsonDialog
+      .getByLabel("Cell value")
+      .fill('{"tier":"pro","seats":9223372036854775807,"flags":[1,2]}');
+    await jsonDialog.getByRole("button", { name: "Format JSON", exact: true }).click();
+    await expect(jsonDialog.getByLabel("Cell value")).toHaveValue(
+      [
+        "{",
+        '  "tier": "pro",',
+        '  "seats": 9223372036854775807,',
+        '  "flags": [',
+        "    1,",
+        "    2",
+        "  ]",
+        "}",
+      ].join("\n"),
+    );
+    await jsonDialog.getByRole("button", { name: "Keep edit", exact: true }).click();
+    await expect(jsonDialog).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Review 1 edit", exact: true })).toBeVisible();
+    await expect(page.locator(".inspector-value")).toContainText('"seats": 9223372036854775807');
+    await page.getByRole("button", { name: "Discard", exact: true }).click();
+    expect(errors).toEqual([]);
+  } finally {
+    await page
+      .getByRole("tablist", { name: "Workspaces" })
+      .getByRole("tab", { name: "Query 1", exact: true })
+      .click();
+    await page
+      .getByRole("textbox", { name: "SQL editor" })
+      .fill(`DROP TABLE IF EXISTS public.${tableName};`);
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    await expect(page.getByRole("tablist", { name: "Query results" }).getByRole("tab")).toHaveCount(
+      1,
+    );
+    await expect(page.locator(".result-footer")).toContainText("0 affected");
+    await expect(page.locator(".query-error")).toHaveCount(0);
+  }
+});
