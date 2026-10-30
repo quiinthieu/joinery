@@ -1,4 +1,4 @@
-use super::values::{cast, identifier, key_predicate, projection, qualified, quote};
+use super::values::{cast, identifier, key_predicate, projection, qualified};
 use super::*;
 
 impl Mysql {
@@ -97,22 +97,16 @@ impl Mysql {
     pub(super) async fn browse_rows(
         &self,
         schema: &TableSchema,
+        query: BrowseQuery,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
         let schema = schema.clone();
         self.metadata(move |conn|Box::pin(async move {
             let current=schema_on(conn,&schema.table).await?;
             unchanged(&schema,&current)?;
-            let pageable=!schema.primary_key.is_empty()&&schema.primary_key.iter().all(|k|schema.columns.iter().find(|c|&c.name==k).is_some_and(|c|cast(c).is_some()));
-            let mut sql=format!("SELECT {} FROM {}",projection(&schema),qualified(&schema.table));let mut params=Vec::new();
-            if let Some(after)=after {
-                if !pageable||after.len()!=schema.primary_key.len()||after.iter().any(Option::is_none) {return Err(AppError::invalid("Invalid table paging key"));}
-                let cols=schema.primary_key.iter().map(|k|quote(k)).collect::<Vec<_>>();
-                let casts=schema.primary_key.iter().map(|k|format!("CAST(? AS {})",cast(schema.columns.iter().find(|c|&c.name==k).unwrap()).unwrap())).collect::<Vec<_>>();
-                sql.push_str(&format!(" WHERE ({}) > ({})",cols.join(","),casts.join(",")));params=after.into_iter().map(bind).collect();
-            }
-            if pageable {sql.push_str(&format!(" ORDER BY {}",schema.primary_key.iter().map(|k|quote(k)).collect::<Vec<_>>().join(",")));}
-            sql.push_str(" LIMIT 501");
+            let built=browse_query::build(&schema,&query,after.as_deref(),&MysqlDialect)?;
+            let sql=format!("SELECT {} FROM {}{}{} LIMIT 501",projection(&schema),qualified(&schema.table),built.where_sql,built.order_sql);
+            let params=built.binds.iter().cloned().map(bind).collect::<Vec<_>>();
             let mut query=conn.exec_iter(sql,Params::Positional(params)).await.map_err(mysql_error)?;
             let names=query.columns_ref().iter().map(|c|c.name_str().into_owned()).collect::<Vec<_>>();
             if names!=schema.columns.iter().map(|c|c.name.clone()).collect::<Vec<_>>() {return Err(AppError::new(ErrorCode::Conflict,"The table schema changed. Refresh before browsing."));}
@@ -125,8 +119,8 @@ impl Mysql {
                 }
                 bytes+=size;rows.push(row);
             }
-            let has_more=limited&&pageable;
-            let next_key=if has_more {rows.last().map(|r|schema.primary_key.iter().map(|k|r[schema.columns.iter().position(|c|&c.name==k).unwrap()].clone()).collect())}else{None};
+            let has_more=limited&&built.pageable;
+            let next_key=if has_more {rows.last().map(|r|built.cursor(r))}else{None};
             Ok(BrowseRows {rows,next_key,has_more,truncated:limited&&!has_more})
         })).await
     }

@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 mod catalog;
 mod values;
+pub(crate) use values::MysqlDialect;
 pub use values::update_sql;
 use values::{column, text_row};
 
@@ -148,6 +149,7 @@ impl Mysql {
                     cancellation: true,
                     table_browsing: true,
                     table_editing: true,
+                    table_filtering: true,
                     processes: true,
                 },
             },
@@ -374,7 +376,16 @@ impl Driver for Mysql {
         schema: &TableSchema,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
-        self.browse_rows(schema, after).await
+        self.browse_rows(schema, BrowseQuery::default(), after)
+            .await
+    }
+    async fn browse_query(
+        &self,
+        schema: &TableSchema,
+        query: &BrowseQuery,
+        after: Option<Vec<Option<String>>>,
+    ) -> AppResult<BrowseRows> {
+        self.browse_rows(schema, query.clone(), after).await
     }
     async fn apply(&self, schema: &TableSchema, rows: &[RowMutation]) -> AppResult<()> {
         self.apply_rows(schema, rows).await

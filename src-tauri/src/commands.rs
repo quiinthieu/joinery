@@ -186,8 +186,11 @@ pub async fn browse_table(
     session_id: String,
     table: TableRef,
     after: Option<Vec<Option<String>>>,
+    query: Option<BrowseQuery>,
 ) -> AppResult<TablePage> {
-    studio.browse(&session_id, &table, after).await
+    studio
+        .browse_with(&session_id, &table, after, &query.unwrap_or_default())
+        .await
 }
 
 #[tauri::command]

@@ -135,7 +135,57 @@ pub struct EngineCapabilities {
     pub cancellation: bool,
     pub table_browsing: bool,
     pub table_editing: bool,
+    /// Server-side typed sorting and filtering while browsing tables.
+    pub table_filtering: bool,
     pub processes: bool,
+}
+
+/// One table-browser ordering key; primary-key tie-breakers are implicit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SortKey {
+    pub column: String,
+    pub descending: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterOp {
+    Eq,
+    NotEq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    Contains,
+    StartsWith,
+    IsNull,
+    IsNotNull,
+}
+
+/// A typed predicate; `value` is always bound, never interpolated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnFilter {
+    pub column: String,
+    pub op: FilterOp,
+    pub value: Option<String>,
+}
+
+/// Server-side table-browser view. Filters are combined with AND.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseQuery {
+    #[serde(default)]
+    pub sort: Vec<SortKey>,
+    #[serde(default)]
+    pub filters: Vec<ColumnFilter>,
+}
+
+impl BrowseQuery {
+    pub fn is_empty(&self) -> bool {
+        self.sort.is_empty() && self.filters.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

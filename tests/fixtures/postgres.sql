@@ -59,3 +59,14 @@ CREATE TABLE line_notes (
   CONSTRAINT line_notes_order_fk FOREIGN KEY (note_order) REFERENCES orders(id)
 );
 INSERT INTO line_notes VALUES (1, 7, 2, 'composite target'), (2, 7, NULL, 'line unknown');
+
+-- Sorted/filtered table-browsing fixture: NULLs, duplicates, mixed case and
+-- LIKE metacharacters across three keyset pages.
+CREATE TABLE browse_sort (id bigint PRIMARY KEY, bucket integer, label text);
+INSERT INTO browse_sort
+SELECT i,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE i % 10 END,
+       CASE WHEN i % 11 = 0 THEN NULL
+            WHEN i % 13 = 0 THEN 'odd_%' || i
+            ELSE (ARRAY['alpha','Beta','gamma'])[1 + i % 3] END
+FROM generate_series(1,1500) AS i;

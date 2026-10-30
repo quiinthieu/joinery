@@ -21,6 +21,7 @@ const session: SessionInfo = {
     cancellation: true,
     tableBrowsing: true,
     tableEditing: true,
+    tableFiltering: true,
     processes: true,
   },
 };
