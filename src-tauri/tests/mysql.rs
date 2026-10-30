@@ -1625,3 +1625,595 @@ async fn table_changes_insert_update_delete_atomically_and_conflict_check_delete
         studio.disconnect(&session.id);
     }
 }
+
+async fn finish_export(mut rx: mpsc::UnboundedReceiver<ExportEvent>) -> Vec<ExportEvent> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let done = matches!(event, ExportEvent::Finished { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExportEvent::Finished { .. })),
+            "export did not finish"
+        );
+        events
+    })
+    .await
+    .expect("export deadline")
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB fixtures"]
+async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    for port in [53306, 53307] {
+        let root = tempfile::tempdir().unwrap();
+        let sandbox = SandboxFileDialog::new(&root.path().join("exports")).unwrap();
+        let studio = Studio::with_secrets_and_dialog(
+            root.path(),
+            Arc::new(MemorySecrets::default()),
+            sandbox.clone(),
+        )
+        .unwrap();
+        let rw = studio
+            .save_profile(profile(port, SafeMode::Silent), None)
+            .unwrap();
+        let mut ro_prof = profile(port, SafeMode::ReadOnly);
+        ro_prof.name = format!("MySQL Export ReadOnly {port}");
+        let ro = studio.save_profile(ro_prof, None).unwrap();
+
+        let session = studio
+            .connect(
+                &rw.id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let ro_session = studio
+            .connect(
+                &ro.id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_mysql_export; \
+                 CREATE TABLE joinery_r2_mysql_export ( \
+                   id BIGINT PRIMARY KEY, \
+                   big_val BIGINT NOT NULL, \
+                   dec_val DECIMAL(30, 8) NOT NULL, \
+                   note VARCHAR(128) NULL \
+                 )",
+            )
+            .await,
+        );
+        for chunk_start in (1..=1550).step_by(250) {
+            let chunk_end = (chunk_start + 249).min(1550);
+            let tuples = (chunk_start..=chunk_end)
+                .map(|g| {
+                    let big = if g == 1 {
+                        "9223372036854775807".to_string()
+                    } else {
+                        (-9223372036854775000_i64 + g as i64).to_string()
+                    };
+                    let note = match g % 3 {
+                        0 => "NULL".to_string(),
+                        1 => "''".to_string(),
+                        _ => "'café\\\\line'".to_string(),
+                    };
+                    format!("({g}, {big}, 12345678901234567890.12345678, {note})")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            completed(
+                &run(
+                    &studio,
+                    &session,
+                    &format!(
+                        "INSERT INTO joinery_r2_mysql_export (id, big_val, dec_val, note) VALUES {tuples}"
+                    ),
+                )
+                .await,
+            );
+        }
+        studio.clear_history().unwrap();
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "joinery_r2_mysql_export".into(),
+        };
+        let grant = studio
+            .pick_export_destination("mysql-stream.sql", ExportFormat::SqlInsert)
+            .await
+            .unwrap()
+            .unwrap();
+        let usage_before = studio.results.usage();
+        assert_eq!(usage_before.0, 0, "port {port}");
+        let (tx, rx) = mpsc::unbounded_channel();
+        studio
+            .start_export(
+                ExportRequest {
+                    destination_token: grant.token,
+                    format: ExportFormat::SqlInsert,
+                    source: ExportSource::Table {
+                        session_id: ro_session.id.clone(),
+                        table: table.clone(),
+                        query: BrowseQuery::default(),
+                        approval: None,
+                        column_ids: Vec::new(),
+                    },
+                    include_headers: true,
+                    engine: Some(EngineKind::Mysql),
+                    target_table: Some(table.clone()),
+                },
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .await
+            .unwrap();
+        let events = finish_export(rx).await;
+        assert_eq!(studio.results.usage(), usage_before, "port {port}");
+        assert!(
+            matches!(
+                events.last(),
+                Some(ExportEvent::Finished {
+                    status: RunStatus::Completed,
+                    rows_written: 1550,
+                    ..
+                })
+            ),
+            "port {port}: {events:?}"
+        );
+        let sql_text = std::fs::read_to_string(sandbox.root().join("mysql-stream.sql")).unwrap();
+        assert!(sql_text.contains(
+            "INSERT INTO `joinery`.`joinery_r2_mysql_export` (`id`, `big_val`, `dec_val`, `note`)"
+        ));
+        assert!(sql_text.contains("(1, 9223372036854775807, 12345678901234567890.12345678, '')"));
+        assert!(sql_text.contains("'café\\\\line'"));
+
+        // ReadOnly blocks GET_LOCK raw clause
+        let ro_grant = studio
+            .pick_export_destination("blocked-mysql.csv", ExportFormat::Csv)
+            .await
+            .unwrap()
+            .unwrap();
+        let err = studio
+            .start_export(
+                ExportRequest {
+                    destination_token: ro_grant.token,
+                    format: ExportFormat::Csv,
+                    source: ExportSource::Table {
+                        session_id: ro_session.id.clone(),
+                        table: table.clone(),
+                        query: BrowseQuery {
+                            where_clause: Some("GET_LOCK('joinery', 0) = 1".into()),
+                            ..Default::default()
+                        },
+                        approval: None,
+                        column_ids: Vec::new(),
+                    },
+                    include_headers: true,
+                    engine: Some(EngineKind::Mysql),
+                    target_table: Some(table.clone()),
+                },
+                Arc::new(|_| true),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::PolicyBlocked, "port {port}");
+
+        completed(&run(&studio, &session, "DROP TABLE joinery_r2_mysql_export").await);
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_import_csv_batches_enforce_read_only_and_rollback_conflicts() {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    for port in [53306, 53307] {
+        let root = tempfile::tempdir().unwrap();
+        let sandbox = SandboxFileDialog::new(&root.path().join("mysql-imports")).unwrap();
+        let studio = Studio::with_secrets_and_dialog(
+            root.path(),
+            Arc::new(MemorySecrets::default()),
+            sandbox.clone(),
+        )
+        .unwrap();
+
+        let rw_p = studio
+            .save_profile(profile(port, SafeMode::Silent), None)
+            .unwrap();
+        let ro_p = studio
+            .save_profile(profile(port, SafeMode::ReadOnly), None)
+            .unwrap();
+        let make_secrets = || ConnectionSecrets {
+            password: Some("joinery-local-only".into()),
+            ..Default::default()
+        };
+        let session = studio.connect(&rw_p.id, make_secrets()).await.unwrap();
+        let ro_session = studio.connect(&ro_p.id, make_secrets()).await.unwrap();
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_mysql_import;
+                 CREATE TABLE joinery_r2_mysql_import (
+                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                   sku VARCHAR(64) NOT NULL UNIQUE,
+                   big_val BIGINT NOT NULL,
+                   price DECIMAL(14,4) NOT NULL,
+                   note VARCHAR(128) NULL,
+                   active TINYINT(1) NOT NULL,
+                   origin VARCHAR(32) NOT NULL DEFAULT 'csv-default'
+                 ) ENGINE=InnoDB;",
+            )
+            .await,
+        );
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "joinery_r2_mysql_import".into(),
+        };
+
+        // Invalid precision decimal rejected upfront
+        let bad_csv = "sku,big_val,price,note,active\nSKU-1,10,12.12345,,true\n";
+        std::fs::write(sandbox.root().join("bad-mysql.csv"), bad_csv.as_bytes()).unwrap();
+        sandbox.queue_open(Some("bad-mysql.csv")).unwrap();
+        let bad_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+        assert_eq!(
+            studio
+                .preview_csv_import(
+                    &ro_session.id,
+                    &bad_grant.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    Vec::new(),
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked,
+            "port {port}"
+        );
+
+        let bad_preview = studio
+            .preview_csv_import(
+                &session.id,
+                &bad_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!bad_preview.can_prepare, "port {port}");
+        assert_eq!(bad_preview.issues.len(), 1);
+        assert_eq!(bad_preview.issues[0].column.as_deref(), Some("price"));
+
+        // Valid CSV with TINYINT(1) boolean coercion ("true"/"false"), NULL vs "" vs "\N", and <default> columns
+        let valid_csv = "sku,big_val,price,note,active\nSKU-A,9223372036854775807,999.1234,,true\nSKU-B,-9223372036854775808,0.5000,\"\",false\nSKU-C,42,10.0000,\"\\N\",1\n";
+        std::fs::write(sandbox.root().join("good-mysql.csv"), valid_csv.as_bytes()).unwrap();
+        sandbox.queue_open(Some("good-mysql.csv")).unwrap();
+        let good_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+        let preview = studio
+            .preview_csv_import(
+                &session.id,
+                &good_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert!(preview.can_prepare, "port {port}: {:?}", preview.issues);
+        assert_eq!(preview.unmapped_defaults, vec!["id", "origin"]);
+
+        let batch = studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &good_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                preview.mappings.clone(),
+                0,
+            )
+            .await
+            .unwrap();
+        let token = studio
+            .authorize(
+                &batch.plan.id,
+                None,
+                batch.plan.confirmation_text.as_deref(),
+            )
+            .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        studio
+            .execute(
+                &batch.plan.id,
+                Some(&token),
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&events);
+
+        // Mid-batch duplicate UNIQUE key rolls back atomically on InnoDB
+        let conflict_csv = "sku,big_val,price,note,active\nSKU-ROLLBACK,7,1.0000,first,true\nSKU-A,8,2.0000,dup,false\n";
+        std::fs::write(
+            sandbox.root().join("conflict-mysql.csv"),
+            conflict_csv.as_bytes(),
+        )
+        .unwrap();
+        sandbox.queue_open(Some("conflict-mysql.csv")).unwrap();
+        let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+        let conflict_batch = studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &conflict_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                preview.mappings,
+                0,
+            )
+            .await
+            .unwrap();
+        let conflict_token = studio
+            .authorize(
+                &conflict_batch.plan.id,
+                None,
+                conflict_batch.plan.confirmation_text.as_deref(),
+            )
+            .unwrap();
+        let (ctx, mut crx) = mpsc::unbounded_channel();
+        studio
+            .execute(
+                &conflict_batch.plan.id,
+                Some(&conflict_token),
+                Arc::new(move |e| ctx.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut cevents = Vec::new();
+        while let Some(ev) = crx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            cevents.push(ev);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            cevents.iter().any(|e| matches!(
+                e,
+                QueryEvent::Finished {
+                    status: RunStatus::Failed,
+                    ..
+                }
+            )),
+            "port {port}: {cevents:?}"
+        );
+
+        let page = studio.browse(&session.id, &table, None).await.unwrap();
+        assert_eq!(page.result.retained_rows, 3, "port {port}");
+        let r0 = studio.results.row(&page.result.id, 0).unwrap();
+        let r1 = studio.results.row(&page.result.id, 1).unwrap();
+        let r2 = studio.results.row(&page.result.id, 2).unwrap();
+        assert_eq!(r0[1].as_deref(), Some("SKU-A"));
+        assert_eq!(r0[2].as_deref(), Some("9223372036854775807"));
+        assert_eq!(r0[4], None);
+        assert_eq!(r0[5].as_deref(), Some("1"));
+        assert_eq!(r0[6].as_deref(), Some("csv-default"));
+        assert_eq!(r1[4].as_deref(), Some(""));
+        assert_eq!(r1[5].as_deref(), Some("0"));
+        assert_eq!(r2[4].as_deref(), Some("\\N"));
+        studio.release_result(&page.result.id);
+
+        completed(&run(&studio, &session, "DROP TABLE joinery_r2_mysql_import").await);
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL, MariaDB, and PostgreSQL services"]
+async fn mysql_mariadb_and_cross_engine_postgres_data_comparison() {
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let make_secrets = || ConnectionSecrets {
+        password: Some("joinery-local-only".into()),
+        ..Default::default()
+    };
+
+    let mysql_p = studio
+        .save_profile(profile(53306, SafeMode::Silent), None)
+        .unwrap();
+    let maria_p = studio
+        .save_profile(profile(53307, SafeMode::Silent), None)
+        .unwrap();
+    let pg_port: u16 = std::env::var("JOINERY_TEST_PORT")
+        .unwrap_or_else(|_| "55432".into())
+        .parse()
+        .unwrap();
+    let pg_p = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Cross Compare".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port: pg_port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Silent,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: false,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+
+    let mysql_s = studio.connect(&mysql_p.id, make_secrets()).await.unwrap();
+    let maria_s = studio.connect(&maria_p.id, make_secrets()).await.unwrap();
+    let pg_s = studio.connect(&pg_p.id, make_secrets()).await.unwrap();
+
+    completed(
+        &run(
+            &studio,
+            &mysql_s,
+            "DROP TABLE IF EXISTS joinery_r2_xengine_cmp;
+             CREATE TABLE joinery_r2_xengine_cmp (
+               id BIGINT NOT NULL PRIMARY KEY,
+               sku VARCHAR(64) NOT NULL,
+               amount DECIMAL(18,4) NOT NULL,
+               note VARCHAR(128) NULL
+             ) ENGINE=InnoDB;
+             INSERT INTO joinery_r2_xengine_cmp VALUES
+               (1, 'SAME-MAX', 99999999.1234, 'identical'),
+               (2, 'DIFF-NOTE', 10.5000, NULL),
+               (3, 'ONLY-MYSQL', 1.0000, 'left');",
+        )
+        .await,
+    );
+
+    completed(
+        &run(
+            &studio,
+            &maria_s,
+            "DROP TABLE IF EXISTS joinery_r2_xengine_cmp;
+             CREATE TABLE joinery_r2_xengine_cmp (
+               id BIGINT NOT NULL PRIMARY KEY,
+               sku VARCHAR(64) NOT NULL,
+               amount DECIMAL(18,4) NOT NULL,
+               note VARCHAR(128) NULL
+             ) ENGINE=InnoDB;
+             INSERT INTO joinery_r2_xengine_cmp VALUES
+               (1, 'SAME-MAX', 99999999.1234, 'identical'),
+               (2, 'DIFF-NOTE', 10.5000, ''),
+               (4, 'ONLY-MARIA', 2.0000, 'right');",
+        )
+        .await,
+    );
+
+    completed(
+        &run(
+            &studio,
+            &pg_s,
+            "DROP TABLE IF EXISTS public.joinery_r2_xengine_cmp;
+             CREATE TABLE public.joinery_r2_xengine_cmp (
+               id BIGINT NOT NULL PRIMARY KEY,
+               sku TEXT NOT NULL,
+               amount NUMERIC(18,4) NOT NULL,
+               note TEXT NULL
+             );
+             INSERT INTO public.joinery_r2_xengine_cmp VALUES
+               (1, 'SAME-MAX', 99999999.1234, 'identical'),
+               (2, 'DIFF-NOTE', 10.5000, ''),
+               (5, 'ONLY-PG', 3.0000, 'pg-only');",
+        )
+        .await,
+    );
+
+    // MySQL 8.4 <-> MariaDB 11.4 LiveTable comparison
+    let mysql_vs_maria = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: mysql_s.id.clone(),
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("MySQL 8.4".into()),
+            },
+            right: CompareSide::LiveTable {
+                session_id: maria_s.id.clone(),
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("MariaDB 11.4".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(mysql_vs_maria.identical_count, 1);
+    assert_eq!(mysql_vs_maria.different_count, 1);
+    assert_eq!(mysql_vs_maria.only_left_count, 1);
+    assert_eq!(mysql_vs_maria.only_right_count, 1);
+
+    // MySQL 8.4 <-> PostgreSQL cross-engine LiveTable comparison
+    let mysql_vs_pg = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: mysql_s.id.clone(),
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("MySQL".into()),
+            },
+            right: CompareSide::LiveTable {
+                session_id: pg_s.id.clone(),
+                table: TableRef {
+                    schema: "public".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("PostgreSQL".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(mysql_vs_pg.key_columns, vec!["id"]);
+    assert_eq!(mysql_vs_pg.identical_count, 1);
+    assert_eq!(mysql_vs_pg.different_count, 1);
+    assert_eq!(mysql_vs_pg.only_left_count, 1);
+    assert_eq!(mysql_vs_pg.only_right_count, 1);
+
+    completed(&run(&studio, &mysql_s, "DROP TABLE joinery_r2_xengine_cmp").await);
+    completed(&run(&studio, &maria_s, "DROP TABLE joinery_r2_xengine_cmp").await);
+    completed(&run(&studio, &pg_s, "DROP TABLE public.joinery_r2_xengine_cmp").await);
+    studio.shutdown();
+}

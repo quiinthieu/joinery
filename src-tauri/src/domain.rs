@@ -745,6 +745,326 @@ pub struct CompletionCatalog {
     pub unqualified_tables: Vec<TableRef>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportFormat {
+    Csv,
+    Tsv,
+    Json,
+    Ndjson,
+    SqlInsert,
+    Markdown,
+}
+
+impl ExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Tsv => "tsv",
+            Self::Json => "json",
+            Self::Ndjson => "ndjson",
+            Self::SqlInsert => "sql",
+            Self::Markdown => "md",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Csv => "CSV",
+            Self::Tsv => "TSV",
+            Self::Json => "JSON",
+            Self::Ndjson => "NDJSON",
+            Self::SqlInsert => "SQL INSERT",
+            Self::Markdown => "Markdown",
+        }
+    }
+}
+
+/// Capability token representing a user-selected native file destination or source.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSelection {
+    pub token: String,
+    pub file_name: String,
+    pub display_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExportSource {
+    Result {
+        result_id: String,
+        #[serde(default)]
+        column_ids: Vec<String>,
+    },
+    Table {
+        session_id: String,
+        table: TableRef,
+        #[serde(default)]
+        query: BrowseQuery,
+        #[serde(default)]
+        approval: Option<BrowseApproval>,
+        #[serde(default)]
+        column_ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    pub destination_token: String,
+    pub format: ExportFormat,
+    pub source: ExportSource,
+    #[serde(default = "default_true")]
+    pub include_headers: bool,
+    #[serde(default)]
+    pub engine: Option<EngineKind>,
+    #[serde(default)]
+    pub target_table: Option<TableRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExportEvent {
+    Started {
+        export_id: String,
+        file_name: String,
+        source_truncated: bool,
+    },
+    Progress {
+        export_id: String,
+        #[ts(type = "number")]
+        rows_written: u64,
+        #[ts(type = "number")]
+        bytes_written: u64,
+    },
+    Finished {
+        export_id: String,
+        status: RunStatus,
+        #[ts(type = "number")]
+        rows_written: u64,
+        #[ts(type = "number")]
+        bytes_written: u64,
+        output_file_name: Option<String>,
+        partial_file_name: Option<String>,
+        error: Option<AppError>,
+        elapsed_ms: u32,
+    },
+}
+
+fn default_null_token() -> String {
+    "\\N".into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CsvDelimiter {
+    Comma,
+    Tab,
+    Semicolon,
+    Pipe,
+}
+
+impl CsvDelimiter {
+    pub fn byte(self) -> u8 {
+        match self {
+            Self::Comma => b',',
+            Self::Tab => b'\t',
+            Self::Semicolon => b';',
+            Self::Pipe => b'|',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comma => "Comma (,)",
+            Self::Tab => "Tab (\\t)",
+            Self::Semicolon => "Semicolon (;)",
+            Self::Pipe => "Pipe (|)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvImportOptions {
+    pub delimiter: CsvDelimiter,
+    #[serde(default = "default_true")]
+    pub has_header: bool,
+    #[serde(default = "default_null_token")]
+    pub null_token: String,
+}
+
+impl Default for CsvImportOptions {
+    fn default() -> Self {
+        Self {
+            delimiter: CsvDelimiter::Comma,
+            has_header: true,
+            null_token: default_null_token(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvColumnMapping {
+    pub csv_index: usize,
+    pub target_column: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvImportIssue {
+    pub line: usize,
+    pub column: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvImportPreview {
+    pub file_name: String,
+    pub headers: Vec<String>,
+    pub mappings: Vec<CsvColumnMapping>,
+    pub unmapped_defaults: Vec<String>,
+    pub unmapped_nulls: Vec<String>,
+    pub sample_rows: Vec<Vec<Option<String>>>,
+    pub total_rows: usize,
+    pub batch_size: usize,
+    pub batch_count: usize,
+    pub issues: Vec<CsvImportIssue>,
+    pub total_issues: usize,
+    pub can_prepare: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CompareSide {
+    #[serde(rename_all = "camelCase")]
+    Snapshot {
+        result_ids: Vec<String>,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        truncated_hint: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    LiveTable {
+        session_id: String,
+        table: TableRef,
+        #[serde(default)]
+        query: BrowseQuery,
+        #[serde(default)]
+        approval: Option<BrowseApproval>,
+        #[serde(default)]
+        label: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareRequest {
+    pub left: CompareSide,
+    pub right: CompareSide,
+    #[serde(default)]
+    pub key_columns: Vec<String>,
+    #[serde(default)]
+    pub ignore_column_case: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AlignedCompareColumn {
+    pub name: String,
+    pub left_name: String,
+    pub right_name: String,
+    pub left_type: String,
+    pub right_type: String,
+    pub kind_mismatch: bool,
+    pub is_key: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CellDiff {
+    pub column: String,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub type_mismatch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RowDiffKind {
+    Different,
+    OnlyLeft,
+    OnlyRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparedRowDiff {
+    pub kind: RowDiffKind,
+    pub key_values: Vec<String>,
+    pub cells: Vec<CellDiff>,
+    pub left_row: Option<Vec<Option<String>>>,
+    pub right_row: Option<Vec<Option<String>>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateKeySample {
+    pub key_values: Vec<String>,
+    pub occurrences: usize,
+    pub counterpart_occurrences: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareSideAnomalies {
+    pub null_key_count: usize,
+    pub null_key_samples: Vec<Vec<Option<String>>>,
+    pub duplicate_key_rows: usize,
+    pub duplicate_distinct_keys: usize,
+    pub excluded_counterpart_rows: usize,
+    pub duplicate_key_samples: Vec<DuplicateKeySample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCompareReport {
+    pub left_label: String,
+    pub right_label: String,
+    pub left_truncated: bool,
+    pub right_truncated: bool,
+    pub key_columns: Vec<String>,
+    pub aligned_columns: Vec<AlignedCompareColumn>,
+    pub unaligned_left_columns: Vec<String>,
+    pub unaligned_right_columns: Vec<String>,
+    pub left_total_rows: usize,
+    pub right_total_rows: usize,
+    pub identical_count: usize,
+    pub different_count: usize,
+    pub only_left_count: usize,
+    pub only_right_count: usize,
+    pub left_anomalies: CompareSideAnomalies,
+    pub right_anomalies: CompareSideAnomalies,
+    pub diffs: Vec<ComparedRowDiff>,
+    pub diffs_truncated: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,12 +8,14 @@ import {
   type RefObject,
 } from "react";
 import {
+  ArrowLeftRight,
   ArrowRight,
   Check,
   ChevronDown,
   Clock3,
   Code2,
   Columns3,
+  Download,
   Gauge,
   Loader2,
   Play,
@@ -24,6 +26,7 @@ import {
   Square,
   Table2,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import type { ConnectionProfile, SessionInfo, TableInfo } from "../ipc/generated";
@@ -31,7 +34,8 @@ import type { StudioTab } from "../state/studio";
 import { useStudio, querySessionForTab } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
-import type { CellTarget } from "../features/grid/DatabaseGrid";
+import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
+import { CopyAsMenu } from "../features/grid/CopyAsMenu";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
@@ -51,12 +55,16 @@ interface Props {
   profile?: ConnectionProfile;
   session?: SessionInfo;
   editorRef: RefObject<EditorHandle>;
+  gridRef: RefObject<DatabaseGridHandle>;
   onRun(sql?: string): void;
   onReview(): void;
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
   onOpenColumns(): void;
+  onOpenExport(): void;
+  onOpenImport(): void;
+  onOpenCompare(): void;
   onNewSession(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
@@ -66,12 +74,16 @@ export function Workbench({
   profile,
   session,
   editorRef,
+  gridRef,
   onRun,
   onReview,
   onConfirm,
   onSelect,
   onOpenValue,
   onOpenColumns,
+  onOpenExport,
+  onOpenImport,
+  onOpenCompare,
   onNewSession,
   onQueryChange,
 }: Props) {
@@ -98,6 +110,11 @@ export function Workbench({
     !!tab.schema?.editable &&
     !!session &&
     tab.dataSessionId === session.id;
+  const tableImportable =
+    tableEditable &&
+    profile?.safeMode !== "readOnly" &&
+    (profile?.engine === "postgres" || profile?.engine === "mysql") &&
+    tab.schema!.columns.some((col) => col.insertable);
   const mutatingDisabled = running || tab.loadingPage || tab.status === "outcomeUnknown";
   const selectedDraftIds: string[] = [];
   const selectedExisting: { resultId: string; row: number }[] = [];
@@ -498,19 +515,44 @@ export function Workbench({
               <span className="result-placeholder">Results</span>
             )}
           </div>
-          <span className="result-caption">
-            {running ? (
+          <div className="table-view-actions">
+            {result && result.columns.length > 0 && (
               <>
-                <Loader2 size={12} className="spin" />
-                {(runningTime / 1000).toFixed(1)} s
-              </>
-            ) : (
-              <>
-                <Clock3 size={12} />
-                {tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}
+                <CopyAsMenu gridRef={gridRef} disabled={running} />
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running}
+                  onClick={onOpenCompare}
+                >
+                  <ArrowLeftRight size={12} />
+                  Compare…
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running}
+                  onClick={onOpenExport}
+                >
+                  <Download size={12} />
+                  Export…
+                </button>
               </>
             )}
-          </span>
+            <span className="result-caption">
+              {running ? (
+                <>
+                  <Loader2 size={12} className="spin" />
+                  {(runningTime / 1000).toFixed(1)} s
+                </>
+              ) : (
+                <>
+                  <Clock3 size={12} />
+                  {tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}
+                </>
+              )}
+            </span>
+          </div>
         </div>
       ) : tab.kind === "table" ? (
         <div className="results-header table-views">
@@ -570,6 +612,36 @@ export function Workbench({
             )}
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
+                <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
+                {tableImportable ? (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    disabled={mutatingDisabled}
+                    onClick={onOpenImport}
+                  >
+                    <Upload size={12} />
+                    Import CSV…
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running || tab.loadingPage}
+                  onClick={onOpenCompare}
+                >
+                  <ArrowLeftRight size={12} />
+                  Compare…
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running || tab.loadingPage}
+                  onClick={onOpenExport}
+                >
+                  <Download size={12} />
+                  Export…
+                </button>
                 <button type="button" className="button ghost small" onClick={onOpenColumns}>
                   <Columns3 size={12} />
                   Columns
@@ -657,6 +729,7 @@ export function Workbench({
         ) : (
           <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}>
             <DatabaseGrid
+              ref={gridRef}
               key={tab.id}
               tab={tab}
               result={result}

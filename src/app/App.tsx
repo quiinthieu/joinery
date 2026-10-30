@@ -2,13 +2,16 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import {
   Activity,
   ArrowDownLeft,
+  ArrowLeftRight,
   ArrowUpDown,
   ArrowUpRight,
   Check,
   Code2,
   Columns3,
   Command,
+  Copy,
   Database,
+  Download,
   FileCode2,
   Filter,
   Gauge,
@@ -21,6 +24,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Upload,
   Wifi,
   X,
   ChevronRight,
@@ -30,6 +34,9 @@ import { ConnectionDialog, ConnectDialog } from "../features/connections/Connect
 import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
+import { ExportDialog } from "../features/grid/ExportDialog";
+import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
+import { DataCompareDialog } from "../features/grid/DataCompareDialog";
 import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
@@ -50,7 +57,8 @@ import { useStudio, beginEventBatch, querySessionForTab, type StudioTab } from "
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
-import type { CellTarget } from "../features/grid/DatabaseGrid";
+import { COPY_FORMATS } from "../features/grid/copy-format";
+import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import {
   canOrder,
@@ -83,6 +91,9 @@ type Dialog =
     }
   | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
   | { kind: "columns"; tabId: string }
+  | { kind: "export"; tabId: string }
+  | { kind: "importCsv"; tabId: string }
+  | { kind: "compare"; tabId?: string }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -103,6 +114,8 @@ export function App() {
     [selectedCell, setSelectedCell] = useState<CellTarget | null>(null),
     [usage, setUsage] = useState<ResourceUsage | null>(null);
   const editor = useRef<EditorHandle>(null);
+  const grid = useRef<DatabaseGridHandle>(null);
+  const importRawRefreshTabRef = useRef<string | null>(null);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const current = state.tabs.find((tab) => tab.id === state.activeTabId);
   const profile = state.bootstrap?.profiles.find(
@@ -252,7 +265,83 @@ export function App() {
             : []),
         ]
       : [];
+  const activeQueryResult =
+    current?.kind === "query"
+      ? (current.results.find((r) => r.id === current.activeResultId) ?? current.results[0])
+      : undefined;
+  const hasCopyableGrid =
+    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    (current?.kind === "table" &&
+      current.view === "data" &&
+      (current.schema?.columns.length ?? 0) > 0) ||
+    current?.kind === "benchmark";
+  const hasExportableData =
+    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    (current?.kind === "table" &&
+      current.view === "data" &&
+      (current.schema?.columns.length ?? 0) > 0);
+  const hasImportableTable =
+    current?.kind === "table" &&
+    current.view === "data" &&
+    !!current.table &&
+    !!current.schema?.editable &&
+    current.schema.columns.some((col) => col.insertable) &&
+    !!session &&
+    current.dataSessionId === session.id &&
+    profile?.safeMode !== "readOnly" &&
+    (profile?.engine === "postgres" || profile?.engine === "mysql");
+  const hasComparableSources =
+    (state.bootstrap?.profiles.some(
+      (p) => (p.engine === "postgres" || p.engine === "mysql") && Boolean(state.sessions[p.id]),
+    ) ??
+      false) ||
+    state.tabs.some(
+      (t) =>
+        (t.kind === "query" && t.results.some((r) => r.columns.length > 0)) ||
+        (t.kind === "table" && t.pages.length > 0),
+    );
+  const copyCommands = [
+    ...(hasComparableSources
+      ? [
+          {
+            label: "Compare data…",
+            shortcut: "Tables & results",
+            icon: ArrowLeftRight,
+            action: () => setDialog({ kind: "compare", tabId: current?.id }),
+          },
+        ]
+      : []),
+    ...(hasImportableTable && current
+      ? [
+          {
+            label: "Import CSV into table…",
+            shortcut: "Reviewed batches",
+            icon: Upload,
+            action: () => setDialog({ kind: "importCsv", tabId: current.id }),
+          },
+        ]
+      : []),
+    ...(hasExportableData && current
+      ? [
+          {
+            label: "Export data to file…",
+            shortcut: "CSV · JSON · SQL",
+            icon: Download,
+            action: () => setDialog({ kind: "export", tabId: current.id }),
+          },
+        ]
+      : []),
+    ...(hasCopyableGrid
+      ? COPY_FORMATS.map((item) => ({
+          label: `Copy as ${item.label}`,
+          shortcut: item.hint,
+          icon: Copy,
+          action: () => void grid.current?.copyAs(item.id),
+        }))
+      : []),
+  ];
   const tableCommands = [
+    ...copyCommands,
     ...layoutCommands,
     ...(current?.kind === "table" && session?.capabilities.tableFiltering
       ? [
@@ -846,6 +935,7 @@ export function App() {
                 profile={profile}
                 session={session ?? undefined}
                 editorRef={editor}
+                gridRef={grid}
                 onRun={(sql) => void runSql(sql)}
                 onReview={() => void reviewEdits()}
                 onConfirm={(title, description, action) =>
@@ -854,6 +944,9 @@ export function App() {
                 onSelect={setSelectedCell}
                 onOpenValue={(target) => setDialog({ kind: "value", target })}
                 onOpenColumns={() => setDialog({ kind: "columns", tabId: current.id })}
+                onOpenExport={() => setDialog({ kind: "export", tabId: current.id })}
+                onOpenImport={() => setDialog({ kind: "importCsv", tabId: current.id })}
+                onOpenCompare={() => setDialog({ kind: "compare", tabId: current.id })}
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
@@ -1059,6 +1152,101 @@ export function App() {
             />
           );
         })()}
+      {dialog?.kind === "export" &&
+        (() => {
+          const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
+          if (!targetTab) return null;
+          const targetProfile = state.bootstrap?.profiles.find(
+            (p) => p.id === (targetTab.connectionId ?? state.selectedConnectionId),
+          );
+          const targetSession =
+            targetTab.kind === "query"
+              ? (querySessionForTab(targetTab, state.sessions) ?? undefined)
+              : targetProfile
+                ? state.sessions[targetProfile.id]
+                : undefined;
+          const targetResult =
+            targetTab.kind === "query"
+              ? (targetTab.results.find((r) => r.id === targetTab.activeResultId) ??
+                targetTab.results[0])
+              : undefined;
+          const allCols =
+            targetTab.kind === "table"
+              ? (targetTab.schema?.columns ?? [])
+              : (targetResult?.columns ?? []);
+          const visibleCols =
+            targetTab.kind === "table" && targetTab.schema
+              ? resolveTableLayout(
+                  targetTab.schema.columns,
+                  findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table),
+                ).visibleColumns
+              : allCols;
+          return (
+            <ExportDialog
+              tab={targetTab}
+              profile={targetProfile}
+              session={targetSession}
+              visibleColumns={visibleCols}
+              allColumns={allCols}
+              result={targetResult}
+              onClose={() => setDialog(null)}
+            />
+          );
+        })()}
+      {dialog?.kind === "importCsv" &&
+        (() => {
+          const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
+          if (!targetTab || targetTab.kind !== "table" || !targetTab.table) {
+            return null;
+          }
+          const targetProfile = state.bootstrap?.profiles.find(
+            (p) => p.id === (targetTab.connectionId ?? state.selectedConnectionId),
+          );
+          const targetSession = targetProfile ? state.sessions[targetProfile.id] : undefined;
+          return (
+            <ImportCsvDialog
+              table={targetTab.table}
+              schema={targetTab.schema}
+              profile={targetProfile}
+              session={targetSession}
+              onImported={() => {
+                const latestTab = useStudio.getState().tabs.find((t) => t.id === targetTab.id);
+                if (!latestTab) return;
+                if (hasRawClauses(latestTab.query)) {
+                  importRawRefreshTabRef.current = targetTab.id;
+                } else {
+                  void state.refreshTable(targetTab.id);
+                }
+              }}
+              onClose={() => {
+                const pendingRefreshTabId = importRawRefreshTabRef.current;
+                importRawRefreshTabRef.current = null;
+                setDialog(null);
+                if (pendingRefreshTabId === targetTab.id) {
+                  const latestTab = useStudio.getState().tabs.find((t) => t.id === targetTab.id);
+                  if (latestTab) {
+                    void applyTableQuery(targetTab.id, latestTab.query, { force: true });
+                  }
+                }
+              }}
+            />
+          );
+        })()}
+      {dialog?.kind === "compare" && (
+        <DataCompareDialog
+          initialTab={dialog.tabId ? state.tabs.find((t) => t.id === dialog.tabId) : current}
+          tabs={state.tabs}
+          profiles={state.bootstrap?.profiles ?? []}
+          sessions={state.sessions}
+          catalog={state.catalog}
+          onCatalogLoaded={(connectionId, tables) =>
+            useStudio.setState((prev) => ({
+              catalog: { ...prev.catalog, [connectionId]: tables },
+            }))
+          }
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "confirm" && (
         <Confirmation
           title={dialog.title}

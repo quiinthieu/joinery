@@ -464,3 +464,82 @@ pub async fn completion_schema(
         .completion_schema(&session_id, &revision, &table)
         .await
 }
+
+#[tauri::command]
+pub async fn pick_export_destination(
+    studio: State<'_, Arc<Studio>>,
+    suggested_name: String,
+    format: ExportFormat,
+) -> AppResult<Option<FileSelection>> {
+    studio
+        .pick_export_destination(&suggested_name, format)
+        .await
+}
+
+#[tauri::command]
+pub async fn start_export(
+    studio: State<'_, Arc<Studio>>,
+    request: ExportRequest,
+    on_event: Channel<ExportEvent>,
+) -> AppResult<String> {
+    studio
+        .inner()
+        .start_export(request, Arc::new(move |event| on_event.send(event).is_ok()))
+        .await
+}
+
+#[tauri::command]
+pub async fn cancel_export(studio: State<'_, Arc<Studio>>, export_id: String) -> AppResult<()> {
+    studio.cancel_export(&export_id)
+}
+
+#[tauri::command]
+pub async fn pick_import_source(
+    studio: State<'_, Arc<Studio>>,
+) -> AppResult<Option<FileSelection>> {
+    studio.pick_import_source().await
+}
+
+#[tauri::command]
+pub async fn preview_csv_import(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    source_token: String,
+    table: TableRef,
+    options: CsvImportOptions,
+    mappings: Vec<CsvColumnMapping>,
+) -> AppResult<CsvImportPreview> {
+    studio
+        .preview_csv_import(&session_id, &source_token, &table, options, mappings)
+        .await
+}
+
+#[tauri::command]
+pub async fn prepare_csv_import_batch(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    source_token: String,
+    table: TableRef,
+    options: CsvImportOptions,
+    mappings: Vec<CsvColumnMapping>,
+    batch_index: usize,
+) -> AppResult<ChangePreview> {
+    studio
+        .prepare_csv_import_batch(
+            &session_id,
+            &source_token,
+            &table,
+            options,
+            mappings,
+            batch_index,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn compare_data(
+    studio: State<'_, Arc<Studio>>,
+    request: CompareRequest,
+) -> AppResult<DataCompareReport> {
+    studio.compare_data(request).await
+}

@@ -1,6 +1,8 @@
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -24,6 +26,14 @@ import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
 import { useStudio, type StudioTab } from "../../state/studio";
+import {
+  copyFormatLabel,
+  formatGridCells,
+  MAX_COPY_CELLS,
+  writeClipboardText,
+  type CopyCell,
+  type CopyFormat,
+} from "./copy-format";
 import { parseTsvClipboard, validatePasteMatrix } from "./paste";
 import {
   clampColumnWidth,
@@ -35,6 +45,26 @@ import {
 } from "./table-layout";
 import { canOrder, sortIndicator } from "./table-query";
 import { opensInValueDialog } from "./value-format";
+
+export type CopyScope = "auto" | "selection" | "row" | "cell" | "loaded";
+
+export interface CopySelectionSummary {
+  hasSelection: boolean;
+  hasRangeSelection: boolean;
+  hasSingleCell: boolean;
+  selectedCellCount: number;
+  selectedRowCount: number;
+  loadedRowCount: number;
+  visibleColumnCount: number;
+}
+
+export interface DatabaseGridHandle {
+  copyAs(
+    format: CopyFormat,
+    options?: { scope?: CopyScope; includeHeaders?: boolean },
+  ): Promise<boolean>;
+  selectionSummary(): CopySelectionSummary;
+}
 
 export interface CellTarget {
   resultId: string;
@@ -118,16 +148,19 @@ function benchmarkValue(col: number, row: number) {
   }
 }
 
-export default function DatabaseGrid({
-  tab,
-  result,
-  theme: themeName,
-  onSelect,
-  onOpenValue,
-  onSelectedRowsChange,
-  focusRowRequest,
-  onSort,
-}: Props) {
+const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid(
+  {
+    tab,
+    result,
+    theme: themeName,
+    onSelect,
+    onOpenValue,
+    onSelectedRowsChange,
+    focusRowRequest,
+    onSort,
+  }: Props,
+  ref,
+) {
   const grid = useRef<DataEditorRef>(null),
     host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 800, height: 400 });
@@ -665,6 +698,196 @@ export default function DatabaseGrid({
   const applyPasteRef = useRef(applyPaste);
   applyPasteRef.current = applyPaste;
 
+  const resolveCopyMatrix = useCallback(
+    (scope: CopyScope) => {
+      const { tab: currentTab, result: currentResult } = model.current;
+      const draftCount =
+        currentTab.kind === "table" ? dirtyStore.insertsForTab(currentTab.id).length : 0;
+      const maxCopyableRows =
+        currentTab.kind === "benchmark"
+          ? 1_000_000
+          : currentTab.kind === "table"
+            ? currentTab.loadedRows + draftCount
+            : (currentResult?.retainedRows ?? 0);
+      const loadedDefaultRows =
+        currentTab.kind === "benchmark"
+          ? 1_000_000
+          : currentTab.kind === "table"
+            ? currentTab.loadedRows > 0
+              ? currentTab.loadedRows
+              : draftCount
+            : (currentResult?.retainedRows ?? 0);
+
+      const sel = selectionRef.current;
+      const rowList = sel.rows.toArray().filter((r) => r >= 0 && r < maxCopyableRows);
+      const colList = sel.columns.toArray().filter((c) => c >= 0 && c < visibleColumns.length);
+      const rects = sel.current ? [sel.current.range, ...sel.current.rangeStack] : [];
+      const hasMultiCellRect =
+        rects.length > 1 || (rects.length === 1 && rects[0].width * rects[0].height > 1);
+      const hasRangeSelection = rowList.length > 0 || colList.length > 0 || hasMultiCellRect;
+      const hasSingleCell = !!sel.current && !hasRangeSelection;
+
+      const selectionCols = new Set<number>(colList);
+      const selectionRows = new Set<number>(rowList);
+      for (const rect of rects) {
+        for (let x = rect.x; x < rect.x + rect.width; x++) {
+          if (x >= 0 && x < visibleColumns.length) selectionCols.add(x);
+        }
+        for (let y = rect.y; y < rect.y + rect.height; y++) {
+          if (y >= 0 && y < maxCopyableRows) selectionRows.add(y);
+        }
+      }
+      if (selectionCols.size === 0 && selectionRows.size > 0) {
+        for (let c = 0; c < visibleColumns.length; c++) selectionCols.add(c);
+      }
+      if (selectionRows.size === 0 && selectionCols.size > 0) {
+        for (let r = 0; r < loadedDefaultRows; r++) selectionRows.add(r);
+      }
+
+      const summary: CopySelectionSummary = {
+        hasSelection: hasRangeSelection || hasSingleCell,
+        hasRangeSelection,
+        hasSingleCell,
+        selectedCellCount: selectionCols.size * selectionRows.size,
+        selectedRowCount: selectedVisualRows(sel).filter((r) => r >= 0 && r < maxCopyableRows)
+          .length,
+        loadedRowCount: loadedDefaultRows,
+        visibleColumnCount: visibleColumns.length,
+      };
+
+      const effectiveScope: Exclude<CopyScope, "auto"> =
+        scope === "auto" ? (hasRangeSelection ? "selection" : "loaded") : scope;
+
+      let colIndices: number[];
+      let rowIndices: number[];
+      if (effectiveScope === "loaded") {
+        colIndices = visibleColumns.map((_, i) => i);
+        rowIndices = Array.from({ length: loadedDefaultRows }, (_, i) => i);
+      } else if (effectiveScope === "row") {
+        colIndices = visibleColumns.map((_, i) => i);
+        rowIndices = selectedVisualRows(sel).filter((r) => r >= 0 && r < maxCopyableRows);
+      } else if (effectiveScope === "cell") {
+        const active = sel.current?.cell;
+        colIndices =
+          active && active[0] >= 0 && active[0] < visibleColumns.length ? [active[0]] : [];
+        rowIndices = active && active[1] >= 0 && active[1] < maxCopyableRows ? [active[1]] : [];
+      } else if (selectionCols.size > 0 && selectionRows.size > 0) {
+        colIndices = [...selectionCols].sort((a, b) => a - b);
+        rowIndices = [...selectionRows].sort((a, b) => a - b);
+      } else {
+        colIndices = visibleColumns.map((_, i) => i);
+        rowIndices = Array.from({ length: loadedDefaultRows }, (_, i) => i);
+      }
+
+      return { colIndices, rowIndices, summary };
+    },
+    [visibleColumns],
+  );
+
+  const copyAs = useCallback(
+    async (
+      format: CopyFormat,
+      options?: { scope?: CopyScope; includeHeaders?: boolean },
+    ): Promise<boolean> => {
+      const { colIndices, rowIndices } = resolveCopyMatrix(options?.scope ?? "auto");
+      if (colIndices.length === 0) {
+        useStudio.getState().notify("No visible columns to copy.");
+        return false;
+      }
+      if (rowIndices.length === 0) {
+        useStudio.getState().notify("No rows to copy.");
+        return false;
+      }
+      if (colIndices.length * rowIndices.length > MAX_COPY_CELLS) {
+        useStudio
+          .getState()
+          .notify(
+            `Select at most ${MAX_COPY_CELLS.toLocaleString()} cells to copy, or use Export for larger datasets.`,
+          );
+        return false;
+      }
+
+      const tabId = model.current.tab.id;
+      const revision = model.current.tab.revision;
+      try {
+        const rows: CopyCell[][] = [];
+        for (const row of rowIndices) {
+          if (model.current.tab.id !== tabId || model.current.tab.revision !== revision) {
+            return false;
+          }
+          if (model.current.tab.kind === "benchmark") {
+            rows.push(colIndices.map((col) => benchmarkValue(col, row)));
+            continue;
+          }
+          if (
+            model.current.tab.kind === "table" &&
+            row < model.current.tab.loadedRows &&
+            !locate(row)
+          ) {
+            await useStudio.getState().ensureTablePage(tabId, row);
+          }
+          const source =
+            model.current.tab.kind !== "table" || row < model.current.tab.loadedRows
+              ? locate(row)
+              : null;
+          if (source) {
+            await resultCache.ensure(source.result.id, source.row, source.result.retainedRows);
+            const pageError = resultCache.error(source.result.id, source.row);
+            if (pageError) throw new Error(pageError);
+          }
+          const line: CopyCell[] = [];
+          for (const col of colIndices) {
+            const target = targetAt([col, row], true);
+            if (!target) {
+              throw new Error("Wait for the selected rows to load before copying.");
+            }
+            line.push(target.insert?.usingDefault ? { kind: "default" } : target.value);
+          }
+          rows.push(line);
+        }
+
+        const currentTab = model.current.tab;
+        const profile = useStudio
+          .getState()
+          .bootstrap?.profiles.find((p) => p.id === currentTab.connectionId);
+        const formatted = formatGridCells({
+          columns: colIndices.map((col) => visibleColumns[col]),
+          rows,
+          format,
+          engine: profile?.engine,
+          table: currentTab.kind === "table" ? currentTab.table : null,
+          includeHeaders: options?.includeHeaders,
+        });
+        if (!formatted.ok) {
+          useStudio.getState().notify(formatted.error);
+          return false;
+        }
+        await writeClipboardText(formatted.text);
+        useStudio
+          .getState()
+          .notify(
+            `Copied ${formatted.rowCount.toLocaleString()} row${formatted.rowCount === 1 ? "" : "s"} as ${copyFormatLabel(format)}`,
+          );
+        return true;
+      } catch (error) {
+        useStudio
+          .getState()
+          .notify(error instanceof Error ? error.message : "Could not copy these cells");
+        return false;
+      }
+    },
+    [locate, resolveCopyMatrix, targetAt, visibleColumns],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      copyAs,
+      selectionSummary: () => resolveCopyMatrix("auto").summary,
+    }),
+    [copyAs, resolveCopyMatrix],
+  );
+
   useLayoutEffect(() => {
     const onWindowPaste = (event: ClipboardEvent) => {
       if (!host.current?.contains(document.activeElement)) return;
@@ -871,4 +1094,6 @@ export default function DatabaseGrid({
       )}
     </div>
   );
-}
+});
+
+export default DatabaseGrid;

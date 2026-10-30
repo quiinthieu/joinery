@@ -122,7 +122,7 @@ Grid browsing and commits use the login role independently of SQL-editor transac
 - Table pages: **500 rows or 2 MiB**, with keyset continuation from the last retained PK.
 - Raw result rows: **2 MiB viewer limit**; large write results are discarded while execution is drained to a known outcome.
 - Pending edits and review originals: **8 MiB**, at most 500 edited rows per commit.
-- File inputs: bounded reads of regular CA/key files; no arbitrary frontend filesystem API.
+- File inputs and exports: bounded reads of regular CA/key files and capability-granted CSV/TSV import files (**16 MiB**, **5,000 rows**, 256 columns), plus capability-granted `.partial`-staged streaming exports (**1,000,000 rows** or **512 MiB** per job, at most two concurrent jobs); no arbitrary frontend filesystem path IPC.
 
 These bounds constrain owned buffers; they do not include WebView, operating-system frameworks, driver receive buffers, transient encoding, or JavaScript object overhead.
 
@@ -856,3 +856,95 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   weakening were introduced. Live Snowflake/production account qualification,
   Windows/Linux packaged runtime, Developer ID signing/notarization and
   representative performance gates remain open.
+
+## Data movement: copy-as, streaming export, reviewed CSV import and key-aware comparison (local implementation)
+
+Branch `feat/data-movement` (`a3020d7..34c51db`, from `origin/main` `94f63ba`)
+implements Milestone R2 (Data movement: `G11`, `G12`, `G13`) locally. It is
+verified on disposable fixtures and macOS native builds, unmerged, and
+unreleased (`v0.1.0-preview.15` remains the published and installed release;
+PRs #25, #26 and #27 are merged on `main` and unreleased):
+
+- **Selection Copy-as (`a3020d7`)**: `copy-format.ts` and `CopyAsMenu.tsx`
+  format grid selections and retained pages as `CSV`, `TSV`, `JSON`, `NDJSON`,
+  `SQL INSERT` and `Markdown` (bounded to **5,000 rows** and **2 MiB**),
+  respecting hidden/reordered columns, distinguishing SQL `NULL` from empty
+  strings, preserving exact 64-bit integer and decimal text without IEEE-754
+  rounding, and quoting identifiers per dialect (`"` on PostgreSQL/Snowflake,
+  `` ` `` on MySQL/MariaDB).
+- **Capability-gated Rust streaming export (`046f049`)**: `file_capability.rs`
+  (`FileDialogPort`, `RfdFileDialog`, `SandboxFileDialog`,
+  `FileCapabilityStore`) issues opaque expiring capability tokens (`FileWriteGrant`
+  one-use 15-minute TTL, `FileReadGrant` 30-minute TTL) so raw filesystem paths
+  never cross IPC. `export.rs` and `ExportDialog.tsx` stream `LiveTable` pages
+  (PostgreSQL, MySQL/MariaDB, honoring Safe-Mode raw-clause `BrowseApproval`)
+  and `RetainedResult` snapshots (PostgreSQL, MySQL/MariaDB, Snowflake, with
+  explicit truncation disclosures when retained results hit the 100,000-row /
+  64 MiB cap) directly to `<dest>.partial` (`0600` on Unix) up to **1,000,000
+  rows** / **512 MiB** without populating `ResultStore`. Completed exports
+  atomically rename `<dest>.partial` to `<dest>`; cancelled or failed runs leave
+  `<dest>.partial` with an explicit `INCOMPLETE` trailer so partial files are
+  never mistaken for complete exports. Zero exported rows or file paths are
+  persisted to SQLite.
+- **CSV/TSV import validation, remapping and reviewed `ChangePlan` batches
+  (`039c580`, `34c51db`)**: `import.rs` and `ImportCsvDialog.tsx` read regular
+  files up to **16 MiB** / **5,000 rows** / **256 columns** (256 KiB per cell)
+  through `FileReadGrant`, auto-detect or override delimiters/headers/NULL
+  tokens, allow column remapping or skipping, and validate the entire file
+  upfront against session `SafeMode` (`ReadOnly` rejected before plan creation),
+  table editability, required non-default columns, generated/binary column
+  exclusions, integer/float/boolean/JSON syntax and duplicate in-file primary
+  keys. Validated rows materialize in **500-row / 8 MiB** `RowChange::Insert`
+  batches through `Studio::prepare_changes_batch` and `ReviewDialog`, preserving
+  production passphrase gates, one-use expiring approvals and full transaction
+  rollback on server constraint conflicts with zero automatic retries. Browser
+  E2E verification caught a transient unmount bug when `refreshTable` cleared
+  `tab.schema` after commit; `34c51db` keeps `ImportCsvDialog` mounted with a
+  cached `TableSchema` across refreshes so completion state and multi-batch
+  progress survive cleanly.
+- **Key-aware bounded data comparison (`defd48e`)**: `compare.rs` and
+  `DataCompareDialog.tsx` compare two `LiveTable` or `RetainedResult` sources
+  (including cross-engine PostgreSQL ↔ MySQL/MariaDB) in 500-row pages up to
+  **25,000 rows** / **16 MiB** per side and **5,000** returned diff/anomaly
+  entries without adding `ResultStore` descriptors or retained bytes. Comparison
+  pairs explicit key columns, distinguishes SQL `NULL` from `""` and exact
+  numeric text, and isolates duplicate-key and `NULL`-key rows into dedicated
+  anomaly buckets rather than silently coalescing them.
+- **Tauri v2 capability ACL enrollment**: Enrolled `pick_export_destination`,
+  `start_export`, `cancel_export`, `pick_import_source`, `preview_csv_import`,
+  `prepare_csv_import_batch` and `compare_data` in `src-tauri/build.rs` and
+  `src-tauri/capabilities/main.json`, and verified all seven commands over real
+  Tauri WebView IPC in `src/native-smoke.ts`.
+
+Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
+
+- `pnpm validate` passes **105 frontend tests** (20 files) and **115 standard
+  Rust tests**, formatting, contracts, types, production build, Cargo check and
+  strict all-target/all-feature Clippy. Script unit tests
+  (`git-identity.test.mjs` 6/6 and `test_runtime_memory.py` 4/4) pass.
+- The disposable Rust integration suite (`postgres` 20, `mysql` 19 across MySQL
+  8.4 and MariaDB 11.4, `redis` 6, `ssh` 2) passes **47 of 47 executed tests**
+  on task-owned Compose project `joinery-r2` (including streaming multi-page
+  exports and `.partial` cancellation trailers, CSV import remapping/read-only/
+  rollback, and live-table/snapshot/cross-engine data comparison). Port 53407
+  remains held by the host agent process, so case-mode-1
+  `mysql_live_completion_uses_server_case_policy` was skipped locally. The
+  `joinery-r2` containers, network and volume were removed immediately afterward
+  (`down -v`).
+- With repository files held fixed, the complete Playwright suite passes **all
+  41 browser workflows** in a single run (`1.7m`), including all four
+  `data-movement.spec.ts` workflows.
+- Clean-commit (`34c51db`, `sourceDirty=false`) `pnpm desktop:build`,
+  `pnpm desktop:bundle:mac` (strict ad-hoc signature verification on
+  `Joinery.app`, 20.41 MiB, bundle executable SHA-256
+  `872ed28177824c7b336f0156122ad1bbecedfa2cfe76e597b7dd6d2452cf580b`),
+  `pnpm desktop:smoke:build` and `pnpm test:native --runs 3 --cycles 10` all
+  pass: three hidden processes (`4,050 / 2,988 / 2,962 ms`), 30 cleanup cycles,
+  main-process peak RSS `100.56–105.36 MiB`, native smoke binary SHA-256
+  `72cf58993b99c75aa98b9c857fde477ad326950d916ae59051b8b0926195fc21`
+  (`bundleBinarySha256`
+  `44727e2f20eaa5be59d97ab50524d4e8a06164924266ef7520f361f8cbeda714`).
+- No production database connections, automatic SQL replay, raw-path IPC or Safe
+  Mode weakening were introduced. Live Snowflake/production account
+  qualification, Windows/Linux packaged runtime, Developer ID
+  signing/notarization and representative performance gates remain open.

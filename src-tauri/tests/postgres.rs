@@ -1696,3 +1696,844 @@ async fn table_changes_insert_update_delete_atomically_and_conflict_check_delete
     );
     studio.shutdown();
 }
+
+async fn finish_export(mut rx: mpsc::UnboundedReceiver<ExportEvent>) -> Vec<ExportEvent> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let done = matches!(event, ExportEvent::Finished { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExportEvent::Finished { .. })),
+            "export did not finish"
+        );
+        events
+    })
+    .await
+    .expect("export deadline")
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_marks_partials() {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    let root = tempfile::tempdir().unwrap();
+    let sandbox = SandboxFileDialog::new(&root.path().join("exports")).unwrap();
+    let studio = Studio::with_secrets_and_dialog(
+        root.path(),
+        Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
+    )
+    .unwrap();
+    let port: u16 = std::env::var("JOINERY_TEST_PORT")
+        .unwrap_or_else(|_| "55432".into())
+        .parse()
+        .unwrap();
+    let writable_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Export Writable".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Silent,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: true,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+    let readonly_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Export ReadOnly".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::ReadOnly,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: true,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+
+    let session = studio
+        .connect(
+            &writable_profile.id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let ro_session = studio
+        .connect(
+            &readonly_profile.id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_export; \
+                 CREATE TABLE joinery_r2_export ( \
+                   id BIGINT PRIMARY KEY, \
+                   big_val BIGINT NOT NULL, \
+                   dec_val NUMERIC(38, 10) NOT NULL, \
+                   note TEXT \
+                 ); \
+                 INSERT INTO joinery_r2_export (id, big_val, dec_val, note) \
+                 SELECT g, \
+                        CASE WHEN g = 1 THEN 9223372036854775807 ELSE -9223372036854775808 + g END, \
+                        12345678901234567890.1234567890, \
+                        CASE WHEN g % 3 = 0 THEN NULL WHEN g % 3 = 1 THEN '' ELSE 'héllo;世界' END \
+                 FROM generate_series(1, 1600) AS g"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    studio.clear_history().unwrap();
+    let table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_export".into(),
+    };
+
+    // 1. Multi-page (>1,500 rows) streaming export without ResultStore retention
+    let grant = studio
+        .pick_export_destination("pg-stream.csv", ExportFormat::Csv)
+        .await
+        .unwrap()
+        .unwrap();
+    let usage_before = studio.results.usage();
+    assert_eq!(usage_before.0, 0);
+    let (tx, rx) = mpsc::unbounded_channel();
+    studio
+        .start_export(
+            ExportRequest {
+                destination_token: grant.token,
+                format: ExportFormat::Csv,
+                source: ExportSource::Table {
+                    session_id: ro_session.id.clone(),
+                    table: table.clone(),
+                    query: BrowseQuery::default(),
+                    approval: None,
+                    column_ids: vec!["c0".into(), "c1".into(), "c2".into(), "c3".into()],
+                },
+                include_headers: true,
+                engine: Some(EngineKind::Postgres),
+                target_table: Some(table.clone()),
+            },
+            Arc::new(move |e| tx.send(e).is_ok()),
+        )
+        .await
+        .unwrap();
+    let export_events = finish_export(rx).await;
+    assert_eq!(studio.results.usage(), usage_before);
+    assert!(matches!(
+        export_events.last(),
+        Some(ExportEvent::Finished {
+            status: RunStatus::Completed,
+            rows_written: 1600,
+            output_file_name: Some(name),
+            partial_file_name: None,
+            ..
+        }) if name == "pg-stream.csv"
+    ));
+    let csv_contents = std::fs::read_to_string(sandbox.root().join("pg-stream.csv")).unwrap();
+    assert!(!sandbox.root().join("pg-stream.csv.partial").exists());
+    let csv_lines: Vec<&str> = csv_contents.lines().collect();
+    assert_eq!(csv_lines.len(), 1601);
+    assert_eq!(csv_lines[0], "id,big_val,dec_val,note");
+    assert_eq!(
+        csv_lines[1],
+        "1,9223372036854775807,12345678901234567890.1234567890,\"\""
+    );
+    assert_eq!(
+        csv_lines[2],
+        "2,-9223372036854775806,12345678901234567890.1234567890,héllo;世界"
+    );
+    assert_eq!(
+        csv_lines[3],
+        "3,-9223372036854775805,12345678901234567890.1234567890,"
+    );
+
+    // 2. ReadOnly blocks non-read raw clause without consuming grant or writing a file
+    let ro_grant = studio
+        .pick_export_destination("blocked.csv", ExportFormat::Csv)
+        .await
+        .unwrap()
+        .unwrap();
+    let blocked = studio
+        .start_export(
+            ExportRequest {
+                destination_token: ro_grant.token.clone(),
+                format: ExportFormat::Csv,
+                source: ExportSource::Table {
+                    session_id: ro_session.id.clone(),
+                    table: table.clone(),
+                    query: BrowseQuery {
+                        where_clause: Some("pg_advisory_lock(1) IS NULL".into()),
+                        ..Default::default()
+                    },
+                    approval: None,
+                    column_ids: Vec::new(),
+                },
+                include_headers: true,
+                engine: Some(EngineKind::Postgres),
+                target_table: Some(table.clone()),
+            },
+            Arc::new(|_| true),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
+    assert!(!sandbox.root().join("blocked.csv").exists());
+    assert!(!sandbox.root().join("blocked.csv.partial").exists());
+
+    // 3. Cancellation leaves only marked .partial file and zero SQLite row/path persistence
+    let cancel_grant = studio
+        .pick_export_destination("cancelled-pg.csv", ExportFormat::Csv)
+        .await
+        .unwrap()
+        .unwrap();
+    let (cancel_tx, cancel_rx) = mpsc::unbounded_channel();
+    // Returning false from event callback cancels the export mid-stream after Started/first chunk
+    studio
+        .start_export(
+            ExportRequest {
+                destination_token: cancel_grant.token,
+                format: ExportFormat::Csv,
+                source: ExportSource::Table {
+                    session_id: ro_session.id.clone(),
+                    table: table.clone(),
+                    query: BrowseQuery::default(),
+                    approval: None,
+                    column_ids: Vec::new(),
+                },
+                include_headers: true,
+                engine: Some(EngineKind::Postgres),
+                target_table: Some(table.clone()),
+            },
+            Arc::new(move |e| {
+                let keep_open = !matches!(e, ExportEvent::Progress { .. });
+                let _ = cancel_tx.send(e);
+                keep_open
+            }),
+        )
+        .await
+        .unwrap();
+    let cancelled_events = finish_export(cancel_rx).await;
+    assert!(matches!(
+        cancelled_events.last(),
+        Some(ExportEvent::Finished {
+            status: RunStatus::Cancelled,
+            output_file_name: None,
+            partial_file_name: Some(partial),
+            ..
+        }) if partial == "cancelled-pg.csv.partial"
+    ));
+    assert!(!sandbox.root().join("cancelled-pg.csv").exists());
+    let partial_text =
+        std::fs::read_to_string(sandbox.root().join("cancelled-pg.csv.partial")).unwrap();
+    assert!(partial_text.contains("# JOINERY EXPORT INCOMPLETE"));
+
+    assert!(studio.history("").unwrap().is_empty());
+    let audit_dump = serde_json::to_string(&studio.audit_log().unwrap()).unwrap();
+    assert!(!audit_dump.contains("pg-stream.csv"));
+    assert!(!audit_dump.contains("héllo;世界"));
+
+    assert_eq!(
+        status(&run(&studio, &session, "DROP TABLE joinery_r2_export").await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_rolls_back_failed_batches()
+ {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    let root = tempfile::tempdir().unwrap();
+    let sandbox = SandboxFileDialog::new(&root.path().join("imports")).unwrap();
+    let studio = Studio::with_secrets_and_dialog(
+        root.path(),
+        Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
+    )
+    .unwrap();
+    let port: u16 = std::env::var("JOINERY_TEST_PORT")
+        .unwrap_or_else(|_| "55432".into())
+        .parse()
+        .unwrap();
+
+    let rw_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Import Writable".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Confirm,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: true,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+    let ro_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Import ReadOnly".into(),
+                safe_mode: SafeMode::ReadOnly,
+                ..rw_profile.clone()
+            },
+            None,
+        )
+        .unwrap();
+
+    let make_secrets = || ConnectionSecrets {
+        password: Some("joinery-local-only".into()),
+        ..Default::default()
+    };
+    let session = studio
+        .connect(&rw_profile.id, make_secrets())
+        .await
+        .unwrap();
+    let ro_session = studio
+        .connect(&ro_profile.id, make_secrets())
+        .await
+        .unwrap();
+
+    // Setup via Silent helper profile or approve DDL on Confirm session
+    let setup_plan = studio
+        .prepare_execution(
+            &session.id,
+            "DROP TABLE IF EXISTS joinery_r2_csv_import;
+             CREATE TABLE joinery_r2_csv_import (
+               id BIGSERIAL PRIMARY KEY,
+               code TEXT NOT NULL UNIQUE,
+               big_ref BIGINT NOT NULL,
+               amount NUMERIC(16,4) NOT NULL,
+               note TEXT,
+               tag TEXT NOT NULL DEFAULT 'default-tag',
+               active BOOLEAN NOT NULL
+             )",
+        )
+        .unwrap();
+    let setup_token = studio
+        .authorize(
+            &setup_plan.id,
+            None,
+            setup_plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &setup_plan, Some(&setup_token)).1).await),
+        RunStatus::Completed
+    );
+
+    let table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_csv_import".into(),
+    };
+
+    // 1. Invalid CSV row is caught upfront and cannot prepare a batch
+    let bad_csv = "external_code,big_ref,amount,note,active,ignored_col\nC-1,9223372036854775807,10.2500,,true,x\nC-2,not-an-int,20.5000,\"\",false,y\n";
+    std::fs::write(sandbox.root().join("invalid.csv"), bad_csv.as_bytes()).unwrap();
+    sandbox.queue_open(Some("invalid.csv")).unwrap();
+    let bad_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+    let remapped = vec![
+        CsvColumnMapping {
+            csv_index: 0,
+            target_column: Some("code".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 1,
+            target_column: Some("big_ref".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 2,
+            target_column: Some("amount".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 3,
+            target_column: Some("note".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 4,
+            target_column: Some("active".into()),
+        },
+        CsvColumnMapping {
+            csv_index: 5,
+            target_column: None,
+        },
+    ];
+
+    // ReadOnly session blocks CSV import preview and preparation
+    assert_eq!(
+        studio
+            .preview_csv_import(
+                &ro_session.id,
+                &bad_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                remapped.clone(),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
+    );
+
+    let bad_preview = studio
+        .preview_csv_import(
+            &session.id,
+            &bad_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(!bad_preview.can_prepare);
+    assert_eq!(bad_preview.issues.len(), 1);
+    assert_eq!(bad_preview.issues[0].line, 3);
+    assert_eq!(bad_preview.issues[0].column.as_deref(), Some("big_ref"));
+    assert_eq!(
+        studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &bad_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                remapped.clone(),
+                0,
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+
+    // 2. Valid 520-row CSV (2 reviewed batches: 500 + 20) with column remapping, <default> columns, and NULL vs "" vs "\N"
+    let mut valid_csv = String::from("external_code,big_ref,amount,note,active,ignored_col\n");
+    for idx in 0..520 {
+        let note_cell = match idx % 3 {
+            0 => "",        // unquoted empty -> SQL NULL
+            1 => "\"\"",    // quoted empty -> ""
+            _ => "\"\\N\"", // quoted \N -> literal "\N"
+        };
+        let big = if idx == 0 {
+            9_223_372_036_854_775_807i64
+        } else {
+            idx as i64
+        };
+        valid_csv.push_str(&format!(
+            "CODE-{idx:04},{big},12345.6789,{note_cell},{},skip-{idx}\n",
+            idx % 2 == 0
+        ));
+    }
+    std::fs::write(sandbox.root().join("valid-520.csv"), valid_csv.as_bytes()).unwrap();
+    sandbox.queue_open(Some("valid-520.csv")).unwrap();
+    let valid_grant = studio.pick_import_source().await.unwrap().unwrap();
+
+    let preview = studio
+        .preview_csv_import(
+            &session.id,
+            &valid_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(preview.can_prepare, "issues: {:?}", preview.issues);
+    assert_eq!(preview.total_rows, 520);
+    assert_eq!(preview.batch_count, 2);
+    assert_eq!(preview.unmapped_defaults, vec!["id", "tag"]);
+
+    for (batch_idx, expected_rows) in [(0usize, 500usize), (1usize, 20usize)] {
+        let batch_preview = studio
+            .prepare_csv_import_batch(
+                &session.id,
+                &valid_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                remapped.clone(),
+                batch_idx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(batch_preview.row_count, expected_rows);
+        assert!(batch_preview.plan.requires_approval);
+        let token = studio
+            .authorize(
+                &batch_preview.plan.id,
+                None,
+                batch_preview.plan.confirmation_text.as_deref(),
+            )
+            .unwrap();
+        assert_eq!(
+            status(&finish(start(&studio, &batch_preview.plan, Some(&token)).1).await),
+            RunStatus::Completed
+        );
+    }
+
+    // 3. Mid-batch unique constraint conflict rolls back the entire batch atomically
+    let conflict_csv = "external_code,big_ref,amount,note,active,ignored_col\nNEW-BEFORE-CONFLICT,42,1.0000,should-rollback,true,a\nCODE-0005,43,2.0000,duplicate-code,false,b\n";
+    std::fs::write(sandbox.root().join("conflict.csv"), conflict_csv.as_bytes()).unwrap();
+    sandbox.queue_open(Some("conflict.csv")).unwrap();
+    let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+    let conflict_batch = studio
+        .prepare_csv_import_batch(
+            &session.id,
+            &conflict_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped,
+            0,
+        )
+        .await
+        .unwrap();
+    let conflict_token = studio
+        .authorize(
+            &conflict_batch.plan.id,
+            None,
+            conflict_batch.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    let conflict_events =
+        finish(start(&studio, &conflict_batch.plan, Some(&conflict_token)).1).await;
+    assert_eq!(status(&conflict_events), RunStatus::Failed);
+
+    // Verify exact row count = 520 (NEW-BEFORE-CONFLICT rolled back!) and exact values
+    let verify_plan = studio
+        .prepare_execution(
+            &session.id,
+            "SELECT count(*)::text,
+                    (SELECT big_ref::text FROM joinery_r2_csv_import WHERE code = 'CODE-0000'),
+                    (SELECT note FROM joinery_r2_csv_import WHERE code = 'CODE-0000'),
+                    (SELECT note FROM joinery_r2_csv_import WHERE code = 'CODE-0001'),
+                    (SELECT note FROM joinery_r2_csv_import WHERE code = 'CODE-0002'),
+                    (SELECT tag FROM joinery_r2_csv_import WHERE code = 'CODE-0000')
+             FROM joinery_r2_csv_import",
+        )
+        .unwrap();
+    let verify_events = finish(start(&studio, &verify_plan, None).1).await;
+    let verify_result_id = result(&verify_events).id;
+    let row = studio.results.row(&verify_result_id, 0).unwrap();
+    assert_eq!(row[0].as_deref(), Some("520"));
+    assert_eq!(row[1].as_deref(), Some("9223372036854775807"));
+    assert_eq!(row[2], None);
+    assert_eq!(row[3].as_deref(), Some(""));
+    assert_eq!(row[4].as_deref(), Some("\\N"));
+    assert_eq!(row[5].as_deref(), Some("default-tag"));
+    studio.release_result(&verify_result_id);
+
+    // Zero CSV paths or imported values in SQLite audit_log
+    let audit_dump = serde_json::to_string(&studio.audit_log().unwrap()).unwrap();
+    assert!(!audit_dump.contains("valid-520.csv"));
+    assert!(!audit_dump.contains("CODE-0000"));
+
+    let drop_plan = studio
+        .prepare_execution(&session.id, "DROP TABLE joinery_r2_csv_import")
+        .unwrap();
+    let drop_token = studio
+        .authorize(&drop_plan.id, None, drop_plan.confirmation_text.as_deref())
+        .unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &drop_plan, Some(&drop_token)).1).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_raw_clause_approvals()
+{
+    let (_root, studio, session) = setup(SafeMode::Confirm).await;
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_cmp_left, joinery_r2_cmp_right;
+                 CREATE TABLE joinery_r2_cmp_left (
+                   tenant_id INT NOT NULL,
+                   item_no BIGINT NOT NULL,
+                   big_val BIGINT NOT NULL,
+                   amount NUMERIC(18,4) NOT NULL,
+                   note TEXT,
+                   PRIMARY KEY (tenant_id, item_no)
+                 );
+                 CREATE TABLE joinery_r2_cmp_right (
+                   tenant_id INT NOT NULL,
+                   item_no BIGINT NOT NULL,
+                   big_val BIGINT NOT NULL,
+                   amount NUMERIC(18,4) NOT NULL,
+                   note TEXT,
+                   PRIMARY KEY (tenant_id, item_no)
+                 );
+                 INSERT INTO joinery_r2_cmp_left
+                   SELECT 1, i, 9223372036854775807, 123456.7890, 'row-' || i
+                   FROM generate_series(1, 610) i;
+                 INSERT INTO joinery_r2_cmp_right
+                   SELECT 1, i, 9223372036854775807, 123456.7890, 'row-' || i
+                   FROM generate_series(1, 610) i;
+                 -- Modify (1, 10): NULL vs empty string + decimal diff
+                 UPDATE joinery_r2_cmp_left SET note = NULL, amount = 50.2500 WHERE item_no = 10;
+                 UPDATE joinery_r2_cmp_right SET note = '', amount = 50.5000 WHERE item_no = 10;
+                 -- Only in left: (1, 901); Only in right: (1, 902)
+                 INSERT INTO joinery_r2_cmp_left VALUES (1, 901, 42, 1.0000, 'private-cmp-left');
+                 INSERT INTO joinery_r2_cmp_right VALUES (1, 902, 42, 2.0000, 'private-cmp-right');",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let left_table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_cmp_left".into(),
+    };
+    let right_table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_cmp_right".into(),
+    };
+
+    // 1. Multi-page (> 500 rows) LiveTable vs LiveTable without retaining in ResultStore
+    let usage_before = studio.usage();
+    assert_eq!(usage_before.retained_bytes, 0);
+    let live_report = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: left_table.clone(),
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("PG Left".into()),
+            },
+            right: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: right_table.clone(),
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("PG Right".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(live_report.key_columns, vec!["tenant_id", "item_no"]);
+    assert_eq!(live_report.identical_count, 609);
+    assert_eq!(live_report.different_count, 1);
+    assert_eq!(live_report.only_left_count, 1);
+    assert_eq!(live_report.only_right_count, 1);
+    assert_eq!(studio.usage().retained_bytes, 0);
+    assert_eq!(studio.usage().result_count, usage_before.result_count);
+
+    let modified = live_report
+        .diffs
+        .iter()
+        .find(|d| d.kind == RowDiffKind::Different)
+        .unwrap();
+    assert_eq!(modified.key_values, vec!["1", "10"]);
+    assert!(modified.cells.contains(&CellDiff {
+        column: "note".into(),
+        left: None,
+        right: Some("".into()),
+        type_mismatch: false,
+    }));
+
+    // 2. Unapproved non-allowlisted SQL function in WHERE under Confirm Safe Mode requires BrowseApproval
+    let gated_query = BrowseQuery {
+        sort: Vec::new(),
+        filters: Vec::new(),
+        where_clause: Some("item_no <= 20 AND pg_backend_pid() > 0".into()),
+        order_clause: None,
+    };
+    assert_eq!(
+        studio
+            .compare_data(CompareRequest {
+                left: CompareSide::LiveTable {
+                    session_id: session.id.clone(),
+                    table: left_table.clone(),
+                    query: gated_query.clone(),
+                    approval: None,
+                    label: None,
+                },
+                right: CompareSide::LiveTable {
+                    session_id: session.id.clone(),
+                    table: right_table.clone(),
+                    query: BrowseQuery {
+                        where_clause: Some("item_no <= 20".into()),
+                        ..Default::default()
+                    },
+                    approval: None,
+                    label: None,
+                },
+                key_columns: Vec::new(),
+                ignore_column_case: false,
+            })
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+
+    let browse_plan = studio
+        .prepare_browse(&session.id, &left_table, &gated_query)
+        .await
+        .unwrap()
+        .expect("subquery WHERE must require approval");
+    let browse_token = studio.authorize(&browse_plan.id, None, None).unwrap();
+    let approved_report = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: left_table.clone(),
+                query: gated_query,
+                approval: Some(BrowseApproval {
+                    plan_id: browse_plan.id,
+                    approval: browse_token,
+                }),
+                label: None,
+            },
+            right: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: right_table.clone(),
+                query: BrowseQuery {
+                    where_clause: Some("item_no <= 20".into()),
+                    ..Default::default()
+                },
+                approval: None,
+                label: None,
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(approved_report.identical_count, 19);
+    assert_eq!(approved_report.different_count, 1);
+
+    // 3. Snapshot with duplicate keys, NULL keys, and uppercase column names vs filtered LiveTable
+    let snap_events = run(
+        &studio,
+        &session,
+        "SELECT 1 AS \"TENANT_ID\", 1::bigint AS \"ITEM_NO\", 9223372036854775807::bigint AS \"BIG_VAL\", 123456.7890::numeric(18,4) AS \"AMOUNT\", 'row-1'::text AS \"NOTE\"
+         UNION ALL
+         SELECT 1, 2, 1, 1.0000, 'dup-1'
+         UNION ALL
+         SELECT 1, 2, 1, 1.0000, 'dup-2'
+         UNION ALL
+         SELECT 1, NULL, 1, 1.0000, 'null-key'",
+    )
+    .await;
+    assert_eq!(status(&snap_events), RunStatus::Completed);
+    let snap_res = result(&snap_events);
+
+    let snap_report = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::Snapshot {
+                result_ids: vec![snap_res.id.clone()],
+                label: Some("Query Snapshot".into()),
+                truncated_hint: true,
+            },
+            right: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: right_table.clone(),
+                query: BrowseQuery {
+                    where_clause: Some("item_no IN (1, 2)".into()),
+                    ..Default::default()
+                },
+                approval: None,
+                label: Some("Filtered Right".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: true,
+        })
+        .await
+        .unwrap();
+
+    assert!(snap_report.left_truncated);
+    assert_eq!(snap_report.identical_count, 1);
+    assert_eq!(snap_report.only_right_count, 0);
+    assert_eq!(snap_report.left_anomalies.null_key_count, 1);
+    assert_eq!(snap_report.left_anomalies.duplicate_key_rows, 2);
+    assert_eq!(snap_report.right_anomalies.excluded_counterpart_rows, 1);
+    studio.release_result(&snap_res.id);
+
+    // Zero private cell text in audit log
+    let audit_dump = serde_json::to_string(&studio.audit_log().unwrap()).unwrap();
+    assert!(!audit_dump.contains("private-cmp-left"));
+    assert!(!audit_dump.contains("private-cmp-right"));
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE joinery_r2_cmp_left, joinery_r2_cmp_right",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

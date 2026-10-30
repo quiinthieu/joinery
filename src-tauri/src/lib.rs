@@ -1,9 +1,13 @@
 use serde::Serialize;
 
+pub mod compare;
 pub mod domain;
 pub mod drivers;
 pub mod execution;
+pub mod export;
+pub mod file_capability;
 mod files;
+pub mod import;
 #[cfg(any(feature = "native-smoke", test))]
 mod native_smoke_config;
 pub mod persistence;
@@ -54,7 +58,13 @@ pub fn run() {
                     Err(error) => return Err(error.into()),
                 };
                 std::fs::write(root.join("startup.json"), serde_json::to_vec(&serde_json::json!({"pid": std::process::id()}))?)?;
-                app.manage(execution::Studio::with_secrets(&root, std::sync::Arc::new(secrets::MemorySecrets::default()))?);
+                let sandbox = file_capability::SandboxFileDialog::new(&root.join("sandbox-files"))
+                    .map_err(|e| std::io::Error::other(e.message))?;
+                app.manage(execution::Studio::with_secrets_and_dialog(
+                    &root,
+                    std::sync::Arc::new(secrets::MemorySecrets::default()),
+                    sandbox,
+                )?);
                 app.manage(commands::NativeSmokeState { started, root: root.clone(), options });
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -115,6 +125,13 @@ pub fn run() {
             commands::resource_usage,
             commands::probe_ssh,
             commands::trust_ssh_key,
+            commands::pick_export_destination,
+            commands::start_export,
+            commands::cancel_export,
+            commands::pick_import_source,
+            commands::preview_csv_import,
+            commands::prepare_csv_import_batch,
+            commands::compare_data,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

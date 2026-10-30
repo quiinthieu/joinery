@@ -27,7 +27,7 @@ required-features = ["contracts"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd"]
 test-harness = ["dep:axum", "dep:tower-http"]
 native-smoke = ["desktop"]
 contracts = []
@@ -37,6 +37,7 @@ tauri-build = { version = "2", optional = true, features = [] }
 
 [dependencies]
 tauri = { version = "~2.11", optional = true, features = [] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"
