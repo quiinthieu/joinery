@@ -75,11 +75,11 @@ Mode 2 needs a case-insensitive filesystem. The bounded
 [Snowflake request-context slice](snowflake-completion-context.md) shipped in
 preview.15; broader search-path/quoted-policy support and live qualification remain
 open. External metadata changes still require refresh.
-The [isolated query-session slice](isolated-query-sessions.md) is implemented
-locally for PostgreSQL/MySQL/MariaDB using existing Rust sessions. Standard
-validation, all 26 browser workflows, desktop build/bundle and three native
-runs/30 cleanup cycles pass after host resources recovered. It is unreleased;
-review/shipping and then grouped-FK metadata/JOIN generation follow.
+The [isolated query-session slice](isolated-query-sessions.md) merged on `main`
+via PR #26 (`877904b`, all six PR checks passing with 79 frontend tests and 31
+browser workflows) for PostgreSQL/MySQL/MariaDB using existing Rust sessions. It
+remains unreleased; clean-source release provenance and grouped-FK JOIN
+generation follow.
 External release gates remain open and need their own authorization/scope.
 
 ### Acceptance and verification contract
@@ -124,7 +124,7 @@ fixture evidence and PR.
 | RX Restriction relaxation | G14 single-table result editing, PK-less row editing, Snowflake DML (A07) | Rust-proven provenance; one-use plans and production passphrase retained; Snowflake writes qualified only on an approved non-production account |
 | v1.0 gates | I05–I07 | Unchanged external signing, platform and performance gates |
 
-### R1 batch 1 result (2026-10-30, local branch `feat/table-data-view`)
+### R1 batch 1 result (merged in PR #25 `6445b0e`; unreleased)
 
 - FK constraints carry name and ordinal-paired columns; Structure lists them.
 - `browse_table` accepts an optional typed `BrowseQuery`. Rust rebuilds the SQL
@@ -139,7 +139,34 @@ fixture evidence and PR.
   primary-key column stayed blank for pages loaded after scrolling.
 
 See the matrix rows N03/G03/G08 and `IMPLEMENTATION_STATUS.md` for evidence.
-Not pushed, merged or released.
+Merged on `main` (`6445b0e`), unreleased.
+
+### R1 batch 2 result (2026-10-30, local branch `feat/table-data-editing`)
+
+- Optional raw `WHERE` and `ORDER BY` clauses on PostgreSQL and MySQL/MariaDB
+  table tabs are synthesized and classified via `safety::prepare` (blocked in
+  `ReadOnly` when non-read/unparseable; gated by one-use `ReviewDialog` approval
+  in writable modes; raw `ORDER BY` disables keyset continuation cleanly).
+- Permission-filtered inbound `referencing_foreign_keys` metadata powers `⇧⌘G`
+  navigation to referencing rows in a new filtered tab across single, composite
+  and multi-constraint relationships.
+- Column hide (non-PK), reorder, resize and reset persist per
+  `connectionId + schema + table` in bounded `SavedWorkspace.table_layouts`
+  (purged on profile delete and reconciled on schema refresh).
+- Multi-cell TSV paste validates every target cell and budget atomically before
+  mutating `DirtyStore`, respecting reordered visible columns.
+- Draft row inserts (`<default>` / `<required>`) and row deletes (`FOR UPDATE`
+  full-row conflict checks) execute alongside updates in one atomic reviewed
+  `BEGIN … COMMIT` transaction across PostgreSQL, MySQL 8.4 and MariaDB 11.4.
+- `ValueDialog` provides 16-byte-per-row binary Hex/ASCII dumps, 1-based indexed
+  PostgreSQL array element viewers (multi-dimensional/custom bounds, SQL `NULL`
+  vs `"NULL"` vs `""`) and lossless token-level formatted JSON preserving
+  64-bit integers and numeric object key order.
+
+See matrix rows G03/G05/G07–G10 and `IMPLEMENTATION_STATUS.md` for evidence
+(`99` frontend tests, `102` standard Rust tests, `41` disposable integration
+tests, `37` Playwright workflows and clean-commit macOS native gates). Local on
+`feat/table-data-editing`; not yet pushed, merged or released.
 
 ## Subsequent phases and blueprint cross-reference
 

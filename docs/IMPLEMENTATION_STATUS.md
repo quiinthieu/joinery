@@ -727,14 +727,17 @@ isolated-desktop.log, isolated-bundle.log, isolated-native-build.log and
 isolated-native-runs.log/json. The retry's containers, network and volume were
 removed. The prior host-resource hold is resolved for these local checks.
 External auth/account, packaged platform, signing and representative performance
-gates remain open. Preview.15 remains installed; this phase is unreleased.
+gates remain open. This slice subsequently merged on `main` via PR #26 (`877904b`,
+including `35b84c5` long-sidebar scroll containment, all six PR checks passing
+with 79 frontend tests and 31 browser workflows); preview.15 remains installed
+and this phase is unreleased.
 
-## Table data view: sort, filter and FK navigation (local implementation)
+## Table data view: sort, filter and FK navigation (merged in PR #25; unreleased)
 
 R1 batch 1 of the approved DataGrip-replacement program (see
-[implementation-roadmap.md](implementation-roadmap.md)) is on local branch
-`feat/table-data-view`, based on fetched `799e600`. It is not pushed, merged,
-released or installed.
+[implementation-roadmap.md](implementation-roadmap.md)) merged on `main` via
+PR #25 (`6445b0e`, all six PR checks and five `main` validation jobs passing). It
+remains unreleased (`v0.1.0-preview.15` is installed).
 
 PostgreSQL and MySQL/MariaDB table tabs sort on the server by header click
 (Shift adds a key) and filter with typed, bound predicates. Rust rebuilds every
@@ -768,3 +771,83 @@ three hidden runs, 30 cleanup cycles. Native fixture SHA-256:
 `76f04be` with documentation uncommitted (sourceDirty=true); not release
 provenance. No production connection, Safe Mode change, replay or reconnect was
 introduced.
+
+## Table data editing, layouts, raw clauses, inbound FKs and viewers (local implementation)
+
+R1 batch 2 of the approved DataGrip-replacement program is implemented on local
+branch `feat/table-data-editing` (`2a59fae..e3b13b4`), based on fetched
+`origin/main` `877904b` (PR #26). It completes Milestone R1 (Data view parity)
+locally and is not yet pushed, merged, released or installed.
+
+- **Raw table `WHERE` / `ORDER BY` classification (`2a59fae`)**: PostgreSQL and
+  MySQL/MariaDB table tabs accept optional raw `WHERE` and `ORDER BY` clauses
+  (capped at 16 KiB each, wrapped in newline-terminated comment guards). Rust
+  synthesizes the full statement and classifies it through `safety::prepare`:
+  multi-statement inputs are rejected, non-read or unparseable expressions are
+  blocked in `ReadOnly` and gated by a one-use `ReviewDialog` approval token
+  (plus production passphrase when configured) in writable modes, and raw
+  `ORDER BY` cleanly disables keyset continuation rather than risking unstable
+  seeks.
+- **Inbound referencing-row navigation (`43da547`)**: Permission-filtered
+  `referencing_foreign_keys` metadata groups composite inbound constraints in
+  key-ordinal order on PostgreSQL and MySQL/MariaDB. `⇧⌘G`, the palette and the
+  inspector open referencing rows in a new filtered tab, with a constraint
+  chooser when multiple child constraints target the row and NULL-key refusal.
+- **Column layout management (`0ca0146`)**: `ColumnConfigPopover` and
+  `table-layout.ts` support hiding non-PK columns, reordering, resizing and
+  resetting per `connectionId + schema + table`, persisted in bounded
+  `SavedWorkspace.table_layouts` (at most 128 tables and 256 columns per table,
+  reconciled against live schema refreshes and purged on profile deletion).
+- **Atomic multi-cell TSV paste (`a026c44`)**: `paste.ts` and
+  `DirtyStore.setBatch` parse RFC-4180-style TSV clipboards and pre-validate
+  every target cell across visible (including reordered/hidden) columns against
+  editability, integer/decimal precision, NULL tokens and the 8 MiB / 500-row
+  dirty budgets before mutating the sparse overlay. Any invalid cell rejects the
+  entire paste with zero partial mutations.
+- **Reviewed multi-row insert and delete (`8a55a4c`)**: `RowChange` becomes an
+  explicit `insert` / `update` / `delete` tagged union. Draft rows display
+  `<default>` / `<required>` states, deletes lock and verify all non-binary
+  original columns via `FOR UPDATE`, and mixed insert/update/delete batches
+  execute atomically in one reviewed `BEGIN … COMMIT` transaction across
+  PostgreSQL, MySQL 8.4 and MariaDB 11.4. Browser testing caught a React 18
+  discrete-click vs passive-`useEffect` `selectionRef` race when focusing newly
+  inserted draft rows; moving `focusRowRequest` to `useLayoutEffect` with eager
+  `selectionRef` synchronization resolved it.
+- **Binary, PostgreSQL array and lossless JSON viewers (`e3b13b4`)**:
+  `ValueDialog` and `value-format.ts` add WAI-ARIA tabbed viewers for binary
+  columns (16-byte-per-row Hex/ASCII dump over a bounded 16 KiB preview with
+  exact byte length, decoding PG `\x`/escaped `bytea` and MySQL `0x`),
+  PostgreSQL arrays (1-based `[1]`, `[1][1]` element table supporting custom
+  `[lower:upper]=` bounds and distinguishing SQL `NULL` from `"NULL"` and `""`,
+  bounded to 2,000 preview elements) and JSON/JSONB (token-level lossless
+  pretty-printer + `Format JSON` action preserving 64-bit integers and numeric
+  object key order).
+
+Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
+
+- `pnpm validate` passes **99 frontend tests** (19 files) and **102 standard
+  Rust tests**, formatting, contracts, types, production build, Cargo check and
+  strict all-target/all-feature Clippy. Script unit tests
+  (`git-identity.test.mjs` 6/6 and `test_runtime_memory.py` 4/4) pass.
+- The disposable Rust integration suite (`postgres` 17, `mysql` 16 across MySQL
+  8.4 and MariaDB 11.4, `redis` 6, `ssh` 2) passes **41 of 41 executed tests**
+  on task-owned Compose project `joinery-batch2`. As in R1 batch 1, port 53407
+  is held by the host agent process, so case-mode-1
+  `mysql_live_completion_uses_server_case_policy` was skipped locally.
+- With repository files held fixed, the complete Playwright suite passes **all
+  37 browser workflows** in a single run (`1.7m`), including all nine
+  `table-data.spec.ts` workflows. The `joinery-batch2` containers, network and
+  volume were removed immediately afterward (`down -v`).
+- Clean-commit (`e3b13b4`, `sourceDirty=false`) `pnpm desktop:build`,
+  `pnpm desktop:bundle:mac` (strict ad-hoc signature verification on
+  `Joinery.app`, 19.91 MiB), `pnpm desktop:smoke:build` and
+  `pnpm test:native --runs 3 --cycles 10` all pass: three hidden processes
+  (`5,875 / 2,985 / 2,924 ms`), 30 cleanup cycles, main-process peak RSS
+  `105.55–105.77 MiB`, native smoke binary SHA-256
+  `41f83080a89ba047fd1b49b9ef6e5d1076a20d47f6796db2d4b36461cbddc348` (bundle
+  binary SHA-256
+  `c4ed4914f0a82e19adcf391f5bf065990f69dec7729dde3ae0b2daf565339688`).
+- No production database connections, automatic SQL replay or Safe Mode
+  weakening were introduced. Live Snowflake/production account qualification,
+  Windows/Linux packaged runtime, Developer ID signing/notarization and
+  representative performance gates remain open.
