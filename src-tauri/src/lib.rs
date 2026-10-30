@@ -99,6 +99,7 @@ pub fn run() {
             commands::redis_scan,
             commands::redis_inspect,
             commands::table_schema,
+            commands::prepare_browse_table,
             commands::browse_table,
             commands::result_range,
             commands::release_result,

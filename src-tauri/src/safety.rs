@@ -7,6 +7,82 @@ use sqlparser::{
 };
 use std::ops::ControlFlow;
 
+pub(crate) fn has_mysql_executable_comment(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                    } else if bytes[i] == quote {
+                        if bytes.get(i + 1) == Some(&quote) {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'`' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'`' {
+                        if bytes.get(i + 1) == Some(&b'`') {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'#' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-')
+                && bytes
+                    .get(i + 2)
+                    .is_none_or(|b| b.is_ascii_whitespace() || b.is_ascii_control()) =>
+            {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                if bytes.get(i + 2) == Some(&b'!')
+                    || (matches!(bytes.get(i + 2), Some(b'M' | b'm'))
+                        && bytes.get(i + 3) == Some(&b'!'))
+                {
+                    return true;
+                }
+                i += 2;
+                while i < bytes.len() {
+                    if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
 pub fn effective_mode(profile: &ConnectionProfile) -> SafeMode {
     if profile.environment == Environment::Production && profile.safe_mode != SafeMode::ReadOnly {
         SafeMode::PasswordGated
@@ -32,15 +108,15 @@ pub fn prepare(
         return crate::drivers::redis::commands::prepare(session_id, profile, sql);
     }
     if profile.engine == EngineKind::Mysql {
-        let tokens = Tokenizer::new(&MySqlDialect {}, sql)
-            .tokenize()
-            .map_err(|_| AppError::invalid("The SQL contains an unterminated token"))?;
-        if tokens.iter().any(|token|matches!(token,Token::Whitespace(sqlparser::tokenizer::Whitespace::MultiLineComment(comment)) if comment.starts_with('!')||comment.to_ascii_uppercase().starts_with("M!"))) {
+        if has_mysql_executable_comment(sql) {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
                 "MySQL executable comments are not supported. Submit their SQL explicitly for review.",
             ));
         }
+        let tokens = Tokenizer::new(&MySqlDialect {}, sql)
+            .tokenize()
+            .map_err(|_| AppError::invalid("The SQL contains an unterminated token"))?;
         let words = tokens
             .iter()
             .filter_map(|t| {

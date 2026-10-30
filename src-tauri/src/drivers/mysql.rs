@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 mod catalog;
 mod values;
+pub(crate) use catalog::browse_sql;
 pub(crate) use values::MysqlDialect;
 pub use values::update_sql;
 use values::{column, text_row};

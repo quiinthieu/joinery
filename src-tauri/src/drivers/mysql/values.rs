@@ -131,6 +131,9 @@ pub(super) fn projection(schema: &TableSchema) -> String {
 pub(crate) struct MysqlDialect;
 
 impl super::browse_query::Dialect for MysqlDialect {
+    fn engine(&self) -> EngineKind {
+        EngineKind::Mysql
+    }
     fn column(&self, name: &str) -> String {
         quote(name)
     }

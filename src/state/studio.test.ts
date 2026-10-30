@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
-import type { SessionInfo, TablePage, TableSchema } from "../ipc/generated";
+import type { PreparedPlan, SessionInfo, TablePage, TableSchema } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import { useStudio, querySessionForTab } from "./studio";
 import { workspaceSnapshot } from "./workspace";
@@ -282,8 +282,13 @@ test("changing the table query reloads from the first page with the query", asyn
     )) as typeof client.call);
   const id = tableTab();
   await useStudio.getState().refreshTable(id);
-  const query = { sort: [{ column: "label", descending: true }], filters: [] };
-  expect(await useStudio.getState().setTableQuery(id, query)).toBeNull();
+  const query = {
+    sort: [{ column: "label", descending: true }],
+    filters: [],
+    whereClause: null,
+    orderClause: null,
+  };
+  expect(await useStudio.getState().setTableQuery(id, query)).toEqual({ kind: "applied" });
   const result = useStudio.getState().tabs.find((tab) => tab.id === id)!;
   expect(result.query).toEqual(query);
   expect(result.pages).toHaveLength(1);
@@ -292,8 +297,59 @@ test("changing the table query reloads from the first page with the query", asyn
     table: source.table,
     after: null,
     query,
+    approval: null,
   });
   expect(client.call).toHaveBeenCalledWith("release_result", { resultId: "result" });
+});
+
+test("raw table SQL clauses request review when classified non-read and forward approval", async () => {
+  const source = schema("label");
+  const plan: PreparedPlan = {
+    id: "plan-1",
+    sessionId: "session",
+    statements: [{ sql: "SELECT ...", kind: "unknown", missingWhere: false }],
+    warnings: ["Unclassified expression"],
+    requiresApproval: true,
+    requiresPassphrase: false,
+    confirmationText: null,
+    expiresAt: 60,
+  };
+  vi.mocked(client.call).mockImplementation(((command: string) =>
+    Promise.resolve(
+      command === "table_schema"
+        ? source
+        : command === "browse_table"
+          ? page(source)
+          : command === "prepare_browse_table"
+            ? plan
+            : null,
+    )) as typeof client.call);
+  const id = tableTab();
+  await useStudio.getState().refreshTable(id);
+  const query = {
+    sort: [],
+    filters: [],
+    whereClause: "  current_setting('server_version_num') <> ''  ",
+    orderClause: null,
+  };
+  const outcome = await useStudio.getState().setTableQuery(id, query);
+  expect(outcome).toEqual({
+    kind: "review",
+    plan,
+    query: { ...query, whereClause: "current_setting('server_version_num') <> ''" },
+  });
+  expect(
+    await useStudio.getState().setTableQuery(id, query, {
+      approval: { planId: "plan-1", approval: "token-1" },
+    }),
+  ).toEqual({ kind: "applied" });
+  expect(client.call).toHaveBeenLastCalledWith("browse_table", {
+    sessionId: "session",
+    table: source.table,
+    after: null,
+    query: { ...query, whereClause: "current_setting('server_version_num') <> ''" },
+    approval: { planId: "plan-1", approval: "token-1" },
+  });
 });
 
 test("pending edits block sort and filter changes", async () => {
@@ -305,10 +361,14 @@ test("pending edits block sort and filter changes", async () => {
   const id = tableTab();
   await useStudio.getState().refreshTable(id);
   dirtyStore.set({ resultId: "result", row: 0, column: "c0", original: "a", value: "b" });
-  const reason = await useStudio
-    .getState()
-    .setTableQuery(id, { sort: [], filters: [{ column: "label", op: "isNull", value: null }] });
-  expect(reason).toContain("pending edits");
+  const outcome = await useStudio.getState().setTableQuery(id, {
+    sort: [],
+    filters: [{ column: "label", op: "isNull", value: null }],
+    whereClause: null,
+    orderClause: null,
+  });
+  expect(outcome.kind).toBe("refused");
+  if (outcome.kind === "refused") expect(outcome.reason).toContain("pending edits");
   expect(useStudio.getState().tabs.find((tab) => tab.id === id)!.query.filters).toHaveLength(0);
   dirtyStore.clear("result");
 });
@@ -321,7 +381,12 @@ test("opening the same table with a different query opens a separate tab", async
     )) as typeof client.call);
   const table = source.table;
   await useStudio.getState().openTable("profile", table);
-  const filtered = { sort: [], filters: [{ column: "id", op: "eq" as const, value: "42" }] };
+  const filtered = {
+    sort: [],
+    filters: [{ column: "id", op: "eq" as const, value: "42" }],
+    whereClause: null,
+    orderClause: null,
+  };
   await useStudio.getState().openTable("profile", table, filtered);
   await useStudio.getState().openTable("profile", table, filtered);
   const tabs = useStudio.getState().tabs;

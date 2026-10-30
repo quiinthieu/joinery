@@ -48,6 +48,7 @@ import type { CellTarget } from "../features/grid/DatabaseGrid";
 import {
   canOrder,
   constraintsForColumn,
+  hasRawClauses,
   referencedRowsQuery,
   withFilter,
 } from "../features/grid/table-query";
@@ -69,6 +70,7 @@ type Dialog =
       tabId: string;
       profile?: ConnectionProfile;
       onSuccess?(): void;
+      onApprove?(approval: string): Promise<void>;
     }
   | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string };
@@ -131,9 +133,34 @@ export function App() {
     else
       setDialog({ kind: "references", keys: selectedKeys, target: tableColumn, tabId: current.id });
   }
+  async function applyTableQuery(tabId: string, query: BrowseQuery, options?: { force?: boolean }) {
+    const outcome = await state.setTableQuery(tabId, query, options);
+    if (outcome.kind === "refused") {
+      state.notify(outcome.reason);
+      return;
+    }
+    if (outcome.kind === "review") {
+      const targetTab = useStudio.getState().tabs.find((t) => t.id === tabId);
+      const targetProfile = useStudio
+        .getState()
+        .bootstrap?.profiles.find((p) => p.id === targetTab?.connectionId);
+      setDialog({
+        kind: "review",
+        plan: outcome.plan,
+        tabId,
+        profile: targetProfile,
+        onApprove: async (approval) => {
+          const next = await useStudio.getState().setTableQuery(tabId, outcome.query, {
+            approval: { planId: outcome.plan.id, approval },
+          });
+          if (next.kind === "refused") useStudio.getState().notify(next.reason);
+        },
+      });
+    }
+  }
   function changeTableQuery(query: BrowseQuery) {
     if (!current) return;
-    void state.setTableQuery(current.id, query).then((reason) => reason && state.notify(reason));
+    void applyTableQuery(current.id, query);
   }
   const tableCommands =
     current?.kind === "table" && session?.capabilities.tableFiltering
@@ -192,6 +219,21 @@ export function App() {
                   shortcut: "",
                   icon: Filter,
                   action: () => changeTableQuery({ ...current.query, filters: [] }),
+                },
+              ]
+            : []),
+          ...(hasRawClauses(current.query)
+            ? [
+                {
+                  label: "Reset table SQL clauses",
+                  shortcut: "",
+                  icon: Filter,
+                  action: () =>
+                    changeTableQuery({
+                      ...current.query,
+                      whereClause: null,
+                      orderClause: null,
+                    }),
                 },
               ]
             : []),
@@ -684,6 +726,7 @@ export function App() {
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
+                onQueryChange={(query, options) => void applyTableQuery(current.id, query, options)}
               />
             )}
           </section>
@@ -837,7 +880,8 @@ export function App() {
           preview={dialog.preview}
           profile={dialog.profile}
           onExecute={async (approval) => {
-            await executePrepared(dialog.tabId, dialog.plan, approval, dialog.onSuccess);
+            if (dialog.onApprove) await dialog.onApprove(approval);
+            else await executePrepared(dialog.tabId, dialog.plan, approval, dialog.onSuccess);
           }}
           onClose={() => setDialog(null)}
         />

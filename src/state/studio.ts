@@ -2,8 +2,10 @@ import { create } from "zustand";
 import type {
   AppError,
   Bootstrap,
+  BrowseApproval,
   BrowseQuery,
   ConnectionProfile,
+  PreparedPlan,
   QueryEvent,
   ResultInfo,
   SessionInfo,
@@ -14,7 +16,14 @@ import type {
 import { client, messageOf } from "../ipc/client";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
-import { EMPTY_QUERY, isEmptyQuery, sameQuery, tableTabTitle } from "../features/grid/table-query";
+import {
+  EMPTY_QUERY,
+  hasRawClauses,
+  isEmptyQuery,
+  normalizeQuery,
+  sameQuery,
+  tableTabTitle,
+} from "../features/grid/table-query";
 
 export type TabKind = "query" | "table" | "benchmark" | "history" | "processes";
 export type TabStatus =
@@ -54,6 +63,11 @@ export interface StudioTab {
   querySessionClosed: boolean;
 }
 
+export type TableQueryOutcome =
+  | { kind: "applied" }
+  | { kind: "refused"; reason: string }
+  | { kind: "review"; plan: PreparedPlan; query: BrowseQuery };
+
 interface StudioState {
   bootstrap: Bootstrap | null;
   error: string | null;
@@ -79,11 +93,15 @@ interface StudioState {
   openQuery(connectionId?: string | null, sql?: string): string;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
   openTable(connectionId: string, table: TableRef, query?: BrowseQuery): Promise<void>;
-  /** Applies a new sort/filter; returns a reason when refused. */
-  setTableQuery(id: string, query: BrowseQuery): Promise<string | null>;
-  loadNextPage(id: string): Promise<void>;
+  /** Applies a new sort/filter or requests review for non-Read raw SQL clauses. */
+  setTableQuery(
+    id: string,
+    query: BrowseQuery,
+    options?: { force?: boolean; approval?: BrowseApproval },
+  ): Promise<TableQueryOutcome>;
+  loadNextPage(id: string, approval?: BrowseApproval): Promise<void>;
   ensureTablePage(id: string, row: number): Promise<void>;
-  refreshTable(id: string): Promise<void>;
+  refreshTable(id: string, approval?: BrowseApproval): Promise<void>;
   updateTab(
     id: string,
     update: Partial<StudioTab> | ((tab: StudioTab) => Partial<StudioTab>),
@@ -139,6 +157,11 @@ function requestIsCurrent(id: string, revision: number, connectionId: string, se
     state.tabs.some((tab) => tab.id === id && tab.revision === revision) &&
     state.sessions[connectionId]?.id === sessionId
   );
+}
+function asAppError(error: unknown): AppError {
+  if (error && typeof error === "object" && "code" in error && "message" in error)
+    return error as AppError;
+  return { code: "database", message: messageOf(error) };
 }
 function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
   if (!schema || JSON.stringify(schema.columns) !== JSON.stringify(result.columns)) {
@@ -316,7 +339,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
-  async openTable(connectionId, table, query = EMPTY_QUERY) {
+  async openTable(connectionId, table, rawQuery = EMPTY_QUERY) {
+    const query = normalizeQuery(rawQuery);
     const existing = get().tabs.find(
       (t) =>
         t.kind === "table" &&
@@ -335,17 +359,37 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     await get().refreshTable(next.id);
   },
-  async setTableQuery(id, query) {
+  async setTableQuery(id, rawQuery, options) {
     const current = get().tabs.find((t) => t.id === id);
-    if (!current?.table) return "This tab does not browse a table";
+    if (!current?.table) return { kind: "refused", reason: "This tab does not browse a table" };
     if (current.pages.some((page) => dirtyStore.hasResult(page.result.id)))
-      return "Review or discard pending edits before changing sort or filters";
-    if (sameQuery(current.query, query)) return null;
-    get().updateTab(id, { query });
-    await get().refreshTable(id);
-    return null;
+      return {
+        kind: "refused",
+        reason: "Review or discard pending edits before changing sort or filters",
+      };
+    const session = current.connectionId ? get().sessions[current.connectionId] : null;
+    if (!session) return { kind: "refused", reason: "Connect to change sort or filters" };
+    const query = normalizeQuery(rawQuery);
+    if (!options?.force && !options?.approval && sameQuery(current.query, query))
+      return { kind: "applied" };
+    if (hasRawClauses(query) && !options?.approval) {
+      try {
+        const plan = await client.call<PreparedPlan | null>("prepare_browse_table", {
+          sessionId: session.id,
+          table: current.table,
+          query,
+        });
+        if (plan) return { kind: "review", plan, query };
+      } catch (error) {
+        get().updateTab(id, { error: asAppError(error) });
+        return { kind: "applied" };
+      }
+    }
+    get().updateTab(id, { query, error: null });
+    await get().refreshTable(id, options?.approval);
+    return { kind: "applied" };
   },
-  async refreshTable(id) {
+  async refreshTable(id, approval) {
     const current = get().tabs.find((t) => t.id === id),
       session = current?.connectionId ? get().sessions[current.connectionId] : null;
     if (!current?.table || !session) return;
@@ -375,17 +419,17 @@ export const useStudio = create<StudioState>((set, get) => ({
       });
       if (!requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id)) return;
       get().updateTab(id, { schema, loadingPage: false });
-      await get().loadNextPage(id);
+      await get().loadNextPage(id, approval);
     } catch (error) {
       if (requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: { code: "database", message: messageOf(error) },
+          error: asAppError(error),
           loadingPage: false,
           hasMore: false,
         });
     }
   },
-  async loadNextPage(id) {
+  async loadNextPage(id, approval) {
     const current = get().tabs.find((t) => t.id === id),
       session = current?.connectionId ? get().sessions[current.connectionId] : null;
     if (
@@ -406,6 +450,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         table: current.table,
         after,
         query: isEmptyQuery(current.query) ? null : current.query,
+        approval: approval ?? null,
       });
       if (
         !get().tabs.some((t) => t.id === id && t.revision === current.revision) ||
@@ -437,7 +482,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     } catch (error) {
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: { code: "database", message: messageOf(error) },
+          error: asAppError(error),
           hasMore: false,
         });
     } finally {

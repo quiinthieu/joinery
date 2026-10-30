@@ -5,7 +5,11 @@ import {
   allowedOperators,
   cycleSort,
   describeFilter,
+  hasRawClauses,
+  isEmptyQuery,
+  normalizeQuery,
   referencedRowsQuery,
+  sameQuery,
   sortIndicator,
   tableTabTitle,
 } from "./table-query";
@@ -62,6 +66,8 @@ test("referenced rows pair composite columns by ordinal and refuse NULL keys", (
       { column: "order_id", op: "eq", value: "7" },
       { column: "line_no", op: "eq", value: "2" },
     ],
+    whereClause: null,
+    orderClause: null,
   });
   row.note_line = null;
   expect(referencedRowsQuery(key, (column) => row[column])).toBeNull();
@@ -77,6 +83,29 @@ test("table titles summarize at most two filters", () => {
         { column: "line_no", op: "eq", value: "2" },
         { column: "sku", op: "isNotNull", value: null },
       ],
+      whereClause: null,
+      orderClause: null,
     }),
   ).toBe("order_lines · order_id = 7, line_no = 2…");
+});
+
+test("raw WHERE and ORDER BY clauses normalize whitespace and yield to header sort clicks", () => {
+  const query = normalizeQuery({
+    sort: [],
+    filters: [],
+    whereClause: "  bucket > 1  ",
+    orderClause: "   ",
+  });
+  expect(query).toEqual({
+    sort: [],
+    filters: [],
+    whereClause: "bucket > 1",
+    orderClause: null,
+  });
+  expect(hasRawClauses(query)).toBe(true);
+  expect(isEmptyQuery(query)).toBe(false);
+  expect(sameQuery(query, { ...query, whereClause: "bucket > 1\n" })).toBe(true);
+  const sorted = cycleSort({ ...query, orderClause: "id DESC" }, "bucket", false);
+  expect(sorted.orderClause).toBeNull();
+  expect(sorted.sort).toEqual([{ column: "bucket", descending: false }]);
 });

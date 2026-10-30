@@ -1113,6 +1113,41 @@ kbd {
 .filter-form input {
   width: 170px;
 }
+.sql-clause-form {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.sql-clause-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.sql-clause-field > span {
+  font-size: 9px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.sql-clause-field > input {
+  height: 22px;
+  width: 145px;
+  border: 0;
+  padding: 0 6px 0 2px;
+  background: transparent;
+  font-size: 11px;
+  color: var(--text);
+}
+.sql-clause-field > input:focus {
+  outline: none;
+}
+.sql-clause-field:focus-within {
+  border-color: var(--accent);
+}
 .filter-spacer {
   flex: 1;
 }

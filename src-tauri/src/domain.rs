@@ -180,12 +180,55 @@ pub struct BrowseQuery {
     pub sort: Vec<SortKey>,
     #[serde(default)]
     pub filters: Vec<ColumnFilter>,
+    /// Optional SQL predicate fragment; classified through `safety::prepare`.
+    #[serde(default)]
+    pub where_clause: Option<String>,
+    /// Optional SQL ORDER BY list; disables keyset continuation paging.
+    #[serde(default)]
+    pub order_clause: Option<String>,
 }
 
 impl BrowseQuery {
-    pub fn is_empty(&self) -> bool {
-        self.sort.is_empty() && self.filters.is_empty()
+    pub fn normalized(&self) -> Self {
+        Self {
+            sort: self.sort.clone(),
+            filters: self.filters.clone(),
+            where_clause: self
+                .where_clause
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            order_clause: self
+                .order_clause
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        }
     }
+
+    pub fn has_raw_clauses(&self) -> bool {
+        self.where_clause
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+            || self
+                .order_clause
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sort.is_empty() && self.filters.is_empty() && !self.has_raw_clauses()
+    }
+}
+
+/// One-use authorization token for a non-`Read` raw table browse clause.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseApproval {
+    pub plan_id: String,
+    pub approval: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

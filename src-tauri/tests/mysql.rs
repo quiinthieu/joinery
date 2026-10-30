@@ -1154,7 +1154,7 @@ async fn browse_sorted_filtered_pages_match_reference_on_both_engines() {
             (
                 BrowseQuery {
                     sort: vec![sort("bucket", true), sort("label", false)],
-                    filters: vec![],
+                    ..Default::default()
                 },
                 "SELECT id FROM browse_sort ORDER BY bucket IS NULL DESC, bucket DESC, label IS NULL, label, id",
             ),
@@ -1162,13 +1162,14 @@ async fn browse_sorted_filtered_pages_match_reference_on_both_engines() {
                 BrowseQuery {
                     sort: vec![sort("label", true), sort("bucket", false)],
                     filters: vec![filter("bucket", FilterOp::NotEq, Some("3"))],
+                    ..Default::default()
                 },
                 "SELECT id FROM browse_sort WHERE bucket <> 3 ORDER BY label IS NULL DESC, label DESC, bucket IS NULL, bucket, id",
             ),
             (
                 BrowseQuery {
-                    sort: vec![],
                     filters: vec![filter("label", FilterOp::Contains, Some("_%"))],
+                    ..Default::default()
                 },
                 "SELECT id FROM browse_sort WHERE label LIKE '%!_!%%' ESCAPE '!' ORDER BY id",
             ),
@@ -1176,13 +1177,14 @@ async fn browse_sorted_filtered_pages_match_reference_on_both_engines() {
                 BrowseQuery {
                     sort: vec![sort("bucket", false)],
                     filters: vec![filter("label", FilterOp::IsNull, None)],
+                    ..Default::default()
                 },
                 "SELECT id FROM browse_sort WHERE label IS NULL ORDER BY bucket IS NULL, bucket, id",
             ),
             (
                 BrowseQuery {
-                    sort: vec![],
                     filters: vec![filter("label", FilterOp::StartsWith, Some("ALP"))],
+                    ..Default::default()
                 },
                 "SELECT id FROM browse_sort WHERE label LIKE 'ALP%' ORDER BY id",
             ),
@@ -1197,12 +1199,12 @@ async fn browse_sorted_filtered_pages_match_reference_on_both_engines() {
             }
         }
         let hostile = BrowseQuery {
-            sort: vec![],
             filters: vec![filter(
                 "label",
                 FilterOp::Eq,
                 Some("' OR 1=1; DROP TABLE browse_sort; -- "),
             )],
+            ..Default::default()
         };
         assert!(
             browse_ids(&studio, &session, &table, &hostile)
@@ -1212,5 +1214,81 @@ async fn browse_sorted_filtered_pages_match_reference_on_both_engines() {
         );
         assert_eq!(studio.usage().retained_bytes, 0);
         studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn raw_browse_clauses_enforce_safety_gates_on_mysql_and_mariadb() {
+    let table = TableRef {
+        schema: "joinery".into(),
+        name: "browse_sort".into(),
+    };
+    for port in [53306, 53307] {
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let read_where = BrowseQuery {
+            where_clause: Some("bucket IS NOT NULL AND id > 10".into()),
+            ..Default::default()
+        };
+        assert!(
+            ro_studio
+                .prepare_browse(&ro_session.id, &table, &read_where)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (ids, pages) = browse_ids(&ro_studio, &ro_session, &table, &read_where).await;
+        assert!(pages > 1, "port {port}");
+        assert_eq!(
+            ids,
+            reference_ids(
+                &ro_studio,
+                &ro_session,
+                "SELECT id FROM browse_sort WHERE bucket IS NOT NULL AND id > 10 ORDER BY id"
+            )
+            .await
+        );
+
+        let unclassified = BrowseQuery {
+            where_clause: Some("id = 1 AND BENCHMARK(1, 1) = 0".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ro_studio
+                .prepare_browse(&ro_session.id, &table, &unclassified)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
+        );
+        ro_studio.shutdown();
+
+        let (_rw_root, rw_studio, rw_session) = setup(port, SafeMode::Confirm).await;
+        let plan = rw_studio
+            .prepare_browse(&rw_session.id, &table, &unclassified)
+            .await
+            .unwrap()
+            .expect("unclassified clause must require approval");
+        let token = rw_studio.authorize(&plan.id, None, None).unwrap();
+        let approval = BrowseApproval {
+            plan_id: plan.id.clone(),
+            approval: token,
+        };
+        let page = rw_studio
+            .browse_with_approval(&rw_session.id, &table, None, &unclassified, Some(&approval))
+            .await
+            .unwrap();
+        assert_eq!(page.result.retained_rows, 1);
+        assert!(!page.has_more);
+        rw_studio.release_result(&page.result.id);
+        assert_eq!(
+            rw_studio
+                .browse_with_approval(&rw_session.id, &table, None, &unclassified, Some(&approval))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalExpired
+        );
+        rw_studio.shutdown();
     }
 }

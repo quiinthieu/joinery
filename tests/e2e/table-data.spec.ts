@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function connect(page: Page, name: string) {
+async function connect(page: Page, name: string, safeMode?: string) {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Connection name", { exact: true }).fill(name);
@@ -10,6 +10,7 @@ async function connect(page: Page, name: string) {
   await page.getByLabel("Username", { exact: true }).fill("joinery");
   await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
   await page.getByLabel("Require TLS and verify the server certificate").uncheck();
+  if (safeMode) await page.getByLabel("Safe Mode", { exact: true }).selectOption(safeMode);
   await page.getByRole("button", { name: "Save and connect" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator(".status-bar")).toContainText(name);
@@ -171,4 +172,68 @@ test("follows single and composite foreign keys to referenced rows in new tabs",
   await expect(page.getByRole("status")).toContainText("references no row");
   expect(errors).toEqual([]);
   await page.screenshot({ path: ".cache/screenshots/foreign-key-navigation.png", fullPage: true });
+});
+
+test("classifies raw table WHERE and ORDER BY clauses through Safe Mode gates", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  await connect(page, "Raw clause confirm", "confirm");
+  await openTable(page, "browse_sort");
+  const filters = page.getByRole("toolbar", { name: "Table filters" });
+  const footer = page.locator(".result-footer");
+  await expect(footer).toContainText("500 rows loaded");
+
+  await filters.getByLabel("WHERE clause").fill("id IN (2, 10, 100)");
+  await filters.getByLabel("ORDER BY clause").fill("id DESC");
+  await filters.getByRole("button", { name: "Run SQL clauses" }).click();
+  await expect(footer).toContainText("3 rows loaded");
+  await expect(filters).toContainText("First 500 rows · custom ORDER BY");
+  await expect.poll(() => cellText(page, 55, 0)).toBe("100");
+  await expect.poll(() => cellText(page, 55, 1)).toBe("10");
+  await expect.poll(() => cellText(page, 55, 2)).toBe("2");
+
+  // Stacked statements are rejected before reaching the database.
+  await filters.getByLabel("WHERE clause").fill("id = 1; SELECT 1");
+  await filters.getByRole("button", { name: "Run SQL clauses" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Enter a single SQL expression without semicolons",
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Dismiss query error" }).click();
+
+  // Unclassified functions require one-use ReviewDialog authorization on writable profiles.
+  await filters
+    .getByLabel("WHERE clause")
+    .fill("id = 10 AND current_setting('server_version_num') <> ''");
+  await filters.getByLabel("ORDER BY clause").fill("");
+  await filters.getByRole("button", { name: "Run SQL clauses" }).click();
+  const review = page.getByRole("dialog", { name: "Review this operation" });
+  await expect(review).toBeVisible();
+  await review.getByRole("button", { name: "Authorize and run" }).click();
+  await expect(review).toHaveCount(0);
+  await expect(footer).toContainText("1 rows loaded");
+  await expect.poll(() => cellText(page, 55, 0)).toBe("10");
+
+  await filters.getByRole("button", { name: "Reset SQL clauses" }).click();
+  await expect(footer).toContainText("500 rows loaded");
+
+  // ReadOnly Safe Mode blocks unclassified SQL clauses without opening ReviewDialog.
+  await connect(page, "Raw clause readonly", "readOnly");
+  await openTable(page, "browse_sort");
+  await expect(footer).toContainText("500 rows loaded");
+  await filters
+    .getByLabel("WHERE clause")
+    .fill("id = 10 AND current_setting('server_version_num') <> ''");
+  await filters.getByRole("button", { name: "Run SQL clauses" }).click();
+  await expect(page.getByRole("alert")).toContainText("This connection is read-only");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Dismiss query error" }).click();
+
+  await filters.getByLabel("WHERE clause").fill("id IN (2, 10)");
+  await filters.getByRole("button", { name: "Run SQL clauses" }).click();
+  await expect(footer).toContainText("2 rows loaded");
+  expect(errors).toEqual([]);
 });

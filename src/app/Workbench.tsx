@@ -22,7 +22,7 @@ import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
-import { cycleSort } from "../features/grid/table-query";
+import { cycleSort, hasRawClauses } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { StructureView } from "../features/studio/UtilityViews";
 import { RedisTools } from "../features/redis/RedisTools";
@@ -45,6 +45,7 @@ interface Props {
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
   onNewSession(): void;
+  onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
 
 export function Workbench({
@@ -58,6 +59,7 @@ export function Workbench({
   onSelect,
   onOpenValue,
   onNewSession,
+  onQueryChange,
 }: Props) {
   const state = useStudio(),
     [editorSize, setEditorSize] = useState(290),
@@ -75,7 +77,7 @@ export function Workbench({
         ? "Review or discard pending edits to change sort or filters"
         : null;
   function applyQuery(query: StudioTab["query"]) {
-    void state.setTableQuery(tab.id, query).then((reason) => reason && state.notify(reason));
+    onQueryChange(query);
   }
   function changeConnection(connectionId: string) {
     const apply = () => {
@@ -259,15 +261,20 @@ export function Workbench({
               <button
                 className="button ghost small"
                 disabled={tab.loadingPage || running}
-                onClick={() =>
-                  edits.length
-                    ? onConfirm(
-                        "Refresh and discard edits?",
-                        "This reloads current database values and discards pending cell edits.",
-                        () => void state.refreshTable(tab.id),
-                      )
-                    : void state.refreshTable(tab.id)
-                }
+                onClick={() => {
+                  const reload = () => {
+                    for (const page of tab.pages) dirtyStore.clear(page.result.id);
+                    if (hasRawClauses(tab.query)) onQueryChange(tab.query, { force: true });
+                    else void state.refreshTable(tab.id);
+                  };
+                  if (edits.length)
+                    onConfirm(
+                      "Refresh and discard edits?",
+                      "This reloads current database values and discards pending cell edits.",
+                      reload,
+                    );
+                  else reload();
+                }}
               >
                 <RefreshCw size={13} className={tab.loadingPage ? "spin" : ""} />
                 Refresh

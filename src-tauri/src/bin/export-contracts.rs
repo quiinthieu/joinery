@@ -35,6 +35,7 @@ fn main() {
         FilterOp::decl(),
         ColumnFilter::decl(),
         BrowseQuery::decl(),
+        BrowseApproval::decl(),
         RetentionStatus::decl(),
         ResultInfo::decl(),
         TablePage::decl(),

@@ -343,14 +343,7 @@ impl Driver for Postgres {
         query: &BrowseQuery,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
-        let built = browse_query::build(schema, query, after.as_deref(), &PostgresDialect)?;
-        let sql = format!(
-            "SELECT {} FROM {} AS __joinery_source{}{} LIMIT 501",
-            projection(schema),
-            qualified(&schema.table),
-            built.where_sql,
-            built.order_sql
-        );
+        let (sql, built) = browse_sql(schema, query, after.as_deref())?;
         let parameters = built
             .binds
             .iter()
@@ -543,13 +536,17 @@ pub fn qualified(table: &TableRef) -> String {
     )
 }
 
-/// Browse SQL selects `column::text`, so ORDER BY must name the source
-/// relation's typed column rather than the text output column.
-pub(crate) struct PostgresDialect;
+/// Browse SQL aliases `column::text` to `__joinery_cN` and keeps the base
+/// table unaliased so user `WHERE` / `ORDER BY` expressions resolve typed
+/// columns both unqualified and qualified (`table.col`).
+pub(crate) struct PostgresDialect<'a>(pub &'a TableRef);
 
-impl browse_query::Dialect for PostgresDialect {
+impl browse_query::Dialect for PostgresDialect<'_> {
+    fn engine(&self) -> EngineKind {
+        EngineKind::Postgres
+    }
     fn column(&self, name: &str) -> String {
-        format!("__joinery_source.{}", quote_identifier(name))
+        format!("{}.{}", qualified(self.0), quote_identifier(name))
     }
     fn typed_bind(&self, column: &ColumnInfo, index: usize) -> Option<String> {
         cast_type(column).map(|cast| format!("(${}::text)::{cast}", index + 1))
@@ -570,6 +567,34 @@ impl browse_query::Dialect for PostgresDialect {
         }
     }
 }
+
+pub(crate) fn browse_sql(
+    schema: &TableSchema,
+    query: &BrowseQuery,
+    after: Option<&[Option<String>]>,
+) -> AppResult<(String, browse_query::Built)> {
+    let dialect = PostgresDialect(&schema.table);
+    let built = browse_query::build(schema, query, after, &dialect)?;
+    let table = qualified(&schema.table);
+    let projection = schema
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            format!(
+                "{table}.{}::text AS __joinery_c{i}",
+                quote_identifier(&c.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT {projection} FROM {table}{}{} LIMIT 501",
+        built.where_sql, built.order_sql
+    );
+    Ok((sql, built))
+}
+
 fn projection(schema: &TableSchema) -> String {
     schema
         .columns

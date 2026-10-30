@@ -50,6 +50,10 @@ struct Session {
 
 enum Action {
     Sql,
+    Browse {
+        table: TableRef,
+        query: BrowseQuery,
+    },
     Changes {
         schema: TableSchema,
         rows: Vec<RowMutation>,
@@ -651,6 +655,10 @@ impl Studio {
                 .map_err(|_| AppError::internal("Could not fingerprint query plan"))?,
         );
         match &action {
+            Action::Browse { table, query } => fingerprint.update(
+                serde_json::to_vec(&(table, query))
+                    .map_err(|_| AppError::internal("Could not fingerprint table filter"))?,
+            ),
             Action::Changes { schema, rows } => fingerprint.update(
                 serde_json::to_vec(&(schema, rows))
                     .map_err(|_| AppError::internal("Could not fingerprint bound changes"))?,
@@ -722,6 +730,11 @@ impl Studio {
         let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
         if stored.deadline <= Instant::now() {
             return Err(expired());
+        }
+        if matches!(stored.action, Action::Browse { .. }) {
+            return Err(AppError::invalid(
+                "Use browse_table to execute an approved table filter",
+            ));
         }
         if stored.plan.requires_approval
             && (stored.approval.is_none() || stored.approval.as_deref() != approval)
@@ -888,6 +901,7 @@ impl Studio {
                     });
                 }
             }
+            Action::Browse { .. } => {}
         }
         if serialized {
             let _gate = session.cancellation_gate.lock().await;
@@ -1123,6 +1137,13 @@ impl Studio {
     }
     pub async fn schema(&self, session_id: &str, table: &TableRef) -> AppResult<TableSchema> {
         let session = self.session(session_id)?;
+        self.schema_for_session(&session, table).await
+    }
+    async fn schema_for_session(
+        &self,
+        session: &Session,
+        table: &TableRef,
+    ) -> AppResult<TableSchema> {
         let mut schema = session.driver.schema(table).await?;
         if safety::effective_mode(&session.profile) == SafeMode::ReadOnly {
             schema.editable = false;
@@ -1189,8 +1210,43 @@ impl Studio {
             .await
     }
 
-    /// Table page with typed server-side sort/filter. The query is rebuilt
-    /// from the current schema on every page; values are never interpolated.
+    pub async fn prepare_browse(
+        &self,
+        session_id: &str,
+        table: &TableRef,
+        query: &BrowseQuery,
+    ) -> AppResult<Option<PreparedPlan>> {
+        let query = query.normalized();
+        if !query.has_raw_clauses() {
+            return Ok(None);
+        }
+        let session = self.session(session_id)?;
+        let _lane = session.lane.lock().await;
+        let schema = self.schema_for_session(&session, table).await?;
+        let sql = browse_sql_for_engine(session.profile.engine, &schema, &query, None)?;
+        let (mut plan, needs_review) = classify_browse_sql(session_id, &session.profile, &sql)?;
+        if !needs_review {
+            return Ok(None);
+        }
+        plan.requires_approval = true;
+        plan.warnings.push(
+            "This table filter or order clause uses an unclassified or side-effecting expression and executes a single bounded page."
+                .into(),
+        );
+        let bytes = sql.len();
+        let stored = self.store_plan(
+            plan,
+            Action::Browse {
+                table: table.clone(),
+                query,
+            },
+            bytes,
+        )?;
+        Ok(Some(stored))
+    }
+
+    /// Table page with server-side sort/filter. Typed values stay bound; raw
+    /// `WHERE` / `ORDER BY` clauses are classified through `safety::prepare`.
     pub async fn browse_with(
         &self,
         session_id: &str,
@@ -1198,10 +1254,87 @@ impl Studio {
         after: Option<Vec<Option<String>>>,
         query: &BrowseQuery,
     ) -> AppResult<TablePage> {
+        self.browse_with_approval(session_id, table, after, query, None)
+            .await
+    }
+
+    pub async fn browse_with_approval(
+        &self,
+        session_id: &str,
+        table: &TableRef,
+        after: Option<Vec<Option<String>>>,
+        query: &BrowseQuery,
+        approval: Option<&BrowseApproval>,
+    ) -> AppResult<TablePage> {
+        let query = query.normalized();
         let session = self.session(session_id)?;
         let _lane = session.lane.lock().await;
-        let schema = self.schema(session_id, table).await?;
-        let page = session.driver.browse_query(&schema, query, after).await?;
+        let schema = self.schema_for_session(&session, table).await?;
+        let mut approved_digest: Option<String> = None;
+        if query.has_raw_clauses() {
+            let sql =
+                browse_sql_for_engine(session.profile.engine, &schema, &query, after.as_deref())?;
+            let (_, needs_review) = classify_browse_sql(session_id, &session.profile, &sql)?;
+            if needs_review {
+                if after.is_some() {
+                    return Err(AppError::new(
+                        ErrorCode::ApprovalRequired,
+                        "Approved table clauses execute a single bounded page",
+                    ));
+                }
+                let token = approval.ok_or_else(|| {
+                    AppError::new(
+                        ErrorCode::ApprovalRequired,
+                        "Review and authorize this table filter or order clause before running it",
+                    )
+                })?;
+                let stored = self
+                    .plans
+                    .lock()
+                    .remove(&token.plan_id)
+                    .ok_or_else(expired)?;
+                if stored.deadline <= Instant::now() {
+                    return Err(expired());
+                }
+                if stored.plan.session_id != session_id
+                    || stored.approval.as_deref() != Some(token.approval.as_str())
+                    || !matches!(
+                        &stored.action,
+                        Action::Browse { table: t, query: q } if t == table && q == &query
+                    )
+                {
+                    return Err(AppError::new(
+                        ErrorCode::ApprovalRequired,
+                        "Review and authorize this exact table filter or order clause before running it",
+                    ));
+                }
+                self.persistence
+                    .audit(&session.profile.id, "browse", &stored.digest, "started")?;
+                approved_digest = Some(stored.digest);
+            }
+        }
+        let mut page = match session.driver.browse_query(&schema, &query, after).await {
+            Ok(page) => {
+                if let Some(digest) = &approved_digest {
+                    let _ =
+                        self.persistence
+                            .audit(&session.profile.id, "browse", digest, "Completed");
+                }
+                page
+            }
+            Err(error) => {
+                if let Some(digest) = &approved_digest {
+                    let _ = self
+                        .persistence
+                        .audit(&session.profile.id, "browse", digest, "Failed");
+                }
+                return Err(error);
+            }
+        };
+        if approved_digest.is_some() {
+            page.has_more = false;
+            page.next_key = None;
+        }
         let result = self.results.create(
             &format!("table:{session_id}"),
             0,
@@ -1463,6 +1596,48 @@ impl Studio {
     }
 }
 
+fn browse_sql_for_engine(
+    engine: EngineKind,
+    schema: &TableSchema,
+    query: &BrowseQuery,
+    after: Option<&[Option<String>]>,
+) -> AppResult<String> {
+    match engine {
+        EngineKind::Postgres => {
+            crate::drivers::postgres::browse_sql(schema, query, after).map(|(sql, _)| sql)
+        }
+        EngineKind::Mysql => {
+            crate::drivers::mysql::browse_sql(schema, query, after).map(|(sql, _)| sql)
+        }
+        EngineKind::Snowflake | EngineKind::Redis => Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Sorting and filtering table data is unavailable for this engine",
+        )),
+    }
+}
+
+fn classify_browse_sql(
+    session_id: &str,
+    profile: &ConnectionProfile,
+    sql: &str,
+) -> AppResult<(PreparedPlan, bool)> {
+    let plan = safety::prepare(session_id, profile, sql)?;
+    if plan.statements.len() != 1 {
+        return Err(AppError::invalid(
+            "Table filter and order clauses must form a single SELECT query",
+        ));
+    }
+    let non_read = plan.statements[0].kind != StatementKind::Read;
+    if safety::effective_mode(profile) == SafeMode::ReadOnly && non_read {
+        return Err(AppError::new(
+            ErrorCode::PolicyBlocked,
+            "This connection is read-only. Table filter and order clauses must be pure read expressions.",
+        ));
+    }
+    let needs_review = non_read || plan.requires_approval;
+    Ok((plan, needs_review))
+}
+
 fn expired() -> AppError {
     AppError::new(
         ErrorCode::ApprovalExpired,
@@ -1570,5 +1745,154 @@ impl QuerySink for Output<'_> {
         let result = self.studio.results.finish(&id, self.truncated)?;
         (self.events)(QueryEvent::Result { result });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod browse_classification_tests {
+    use super::*;
+
+    fn profile(engine: EngineKind, safe_mode: SafeMode) -> ConnectionProfile {
+        ConnectionProfile {
+            id: new_id(),
+            name: "BrowseTest".into(),
+            group_id: "local".into(),
+            engine,
+            host: "127.0.0.1".into(),
+            port: 5432,
+            database: "joinery".into(),
+            username: "joinery".into(),
+            environment: Environment::Local,
+            safe_mode,
+            tls_mode: TlsMode::Disable,
+            ca_cert_path: None,
+            ssh: None,
+            remember_password: false,
+            store_query_text: false,
+            store_drafts: false,
+            snowflake: None,
+        }
+    }
+
+    fn schema(engine: EngineKind) -> TableSchema {
+        let (int_type, text_type) = if engine == EngineKind::Mysql {
+            ("bigint", "varchar(64)")
+        } else {
+            ("bigint", "text")
+        };
+        TableSchema {
+            table: TableRef {
+                schema: if engine == EngineKind::Mysql {
+                    "joinery".into()
+                } else {
+                    "public".into()
+                },
+                name: "orders".into(),
+            },
+            columns: vec![
+                ColumnInfo {
+                    id: "c0".into(),
+                    name: "id".into(),
+                    database_type: int_type.into(),
+                    kind: ColumnKind::Integer,
+                    nullable: false,
+                    primary_key: true,
+                    foreign_key: false,
+                    editable: false,
+                },
+                ColumnInfo {
+                    id: "c1".into(),
+                    name: "bucket".into(),
+                    database_type: int_type.into(),
+                    kind: ColumnKind::Integer,
+                    nullable: true,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: true,
+                },
+                ColumnInfo {
+                    id: "c2".into(),
+                    name: "label".into(),
+                    database_type: text_type.into(),
+                    kind: ColumnKind::Text,
+                    nullable: true,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: true,
+                },
+            ],
+            primary_key: vec!["id".into()],
+            foreign_keys: vec![],
+            editable: true,
+        }
+    }
+
+    #[test]
+    fn pure_read_raw_clauses_with_typed_filters_need_no_approval_on_pg_and_mysql() {
+        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+            let schema = schema(engine);
+            let query = BrowseQuery {
+                sort: vec![SortKey {
+                    column: "bucket".into(),
+                    descending: true,
+                }],
+                filters: vec![
+                    ColumnFilter {
+                        column: "label".into(),
+                        op: FilterOp::Contains,
+                        value: Some("ok".into()),
+                    },
+                    ColumnFilter {
+                        column: "bucket".into(),
+                        op: FilterOp::Gte,
+                        value: Some("1".into()),
+                    },
+                ],
+                where_clause: Some("bucket IS NOT NULL AND LOWER(label) <> 'skip'".into()),
+                order_clause: None,
+            };
+            let sql = browse_sql_for_engine(engine, &schema, &query, None).unwrap();
+            for mode in [SafeMode::ReadOnly, SafeMode::Confirm, SafeMode::Silent] {
+                let (_, needs_review) =
+                    classify_browse_sql("s", &profile(engine, mode), &sql).unwrap();
+                assert!(!needs_review, "{engine:?} {mode:?}: {sql}");
+            }
+
+            let custom_order = BrowseQuery {
+                where_clause: Some("id > 0".into()),
+                order_clause: Some("COALESCE(bucket, 0) DESC, id ASC".into()),
+                ..Default::default()
+            };
+            let sql = browse_sql_for_engine(engine, &schema, &custom_order, None).unwrap();
+            let (_, needs_review) =
+                classify_browse_sql("s", &profile(engine, SafeMode::ReadOnly), &sql).unwrap();
+            assert!(!needs_review, "{engine:?} custom order: {sql}");
+        }
+    }
+
+    #[test]
+    fn non_read_raw_clauses_are_blocked_in_read_only_and_reviewed_in_writable_modes() {
+        for (engine, expr) in [
+            (EngineKind::Postgres, "pg_advisory_lock(1) IS NULL"),
+            (EngineKind::Mysql, "GET_LOCK('joinery', 0) = 1"),
+        ] {
+            let schema = schema(engine);
+            let query = BrowseQuery {
+                where_clause: Some(expr.into()),
+                ..Default::default()
+            };
+            let sql = browse_sql_for_engine(engine, &schema, &query, None).unwrap();
+            assert_eq!(
+                classify_browse_sql("s", &profile(engine, SafeMode::ReadOnly), &sql)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PolicyBlocked
+            );
+            for mode in [SafeMode::Silent, SafeMode::Confirm, SafeMode::PasswordGated] {
+                let (_, needs_review) =
+                    classify_browse_sql("s", &profile(engine, mode), &sql).unwrap();
+                assert!(needs_review, "{engine:?} {mode:?} must require review");
+            }
+        }
     }
 }

@@ -8,7 +8,12 @@ import type {
   TableSchema,
 } from "../../ipc/generated";
 
-export const EMPTY_QUERY: BrowseQuery = { sort: [], filters: [] };
+export const EMPTY_QUERY: BrowseQuery = {
+  sort: [],
+  filters: [],
+  whereClause: null,
+  orderClause: null,
+};
 
 export const FILTER_OPERATORS: { op: FilterOp; label: string; needsValue: boolean }[] = [
   { op: "eq", label: "=", needsValue: true },
@@ -39,12 +44,30 @@ export function allowedOperators(column: ColumnInfo): FilterOp[] {
   ).map((o) => o.op);
 }
 
+export function normalizeClause(clause: string | null | undefined): string | null {
+  const trimmed = clause?.trim() ?? "";
+  return trimmed ? trimmed : null;
+}
+
+export function normalizeQuery(query: BrowseQuery): BrowseQuery {
+  return {
+    sort: query.sort,
+    filters: query.filters,
+    whereClause: normalizeClause(query.whereClause),
+    orderClause: normalizeClause(query.orderClause),
+  };
+}
+
+export function hasRawClauses(query: BrowseQuery) {
+  return normalizeClause(query.whereClause) !== null || normalizeClause(query.orderClause) !== null;
+}
+
 export function isEmptyQuery(query: BrowseQuery) {
-  return query.sort.length === 0 && query.filters.length === 0;
+  return query.sort.length === 0 && query.filters.length === 0 && !hasRawClauses(query);
 }
 
 export function sameQuery(a: BrowseQuery, b: BrowseQuery) {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return JSON.stringify(normalizeQuery(a)) === JSON.stringify(normalizeQuery(b));
 }
 
 /**
@@ -66,7 +89,7 @@ export function cycleSort(query: BrowseQuery, column: string, additive: boolean)
   } else {
     sort = next ? [next] : [];
   }
-  return { ...query, sort };
+  return { ...query, sort, orderClause: null };
 }
 
 export function sortIndicator(query: BrowseQuery, column: string) {
@@ -121,11 +144,14 @@ export function referencedRowsQuery(
     if (current === null || current === undefined) return null;
     filters.push({ column: key.targetColumns[i], op: "eq", value: current });
   }
-  return { sort: [], filters };
+  return { sort: [], filters, whereClause: null, orderClause: null };
 }
 
 export function tableTabTitle(name: string, query: BrowseQuery) {
-  if (!query.filters.length) return name;
+  if (!query.filters.length) {
+    const raw = normalizeClause(query.whereClause);
+    return raw ? `${name} · WHERE` : name;
+  }
   const shown = query.filters
     .slice(0, 2)
     .map((filter) =>

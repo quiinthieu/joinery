@@ -181,15 +181,32 @@ pub async fn table_schema(
 }
 
 #[tauri::command]
+pub async fn prepare_browse_table(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    table: TableRef,
+    query: BrowseQuery,
+) -> AppResult<Option<PreparedPlan>> {
+    studio.prepare_browse(&session_id, &table, &query).await
+}
+
+#[tauri::command]
 pub async fn browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
     table: TableRef,
     after: Option<Vec<Option<String>>>,
     query: Option<BrowseQuery>,
+    approval: Option<BrowseApproval>,
 ) -> AppResult<TablePage> {
     studio
-        .browse_with(&session_id, &table, after, &query.unwrap_or_default())
+        .browse_with_approval(
+            &session_id,
+            &table,
+            after,
+            &query.unwrap_or_default(),
+            approval.as_ref(),
+        )
         .await
 }
 

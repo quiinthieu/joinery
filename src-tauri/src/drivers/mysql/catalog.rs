@@ -104,8 +104,7 @@ impl Mysql {
         self.metadata(move |conn|Box::pin(async move {
             let current=schema_on(conn,&schema.table).await?;
             unchanged(&schema,&current)?;
-            let built=browse_query::build(&schema,&query,after.as_deref(),&MysqlDialect)?;
-            let sql=format!("SELECT {} FROM {}{}{} LIMIT 501",projection(&schema),qualified(&schema.table),built.where_sql,built.order_sql);
+            let (sql,built)=browse_sql(&schema,&query,after.as_deref())?;
             let params=built.binds.iter().cloned().map(bind).collect::<Vec<_>>();
             let mut query=conn.exec_iter(sql,Params::Positional(params)).await.map_err(mysql_error)?;
             let names=query.columns_ref().iter().map(|c|c.name_str().into_owned()).collect::<Vec<_>>();
@@ -170,6 +169,24 @@ impl Mysql {
             other => other,
         }
     }
+}
+
+pub(crate) fn browse_sql(
+    schema: &TableSchema,
+    query: &BrowseQuery,
+    after: Option<&[Option<String>]>,
+) -> AppResult<(String, browse_query::Built)> {
+    identifier(&schema.table.schema)?;
+    identifier(&schema.table.name)?;
+    let built = browse_query::build(schema, query, after, &MysqlDialect)?;
+    let sql = format!(
+        "SELECT {} FROM {}{}{} LIMIT 501",
+        projection(schema),
+        qualified(&schema.table),
+        built.where_sql,
+        built.order_sql
+    );
+    Ok((sql, built))
 }
 
 fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {

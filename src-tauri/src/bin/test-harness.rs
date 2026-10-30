@@ -164,13 +164,23 @@ async fn rpc(
                     .schema(&arg::<String>(&args, "sessionId")?, &arg(&args, "table")?)
                     .await?
             ),
+            "prepare_browse_table" => json!(
+                studio
+                    .prepare_browse(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg(&args, "table")?,
+                        &arg(&args, "query")?
+                    )
+                    .await?
+            ),
             "browse_table" => json!(
                 studio
-                    .browse_with(
+                    .browse_with_approval(
                         &arg::<String>(&args, "sessionId")?,
                         &arg(&args, "table")?,
                         arg(&args, "after")?,
-                        &arg::<Option<BrowseQuery>>(&args, "query")?.unwrap_or_default()
+                        &arg::<Option<BrowseQuery>>(&args, "query")?.unwrap_or_default(),
+                        arg::<Option<BrowseApproval>>(&args, "approval")?.as_ref()
                     )
                     .await?
             ),
