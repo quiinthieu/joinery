@@ -325,14 +325,11 @@ mod tests {
     #[ignore = "subprocess helper for killed_restore_keeps_complete_live_metadata"]
     fn restore_writer() {
         let root = std::env::var_os("JOINERY_RESTORE_FIXTURE_ROOT").unwrap();
+        let snapshot_id = std::env::var("JOINERY_RESTORE_SNAPSHOT_ID").unwrap();
+        let snapshot_digest = std::env::var("JOINERY_RESTORE_SNAPSHOT_DIGEST").unwrap();
         let db = Persistence::open(Path::new(&root)).unwrap();
-        db.set_setting("fixture-one", "before").unwrap();
-        db.set_setting("fixture-two", "before").unwrap();
-        let snapshot = db.create_metadata_backup().unwrap();
-        db.set_setting("fixture-one", "after").unwrap();
-        db.set_setting("fixture-two", "after").unwrap();
         PAUSE_RESTORE.store(true, std::sync::atomic::Ordering::Relaxed);
-        db.restore_metadata_backup(&snapshot.id, &snapshot.digest)
+        db.restore_metadata_backup(&snapshot_id, &snapshot_digest)
             .unwrap();
     }
 
@@ -346,6 +343,15 @@ mod tests {
             }
         }
         let root = tempfile::tempdir().unwrap();
+        let snapshot = {
+            let db = Persistence::open(root.path()).unwrap();
+            db.set_setting("fixture-one", "before").unwrap();
+            db.set_setting("fixture-two", "before").unwrap();
+            let snapshot = db.create_metadata_backup().unwrap();
+            db.set_setting("fixture-one", "after").unwrap();
+            db.set_setting("fixture-two", "after").unwrap();
+            snapshot
+        };
         let mut child = Child(
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -354,11 +360,13 @@ mod tests {
                     "--ignored",
                 ])
                 .env("JOINERY_RESTORE_FIXTURE_ROOT", root.path())
+                .env("JOINERY_RESTORE_SNAPSHOT_ID", &snapshot.id)
+                .env("JOINERY_RESTORE_SNAPSHOT_DIGEST", &snapshot.digest)
                 .stdout(std::process::Stdio::null())
                 .spawn()
                 .unwrap(),
         );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !root.path().join("restore-in-progress").exists() {
             assert!(
                 child.0.try_wait().unwrap().is_none(),

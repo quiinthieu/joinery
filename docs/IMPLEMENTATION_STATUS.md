@@ -610,7 +610,7 @@ Integration now starts and cleans up the folded-case fixtures and runs their
 ignored test. This changes qualification infrastructure; preview.14 remains
 the binary download.
 
-## Snowflake completion request context (local implementation)
+## Snowflake completion request context (shipped in preview.15)
 
 The [bounded contract](snowflake-completion-context.md) extends the existing
 Rust snapshot, revision checks and CodeMirror worker. Fixed, bounded metadata
@@ -632,7 +632,7 @@ and lazy revision-bound column completion. No application fix was required for
 that reload. Logs: `.cache/sf-context-validate.log`, `-rust.log`,
 `-browser.log` and `-browser-final.log`.
 
-The slice remains local and unreleased. Live Snowflake accounts, actual inherited
+The initial local builds preceded the release described below. Live Snowflake accounts, actual inherited
 defaults/grants, broader search paths/quoted policies and representative metadata
 latency remain unqualified. Thirty-four ignored tests are skipped by ordinary
 validation; no full ignored or destructive runtime SQL suite was run locally in
@@ -648,6 +648,86 @@ not release provenance. Native JSON is preserved in
 `.cache/sf-context-native-runs.json`; build/bundle/native logs use the
 `.cache/sf-context-` prefix. Task-owned database containers, network and volume
 were removed. The installed preview.14 was preserved during development.
+
+PR #24 subsequently passed all six checks and merged as 799e600, with the same
+complete tree as tested f8488f7. All five main jobs passed
+([run 40825228002](https://github.com/quiinthieu/joinery/actions/runs/40825228002)).
+[Preview.15](https://github.com/quiinthieu/joinery/releases/tag/v0.1.0-preview.15)
+was built from clean committed source, including three native runs/30 cleanup
+cycles (sourceDirty=false). Public asset downloads, checksums, extracted app
+and strict ad-hoc signature verify. It was installed after the prior app exited;
+the prior bundle is retained. Installed executable SHA-256:
+`04b5ea7a2639fa1975e9f74a53beee798bc5d580a1177e8feb3b4c2244a193bd`.
+AppKit verified Applications path, finished launch and one visible window.
+Receipt: .cache/ship-sf-context/receipt.json. Live account, signing/platform and
+performance gates remain open.
+
+## Isolated query-tab sessions (locally verified; unreleased)
+
+M06-Q reuses the existing Rust-owned connect/disconnect operations, engine
+adapters, Safe Mode and four-session profile cap. The existing sign-in dialog
+hands a new SessionInfo to its query tab without replacing the explorer's primary
+session. Execution and completion resolve that exact tab binding. Cancellation
+retains a disconnected binding with explicit reconnect; stale events cannot
+retire a new session, and changed-session prepared plans are never submitted.
+Close/switch/profile/native-exit confirmations address possible open
+transactions. Draft snapshots exclude live bindings. No new IPC or credential
+cloning API was introduced; see [the bounded contract](isolated-query-sessions.md).
+
+Passed: final pnpm validate, 71 frontend tests (eight new ownership/cleanup/
+credential-handoff/draft cases), 86 standard Rust tests, frontend build, formatting,
+types, Cargo check and strict Clippy. Three actual browser/engine flows pass on
+PostgreSQL 18, MySQL 8.4 and MariaDB 11.4, including concurrent consoles,
+private/shared state, owned cancellation, explicit reconnect, close cancellation
+and backend resource-count cleanup. A delayed PostgreSQL prepared response across
+rebinding produced no execution submission.
+
+Baseline: after correcting test result-set selection, the new acceptance flow
+failed at the missing isolated-session control before implementation.
+Full browser attempts passed 25/26 each. The first failure was a blank page
+with ERR_NETWORK_CHANGED module downloads. The second was the existing grid
+keyboard test after repeated selection activated its read-only value viewer;
+the test now presses Escape before checking grid navigation. The next full retry
+and PostgreSQL-only keyboard retry were interrupted when host load rose above
+100 and then 126 with low free memory. They do not establish product failures
+or a clean final full-suite pass.
+
+Initial blocked/not-reached checks: desktop:build, desktop:bundle:mac,
+desktop:smoke:build and test:native for this slice. The pipeline stopped at the browser gate. Earlier
+preview.15 native evidence applies only to its released tree. Native and
+clean full-regression qualification were open at that point; see the successful
+continuation below. This slice is not released.
+No production queries, destructive runtime SQL, locked-store interaction or
+new SSH/production account qualification was performed. Ordinary validation
+skips 34 ignored tests; the full ignored suite was not rerun locally.
+
+Logs: .cache/isolated-validate-final.log, isolated-workflows.log,
+isolated-browser-final.log, isolated-browser-verified.log,
+isolated-browser-complete.log, isolated-keyboard-final.log and baseline logs.
+The screenshot review preserved Joinery's existing layout and visible ownership
+label; no proprietary assets were used. Only task-owned test processes and
+fixture containers were stopped; user workloads and installed preview.15 were
+preserved.
+
+After host resources recovered, the final fixed-file browser suite passed all
+26 workflows, including all three new session flows. The first recovered run
+was 25/26 because the unconditional Escape helper cleared a normal grid
+selection. The corrected helper dismisses only an open Glide overlay and
+verifies the selected column before ArrowRight; the final full suite passes.
+No application change was needed for these helper/network failures.
+
+Passed continuation: desktop:build, desktop:bundle:mac with strict ad-hoc
+signature, desktop:smoke:build and three native runs/30 cleanup cycles.
+Native elapsed times: 3662/3237/3423 ms. Build sourceRevision=f556518,
+sourceDirty=true (final test-helper edit before its commit); binary SHA-256
+`a2d918af11f6910185f863ac9732c56de864b62bde02e5abbff47b562b5f953b`.
+This is local candidate evidence, not clean-source release provenance.
+Logs: .cache/isolated-browser-qualified.log, isolated-format-recovered.log,
+isolated-desktop.log, isolated-bundle.log, isolated-native-build.log and
+isolated-native-runs.log/json. The retry's containers, network and volume were
+removed. The prior host-resource hold is resolved for these local checks.
+External auth/account, packaged platform, signing and representative performance
+gates remain open. Preview.15 remains installed; this phase is unreleased.
 
 ## Table data view: sort, filter and FK navigation (local implementation)
 

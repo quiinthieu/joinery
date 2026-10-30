@@ -2,7 +2,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
 import type { SessionInfo, TablePage, TableSchema } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
-import { useStudio } from "./studio";
+import { useStudio, querySessionForTab } from "./studio";
+import { workspaceSnapshot } from "./workspace";
 import { dirtyStore } from "../data/dirty-store";
 
 vi.mock("../ipc/client", () => ({
@@ -68,7 +69,133 @@ function tableTab() {
 }
 beforeEach(() => {
   vi.clearAllMocks();
-  useStudio.setState({ tabs: [], activeTabId: null, sessions: { profile: session } });
+  useStudio.setState({
+    bootstrap: null,
+    tabs: [],
+    activeTabId: null,
+    sessions: { profile: session },
+  });
+});
+
+test("an isolated query session replaces only its tab binding and releases old results", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const id = useStudio.getState().openQuery("profile");
+  useStudio
+    .getState()
+    .updateTab(id, { results: [page(schema("old")).result], dataSessionId: session.id });
+  const isolated = { ...session, id: "isolated" };
+  expect(useStudio.getState().bindQuerySession(id, isolated)).toBe(true);
+  const state = useStudio.getState(),
+    tab = state.tabs.find((t) => t.id === id)!;
+  expect(querySessionForTab(tab, state.sessions)?.id).toBe("isolated");
+  expect(state.sessions.profile.id).toBe("session");
+  expect(tab.results).toEqual([]);
+  expect(tab.dataSessionId).toBeNull();
+  expect(client.call).toHaveBeenCalledWith("release_result", { resultId: "result" });
+});
+
+test("closing one isolated session never falls back to or retires a sibling session", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const id = useStudio.getState().openQuery("profile");
+  const sibling = useStudio.getState().openQuery("profile");
+  useStudio.getState().bindQuerySession(id, { ...session, id: "isolated" });
+  useStudio.getState().bindQuerySession(sibling, { ...session, id: "sibling" });
+  const revision = useStudio.getState().tabs.find((t) => t.id === id)!.revision;
+  useStudio
+    .getState()
+    .applyEvents(
+      id,
+      [{ type: "sessionClosed", sessionId: "isolated", reason: "Cancelled" }],
+      revision,
+    );
+  const state = useStudio.getState();
+  expect(
+    querySessionForTab(
+      state.tabs.find((t) => t.id === id)!,
+      state.sessions,
+    ),
+  ).toBeUndefined();
+  expect(
+    querySessionForTab(
+      state.tabs.find((t) => t.id === sibling)!,
+      state.sessions,
+    )?.id,
+  ).toBe("sibling");
+  expect(state.sessions.profile.id).toBe("session");
+});
+
+test("closing an isolated query tab disconnects only its owned socket", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const id = useStudio.getState().openQuery("profile");
+  useStudio.getState().bindQuerySession(id, { ...session, id: "isolated" });
+  useStudio.getState().closeTab(id);
+  expect(client.call).toHaveBeenCalledWith("disconnect", { sessionId: "isolated" });
+  expect(client.call).not.toHaveBeenCalledWith("disconnect", { sessionId: "session" });
+  expect(useStudio.getState().sessions.profile.id).toBe("session");
+});
+
+test("a late session connection is released when its target tab no longer exists", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const id = useStudio.getState().openQuery("profile");
+  useStudio.getState().closeTab(id);
+  expect(useStudio.getState().bindQuerySession(id, { ...session, id: "late" })).toBe(false);
+  expect(client.call).toHaveBeenCalledWith("disconnect", { sessionId: "late" });
+});
+
+test("a stale close event cannot retire an explicitly reconnected query session", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const id = useStudio.getState().openQuery("profile");
+  useStudio.getState().bindQuerySession(id, { ...session, id: "old" });
+  useStudio.getState().retireSession("old");
+  useStudio.getState().bindQuerySession(id, { ...session, id: "new" });
+  useStudio.getState().retireSession("old");
+  const state = useStudio.getState();
+  expect(
+    querySessionForTab(
+      state.tabs.find((t) => t.id === id)!,
+      state.sessions,
+    )?.id,
+  ).toBe("new");
+});
+
+test("shared-session loss preserves isolated sockets until a profile disconnect", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const id = useStudio.getState().openQuery("profile");
+  useStudio.getState().bindQuerySession(id, { ...session, id: "isolated" });
+  useStudio.getState().retireSession(session.id);
+  let state = useStudio.getState();
+  expect(
+    querySessionForTab(
+      state.tabs.find((t) => t.id === id)!,
+      state.sessions,
+    )?.id,
+  ).toBe("isolated");
+  state.disconnected("profile");
+  state = useStudio.getState();
+  expect(
+    querySessionForTab(
+      state.tabs.find((t) => t.id === id)!,
+      state.sessions,
+    ),
+  ).toBeUndefined();
+});
+
+test("workspace recovery persists SQL drafts without live isolated-session bindings", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  useStudio.setState({
+    bootstrap: {
+      profiles: [{ id: "profile", storeDrafts: true } as ConnectionProfile],
+    } as Bootstrap,
+  });
+  const id = useStudio.getState().openQuery("profile", "SELECT 42");
+  useStudio
+    .getState()
+    .bindQuerySession(id, { ...session, id: "transient-session-must-not-persist" });
+  const saved = workspaceSnapshot();
+  expect(saved.drafts).toEqual([
+    { id, connectionId: "profile", title: "Query 1", sql: "SELECT 42" },
+  ]);
+  expect(JSON.stringify(saved)).not.toContain("transient-session-must-not-persist");
 });
 
 test("a slow earlier schema refresh cannot overwrite the latest table view", async () => {

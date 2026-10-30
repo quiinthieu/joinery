@@ -307,8 +307,10 @@ kbd {
 .app-shell {
   display: grid;
   grid-template-columns: 234px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100%;
+  overflow: hidden;
   background: var(--bg);
 }
 .app-shell.sidebar-hidden {
@@ -316,6 +318,7 @@ kbd {
 }
 .sidebar {
   min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: var(--sidebar);
@@ -362,6 +365,9 @@ kbd {
 }
 .connection-groups {
   padding: 3px 9px 8px;
+  min-height: 64px;
+  max-height: 36vh;
+  overflow-y: auto;
 }
 .connection-group {
   margin-bottom: 7px;
@@ -496,6 +502,7 @@ kbd {
 .sidebar-divider {
   margin: 5px 18px 10px;
   border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .schema-search {
   display: flex;
@@ -507,6 +514,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--faint);
+  flex-shrink: 0;
 }
 .schema-search input {
   width: 100%;
@@ -594,6 +602,7 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex-shrink: 0;
 }
 .sidebar-tools button,
 .sidebar-settings {
@@ -787,16 +796,18 @@ kbd {
 }
 .query-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   min-height: 49px;
   gap: 12px;
-  padding: 0 19px;
+  padding: 6px 19px;
   border-bottom: 1px solid var(--row-border);
   flex-shrink: 0;
 }
 .query-context {
   display: flex;
+  flex-wrap: wrap;
   gap: 9px;
   align-items: center;
   font-size: 11px;
@@ -819,6 +830,11 @@ kbd {
   display: flex;
   gap: 7px;
   align-items: center;
+}
+.query-session {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .read-policy {
   display: inline-flex;

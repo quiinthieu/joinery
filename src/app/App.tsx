@@ -40,7 +40,7 @@ import type {
   ProcessInfo,
   ResourceUsage,
 } from "../ipc/generated";
-import { useStudio, beginEventBatch, type StudioTab } from "../state/studio";
+import { useStudio, beginEventBatch, querySessionForTab, type StudioTab } from "../state/studio";
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
@@ -58,7 +58,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Dialog =
   | { kind: "connection"; profile?: ConnectionProfile; groupId?: string }
-  | { kind: "connect"; profile: ConnectionProfile }
+  | { kind: "connect"; profile: ConnectionProfile; tabId?: string }
   | { kind: "settings" }
   | { kind: "palette" }
   | { kind: "value"; target: CellTarget }
@@ -87,7 +87,12 @@ export function App() {
   const profile = state.bootstrap?.profiles.find(
     (p) => p.id === (current?.connectionId ?? state.selectedConnectionId),
   );
-  const session = profile ? state.sessions[profile.id] : null;
+  const session =
+    current?.kind === "query"
+      ? querySessionForTab(current, state.sessions)
+      : profile
+        ? state.sessions[profile.id]
+        : null;
   const references = useRef({ current, dialog, profile });
   references.current = { current, dialog, profile };
   const tableColumn =
@@ -204,7 +209,12 @@ export function App() {
     const hasPendingWork = () =>
       useStudio
         .getState()
-        .tabs.some((tab) => dirtyFor(tab).length || ["queued", "running"].includes(tab.status));
+        .tabs.some(
+          (tab) =>
+            dirtyFor(tab).length ||
+            ["queued", "running"].includes(tab.status) ||
+            (tab.querySession && !tab.querySessionClosed),
+        );
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (hasPendingWork()) {
         event.preventDefault();
@@ -230,7 +240,7 @@ export function App() {
         kind: "confirm",
         title: "Close Joinery?",
         description:
-          "Pending edits will be discarded and running queries will be cancelled. Completed writes are not undone.",
+          "Pending edits will be discarded, running queries cancelled, and open SQL transactions rolled back. Completed writes are not undone.",
         action: closeSafely,
       });
     });
@@ -244,7 +254,7 @@ export function App() {
         kind: "confirm",
         title: "Close Joinery?",
         description:
-          "Pending edits will be discarded and running queries will be cancelled. Completed writes are not undone.",
+          "Pending edits will be discarded, running queries cancelled, and open SQL transactions rolled back. Completed writes are not undone.",
         action: closeSafely,
       });
     });
@@ -272,11 +282,17 @@ export function App() {
         void client
           .call<number>("health", { sessionId: session.id })
           .then((latencyMs) => {
-            const latest = useStudio.getState().sessions[session.connectionId];
-            if (latest?.id === session.id)
-              useStudio.getState().setSession({ ...latest, latencyMs });
+            const state = useStudio.getState();
+            const owner = state.tabs.find(
+              (t) => t.querySession?.id === session.id && !t.querySessionClosed,
+            );
+            if (owner) state.updateTab(owner.id, { querySession: { ...session, latencyMs } });
+            else {
+              const latest = state.sessions[session.connectionId];
+              if (latest?.id === session.id) state.setSession({ ...latest, latencyMs });
+            }
           })
-          .catch(() => useStudio.getState().disconnected(session.connectionId));
+          .catch(() => useStudio.getState().retireSession(session.id));
     }, 30000);
     return () => clearInterval(timer);
   }, [session?.id]);
@@ -289,6 +305,13 @@ export function App() {
   ) {
     const active = useStudio.getState().tabs.find((tab) => tab.id === tabId);
     if (!active) return;
+    if (
+      active.kind === "query" &&
+      querySessionForTab(active, useStudio.getState().sessions)?.id !== plan.sessionId
+    ) {
+      state.notify("The query session changed. Run the statement again in its current session.");
+      return;
+    }
     if (active.kind === "query") {
       for (const previous of active.results) {
         resultCache.release(previous.id);
@@ -326,9 +349,7 @@ export function App() {
   async function runSql(sql?: string) {
     const active = references.current.current;
     if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
-    const selected = active.connectionId
-      ? useStudio.getState().sessions[active.connectionId]
-      : null;
+    const selected = querySessionForTab(active, useStudio.getState().sessions);
     if (!selected) {
       state.notify("Connect this query tab to a database first.");
       return;
@@ -399,12 +420,16 @@ export function App() {
     }
   }
   function confirmDiscard(active: StudioTab, action: () => void) {
-    if (dirtyFor(active).length || ["queued", "running"].includes(active.status))
+    if (
+      dirtyFor(active).length ||
+      ["queued", "running"].includes(active.status) ||
+      (active.querySession && !active.querySessionClosed)
+    )
       setDialog({
         kind: "confirm",
         title: "Close this workspace?",
         description:
-          "Pending edits will be discarded and any running query will be cancelled. Completed writes are not undone.",
+          "Pending edits will be discarded and running queries cancelled. Closing an isolated session rolls back its open transactions. Completed writes are not undone.",
         action,
       });
     else action();
@@ -420,24 +445,36 @@ export function App() {
   function disconnectProfile(profile: ConnectionProfile) {
     const action = async () => {
       const session = useStudio.getState().sessions[profile.id];
-      if (session) await client.call("disconnect", { sessionId: session.id });
+      const owned = useStudio
+        .getState()
+        .tabs.filter(
+          (t) => t.connectionId === profile.id && t.querySession && !t.querySessionClosed,
+        )
+        .map((t) => t.querySession!.id);
+      await Promise.all(
+        [...new Set([...(session ? [session.id] : []), ...owned])].map((sessionId) =>
+          client.call("disconnect", { sessionId }),
+        ),
+      );
       state.resetConnectionResults(profile.id);
     };
     if (
       state.tabs.some(
         (tab) =>
           tab.connectionId === profile.id &&
-          (dirtyFor(tab).length || ["queued", "running"].includes(tab.status)),
+          (dirtyFor(tab).length ||
+            ["queued", "running"].includes(tab.status) ||
+            (tab.querySession && !tab.querySessionClosed)),
       )
     )
       setDialog({
         kind: "confirm",
         title: `Disconnect ${profile.name}?`,
         description:
-          "This closes its results, discards pending edits, and cancels running queries.",
+          "This closes all its sessions and results, discards pending edits, cancels running queries, and rolls back open transactions.",
         action,
       });
-    else void action();
+    else void action().catch((error) => state.notify(messageOf(error)));
   }
   const actions = useRef({ runSql, reviewEdits, goToReferenced });
   actions.current = { runSql, reviewEdits, goToReferenced };
@@ -644,6 +681,9 @@ export function App() {
                 }
                 onSelect={setSelectedCell}
                 onOpenValue={(target) => setDialog({ kind: "value", target })}
+                onNewSession={() =>
+                  profile && setDialog({ kind: "connect", profile, tabId: current.id })
+                }
               />
             )}
           </section>
@@ -777,7 +817,18 @@ export function App() {
         />
       )}
       {dialog?.kind === "connect" && (
-        <ConnectDialog profile={dialog.profile} onClose={() => setDialog(null)} />
+        <ConnectDialog
+          profile={dialog.profile}
+          onClose={() => setDialog(null)}
+          onConnected={
+            dialog.tabId
+              ? (session) => {
+                  if (state.bindQuerySession(dialog.tabId!, session))
+                    state.notify("Isolated SQL session connected");
+                }
+              : undefined
+          }
+        />
       )}
       {dialog?.kind === "settings" && <Preferences onClose={() => setDialog(null)} />}
       {dialog?.kind === "review" && (

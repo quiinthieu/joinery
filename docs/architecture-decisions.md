@@ -65,3 +65,19 @@ inaccessible earlier table is absent. Qualified lookup remains available.
 Unsupported quoted-name policy fails with a visible error. This trades broader
 inference for explicit, bounded correctness; live-account qualification and
 additional identifier policies remain separate work.
+
+## 2026-10-29: Query tabs own explicitly opened SQL sessions
+
+Reuse the existing Rust connect/disconnect operations and four-session profile
+limit. An isolated tab signs in through ConnectDialog and holds only SessionInfo
+in the existing Zustand tab state; Rust retains the socket, credentials, lanes,
+approval plans and buffers. The explorer and table browser keep their primary
+session. No driver credential-cloning API or competing session registry is added.
+
+A closed isolated binding remains distinct from a shared binding. Retire by exact
+session ID, preventing fallback after cancellation and protecting a new session
+from old close events. Prepared/reviewed execution is rejected after rebinding.
+Close releases the owned socket; reconnect is explicit. Session bindings are
+excluded from workspace persistence. Because server transaction state is not yet
+exposed, closing an owned connection conservatively warns about possible open
+transactions rather than attempting to parse user SQL into a transaction model.

@@ -72,10 +72,14 @@ The [MySQL/MariaDB live adapter](mysql-live-completion-context.md) shipped in
 preview.14 (PR #22, `dc220b0`), with mode-0 fixtures and clean-source release
 evidence. PR #23 adds mode-1 qualification on both disposable engines.
 Mode 2 needs a case-insensitive filesystem. The bounded
-[Snowflake request-context slice](snowflake-completion-context.md) is implemented
-locally; broader search-path/quoted-policy support and live qualification remain
+[Snowflake request-context slice](snowflake-completion-context.md) shipped in
+preview.15; broader search-path/quoted-policy support and live qualification remain
 open. External metadata changes still require refresh.
-Independent console/session binding and grouped-FK JOIN generation follow.
+The [isolated query-session slice](isolated-query-sessions.md) is implemented
+locally for PostgreSQL/MySQL/MariaDB using existing Rust sessions. Standard
+validation, all 26 browser workflows, desktop build/bundle and three native
+runs/30 cleanup cycles pass after host resources recovered. It is unreleased;
+review/shipping and then grouped-FK metadata/JOIN generation follow.
 External release gates remain open and need their own authorization/scope.
 
 ### Acceptance and verification contract

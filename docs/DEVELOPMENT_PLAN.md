@@ -235,9 +235,11 @@ evidence). The PostgreSQL live role/search-path slice shipped in preview.13; see
 [MySQL/MariaDB live slice](mysql-live-completion-context.md) shipped in
 preview.14. PR #23 qualifies case mode 1 on disposable MySQL and MariaDB;
 mode 2 remains open. The bounded [Snowflake request-context slice](snowflake-completion-context.md)
-is implemented locally with synthetic verification; live qualification and full
-search-path inference remain open. Independent console binding and JOIN
-generation follow.
+shipped in preview.15 with synthetic verification; live qualification and full
+search-path inference remain open. The [isolated query-session slice](isolated-query-sessions.md)
+is locally verified on PostgreSQL/MySQL/MariaDB: 26 browser workflows, desktop
+build/bundle and three native runs pass after host resources recovered. It is
+unreleased. Grouped foreign-key metadata and JOIN generation follow.
 The measured warm lookup target passes, while visible completion latency and
 representative native performance remain open qualification work.
 

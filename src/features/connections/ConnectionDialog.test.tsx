@@ -32,6 +32,27 @@ const profile: ConnectionProfile = {
 };
 const initialStudio = { ...useStudio.getState() };
 
+test("an isolated connection is handed to its tab without replacing the shared session", async () => {
+  const setSession = vi.spyOn(useStudio.getState(), "setSession");
+  const refresh = vi.spyOn(useStudio.getState(), "refreshCatalog");
+  const onConnected = vi.fn(),
+    onClose = vi.fn();
+  const session = { id: "isolated", connectionId: profile.id } as SessionInfo;
+  vi.mocked(client.call).mockResolvedValue(session);
+  render(<ConnectDialog profile={profile} onClose={onClose} onConnected={onConnected} />);
+  fireEvent.change(screen.getByLabelText("Password", { exact: true }), {
+    target: { value: "one-use-fixture" },
+  });
+  fireEvent.submit(screen.getByRole("button", { name: "Connect" }).closest("form")!);
+  await waitFor(() => expect(onConnected).toHaveBeenCalledWith(session));
+  expect(setSession).not.toHaveBeenCalled();
+  expect(refresh).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledOnce();
+  await waitFor(() =>
+    expect((screen.getByLabelText("Password", { exact: true }) as HTMLInputElement).value).toBe(""),
+  );
+});
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
