@@ -740,6 +740,8 @@ kbd {
   padding: 0 12px 0 16px;
   height: 100%;
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
   text-align: left;
   font-size: 11px;
   white-space: nowrap;

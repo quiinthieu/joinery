@@ -123,3 +123,52 @@ test("pending edits lock sort and filter controls until discarded", async ({ pag
   await clickHeader(page, 110 + 55);
   await expect(page.locator(".sort-summary")).toContainText("bucket ascending");
 });
+
+test("follows single and composite foreign keys to referenced rows in new tabs", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await connect(page, "Foreign key fixture");
+  const tabs = page.getByRole("tablist", { name: "Workspaces" });
+  const footer = page.locator(".result-footer");
+
+  // orders.id 1 has customer_id 2.
+  await openTable(page, "orders");
+  await expect(footer).toContainText("500 rows loaded");
+  await expect.poll(() => cellText(page, 110 + 55)).toBe("2");
+  await page.keyboard.press("ControlOrMeta+Shift+B");
+  await expect(tabs.getByRole("tab", { name: "customers · id = 2" })).toBeVisible();
+  await expect(footer).toContainText("1 rows loaded");
+  await expect(page.getByRole("toolbar", { name: "Table filters" })).toContainText("id = '2'");
+  await expect.poll(() => cellText(page, 55)).toBe("2");
+
+  // line_notes 1 references order_lines (7, 2) through differently named columns.
+  await page.getByRole("button", { name: "line_notes", exact: true }).click();
+  await expect(footer).toContainText("2 rows loaded");
+  await expect.poll(() => cellText(page, 220 + 55)).toBe("2");
+  await page.getByRole("button", { name: "Go to referenced row", exact: true }).click();
+  await expect(
+    tabs.getByRole("tab", { name: "order_lines · order_id = 7, line_no = 2" }),
+  ).toBeVisible();
+  await expect(footer).toContainText("1 rows loaded");
+  await expect.poll(() => cellText(page, 220 + 100)).toBe("SKU-7-2");
+
+  // note_order belongs to two constraints, so a chooser appears.
+  await tabs.getByRole("tab", { name: "line_notes", exact: true }).click();
+  await expect.poll(() => cellText(page, 110 + 55)).toBe("7");
+  await page.keyboard.press("ControlOrMeta+Shift+B");
+  const chooser = page.getByRole("dialog", { name: "Go to referenced row" });
+  await expect(chooser).toContainText("public.order_lines (order_id, line_no)");
+  await chooser.getByRole("button", { name: /public\.orders \(id\)/ }).click();
+  await expect(tabs.getByRole("tab", { name: "orders · id = 7" })).toBeVisible();
+  await expect(footer).toContainText("1 rows loaded");
+
+  // A NULL component references nothing.
+  await tabs.getByRole("tab", { name: "line_notes", exact: true }).click();
+  await expect.poll(() => cellText(page, 220 + 55, 1)).toBe("NULL");
+  await page.keyboard.press("ControlOrMeta+Shift+B");
+  await expect(page.getByRole("status")).toContainText("references no row");
+  expect(errors).toEqual([]);
+  await page.screenshot({ path: ".cache/screenshots/foreign-key-navigation.png", fullPage: true });
+});
