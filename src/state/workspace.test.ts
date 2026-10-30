@@ -9,6 +9,7 @@ const snapshot = (theme: string): SavedWorkspace => ({
   inspectorVisible: false,
   activeDraftId: null,
   drafts: [],
+  tableLayouts: [],
 });
 afterEach(() => vi.useRealTimers());
 

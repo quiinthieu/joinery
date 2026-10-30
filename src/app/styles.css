@@ -1148,6 +1148,69 @@ kbd {
 .sql-clause-field:focus-within {
   border-color: var(--accent);
 }
+.table-view-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.table-columns-dialog {
+  max-height: min(62vh, 460px);
+  overflow-y: auto;
+}
+.table-columns-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.table-column-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+}
+.table-column-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+  cursor: pointer;
+}
+.table-column-toggle > span:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table-column-meta {
+  font-size: 10px;
+  color: var(--faint);
+}
+.table-column-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.table-column-width {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--faint);
+  margin-right: 4px;
+}
+.table-column-width > input {
+  width: 68px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
+  text-align: right;
+}
 .filter-spacer {
   flex: 1;
 }

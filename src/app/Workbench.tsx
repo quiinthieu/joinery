@@ -5,11 +5,13 @@ import {
   ChevronDown,
   Clock3,
   Code2,
+  Columns3,
   Gauge,
   Loader2,
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   Square,
   Table2,
@@ -22,6 +24,7 @@ import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
+import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { StructureView } from "../features/studio/UtilityViews";
@@ -44,6 +47,7 @@ interface Props {
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
+  onOpenColumns(): void;
   onNewSession(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
@@ -58,6 +62,7 @@ export function Workbench({
   onConfirm,
   onSelect,
   onOpenValue,
+  onOpenColumns,
   onNewSession,
   onQueryChange,
 }: Props) {
@@ -68,6 +73,10 @@ export function Workbench({
   const running = tab.status === "running" || tab.status === "queued";
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const edits = tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
+  const tableColumns = tab.kind === "table" ? (tab.schema?.columns ?? []) : [];
+  const tableLayout =
+    tab.kind === "table" ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table) : null;
+  const resolvedLayout = resolveTableLayout(tableColumns, tableLayout);
   const filtering = tab.kind === "table" && !!session?.capabilities.tableFiltering;
   const queryLock = !session
     ? "Connect to change sort or filters"
@@ -446,15 +455,38 @@ export function Workbench({
               Structure
             </button>
           </div>
-          <span className="result-caption">
-            {session && tab.dataSessionId !== session.id
-              ? "Refresh after reconnecting"
-              : profile?.engine === "snowflake"
-                ? "Read-only preview · up to 500 rows / 2 MiB"
-                : tab.schema?.editable
-                  ? "Double-click a cell to edit"
-                  : "Read-only result"}
-          </span>
+          <div className="table-view-actions">
+            {tab.view === "data" && tableColumns.length > 0 && (
+              <>
+                <button type="button" className="button ghost small" onClick={onOpenColumns}>
+                  <Columns3 size={12} />
+                  Columns
+                  {resolvedLayout.hiddenSet.size > 0
+                    ? ` (${resolvedLayout.visibleColumns.length}/${resolvedLayout.orderedColumns.length})`
+                    : ""}
+                </button>
+                {resolvedLayout.customized && tab.connectionId && tab.table && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    onClick={() => state.resetTableLayout(tab.connectionId!, tab.table!)}
+                  >
+                    <RotateCcw size={12} />
+                    Reset column layout
+                  </button>
+                )}
+              </>
+            )}
+            <span className="result-caption">
+              {session && tab.dataSessionId !== session.id
+                ? "Refresh after reconnecting"
+                : profile?.engine === "snowflake"
+                  ? "Read-only preview · up to 500 rows / 2 MiB"
+                  : tab.schema?.editable
+                    ? "Double-click a cell to edit"
+                    : "Read-only result"}
+            </span>
+          </div>
         </div>
       ) : (
         <div className="benchmark-note">

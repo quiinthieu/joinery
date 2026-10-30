@@ -8,6 +8,7 @@ import type {
   PreparedPlan,
   QueryEvent,
   ResultInfo,
+  SavedTableLayout,
   SessionInfo,
   TableInfo,
   TableRef,
@@ -16,6 +17,11 @@ import type {
 import { client, messageOf } from "../ipc/client";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
+import {
+  MAX_TABLE_LAYOUTS,
+  isDefaultTableLayout,
+  sameTableLayoutTarget,
+} from "../features/grid/table-layout";
 import {
   EMPTY_QUERY,
   hasRawClauses,
@@ -76,6 +82,7 @@ interface StudioState {
   selectedConnectionId: string | null;
   tabs: StudioTab[];
   activeTabId: string | null;
+  tableLayouts: SavedTableLayout[];
   theme: "dark" | "light" | "contrast";
   density: "comfortable" | "compact";
   sidebarVisible: boolean;
@@ -84,6 +91,8 @@ interface StudioState {
   initialize(): Promise<void>;
   notify(message: string): void;
   setTheme(theme: StudioState["theme"]): void;
+  setTableLayout(connectionId: string, table: TableRef, layout: SavedTableLayout | null): void;
+  resetTableLayout(connectionId: string, table: TableRef): void;
   setSession(session: SessionInfo): void;
   bindQuerySession(tabId: string, session: SessionInfo): boolean;
   retireSession(sessionId: string): void;
@@ -178,6 +187,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   selectedConnectionId: null,
   tabs: [],
   activeTabId: null,
+  tableLayouts: [],
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
   density: "comfortable",
   sidebarVisible: true,
@@ -199,6 +209,14 @@ export const useStudio = create<StudioState>((set, get) => ({
             id: draft.id,
             sql: draft.sql,
           })) ?? [];
+      const restoredLayouts =
+        workspace?.tableLayouts
+          ?.filter(
+            (layout) =>
+              !isDefaultTableLayout(layout) &&
+              bootstrap.profiles.some((profile) => profile.id === layout.connectionId),
+          )
+          .slice(-MAX_TABLE_LAYOUTS) ?? [];
       const existing = get().tabs;
       const tabs = [
         ...restored.filter((draft) => !existing.some((tab) => tab.id === draft.id)),
@@ -214,6 +232,7 @@ export const useStudio = create<StudioState>((set, get) => ({
               sidebarVisible: workspace.sidebarVisible,
               inspectorVisible: workspace.inspectorVisible,
               tabs,
+              tableLayouts: restoredLayouts,
               activeTabId:
                 get().activeTabId ??
                 restored.find((draft) => draft.id === workspace.activeDraftId)?.id ??
@@ -235,6 +254,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     localStorage.setItem("joinery.theme", theme);
     document.documentElement.dataset.theme = theme;
     set({ theme });
+  },
+  setTableLayout(connectionId, table, layout) {
+    set((state) => {
+      const remaining = state.tableLayouts.filter(
+        (entry) => !sameTableLayoutTarget(entry, connectionId, table),
+      );
+      if (!layout || isDefaultTableLayout(layout)) return { tableLayouts: remaining };
+      return { tableLayouts: [...remaining, layout].slice(-MAX_TABLE_LAYOUTS) };
+    });
+  },
+  resetTableLayout(connectionId, table) {
+    get().setTableLayout(connectionId, table, null);
   },
   setSession(session) {
     set((state) => ({
@@ -585,6 +616,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       bootstrap: state.bootstrap
         ? { ...state.bootstrap, profiles: state.bootstrap.profiles.filter((p) => p.id !== id) }
         : null,
+      tableLayouts: state.tableLayouts.filter((layout) => layout.connectionId !== id),
       selectedConnectionId: state.selectedConnectionId === id ? null : state.selectedConnectionId,
     }));
   },

@@ -16,6 +16,14 @@ import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
 import { useStudio, type StudioTab } from "../../state/studio";
+import {
+  clampColumnWidth,
+  defaultColumnWidth,
+  findTableLayout,
+  moveVisibleColumn,
+  resizeTableColumn,
+  resolveTableLayout,
+} from "./table-layout";
 import { canOrder, sortIndicator } from "./table-query";
 
 export interface CellTarget {
@@ -99,19 +107,33 @@ export default function DatabaseGrid({
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
   const model = useRef({ tab, result });
   model.current = { tab, result };
-  const columnsInfo =
+  const rawColumnsInfo =
     tab.kind === "benchmark"
       ? benchmarkColumns
       : tab.kind === "table"
         ? (tab.schema?.columns ?? [])
         : (result?.columns ?? []);
-  const freezeColumns = columnsInfo[0]?.primaryKey ? 1 : 0;
+  const tableLayout = useStudio((state) =>
+    tab.kind === "table" && tab.connectionId && tab.table
+      ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table)
+      : null,
+  );
+  const resolvedLayout = useMemo(
+    () => resolveTableLayout(rawColumnsInfo, tableLayout),
+    [rawColumnsInfo, tableLayout],
+  );
+  const visibleColumns = resolvedLayout.visibleColumns;
+  const visibleOrderKey = useMemo(
+    () => visibleColumns.map((column) => column.id).join(","),
+    [visibleColumns],
+  );
+  const freezeColumns = visibleColumns[0]?.primaryKey ? 1 : 0;
   const frozen = useRef(freezeColumns);
   frozen.current = freezeColumns;
   const sortQuery = tab.kind === "table" ? tab.query : null;
   const columns = useMemo<GridColumn[]>(
     () =>
-      columnsInfo.map((column) => {
+      visibleColumns.map((column) => {
         const indicator = sortQuery ? sortIndicator(sortQuery, column.name) : "";
         return {
           id: column.id,
@@ -119,16 +141,9 @@ export default function DatabaseGrid({
             indicator ? ` ${indicator}` : ""
           }`,
           width:
-            widths[column.id] ??
-            (column.name.includes("email")
-              ? 230
-              : column.kind === "temporal"
-                ? 225
-                : column.kind === "integer"
-                  ? 110
-                  : column.name === "status"
-                    ? 150
-                    : 200),
+            tab.kind === "table"
+              ? (resolvedLayout.widths[column.name] ?? defaultColumnWidth(column))
+              : (widths[column.id] ?? defaultColumnWidth(column)),
           icon:
             column.kind === "integer" || column.kind === "decimal"
               ? "headerNumber"
@@ -141,7 +156,7 @@ export default function DatabaseGrid({
                     : "headerString",
         };
       }),
-    [columnsInfo, widths, sortQuery],
+    [visibleColumns, resolvedLayout.widths, tab.kind, widths, sortQuery],
   );
   const rowCount =
     tab.kind === "benchmark"
@@ -203,7 +218,8 @@ export default function DatabaseGrid({
   useEffect(() => {
     setSelection({ rows: CompactSelection.empty(), columns: CompactSelection.empty() });
     onSelect(null);
-  }, [tab.id, tab.revision, result?.id]);
+    redraw();
+  }, [tab.id, tab.revision, result?.id, visibleOrderKey, redraw]);
 
   const locate = useCallback((row: number) => {
     const { tab, result } = model.current;
@@ -216,7 +232,7 @@ export default function DatabaseGrid({
   const targetAt = useCallback(
     ([col, row]: Item, full = false): CellTarget | null => {
       const source = locate(row),
-        column = columnsInfo[col];
+        column = visibleColumns[col];
       if (!source || !column) return null;
       const value = resultCache.read(source.result.id, column.id, source.row, full);
       if (!value) return null;
@@ -233,13 +249,13 @@ export default function DatabaseGrid({
         large: value.large,
       };
     },
-    [locate, columnsInfo, connected],
+    [locate, visibleColumns, connected],
   );
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
       const { tab } = model.current,
-        column = columnsInfo[col];
+        column = visibleColumns[col];
       if (!column) return { kind: GridCellKind.Loading, allowOverlay: false };
       if (tab.kind === "benchmark") {
         const value = benchmarkValue(col, row);
@@ -305,7 +321,7 @@ export default function DatabaseGrid({
         themeOverride: override,
       };
     },
-    [columnsInfo, locate, themeName, connected],
+    [visibleColumns, locate, themeName, connected],
   );
 
   const edit = useCallback(
@@ -357,11 +373,51 @@ export default function DatabaseGrid({
           theme={theme}
           freezeColumns={freezeColumns}
           onColumnResize={(column, width) => {
-            if (column.id) setWidths((old) => ({ ...old, [column.id!]: width }));
+            if (tab.kind === "table" && tab.connectionId && tab.table && column.id) {
+              const target = visibleColumns.find((entry) => entry.id === column.id);
+              if (target) {
+                useStudio
+                  .getState()
+                  .setTableLayout(
+                    tab.connectionId,
+                    tab.table,
+                    resizeTableColumn(
+                      rawColumnsInfo,
+                      tableLayout,
+                      tab.connectionId,
+                      tab.table,
+                      target.name,
+                      width,
+                    ),
+                  );
+              }
+              return;
+            }
+            if (column.id) setWidths((old) => ({ ...old, [column.id!]: clampColumnWidth(width) }));
           }}
+          onColumnMoved={
+            tab.kind === "table" && tab.connectionId && tab.table
+              ? (startIndex, endIndex) => {
+                  useStudio
+                    .getState()
+                    .setTableLayout(
+                      tab.connectionId!,
+                      tab.table!,
+                      moveVisibleColumn(
+                        rawColumnsInfo,
+                        tableLayout,
+                        tab.connectionId!,
+                        tab.table!,
+                        startIndex,
+                        endIndex,
+                      ),
+                    );
+                }
+              : undefined
+          }
           onCellEdited={edit}
           onHeaderClicked={(col, event) => {
-            const column = columnsInfo[col];
+            const column = visibleColumns[col];
             if (!onSort || !column || !canOrder(column)) return;
             event.preventDefault();
             onSort(column, event.shiftKey);

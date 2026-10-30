@@ -4,14 +4,34 @@ use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TABLE_LAYOUTS: usize = 128;
+const MAX_LAYOUT_COLUMNS: usize = 256;
+const MAX_LAYOUT_NAME_BYTES: usize = 256;
+const MIN_COLUMN_WIDTH: u32 = 60;
+const MAX_COLUMN_WIDTH: u32 = 1600;
+
+fn valid_identifier(name: &str) -> bool {
+    !name.trim().is_empty() && name.len() <= MAX_LAYOUT_NAME_BYTES && !name.contains('\0')
+}
+
+fn valid_column_list(names: &[String]) -> bool {
+    if names.len() > MAX_LAYOUT_COLUMNS {
+        return false;
+    }
+    let mut seen = HashSet::with_capacity(names.len());
+    names
+        .iter()
+        .all(|name| valid_identifier(name) && seen.insert(name.as_str()))
+}
 
 fn validate(workspace: &SavedWorkspace) -> AppResult<()> {
     if !["dark", "light", "contrast"].contains(&workspace.theme.as_str())
         || !["comfortable", "compact"].contains(&workspace.density.as_str())
         || workspace.drafts.len() > 32
+        || workspace.table_layouts.len() > MAX_TABLE_LAYOUTS
     {
         return Err(AppError::invalid(
-            "Invalid workspace preferences or more than 32 saved query drafts",
+            "Invalid workspace preferences, query drafts, or table layouts",
         ));
     }
     let mut ids = HashSet::new();
@@ -38,6 +58,28 @@ fn validate(workspace: &SavedWorkspace) -> AppResult<()> {
         .is_some_and(|id| !ids.contains(id))
     {
         return Err(AppError::invalid("The selected query draft is unavailable"));
+    }
+    let mut layout_keys = HashSet::new();
+    for layout in &workspace.table_layouts {
+        if uuid::Uuid::parse_str(&layout.connection_id).is_err()
+            || !valid_identifier(&layout.table.schema)
+            || !valid_identifier(&layout.table.name)
+            || !layout_keys.insert((
+                layout.connection_id.as_str(),
+                layout.table.schema.as_str(),
+                layout.table.name.as_str(),
+            ))
+            || !valid_column_list(&layout.column_order)
+            || !valid_column_list(&layout.hidden_columns)
+            || layout.column_widths.len() > MAX_LAYOUT_COLUMNS
+            || layout.column_widths.iter().any(|(name, width)| {
+                !valid_identifier(name) || !(MIN_COLUMN_WIDTH..=MAX_COLUMN_WIDTH).contains(width)
+            })
+        {
+            return Err(AppError::invalid(
+                "A saved table column layout is invalid or out of bounds",
+            ));
+        }
     }
     Ok(())
 }
@@ -88,6 +130,24 @@ pub(super) fn purge_drafts(connection: &Connection, id: &str) -> AppResult<()> {
     Ok(())
 }
 
+pub(super) fn purge_connection(connection: &Connection, id: &str) -> AppResult<()> {
+    if let Some(mut workspace) = read_workspace(connection)? {
+        workspace.drafts.retain(|draft| draft.connection_id != id);
+        workspace
+            .table_layouts
+            .retain(|layout| layout.connection_id != id);
+        if !workspace
+            .drafts
+            .iter()
+            .any(|draft| Some(&draft.id) == workspace.active_draft_id.as_ref())
+        {
+            workspace.active_draft_id = None;
+        }
+        write_workspace(connection, &workspace)?;
+    }
+    Ok(())
+}
+
 fn enforce_opt_in(connection: &Connection, workspace: &mut SavedWorkspace) -> AppResult<()> {
     let mut statement = connection
         .prepare("SELECT json FROM profiles")
@@ -95,17 +155,22 @@ fn enforce_opt_in(connection: &Connection, workspace: &mut SavedWorkspace) -> Ap
     let profiles = statement
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(db_error)?;
-    let mut allowed = HashSet::new();
+    let mut existing = HashSet::new();
+    let mut allowed_drafts = HashSet::new();
     for profile in profiles {
         let profile: ConnectionProfile = serde_json::from_str(&profile.map_err(db_error)?)
             .map_err(|_| AppError::internal("Application profile data is invalid"))?;
         if profile.store_drafts {
-            allowed.insert(profile.id);
+            allowed_drafts.insert(profile.id.clone());
         }
+        existing.insert(profile.id);
     }
     workspace
         .drafts
-        .retain(|draft| allowed.contains(&draft.connection_id));
+        .retain(|draft| allowed_drafts.contains(&draft.connection_id));
+    workspace
+        .table_layouts
+        .retain(|layout| existing.contains(&layout.connection_id));
     if !workspace
         .drafts
         .iter()
@@ -162,6 +227,16 @@ mod tests {
                 connection_id: profile.id.clone(),
                 title: "Draft".into(),
                 sql: "SELECT 'synthetic-sensitive-literal'".into(),
+            }],
+            table_layouts: vec![SavedTableLayout {
+                connection_id: profile.id.clone(),
+                table: TableRef {
+                    schema: "public".into(),
+                    name: "customers".into(),
+                },
+                column_order: vec!["email".into(), "id".into()],
+                hidden_columns: vec!["metadata".into()],
+                column_widths: [("email".to_string(), 320)].into_iter().collect(),
             }],
         }
     }
@@ -253,5 +328,74 @@ mod tests {
                 .unwrap()
                 .store_drafts
         );
+    }
+
+    #[test]
+    fn table_layouts_persist_without_draft_opt_in_enforce_bounds_and_purge_on_profile_delete() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        let profile = profile(false);
+        db.save_profile(&profile).unwrap();
+        let original = workspace(&profile);
+        db.save_workspace(original.clone()).unwrap();
+        let restored = db.workspace().unwrap().unwrap();
+        assert!(restored.drafts.is_empty());
+        assert_eq!(restored.table_layouts, original.table_layouts);
+
+        // Saving profile with store_drafts=false keeps structural table layouts intact.
+        db.save_profile(&profile).unwrap();
+        assert_eq!(
+            db.workspace().unwrap().unwrap().table_layouts,
+            original.table_layouts
+        );
+
+        // Legacy workspace snapshots without tableLayouts deserialize with an empty list.
+        let legacy: SavedWorkspace = serde_json::from_value(serde_json::json!({
+            "theme": "dark",
+            "density": "comfortable",
+            "sidebarVisible": true,
+            "inspectorVisible": false,
+            "activeDraftId": null,
+            "drafts": []
+        }))
+        .unwrap();
+        assert!(legacy.table_layouts.is_empty());
+
+        // Bounds: duplicate table keys, out-of-range widths, and duplicate column names are rejected.
+        let mut duplicate = workspace(&profile);
+        duplicate
+            .table_layouts
+            .push(duplicate.table_layouts[0].clone());
+        assert!(db.save_workspace(duplicate).is_err());
+
+        let mut narrow = workspace(&profile);
+        narrow.table_layouts[0]
+            .column_widths
+            .insert("email".into(), 40);
+        assert!(db.save_workspace(narrow).is_err());
+
+        let mut repeated_col = workspace(&profile);
+        repeated_col.table_layouts[0]
+            .column_order
+            .push("email".into());
+        assert!(db.save_workspace(repeated_col).is_err());
+
+        // Unknown profile IDs are dropped, and deleting the profile purges its layouts.
+        let mut stale = workspace(&profile);
+        stale.table_layouts.push(SavedTableLayout {
+            connection_id: new_id(),
+            table: TableRef {
+                schema: "public".into(),
+                name: "orders".into(),
+            },
+            column_order: vec!["id".into()],
+            hidden_columns: vec![],
+            column_widths: Default::default(),
+        });
+        db.save_workspace(stale).unwrap();
+        assert_eq!(db.workspace().unwrap().unwrap().table_layouts.len(), 1);
+
+        db.delete_profile(&profile.id).unwrap();
+        assert!(db.workspace().unwrap().unwrap().table_layouts.is_empty());
     }
 }

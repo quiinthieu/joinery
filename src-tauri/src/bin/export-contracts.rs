@@ -49,6 +49,7 @@ fn main() {
         HistoryEntry::decl(),
         AuditEntry::decl(),
         Bootstrap::decl(),
+        SavedTableLayout::decl(),
         SavedWorkspace::decl(),
         QueryDraft::decl(),
         MetadataBackup::decl(),

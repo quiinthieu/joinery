@@ -6,6 +6,7 @@ import {
   ArrowUpRight,
   Check,
   Code2,
+  Columns3,
   Command,
   Database,
   FileCode2,
@@ -18,6 +19,7 @@ import {
   PanelLeftOpen,
   PanelRight,
   Plus,
+  RotateCcw,
   Search,
   Wifi,
   X,
@@ -28,6 +30,7 @@ import { ConnectionDialog, ConnectDialog } from "../features/connections/Connect
 import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
+import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
 import { tabNavigation } from "../components/ui/tabs";
@@ -47,6 +50,7 @@ import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
+import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import {
   canOrder,
   constraintsForColumn,
@@ -77,6 +81,7 @@ type Dialog =
       onApprove?(approval: string): Promise<void>;
     }
   | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
+  | { kind: "columns"; tabId: string }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -205,8 +210,41 @@ export function App() {
     if (!current) return;
     void applyTableQuery(current.id, query);
   }
-  const tableCommands =
-    current?.kind === "table" && session?.capabilities.tableFiltering
+  const currentLayout =
+    current?.kind === "table"
+      ? findTableLayout(state.tableLayouts, current.connectionId, current.table)
+      : null;
+  const resolvedCurrentLayout =
+    current?.kind === "table" && current.schema
+      ? resolveTableLayout(current.schema.columns, currentLayout)
+      : null;
+  const layoutCommands =
+    current?.kind === "table" &&
+    current.connectionId &&
+    current.table &&
+    (current.schema?.columns.length ?? 0) > 0
+      ? [
+          {
+            label: "Configure table columns",
+            shortcut: "",
+            icon: Columns3,
+            action: () => setDialog({ kind: "columns", tabId: current.id }),
+          },
+          ...(resolvedCurrentLayout?.customized
+            ? [
+                {
+                  label: "Reset column layout",
+                  shortcut: "",
+                  icon: RotateCcw,
+                  action: () => state.resetTableLayout(current.connectionId!, current.table!),
+                },
+              ]
+            : []),
+        ]
+      : [];
+  const tableCommands = [
+    ...layoutCommands,
+    ...(current?.kind === "table" && session?.capabilities.tableFiltering
       ? [
           ...selectedKeys.map((key, index) => ({
             label: `Go to referenced row in ${key.target.name}${
@@ -291,7 +329,8 @@ export function App() {
               ]
             : []),
         ]
-      : [];
+      : []),
+  ];
   useEffect(() => {
     void state.initialize();
   }, []);
@@ -779,6 +818,7 @@ export function App() {
                 }
                 onSelect={setSelectedCell}
                 onOpenValue={(target) => setDialog({ kind: "value", target })}
+                onOpenColumns={() => setDialog({ kind: "columns", tabId: current.id })}
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
@@ -951,6 +991,23 @@ export function App() {
       {dialog?.kind === "value" && (
         <ValueDialog target={dialog.target} onClose={() => setDialog(null)} />
       )}
+      {dialog?.kind === "columns" &&
+        (() => {
+          const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
+          if (!targetTab?.connectionId || !targetTab.table || !targetTab.schema) return null;
+          return (
+            <TableColumnsDialog
+              connectionId={targetTab.connectionId}
+              table={targetTab.table}
+              columns={targetTab.schema.columns}
+              layout={findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table)}
+              onChange={(next) =>
+                state.setTableLayout(targetTab.connectionId!, targetTab.table!, next)
+              }
+              onClose={() => setDialog(null)}
+            />
+          );
+        })()}
       {dialog?.kind === "confirm" && (
         <Confirmation
           title={dialog.title}

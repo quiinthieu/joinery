@@ -286,3 +286,68 @@ test("navigates inbound referencing rows across single, multi-constraint, and co
   );
   expect(errors).toEqual([]);
 });
+
+test("reorders, hides, and resizes table columns with persistence across reload", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const profileName = `Column layout ${Date.now()}`;
+  await connect(page, profileName);
+  await openTable(page, "customers");
+  const footer = page.locator(".result-footer");
+  await expect(footer).toContainText("500 rows loaded");
+  await expect.poll(() => cellText(page, 55, 0)).toBe("1");
+
+  const saved = page.waitForResponse(
+    (response) => response.url().endsWith("/rpc/save_workspace") && response.ok(),
+  );
+  await page.getByRole("button", { name: "Columns", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Table columns" });
+  await dialog.getByLabel("Move email up").click();
+  await dialog.getByLabel("Move email up").click();
+  await dialog.getByLabel("Show metadata").uncheck();
+  await dialog.getByLabel("Show created_at").uncheck();
+  await dialog.getByLabel("Width for email").fill("320");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await saved;
+
+  await expect(page.getByRole("button", { name: "Columns (4/6)", exact: true })).toBeVisible();
+  await expect.poll(() => cellText(page, 55, 0)).toBe("customer1@example.test");
+  await expect(page.locator(".inspector h3")).toHaveText("email");
+
+  // Reload the app, reconnect the saved profile, and verify the table layout persisted.
+  await page.reload();
+  await page.getByRole("button", { name: profileName, exact: true }).click();
+  const reconnect = page.getByRole("dialog", { name: `Connect to ${profileName}` });
+  await reconnect.getByLabel("Password", { exact: true }).fill("joinery-local-only");
+  await reconnect.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(reconnect).toHaveCount(0);
+  if (!(await page.locator(".inspector").isVisible()))
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+
+  await openTable(page, "customers");
+  await expect(footer).toContainText("500 rows loaded");
+  await expect(page.getByRole("button", { name: "Columns (4/6)", exact: true })).toBeVisible();
+  await expect.poll(() => cellText(page, 55, 0)).toBe("customer1@example.test");
+  await expect(page.locator(".inspector h3")).toHaveText("email");
+
+  // Verify persisted width, hidden columns, and the >= 1 visible column guard.
+  await page.getByRole("button", { name: "Columns (4/6)", exact: true }).click();
+  const reopened = page.getByRole("dialog", { name: "Table columns" });
+  await expect(reopened.getByLabel("Width for email")).toHaveValue("320");
+  await expect(reopened.getByLabel("Show metadata")).not.toBeChecked();
+  await expect(reopened.getByLabel("Show created_at")).not.toBeChecked();
+  await reopened.getByLabel("Show id").uncheck();
+  await reopened.getByLabel("Show name").uncheck();
+  await reopened.getByLabel("Show active").uncheck();
+  await expect(reopened.getByLabel("Show email")).toBeDisabled();
+  await reopened.getByRole("button", { name: "Reset column layout", exact: true }).click();
+  await reopened.getByRole("button", { name: "Done", exact: true }).click();
+
+  await expect(page.getByRole("button", { name: "Columns", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reset column layout" })).toHaveCount(0);
+  await expect.poll(() => cellText(page, 55, 0)).toBe("1");
+  expect(errors).toEqual([]);
+});

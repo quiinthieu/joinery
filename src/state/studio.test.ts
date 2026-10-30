@@ -73,6 +73,7 @@ beforeEach(() => {
     bootstrap: null,
     tabs: [],
     activeTabId: null,
+    tableLayouts: [],
     sessions: { profile: session },
   });
 });
@@ -263,6 +264,7 @@ test("a new tab opened during startup cannot overwrite recoverable drafts", asyn
       inspectorVisible: false,
       activeDraftId: savedId,
       drafts: [{ id: savedId, connectionId, title: "Recovered", sql: "SELECT 'recovered'" }],
+      tableLayouts: [],
     },
   });
   await pending;
@@ -393,4 +395,26 @@ test("opening the same table with a different query opens a separate tab", async
   expect(tabs).toHaveLength(2);
   expect(tabs[1].title).toBe("fixture · id = 42");
   expect(useStudio.getState().activeTabId).toBe(tabs[1].id);
+});
+
+test("table column layouts are included in workspace snapshots and purged when removing a connection", () => {
+  useStudio.setState({
+    bootstrap: {
+      profiles: [{ id: "profile", storeDrafts: false } as ConnectionProfile],
+    } as Bootstrap,
+  });
+  const table = { schema: "public", name: "customers" };
+  useStudio.getState().setTableLayout("profile", table, {
+    connectionId: "profile",
+    table,
+    columnOrder: ["email", "id"],
+    hiddenColumns: ["metadata"],
+    columnWidths: { email: 310 },
+  });
+  expect(workspaceSnapshot().tableLayouts).toHaveLength(1);
+  expect(workspaceSnapshot().tableLayouts[0].columnOrder).toEqual(["email", "id"]);
+
+  useStudio.getState().removeConnection("profile");
+  expect(useStudio.getState().tableLayouts).toEqual([]);
+  expect(workspaceSnapshot().tableLayouts).toEqual([]);
 });

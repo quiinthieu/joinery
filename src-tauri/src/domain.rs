@@ -561,6 +561,16 @@ pub struct QueryDraft {
     pub sql: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedTableLayout {
+    pub connection_id: String,
+    pub table: TableRef,
+    pub column_order: Vec<String>,
+    pub hidden_columns: Vec<String>,
+    pub column_widths: std::collections::BTreeMap<String, u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedWorkspace {
@@ -570,6 +580,8 @@ pub struct SavedWorkspace {
     pub inspector_visible: bool,
     pub active_draft_id: Option<String>,
     pub drafts: Vec<QueryDraft>,
+    #[serde(default)]
+    pub table_layouts: Vec<SavedTableLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
