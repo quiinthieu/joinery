@@ -175,6 +175,7 @@ impl Snowflake {
                 cancellation: true,
                 table_browsing: true,
                 table_editing: false,
+                table_filtering: false,
                 processes: false,
             },
         };

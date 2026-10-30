@@ -21,6 +21,8 @@ import { useStudio } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
+import { TableFilterBar } from "../features/grid/TableFilterBar";
+import { cycleSort } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { StructureView } from "../features/studio/UtilityViews";
 import { RedisTools } from "../features/redis/RedisTools";
@@ -62,6 +64,17 @@ export function Workbench({
   const running = tab.status === "running" || tab.status === "queued";
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const edits = tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
+  const filtering = tab.kind === "table" && !!session?.capabilities.tableFiltering;
+  const queryLock = !session
+    ? "Connect to change sort or filters"
+    : tab.dataSessionId !== session.id
+      ? "Refresh after reconnecting"
+      : edits.length
+        ? "Review or discard pending edits to change sort or filters"
+        : null;
+  function applyQuery(query: StudioTab["query"]) {
+    void state.setTableQuery(tab.id, query).then((reason) => reason && state.notify(reason));
+  }
   function changeConnection(connectionId: string) {
     for (const result of tab.results) {
       resultCache.release(result.id);
@@ -397,6 +410,17 @@ export function Workbench({
           Generated on demand · no database connection · constant row storage
         </div>
       )}
+      {filtering && tab.view === "data" && (
+        <TableFilterBar
+          query={tab.query}
+          columns={tab.schema?.columns ?? []}
+          disabledReason={queryLock}
+          searchNote={
+            profile?.engine === "postgres" ? "case-insensitive text" : "follows column collation"
+          }
+          onChange={applyQuery}
+        />
+      )}
       {tab.error && (
         <div
           className={`query-error ${tab.error.code === "outcomeUnknown" ? "uncertain" : ""}`}
@@ -443,6 +467,14 @@ export function Workbench({
               theme={state.theme}
               onSelect={onSelect}
               onOpenValue={onOpenValue}
+              onSort={
+                filtering
+                  ? (column, additive) =>
+                      queryLock
+                        ? state.notify(queryLock)
+                        : applyQuery(cycleSort(tab.query, column.name, additive))
+                  : undefined
+              }
             />
           </Suspense>
         )}

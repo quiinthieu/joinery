@@ -126,6 +126,47 @@ pub(super) fn projection(schema: &TableSchema) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
+
+/// MySQL browse dialect. NULL order is emulated with a leading IS NULL term.
+pub(crate) struct MysqlDialect;
+
+impl super::browse_query::Dialect for MysqlDialect {
+    fn column(&self, name: &str) -> String {
+        quote(name)
+    }
+    fn typed_bind(&self, column: &ColumnInfo, _index: usize) -> Option<String> {
+        let base = column.database_type.to_ascii_lowercase();
+        // ENUM/SET order by member index, not by the text a bind compares.
+        if base.starts_with("enum") || base.starts_with("set") {
+            return None;
+        }
+        let cast = cast(column)?;
+        // An untyped text bind adopts the column collation, matching ORDER BY.
+        Some(if cast.starts_with("CHAR") {
+            "?".into()
+        } else {
+            format!("CAST(? AS {cast})")
+        })
+    }
+    fn like(&self, column: &ColumnInfo, _index: usize) -> String {
+        let expression = if column.kind == ColumnKind::Text {
+            quote(&column.name)
+        } else {
+            format!("CAST({} AS CHAR)", quote(&column.name))
+        };
+        format!(
+            "{expression} LIKE ?{}",
+            super::browse_query::like_escape_clause()
+        )
+    }
+    fn order_term(&self, expression: &str, descending: bool) -> String {
+        if descending {
+            format!("{expression} IS NULL DESC,{expression} DESC")
+        } else {
+            format!("{expression} IS NULL,{expression} ASC")
+        }
+    }
+}
 pub(super) fn identifier(name: &str) -> AppResult<()> {
     if name.is_empty() || name.chars().count() > 64 || name.contains('\0') {
         Err(AppError::invalid("Invalid MySQL object identifier"))

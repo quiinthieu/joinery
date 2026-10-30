@@ -3,6 +3,7 @@ import { client } from "../ipc/client";
 import type { SessionInfo, TablePage, TableSchema } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import { useStudio } from "./studio";
+import { dirtyStore } from "../data/dirty-store";
 
 vi.mock("../ipc/client", () => ({
   client: { call: vi.fn() },
@@ -21,6 +22,7 @@ const session: SessionInfo = {
     cancellation: true,
     tableBrowsing: true,
     tableEditing: true,
+    tableFiltering: true,
     processes: true,
   },
 };
@@ -143,4 +145,60 @@ test("a new tab opened during startup cannot overwrite recoverable drafts", asyn
   expect(
     useStudio.getState().tabs.every((tab) => !tab.results.length && tab.status === "idle"),
   ).toBe(true);
+});
+
+test("changing the table query reloads from the first page with the query", async () => {
+  const source = schema("label");
+  vi.mocked(client.call).mockImplementation(((command: string) =>
+    Promise.resolve(
+      command === "table_schema" ? source : command === "browse_table" ? page(source) : null,
+    )) as typeof client.call);
+  const id = tableTab();
+  await useStudio.getState().refreshTable(id);
+  const query = { sort: [{ column: "label", descending: true }], filters: [] };
+  expect(await useStudio.getState().setTableQuery(id, query)).toBeNull();
+  const result = useStudio.getState().tabs.find((tab) => tab.id === id)!;
+  expect(result.query).toEqual(query);
+  expect(result.pages).toHaveLength(1);
+  expect(client.call).toHaveBeenLastCalledWith("browse_table", {
+    sessionId: "session",
+    table: source.table,
+    after: null,
+    query,
+  });
+  expect(client.call).toHaveBeenCalledWith("release_result", { resultId: "result" });
+});
+
+test("pending edits block sort and filter changes", async () => {
+  const source = schema("label");
+  vi.mocked(client.call).mockImplementation(((command: string) =>
+    Promise.resolve(
+      command === "table_schema" ? source : command === "browse_table" ? page(source) : null,
+    )) as typeof client.call);
+  const id = tableTab();
+  await useStudio.getState().refreshTable(id);
+  dirtyStore.set({ resultId: "result", row: 0, column: "c0", original: "a", value: "b" });
+  const reason = await useStudio
+    .getState()
+    .setTableQuery(id, { sort: [], filters: [{ column: "label", op: "isNull", value: null }] });
+  expect(reason).toContain("pending edits");
+  expect(useStudio.getState().tabs.find((tab) => tab.id === id)!.query.filters).toHaveLength(0);
+  dirtyStore.clear("result");
+});
+
+test("opening the same table with a different query opens a separate tab", async () => {
+  const source = schema("id");
+  vi.mocked(client.call).mockImplementation(((command: string) =>
+    Promise.resolve(
+      command === "table_schema" ? source : command === "browse_table" ? page(source) : null,
+    )) as typeof client.call);
+  const table = source.table;
+  await useStudio.getState().openTable("profile", table);
+  const filtered = { sort: [], filters: [{ column: "id", op: "eq" as const, value: "42" }] };
+  await useStudio.getState().openTable("profile", table, filtered);
+  await useStudio.getState().openTable("profile", table, filtered);
+  const tabs = useStudio.getState().tabs;
+  expect(tabs).toHaveLength(2);
+  expect(tabs[1].title).toBe("fixture · id = 42");
+  expect(useStudio.getState().activeTabId).toBe(tabs[1].id);
 });

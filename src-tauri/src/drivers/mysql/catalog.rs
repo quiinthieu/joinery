@@ -1,4 +1,4 @@
-use super::values::{cast, identifier, key_predicate, projection, qualified, quote};
+use super::values::{cast, identifier, key_predicate, projection, qualified};
 use super::*;
 
 impl Mysql {
@@ -97,22 +97,16 @@ impl Mysql {
     pub(super) async fn browse_rows(
         &self,
         schema: &TableSchema,
+        query: BrowseQuery,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
         let schema = schema.clone();
         self.metadata(move |conn|Box::pin(async move {
             let current=schema_on(conn,&schema.table).await?;
             unchanged(&schema,&current)?;
-            let pageable=!schema.primary_key.is_empty()&&schema.primary_key.iter().all(|k|schema.columns.iter().find(|c|&c.name==k).is_some_and(|c|cast(c).is_some()));
-            let mut sql=format!("SELECT {} FROM {}",projection(&schema),qualified(&schema.table));let mut params=Vec::new();
-            if let Some(after)=after {
-                if !pageable||after.len()!=schema.primary_key.len()||after.iter().any(Option::is_none) {return Err(AppError::invalid("Invalid table paging key"));}
-                let cols=schema.primary_key.iter().map(|k|quote(k)).collect::<Vec<_>>();
-                let casts=schema.primary_key.iter().map(|k|format!("CAST(? AS {})",cast(schema.columns.iter().find(|c|&c.name==k).unwrap()).unwrap())).collect::<Vec<_>>();
-                sql.push_str(&format!(" WHERE ({}) > ({})",cols.join(","),casts.join(",")));params=after.into_iter().map(bind).collect();
-            }
-            if pageable {sql.push_str(&format!(" ORDER BY {}",schema.primary_key.iter().map(|k|quote(k)).collect::<Vec<_>>().join(",")));}
-            sql.push_str(" LIMIT 501");
+            let built=browse_query::build(&schema,&query,after.as_deref(),&MysqlDialect)?;
+            let sql=format!("SELECT {} FROM {}{}{} LIMIT 501",projection(&schema),qualified(&schema.table),built.where_sql,built.order_sql);
+            let params=built.binds.iter().cloned().map(bind).collect::<Vec<_>>();
             let mut query=conn.exec_iter(sql,Params::Positional(params)).await.map_err(mysql_error)?;
             let names=query.columns_ref().iter().map(|c|c.name_str().into_owned()).collect::<Vec<_>>();
             if names!=schema.columns.iter().map(|c|c.name.clone()).collect::<Vec<_>>() {return Err(AppError::new(ErrorCode::Conflict,"The table schema changed. Refresh before browsing."));}
@@ -125,8 +119,8 @@ impl Mysql {
                 }
                 bytes+=size;rows.push(row);
             }
-            let has_more=limited&&pageable;
-            let next_key=if has_more {rows.last().map(|r|schema.primary_key.iter().map(|k|r[schema.columns.iter().position(|c|&c.name==k).unwrap()].clone()).collect())}else{None};
+            let has_more=limited&&built.pageable;
+            let next_key=if has_more {rows.last().map(|r|built.cursor(r))}else{None};
             Ok(BrowseRows {rows,next_key,has_more,truncated:limited&&!has_more})
         })).await
     }
@@ -179,9 +173,21 @@ impl Mysql {
 }
 
 fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
-    if expected.columns != current.columns
+    // Read-only Safe Mode masks editability on the expected schema. Masking
+    // may narrow, never widen, what the current table allows.
+    let narrowed = |expected: bool, current: bool| !expected || current;
+    let columns = expected.columns.len() == current.columns.len()
+        && expected.columns.iter().zip(&current.columns).all(|(e, c)| {
+            narrowed(e.editable, c.editable)
+                && *e
+                    == ColumnInfo {
+                        editable: e.editable,
+                        ..c.clone()
+                    }
+        });
+    if !columns
         || expected.primary_key != current.primary_key
-        || expected.editable != current.editable
+        || !narrowed(expected.editable, current.editable)
         || serde_json::to_string(&expected.foreign_keys).ok()
             != serde_json::to_string(&current.foreign_keys).ok()
     {
@@ -224,18 +230,18 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
         .iter()
         .map(|r| cell(r, 0).to_owned())
         .collect::<Vec<_>>();
-    let foreign=fetch(conn,"SELECT COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
-    let foreign_keys = foreign
-        .iter()
-        .map(|r| ForeignKey {
-            column: cell(r, 0).into(),
-            target: TableRef {
-                schema: cell(r, 1).into(),
-                name: cell(r, 2).into(),
+    let foreign=fetch(conn,"SELECT CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
+    let foreign_keys = ForeignKey::group(foreign.iter().map(|r| {
+        (
+            cell(r, 0).into(),
+            cell(r, 1).into(),
+            TableRef {
+                schema: cell(r, 2).into(),
+                name: cell(r, 3).into(),
             },
-            target_column: cell(r, 3).into(),
-        })
-        .collect::<Vec<_>>();
+            cell(r, 4).into(),
+        )
+    }));
     let mut columns =
         rows.iter()
             .enumerate()
@@ -265,7 +271,9 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
                     kind,
                     nullable: cell(r, 3) == "YES",
                     primary_key: primary_key.iter().any(|k| k == name),
-                    foreign_key: foreign_keys.iter().any(|f| f.column == name),
+                    foreign_key: foreign_keys
+                        .iter()
+                        .any(|f| f.columns.iter().any(|c| c == name)),
                     editable: false,
                 };
                 c.editable = transactional

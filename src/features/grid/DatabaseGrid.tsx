@@ -16,6 +16,7 @@ import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
 import { useStudio, type StudioTab } from "../../state/studio";
+import { canOrder, sortIndicator } from "./table-query";
 
 export interface CellTarget {
   resultId: string;
@@ -30,6 +31,8 @@ interface Props {
   theme: string;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
+  /** Server-side header sorting for table tabs; absent when unavailable. */
+  onSort?(column: ColumnInfo, additive: boolean): void;
 }
 
 const benchmarkColumns: ColumnInfo[] = [
@@ -79,6 +82,7 @@ export default function DatabaseGrid({
   theme: themeName,
   onSelect,
   onOpenValue,
+  onSort,
 }: Props) {
   const grid = useRef<DataEditorRef>(null),
     host = useRef<HTMLDivElement>(null);
@@ -101,34 +105,43 @@ export default function DatabaseGrid({
       : tab.kind === "table"
         ? (tab.schema?.columns ?? [])
         : (result?.columns ?? []);
+  const freezeColumns = columnsInfo[0]?.primaryKey ? 1 : 0;
+  const frozen = useRef(freezeColumns);
+  frozen.current = freezeColumns;
+  const sortQuery = tab.kind === "table" ? tab.query : null;
   const columns = useMemo<GridColumn[]>(
     () =>
-      columnsInfo.map((column) => ({
-        id: column.id,
-        title: `${column.primaryKey ? "⌑ " : column.foreignKey ? "↗ " : ""}${column.name}`,
-        width:
-          widths[column.id] ??
-          (column.name.includes("email")
-            ? 230
-            : column.kind === "temporal"
-              ? 225
-              : column.kind === "integer"
-                ? 110
-                : column.name === "status"
-                  ? 150
-                  : 200),
-        icon:
-          column.kind === "integer" || column.kind === "decimal"
-            ? "headerNumber"
-            : column.kind === "boolean"
-              ? "headerBoolean"
+      columnsInfo.map((column) => {
+        const indicator = sortQuery ? sortIndicator(sortQuery, column.name) : "";
+        return {
+          id: column.id,
+          title: `${column.primaryKey ? "⌑ " : column.foreignKey ? "↗ " : ""}${column.name}${
+            indicator ? ` ${indicator}` : ""
+          }`,
+          width:
+            widths[column.id] ??
+            (column.name.includes("email")
+              ? 230
               : column.kind === "temporal"
-                ? "headerDate"
-                : column.kind === "json"
-                  ? "headerCode"
-                  : "headerString",
-      })),
-    [columnsInfo, widths],
+                ? 225
+                : column.kind === "integer"
+                  ? 110
+                  : column.name === "status"
+                    ? 150
+                    : 200),
+          icon:
+            column.kind === "integer" || column.kind === "decimal"
+              ? "headerNumber"
+              : column.kind === "boolean"
+                ? "headerBoolean"
+                : column.kind === "temporal"
+                  ? "headerDate"
+                  : column.kind === "json"
+                    ? "headerCode"
+                    : "headerString",
+        };
+      }),
+    [columnsInfo, widths, sortQuery],
   );
   const rowCount =
     tab.kind === "benchmark"
@@ -176,8 +189,13 @@ export default function DatabaseGrid({
   const redraw = useCallback(() => {
     const range = visible.current,
       cells: { cell: Item }[] = [];
+    // Glide's visible region starts after frozen columns, which also need
+    // repainting once their page arrives.
+    const columns = new Set<number>();
+    for (let x = 0; x < frozen.current; x++) columns.add(x);
+    for (let x = range.x; x < range.x + range.width; x++) columns.add(x);
     for (let y = range.y; y < range.y + range.height + 1; y++)
-      for (let x = range.x; x < range.x + range.width; x++) cells.push({ cell: [x, y] });
+      for (const x of columns) cells.push({ cell: [x, y] });
     grid.current?.updateCells(cells);
   }, []);
   useEffect(() => resultCache.subscribe(redraw), [redraw]);
@@ -337,11 +355,17 @@ export default function DatabaseGrid({
           smoothScrollX
           smoothScrollY
           theme={theme}
-          freezeColumns={columnsInfo[0]?.primaryKey ? 1 : 0}
+          freezeColumns={freezeColumns}
           onColumnResize={(column, width) => {
             if (column.id) setWidths((old) => ({ ...old, [column.id!]: width }));
           }}
           onCellEdited={edit}
+          onHeaderClicked={(col, event) => {
+            const column = columnsInfo[col];
+            if (!onSort || !column || !canOrder(column)) return;
+            event.preventDefault();
+            onSort(column, event.shiftKey);
+          }}
           onCellClicked={(cell) => onSelect(targetAt(cell, true))}
           gridSelection={selection}
           onGridSelectionChange={(selection) => {

@@ -1185,10 +1185,23 @@ impl Studio {
         table: &TableRef,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<TablePage> {
+        self.browse_with(session_id, table, after, &BrowseQuery::default())
+            .await
+    }
+
+    /// Table page with typed server-side sort/filter. The query is rebuilt
+    /// from the current schema on every page; values are never interpolated.
+    pub async fn browse_with(
+        &self,
+        session_id: &str,
+        table: &TableRef,
+        after: Option<Vec<Option<String>>>,
+        query: &BrowseQuery,
+    ) -> AppResult<TablePage> {
         let session = self.session(session_id)?;
         let _lane = session.lane.lock().await;
         let schema = self.schema(session_id, table).await?;
-        let page = session.driver.browse(&schema, after).await?;
+        let page = session.driver.browse_query(&schema, query, after).await?;
         let result = self.results.create(
             &format!("table:{session_id}"),
             0,

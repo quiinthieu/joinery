@@ -1,6 +1,7 @@
 use crate::domain::*;
 use async_trait::async_trait;
 
+pub mod browse_query;
 pub mod mysql;
 pub mod postgres;
 pub mod redis;
@@ -69,6 +70,22 @@ pub trait Driver: Send + Sync {
         schema: &TableSchema,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows>;
+    /// Browses with typed server-side sort/filter. Engines without
+    /// `table_filtering` accept only the empty query.
+    async fn browse_query(
+        &self,
+        schema: &TableSchema,
+        query: &BrowseQuery,
+        after: Option<Vec<Option<String>>>,
+    ) -> AppResult<BrowseRows> {
+        if !query.is_empty() {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Sorting and filtering table data is unavailable for this engine",
+            ));
+        }
+        self.browse(schema, after).await
+    }
     async fn apply(&self, schema: &TableSchema, rows: &[RowMutation]) -> AppResult<()>;
     async fn processes(&self) -> AppResult<Vec<ProcessInfo>>;
     async fn cancel_process(&self, id: &str, identity: &str) -> AppResult<()>;

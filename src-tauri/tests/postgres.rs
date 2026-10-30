@@ -871,12 +871,193 @@ async fn live_context_preserves_legacy_grid_foreign_keys() {
         schema
             .foreign_keys
             .iter()
-            .any(|key| key.column == "customer_id"
+            .any(|key| key.columns == ["customer_id"]
                 && key.target.name == "customers"
-                && key.target_column == "id")
+                && key.target_columns == ["id"])
     );
     assert!(!schema.editable);
     let page = studio.browse(&session.id, &table, None).await.unwrap();
     assert_eq!(page.result.retained_rows, 500);
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn foreign_keys_group_composite_constraints() {
+    let (_root, studio, session) = setup(SafeMode::ReadOnly).await;
+    let schema = studio
+        .schema(
+            &session.id,
+            &TableRef {
+                schema: "public".into(),
+                name: "line_notes".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(schema.foreign_keys.len(), 2);
+    let line = &schema.foreign_keys[0];
+    assert_eq!(line.name, "line_notes_line_fk");
+    assert_eq!(line.columns, ["note_order", "note_line"]);
+    assert_eq!(line.target.name, "order_lines");
+    assert_eq!(line.target_columns, ["order_id", "line_no"]);
+    let order = &schema.foreign_keys[1];
+    assert_eq!(order.name, "line_notes_order_fk");
+    assert_eq!(order.columns, ["note_order"]);
+    assert_eq!(order.target.name, "orders");
+    assert_eq!(order.target_columns, ["id"]);
+    assert!(
+        schema
+            .columns
+            .iter()
+            .filter(|c| c.name.starts_with("note_"))
+            .all(|c| c.foreign_key)
+    );
+    studio.shutdown();
+}
+
+async fn browse_ids(
+    studio: &Arc<Studio>,
+    session: &SessionInfo,
+    table: &TableRef,
+    query: &BrowseQuery,
+) -> (Vec<String>, usize) {
+    let mut ids = Vec::new();
+    let mut after = None;
+    let mut pages = 0;
+    loop {
+        let page = studio
+            .browse_with(&session.id, table, after, query)
+            .await
+            .unwrap();
+        pages += 1;
+        for i in 0..page.result.retained_rows {
+            ids.push(
+                studio.results.row(&page.result.id, i).unwrap()[0]
+                    .clone()
+                    .unwrap(),
+            );
+        }
+        studio.release_result(&page.result.id);
+        if !page.has_more {
+            break;
+        }
+        after = page.next_key;
+    }
+    (ids, pages)
+}
+
+async fn reference_ids(studio: &Arc<Studio>, session: &SessionInfo, sql: &str) -> Vec<String> {
+    let events = run(studio, session, sql).await;
+    assert_eq!(status(&events), RunStatus::Completed);
+    let retained = result(&events);
+    let ids = (0..retained.retained_rows)
+        .map(|i| {
+            studio.results.row(&retained.id, i).unwrap()[0]
+                .clone()
+                .unwrap()
+        })
+        .collect();
+    studio.release_result(&retained.id);
+    ids
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn browse_sorted_filtered_pages_match_reference() {
+    let (_root, studio, session) = setup(SafeMode::ReadOnly).await;
+    let table = TableRef {
+        schema: "public".into(),
+        name: "browse_sort".into(),
+    };
+    let sort = |column: &str, descending| SortKey {
+        column: column.into(),
+        descending,
+    };
+    let cases = [
+        (
+            BrowseQuery {
+                sort: vec![sort("bucket", true), sort("label", false)],
+                filters: vec![],
+            },
+            "SELECT id FROM browse_sort ORDER BY bucket DESC NULLS FIRST, label ASC NULLS LAST, id",
+        ),
+        (
+            BrowseQuery {
+                sort: vec![sort("label", true), sort("bucket", false)],
+                filters: vec![ColumnFilter {
+                    column: "bucket".into(),
+                    op: FilterOp::NotEq,
+                    value: Some("3".into()),
+                }],
+            },
+            "SELECT id FROM browse_sort WHERE bucket <> 3 ORDER BY label DESC NULLS FIRST, bucket ASC NULLS LAST, id",
+        ),
+        (
+            BrowseQuery {
+                sort: vec![],
+                filters: vec![ColumnFilter {
+                    column: "label".into(),
+                    op: FilterOp::Contains,
+                    value: Some("_%".into()),
+                }],
+            },
+            "SELECT id FROM browse_sort WHERE label LIKE '%!_!%%' ESCAPE '!' ORDER BY id",
+        ),
+        (
+            BrowseQuery {
+                sort: vec![sort("bucket", false)],
+                filters: vec![ColumnFilter {
+                    column: "label".into(),
+                    op: FilterOp::IsNull,
+                    value: None,
+                }],
+            },
+            "SELECT id FROM browse_sort WHERE label IS NULL ORDER BY bucket ASC NULLS LAST, id",
+        ),
+    ];
+    for (query, reference) in cases {
+        let (ids, pages) = browse_ids(&studio, &session, &table, &query).await;
+        let expected = reference_ids(&studio, &session, reference).await;
+        assert!(!expected.is_empty(), "{reference}");
+        assert_eq!(ids, expected, "{query:?}");
+        if expected.len() > 500 {
+            assert!(pages > 1, "{query:?} should page");
+        }
+    }
+    let alpha = BrowseQuery {
+        sort: vec![],
+        filters: vec![ColumnFilter {
+            column: "label".into(),
+            op: FilterOp::StartsWith,
+            value: Some("ALP".into()),
+        }],
+    };
+    let (ids, _) = browse_ids(&studio, &session, &table, &alpha).await;
+    assert_eq!(
+        ids,
+        reference_ids(
+            &studio,
+            &session,
+            "SELECT id FROM browse_sort WHERE label = 'alpha' ORDER BY id"
+        )
+        .await,
+        "PostgreSQL text search is case-insensitive"
+    );
+    let hostile = BrowseQuery {
+        sort: vec![],
+        filters: vec![ColumnFilter {
+            column: "label".into(),
+            op: FilterOp::Eq,
+            value: Some("'; DROP TABLE browse_sort; --".into()),
+        }],
+    };
+    assert!(
+        browse_ids(&studio, &session, &table, &hostile)
+            .await
+            .0
+            .is_empty()
+    );
+    assert_eq!(studio.usage().retained_bytes, 0);
     studio.shutdown();
 }

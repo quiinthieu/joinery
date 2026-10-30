@@ -1,11 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
+  ArrowUpDown,
+  ArrowUpRight,
   Check,
   Code2,
   Command,
   Database,
   FileCode2,
+  Filter,
   Gauge,
   History,
   Keyboard,
@@ -29,8 +32,10 @@ import { Modal, InlineError } from "../components/ui/Modal";
 import { tabNavigation } from "../components/ui/tabs";
 import { client, messageOf } from "../ipc/client";
 import type {
+  BrowseQuery,
   ChangePreview,
   ConnectionProfile,
+  ForeignKey,
   PreparedPlan,
   ProcessInfo,
   ResourceUsage,
@@ -40,6 +45,12 @@ import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
+import {
+  canOrder,
+  constraintsForColumn,
+  referencedRowsQuery,
+  withFilter,
+} from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { Workbench, Welcome } from "./Workbench";
 import { isTauri } from "@tauri-apps/api/core";
@@ -59,7 +70,8 @@ type Dialog =
       profile?: ConnectionProfile;
       onSuccess?(): void;
     }
-  | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> };
+  | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
+  | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
   return tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
 }
@@ -78,6 +90,108 @@ export function App() {
   const session = profile ? state.sessions[profile.id] : null;
   const references = useRef({ current, dialog, profile });
   references.current = { current, dialog, profile };
+  const tableColumn =
+    current?.kind === "table" &&
+    session?.capabilities.tableFiltering &&
+    selectedCell &&
+    current.pages.some((page) => page.result.id === selectedCell.resultId) &&
+    current.schema?.columns.some((column) => column.id === selectedCell.column.id)
+      ? selectedCell
+      : null;
+  const selectedKeys = tableColumn
+    ? constraintsForColumn(current!.schema, tableColumn.column.name)
+    : [];
+  /** Opens the row referenced by `key` in a new tab, as DataGrip does. */
+  function followKey(tab: StudioTab, key: ForeignKey, target: CellTarget) {
+    const query = referencedRowsQuery(key, (name) => {
+      const column = tab.schema?.columns.find((c) => c.name === name);
+      return column ? resultCache.read(target.resultId, column.id, target.row, true)?.value : null;
+    });
+    if (!query || !tab.connectionId) {
+      state.notify("This row's foreign key contains NULL, so it references no row.");
+      return;
+    }
+    void state.openTable(tab.connectionId, key.target, query);
+  }
+  function goToReferenced() {
+    if (!current || !tableColumn) {
+      state.notify("Select a foreign-key cell in a table to open the row it references.");
+      return;
+    }
+    if (!selectedKeys.length) {
+      state.notify(`${tableColumn.column.name} is not part of a foreign key.`);
+      return;
+    }
+    if (selectedKeys.length === 1) followKey(current, selectedKeys[0], tableColumn);
+    else
+      setDialog({ kind: "references", keys: selectedKeys, target: tableColumn, tabId: current.id });
+  }
+  function changeTableQuery(query: BrowseQuery) {
+    if (!current) return;
+    void state.setTableQuery(current.id, query).then((reason) => reason && state.notify(reason));
+  }
+  const tableCommands =
+    current?.kind === "table" && session?.capabilities.tableFiltering
+      ? [
+          ...selectedKeys.map((key, index) => ({
+            label: `Go to referenced row in ${key.target.name}${
+              selectedKeys.length > 1 ? ` (${key.columns.join(", ")})` : ""
+            }`,
+            shortcut: index === 0 && selectedKeys.length === 1 ? "⇧⌘ B" : "",
+            icon: ArrowUpRight,
+            action: () => current && tableColumn && followKey(current, key, tableColumn),
+          })),
+          ...(tableColumn && canOrder(tableColumn.column)
+            ? [false, true].map((descending) => ({
+                label: `Sort ${descending ? "descending" : "ascending"} by ${tableColumn.column.name}`,
+                shortcut: "",
+                icon: ArrowUpDown,
+                action: () =>
+                  changeTableQuery({
+                    ...current.query,
+                    sort: [{ column: tableColumn.column.name, descending }],
+                  }),
+              }))
+            : []),
+          ...(tableColumn && !tableColumn.large && tableColumn.column.kind !== "binary"
+            ? [
+                {
+                  label: `Filter where ${tableColumn.column.name} ${tableColumn.value === null ? "is NULL" : "= selected value"}`,
+                  shortcut: "",
+                  icon: Filter,
+                  action: () =>
+                    changeTableQuery(
+                      withFilter(current.query, {
+                        column: tableColumn.column.name,
+                        op: tableColumn.value === null ? "isNull" : "eq",
+                        value: tableColumn.value,
+                      }),
+                    ),
+                },
+              ]
+            : []),
+          ...(current.query.sort.length
+            ? [
+                {
+                  label: "Clear table sort",
+                  shortcut: "",
+                  icon: ArrowUpDown,
+                  action: () => changeTableQuery({ ...current.query, sort: [] }),
+                },
+              ]
+            : []),
+          ...(current.query.filters.length
+            ? [
+                {
+                  label: "Clear table filters",
+                  shortcut: "",
+                  icon: Filter,
+                  action: () => changeTableQuery({ ...current.query, filters: [] }),
+                },
+              ]
+            : []),
+        ]
+      : [];
   useEffect(() => {
     void state.initialize();
   }, []);
@@ -325,8 +439,8 @@ export function App() {
       });
     else void action();
   }
-  const actions = useRef({ runSql, reviewEdits });
-  actions.current = { runSql, reviewEdits };
+  const actions = useRef({ runSql, reviewEdits, goToReferenced });
+  actions.current = { runSql, reviewEdits, goToReferenced };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || references.current.dialog) return;
@@ -341,6 +455,9 @@ export function App() {
       } else if (key === "w" && active) {
         event.preventDefault();
         confirmDiscard(active, () => closeWorkspace(active.id));
+      } else if (key === "b" && event.shiftKey) {
+        event.preventDefault();
+        actions.current.goToReferenced();
       } else if (key === "b") {
         event.preventDefault();
         useStudio.setState((state) => ({ sidebarVisible: !state.sidebarVisible }));
@@ -473,7 +590,7 @@ export function App() {
                 ) : (
                   <Gauge size={13} />
                 )}
-                <span>{tab.title}</span>
+                <span title={tab.title}>{tab.title}</span>
                 {tab.kind === "table" && dirtyFor(tab).length > 0 && <i className="dirty-dot" />}
                 {["queued", "running"].includes(tab.status) && (
                   <span className="tab-running">●</span>
@@ -577,6 +694,12 @@ export function App() {
                   >
                     {selectedCell.column.editable ? "Edit value" : "View full value"}
                   </button>
+                  {selectedKeys.length > 0 && (
+                    <button className="button ghost small" onClick={goToReferenced}>
+                      <ArrowUpRight size={12} />
+                      Go to referenced row
+                    </button>
+                  )}
                 </>
               ) : (
                 <div className="inspector-empty">
@@ -679,6 +802,32 @@ export function App() {
           onClose={() => setDialog((current) => (current === dialog ? null : current))}
         />
       )}
+      {dialog?.kind === "references" && (
+        <Modal
+          title="Go to referenced row"
+          subtitle={`${dialog.target.column.name} belongs to more than one foreign key`}
+          onClose={() => setDialog(null)}
+        >
+          <div className="palette-commands">
+            {dialog.keys.map((key) => (
+              <button
+                key={key.name}
+                onClick={() => {
+                  setDialog(null);
+                  const tab = useStudio.getState().tabs.find((t) => t.id === dialog.tabId);
+                  if (tab) followKey(tab, key, dialog.target);
+                }}
+              >
+                <ArrowUpRight size={16} />
+                <span>
+                  {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
+                </span>
+                <kbd>{key.name}</kbd>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
       {dialog?.kind === "palette" && (
         <CommandPalette
           onClose={() => setDialog(null)}
@@ -713,6 +862,7 @@ export function App() {
               icon: Command,
               action: () => setDialog({ kind: "settings" }),
             },
+            ...tableCommands,
           ]}
         />
       )}

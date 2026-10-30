@@ -93,6 +93,7 @@ impl Postgres {
                 cancellation: true,
                 table_browsing: true,
                 table_editing: true,
+                table_filtering: true,
                 processes: true,
             },
         };
@@ -332,56 +333,26 @@ impl Driver for Postgres {
         schema: &TableSchema,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
-        let projection = projection(schema);
-        let mut sql = format!(
-            "SELECT {projection} FROM {} AS __joinery_source",
-            qualified(&schema.table)
+        self.browse_query(schema, &BrowseQuery::default(), after)
+            .await
+    }
+
+    async fn browse_query(
+        &self,
+        schema: &TableSchema,
+        query: &BrowseQuery,
+        after: Option<Vec<Option<String>>>,
+    ) -> AppResult<BrowseRows> {
+        let built = browse_query::build(schema, query, after.as_deref(), &PostgresDialect)?;
+        let sql = format!(
+            "SELECT {} FROM {} AS __joinery_source{}{} LIMIT 501",
+            projection(schema),
+            qualified(&schema.table),
+            built.where_sql,
+            built.order_sql
         );
-        let mut values = Vec::new();
-        if let Some(after) = after {
-            if schema.primary_key.is_empty()
-                || after.len() != schema.primary_key.len()
-                || after.iter().any(Option::is_none)
-            {
-                return Err(AppError::invalid("Invalid table paging key"));
-            }
-            let mut cols = Vec::new();
-            let mut binds = Vec::new();
-            for (i, key) in schema.primary_key.iter().enumerate() {
-                let col = schema
-                    .columns
-                    .iter()
-                    .find(|c| &c.name == key)
-                    .ok_or_else(|| AppError::internal("Primary key column missing"))?;
-                let cast = cast_type(col).ok_or_else(|| {
-                    AppError::new(
-                        ErrorCode::Unsupported,
-                        "This primary key type does not support paging",
-                    )
-                })?;
-                cols.push(quote_identifier(key));
-                binds.push(format!("(${}::text)::{cast}", i + 1));
-            }
-            sql.push_str(&format!(
-                " WHERE ({}) > ({})",
-                cols.join(","),
-                binds.join(",")
-            ));
-            values = after;
-        }
-        if !schema.primary_key.is_empty() {
-            sql.push_str(&format!(
-                " ORDER BY {}",
-                schema
-                    .primary_key
-                    .iter()
-                    .map(|c| format!("__joinery_source.{}", quote_identifier(c)))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ));
-        }
-        sql.push_str(" LIMIT 501");
-        let parameters = values
+        let parameters = built
+            .binds
             .iter()
             .map(|v| v as &(dyn ToSql + Sync))
             .collect::<Vec<_>>();
@@ -419,17 +390,9 @@ impl Driver for Postgres {
                     .collect::<TextRow>(),
             );
         }
-        let has_more = limited && !schema.primary_key.is_empty();
+        let has_more = limited && built.pageable;
         let next_key = if has_more {
-            rows.last().map(|r| {
-                schema
-                    .primary_key
-                    .iter()
-                    .map(|key| {
-                        r[schema.columns.iter().position(|c| &c.name == key).unwrap()].clone()
-                    })
-                    .collect()
-            })
+            rows.last().map(|r| built.cursor(r))
         } else {
             None
         };
@@ -578,6 +541,34 @@ pub fn qualified(table: &TableRef) -> String {
         quote_identifier(&table.schema),
         quote_identifier(&table.name)
     )
+}
+
+/// Browse SQL selects `column::text`, so ORDER BY must name the source
+/// relation's typed column rather than the text output column.
+pub(crate) struct PostgresDialect;
+
+impl browse_query::Dialect for PostgresDialect {
+    fn column(&self, name: &str) -> String {
+        format!("__joinery_source.{}", quote_identifier(name))
+    }
+    fn typed_bind(&self, column: &ColumnInfo, index: usize) -> Option<String> {
+        cast_type(column).map(|cast| format!("(${}::text)::{cast}", index + 1))
+    }
+    fn like(&self, column: &ColumnInfo, index: usize) -> String {
+        format!(
+            "{}::text ILIKE ${}::text{}",
+            self.column(&column.name),
+            index + 1,
+            browse_query::like_escape_clause()
+        )
+    }
+    fn order_term(&self, expression: &str, descending: bool) -> String {
+        if descending {
+            format!("{expression} DESC NULLS FIRST")
+        } else {
+            format!("{expression} ASC NULLS LAST")
+        }
+    }
 }
 fn projection(schema: &TableSchema) -> String {
     schema
@@ -781,23 +772,23 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         });
     }
     let foreign=client.query(
-            "SELECT a.attname,n.nspname,c.relname,b.attname FROM pg_catalog.pg_constraint k
-             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey),pg_catalog.unnest(k.confkey)) AS x(src,dst)
+            "SELECT k.conname::pg_catalog.text,a.attname,n.nspname,c.relname,b.attname FROM pg_catalog.pg_constraint k
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey),pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src,dst,ord)
              JOIN pg_catalog.pg_attribute a ON a.attrelid=k.conrelid AND a.attnum=x.src
              JOIN pg_catalog.pg_class c ON c.oid=k.confrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
              JOIN pg_catalog.pg_attribute b ON b.attrelid=k.confrelid AND b.attnum=x.dst
-             WHERE k.contype='f' AND k.conrelid=pg_catalog.to_regclass($1)",&[&qualified]).await.map_err(pg_error)?;
-    let foreign_keys = foreign
-        .iter()
-        .map(|r| ForeignKey {
-            column: r.get(0),
-            target: TableRef {
-                schema: r.get(1),
-                name: r.get(2),
+             WHERE k.contype='f' AND k.conrelid=pg_catalog.to_regclass($1) ORDER BY k.conname,k.oid,x.ord",&[&qualified]).await.map_err(pg_error)?;
+    let foreign_keys = ForeignKey::group(foreign.iter().map(|r| {
+        (
+            r.get(0),
+            r.get(1),
+            TableRef {
+                schema: r.get(2),
+                name: r.get(3),
             },
-            target_column: r.get(3),
-        })
-        .collect();
+            r.get(4),
+        )
+    }));
     let editable = physical
         && !primary_key.is_empty()
         && columns

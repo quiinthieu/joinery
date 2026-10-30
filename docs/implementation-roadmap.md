@@ -97,6 +97,46 @@ External release gates remain open and need their own authorization/scope.
    `pnpm desktop:bundle:mac`, and hidden native smoke. Record Passed, Failed,
    Skipped, Blocked by environment, and Not executed separately.
 
+## DataGrip replacement program (approved 2026-10-30)
+
+The owner asked for Joinery to replace DataGrip on the existing engines
+(PostgreSQL, MySQL/MariaDB, Snowflake, Redis), and approved this
+milestone order. It supersedes the order of the "Subsequent phases" table
+below without changing its exit criteria. Console/session binding moves to R4
+so table-data parity, which also supplies grouped FK metadata for JOIN
+completion and diagrams, ships first. Each batch needs its own approved plan,
+fixture evidence and PR.
+
+| Milestone | Scope (feature IDs) | Exit criteria |
+|---|---|---|
+| R1 Data view parity | Batch 1: N03, G03 typed, G08 outbound. Batch 2: G05, G09, G10, G07, raw WHERE/ORDER BY text classified by `safety::prepare`, inbound referencing rows | Sorted/filtered pages equal reference queries; composite FKs navigate; paste all-or-nothing; inserts/deletes via one-use plans |
+| R2 Data movement | G11 export, copy-as formats, G12 CSV import, G13 data compare | Exact values round-trip; cancelled exports marked partial; no result rows in app data |
+| R3 Explorer and search | N01, N02, N04–N07, P01 | Keyboard tree; quoted/overloaded names; per-object permission degradation |
+| R4 Consoles, sessions, files | M05, M06, X04, E14, P02, P03 | Isolated console transactions/cancellation; unsaved-file guard |
+| R5 Editor intelligence | E06, E07/X08, E15, E11, E13, E09, E12, E16 | Correct composite JOIN text; multibyte error carets; bindings in approval digest |
+| R6 Query plans | X07, A01, A02, X05 | ANALYZE explicitly authorized; estimates and actuals distinct |
+| R7 Database design | D01–D05, N08 | DDL round-trips on disposable schemas; no unattended apply |
+| R8 Productivity and monitoring | P05, P06, A03–A05, E08, E10 | Shortcut conflicts detected; monitoring permission-aware |
+| RX Restriction relaxation | G14 single-table result editing, PK-less row editing, Snowflake DML (A07) | Rust-proven provenance; one-use plans and production passphrase retained; Snowflake writes qualified only on an approved non-production account |
+| v1.0 gates | I05–I07 | Unchanged external signing, platform and performance gates |
+
+### R1 batch 1 result (2026-10-30, local branch `feat/table-data-view`)
+
+- FK constraints carry name and ordinal-paired columns; Structure lists them.
+- `browse_table` accepts an optional typed `BrowseQuery`. Rust rebuilds the SQL
+  from the current schema with bound values, PK tie-breakers, explicit NULL
+  order (ascending last, descending first) and a NULL-safe keyset seek.
+  Engines without `tableFiltering` (Snowflake, Redis) reject non-empty queries.
+- Header clicks sort (Shift adds a key); a filter bar builds typed predicates;
+  controls lock while edits are pending. ⇧⌘B, the palette or the inspector
+  opens the referenced row in a new tab, with a chooser for multi-key columns.
+- Two pre-existing defects found by the new tests are fixed separately:
+  MySQL read-only profiles could not browse editable tables, and the frozen
+  primary-key column stayed blank for pages loaded after scrolling.
+
+See the matrix rows N03/G03/G08 and `IMPLEMENTATION_STATUS.md` for evidence.
+Not pushed, merged or released.
+
 ## Subsequent phases and blueprint cross-reference
 
 | Phase | Feature IDs / user value | Priority / complexity | Dependencies and exit criteria | Blueprint relationship |
