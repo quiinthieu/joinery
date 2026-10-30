@@ -1054,6 +1054,53 @@ kbd {
   font-size: 10px;
   flex-shrink: 0;
 }
+.table-filter-bar {
+  min-height: 34px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 17px 4px 12px;
+  color: var(--muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.filter-chip,
+.sort-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 3px 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.sort-summary {
+  padding-left: 6px;
+  color: var(--muted);
+}
+.filter-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.filter-form select,
+.filter-form input {
+  height: 24px;
+  font-size: 11px;
+}
+.filter-form input {
+  width: 170px;
+}
+.filter-spacer {
+  flex: 1;
+}
+.filter-note {
+  color: #c9ab74;
+}
 .query-error {
   display: flex;
   align-items: center;

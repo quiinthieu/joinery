@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
+  ArrowUpDown,
   Check,
   Code2,
   Command,
   Database,
   FileCode2,
+  Filter,
   Gauge,
   History,
   Keyboard,
@@ -29,6 +31,7 @@ import { Modal, InlineError } from "../components/ui/Modal";
 import { tabNavigation } from "../components/ui/tabs";
 import { client, messageOf } from "../ipc/client";
 import type {
+  BrowseQuery,
   ChangePreview,
   ConnectionProfile,
   PreparedPlan,
@@ -40,6 +43,7 @@ import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
+import { canOrder, withFilter } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { Workbench, Welcome } from "./Workbench";
 import { isTauri } from "@tauri-apps/api/core";
@@ -78,6 +82,71 @@ export function App() {
   const session = profile ? state.sessions[profile.id] : null;
   const references = useRef({ current, dialog, profile });
   references.current = { current, dialog, profile };
+  const tableColumn =
+    current?.kind === "table" &&
+    session?.capabilities.tableFiltering &&
+    selectedCell &&
+    current.schema?.columns.some((column) => column.id === selectedCell.column.id)
+      ? selectedCell
+      : null;
+  function changeTableQuery(query: BrowseQuery) {
+    if (!current) return;
+    void state.setTableQuery(current.id, query).then((reason) => reason && state.notify(reason));
+  }
+  const tableCommands =
+    current?.kind === "table" && session?.capabilities.tableFiltering
+      ? [
+          ...(tableColumn && canOrder(tableColumn.column)
+            ? [false, true].map((descending) => ({
+                label: `Sort ${descending ? "descending" : "ascending"} by ${tableColumn.column.name}`,
+                shortcut: "",
+                icon: ArrowUpDown,
+                action: () =>
+                  changeTableQuery({
+                    ...current.query,
+                    sort: [{ column: tableColumn.column.name, descending }],
+                  }),
+              }))
+            : []),
+          ...(tableColumn && !tableColumn.large && tableColumn.column.kind !== "binary"
+            ? [
+                {
+                  label: `Filter where ${tableColumn.column.name} ${tableColumn.value === null ? "is NULL" : "= selected value"}`,
+                  shortcut: "",
+                  icon: Filter,
+                  action: () =>
+                    changeTableQuery(
+                      withFilter(current.query, {
+                        column: tableColumn.column.name,
+                        op: tableColumn.value === null ? "isNull" : "eq",
+                        value: tableColumn.value,
+                      }),
+                    ),
+                },
+              ]
+            : []),
+          ...(current.query.sort.length
+            ? [
+                {
+                  label: "Clear table sort",
+                  shortcut: "",
+                  icon: ArrowUpDown,
+                  action: () => changeTableQuery({ ...current.query, sort: [] }),
+                },
+              ]
+            : []),
+          ...(current.query.filters.length
+            ? [
+                {
+                  label: "Clear table filters",
+                  shortcut: "",
+                  icon: Filter,
+                  action: () => changeTableQuery({ ...current.query, filters: [] }),
+                },
+              ]
+            : []),
+        ]
+      : [];
   useEffect(() => {
     void state.initialize();
   }, []);
@@ -713,6 +782,7 @@ export function App() {
               icon: Command,
               action: () => setDialog({ kind: "settings" }),
             },
+            ...tableCommands,
           ]}
         />
       )}
