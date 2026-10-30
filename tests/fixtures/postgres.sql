@@ -39,3 +39,23 @@ GRANT USAGE ON SCHEMA completion_alt TO joinery_completion_reader;
 GRANT SELECT ON completion_alt.orders TO joinery_completion_reader;
 CREATE TABLE completion_alt.column_grants (visible_note text, private_note text);
 GRANT SELECT (visible_note) ON completion_alt.column_grants TO joinery_completion_reader;
+
+-- Grouped foreign-key fixtures; source names differ from targets to prove
+-- ordinal pairing, and note_order participates in two constraints.
+CREATE TABLE order_lines (
+  order_id bigint NOT NULL REFERENCES orders(id),
+  line_no integer NOT NULL,
+  sku text NOT NULL,
+  PRIMARY KEY (order_id, line_no)
+);
+INSERT INTO order_lines
+SELECT o, l, 'SKU-' || o || '-' || l FROM generate_series(1,20) AS o, generate_series(1,3) AS l;
+CREATE TABLE line_notes (
+  id bigint PRIMARY KEY,
+  note_order bigint NOT NULL,
+  note_line integer,
+  note text NOT NULL,
+  CONSTRAINT line_notes_line_fk FOREIGN KEY (note_order, note_line) REFERENCES order_lines(order_id, line_no),
+  CONSTRAINT line_notes_order_fk FOREIGN KEY (note_order) REFERENCES orders(id)
+);
+INSERT INTO line_notes VALUES (1, 7, 2, 'composite target'), (2, 7, NULL, 'line unknown');

@@ -1034,3 +1034,32 @@ async fn a_full_result_registry_cannot_misreport_a_write_as_failed() {
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn foreign_keys_group_composite_constraints_on_both_engines() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        let schema = studio
+            .schema(
+                &session.id,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "line_notes".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(schema.foreign_keys.len(), 2, "port {port}");
+        let line = &schema.foreign_keys[0];
+        assert_eq!(line.name, "line_notes_line_fk");
+        assert_eq!(line.columns, ["note_order", "note_line"]);
+        assert_eq!(line.target.name, "order_lines");
+        assert_eq!(line.target_columns, ["order_id", "line_no"]);
+        let order = &schema.foreign_keys[1];
+        assert_eq!(order.name, "line_notes_order_fk");
+        assert_eq!(order.columns, ["note_order"]);
+        assert_eq!(order.target_columns, ["id"]);
+        studio.shutdown();
+    }
+}

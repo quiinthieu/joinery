@@ -781,23 +781,23 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         });
     }
     let foreign=client.query(
-            "SELECT a.attname,n.nspname,c.relname,b.attname FROM pg_catalog.pg_constraint k
-             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey),pg_catalog.unnest(k.confkey)) AS x(src,dst)
+            "SELECT k.conname::pg_catalog.text,a.attname,n.nspname,c.relname,b.attname FROM pg_catalog.pg_constraint k
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey),pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src,dst,ord)
              JOIN pg_catalog.pg_attribute a ON a.attrelid=k.conrelid AND a.attnum=x.src
              JOIN pg_catalog.pg_class c ON c.oid=k.confrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
              JOIN pg_catalog.pg_attribute b ON b.attrelid=k.confrelid AND b.attnum=x.dst
-             WHERE k.contype='f' AND k.conrelid=pg_catalog.to_regclass($1)",&[&qualified]).await.map_err(pg_error)?;
-    let foreign_keys = foreign
-        .iter()
-        .map(|r| ForeignKey {
-            column: r.get(0),
-            target: TableRef {
-                schema: r.get(1),
-                name: r.get(2),
+             WHERE k.contype='f' AND k.conrelid=pg_catalog.to_regclass($1) ORDER BY k.conname,k.oid,x.ord",&[&qualified]).await.map_err(pg_error)?;
+    let foreign_keys = ForeignKey::group(foreign.iter().map(|r| {
+        (
+            r.get(0),
+            r.get(1),
+            TableRef {
+                schema: r.get(2),
+                name: r.get(3),
             },
-            target_column: r.get(3),
-        })
-        .collect();
+            r.get(4),
+        )
+    }));
     let editable = physical
         && !primary_key.is_empty()
         && columns

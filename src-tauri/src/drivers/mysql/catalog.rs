@@ -224,18 +224,18 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
         .iter()
         .map(|r| cell(r, 0).to_owned())
         .collect::<Vec<_>>();
-    let foreign=fetch(conn,"SELECT COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
-    let foreign_keys = foreign
-        .iter()
-        .map(|r| ForeignKey {
-            column: cell(r, 0).into(),
-            target: TableRef {
-                schema: cell(r, 1).into(),
-                name: cell(r, 2).into(),
+    let foreign=fetch(conn,"SELECT CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
+    let foreign_keys = ForeignKey::group(foreign.iter().map(|r| {
+        (
+            cell(r, 0).into(),
+            cell(r, 1).into(),
+            TableRef {
+                schema: cell(r, 2).into(),
+                name: cell(r, 3).into(),
             },
-            target_column: cell(r, 3).into(),
-        })
-        .collect::<Vec<_>>();
+            cell(r, 4).into(),
+        )
+    }));
     let mut columns =
         rows.iter()
             .enumerate()
@@ -265,7 +265,9 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
                     kind,
                     nullable: cell(r, 3) == "YES",
                     primary_key: primary_key.iter().any(|k| k == name),
-                    foreign_key: foreign_keys.iter().any(|f| f.column == name),
+                    foreign_key: foreign_keys
+                        .iter()
+                        .any(|f| f.columns.iter().any(|c| c == name)),
                     editable: false,
                 };
                 c.editable = transactional

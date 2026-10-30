@@ -871,12 +871,47 @@ async fn live_context_preserves_legacy_grid_foreign_keys() {
         schema
             .foreign_keys
             .iter()
-            .any(|key| key.column == "customer_id"
+            .any(|key| key.columns == ["customer_id"]
                 && key.target.name == "customers"
-                && key.target_column == "id")
+                && key.target_columns == ["id"])
     );
     assert!(!schema.editable);
     let page = studio.browse(&session.id, &table, None).await.unwrap();
     assert_eq!(page.result.retained_rows, 500);
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn foreign_keys_group_composite_constraints() {
+    let (_root, studio, session) = setup(SafeMode::ReadOnly).await;
+    let schema = studio
+        .schema(
+            &session.id,
+            &TableRef {
+                schema: "public".into(),
+                name: "line_notes".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(schema.foreign_keys.len(), 2);
+    let line = &schema.foreign_keys[0];
+    assert_eq!(line.name, "line_notes_line_fk");
+    assert_eq!(line.columns, ["note_order", "note_line"]);
+    assert_eq!(line.target.name, "order_lines");
+    assert_eq!(line.target_columns, ["order_id", "line_no"]);
+    let order = &schema.foreign_keys[1];
+    assert_eq!(order.name, "line_notes_order_fk");
+    assert_eq!(order.columns, ["note_order"]);
+    assert_eq!(order.target.name, "orders");
+    assert_eq!(order.target_columns, ["id"]);
+    assert!(
+        schema
+            .columns
+            .iter()
+            .filter(|c| c.name.starts_with("note_"))
+            .all(|c| c.foreign_key)
+    );
     studio.shutdown();
 }

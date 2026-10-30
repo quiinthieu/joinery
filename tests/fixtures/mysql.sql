@@ -39,3 +39,25 @@ GRANT SELECT ON completion_alt.sample TO completion_reader;
 GRANT SELECT ON completion_alt.`CaseOnly` TO completion_reader;
 GRANT SELECT (visible_note), UPDATE (private_note) ON completion_alt.column_grants TO completion_reader;
 GRANT completion_reader TO 'joinery'@'%';
+
+-- Grouped foreign-key fixtures; source names differ from targets to prove
+-- ordinal pairing, and note_order participates in two constraints.
+CREATE TABLE note_orders (id BIGINT PRIMARY KEY) ENGINE=InnoDB;
+INSERT INTO note_orders VALUES (7),(8);
+CREATE TABLE order_lines (
+  order_id BIGINT NOT NULL,
+  line_no INT NOT NULL,
+  sku VARCHAR(40) NOT NULL,
+  PRIMARY KEY (order_id, line_no),
+  FOREIGN KEY (order_id) REFERENCES note_orders(id)
+) ENGINE=InnoDB;
+INSERT INTO order_lines VALUES (7,1,'SKU-7-1'),(7,2,'SKU-7-2'),(8,1,'SKU-8-1');
+CREATE TABLE line_notes (
+  id BIGINT PRIMARY KEY,
+  note_order BIGINT NOT NULL,
+  note_line INT NULL,
+  note VARCHAR(100) NOT NULL,
+  CONSTRAINT line_notes_line_fk FOREIGN KEY (note_order, note_line) REFERENCES order_lines(order_id, line_no),
+  CONSTRAINT line_notes_order_fk FOREIGN KEY (note_order) REFERENCES note_orders(id)
+) ENGINE=InnoDB;
+INSERT INTO line_notes VALUES (1,7,2,'composite target'),(2,7,NULL,'line unknown');

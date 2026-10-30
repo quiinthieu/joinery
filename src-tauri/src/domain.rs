@@ -212,12 +212,38 @@ pub struct TableInfo {
     pub total_bytes: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// One foreign-key constraint. `columns[i]` references `target_columns[i]`,
+/// in constraint ordinal order, so composite keys keep their pairing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ForeignKey {
-    pub column: String,
+    pub name: String,
+    pub columns: Vec<String>,
     pub target: TableRef,
-    pub target_column: String,
+    pub target_columns: Vec<String>,
+}
+
+impl ForeignKey {
+    /// Folds per-column catalog rows `(constraint, column, target, target column)`
+    /// into constraints. Rows must be ordered by constraint and ordinal position.
+    pub fn group(rows: impl IntoIterator<Item = (String, String, TableRef, String)>) -> Vec<Self> {
+        let mut keys: Vec<Self> = Vec::new();
+        for (name, column, target, target_column) in rows {
+            match keys.last_mut() {
+                Some(key) if key.name == name && key.target == target => {
+                    key.columns.push(column);
+                    key.target_columns.push(target_column);
+                }
+                _ => keys.push(Self {
+                    name,
+                    columns: vec![column],
+                    target,
+                    target_columns: vec![target_column],
+                }),
+            }
+        }
+        keys
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -540,4 +566,49 @@ pub struct CompletionCatalog {
     pub tables: Vec<TableInfo>,
     /// Relations that resolve in the current engine's unqualified namespace.
     pub unqualified_tables: Vec<TableRef>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(
+        name: &str,
+        column: &str,
+        target: &str,
+        target_column: &str,
+    ) -> (String, String, TableRef, String) {
+        (
+            name.into(),
+            column.into(),
+            TableRef {
+                schema: "public".into(),
+                name: target.into(),
+            },
+            target_column.into(),
+        )
+    }
+
+    #[test]
+    fn foreign_keys_group_by_constraint_in_ordinal_order() {
+        let keys = ForeignKey::group([
+            row("line_fk", "order_id", "order_lines", "order_id"),
+            row("line_fk", "line_no", "order_lines", "line_no"),
+            row("reviewer_fk", "reviewer_id", "customers", "id"),
+        ]);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].columns, ["order_id", "line_no"]);
+        assert_eq!(keys[0].target_columns, ["order_id", "line_no"]);
+        assert_eq!(keys[1].name, "reviewer_fk");
+        assert_eq!(keys[1].columns, ["reviewer_id"]);
+    }
+
+    #[test]
+    fn same_named_constraints_to_different_targets_stay_separate() {
+        let keys = ForeignKey::group([
+            row("fk", "a", "left_table", "id"),
+            row("fk", "b", "right_table", "id"),
+        ]);
+        assert_eq!(keys.len(), 2);
+    }
 }
