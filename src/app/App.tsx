@@ -115,6 +115,7 @@ export function App() {
     [usage, setUsage] = useState<ResourceUsage | null>(null);
   const editor = useRef<EditorHandle>(null);
   const grid = useRef<DatabaseGridHandle>(null);
+  const importRawRefreshTabRef = useRef<string | null>(null);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const current = state.tabs.find((tab) => tab.id === state.activeTabId);
   const profile = state.bootstrap?.profiles.find(
@@ -1195,14 +1196,13 @@ export function App() {
       {dialog?.kind === "importCsv" &&
         (() => {
           const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
-          if (!targetTab || targetTab.kind !== "table" || !targetTab.table || !targetTab.schema) {
+          if (!targetTab || targetTab.kind !== "table" || !targetTab.table) {
             return null;
           }
           const targetProfile = state.bootstrap?.profiles.find(
             (p) => p.id === (targetTab.connectionId ?? state.selectedConnectionId),
           );
           const targetSession = targetProfile ? state.sessions[targetProfile.id] : undefined;
-          let needsRawRefreshOnClose = false;
           return (
             <ImportCsvDialog
               table={targetTab.table}
@@ -1213,14 +1213,16 @@ export function App() {
                 const latestTab = useStudio.getState().tabs.find((t) => t.id === targetTab.id);
                 if (!latestTab) return;
                 if (hasRawClauses(latestTab.query)) {
-                  needsRawRefreshOnClose = true;
+                  importRawRefreshTabRef.current = targetTab.id;
                 } else {
                   void state.refreshTable(targetTab.id);
                 }
               }}
               onClose={() => {
+                const pendingRefreshTabId = importRawRefreshTabRef.current;
+                importRawRefreshTabRef.current = null;
                 setDialog(null);
-                if (needsRawRefreshOnClose) {
+                if (pendingRefreshTabId === targetTab.id) {
                   const latestTab = useStudio.getState().tabs.find((t) => t.id === targetTab.id);
                   if (latestTab) {
                     void applyTableQuery(targetTab.id, latestTab.query, { force: true });

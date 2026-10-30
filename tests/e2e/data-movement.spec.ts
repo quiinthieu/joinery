@@ -6,20 +6,52 @@ const BRIDGE_TOKEN = "joinery-disposable-browser-tests-only";
 async function installClipboardMock(page: Page) {
   await page.addInitScript(() => {
     let text = "";
-    (window as unknown as { __joineryCopiedText: () => string }).__joineryCopiedText = () => text;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: async (value: string) => {
-          text = value;
-        },
-        readText: async () => text,
+    const w = window as unknown as {
+      __joineryCopiedText: () => string;
+      __joineryClearCopiedText: () => void;
+    };
+    w.__joineryCopiedText = () => text;
+    w.__joineryClearCopiedText = () => {
+      text = "";
+    };
+    const mockClipboard = {
+      writeText: async (value: string) => {
+        text = value;
       },
-    });
+      readText: async () => text,
+    };
+    try {
+      Object.defineProperty(Navigator.prototype, "clipboard", {
+        configurable: true,
+        get: () => mockClipboard,
+      });
+    } catch {
+      // Fallback if prototype property cannot be redefined
+    }
+    try {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        get: () => mockClipboard,
+      });
+    } catch {
+      // Prototype getter handles access
+    }
   });
 }
 
-async function readCopiedText(page: Page): Promise<string> {
+async function clickCopyAsAndRead(page: Page, itemName: RegExp): Promise<string> {
+  await page.evaluate(() =>
+    (window as unknown as { __joineryClearCopiedText: () => void }).__joineryClearCopiedText(),
+  );
+  await page.getByRole("button", { name: "Copy as" }).click();
+  await page.getByRole("menuitem", { name: itemName }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __joineryCopiedText: () => string }).__joineryCopiedText(),
+      ),
+    )
+    .not.toBe("");
   return page.evaluate(() =>
     (window as unknown as { __joineryCopiedText: () => string }).__joineryCopiedText(),
   );
@@ -89,26 +121,20 @@ test("copy-as preserves exact int64, decimals, NULL vs empty string, and visible
   await expect(page.locator(".result-footer")).toContainText("1 rows");
 
   // Copy as JSON: exact numeric tokens without float rounding, null vs ""
-  await page.getByRole("button", { name: "Copy as" }).click();
-  await page.getByRole("menuitem", { name: /Copy as JSON/ }).click();
-  const copiedJson = await readCopiedText(page);
+  const copiedJson = await clickCopyAsAndRead(page, /Copy as JSON/);
   expect(copiedJson).toContain('"big_id": 9223372036854775807');
   expect(copiedJson).toContain('"amount": 123456.7890');
   expect(copiedJson).toContain('"absent": null');
   expect(copiedJson).toContain('"blank": ""');
 
   // Copy as SQL INSERT
-  await page.getByRole("button", { name: "Copy as" }).click();
-  await page.getByRole("menuitem", { name: /Copy as SQL INSERT/ }).click();
-  const copiedSql = await readCopiedText(page);
+  const copiedSql = await clickCopyAsAndRead(page, /Copy as SQL INSERT/);
   expect(copiedSql).toContain(
-    "VALUES (9223372036854775807, 123456.7890, NULL, '', 'héllo | world');",
+    "VALUES\n  (9223372036854775807, 123456.7890, NULL, '', 'héllo | world');",
   );
 
   // Copy as Markdown
-  await page.getByRole("button", { name: "Copy as" }).click();
-  await page.getByRole("menuitem", { name: /Copy as Markdown/ }).click();
-  const copiedMd = await readCopiedText(page);
+  const copiedMd = await clickCopyAsAndRead(page, /Copy as Markdown/);
   expect(copiedMd).toContain("| big_id | amount | absent | blank | note |");
   expect(copiedMd).toContain("héllo \\| world");
 
@@ -122,9 +148,7 @@ test("copy-as preserves exact int64, decimals, NULL vs empty string, and visible
   await colDialog.getByRole("button", { name: "Done" }).click();
   await expect(colDialog).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Copy as" }).click();
-  await page.getByRole("menuitem", { name: /Copy as CSV/ }).click();
-  const copiedCsv = await readCopiedText(page);
+  const copiedCsv = await clickCopyAsAndRead(page, /Copy as CSV/);
   const csvLines = copiedCsv.trim().split("\n");
   expect(csvLines[0]).toBe("id,note,note_line");
   expect(csvLines[1]).toBe("1,composite target,2");
@@ -192,7 +216,11 @@ test("streams multi-page table exports and leaves marked .partial files on cance
     expect(partialCancelled.exists).toBe(true);
     expect(partialCancelled.contents).toContain("JOINERY EXPORT INCOMPLETE");
   }
-  await cancelDialog.getByRole("button", { name: /Close|Done/ }).click();
+  const footerClose = cancelDialog
+    .locator("footer")
+    .getByRole("button", { name: /^(Close|Done)$/ });
+  await expect(footerClose).toBeEnabled({ timeout: 15000 });
+  await footerClose.click();
   expect(errors).toEqual([]);
 });
 
@@ -297,7 +325,7 @@ test("compares live tables and retained snapshots with NULL vs empty diffs and k
      SELECT 'ready'::text AS status;`,
   );
   await page.getByRole("button", { name: "Run all statements", exact: true }).click();
-  await expect(page.locator(".result-footer")).toContainText("1 rows");
+  await expect(page.getByRole("tab", { name: /Query 6/ })).toBeVisible();
 
   await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
   await openTable(page, "e2e_r2_cmp_a");

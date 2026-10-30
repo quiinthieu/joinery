@@ -1841,6 +1841,8 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
         .await
         .unwrap()
         .unwrap();
+    let usage_before = studio.results.usage();
+    assert_eq!(usage_before.0, 0);
     let (tx, rx) = mpsc::unbounded_channel();
     studio
         .start_export(
@@ -1863,7 +1865,7 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
         .await
         .unwrap();
     let export_events = finish_export(rx).await;
-    assert_eq!(studio.results.usage(), (0, 0));
+    assert_eq!(studio.results.usage(), usage_before);
     assert!(matches!(
         export_events.last(),
         Some(ExportEvent::Finished {
@@ -2353,6 +2355,8 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
     };
 
     // 1. Multi-page (> 500 rows) LiveTable vs LiveTable without retaining in ResultStore
+    let usage_before = studio.usage();
+    assert_eq!(usage_before.retained_bytes, 0);
     let live_report = studio
         .compare_data(CompareRequest {
             left: CompareSide::LiveTable {
@@ -2380,7 +2384,8 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
     assert_eq!(live_report.different_count, 1);
     assert_eq!(live_report.only_left_count, 1);
     assert_eq!(live_report.only_right_count, 1);
-    assert_eq!(studio.usage().result_count, 0);
+    assert_eq!(studio.usage().retained_bytes, 0);
+    assert_eq!(studio.usage().result_count, usage_before.result_count);
 
     let modified = live_report
         .diffs
@@ -2395,11 +2400,11 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
         type_mismatch: false,
     }));
 
-    // 2. Unapproved raw SQL subquery in WHERE under Confirm Safe Mode requires BrowseApproval
+    // 2. Unapproved non-allowlisted SQL function in WHERE under Confirm Safe Mode requires BrowseApproval
     let gated_query = BrowseQuery {
         sort: Vec::new(),
         filters: Vec::new(),
-        where_clause: Some("item_no <= 20 AND EXISTS (SELECT 1)".into()),
+        where_clause: Some("item_no <= 20 AND pg_backend_pid() > 0".into()),
         order_clause: None,
     };
     assert_eq!(

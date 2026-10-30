@@ -71,12 +71,17 @@ export function ImportCsvDialog({
   onClose,
 }: {
   table: TableRef;
-  schema: TableSchema;
+  schema: TableSchema | null;
   profile?: ConnectionProfile;
   session?: SessionInfo;
   onImported(): void;
   onClose(): void;
 }) {
+  const cachedSchemaRef = useRef<TableSchema | null>(schema);
+  if (schema) {
+    cachedSchemaRef.current = schema;
+  }
+  const activeSchema = schema ?? cachedSchemaRef.current;
   const [selection, setSelection] = useState<FileSelection | null>(null);
   const [options, setOptions] = useState<CsvImportOptions>({
     delimiter: "comma",
@@ -405,7 +410,7 @@ export function ImportCsvDialog({
                           }
                         >
                           <option value="">&lt;skip&gt;</option>
-                          {schema.columns.map((col) => (
+                          {(activeSchema?.columns ?? []).map((col) => (
                             <option key={col.id} value={col.name} disabled={!col.insertable}>
                               {col.name} ({col.databaseType})
                               {!col.insertable

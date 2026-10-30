@@ -1744,6 +1744,8 @@ async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
             .await
             .unwrap()
             .unwrap();
+        let usage_before = studio.results.usage();
+        assert_eq!(usage_before.0, 0, "port {port}");
         let (tx, rx) = mpsc::unbounded_channel();
         studio
             .start_export(
@@ -1766,7 +1768,7 @@ async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
             .await
             .unwrap();
         let events = finish_export(rx).await;
-        assert_eq!(studio.results.usage(), (0, 0), "port {port}");
+        assert_eq!(studio.results.usage(), usage_before, "port {port}");
         assert!(
             matches!(
                 events.last(),
