@@ -1,3 +1,5 @@
+#[cfg(feature = "desktop")]
+use crate::file_capability::NativeFileDialog;
 use crate::{
     domain::*,
     drivers::{
@@ -7,6 +9,8 @@ use crate::{
         redis::Redis,
         snowflake::Snowflake,
     },
+    export::{ExportFileSession, ExportWriterOptions, resolve_export_columns},
+    file_capability::{DisabledFileDialog, FileCapabilities, FileDialogProvider},
     persistence::Persistence,
     results::{RESULT_BUDGET, ROW_LIMIT, ResultStore},
     safety,
@@ -35,6 +39,7 @@ use zeroize::Zeroizing;
 mod recovery_tests;
 
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
+pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
 struct Session {
     info: SessionInfo,
@@ -79,12 +84,39 @@ struct Job {
     cancellation_sent: Arc<AtomicBool>,
 }
 
+struct ExportJob {
+    session_id: Option<String>,
+    token: CancellationToken,
+}
+
+struct PreparedTableExport {
+    session: Arc<Session>,
+    schema: TableSchema,
+    query: BrowseQuery,
+    column_indices: Vec<usize>,
+    single_page_only: bool,
+    approved_digest: Option<String>,
+}
+
+enum PreparedExportSource {
+    Result {
+        result_id: String,
+        batch_count: usize,
+        column_indices: Vec<usize>,
+        source_truncated: bool,
+    },
+    Table(Box<PreparedTableExport>),
+}
+
 pub struct Studio {
     persistence: Persistence,
     secrets: Arc<dyn SecretStore>,
+    file_dialog: Arc<dyn FileDialogProvider>,
+    pub file_capabilities: FileCapabilities,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     plans: Mutex<HashMap<String, StoredPlan>>,
     jobs: Mutex<HashMap<String, Job>>,
+    exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
     pub results: ResultStore,
     connect_gate: tokio::sync::Mutex<()>,
@@ -94,15 +126,29 @@ pub struct Studio {
 
 impl Studio {
     pub fn open(root: &Path) -> AppResult<Arc<Self>> {
-        Self::with_secrets(root, OsSecrets::initialize())
+        #[cfg(feature = "desktop")]
+        let dialog: Arc<dyn FileDialogProvider> = Arc::new(NativeFileDialog);
+        #[cfg(not(feature = "desktop"))]
+        let dialog: Arc<dyn FileDialogProvider> = Arc::new(DisabledFileDialog);
+        Self::with_secrets_and_dialog(root, OsSecrets::initialize(), dialog)
     }
     pub fn with_secrets(root: &Path, secrets: Arc<dyn SecretStore>) -> AppResult<Arc<Self>> {
+        Self::with_secrets_and_dialog(root, secrets, Arc::new(DisabledFileDialog))
+    }
+    pub fn with_secrets_and_dialog(
+        root: &Path,
+        secrets: Arc<dyn SecretStore>,
+        file_dialog: Arc<dyn FileDialogProvider>,
+    ) -> AppResult<Arc<Self>> {
         Ok(Arc::new(Self {
             persistence: Persistence::open(root)?,
             secrets,
+            file_dialog,
+            file_capabilities: FileCapabilities::default(),
             sessions: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
+            exports: Mutex::new(HashMap::new()),
             result_sessions: Mutex::new(HashMap::new()),
             results: ResultStore::default(),
             connect_gate: tokio::sync::Mutex::new(()),
@@ -165,6 +211,7 @@ impl Studio {
         let _configuration = self.configuration_gate.lock();
         if !self.sessions.lock().is_empty()
             || !self.jobs.lock().is_empty()
+            || !self.exports.lock().is_empty()
             || self.results.usage().1 > 0
         {
             return Err(AppError::invalid(
@@ -547,6 +594,14 @@ impl Studio {
         self.plans.lock().retain(|_, p| p.plan.session_id != id);
         for job in self.jobs.lock().values().filter(|j| j.session_id == id) {
             job.token.cancel();
+        }
+        for export in self
+            .exports
+            .lock()
+            .values()
+            .filter(|e| e.session_id.as_deref() == Some(id))
+        {
+            export.token.cancel();
         }
         let results = self
             .result_sessions
@@ -1736,16 +1791,466 @@ impl Studio {
     pub fn audit_log(&self) -> AppResult<Vec<AuditEntry>> {
         self.persistence.audit_log()
     }
+    pub async fn pick_export_destination(
+        &self,
+        suggested_name: &str,
+        format: ExportFormat,
+    ) -> AppResult<Option<FileSelection>> {
+        let mut sanitized = FileCapabilities::validate_suggested_name(suggested_name)?;
+        let ext_suffix = format!(".{}", format.extension());
+        if !sanitized.to_ascii_lowercase().ends_with(&ext_suffix) {
+            sanitized.push_str(&ext_suffix);
+        }
+        let Some(path) = self.file_dialog.pick_save_file(&sanitized, format).await? else {
+            return Ok(None);
+        };
+        Ok(Some(self.file_capabilities.mint_write_grant(path)?))
+    }
+
+    pub async fn start_export(
+        self: &Arc<Self>,
+        request: ExportRequest,
+        events: ExportEventHandler,
+    ) -> AppResult<String> {
+        self.file_capabilities
+            .verify_write_grant(&request.destination_token)?;
+        if self.exports.lock().len() >= 16 {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "Too many exports are already running",
+            ));
+        }
+
+        let (prepared, selected_columns, engine, target_table, owner_session_id) = match request
+            .source
+        {
+            ExportSource::Result {
+                result_id,
+                column_ids,
+            } => {
+                let info = self.results.info(&result_id)?;
+                let (selected_columns, column_indices) =
+                    resolve_export_columns(&info.columns, &column_ids)?;
+                let batch_count = self.results.batch_count(&result_id)?;
+                let session_id = self.result_sessions.lock().get(&result_id).cloned();
+                let engine = request.engine.or_else(|| {
+                    session_id
+                        .as_deref()
+                        .and_then(|sid| self.sessions.lock().get(sid).map(|s| s.profile.engine))
+                });
+                let target_table = request
+                    .target_table
+                    .clone()
+                    .or_else(|| self.results.provenance(&result_id).ok().map(|s| s.table));
+                let source_truncated = info.status == RetentionStatus::Truncated;
+                (
+                    PreparedExportSource::Result {
+                        result_id,
+                        batch_count,
+                        column_indices,
+                        source_truncated,
+                    },
+                    selected_columns,
+                    engine,
+                    target_table,
+                    session_id,
+                )
+            }
+            ExportSource::Table {
+                session_id,
+                table,
+                query,
+                approval,
+                column_ids,
+            } => {
+                let query = query.normalized();
+                let session = self.session(&session_id)?;
+                if session.profile.engine == EngineKind::Redis {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "Table streaming export is unavailable for Redis sessions",
+                    ));
+                }
+                let schema = {
+                    let _lane = session.lane.lock().await;
+                    self.schema_for_session(&session, &table).await?
+                };
+                let mut approved_digest: Option<String> = None;
+                if query.has_raw_clauses() {
+                    let sql = browse_sql_for_engine(session.profile.engine, &schema, &query, None)?;
+                    let (_, needs_review) =
+                        classify_browse_sql(&session_id, &session.profile, &sql)?;
+                    if needs_review {
+                        let token = approval.as_ref().ok_or_else(|| {
+                                AppError::new(
+                                    ErrorCode::ApprovalRequired,
+                                    "Review and authorize this table filter or order clause before exporting",
+                                )
+                            })?;
+                        let stored = self
+                            .plans
+                            .lock()
+                            .remove(&token.plan_id)
+                            .ok_or_else(expired)?;
+                        if stored.deadline <= Instant::now() {
+                            return Err(expired());
+                        }
+                        if stored.plan.session_id != session_id
+                            || stored.approval.as_deref() != Some(token.approval.as_str())
+                            || !matches!(
+                                &stored.action,
+                                Action::Browse { table: t, query: q } if t == &table && q == &query
+                            )
+                        {
+                            return Err(AppError::new(
+                                ErrorCode::ApprovalRequired,
+                                "Review and authorize this exact table filter or order clause before exporting",
+                            ));
+                        }
+                        self.persistence.audit(
+                            &session.profile.id,
+                            "browse",
+                            &stored.digest,
+                            "started",
+                        )?;
+                        approved_digest = Some(stored.digest);
+                    }
+                }
+                let (selected_columns, column_indices) =
+                    resolve_export_columns(&schema.columns, &column_ids)?;
+                let engine = request.engine.or(Some(session.profile.engine));
+                let target_table = request.target_table.clone().or_else(|| Some(table.clone()));
+                let single_page_only = approved_digest.is_some();
+                (
+                    PreparedExportSource::Table(Box::new(PreparedTableExport {
+                        session,
+                        schema,
+                        query,
+                        column_indices,
+                        single_page_only,
+                        approved_digest,
+                    })),
+                    selected_columns,
+                    engine,
+                    target_table,
+                    Some(session_id),
+                )
+            }
+        };
+
+        let destination = self
+            .file_capabilities
+            .consume_write_grant(&request.destination_token)?;
+        let options = ExportWriterOptions::new(
+            request.format,
+            selected_columns,
+            request.include_headers,
+            engine,
+            target_table,
+        );
+        let file_session = ExportFileSession::create(destination, options)?;
+
+        let export_id = new_id();
+        let token = CancellationToken::new();
+        self.exports.lock().insert(
+            export_id.clone(),
+            ExportJob {
+                session_id: owner_session_id,
+                token: token.clone(),
+            },
+        );
+        let studio = self.clone();
+        let id = export_id.clone();
+        tokio::spawn(async move {
+            studio
+                .run_export(id, prepared, file_session, token, events)
+                .await;
+        });
+        Ok(export_id)
+    }
+
+    async fn run_export(
+        self: Arc<Self>,
+        export_id: String,
+        source: PreparedExportSource,
+        mut file_session: ExportFileSession,
+        token: CancellationToken,
+        events: ExportEventHandler,
+    ) {
+        let started = Instant::now();
+        let source_truncated = match &source {
+            PreparedExportSource::Result {
+                source_truncated, ..
+            } => *source_truncated,
+            PreparedExportSource::Table(_) => false,
+        };
+        if !events(ExportEvent::Started {
+            export_id: export_id.clone(),
+            file_name: file_session.file_name().to_owned(),
+            source_truncated,
+        }) {
+            token.cancel();
+        }
+
+        let finish_aborted = |studio: &Studio,
+                              file_session: ExportFileSession,
+                              status: RunStatus,
+                              reason: &str,
+                              error: Option<AppError>| {
+            let (rows_written, bytes_written, partial_file_name) = file_session.abort(reason);
+            studio.exports.lock().remove(&export_id);
+            events(ExportEvent::Finished {
+                export_id: export_id.clone(),
+                status,
+                rows_written,
+                bytes_written,
+                output_file_name: None,
+                partial_file_name: Some(partial_file_name),
+                error,
+                elapsed_ms: started.elapsed().as_millis() as u32,
+            });
+        };
+
+        match source {
+            PreparedExportSource::Result {
+                result_id,
+                batch_count,
+                column_indices,
+                ..
+            } => {
+                for batch_index in 0..batch_count {
+                    if token.is_cancelled() {
+                        finish_aborted(
+                            &self,
+                            file_session,
+                            RunStatus::Cancelled,
+                            "cancelled",
+                            None,
+                        );
+                        return;
+                    }
+                    let rows =
+                        match self
+                            .results
+                            .batch_rows(&result_id, batch_index, &column_indices)
+                        {
+                            Ok(Some(rows)) => rows,
+                            Ok(None) => break,
+                            Err(error) => {
+                                let reason = error.message.clone();
+                                finish_aborted(
+                                    &self,
+                                    file_session,
+                                    RunStatus::Failed,
+                                    &reason,
+                                    Some(error),
+                                );
+                                return;
+                            }
+                        };
+                    if let Err(error) = file_session.write_rows(&rows) {
+                        let reason = error.message.clone();
+                        finish_aborted(
+                            &self,
+                            file_session,
+                            RunStatus::Failed,
+                            &reason,
+                            Some(error),
+                        );
+                        return;
+                    }
+                    if !events(ExportEvent::Progress {
+                        export_id: export_id.clone(),
+                        rows_written: file_session.rows_written(),
+                        bytes_written: file_session.bytes_written(),
+                    }) {
+                        token.cancel();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+            PreparedExportSource::Table(table_export) => {
+                let PreparedTableExport {
+                    session,
+                    schema,
+                    query,
+                    column_indices,
+                    single_page_only,
+                    approved_digest,
+                } = *table_export;
+                let mut after: Option<Vec<Option<String>>> = None;
+                let mut audited_completion = false;
+                loop {
+                    if token.is_cancelled() || session.closed.load(Ordering::Acquire) {
+                        finish_aborted(
+                            &self,
+                            file_session,
+                            RunStatus::Cancelled,
+                            "cancelled",
+                            None,
+                        );
+                        return;
+                    }
+                    let page = tokio::select! {
+                        biased;
+                        _ = token.cancelled() => {
+                            finish_aborted(
+                                &self,
+                                file_session,
+                                RunStatus::Cancelled,
+                                "cancelled",
+                                None,
+                            );
+                            return;
+                        }
+                        outcome = session.driver.browse_query(&schema, &query, after.take()) => outcome,
+                    };
+                    let page = match page {
+                        Ok(page) => {
+                            if !audited_completion && let Some(digest) = &approved_digest {
+                                let _ = self.persistence.audit(
+                                    &session.profile.id,
+                                    "browse",
+                                    digest,
+                                    "Completed",
+                                );
+                                audited_completion = true;
+                            }
+                            page
+                        }
+                        Err(error) => {
+                            if !audited_completion && let Some(digest) = &approved_digest {
+                                let _ = self.persistence.audit(
+                                    &session.profile.id,
+                                    "browse",
+                                    digest,
+                                    "Failed",
+                                );
+                            }
+                            let cancelled =
+                                token.is_cancelled() || error.code == ErrorCode::Cancelled;
+                            let status = if cancelled {
+                                RunStatus::Cancelled
+                            } else {
+                                RunStatus::Failed
+                            };
+                            let reason = if cancelled {
+                                "cancelled".to_owned()
+                            } else {
+                                error.message.clone()
+                            };
+                            finish_aborted(
+                                &self,
+                                file_session,
+                                status,
+                                &reason,
+                                if cancelled { None } else { Some(error) },
+                            );
+                            return;
+                        }
+                    };
+                    if let Err(error) =
+                        file_session.write_projected_rows(&page.rows, &column_indices)
+                    {
+                        let reason = error.message.clone();
+                        finish_aborted(
+                            &self,
+                            file_session,
+                            RunStatus::Failed,
+                            &reason,
+                            Some(error),
+                        );
+                        return;
+                    }
+                    if !events(ExportEvent::Progress {
+                        export_id: export_id.clone(),
+                        rows_written: file_session.rows_written(),
+                        bytes_written: file_session.bytes_written(),
+                    }) {
+                        token.cancel();
+                    }
+                    if !single_page_only && !page.has_more && page.truncated {
+                        let error = AppError::new(
+                            ErrorCode::ResultLimitReached,
+                            "This table or custom ORDER BY cannot stream beyond one 500-row page without keyset pagination. Run a SQL query and export its result, or clear the custom ORDER BY.",
+                        );
+                        let reason = error.message.clone();
+                        finish_aborted(
+                            &self,
+                            file_session,
+                            RunStatus::Failed,
+                            &reason,
+                            Some(error),
+                        );
+                        return;
+                    }
+                    if single_page_only || !page.has_more || page.next_key.is_none() {
+                        break;
+                    }
+                    after = page.next_key;
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+
+        if token.is_cancelled() {
+            finish_aborted(&self, file_session, RunStatus::Cancelled, "cancelled", None);
+            return;
+        }
+
+        match file_session.complete() {
+            Ok((rows_written, bytes_written, output_file_name)) => {
+                self.exports.lock().remove(&export_id);
+                events(ExportEvent::Finished {
+                    export_id,
+                    status: RunStatus::Completed,
+                    rows_written,
+                    bytes_written,
+                    output_file_name: Some(output_file_name),
+                    partial_file_name: None,
+                    error: None,
+                    elapsed_ms: started.elapsed().as_millis() as u32,
+                });
+            }
+            Err(error) => {
+                self.exports.lock().remove(&export_id);
+                events(ExportEvent::Finished {
+                    export_id,
+                    status: RunStatus::Failed,
+                    rows_written: 0,
+                    bytes_written: 0,
+                    output_file_name: None,
+                    partial_file_name: None,
+                    error: Some(error),
+                    elapsed_ms: started.elapsed().as_millis() as u32,
+                });
+            }
+        }
+    }
+
+    pub fn cancel_export(&self, export_id: &str) -> AppResult<()> {
+        let exports = self.exports.lock();
+        let job = exports.get(export_id).ok_or_else(|| {
+            AppError::new(ErrorCode::NotFound, "This export has already finished")
+        })?;
+        job.token.cancel();
+        Ok(())
+    }
+
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         ResourceUsage {
             retained_bytes,
             result_count,
             session_count: self.sessions.lock().len(),
-            active_runs: self.jobs.lock().len(),
+            active_runs: self.jobs.lock().len() + self.exports.lock().len(),
         }
     }
     pub fn shutdown(&self) {
+        for export in self.exports.lock().values() {
+            export.token.cancel();
+        }
+        self.file_capabilities.clear();
         let ids = self.sessions.lock().keys().cloned().collect::<Vec<_>>();
         for id in ids {
             self.disconnect(&id);

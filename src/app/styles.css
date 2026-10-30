@@ -2332,3 +2332,68 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+.export-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.export-destination-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.export-destination-label {
+  display: block;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+.export-destination-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.export-progress-card,
+.export-status-card {
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 11px;
+  line-height: 1.65;
+}
+.export-status-card.completed {
+  border-color: #63b58c38;
+  background: #63b58c10;
+}
+.export-status-card.incomplete {
+  border-color: #c9ac7938;
+  background: #c9ac7910;
+}
+.export-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+  color: var(--text);
+}
+.export-status-card.completed .export-progress-head svg {
+  color: var(--accent);
+}
+.export-status-card.incomplete .export-progress-head svg {
+  color: #c9ac79;
+}
+.export-progress-card p,
+.export-status-card p {
+  margin: 0;
+  color: var(--muted);
+}

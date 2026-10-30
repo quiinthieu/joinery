@@ -58,6 +58,11 @@ fn main() {
         QueryDraft::decl(),
         MetadataBackup::decl(),
         ResourceUsage::decl(),
+        ExportFormat::decl(),
+        FileSelection::decl(),
+        ExportSource::decl(),
+        ExportRequest::decl(),
+        ExportEvent::decl(),
         ErrorCode::decl(),
         AppError::decl(),
     ];

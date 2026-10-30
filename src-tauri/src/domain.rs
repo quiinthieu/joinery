@@ -745,6 +745,125 @@ pub struct CompletionCatalog {
     pub unqualified_tables: Vec<TableRef>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportFormat {
+    Csv,
+    Tsv,
+    Json,
+    Ndjson,
+    SqlInsert,
+    Markdown,
+}
+
+impl ExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Tsv => "tsv",
+            Self::Json => "json",
+            Self::Ndjson => "ndjson",
+            Self::SqlInsert => "sql",
+            Self::Markdown => "md",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Csv => "CSV",
+            Self::Tsv => "TSV",
+            Self::Json => "JSON",
+            Self::Ndjson => "NDJSON",
+            Self::SqlInsert => "SQL INSERT",
+            Self::Markdown => "Markdown",
+        }
+    }
+}
+
+/// Capability token representing a user-selected native file destination or source.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSelection {
+    pub token: String,
+    pub file_name: String,
+    pub display_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExportSource {
+    Result {
+        result_id: String,
+        #[serde(default)]
+        column_ids: Vec<String>,
+    },
+    Table {
+        session_id: String,
+        table: TableRef,
+        #[serde(default)]
+        query: BrowseQuery,
+        #[serde(default)]
+        approval: Option<BrowseApproval>,
+        #[serde(default)]
+        column_ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    pub destination_token: String,
+    pub format: ExportFormat,
+    pub source: ExportSource,
+    #[serde(default = "default_true")]
+    pub include_headers: bool,
+    #[serde(default)]
+    pub engine: Option<EngineKind>,
+    #[serde(default)]
+    pub target_table: Option<TableRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExportEvent {
+    Started {
+        export_id: String,
+        file_name: String,
+        source_truncated: bool,
+    },
+    Progress {
+        export_id: String,
+        #[ts(type = "number")]
+        rows_written: u64,
+        #[ts(type = "number")]
+        bytes_written: u64,
+    },
+    Finished {
+        export_id: String,
+        status: RunStatus,
+        #[ts(type = "number")]
+        rows_written: u64,
+        #[ts(type = "number")]
+        bytes_written: u64,
+        output_file_name: Option<String>,
+        partial_file_name: Option<String>,
+        error: Option<AppError>,
+        elapsed_ms: u32,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -318,6 +318,50 @@ impl ResultStore {
             state.bytes = state.bytes.saturating_sub(result.bytes);
         }
     }
+
+    pub fn batch_count(&self, id: &str) -> AppResult<usize> {
+        let state = self.state.lock();
+        let result = state.results.get(id).ok_or_else(not_found)?;
+        Ok(result.batches.len())
+    }
+
+    pub fn batch_rows(
+        &self,
+        id: &str,
+        batch_index: usize,
+        column_indices: &[usize],
+    ) -> AppResult<Option<Vec<TextRow>>> {
+        let state = self.state.lock();
+        let result = state.results.get(id).ok_or_else(not_found)?;
+        let Some(batch) = result.batches.get(batch_index) else {
+            return Ok(None);
+        };
+        let arrays: Vec<&StringArray> = column_indices
+            .iter()
+            .map(|&col_idx| {
+                batch
+                    .column(col_idx)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| AppError::internal("Invalid result column encoding"))
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let num_rows = batch.num_rows();
+        let mut rows = Vec::with_capacity(num_rows);
+        for row_idx in 0..num_rows {
+            let mut row = Vec::with_capacity(arrays.len());
+            for array in &arrays {
+                if array.is_null(row_idx) {
+                    row.push(None);
+                } else {
+                    row.push(Some(array.value(row_idx).to_string()));
+                }
+            }
+            rows.push(row);
+        }
+        Ok(Some(rows))
+    }
+
     pub fn usage(&self) -> (usize, usize) {
         let state = self.state.lock();
         (state.bytes, state.results.len())

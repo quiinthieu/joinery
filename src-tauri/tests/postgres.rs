@@ -1696,3 +1696,290 @@ async fn table_changes_insert_update_delete_atomically_and_conflict_check_delete
     );
     studio.shutdown();
 }
+
+async fn finish_export(mut rx: mpsc::UnboundedReceiver<ExportEvent>) -> Vec<ExportEvent> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let done = matches!(event, ExportEvent::Finished { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExportEvent::Finished { .. })),
+            "export did not finish"
+        );
+        events
+    })
+    .await
+    .expect("export deadline")
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_marks_partials() {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    let root = tempfile::tempdir().unwrap();
+    let sandbox = SandboxFileDialog::new(&root.path().join("exports")).unwrap();
+    let studio = Studio::with_secrets_and_dialog(
+        root.path(),
+        Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
+    )
+    .unwrap();
+    let port: u16 = std::env::var("JOINERY_TEST_PORT")
+        .unwrap_or_else(|_| "55432".into())
+        .parse()
+        .unwrap();
+    let writable_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Export Writable".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Silent,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: true,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+    let readonly_profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Export ReadOnly".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::ReadOnly,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: true,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+
+    let session = studio
+        .connect(
+            &writable_profile.id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let ro_session = studio
+        .connect(
+            &readonly_profile.id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_export; \
+                 CREATE TABLE joinery_r2_export ( \
+                   id BIGINT PRIMARY KEY, \
+                   big_val BIGINT NOT NULL, \
+                   dec_val NUMERIC(38, 10) NOT NULL, \
+                   note TEXT \
+                 ); \
+                 INSERT INTO joinery_r2_export (id, big_val, dec_val, note) \
+                 SELECT g, \
+                        CASE WHEN g = 1 THEN 9223372036854775807 ELSE -9223372036854775808 + g END, \
+                        12345678901234567890.1234567890, \
+                        CASE WHEN g % 3 = 0 THEN NULL WHEN g % 3 = 1 THEN '' ELSE 'héllo;世界' END \
+                 FROM generate_series(1, 1600) AS g"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    studio.clear_history().unwrap();
+    let table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_export".into(),
+    };
+
+    // 1. Multi-page (>1,500 rows) streaming export without ResultStore retention
+    let grant = studio
+        .pick_export_destination("pg-stream.csv", ExportFormat::Csv)
+        .await
+        .unwrap()
+        .unwrap();
+    let (tx, rx) = mpsc::unbounded_channel();
+    studio
+        .start_export(
+            ExportRequest {
+                destination_token: grant.token,
+                format: ExportFormat::Csv,
+                source: ExportSource::Table {
+                    session_id: ro_session.id.clone(),
+                    table: table.clone(),
+                    query: BrowseQuery::default(),
+                    approval: None,
+                    column_ids: vec!["c0".into(), "c1".into(), "c2".into(), "c3".into()],
+                },
+                include_headers: true,
+                engine: Some(EngineKind::Postgres),
+                target_table: Some(table.clone()),
+            },
+            Arc::new(move |e| tx.send(e).is_ok()),
+        )
+        .await
+        .unwrap();
+    let export_events = finish_export(rx).await;
+    assert_eq!(studio.results.usage(), (0, 0));
+    assert!(matches!(
+        export_events.last(),
+        Some(ExportEvent::Finished {
+            status: RunStatus::Completed,
+            rows_written: 1600,
+            output_file_name: Some(name),
+            partial_file_name: None,
+            ..
+        }) if name == "pg-stream.csv"
+    ));
+    let csv_contents = std::fs::read_to_string(sandbox.root().join("pg-stream.csv")).unwrap();
+    assert!(!sandbox.root().join("pg-stream.csv.partial").exists());
+    let csv_lines: Vec<&str> = csv_contents.lines().collect();
+    assert_eq!(csv_lines.len(), 1601);
+    assert_eq!(csv_lines[0], "id,big_val,dec_val,note");
+    assert_eq!(
+        csv_lines[1],
+        "1,9223372036854775807,12345678901234567890.1234567890,\"\""
+    );
+    assert_eq!(
+        csv_lines[2],
+        "2,-9223372036854775806,12345678901234567890.1234567890,héllo;世界"
+    );
+    assert_eq!(
+        csv_lines[3],
+        "3,-9223372036854775805,12345678901234567890.1234567890,"
+    );
+
+    // 2. ReadOnly blocks non-read raw clause without consuming grant or writing a file
+    let ro_grant = studio
+        .pick_export_destination("blocked.csv", ExportFormat::Csv)
+        .await
+        .unwrap()
+        .unwrap();
+    let blocked = studio
+        .start_export(
+            ExportRequest {
+                destination_token: ro_grant.token.clone(),
+                format: ExportFormat::Csv,
+                source: ExportSource::Table {
+                    session_id: ro_session.id.clone(),
+                    table: table.clone(),
+                    query: BrowseQuery {
+                        where_clause: Some("pg_advisory_lock(1) IS NULL".into()),
+                        ..Default::default()
+                    },
+                    approval: None,
+                    column_ids: Vec::new(),
+                },
+                include_headers: true,
+                engine: Some(EngineKind::Postgres),
+                target_table: Some(table.clone()),
+            },
+            Arc::new(|_| true),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
+    assert!(!sandbox.root().join("blocked.csv").exists());
+    assert!(!sandbox.root().join("blocked.csv.partial").exists());
+
+    // 3. Cancellation leaves only marked .partial file and zero SQLite row/path persistence
+    let cancel_grant = studio
+        .pick_export_destination("cancelled-pg.csv", ExportFormat::Csv)
+        .await
+        .unwrap()
+        .unwrap();
+    let (cancel_tx, cancel_rx) = mpsc::unbounded_channel();
+    // Returning false from event callback cancels the export mid-stream after Started/first chunk
+    studio
+        .start_export(
+            ExportRequest {
+                destination_token: cancel_grant.token,
+                format: ExportFormat::Csv,
+                source: ExportSource::Table {
+                    session_id: ro_session.id.clone(),
+                    table: table.clone(),
+                    query: BrowseQuery::default(),
+                    approval: None,
+                    column_ids: Vec::new(),
+                },
+                include_headers: true,
+                engine: Some(EngineKind::Postgres),
+                target_table: Some(table.clone()),
+            },
+            Arc::new(move |e| {
+                let keep_open = !matches!(e, ExportEvent::Progress { .. });
+                let _ = cancel_tx.send(e);
+                keep_open
+            }),
+        )
+        .await
+        .unwrap();
+    let cancelled_events = finish_export(cancel_rx).await;
+    assert!(matches!(
+        cancelled_events.last(),
+        Some(ExportEvent::Finished {
+            status: RunStatus::Cancelled,
+            output_file_name: None,
+            partial_file_name: Some(partial),
+            ..
+        }) if partial == "cancelled-pg.csv.partial"
+    ));
+    assert!(!sandbox.root().join("cancelled-pg.csv").exists());
+    let partial_text =
+        std::fs::read_to_string(sandbox.root().join("cancelled-pg.csv.partial")).unwrap();
+    assert!(partial_text.contains("# JOINERY EXPORT INCOMPLETE"));
+
+    assert!(studio.history("").unwrap().is_empty());
+    let audit_dump = serde_json::to_string(&studio.audit_log().unwrap()).unwrap();
+    assert!(!audit_dump.contains("pg-stream.csv"));
+    assert!(!audit_dump.contains("héllo;世界"));
+
+    assert_eq!(
+        status(&run(&studio, &session, "DROP TABLE joinery_r2_export").await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

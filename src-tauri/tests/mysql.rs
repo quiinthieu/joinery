@@ -1625,3 +1625,198 @@ async fn table_changes_insert_update_delete_atomically_and_conflict_check_delete
         studio.disconnect(&session.id);
     }
 }
+
+async fn finish_export(mut rx: mpsc::UnboundedReceiver<ExportEvent>) -> Vec<ExportEvent> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let done = matches!(event, ExportEvent::Finished { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExportEvent::Finished { .. })),
+            "export did not finish"
+        );
+        events
+    })
+    .await
+    .expect("export deadline")
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB fixtures"]
+async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    for port in [53306, 53307] {
+        let root = tempfile::tempdir().unwrap();
+        let sandbox = SandboxFileDialog::new(&root.path().join("exports")).unwrap();
+        let studio = Studio::with_secrets_and_dialog(
+            root.path(),
+            Arc::new(MemorySecrets::default()),
+            sandbox.clone(),
+        )
+        .unwrap();
+        let rw = studio
+            .save_profile(profile(port, SafeMode::Silent), None)
+            .unwrap();
+        let mut ro_prof = profile(port, SafeMode::ReadOnly);
+        ro_prof.name = format!("MySQL Export ReadOnly {port}");
+        let ro = studio.save_profile(ro_prof, None).unwrap();
+
+        let session = studio
+            .connect(
+                &rw.id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let ro_session = studio
+            .connect(
+                &ro.id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_mysql_export; \
+                 CREATE TABLE joinery_r2_mysql_export ( \
+                   id BIGINT PRIMARY KEY, \
+                   big_val BIGINT NOT NULL, \
+                   dec_val DECIMAL(30, 8) NOT NULL, \
+                   note VARCHAR(128) NULL \
+                 )",
+            )
+            .await,
+        );
+        for chunk_start in (1..=1550).step_by(250) {
+            let chunk_end = (chunk_start + 249).min(1550);
+            let tuples = (chunk_start..=chunk_end)
+                .map(|g| {
+                    let big = if g == 1 {
+                        "9223372036854775807".to_string()
+                    } else {
+                        (-9223372036854775000_i64 + g as i64).to_string()
+                    };
+                    let note = match g % 3 {
+                        0 => "NULL".to_string(),
+                        1 => "''".to_string(),
+                        _ => "'café\\\\line'".to_string(),
+                    };
+                    format!("({g}, {big}, 12345678901234567890.12345678, {note})")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            completed(
+                &run(
+                    &studio,
+                    &session,
+                    &format!(
+                        "INSERT INTO joinery_r2_mysql_export (id, big_val, dec_val, note) VALUES {tuples}"
+                    ),
+                )
+                .await,
+            );
+        }
+        studio.clear_history().unwrap();
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "joinery_r2_mysql_export".into(),
+        };
+        let grant = studio
+            .pick_export_destination("mysql-stream.sql", ExportFormat::SqlInsert)
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        studio
+            .start_export(
+                ExportRequest {
+                    destination_token: grant.token,
+                    format: ExportFormat::SqlInsert,
+                    source: ExportSource::Table {
+                        session_id: ro_session.id.clone(),
+                        table: table.clone(),
+                        query: BrowseQuery::default(),
+                        approval: None,
+                        column_ids: Vec::new(),
+                    },
+                    include_headers: true,
+                    engine: Some(EngineKind::Mysql),
+                    target_table: Some(table.clone()),
+                },
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .await
+            .unwrap();
+        let events = finish_export(rx).await;
+        assert_eq!(studio.results.usage(), (0, 0), "port {port}");
+        assert!(
+            matches!(
+                events.last(),
+                Some(ExportEvent::Finished {
+                    status: RunStatus::Completed,
+                    rows_written: 1550,
+                    ..
+                })
+            ),
+            "port {port}: {events:?}"
+        );
+        let sql_text = std::fs::read_to_string(sandbox.root().join("mysql-stream.sql")).unwrap();
+        assert!(sql_text.contains(
+            "INSERT INTO `joinery`.`joinery_r2_mysql_export` (`id`, `big_val`, `dec_val`, `note`)"
+        ));
+        assert!(sql_text.contains("(1, 9223372036854775807, 12345678901234567890.12345678, '')"));
+        assert!(sql_text.contains("'café\\\\line'"));
+
+        // ReadOnly blocks GET_LOCK raw clause
+        let ro_grant = studio
+            .pick_export_destination("blocked-mysql.csv", ExportFormat::Csv)
+            .await
+            .unwrap()
+            .unwrap();
+        let err = studio
+            .start_export(
+                ExportRequest {
+                    destination_token: ro_grant.token,
+                    format: ExportFormat::Csv,
+                    source: ExportSource::Table {
+                        session_id: ro_session.id.clone(),
+                        table: table.clone(),
+                        query: BrowseQuery {
+                            where_clause: Some("GET_LOCK('joinery', 0) = 1".into()),
+                            ..Default::default()
+                        },
+                        approval: None,
+                        column_ids: Vec::new(),
+                    },
+                    include_headers: true,
+                    engine: Some(EngineKind::Mysql),
+                    target_table: Some(table.clone()),
+                },
+                Arc::new(|_| true),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::PolicyBlocked, "port {port}");
+
+        completed(&run(&studio, &session, "DROP TABLE joinery_r2_mysql_export").await);
+        studio.shutdown();
+    }
+}

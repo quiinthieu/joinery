@@ -49,6 +49,9 @@
     "allow-clear-history",
     "allow-resource-usage",
     "allow-probe-ssh",
-    "allow-trust-ssh-key"
+    "allow-trust-ssh-key",
+    "allow-pick-export-destination",
+    "allow-start-export",
+    "allow-cancel-export"
   ]
 }

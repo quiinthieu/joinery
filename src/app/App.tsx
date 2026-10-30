@@ -10,6 +10,7 @@ import {
   Command,
   Copy,
   Database,
+  Download,
   FileCode2,
   Filter,
   Gauge,
@@ -31,6 +32,7 @@ import { ConnectionDialog, ConnectDialog } from "../features/connections/Connect
 import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
+import { ExportDialog } from "../features/grid/ExportDialog";
 import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
@@ -85,6 +87,7 @@ type Dialog =
     }
   | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
   | { kind: "columns"; tabId: string }
+  | { kind: "export"; tabId: string }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -265,14 +268,31 @@ export function App() {
       current.view === "data" &&
       (current.schema?.columns.length ?? 0) > 0) ||
     current?.kind === "benchmark";
-  const copyCommands = hasCopyableGrid
-    ? COPY_FORMATS.map((item) => ({
-        label: `Copy as ${item.label}`,
-        shortcut: item.hint,
-        icon: Copy,
-        action: () => void grid.current?.copyAs(item.id),
-      }))
-    : [];
+  const hasExportableData =
+    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    (current?.kind === "table" &&
+      current.view === "data" &&
+      (current.schema?.columns.length ?? 0) > 0);
+  const copyCommands = [
+    ...(hasExportableData && current
+      ? [
+          {
+            label: "Export data to file…",
+            shortcut: "CSV · JSON · SQL",
+            icon: Download,
+            action: () => setDialog({ kind: "export", tabId: current.id }),
+          },
+        ]
+      : []),
+    ...(hasCopyableGrid
+      ? COPY_FORMATS.map((item) => ({
+          label: `Copy as ${item.label}`,
+          shortcut: item.hint,
+          icon: Copy,
+          action: () => void grid.current?.copyAs(item.id),
+        }))
+      : []),
+  ];
   const tableCommands = [
     ...copyCommands,
     ...layoutCommands,
@@ -877,6 +897,7 @@ export function App() {
                 onSelect={setSelectedCell}
                 onOpenValue={(target) => setDialog({ kind: "value", target })}
                 onOpenColumns={() => setDialog({ kind: "columns", tabId: current.id })}
+                onOpenExport={() => setDialog({ kind: "export", tabId: current.id })}
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
@@ -1078,6 +1099,47 @@ export function App() {
               onChange={(next) =>
                 state.setTableLayout(targetTab.connectionId!, targetTab.table!, next)
               }
+              onClose={() => setDialog(null)}
+            />
+          );
+        })()}
+      {dialog?.kind === "export" &&
+        (() => {
+          const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
+          if (!targetTab) return null;
+          const targetProfile = state.bootstrap?.profiles.find(
+            (p) => p.id === (targetTab.connectionId ?? state.selectedConnectionId),
+          );
+          const targetSession =
+            targetTab.kind === "query"
+              ? (querySessionForTab(targetTab, state.sessions) ?? undefined)
+              : targetProfile
+                ? state.sessions[targetProfile.id]
+                : undefined;
+          const targetResult =
+            targetTab.kind === "query"
+              ? (targetTab.results.find((r) => r.id === targetTab.activeResultId) ??
+                targetTab.results[0])
+              : undefined;
+          const allCols =
+            targetTab.kind === "table"
+              ? (targetTab.schema?.columns ?? [])
+              : (targetResult?.columns ?? []);
+          const visibleCols =
+            targetTab.kind === "table" && targetTab.schema
+              ? resolveTableLayout(
+                  targetTab.schema.columns,
+                  findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table),
+                ).visibleColumns
+              : allCols;
+          return (
+            <ExportDialog
+              tab={targetTab}
+              profile={targetProfile}
+              session={targetSession}
+              visibleColumns={visibleCols}
+              allColumns={allCols}
+              result={targetResult}
               onClose={() => setDialog(null)}
             />
           );

@@ -1,5 +1,5 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { AppError, QueryEvent } from "./generated";
+import type { AppError, ExportEvent, ExportRequest, QueryEvent } from "./generated";
 
 export interface StudioClient {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -8,6 +8,7 @@ export interface StudioClient {
     approval: string | null,
     onEvent: (event: QueryEvent) => void,
   ): Promise<string>;
+  exportData(request: ExportRequest, onEvent: (event: ExportEvent) => void): Promise<string>;
   range(resultId: string, start: number, count: number): Promise<ArrayBuffer>;
 }
 
@@ -19,6 +20,11 @@ class NativeClient implements StudioClient {
     const onEventChannel = new Channel<QueryEvent>();
     onEventChannel.onmessage = onEvent;
     return this.call<string>("execute_plan", { planId, approval, onEvent: onEventChannel });
+  }
+  exportData(request: ExportRequest, onEvent: (event: ExportEvent) => void) {
+    const onEventChannel = new Channel<ExportEvent>();
+    onEventChannel.onmessage = onEvent;
+    return this.call<string>("start_export", { request, onEvent: onEventChannel });
   }
   range(resultId: string, start: number, count: number) {
     return new Promise<ArrayBuffer>((resolve, reject) => {
@@ -81,6 +87,35 @@ class BrowserTestClient implements StudioClient {
     void poll();
     return runId;
   }
+  async exportData(request: ExportRequest, onEvent: (event: ExportEvent) => void) {
+    const streamId = crypto.randomUUID();
+    const exportId = await this.call<string>("start_export", { request, streamId });
+    const poll = async () => {
+      try {
+        const response = await fetch(`${this.url}/export-events/${streamId}`, {
+          headers: this.headers(),
+        });
+        if (!response.ok) throw new Error("The export stream disconnected");
+        const events = (await response.json()) as ExportEvent[];
+        events.forEach(onEvent);
+        if (!events.some((event) => event.type === "finished")) setTimeout(() => void poll(), 50);
+      } catch {
+        onEvent({
+          type: "finished",
+          exportId,
+          status: "failed",
+          rowsWritten: 0,
+          bytesWritten: 0,
+          outputFileName: null,
+          partialFileName: null,
+          error: { code: "connectionClosed", message: "The test export stream disconnected" },
+          elapsedMs: 0,
+        });
+      }
+    };
+    void poll();
+    return exportId;
+  }
   async range(resultId: string, start: number, count: number) {
     const response = await fetch(`${this.url}/result/${resultId}?start=${start}&count=${count}`, {
       headers: this.headers(),
@@ -114,6 +149,9 @@ class PreviewClient implements StudioClient {
   }
   async execute(): Promise<string> {
     throw new Error("Database execution is available in the desktop app");
+  }
+  async exportData(): Promise<string> {
+    throw new Error("File export is available in the desktop app");
   }
   async range(): Promise<ArrayBuffer> {
     throw new Error("No database results are available in browser preview");

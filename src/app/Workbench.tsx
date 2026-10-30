@@ -14,6 +14,7 @@ import {
   Clock3,
   Code2,
   Columns3,
+  Download,
   Gauge,
   Loader2,
   Play,
@@ -59,6 +60,7 @@ interface Props {
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
   onOpenColumns(): void;
+  onOpenExport(): void;
   onNewSession(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
@@ -75,6 +77,7 @@ export function Workbench({
   onSelect,
   onOpenValue,
   onOpenColumns,
+  onOpenExport,
   onNewSession,
   onQueryChange,
 }: Props) {
@@ -503,7 +506,18 @@ export function Workbench({
           </div>
           <div className="table-view-actions">
             {result && result.columns.length > 0 && (
-              <CopyAsMenu gridRef={gridRef} disabled={running} />
+              <>
+                <CopyAsMenu gridRef={gridRef} disabled={running} />
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running}
+                  onClick={onOpenExport}
+                >
+                  <Download size={12} />
+                  Export…
+                </button>
+              </>
             )}
             <span className="result-caption">
               {running ? (
@@ -579,6 +593,15 @@ export function Workbench({
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
                 <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running || tab.loadingPage}
+                  onClick={onOpenExport}
+                >
+                  <Download size={12} />
+                  Export…
+                </button>
                 <button type="button" className="button ghost small" onClick={onOpenColumns}>
                   <Columns3 size={12} />
                   Columns

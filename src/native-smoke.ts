@@ -100,6 +100,43 @@ export async function runNativeSmoke() {
       }
       assert(denied, `Native ${command} must reach the Rust disconnected-session guard`);
     }
+    for (const [command, expectedCode, invokeCommand] of [
+      [
+        "pick_export_destination",
+        "invalidInput",
+        () => client.call("pick_export_destination", { suggestedName: "", format: "csv" }),
+      ],
+      [
+        "start_export",
+        "approvalExpired",
+        () =>
+          client.exportData(
+            {
+              destinationToken: "expired-native-smoke-grant",
+              format: "csv",
+              source: { kind: "result", resultId: "missing-result", columnIds: [] },
+              includeHeaders: true,
+              engine: null,
+              targetTable: null,
+            },
+            () => {},
+          ),
+      ],
+      [
+        "cancel_export",
+        "notFound",
+        () => client.call("cancel_export", { exportId: "missing-native-smoke-export" }),
+      ],
+    ] as const) {
+      let matched = false;
+      try {
+        await invokeCommand();
+      } catch (error) {
+        matched =
+          !!error && typeof error === "object" && "code" in error && error.code === expectedCode;
+      }
+      assert(matched, `Native ${command} must reach its Rust guard (${expectedCode})`);
+    }
     report.bootstrapMs = performance.now() - started;
     const shellDeadline = performance.now() + 3000;
     while (

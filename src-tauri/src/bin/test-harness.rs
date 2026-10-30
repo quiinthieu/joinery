@@ -7,7 +7,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use joinery_core::{domain::*, execution::Studio, secrets::MemorySecrets};
+use joinery_core::{
+    domain::*, execution::Studio, file_capability::SandboxFileDialog, secrets::MemorySecrets,
+};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -19,10 +21,17 @@ struct Stream {
     touched: Instant,
     finished: bool,
 }
+struct ExportStream {
+    events: Vec<ExportEvent>,
+    touched: Instant,
+    finished: bool,
+}
 struct Harness {
     studio: Arc<Studio>,
+    sandbox: Arc<SandboxFileDialog>,
     token: String,
     streams: Mutex<HashMap<String, Stream>>,
+    export_streams: Mutex<HashMap<String, ExportStream>>,
 }
 
 fn authorized(headers: &HeaderMap, state: &Harness) -> bool {
@@ -226,6 +235,94 @@ async fn rpc(
                 Value::Null
             }
             "resource_usage" => json!(studio.usage()),
+            "pick_export_destination" => json!(
+                studio
+                    .pick_export_destination(
+                        &arg::<String>(&args, "suggestedName")?,
+                        arg(&args, "format")?
+                    )
+                    .await?
+            ),
+            "start_export" => {
+                let stream_id: String = arg(&args, "streamId")?;
+                uuid::Uuid::parse_str(&stream_id)
+                    .map_err(|_| AppError::invalid("Invalid stream identifier"))?;
+                {
+                    let mut streams = state.export_streams.lock();
+                    streams.retain(|_, s| s.touched.elapsed().as_secs() < 120);
+                    if streams.len() >= 32 {
+                        return Err(AppError::new(
+                            ErrorCode::ResultLimitReached,
+                            "Too many browser test export streams",
+                        ));
+                    }
+                    streams.insert(
+                        stream_id.clone(),
+                        ExportStream {
+                            events: Vec::new(),
+                            touched: Instant::now(),
+                            finished: false,
+                        },
+                    );
+                }
+                let owner = state.clone();
+                json!(
+                    studio
+                        .start_export(
+                            arg(&args, "request")?,
+                            Arc::new(move |event| {
+                                let mut streams = owner.export_streams.lock();
+                                let Some(stream) = streams.get_mut(&stream_id) else {
+                                    return false;
+                                };
+                                if stream.events.len() >= 4096 {
+                                    return false;
+                                };
+                                stream.finished = matches!(event, ExportEvent::Finished { .. });
+                                stream.events.push(event);
+                                true
+                            })
+                        )
+                        .await?
+                )
+            }
+            "cancel_export" => {
+                studio.cancel_export(&arg::<String>(&args, "exportId")?)?;
+                Value::Null
+            }
+            // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
+            "test_queue_save_file" => {
+                let file_name: Option<String> = arg(&args, "fileName")?;
+                state.sandbox.queue_save(file_name.as_deref())?;
+                Value::Null
+            }
+            "test_write_sandbox_file" => {
+                let file_name: String = arg(&args, "fileName")?;
+                let contents: String = arg(&args, "contents")?;
+                if contents.len() > 20 * 1024 * 1024 {
+                    return Err(AppError::invalid("Sandbox test file exceeds 20 MiB"));
+                }
+                let path = state.sandbox.resolve_confined(&file_name)?;
+                std::fs::write(&path, contents.as_bytes())
+                    .map_err(|_| AppError::internal("Could not write disposable sandbox file"))?;
+                state.sandbox.queue_open(Some(&file_name))?;
+                Value::Null
+            }
+            "test_read_sandbox_file" => {
+                let file_name: String = arg(&args, "fileName")?;
+                let path = state.sandbox.resolve_confined(&file_name)?;
+                match std::fs::read_to_string(&path) {
+                    Ok(contents) => json!({ "exists": true, "contents": contents }),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        json!({ "exists": false, "contents": Value::Null })
+                    }
+                    Err(_) => {
+                        return Err(AppError::internal(
+                            "Could not read disposable sandbox file",
+                        ));
+                    }
+                }
+            }
             _ => return Err(AppError::new(ErrorCode::NotFound, "Unknown test command")),
         })
     }
@@ -245,6 +342,27 @@ async fn events(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut streams = state.streams.lock();
+    let Some(stream) = streams.get_mut(&id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    stream.touched = Instant::now();
+    let events = std::mem::take(&mut stream.events);
+    let finished = stream.finished;
+    if finished {
+        streams.remove(&id);
+    }
+    Json(events).into_response()
+}
+
+async fn export_events(
+    State(state): State<Arc<Harness>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&headers, &state) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let mut streams = state.export_streams.lock();
     let Some(stream) = streams.get_mut(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -295,20 +413,26 @@ async fn main() {
     );
     let root = std::env::var("JOINERY_TEST_DATA_ROOT")
         .expect("Set a dedicated disposable test data directory");
-    let studio = Studio::with_secrets(
+    let sandbox =
+        SandboxFileDialog::new(&std::path::Path::new(&root).join("sandbox-files")).unwrap();
+    let studio = Studio::with_secrets_and_dialog(
         std::path::Path::new(&root),
         Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
     )
     .unwrap();
     let state = Arc::new(Harness {
         studio,
+        sandbox,
         token,
         streams: Mutex::new(HashMap::new()),
+        export_streams: Mutex::new(HashMap::new()),
     });
     let origin = HeaderValue::from_static("http://127.0.0.1:1421");
     let router = Router::new()
         .route("/rpc/{command}", post(rpc))
         .route("/events/{id}", get(events))
+        .route("/export-events/{id}", get(export_events))
         .route("/result/{id}", get(range))
         .route("/health", get(|| async { "ready" }))
         .layer(
