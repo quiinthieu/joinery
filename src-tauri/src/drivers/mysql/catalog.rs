@@ -179,9 +179,21 @@ impl Mysql {
 }
 
 fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
-    if expected.columns != current.columns
+    // Read-only Safe Mode masks editability on the expected schema. Masking
+    // may narrow, never widen, what the current table allows.
+    let narrowed = |expected: bool, current: bool| !expected || current;
+    let columns = expected.columns.len() == current.columns.len()
+        && expected.columns.iter().zip(&current.columns).all(|(e, c)| {
+            narrowed(e.editable, c.editable)
+                && *e
+                    == ColumnInfo {
+                        editable: e.editable,
+                        ..c.clone()
+                    }
+        });
+    if !columns
         || expected.primary_key != current.primary_key
-        || expected.editable != current.editable
+        || !narrowed(expected.editable, current.editable)
         || serde_json::to_string(&expected.foreign_keys).ok()
             != serde_json::to_string(&current.foreign_keys).ok()
     {

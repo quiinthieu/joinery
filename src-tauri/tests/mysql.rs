@@ -463,6 +463,28 @@ async fn catalog_keys_paging_and_read_only_tables_work_on_both_engines() {
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB services"]
+async fn read_only_profiles_can_browse_editable_tables() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "sample".into(),
+        };
+        let schema = studio.schema(&session.id, &table).await.unwrap();
+        assert!(!schema.editable && schema.columns.iter().all(|c| !c.editable));
+        let first = studio.browse(&session.id, &table, None).await.unwrap();
+        assert_eq!(first.result.retained_rows, 500, "port {port}");
+        let second = studio
+            .browse(&session.id, &table, first.next_key)
+            .await
+            .unwrap();
+        assert_eq!(second.result.retained_rows, 500, "port {port}");
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
 async fn reviewed_edits_are_bound_atomic_conflict_checked_and_separate_from_editor_transactions() {
     for port in [53306, 53307] {
         let (_root, studio, session) = setup(port, SafeMode::Silent).await;
