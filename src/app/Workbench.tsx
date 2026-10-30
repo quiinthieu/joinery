@@ -31,7 +31,8 @@ import type { StudioTab } from "../state/studio";
 import { useStudio, querySessionForTab } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
-import type { CellTarget } from "../features/grid/DatabaseGrid";
+import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
+import { CopyAsMenu } from "../features/grid/CopyAsMenu";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
@@ -51,6 +52,7 @@ interface Props {
   profile?: ConnectionProfile;
   session?: SessionInfo;
   editorRef: RefObject<EditorHandle>;
+  gridRef: RefObject<DatabaseGridHandle>;
   onRun(sql?: string): void;
   onReview(): void;
   onConfirm(title: string, description: string, action: () => void): void;
@@ -66,6 +68,7 @@ export function Workbench({
   profile,
   session,
   editorRef,
+  gridRef,
   onRun,
   onReview,
   onConfirm,
@@ -498,19 +501,24 @@ export function Workbench({
               <span className="result-placeholder">Results</span>
             )}
           </div>
-          <span className="result-caption">
-            {running ? (
-              <>
-                <Loader2 size={12} className="spin" />
-                {(runningTime / 1000).toFixed(1)} s
-              </>
-            ) : (
-              <>
-                <Clock3 size={12} />
-                {tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}
-              </>
+          <div className="table-view-actions">
+            {result && result.columns.length > 0 && (
+              <CopyAsMenu gridRef={gridRef} disabled={running} />
             )}
-          </span>
+            <span className="result-caption">
+              {running ? (
+                <>
+                  <Loader2 size={12} className="spin" />
+                  {(runningTime / 1000).toFixed(1)} s
+                </>
+              ) : (
+                <>
+                  <Clock3 size={12} />
+                  {tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}
+                </>
+              )}
+            </span>
+          </div>
         </div>
       ) : tab.kind === "table" ? (
         <div className="results-header table-views">
@@ -570,6 +578,7 @@ export function Workbench({
             )}
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
+                <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
                 <button type="button" className="button ghost small" onClick={onOpenColumns}>
                   <Columns3 size={12} />
                   Columns
@@ -657,6 +666,7 @@ export function Workbench({
         ) : (
           <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}>
             <DatabaseGrid
+              ref={gridRef}
               key={tab.id}
               tab={tab}
               result={result}

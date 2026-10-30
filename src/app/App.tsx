@@ -8,6 +8,7 @@ import {
   Code2,
   Columns3,
   Command,
+  Copy,
   Database,
   FileCode2,
   Filter,
@@ -50,7 +51,8 @@ import { useStudio, beginEventBatch, querySessionForTab, type StudioTab } from "
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
-import type { CellTarget } from "../features/grid/DatabaseGrid";
+import { COPY_FORMATS } from "../features/grid/copy-format";
+import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import {
   canOrder,
@@ -103,6 +105,7 @@ export function App() {
     [selectedCell, setSelectedCell] = useState<CellTarget | null>(null),
     [usage, setUsage] = useState<ResourceUsage | null>(null);
   const editor = useRef<EditorHandle>(null);
+  const grid = useRef<DatabaseGridHandle>(null);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const current = state.tabs.find((tab) => tab.id === state.activeTabId);
   const profile = state.bootstrap?.profiles.find(
@@ -252,7 +255,26 @@ export function App() {
             : []),
         ]
       : [];
+  const activeQueryResult =
+    current?.kind === "query"
+      ? (current.results.find((r) => r.id === current.activeResultId) ?? current.results[0])
+      : undefined;
+  const hasCopyableGrid =
+    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    (current?.kind === "table" &&
+      current.view === "data" &&
+      (current.schema?.columns.length ?? 0) > 0) ||
+    current?.kind === "benchmark";
+  const copyCommands = hasCopyableGrid
+    ? COPY_FORMATS.map((item) => ({
+        label: `Copy as ${item.label}`,
+        shortcut: item.hint,
+        icon: Copy,
+        action: () => void grid.current?.copyAs(item.id),
+      }))
+    : [];
   const tableCommands = [
+    ...copyCommands,
     ...layoutCommands,
     ...(current?.kind === "table" && session?.capabilities.tableFiltering
       ? [
@@ -846,6 +868,7 @@ export function App() {
                 profile={profile}
                 session={session ?? undefined}
                 editorRef={editor}
+                gridRef={grid}
                 onRun={(sql) => void runSql(sql)}
                 onReview={() => void reviewEdits()}
                 onConfirm={(title, description, action) =>
