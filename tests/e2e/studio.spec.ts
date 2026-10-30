@@ -252,9 +252,17 @@ test("repaints the frozen primary-key column when pages load after scrolling", a
   // Scrolling reports a visible region that starts after the frozen column;
   // pages that arrive afterwards are repainted from that region.
   await page.mouse.move(box.x + 400, box.y + 200);
-  for (let i = 0; i < 8 && !(await footer.textContent())?.includes("2,500 rows"); i++)
+  const loadedRows = async () => {
+    const text = (await footer.textContent()) ?? "";
+    const match = text.match(/([\d,]+)\s+rows loaded/);
+    return match ? Number(match[1].replaceAll(",", "")) : 0;
+  };
+  for (let i = 0; i < 8 && (await loadedRows()) < 2500; i++) {
+    const before = await loadedRows();
     await page.mouse.wheel(0, 20000);
-  await expect(footer).toContainText("2,500 rows loaded");
+    await expect.poll(loadedRows, { timeout: 5000 }).toBeGreaterThan(before);
+  }
+  await expect.poll(loadedRows, { timeout: 10000 }).toBeGreaterThanOrEqual(2500);
   // Rows whose status cell has text but whose frozen id cell has none.
   const unpainted = () =>
     grid
