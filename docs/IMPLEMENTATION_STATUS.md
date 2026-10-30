@@ -648,3 +648,43 @@ not release provenance. Native JSON is preserved in
 `.cache/sf-context-native-runs.json`; build/bundle/native logs use the
 `.cache/sf-context-` prefix. Task-owned database containers, network and volume
 were removed. The installed preview.14 was preserved during development.
+
+## Table data view: sort, filter and FK navigation (local implementation)
+
+R1 batch 1 of the approved DataGrip-replacement program (see
+[implementation-roadmap.md](implementation-roadmap.md)) is on local branch
+`feat/table-data-view`, based on fetched `799e600`. It is not pushed, merged,
+released or installed.
+
+PostgreSQL and MySQL/MariaDB table tabs sort on the server by header click
+(Shift adds a key) and filter with typed, bound predicates. Rust rebuilds every
+page query from the current schema, adds primary-key tie-breakers and a fixed
+NULL order, and continues with a NULL-safe keyset seek. Without user sort keys
+the previous row-value fast path is kept. Snowflake and Redis advertise
+`tableFiltering: false` and reject non-empty queries. Foreign keys are grouped
+constraints with ordinal-paired columns; ⇧⌘B, the palette or the inspector opens
+the referenced row in a new tab. Sort/filter controls lock while edits are
+pending, so a reload cannot silently discard them.
+
+New tests found two pre-existing defects, each fixed in its own commit with a
+regression test. Read-only MySQL profiles could not browse editable tables
+because masked editability was treated as schema drift. The frozen primary-key
+column stayed blank for pages loaded after scrolling because Glide's visible
+region excludes frozen columns.
+
+`pnpm validate` passes 71 frontend and 97 standard Rust tests, formatting,
+contracts, types, build, Cargo check and strict Clippy. The ignored suite
+(`postgres`, `ssh`, `mysql`, `redis`) passes 35 tests on a task-owned disposable
+Compose project. The case-mode-1 MariaDB fixture could not bind port 53407,
+which the agent host process holds; `mysql_live_completion_uses_server_case_policy`
+was skipped. The final full browser run passes all 27 workflows; an earlier
+run's MariaDB failure reproduced a known reload while documentation was edited
+under the live Vite server. Logs use the `.cache/table-data-` prefix.
+
+`pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature),
+`pnpm desktop:smoke:build` and `pnpm test:native --runs 3 --cycles 10` pass:
+three hidden runs, 30 cleanup cycles. Native fixture SHA-256:
+`f2d9bafdd1e551b354f520da3b07144de6c40edfb84b5fa3d08379cf504b5d9b`, built from
+`76f04be` with documentation uncommitted (sourceDirty=true); not release
+provenance. No production connection, Safe Mode change, replay or reconnect was
+introduced.

@@ -175,6 +175,7 @@ authenticated explicitly and never fall back to the default user.
 - SSH bastions with password, encrypted OpenSSH key, or agent authentication; explicit host fingerprint trust; shared tunnels and loopback-only forwarding. Database TLS verifies the original database hostname through the tunnel.
 - CodeMirror SQL tabs, current-statement/selection execution, complete-batch execution, schema-aware completion, worker-based formatting, cancellation, process inspection, and metadata history.
 - Canvas grid, exact integer/decimal text, explicit NULLs, keyset table browsing, PK/FK structure, sparse edits, typed values, generated SQL/bindings review, and atomic conflict-checked commits across pages.
+- PostgreSQL and MySQL/MariaDB table tabs sort on the server (click a header; Shift+click adds a key) and filter with typed predicates whose values are always bound. Paging keeps a primary-key tie-breaker and a fixed NULL order (ascending last, descending first). Sort and filter lock while edits are pending. Select a foreign-key cell and press ⇧⌘B, or use the inspector, to open the referenced row in a new tab; composite keys pair columns by constraint order and NULL keys reference nothing. PostgreSQL text search is case-insensitive; MySQL follows the column collation.
 - Rust-enforced Safe Mode, production password gates, one-use expiring approvals, a hash-only audit viewer, and uncertain commit outcomes.
 - Dark/light/high-contrast themes, keyboard commands, inspector, and bounded in-memory result storage.
 
