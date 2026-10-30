@@ -486,12 +486,11 @@ Evidence (2026-10-30, macOS Apple Silicon, local Node 24 / Rust 1.99.1):
 | Blocked by environment | Case-mode-1 MariaDB fixture: port 53407 is held by the agent host process, so `mysql_live_completion_uses_server_case_policy` was skipped |
 | Not executed | Production accounts, Snowflake live, Windows/Linux packages, signing/notarization, representative performance |
 
-## Table data editing batch (R1 batch 2) — local branch
+## Table data editing batch (R1 batch 2) — PR #27 (unreleased)
 
-Branch `feat/table-data-editing` (`2a59fae..e3b13b4`) from fetched `origin/main`
+Branch `feat/table-data-editing` (`2a59fae..b62e475`) from fetched `origin/main`
 `877904b` (PR #26). It completes Milestone R1 (Data view parity) of
-[implementation-roadmap.md](implementation-roadmap.md). It has not been pushed,
-merged, released or installed.
+[implementation-roadmap.md](implementation-roadmap.md) and remains unreleased.
 
 | Field | Table data editing workflow |
 |---|---|
@@ -501,7 +500,7 @@ merged, released or installed.
 | Observed behavior | Raw WHERE/ORDER BY clauses classify via `safety::prepare` (pure reads execute directly; side-effecting/unparseable SQL is blocked in ReadOnly and requires one-use `ReviewDialog` approval in writable modes; raw ORDER BY disables keyset continuation cleanly). `⇧⌘G` opens referencing rows in a new filtered tab with permission-filtered inbound constraints, composite ordinal pairing and multi-constraint chooser. Column hide (non-PK), reorder and widths persist per `connectionId + schema + table` across reloads and purge on profile delete. Multi-cell TSV paste validates every target cell and budget atomically before mutating `DirtyStore`, respecting reordered visible columns. Draft row inserts (`<default>`/`<required>`) and row deletes (`FOR UPDATE` full-row conflict checks) execute alongside updates in one reviewed `BEGIN … COMMIT` transaction. `ValueDialog` adds 16-byte-per-row binary Hex/ASCII dumps, 1-based indexed PostgreSQL array viewers (1D/2D/3D, custom bounds, SQL NULL vs `"NULL"` vs `""`) and lossless token-level formatted JSON preserving 64-bit integers and numeric key order |
 | Missing behavior | Snowflake table sort/filter, arbitrary-result editing (RX), PK editing on existing rows, editable binary columns, non-PostgreSQL array viewers, streaming file export/import/compare (R2) |
 | Security / bounds | Raw clauses capped at 16 KiB each, wrapped in newline-terminated guards, multi-statement inputs rejected, one-use approval token scoped to exact session/table/query. `SavedWorkspace.table_layouts` capped at 128 tables and 256 columns per table (no filter/clause literals persisted). Paste and row mutations enforce existing 8 MiB / 500-row dirty budgets and immutable expiring `ChangePlan` digests. Binary preview bounded to 16 KiB while reporting exact byte length; PG array element table bounded to 2,000 elements |
-| Defects found and fixed | During Commit 5 (`G09`) browser verification, clicking `Insert row` updated `selection` in a passive `useEffect` without updating `selectionRef.current` synchronously, allowing a sibling `useEffect` to revert Inspector/paste focus to the prior cell. Switching `focusRowRequest` to `useLayoutEffect` with eager `selectionRef` synchronization resolved the race |
+| Defects found and fixed | During Commit 5 (`G09`) browser verification, clicking `Insert row` updated `selection` in a passive `useEffect` without updating `selectionRef.current` synchronously, allowing a sibling `useEffect` to revert Inspector/paste focus to the prior cell; switching `focusRowRequest` to `useLayoutEffect` with eager `selectionRef` synchronization resolved the race. During post-implementation Tauri capability review, `referencing_foreign_keys`, `prepare_browse_table` and `prepare_table_changes` were found missing from `src-tauri/build.rs` and `src-tauri/capabilities/main.json`; enrolled all three and added typed real-WebView IPC guard checks in `src/native-smoke.ts` |
 | Tests | 21 new Vitest cases (`table-query`, `table-layout`, `paste`, `dirty-store`, `value-format`, `studio`), 5 new Rust unit tests (raw-clause safety classification, inbound FK grouping, workspace layout bounds/purge), 6 new disposable PG/MySQL/MariaDB integration tests (raw clauses, inbound FKs, atomic insert/update/delete + stale-delete rollback), and 6 new Playwright E2E workflows |
 
 Evidence (2026-10-30, macOS Apple Silicon, local Node 24 / Rust 1.99.1):
@@ -511,6 +510,6 @@ Evidence (2026-10-30, macOS Apple Silicon, local Node 24 / Rust 1.99.1):
 | Passed | `pnpm validate`: 99 frontend tests (19 files), 102 standard Rust tests, formatting, contracts, types, production build, Cargo check and strict Clippy; script tests (`git-identity.test.mjs` 6/6, `test_runtime_memory.py` 4/4) |
 | Passed | Ignored integration suite on task-owned disposable fixtures (`postgres` 17, `mysql` 16 across MySQL 8.4 & MariaDB 11.4, `redis` 6, `ssh` 2): 41 tests passed, 0 failed |
 | Passed | Full `pnpm test:e2e` with repository files held fixed: all 37 browser workflows passed in one run (`1.7m`), including all 9 `table-data.spec.ts` workflows |
-| Passed | Clean-commit (`e3b13b4`, `sourceDirty=false`) `pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature, `Joinery.app` 19.91 MiB), `pnpm desktop:smoke:build` and `pnpm test:native --runs 3 --cycles 10`: three hidden runs (5,875 / 2,985 / 2,924 ms), 30 cleanup cycles, main-process peak RSS 105.55–105.77 MiB, fixture SHA-256 `41f83080…c348` |
+| Passed | Clean-commit (`b62e475`, `sourceDirty=false`) `pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature, `Joinery.app` 19.91 MiB), `pnpm desktop:smoke:build` and `pnpm test:native --runs 3 --cycles 10`: three hidden runs (3,725 / 2,927 / 2,925 ms), 30 cleanup cycles, main-process peak RSS 105.12–105.83 MiB, fixture SHA-256 `dcc7e495…2b55` (including WebView IPC ACL guards for all three new R1 Batch 2 commands) |
 | Blocked by environment | Case-mode-1 MariaDB fixture: port 53407 is held by the agent host process, so `mysql_live_completion_uses_server_case_policy` was skipped locally (covered by CI `integration` job) |
 | Not executed | Production accounts, live Snowflake accounts, Windows/Linux packaged runtime, Developer ID signing/notarization, representative performance qualification |

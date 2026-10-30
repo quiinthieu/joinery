@@ -774,10 +774,10 @@ introduced.
 
 ## Table data editing, layouts, raw clauses, inbound FKs and viewers (local implementation)
 
-R1 batch 2 of the approved DataGrip-replacement program is implemented on local
-branch `feat/table-data-editing` (`2a59fae..e3b13b4`), based on fetched
+R1 batch 2 of the approved DataGrip-replacement program is implemented on
+branch `feat/table-data-editing` (`2a59fae..b62e475`), based on fetched
 `origin/main` `877904b` (PR #26). It completes Milestone R1 (Data view parity)
-locally and is not yet pushed, merged, released or installed.
+and remains unreleased.
 
 - **Raw table `WHERE` / `ORDER BY` classification (`2a59fae`)**: PostgreSQL and
   MySQL/MariaDB table tabs accept optional raw `WHERE` and `ORDER BY` clauses
@@ -838,15 +838,20 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   37 browser workflows** in a single run (`1.7m`), including all nine
   `table-data.spec.ts` workflows. The `joinery-batch2` containers, network and
   volume were removed immediately afterward (`down -v`).
-- Clean-commit (`e3b13b4`, `sourceDirty=false`) `pnpm desktop:build`,
+- **Tauri v2 capability ACL enrollment (`951fca6`, `b62e475`)**: Enrolled
+  `referencing_foreign_keys`, `prepare_browse_table` and `prepare_table_changes`
+  in `src-tauri/build.rs` and `src-tauri/capabilities/main.json`, and added
+  typed real-WebView IPC disconnected-session guard assertions for all three
+  commands in `src/native-smoke.ts`.
+- Clean-commit (`b62e475`, `sourceDirty=false`) `pnpm desktop:build`,
   `pnpm desktop:bundle:mac` (strict ad-hoc signature verification on
   `Joinery.app`, 19.91 MiB), `pnpm desktop:smoke:build` and
   `pnpm test:native --runs 3 --cycles 10` all pass: three hidden processes
-  (`5,875 / 2,985 / 2,924 ms`), 30 cleanup cycles, main-process peak RSS
-  `105.55–105.77 MiB`, native smoke binary SHA-256
-  `41f83080a89ba047fd1b49b9ef6e5d1076a20d47f6796db2d4b36461cbddc348` (bundle
+  (`3,725 / 2,927 / 2,925 ms`), 30 cleanup cycles, main-process peak RSS
+  `105.12–105.83 MiB`, native smoke binary SHA-256
+  `dcc7e49561e0022e29a59927d6d3c3f5f724b2504544f5ada3a2a0719b8a2b55` (bundle
   binary SHA-256
-  `c4ed4914f0a82e19adcf391f5bf065990f69dec7729dde3ae0b2daf565339688`).
+  `0b73952da4025367e65746849c019df3c22283aa03b591932324590a06950691`).
 - No production database connections, automatic SQL replay or Safe Mode
   weakening were introduced. Live Snowflake/production account qualification,
   Windows/Linux packaged runtime, Developer ID signing/notarization and
