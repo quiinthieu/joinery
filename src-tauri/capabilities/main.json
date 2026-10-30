@@ -55,6 +55,7 @@
     "allow-cancel-export",
     "allow-pick-import-source",
     "allow-preview-csv-import",
-    "allow-prepare-csv-import-batch"
+    "allow-prepare-csv-import-batch",
+    "allow-compare-data"
   ]
 }

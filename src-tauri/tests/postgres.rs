@@ -2296,3 +2296,239 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_raw_clause_approvals()
+{
+    let (_root, studio, session) = setup(SafeMode::Confirm).await;
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_r2_cmp_left, joinery_r2_cmp_right;
+                 CREATE TABLE joinery_r2_cmp_left (
+                   tenant_id INT NOT NULL,
+                   item_no BIGINT NOT NULL,
+                   big_val BIGINT NOT NULL,
+                   amount NUMERIC(18,4) NOT NULL,
+                   note TEXT,
+                   PRIMARY KEY (tenant_id, item_no)
+                 );
+                 CREATE TABLE joinery_r2_cmp_right (
+                   tenant_id INT NOT NULL,
+                   item_no BIGINT NOT NULL,
+                   big_val BIGINT NOT NULL,
+                   amount NUMERIC(18,4) NOT NULL,
+                   note TEXT,
+                   PRIMARY KEY (tenant_id, item_no)
+                 );
+                 INSERT INTO joinery_r2_cmp_left
+                   SELECT 1, i, 9223372036854775807, 123456.7890, 'row-' || i
+                   FROM generate_series(1, 610) i;
+                 INSERT INTO joinery_r2_cmp_right
+                   SELECT 1, i, 9223372036854775807, 123456.7890, 'row-' || i
+                   FROM generate_series(1, 610) i;
+                 -- Modify (1, 10): NULL vs empty string + decimal diff
+                 UPDATE joinery_r2_cmp_left SET note = NULL, amount = 50.2500 WHERE item_no = 10;
+                 UPDATE joinery_r2_cmp_right SET note = '', amount = 50.5000 WHERE item_no = 10;
+                 -- Only in left: (1, 901); Only in right: (1, 902)
+                 INSERT INTO joinery_r2_cmp_left VALUES (1, 901, 42, 1.0000, 'private-cmp-left');
+                 INSERT INTO joinery_r2_cmp_right VALUES (1, 902, 42, 2.0000, 'private-cmp-right');",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let left_table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_cmp_left".into(),
+    };
+    let right_table = TableRef {
+        schema: "public".into(),
+        name: "joinery_r2_cmp_right".into(),
+    };
+
+    // 1. Multi-page (> 500 rows) LiveTable vs LiveTable without retaining in ResultStore
+    let live_report = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: left_table.clone(),
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("PG Left".into()),
+            },
+            right: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: right_table.clone(),
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("PG Right".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(live_report.key_columns, vec!["tenant_id", "item_no"]);
+    assert_eq!(live_report.identical_count, 609);
+    assert_eq!(live_report.different_count, 1);
+    assert_eq!(live_report.only_left_count, 1);
+    assert_eq!(live_report.only_right_count, 1);
+    assert_eq!(studio.usage().result_count, 0);
+
+    let modified = live_report
+        .diffs
+        .iter()
+        .find(|d| d.kind == RowDiffKind::Different)
+        .unwrap();
+    assert_eq!(modified.key_values, vec!["1", "10"]);
+    assert!(modified.cells.contains(&CellDiff {
+        column: "note".into(),
+        left: None,
+        right: Some("".into()),
+        type_mismatch: false,
+    }));
+
+    // 2. Unapproved raw SQL subquery in WHERE under Confirm Safe Mode requires BrowseApproval
+    let gated_query = BrowseQuery {
+        sort: Vec::new(),
+        filters: Vec::new(),
+        where_clause: Some("item_no <= 20 AND EXISTS (SELECT 1)".into()),
+        order_clause: None,
+    };
+    assert_eq!(
+        studio
+            .compare_data(CompareRequest {
+                left: CompareSide::LiveTable {
+                    session_id: session.id.clone(),
+                    table: left_table.clone(),
+                    query: gated_query.clone(),
+                    approval: None,
+                    label: None,
+                },
+                right: CompareSide::LiveTable {
+                    session_id: session.id.clone(),
+                    table: right_table.clone(),
+                    query: BrowseQuery {
+                        where_clause: Some("item_no <= 20".into()),
+                        ..Default::default()
+                    },
+                    approval: None,
+                    label: None,
+                },
+                key_columns: Vec::new(),
+                ignore_column_case: false,
+            })
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+
+    let browse_plan = studio
+        .prepare_browse(&session.id, &left_table, &gated_query)
+        .await
+        .unwrap()
+        .expect("subquery WHERE must require approval");
+    let browse_token = studio.authorize(&browse_plan.id, None, None).unwrap();
+    let approved_report = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: left_table.clone(),
+                query: gated_query,
+                approval: Some(BrowseApproval {
+                    plan_id: browse_plan.id,
+                    approval: browse_token,
+                }),
+                label: None,
+            },
+            right: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: right_table.clone(),
+                query: BrowseQuery {
+                    where_clause: Some("item_no <= 20".into()),
+                    ..Default::default()
+                },
+                approval: None,
+                label: None,
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(approved_report.identical_count, 19);
+    assert_eq!(approved_report.different_count, 1);
+
+    // 3. Snapshot with duplicate keys, NULL keys, and uppercase column names vs filtered LiveTable
+    let snap_events = run(
+        &studio,
+        &session,
+        "SELECT 1 AS \"TENANT_ID\", 1::bigint AS \"ITEM_NO\", 9223372036854775807::bigint AS \"BIG_VAL\", 123456.7890::numeric(18,4) AS \"AMOUNT\", 'row-1'::text AS \"NOTE\"
+         UNION ALL
+         SELECT 1, 2, 1, 1.0000, 'dup-1'
+         UNION ALL
+         SELECT 1, 2, 1, 1.0000, 'dup-2'
+         UNION ALL
+         SELECT 1, NULL, 1, 1.0000, 'null-key'",
+    )
+    .await;
+    assert_eq!(status(&snap_events), RunStatus::Completed);
+    let snap_res = result(&snap_events);
+
+    let snap_report = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::Snapshot {
+                result_ids: vec![snap_res.id.clone()],
+                label: Some("Query Snapshot".into()),
+                truncated_hint: true,
+            },
+            right: CompareSide::LiveTable {
+                session_id: session.id.clone(),
+                table: right_table.clone(),
+                query: BrowseQuery {
+                    where_clause: Some("item_no IN (1, 2)".into()),
+                    ..Default::default()
+                },
+                approval: None,
+                label: Some("Filtered Right".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: true,
+        })
+        .await
+        .unwrap();
+
+    assert!(snap_report.left_truncated);
+    assert_eq!(snap_report.identical_count, 1);
+    assert_eq!(snap_report.only_right_count, 0);
+    assert_eq!(snap_report.left_anomalies.null_key_count, 1);
+    assert_eq!(snap_report.left_anomalies.duplicate_key_rows, 2);
+    assert_eq!(snap_report.right_anomalies.excluded_counterpart_rows, 1);
+    studio.release_result(&snap_res.id);
+
+    // Zero private cell text in audit log
+    let audit_dump = serde_json::to_string(&studio.audit_log().unwrap()).unwrap();
+    assert!(!audit_dump.contains("private-cmp-left"));
+    assert!(!audit_dump.contains("private-cmp-right"));
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE joinery_r2_cmp_left, joinery_r2_cmp_right",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

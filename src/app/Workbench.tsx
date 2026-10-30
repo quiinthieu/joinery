@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import {
+  ArrowLeftRight,
   ArrowRight,
   Check,
   ChevronDown,
@@ -63,6 +64,7 @@ interface Props {
   onOpenColumns(): void;
   onOpenExport(): void;
   onOpenImport(): void;
+  onOpenCompare(): void;
   onNewSession(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
@@ -81,6 +83,7 @@ export function Workbench({
   onOpenColumns,
   onOpenExport,
   onOpenImport,
+  onOpenCompare,
   onNewSession,
   onQueryChange,
 }: Props) {
@@ -520,6 +523,15 @@ export function Workbench({
                   type="button"
                   className="button ghost small"
                   disabled={running}
+                  onClick={onOpenCompare}
+                >
+                  <ArrowLeftRight size={12} />
+                  Compare…
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running}
                   onClick={onOpenExport}
                 >
                   <Download size={12} />
@@ -612,6 +624,15 @@ export function Workbench({
                     Import CSV…
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running || tab.loadingPage}
+                  onClick={onOpenCompare}
+                >
+                  <ArrowLeftRight size={12} />
+                  Compare…
+                </button>
                 <button
                   type="button"
                   className="button ghost small"

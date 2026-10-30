@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import {
   Activity,
   ArrowDownLeft,
+  ArrowLeftRight,
   ArrowUpDown,
   ArrowUpRight,
   Check,
@@ -35,6 +36,7 @@ import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
 import { ExportDialog } from "../features/grid/ExportDialog";
 import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
+import { DataCompareDialog } from "../features/grid/DataCompareDialog";
 import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
@@ -91,6 +93,7 @@ type Dialog =
   | { kind: "columns"; tabId: string }
   | { kind: "export"; tabId: string }
   | { kind: "importCsv"; tabId: string }
+  | { kind: "compare"; tabId?: string }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -286,7 +289,27 @@ export function App() {
     current.dataSessionId === session.id &&
     profile?.safeMode !== "readOnly" &&
     (profile?.engine === "postgres" || profile?.engine === "mysql");
+  const hasComparableSources =
+    (state.bootstrap?.profiles.some(
+      (p) => (p.engine === "postgres" || p.engine === "mysql") && Boolean(state.sessions[p.id]),
+    ) ??
+      false) ||
+    state.tabs.some(
+      (t) =>
+        (t.kind === "query" && t.results.some((r) => r.columns.length > 0)) ||
+        (t.kind === "table" && t.pages.length > 0),
+    );
   const copyCommands = [
+    ...(hasComparableSources
+      ? [
+          {
+            label: "Compare data…",
+            shortcut: "Tables & results",
+            icon: ArrowLeftRight,
+            action: () => setDialog({ kind: "compare", tabId: current?.id }),
+          },
+        ]
+      : []),
     ...(hasImportableTable && current
       ? [
           {
@@ -922,6 +945,7 @@ export function App() {
                 onOpenColumns={() => setDialog({ kind: "columns", tabId: current.id })}
                 onOpenExport={() => setDialog({ kind: "export", tabId: current.id })}
                 onOpenImport={() => setDialog({ kind: "importCsv", tabId: current.id })}
+                onOpenCompare={() => setDialog({ kind: "compare", tabId: current.id })}
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
@@ -1206,6 +1230,21 @@ export function App() {
             />
           );
         })()}
+      {dialog?.kind === "compare" && (
+        <DataCompareDialog
+          initialTab={dialog.tabId ? state.tabs.find((t) => t.id === dialog.tabId) : current}
+          tabs={state.tabs}
+          profiles={state.bootstrap?.profiles ?? []}
+          sessions={state.sessions}
+          catalog={state.catalog}
+          onCatalogLoaded={(connectionId, tables) =>
+            useStudio.setState((prev) => ({
+              catalog: { ...prev.catalog, [connectionId]: tables },
+            }))
+          }
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "confirm" && (
         <Confirmation
           title={dialog.title}

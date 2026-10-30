@@ -2036,3 +2036,182 @@ async fn mysql_and_mariadb_import_csv_batches_enforce_read_only_and_rollback_con
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL, MariaDB, and PostgreSQL services"]
+async fn mysql_mariadb_and_cross_engine_postgres_data_comparison() {
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let make_secrets = || ConnectionSecrets {
+        password: Some("joinery-local-only".into()),
+        ..Default::default()
+    };
+
+    let mysql_p = studio
+        .save_profile(profile(53306, SafeMode::Silent), None)
+        .unwrap();
+    let maria_p = studio
+        .save_profile(profile(53307, SafeMode::Silent), None)
+        .unwrap();
+    let pg_port: u16 = std::env::var("JOINERY_TEST_PORT")
+        .unwrap_or_else(|_| "55432".into())
+        .parse()
+        .unwrap();
+    let pg_p = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "PG Cross Compare".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port: pg_port,
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Silent,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: false,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+
+    let mysql_s = studio.connect(&mysql_p.id, make_secrets()).await.unwrap();
+    let maria_s = studio.connect(&maria_p.id, make_secrets()).await.unwrap();
+    let pg_s = studio.connect(&pg_p.id, make_secrets()).await.unwrap();
+
+    completed(
+        &run(
+            &studio,
+            &mysql_s,
+            "DROP TABLE IF EXISTS joinery_r2_xengine_cmp;
+             CREATE TABLE joinery_r2_xengine_cmp (
+               id BIGINT NOT NULL PRIMARY KEY,
+               sku VARCHAR(64) NOT NULL,
+               amount DECIMAL(18,4) NOT NULL,
+               note VARCHAR(128) NULL
+             ) ENGINE=InnoDB;
+             INSERT INTO joinery_r2_xengine_cmp VALUES
+               (1, 'SAME-MAX', 99999999.1234, 'identical'),
+               (2, 'DIFF-NOTE', 10.5000, NULL),
+               (3, 'ONLY-MYSQL', 1.0000, 'left');",
+        )
+        .await,
+    );
+
+    completed(
+        &run(
+            &studio,
+            &maria_s,
+            "DROP TABLE IF EXISTS joinery_r2_xengine_cmp;
+             CREATE TABLE joinery_r2_xengine_cmp (
+               id BIGINT NOT NULL PRIMARY KEY,
+               sku VARCHAR(64) NOT NULL,
+               amount DECIMAL(18,4) NOT NULL,
+               note VARCHAR(128) NULL
+             ) ENGINE=InnoDB;
+             INSERT INTO joinery_r2_xengine_cmp VALUES
+               (1, 'SAME-MAX', 99999999.1234, 'identical'),
+               (2, 'DIFF-NOTE', 10.5000, ''),
+               (4, 'ONLY-MARIA', 2.0000, 'right');",
+        )
+        .await,
+    );
+
+    completed(
+        &run(
+            &studio,
+            &pg_s,
+            "DROP TABLE IF EXISTS public.joinery_r2_xengine_cmp;
+             CREATE TABLE public.joinery_r2_xengine_cmp (
+               id BIGINT NOT NULL PRIMARY KEY,
+               sku TEXT NOT NULL,
+               amount NUMERIC(18,4) NOT NULL,
+               note TEXT NULL
+             );
+             INSERT INTO public.joinery_r2_xengine_cmp VALUES
+               (1, 'SAME-MAX', 99999999.1234, 'identical'),
+               (2, 'DIFF-NOTE', 10.5000, ''),
+               (5, 'ONLY-PG', 3.0000, 'pg-only');",
+        )
+        .await,
+    );
+
+    // MySQL 8.4 <-> MariaDB 11.4 LiveTable comparison
+    let mysql_vs_maria = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: mysql_s.id.clone(),
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("MySQL 8.4".into()),
+            },
+            right: CompareSide::LiveTable {
+                session_id: maria_s.id.clone(),
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("MariaDB 11.4".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(mysql_vs_maria.identical_count, 1);
+    assert_eq!(mysql_vs_maria.different_count, 1);
+    assert_eq!(mysql_vs_maria.only_left_count, 1);
+    assert_eq!(mysql_vs_maria.only_right_count, 1);
+
+    // MySQL 8.4 <-> PostgreSQL cross-engine LiveTable comparison
+    let mysql_vs_pg = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: mysql_s.id.clone(),
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("MySQL".into()),
+            },
+            right: CompareSide::LiveTable {
+                session_id: pg_s.id.clone(),
+                table: TableRef {
+                    schema: "public".into(),
+                    name: "joinery_r2_xengine_cmp".into(),
+                },
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("PostgreSQL".into()),
+            },
+            key_columns: Vec::new(),
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(mysql_vs_pg.key_columns, vec!["id"]);
+    assert_eq!(mysql_vs_pg.identical_count, 1);
+    assert_eq!(mysql_vs_pg.different_count, 1);
+    assert_eq!(mysql_vs_pg.only_left_count, 1);
+    assert_eq!(mysql_vs_pg.only_right_count, 1);
+
+    completed(&run(&studio, &mysql_s, "DROP TABLE joinery_r2_xengine_cmp").await);
+    completed(&run(&studio, &maria_s, "DROP TABLE joinery_r2_xengine_cmp").await);
+    completed(&run(&studio, &pg_s, "DROP TABLE public.joinery_r2_xengine_cmp").await);
+    studio.shutdown();
+}

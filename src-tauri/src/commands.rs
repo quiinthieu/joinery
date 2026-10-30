@@ -535,3 +535,11 @@ pub async fn prepare_csv_import_batch(
         )
         .await
 }
+
+#[tauri::command]
+pub async fn compare_data(
+    studio: State<'_, Arc<Studio>>,
+    request: CompareRequest,
+) -> AppResult<DataCompareReport> {
+    studio.compare_data(request).await
+}

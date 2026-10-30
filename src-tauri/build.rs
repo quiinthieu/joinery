@@ -50,6 +50,7 @@ fn main() {
             "pick_import_source",
             "preview_csv_import",
             "prepare_csv_import_batch",
+            "compare_data",
             "native_smoke_fixture",
             "native_smoke_checkpoint",
             "native_smoke_report",

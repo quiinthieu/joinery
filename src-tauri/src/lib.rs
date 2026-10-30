@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+pub mod compare;
 pub mod domain;
 pub mod drivers;
 pub mod execution;
@@ -130,6 +131,7 @@ pub fn run() {
             commands::pick_import_source,
             commands::preview_csv_import,
             commands::prepare_csv_import_batch,
+            commands::compare_data,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

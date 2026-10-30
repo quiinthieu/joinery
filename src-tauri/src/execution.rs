@@ -108,6 +108,26 @@ enum PreparedExportSource {
     Table(Box<PreparedTableExport>),
 }
 
+struct PreparedLiveCompare {
+    session: Arc<Session>,
+    schema: TableSchema,
+    query: BrowseQuery,
+    label: String,
+    single_page_only: bool,
+    approval_plan_id: Option<String>,
+    approved_digest: Option<String>,
+}
+
+enum PreparedCompareSide {
+    Snapshot {
+        label: String,
+        columns: Vec<ColumnInfo>,
+        result_ids: Vec<String>,
+        truncated: bool,
+    },
+    LiveTable(Box<PreparedLiveCompare>),
+}
+
 pub struct Studio {
     persistence: Persistence,
     secrets: Arc<dyn SecretStore>,
@@ -2384,6 +2404,307 @@ impl Studio {
             sql,
             bindings,
         })
+    }
+
+    async fn prepare_compare_side(
+        &self,
+        side: CompareSide,
+        side_name: &'static str,
+    ) -> AppResult<PreparedCompareSide> {
+        match side {
+            CompareSide::Snapshot {
+                result_ids,
+                label,
+                truncated_hint,
+            } => {
+                if result_ids.is_empty() {
+                    return Err(AppError::invalid(format!(
+                        "{side_name} must select a retained result snapshot"
+                    )));
+                }
+                let first = self.results.info(&result_ids[0])?;
+                if first.columns.is_empty() {
+                    return Err(AppError::invalid(format!(
+                        "{side_name} has no columns to compare"
+                    )));
+                }
+                let mut columns = first.columns.clone();
+                if let Ok(prov) = self.results.provenance(&result_ids[0])
+                    && prov.columns.len() == columns.len()
+                {
+                    for (col, src) in columns.iter_mut().zip(prov.columns.iter()) {
+                        col.primary_key |= src.primary_key;
+                    }
+                }
+                let mut truncated = truncated_hint || first.status == RetentionStatus::Truncated;
+                for rid in result_ids.iter().skip(1) {
+                    let info = self.results.info(rid)?;
+                    if info.columns.len() != columns.len()
+                        || info
+                            .columns
+                            .iter()
+                            .zip(columns.iter())
+                            .any(|(a, b)| a.name != b.name)
+                    {
+                        return Err(AppError::invalid(format!(
+                            "{side_name} snapshot pages do not share an identical column schema"
+                        )));
+                    }
+                    truncated |= info.status == RetentionStatus::Truncated;
+                }
+                let resolved_label = label.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+                    first
+                        .table
+                        .as_ref()
+                        .map(|t| format!("{}.{} (snapshot)", t.schema, t.name))
+                        .unwrap_or_else(|| format!("Result #{}", first.statement_index + 1))
+                });
+                Ok(PreparedCompareSide::Snapshot {
+                    label: resolved_label,
+                    columns,
+                    result_ids,
+                    truncated,
+                })
+            }
+            CompareSide::LiveTable {
+                session_id,
+                table,
+                query,
+                approval,
+                label,
+            } => {
+                let query = query.normalized();
+                let session = self.session(&session_id)?;
+                if !matches!(
+                    session.profile.engine,
+                    EngineKind::Postgres | EngineKind::Mysql
+                ) {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "Live table comparison is available for PostgreSQL and MySQL/MariaDB. Compare retained query or preview snapshots for other engines.",
+                    ));
+                }
+                let schema = {
+                    let _lane = session.lane.lock().await;
+                    self.schema_for_session(&session, &table).await?
+                };
+                if schema.columns.is_empty() {
+                    return Err(AppError::invalid(format!(
+                        "{side_name} table has no columns to compare"
+                    )));
+                }
+                let mut approval_plan_id: Option<String> = None;
+                if query.has_raw_clauses() {
+                    let sql = browse_sql_for_engine(session.profile.engine, &schema, &query, None)?;
+                    let (_, needs_review) =
+                        classify_browse_sql(&session_id, &session.profile, &sql)?;
+                    if needs_review {
+                        let token = approval.as_ref().ok_or_else(|| {
+                            AppError::new(
+                                ErrorCode::ApprovalRequired,
+                                format!(
+                                    "Review and authorize the SQL clause on {} before comparing",
+                                    side_name.to_ascii_lowercase()
+                                ),
+                            )
+                        })?;
+                        let plans = self.plans.lock();
+                        let stored = plans.get(&token.plan_id).ok_or_else(expired)?;
+                        if stored.deadline <= Instant::now() {
+                            return Err(expired());
+                        }
+                        if stored.plan.session_id != session_id
+                            || stored.approval.as_deref() != Some(token.approval.as_str())
+                            || !matches!(
+                                &stored.action,
+                                Action::Browse { table: t, query: q } if t == &table && q == &query
+                            )
+                        {
+                            return Err(AppError::new(
+                                ErrorCode::ApprovalRequired,
+                                format!(
+                                    "Review and authorize the exact SQL clause on {} before comparing",
+                                    side_name.to_ascii_lowercase()
+                                ),
+                            ));
+                        }
+                        approval_plan_id = Some(token.plan_id.clone());
+                    }
+                }
+                let resolved_label = label.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+                    format!("{} · {}.{}", session.profile.name, table.schema, table.name)
+                });
+                let single_page_only = approval_plan_id.is_some();
+                Ok(PreparedCompareSide::LiveTable(Box::new(
+                    PreparedLiveCompare {
+                        session,
+                        schema,
+                        query,
+                        label: resolved_label,
+                        single_page_only,
+                        approval_plan_id,
+                        approved_digest: None,
+                    },
+                )))
+            }
+        }
+    }
+
+    fn consume_compare_approval(&self, side: &mut PreparedCompareSide) -> AppResult<()> {
+        if let PreparedCompareSide::LiveTable(live) = side
+            && let Some(plan_id) = live.approval_plan_id.take()
+        {
+            let stored = self.plans.lock().remove(&plan_id).ok_or_else(expired)?;
+            if stored.deadline <= Instant::now() {
+                return Err(expired());
+            }
+            self.persistence.audit(
+                &live.session.profile.id,
+                "browse",
+                &stored.digest,
+                "started",
+            )?;
+            live.approved_digest = Some(stored.digest);
+        }
+        Ok(())
+    }
+
+    async fn materialize_compare_side(
+        &self,
+        side: PreparedCompareSide,
+        side_name: &'static str,
+    ) -> AppResult<crate::compare::CompareDataset> {
+        match side {
+            PreparedCompareSide::Snapshot {
+                label,
+                columns,
+                result_ids,
+                truncated,
+            } => {
+                let col_indices: Vec<usize> = (0..columns.len()).collect();
+                let mut builder = crate::compare::CompareDatasetBuilder::new(
+                    side_name, label, columns, truncated,
+                );
+                for rid in &result_ids {
+                    let batches = self.results.batch_count(rid)?;
+                    for batch_idx in 0..batches {
+                        if let Some(rows) = self.results.batch_rows(rid, batch_idx, &col_indices)? {
+                            builder.append_rows(rows)?;
+                        }
+                    }
+                }
+                Ok(builder.finish())
+            }
+            PreparedCompareSide::LiveTable(live) => {
+                let PreparedLiveCompare {
+                    session,
+                    schema,
+                    query,
+                    label,
+                    single_page_only,
+                    approval_plan_id: _,
+                    approved_digest,
+                } = *live;
+                let mut builder = crate::compare::CompareDatasetBuilder::new(
+                    side_name,
+                    label,
+                    schema.columns.clone(),
+                    false,
+                );
+                let mut after: Option<Vec<Option<String>>> = None;
+                let mut audited_completion = false;
+                loop {
+                    if session.closed.load(Ordering::Acquire) {
+                        return Err(AppError::new(
+                            ErrorCode::ConnectionClosed,
+                            "The database connection closed during comparison",
+                        ));
+                    }
+                    let page = match session
+                        .driver
+                        .browse_query(&schema, &query, after.take())
+                        .await
+                    {
+                        Ok(page) => {
+                            if !audited_completion && let Some(digest) = &approved_digest {
+                                let _ = self.persistence.audit(
+                                    &session.profile.id,
+                                    "browse",
+                                    digest,
+                                    "Completed",
+                                );
+                                audited_completion = true;
+                            }
+                            page
+                        }
+                        Err(err) => {
+                            if !audited_completion && let Some(digest) = &approved_digest {
+                                let _ = self.persistence.audit(
+                                    &session.profile.id,
+                                    "browse",
+                                    digest,
+                                    "Failed",
+                                );
+                            }
+                            return Err(err);
+                        }
+                    };
+                    builder.append_rows(page.rows)?;
+                    if page.truncated && (!page.has_more || single_page_only) {
+                        return Err(AppError::new(
+                            ErrorCode::ResultLimitReached,
+                            format!(
+                                "{side_name} matched more rows than can be streamed without keyset pagination. Add a narrower filter or compare a SQL query snapshot."
+                            ),
+                        ));
+                    }
+                    if single_page_only || !page.has_more || page.next_key.is_none() {
+                        break;
+                    }
+                    after = page.next_key;
+                    tokio::task::yield_now().await;
+                }
+                Ok(builder.finish())
+            }
+        }
+    }
+
+    pub async fn compare_data(&self, request: CompareRequest) -> AppResult<DataCompareReport> {
+        let mut left_prepared = self
+            .prepare_compare_side(request.left, "Left dataset")
+            .await?;
+        let mut right_prepared = self
+            .prepare_compare_side(request.right, "Right dataset")
+            .await?;
+
+        if let (PreparedCompareSide::LiveTable(l), PreparedCompareSide::LiveTable(r)) =
+            (&left_prepared, &right_prepared)
+            && let (Some(lp), Some(rp)) = (&l.approval_plan_id, &r.approval_plan_id)
+            && lp == rp
+        {
+            return Err(AppError::new(
+                ErrorCode::ApprovalRequired,
+                "Each live table SQL clause requires its own one-use approval token",
+            ));
+        }
+
+        self.consume_compare_approval(&mut left_prepared)?;
+        self.consume_compare_approval(&mut right_prepared)?;
+
+        let left_ds = self
+            .materialize_compare_side(left_prepared, "Left dataset")
+            .await?;
+        let right_ds = self
+            .materialize_compare_side(right_prepared, "Right dataset")
+            .await?;
+        let key_columns = request.key_columns;
+        let ignore_case = request.ignore_column_case;
+
+        tokio::task::spawn_blocking(move || {
+            crate::compare::compare_datasets(left_ds, right_ds, &key_columns, ignore_case)
+        })
+        .await
+        .map_err(|_| AppError::internal("Data comparison task could not complete"))?
     }
 
     pub fn usage(&self) -> ResourceUsage {

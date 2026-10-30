@@ -314,6 +314,7 @@ async fn rpc(
                     )
                     .await?
             ),
+            "compare_data" => json!(studio.compare_data(arg(&args, "request")?).await?),
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
             "test_queue_save_file" => {
                 let file_name: Option<String> = arg(&args, "fileName")?;

@@ -153,6 +153,29 @@ export async function runNativeSmoke() {
             batchIndex: 0,
           }),
       ],
+      [
+        "compare_data",
+        "notFound",
+        () =>
+          client.call("compare_data", {
+            request: {
+              left: {
+                kind: "snapshot",
+                resultIds: ["missing-native-smoke-left"],
+                label: null,
+                truncatedHint: false,
+              },
+              right: {
+                kind: "snapshot",
+                resultIds: ["missing-native-smoke-right"],
+                label: null,
+                truncatedHint: false,
+              },
+              keyColumns: [],
+              ignoreColumnCase: false,
+            },
+          }),
+      ],
     ] as const) {
       let matched = false;
       try {

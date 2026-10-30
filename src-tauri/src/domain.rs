@@ -949,6 +949,122 @@ pub struct CsvImportPreview {
     pub can_prepare: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CompareSide {
+    #[serde(rename_all = "camelCase")]
+    Snapshot {
+        result_ids: Vec<String>,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        truncated_hint: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    LiveTable {
+        session_id: String,
+        table: TableRef,
+        #[serde(default)]
+        query: BrowseQuery,
+        #[serde(default)]
+        approval: Option<BrowseApproval>,
+        #[serde(default)]
+        label: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareRequest {
+    pub left: CompareSide,
+    pub right: CompareSide,
+    #[serde(default)]
+    pub key_columns: Vec<String>,
+    #[serde(default)]
+    pub ignore_column_case: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AlignedCompareColumn {
+    pub name: String,
+    pub left_name: String,
+    pub right_name: String,
+    pub left_type: String,
+    pub right_type: String,
+    pub kind_mismatch: bool,
+    pub is_key: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CellDiff {
+    pub column: String,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub type_mismatch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RowDiffKind {
+    Different,
+    OnlyLeft,
+    OnlyRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparedRowDiff {
+    pub kind: RowDiffKind,
+    pub key_values: Vec<String>,
+    pub cells: Vec<CellDiff>,
+    pub left_row: Option<Vec<Option<String>>>,
+    pub right_row: Option<Vec<Option<String>>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateKeySample {
+    pub key_values: Vec<String>,
+    pub occurrences: usize,
+    pub counterpart_occurrences: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareSideAnomalies {
+    pub null_key_count: usize,
+    pub null_key_samples: Vec<Vec<Option<String>>>,
+    pub duplicate_key_rows: usize,
+    pub duplicate_distinct_keys: usize,
+    pub excluded_counterpart_rows: usize,
+    pub duplicate_key_samples: Vec<DuplicateKeySample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCompareReport {
+    pub left_label: String,
+    pub right_label: String,
+    pub left_truncated: bool,
+    pub right_truncated: bool,
+    pub key_columns: Vec<String>,
+    pub aligned_columns: Vec<AlignedCompareColumn>,
+    pub unaligned_left_columns: Vec<String>,
+    pub unaligned_right_columns: Vec<String>,
+    pub left_total_rows: usize,
+    pub right_total_rows: usize,
+    pub identical_count: usize,
+    pub different_count: usize,
+    pub only_left_count: usize,
+    pub only_right_count: usize,
+    pub left_anomalies: CompareSideAnomalies,
+    pub right_anomalies: CompareSideAnomalies,
+    pub diffs: Vec<ComparedRowDiff>,
+    pub diffs_truncated: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
