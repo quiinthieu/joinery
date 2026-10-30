@@ -328,6 +328,10 @@ impl Driver for Postgres {
         schema_on(self.metadata().await?, table, false).await
     }
 
+    async fn referencing_keys(&self, table: &TableRef) -> AppResult<Vec<InboundForeignKey>> {
+        referencing_keys_on(self.metadata().await?, table).await
+    }
+
     async fn browse(
         &self,
         schema: &TableSchema,
@@ -343,14 +347,7 @@ impl Driver for Postgres {
         query: &BrowseQuery,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
-        let built = browse_query::build(schema, query, after.as_deref(), &PostgresDialect)?;
-        let sql = format!(
-            "SELECT {} FROM {} AS __joinery_source{}{} LIMIT 501",
-            projection(schema),
-            qualified(&schema.table),
-            built.where_sql,
-            built.order_sql
-        );
+        let (sql, built) = browse_sql(schema, query, after.as_deref())?;
         let parameters = built
             .binds
             .iter()
@@ -489,21 +486,52 @@ impl Postgres {
         rows: &[RowMutation],
     ) -> AppResult<()> {
         client.batch_execute("BEGIN").await.map_err(pg_error)?;
-        let result=async {
+        let result = async {
             for row in rows {
-                let (predicate,keys)=key_predicate(schema,&row.original,1)?;
-                let params=keys.iter().map(|v|v as &(dyn ToSql+Sync)).collect::<Vec<_>>();
-                let sql=format!("SELECT {} FROM {} WHERE {predicate} FOR UPDATE",projection(schema),qualified(&schema.table));
-                let locked=client.query(&sql,&params).await.map_err(pg_error)?;
-                if locked.len()!=1 { return Err(AppError::new(ErrorCode::Conflict,"A target row was deleted or its key changed. Refresh before applying edits.")); }
-                let actual=(0..locked[0].len()).map(|i|locked[0].get::<_,Option<String>>(i)).collect::<TextRow>();
-                if actual!=row.original { return Err(AppError::new(ErrorCode::Conflict,"A row changed since it was loaded. No edits were committed.")); }
-                let (sql,values)=update_sql(schema,row)?;
-                let params=values.iter().map(|v|v as &(dyn ToSql+Sync)).collect::<Vec<_>>();
-                if client.execute(&sql,&params).await.map_err(pg_error)?!=1 { return Err(AppError::new(ErrorCode::Conflict,"An update did not match exactly one row. No edits were committed.")); }
+                if let RowMutation::Update { original, .. } | RowMutation::Delete { original } = row
+                {
+                    let (predicate, keys) = key_predicate(schema, original, 1)?;
+                    let params = keys
+                        .iter()
+                        .map(|v| v as &(dyn ToSql + Sync))
+                        .collect::<Vec<_>>();
+                    let sql = format!(
+                        "SELECT {} FROM {} WHERE {predicate} FOR UPDATE",
+                        projection(schema),
+                        qualified(&schema.table)
+                    );
+                    let locked = client.query(&sql, &params).await.map_err(pg_error)?;
+                    if locked.len() != 1 {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "A target row was deleted or its key changed. Refresh before applying edits.",
+                        ));
+                    }
+                    let actual = (0..locked[0].len())
+                        .map(|i| locked[0].get::<_, Option<String>>(i))
+                        .collect::<TextRow>();
+                    if &actual != original {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "A row changed since it was loaded. No edits were committed.",
+                        ));
+                    }
+                }
+                let (sql, values) = mutation_sql(schema, row)?;
+                let params = values
+                    .iter()
+                    .map(|v| v as &(dyn ToSql + Sync))
+                    .collect::<Vec<_>>();
+                if client.execute(&sql, &params).await.map_err(pg_error)? != 1 {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A table change did not affect exactly one row. No edits were committed.",
+                    ));
+                }
             }
             Ok(())
-        }.await;
+        }
+        .await;
         if let Err(error) = result {
             if client.batch_execute("ROLLBACK").await.is_err() {
                 self.close();
@@ -543,13 +571,17 @@ pub fn qualified(table: &TableRef) -> String {
     )
 }
 
-/// Browse SQL selects `column::text`, so ORDER BY must name the source
-/// relation's typed column rather than the text output column.
-pub(crate) struct PostgresDialect;
+/// Browse SQL aliases `column::text` to `__joinery_cN` and keeps the base
+/// table unaliased so user `WHERE` / `ORDER BY` expressions resolve typed
+/// columns both unqualified and qualified (`table.col`).
+pub(crate) struct PostgresDialect<'a>(pub &'a TableRef);
 
-impl browse_query::Dialect for PostgresDialect {
+impl browse_query::Dialect for PostgresDialect<'_> {
+    fn engine(&self) -> EngineKind {
+        EngineKind::Postgres
+    }
     fn column(&self, name: &str) -> String {
-        format!("__joinery_source.{}", quote_identifier(name))
+        format!("{}.{}", qualified(self.0), quote_identifier(name))
     }
     fn typed_bind(&self, column: &ColumnInfo, index: usize) -> Option<String> {
         cast_type(column).map(|cast| format!("(${}::text)::{cast}", index + 1))
@@ -570,6 +602,34 @@ impl browse_query::Dialect for PostgresDialect {
         }
     }
 }
+
+pub(crate) fn browse_sql(
+    schema: &TableSchema,
+    query: &BrowseQuery,
+    after: Option<&[Option<String>]>,
+) -> AppResult<(String, browse_query::Built)> {
+    let dialect = PostgresDialect(&schema.table);
+    let built = browse_query::build(schema, query, after, &dialect)?;
+    let table = qualified(&schema.table);
+    let projection = schema
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            format!(
+                "{table}.{}::text AS __joinery_c{i}",
+                quote_identifier(&c.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT {projection} FROM {table}{}{} LIMIT 501",
+        built.where_sql, built.order_sql
+    );
+    Ok((sql, built))
+}
+
 fn projection(schema: &TableSchema) -> String {
     schema
         .columns
@@ -639,43 +699,107 @@ fn key_predicate(
     Ok((parts.join(" AND "), values))
 }
 
-pub fn update_sql(
+pub fn mutation_sql(
     schema: &TableSchema,
     row: &RowMutation,
 ) -> AppResult<(String, Vec<Option<String>>)> {
-    let mut assignments = Vec::new();
-    let mut values = Vec::new();
-    for (index, value) in &row.changes {
-        let column = schema
-            .columns
-            .get(*index)
-            .ok_or_else(|| AppError::invalid("Invalid edited column"))?;
-        if !column.editable {
-            return Err(AppError::new(
-                ErrorCode::PolicyBlocked,
-                "This column is read-only",
-            ));
-        }
-        let cast = cast_type(column).ok_or_else(|| {
-            AppError::new(ErrorCode::Unsupported, "This data type cannot be edited")
-        })?;
-        assignments.push(format!(
-            "{}=(${}::text)::{cast}",
-            quote_identifier(&column.name),
-            values.len() + 1
+    if !schema.editable {
+        return Err(AppError::new(
+            ErrorCode::PolicyBlocked,
+            "This table cannot be edited safely",
         ));
-        values.push(value.clone());
     }
-    let (predicate, keys) = key_predicate(schema, &row.original, values.len() + 1)?;
-    values.extend(keys);
-    Ok((
-        format!(
-            "UPDATE {} SET {} WHERE {predicate}",
-            qualified(&schema.table),
-            assignments.join(", ")
-        ),
-        values,
-    ))
+    match row {
+        RowMutation::Update { original, changes } => {
+            if changes.is_empty() {
+                return Err(AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    "This table cannot be edited safely",
+                ));
+            }
+            let mut assignments = Vec::new();
+            let mut values = Vec::new();
+            for (index, value) in changes {
+                let column = schema
+                    .columns
+                    .get(*index)
+                    .ok_or_else(|| AppError::invalid("Invalid edited column"))?;
+                if !column.editable {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        "This column is read-only",
+                    ));
+                }
+                let cast = cast_type(column).ok_or_else(|| {
+                    AppError::new(ErrorCode::Unsupported, "This data type cannot be edited")
+                })?;
+                assignments.push(format!(
+                    "{}=(${}::text)::{cast}",
+                    quote_identifier(&column.name),
+                    values.len() + 1
+                ));
+                values.push(value.clone());
+            }
+            let (predicate, keys) = key_predicate(schema, original, values.len() + 1)?;
+            values.extend(keys);
+            Ok((
+                format!(
+                    "UPDATE {} SET {} WHERE {predicate}",
+                    qualified(&schema.table),
+                    assignments.join(", ")
+                ),
+                values,
+            ))
+        }
+        RowMutation::Delete { original } => {
+            let (predicate, keys) = key_predicate(schema, original, 1)?;
+            Ok((
+                format!("DELETE FROM {} WHERE {predicate}", qualified(&schema.table)),
+                keys,
+            ))
+        }
+        RowMutation::Insert { values } => {
+            if values.is_empty() {
+                return Ok((
+                    format!("INSERT INTO {} DEFAULT VALUES", qualified(&schema.table)),
+                    Vec::new(),
+                ));
+            }
+            let mut columns = Vec::new();
+            let mut expressions = Vec::new();
+            let mut binds = Vec::new();
+            for (index, value) in values {
+                let column = schema
+                    .columns
+                    .get(*index)
+                    .ok_or_else(|| AppError::invalid("Invalid inserted column"))?;
+                if !column.insertable {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        "This column cannot be set on insert",
+                    ));
+                }
+                if !column.nullable && value.is_none() {
+                    return Err(AppError::invalid("This column does not allow NULL"));
+                }
+                let cast = cast_type(column).ok_or_else(|| {
+                    AppError::new(ErrorCode::Unsupported, "This data type cannot be inserted")
+                })?;
+                columns.push(quote_identifier(&column.name));
+                expressions.push(format!("(${}::text)::{cast}", binds.len() + 1));
+                binds.push(value.clone());
+            }
+            Ok((
+                format!(
+                    "INSERT INTO {} ({}) VALUES ({})",
+                    qualified(&schema.table),
+                    columns.join(", "),
+                    expressions.join(", ")
+                ),
+                binds,
+            ))
+        }
+    }
 }
 
 fn column(index: usize, name: &str, type_name: &str) -> ColumnInfo {
@@ -700,6 +824,8 @@ fn column(index: usize, name: &str, type_name: &str) -> ColumnInfo {
         primary_key: false,
         foreign_key: false,
         editable: false,
+        insertable: false,
+        has_default: false,
     }
 }
 
@@ -729,7 +855,8 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
     let rows=client.query(
             "SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),t.typname,a.attnotnull,a.attgenerated::pg_catalog.text,a.attidentity::pg_catalog.text,
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='p' AND a.attnum=ANY(k.conkey)),
-              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text
+              EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text,
+              a.atthasdef
              FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
              WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion]).await.map_err(pg_error)?;
     if rows.is_empty() {
@@ -739,20 +866,29 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         ));
     }
     let physical = matches!(rows[0].get::<_, String>(8).as_str(), "r" | "p");
-    let columns: Vec<ColumnInfo> = rows
+    let mut columns: Vec<ColumnInfo> = rows
         .iter()
         .enumerate()
         .map(|(i, r)| {
             let mut c = column(i, r.get::<_, &str>(0), r.get::<_, &str>(2));
+            let generated = r.get::<_, String>(4);
+            let identity = r.get::<_, String>(5);
+            let has_def: bool = r.get(9);
             c.database_type = r.get(1);
             c.nullable = !r.get::<_, bool>(3);
             c.primary_key = r.get(6);
             c.foreign_key = r.get(7);
+            c.has_default = has_def || !identity.is_empty() || !generated.is_empty();
             c.editable = !completion
                 && physical
                 && !c.primary_key
-                && r.get::<_, String>(4).is_empty()
-                && r.get::<_, String>(5).is_empty()
+                && generated.is_empty()
+                && identity.is_empty()
+                && cast_type(&c).is_some();
+            c.insertable = !completion
+                && physical
+                && generated.is_empty()
+                && identity != "a"
                 && cast_type(&c).is_some();
             c
         })
@@ -795,6 +931,12 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
             .iter()
             .filter(|c| c.primary_key)
             .all(|c| cast_type(c).is_some());
+    if !editable {
+        for c in &mut columns {
+            c.editable = false;
+            c.insertable = false;
+        }
+    }
     Ok(TableSchema {
         table: table.clone(),
         columns,
@@ -802,4 +944,75 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         foreign_keys,
         editable,
     })
+}
+
+async fn referencing_keys_on(
+    client: &Client,
+    table: &TableRef,
+) -> AppResult<Vec<InboundForeignKey>> {
+    let exists = client
+        .query(
+            "SELECT 1 FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relname = $2
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')",
+            &[&table.schema, &table.name],
+        )
+        .await
+        .map_err(pg_error)?;
+    if exists.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The table is missing or its schema is unavailable",
+        ));
+    }
+    let rows = client
+        .query(
+            "SELECT k.conname::pg_catalog.text, n.nspname, c.relname, a.attname, b.attname,
+                    pg_catalog.cardinality(k.conkey)::pg_catalog.int4
+             FROM pg_catalog.pg_constraint k
+             JOIN pg_catalog.pg_class t ON t.oid = k.confrelid
+             JOIN pg_catalog.pg_namespace tn ON tn.oid = t.relnamespace
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey), pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src, dst, ord)
+             JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = x.src AND NOT a.attisdropped
+             JOIN pg_catalog.pg_attribute b ON b.attrelid = k.confrelid AND b.attnum = x.dst AND NOT b.attisdropped
+             WHERE k.contype = 'f'
+               AND tn.nspname = $1 AND t.relname = $2
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+               AND pg_catalog.has_table_privilege(c.oid, 'SELECT')
+             ORDER BY n.nspname, c.relname, k.conname, k.oid, x.ord
+             LIMIT 500",
+            &[&table.schema, &table.name],
+        )
+        .await
+        .map_err(pg_error)?;
+    let mut widths: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    let grouped = InboundForeignKey::group(rows.iter().map(|r| {
+        let name: String = r.get(0);
+        let source = TableRef {
+            schema: r.get(1),
+            name: r.get(2),
+        };
+        let expected: i32 = r.get(5);
+        widths.insert(
+            (source.schema.clone(), source.name.clone(), name.clone()),
+            expected.max(0) as usize,
+        );
+        (name, source, r.get(3), r.get(4))
+    }));
+    Ok(grouped
+        .into_iter()
+        .filter(|key| {
+            widths
+                .get(&(
+                    key.source.schema.clone(),
+                    key.source.name.clone(),
+                    key.name.clone(),
+                ))
+                .is_none_or(|&w| key.columns.len() == w)
+        })
+        .collect())
 }

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import DataEditor, {
   GridCellKind,
   CompactSelection,
@@ -16,7 +24,17 @@ import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
 import { useStudio, type StudioTab } from "../../state/studio";
+import { parseTsvClipboard, validatePasteMatrix } from "./paste";
+import {
+  clampColumnWidth,
+  defaultColumnWidth,
+  findTableLayout,
+  moveVisibleColumn,
+  resizeTableColumn,
+  resolveTableLayout,
+} from "./table-layout";
 import { canOrder, sortIndicator } from "./table-query";
+import { opensInValueDialog } from "./value-format";
 
 export interface CellTarget {
   resultId: string;
@@ -24,6 +42,14 @@ export interface CellTarget {
   column: ColumnInfo;
   value: string | null;
   large: boolean;
+  insert?: {
+    tabId: string;
+    insertId: string;
+    usingDefault: boolean;
+    explicitNull: boolean;
+    unfilledRequired: boolean;
+  };
+  deleted?: boolean;
 }
 interface Props {
   tab: StudioTab;
@@ -31,8 +57,22 @@ interface Props {
   theme: string;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
+  onSelectedRowsChange?(rows: number[]): void;
+  focusRowRequest?: { seq: number; row: number } | null;
   /** Server-side header sorting for table tabs; absent when unavailable. */
   onSort?(column: ColumnInfo, additive: boolean): void;
+}
+
+function selectedVisualRows(selection: GridSelection): number[] {
+  const rows = new Set<number>(selection.rows.toArray());
+  if (selection.current) {
+    const { range, rangeStack } = selection.current;
+    for (let y = range.y; y < range.y + range.height; y++) rows.add(y);
+    for (const rect of rangeStack) {
+      for (let y = rect.y; y < rect.y + rect.height; y++) rows.add(y);
+    }
+  }
+  return [...rows].sort((a, b) => a - b);
 }
 
 const benchmarkColumns: ColumnInfo[] = [
@@ -53,6 +93,8 @@ const benchmarkColumns: ColumnInfo[] = [
   primaryKey: i === 0,
   foreignKey: false,
   editable: false,
+  insertable: false,
+  hasDefault: false,
 }));
 function benchmarkValue(col: number, row: number) {
   const statuses = ["completed", "processing", "pending", "completed", "refunded"];
@@ -82,6 +124,8 @@ export default function DatabaseGrid({
   theme: themeName,
   onSelect,
   onOpenValue,
+  onSelectedRowsChange,
+  focusRowRequest,
   onSort,
 }: Props) {
   const grid = useRef<DataEditorRef>(null),
@@ -89,6 +133,7 @@ export default function DatabaseGrid({
   const [size, setSize] = useState({ width: 800, height: 400 });
   const [widths, setWidths] = useState<Record<string, number>>({});
   const density = useStudio((state) => state.density);
+  const dirtyVersion = useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const [selection, setSelection] = useState<GridSelection>({
     rows: CompactSelection.empty(),
     columns: CompactSelection.empty(),
@@ -99,19 +144,33 @@ export default function DatabaseGrid({
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
   const model = useRef({ tab, result });
   model.current = { tab, result };
-  const columnsInfo =
+  const rawColumnsInfo =
     tab.kind === "benchmark"
       ? benchmarkColumns
       : tab.kind === "table"
         ? (tab.schema?.columns ?? [])
         : (result?.columns ?? []);
-  const freezeColumns = columnsInfo[0]?.primaryKey ? 1 : 0;
+  const tableLayout = useStudio((state) =>
+    tab.kind === "table" && tab.connectionId && tab.table
+      ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table)
+      : null,
+  );
+  const resolvedLayout = useMemo(
+    () => resolveTableLayout(rawColumnsInfo, tableLayout),
+    [rawColumnsInfo, tableLayout],
+  );
+  const visibleColumns = resolvedLayout.visibleColumns;
+  const visibleOrderKey = useMemo(
+    () => visibleColumns.map((column) => column.id).join(","),
+    [visibleColumns],
+  );
+  const freezeColumns = visibleColumns[0]?.primaryKey ? 1 : 0;
   const frozen = useRef(freezeColumns);
   frozen.current = freezeColumns;
   const sortQuery = tab.kind === "table" ? tab.query : null;
   const columns = useMemo<GridColumn[]>(
     () =>
-      columnsInfo.map((column) => {
+      visibleColumns.map((column) => {
         const indicator = sortQuery ? sortIndicator(sortQuery, column.name) : "";
         return {
           id: column.id,
@@ -119,16 +178,9 @@ export default function DatabaseGrid({
             indicator ? ` ${indicator}` : ""
           }`,
           width:
-            widths[column.id] ??
-            (column.name.includes("email")
-              ? 230
-              : column.kind === "temporal"
-                ? 225
-                : column.kind === "integer"
-                  ? 110
-                  : column.name === "status"
-                    ? 150
-                    : 200),
+            tab.kind === "table"
+              ? (resolvedLayout.widths[column.name] ?? defaultColumnWidth(column))
+              : (widths[column.id] ?? defaultColumnWidth(column)),
           icon:
             column.kind === "integer" || column.kind === "decimal"
               ? "headerNumber"
@@ -141,13 +193,16 @@ export default function DatabaseGrid({
                     : "headerString",
         };
       }),
-    [columnsInfo, widths, sortQuery],
+    [visibleColumns, resolvedLayout.widths, tab.kind, widths, sortQuery],
   );
+  const draftInserts = tab.kind === "table" ? dirtyStore.insertsForTab(tab.id) : [];
   const rowCount =
     tab.kind === "benchmark"
       ? 1_000_000
       : tab.kind === "table"
-        ? tab.loadedRows + (tab.hasMore ? 1 : 0)
+        ? draftInserts.length > 0
+          ? tab.loadedRows + draftInserts.length
+          : tab.loadedRows + (tab.hasMore ? 1 : 0)
         : (result?.retainedRows ?? 0);
   const theme = useMemo<Partial<Theme>>(() => {
     const style = getComputedStyle(document.documentElement),
@@ -201,9 +256,13 @@ export default function DatabaseGrid({
   useEffect(() => resultCache.subscribe(redraw), [redraw]);
   useEffect(() => dirtyStore.subscribe(redraw), [redraw]);
   useEffect(() => {
-    setSelection({ rows: CompactSelection.empty(), columns: CompactSelection.empty() });
+    const empty = { rows: CompactSelection.empty(), columns: CompactSelection.empty() };
+    selectionRef.current = empty;
+    setSelection(empty);
+    onSelectedRowsChange?.([]);
     onSelect(null);
-  }, [tab.id, tab.revision, result?.id]);
+    redraw();
+  }, [tab.id, tab.revision, result?.id, visibleOrderKey, redraw]);
 
   const locate = useCallback((row: number) => {
     const { tab, result } = model.current;
@@ -213,33 +272,118 @@ export default function DatabaseGrid({
     }
     return result ? { result, row } : null;
   }, []);
+
+  const locateDraft = useCallback((row: number) => {
+    const { tab } = model.current;
+    if (tab.kind !== "table" || row < tab.loadedRows) return null;
+    const inserts = dirtyStore.insertsForTab(tab.id);
+    const index = row - tab.loadedRows;
+    const draft = inserts[index];
+    return draft ? { tabId: tab.id, draft, index } : null;
+  }, []);
+
   const targetAt = useCallback(
     ([col, row]: Item, full = false): CellTarget | null => {
-      const source = locate(row),
-        column = columnsInfo[col];
-      if (!source || !column) return null;
-      const value = resultCache.read(source.result.id, column.id, source.row, full);
-      if (!value) return null;
-      const dirty = dirtyStore.get(source.result.id, source.row, column.id);
-      const editable =
+      const column = visibleColumns[col];
+      if (!column) return null;
+      const tableEditable =
         connected &&
         !["running", "queued", "outcomeUnknown"].includes(model.current.tab.status) &&
         !!model.current.tab.schema?.editable;
+      const draftSource = locateDraft(row);
+      if (draftSource) {
+        const hasExplicit = column.id in draftSource.draft.values;
+        const explicitValue = hasExplicit ? draftSource.draft.values[column.id] : null;
+        return {
+          resultId: `insert:${draftSource.draft.id}`,
+          row: draftSource.index,
+          column: { ...column, editable: column.insertable && tableEditable },
+          value: hasExplicit ? explicitValue : null,
+          large: false,
+          insert: {
+            tabId: draftSource.tabId,
+            insertId: draftSource.draft.id,
+            usingDefault: !hasExplicit && column.hasDefault,
+            explicitNull: hasExplicit && explicitValue === null,
+            unfilledRequired: !hasExplicit && !column.hasDefault && !column.nullable,
+          },
+        };
+      }
+      const source = locate(row);
+      if (!source) return null;
+      const value = resultCache.read(source.result.id, column.id, source.row, full);
+      if (!value) return null;
+      const deleted = dirtyStore.isDeleted(source.result.id, source.row);
+      const dirty = dirtyStore.get(source.result.id, source.row, column.id);
       return {
         resultId: source.result.id,
         row: source.row,
-        column: { ...column, editable: column.editable && editable },
+        column: { ...column, editable: column.editable && tableEditable && !deleted },
         value: dirty ? dirty.value : value.value,
         large: value.large,
+        deleted,
       };
     },
-    [locate, columnsInfo, connected],
+    [locate, locateDraft, visibleColumns, connected],
   );
+
+  const pendingCanvasFocus = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!focusRowRequest || !columns.length) return;
+    const targetRow = focusRowRequest.row;
+    if (targetRow < 0 || targetRow >= rowCount) return;
+    const isDraft = model.current.tab.kind === "table" && targetRow >= model.current.tab.loadedRows;
+    const targetCol = isDraft
+      ? Math.max(
+          0,
+          visibleColumns.findIndex((column) => column.insertable),
+        )
+      : 0;
+    const nextSelection: GridSelection = {
+      rows: CompactSelection.empty(),
+      columns: CompactSelection.empty(),
+      current: {
+        cell: [targetCol, targetRow],
+        range: { x: targetCol, y: targetRow, width: 1, height: 1 },
+        rangeStack: [],
+      },
+    };
+    selectionRef.current = nextSelection;
+    pendingCanvasFocus.current = true;
+    setSelection(nextSelection);
+    onSelectedRowsChange?.([targetRow]);
+    onSelect(targetAt([targetCol, targetRow], true));
+  }, [focusRowRequest?.seq]);
+
+  useLayoutEffect(() => {
+    if (!pendingCanvasFocus.current) return;
+    pendingCanvasFocus.current = false;
+    const cell = selection.current?.cell;
+    if (cell) grid.current?.scrollTo?.(cell[0], cell[1]);
+    host.current
+      ?.querySelector<HTMLElement>('[data-testid="data-grid-canvas"]')
+      ?.focus({ preventScroll: true });
+  }, [selection]);
+
+  useEffect(() => {
+    const rows = selectedVisualRows(selectionRef.current);
+    if (rows.some((row) => row >= rowCount)) {
+      const empty = { rows: CompactSelection.empty(), columns: CompactSelection.empty() };
+      selectionRef.current = empty;
+      setSelection(empty);
+      onSelectedRowsChange?.([]);
+      onSelect(null);
+      return;
+    }
+    const activeCell = selectionRef.current.current?.cell;
+    if (activeCell) onSelect(targetAt(activeCell, true));
+  }, [dirtyVersion, rowCount, targetAt]);
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
       const { tab } = model.current,
-        column = columnsInfo[col];
+        column = visibleColumns[col];
       if (!column) return { kind: GridCellKind.Loading, allowOverlay: false };
       if (tab.kind === "benchmark") {
         const value = benchmarkValue(col, row);
@@ -249,6 +393,48 @@ export default function DatabaseGrid({
           displayData: value,
           allowOverlay: true,
           readonly: true,
+        };
+      }
+      const draftSource = locateDraft(row);
+      if (draftSource) {
+        const tableEditable =
+          connected &&
+          tab.kind === "table" &&
+          !!tab.schema?.editable &&
+          !["outcomeUnknown", "queued", "running"].includes(tab.status);
+        const editable = tableEditable && column.insertable;
+        const hasExplicit = column.id in draftSource.draft.values;
+        const explicitValue = hasExplicit ? draftSource.draft.values[column.id] : null;
+        const override = {
+          bgCell: themeName === "light" ? "#e8f8ef" : "#1d3528",
+          textDark: themeName === "light" ? "#166534" : "#9fe3b8",
+        };
+        if (column.kind === "boolean" && hasExplicit && explicitValue !== null) {
+          return {
+            kind: GridCellKind.Boolean,
+            data: explicitValue === "true" || explicitValue === "t" || explicitValue === "1",
+            allowOverlay: false,
+            readonly: !editable,
+            themeOverride: override,
+          };
+        }
+        const displayData = hasExplicit
+          ? explicitValue === null
+            ? "NULL"
+            : explicitValue
+          : column.hasDefault
+            ? "<default>"
+            : column.nullable
+              ? "NULL"
+              : "<required>";
+        return {
+          kind: GridCellKind.Text,
+          data: hasExplicit && explicitValue !== null ? explicitValue : "",
+          displayData,
+          allowOverlay: editable && !opensInValueDialog(column),
+          readonly: !editable,
+          style: !hasExplicit || explicitValue === null ? "faded" : "normal",
+          themeOverride: override,
         };
       }
       const source = locate(row);
@@ -272,21 +458,28 @@ export default function DatabaseGrid({
           };
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
+      const deleted = dirtyStore.isDeleted(source.result.id, source.row);
       const dirty = dirtyStore.get(source.result.id, source.row, column.id),
         value = dirty ? dirty.value : cached.value;
       const editable =
+        !deleted &&
         connected &&
         tab.kind === "table" &&
         column.editable &&
         !!tab.schema?.editable &&
         !["outcomeUnknown", "queued", "running"].includes(tab.status) &&
         !cached.large;
-      const override = dirty
+      const override = deleted
         ? {
-            bgCell: themeName === "light" ? "#fff3d9" : "#353021",
-            textDark: themeName === "light" ? "#845715" : "#e7c384",
+            bgCell: themeName === "light" ? "#fdecec" : "#3a2024",
+            textDark: themeName === "light" ? "#9f2d2d" : "#f29b9b",
           }
-        : undefined;
+        : dirty
+          ? {
+              bgCell: themeName === "light" ? "#fff3d9" : "#353021",
+              textDark: themeName === "light" ? "#845715" : "#e7c384",
+            }
+          : undefined;
       if (column.kind === "boolean" && value !== null)
         return {
           kind: GridCellKind.Boolean,
@@ -299,30 +492,101 @@ export default function DatabaseGrid({
         kind: GridCellKind.Text,
         data: value ?? "",
         displayData: value === null ? "NULL" : value,
-        allowOverlay: !cached.large,
+        allowOverlay: !cached.large && !deleted && !opensInValueDialog(column),
         readonly: !editable,
-        style: value === null ? "faded" : "normal",
+        style: deleted || value === null ? "faded" : "normal",
         themeOverride: override,
       };
     },
-    [columnsInfo, locate, themeName, connected],
+    [visibleColumns, locate, locateDraft, themeName, connected],
   );
 
   const edit = useCallback(
     (cell: Item, edited: EditableGridCell) => {
       const target = targetAt(cell, true);
       if (!target || !target.column.editable || !model.current.tab.schema?.editable) return;
-      const value =
-        edited.kind === GridCellKind.Boolean
-          ? edited.data === undefined || edited.data === null
-            ? null
-            : edited.data
-              ? "true"
-              : "false"
-          : edited.kind === GridCellKind.Text
-            ? edited.data
-            : target.value;
       try {
+        if (target.insert) {
+          if (edited.kind === GridCellKind.Boolean) {
+            const next =
+              edited.data === undefined || edited.data === null
+                ? null
+                : edited.data
+                  ? "true"
+                  : "false";
+            dirtyStore.setInsertCell(
+              target.insert.tabId,
+              target.insert.insertId,
+              target.column.id,
+              next,
+            );
+          } else if (edited.kind === GridCellKind.Text) {
+            const raw = edited.data;
+            if (raw === "\\N") {
+              if (!target.column.nullable)
+                throw new Error(`Column "${target.column.name}" does not allow NULL.`);
+              dirtyStore.setInsertCell(
+                target.insert.tabId,
+                target.insert.insertId,
+                target.column.id,
+                null,
+              );
+            } else if (
+              raw === "" &&
+              target.column.kind !== "text" &&
+              target.column.kind !== "unknown"
+            ) {
+              const resetVal =
+                target.column.hasDefault || !target.column.nullable ? undefined : null;
+              dirtyStore.setInsertCell(
+                target.insert.tabId,
+                target.insert.insertId,
+                target.column.id,
+                resetVal,
+              );
+            } else if (target.column.kind === "boolean") {
+              const lower = raw.trim().toLowerCase();
+              if (lower === "true" || lower === "t" || lower === "1") {
+                dirtyStore.setInsertCell(
+                  target.insert.tabId,
+                  target.insert.insertId,
+                  target.column.id,
+                  "true",
+                );
+              } else if (lower === "false" || lower === "f" || lower === "0") {
+                dirtyStore.setInsertCell(
+                  target.insert.tabId,
+                  target.insert.insertId,
+                  target.column.id,
+                  "false",
+                );
+              } else {
+                throw new Error(
+                  `Column "${target.column.name}" expects a boolean (true/false, t/f, 1/0).`,
+                );
+              }
+            } else {
+              dirtyStore.setInsertCell(
+                target.insert.tabId,
+                target.insert.insertId,
+                target.column.id,
+                raw,
+              );
+            }
+          }
+          onSelect(targetAt(cell, true));
+          return;
+        }
+        const value =
+          edited.kind === GridCellKind.Boolean
+            ? edited.data === undefined || edited.data === null
+              ? null
+              : edited.data
+                ? "true"
+                : "false"
+            : edited.kind === GridCellKind.Text
+              ? edited.data
+              : target.value;
         dirtyStore.set({
           resultId: target.resultId,
           row: target.row,
@@ -330,14 +594,103 @@ export default function DatabaseGrid({
           original: resultCache.read(target.resultId, target.column.id, target.row, true)!.value,
           value,
         });
+        onSelect(targetAt(cell, true));
       } catch (error) {
         useStudio
           .getState()
           .notify(error instanceof Error ? error.message : "Could not edit this value");
       }
     },
-    [targetAt],
+    [onSelect, targetAt],
   );
+
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
+  const applyPaste = useCallback(
+    (anchor: Item, values: readonly (readonly string[])[]) => {
+      const currentTab = model.current.tab;
+      const tableEditable =
+        connected &&
+        currentTab.kind === "table" &&
+        !!currentTab.schema?.editable &&
+        !["outcomeUnknown", "queued", "running"].includes(currentTab.status);
+      const inserts = currentTab.kind === "table" ? dirtyStore.insertsForTab(currentTab.id) : [];
+      const outcome = validatePasteMatrix({
+        anchor,
+        values,
+        visibleColumns,
+        tableEditable,
+        resolveRow: (visualRow) => {
+          if (currentTab.kind !== "table" || visualRow < 0) return { kind: "outOfBounds" };
+          if (visualRow >= currentTab.loadedRows) {
+            if (inserts.length > 0) {
+              const draft = inserts[visualRow - currentTab.loadedRows];
+              return draft
+                ? { kind: "draftInsert", tabId: currentTab.id, insertId: draft.id }
+                : { kind: "outOfBounds" };
+            }
+            const totalRows = currentTab.loadedRows + (currentTab.hasMore ? 1 : 0);
+            return visualRow < totalRows ? { kind: "unloaded" } : { kind: "outOfBounds" };
+          }
+          const source = locate(visualRow);
+          if (!source) return { kind: "unloaded" };
+          return {
+            kind: "existing",
+            resultId: source.result.id,
+            row: source.row,
+            deleted: dirtyStore.isDeleted(source.result.id, source.row),
+            readOriginal: (columnId) =>
+              resultCache.read(source.result.id, columnId, source.row, true)?.value,
+          };
+        },
+      });
+      if (!outcome.ok) {
+        useStudio.getState().notify(outcome.error);
+        return;
+      }
+      try {
+        dirtyStore.applyBatch(outcome.cells, outcome.insertCells);
+        const activeCell = selectionRef.current.current?.cell;
+        if (activeCell) onSelect(targetAt(activeCell, true));
+      } catch (error) {
+        useStudio
+          .getState()
+          .notify(error instanceof Error ? error.message : "Could not paste these cells");
+      }
+    },
+    [connected, locate, onSelect, targetAt, visibleColumns],
+  );
+
+  const applyPasteRef = useRef(applyPaste);
+  applyPasteRef.current = applyPaste;
+
+  useLayoutEffect(() => {
+    const onWindowPaste = (event: ClipboardEvent) => {
+      if (!host.current?.contains(document.activeElement)) return;
+      if (
+        document.activeElement instanceof HTMLInputElement ||
+        document.activeElement instanceof HTMLTextAreaElement
+      )
+        return;
+      const sel = selectionRef.current;
+      const anchor: Item | null = sel.current
+        ? [sel.current.range.x, sel.current.range.y]
+        : sel.columns.length === 1
+          ? [sel.columns.first() ?? 0, 0]
+          : sel.rows.length === 1
+            ? [0, sel.rows.first() ?? 0]
+            : null;
+      if (!anchor || !event.clipboardData) return;
+      if (!event.clipboardData.types.includes("text/plain")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const raw = event.clipboardData.getData("text/plain");
+      applyPasteRef.current(anchor, parseTsvClipboard(raw));
+    };
+    window.addEventListener("paste", onWindowPaste, true);
+    return () => window.removeEventListener("paste", onWindowPaste, true);
+  }, []);
 
   return (
     <div className="grid-host" ref={host}>
@@ -357,28 +710,80 @@ export default function DatabaseGrid({
           theme={theme}
           freezeColumns={freezeColumns}
           onColumnResize={(column, width) => {
-            if (column.id) setWidths((old) => ({ ...old, [column.id!]: width }));
+            if (tab.kind === "table" && tab.connectionId && tab.table && column.id) {
+              const target = visibleColumns.find((entry) => entry.id === column.id);
+              if (target) {
+                useStudio
+                  .getState()
+                  .setTableLayout(
+                    tab.connectionId,
+                    tab.table,
+                    resizeTableColumn(
+                      rawColumnsInfo,
+                      tableLayout,
+                      tab.connectionId,
+                      tab.table,
+                      target.name,
+                      width,
+                    ),
+                  );
+              }
+              return;
+            }
+            if (column.id) setWidths((old) => ({ ...old, [column.id!]: clampColumnWidth(width) }));
           }}
+          onColumnMoved={
+            tab.kind === "table" && tab.connectionId && tab.table
+              ? (startIndex, endIndex) => {
+                  useStudio
+                    .getState()
+                    .setTableLayout(
+                      tab.connectionId!,
+                      tab.table!,
+                      moveVisibleColumn(
+                        rawColumnsInfo,
+                        tableLayout,
+                        tab.connectionId!,
+                        tab.table!,
+                        startIndex,
+                        endIndex,
+                      ),
+                    );
+                }
+              : undefined
+          }
           onCellEdited={edit}
+          onPaste={(target, values) => {
+            applyPaste(target, values);
+            return false;
+          }}
           onHeaderClicked={(col, event) => {
-            const column = columnsInfo[col];
+            const column = visibleColumns[col];
             if (!onSort || !column || !canOrder(column)) return;
             event.preventDefault();
             onSort(column, event.shiftKey);
           }}
-          onCellClicked={(cell) => onSelect(targetAt(cell, true))}
+          onCellClicked={(cell) => {
+            if (
+              !host.current?.contains(document.activeElement) &&
+              !document.activeElement?.closest("#portal")
+            ) {
+              host.current
+                ?.querySelector<HTMLElement>('[data-testid="data-grid-canvas"]')
+                ?.focus({ preventScroll: true });
+            }
+            onSelect(targetAt(cell, true));
+          }}
           gridSelection={selection}
-          onGridSelectionChange={(selection) => {
-            setSelection(selection);
-            onSelect(selection.current ? targetAt(selection.current.cell, true) : null);
+          onGridSelectionChange={(nextSelection) => {
+            selectionRef.current = nextSelection;
+            setSelection(nextSelection);
+            onSelectedRowsChange?.(selectedVisualRows(nextSelection));
+            onSelect(nextSelection.current ? targetAt(nextSelection.current.cell, true) : null);
           }}
           onCellActivated={(cell) => {
             const target = targetAt(cell, true);
-            if (
-              target &&
-              (target.large || target.column.kind === "json" || target.column.kind === "temporal")
-            )
-              onOpenValue(target);
+            if (target && (target.large || opensInValueDialog(target.column))) onOpenValue(target);
           }}
           onVisibleRegionChanged={(range) => {
             visible.current = range;
@@ -386,6 +791,7 @@ export default function DatabaseGrid({
             if (
               current.kind === "table" &&
               current.hasMore &&
+              dirtyStore.insertsForTab(current.id).length === 0 &&
               range.y + range.height >= current.loadedRows - 40
             )
               void useStudio.getState().loadNextPage(current.id);
@@ -408,9 +814,13 @@ export default function DatabaseGrid({
                     model.current.tab.revision !== revision
                   )
                     return [];
-                  if (model.current.tab.kind === "table" && !locate(row))
+                  if (
+                    model.current.tab.kind === "table" &&
+                    row < model.current.tab.loadedRows &&
+                    !locate(row)
+                  )
                     await useStudio.getState().ensureTablePage(tabId, row);
-                  const source = locate(row);
+                  const source = row < model.current.tab.loadedRows ? locate(row) : null;
                   if (source)
                     await resultCache.ensure(
                       source.result.id,
@@ -426,13 +836,16 @@ export default function DatabaseGrid({
                     const target = targetAt([col, row], true);
                     if (!target)
                       throw new Error("Wait for the selected rows to load before copying.");
-                    bytes += (target.value?.length ?? 0) * 2;
+                    const copyText = target.insert?.usingDefault
+                      ? "<default>"
+                      : (target.value ?? "NULL");
+                    bytes += copyText.length * 2;
                     if (bytes > 8 * 1024 * 1024)
                       throw new Error("Copy is limited to 8 MiB. Select fewer cells.");
                     line.push({
                       kind: GridCellKind.Text,
-                      data: target.value ?? "NULL",
-                      displayData: target.value ?? "NULL",
+                      data: copyText,
+                      displayData: copyText,
                       allowOverlay: false,
                       readonly: true,
                     });

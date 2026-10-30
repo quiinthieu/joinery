@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
+  ArrowDownLeft,
   ArrowUpDown,
   ArrowUpRight,
   Check,
   Code2,
+  Columns3,
   Command,
   Database,
   FileCode2,
@@ -17,6 +19,7 @@ import {
   PanelLeftOpen,
   PanelRight,
   Plus,
+  RotateCcw,
   Search,
   Wifi,
   X,
@@ -27,6 +30,7 @@ import { ConnectionDialog, ConnectDialog } from "../features/connections/Connect
 import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
+import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
 import { tabNavigation } from "../components/ui/tabs";
@@ -36,19 +40,25 @@ import type {
   ChangePreview,
   ConnectionProfile,
   ForeignKey,
+  InboundForeignKey,
   PreparedPlan,
   ProcessInfo,
   ResourceUsage,
+  TableChanges,
 } from "../ipc/generated";
 import { useStudio, beginEventBatch, querySessionForTab, type StudioTab } from "../state/studio";
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
 import type { CellTarget } from "../features/grid/DatabaseGrid";
+import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import {
   canOrder,
   constraintsForColumn,
+  hasRawClauses,
+  inboundConstraintsForCell,
   referencedRowsQuery,
+  referencingRowsQuery,
   withFilter,
 } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
@@ -69,11 +79,22 @@ type Dialog =
       tabId: string;
       profile?: ConnectionProfile;
       onSuccess?(): void;
+      onApprove?(approval: string): Promise<void>;
     }
   | { kind: "confirm"; title: string; description: string; action(): void | Promise<void> }
-  | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string };
+  | { kind: "columns"; tabId: string }
+  | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
+  | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
   return tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
+}
+export function pendingCountFor(tab: StudioTab) {
+  return tab.kind === "table"
+    ? dirtyStore.pendingCountForTab(
+        tab.id,
+        tab.pages.map((page) => page.result.id),
+      )
+    : 0;
 }
 
 export function App() {
@@ -99,6 +120,7 @@ export function App() {
     current?.kind === "table" &&
     session?.capabilities.tableFiltering &&
     selectedCell &&
+    !selectedCell.insert &&
     current.pages.some((page) => page.result.id === selectedCell.resultId) &&
     current.schema?.columns.some((column) => column.id === selectedCell.column.id)
       ? selectedCell
@@ -131,12 +153,108 @@ export function App() {
     else
       setDialog({ kind: "references", keys: selectedKeys, target: tableColumn, tabId: current.id });
   }
+  function followReferencingKey(tab: StudioTab, key: InboundForeignKey, target: CellTarget) {
+    const query = referencingRowsQuery(key, (name) => {
+      const column = tab.schema?.columns.find((c) => c.name === name);
+      return column ? resultCache.read(target.resultId, column.id, target.row, true)?.value : null;
+    });
+    if (!query || !tab.connectionId) {
+      state.notify("This row's referenced key contains NULL, so no rows can reference it.");
+      return;
+    }
+    void state.openTable(tab.connectionId, key.source, query);
+  }
+  async function goToReferencing() {
+    if (!current || current.kind !== "table" || !current.table || !tableColumn || !session) {
+      state.notify("Select a row in a table to open rows that reference it.");
+      return;
+    }
+    try {
+      const all = await client.call<InboundForeignKey[]>("referencing_foreign_keys", {
+        sessionId: session.id,
+        table: current.table,
+      });
+      if (!all.length) {
+        state.notify(`No visible tables reference ${current.table.schema}.${current.table.name}.`);
+        return;
+      }
+      const relevant = inboundConstraintsForCell(all, tableColumn.column.name);
+      if (relevant.length === 1) followReferencingKey(current, relevant[0], tableColumn);
+      else
+        setDialog({
+          kind: "referencing",
+          keys: relevant,
+          target: tableColumn,
+          tabId: current.id,
+        });
+    } catch (error) {
+      state.notify(messageOf(error));
+    }
+  }
+  async function applyTableQuery(tabId: string, query: BrowseQuery, options?: { force?: boolean }) {
+    const outcome = await state.setTableQuery(tabId, query, options);
+    if (outcome.kind === "refused") {
+      state.notify(outcome.reason);
+      return;
+    }
+    if (outcome.kind === "review") {
+      const targetTab = useStudio.getState().tabs.find((t) => t.id === tabId);
+      const targetProfile = useStudio
+        .getState()
+        .bootstrap?.profiles.find((p) => p.id === targetTab?.connectionId);
+      setDialog({
+        kind: "review",
+        plan: outcome.plan,
+        tabId,
+        profile: targetProfile,
+        onApprove: async (approval) => {
+          const next = await useStudio.getState().setTableQuery(tabId, outcome.query, {
+            approval: { planId: outcome.plan.id, approval },
+          });
+          if (next.kind === "refused") useStudio.getState().notify(next.reason);
+        },
+      });
+    }
+  }
   function changeTableQuery(query: BrowseQuery) {
     if (!current) return;
-    void state.setTableQuery(current.id, query).then((reason) => reason && state.notify(reason));
+    void applyTableQuery(current.id, query);
   }
-  const tableCommands =
-    current?.kind === "table" && session?.capabilities.tableFiltering
+  const currentLayout =
+    current?.kind === "table"
+      ? findTableLayout(state.tableLayouts, current.connectionId, current.table)
+      : null;
+  const resolvedCurrentLayout =
+    current?.kind === "table" && current.schema
+      ? resolveTableLayout(current.schema.columns, currentLayout)
+      : null;
+  const layoutCommands =
+    current?.kind === "table" &&
+    current.connectionId &&
+    current.table &&
+    (current.schema?.columns.length ?? 0) > 0
+      ? [
+          {
+            label: "Configure table columns",
+            shortcut: "",
+            icon: Columns3,
+            action: () => setDialog({ kind: "columns", tabId: current.id }),
+          },
+          ...(resolvedCurrentLayout?.customized
+            ? [
+                {
+                  label: "Reset column layout",
+                  shortcut: "",
+                  icon: RotateCcw,
+                  action: () => state.resetTableLayout(current.connectionId!, current.table!),
+                },
+              ]
+            : []),
+        ]
+      : [];
+  const tableCommands = [
+    ...layoutCommands,
+    ...(current?.kind === "table" && session?.capabilities.tableFiltering
       ? [
           ...selectedKeys.map((key, index) => ({
             label: `Go to referenced row in ${key.target.name}${
@@ -146,6 +264,16 @@ export function App() {
             icon: ArrowUpRight,
             action: () => current && tableColumn && followKey(current, key, tableColumn),
           })),
+          ...(tableColumn
+            ? [
+                {
+                  label: "Go to referencing rows",
+                  shortcut: "⇧⌘ G",
+                  icon: ArrowDownLeft,
+                  action: () => void goToReferencing(),
+                },
+              ]
+            : []),
           ...(tableColumn && canOrder(tableColumn.column)
             ? [false, true].map((descending) => ({
                 label: `Sort ${descending ? "descending" : "ascending"} by ${tableColumn.column.name}`,
@@ -195,8 +323,24 @@ export function App() {
                 },
               ]
             : []),
+          ...(hasRawClauses(current.query)
+            ? [
+                {
+                  label: "Reset table SQL clauses",
+                  shortcut: "",
+                  icon: Filter,
+                  action: () =>
+                    changeTableQuery({
+                      ...current.query,
+                      whereClause: null,
+                      orderClause: null,
+                    }),
+                },
+              ]
+            : []),
         ]
-      : [];
+      : []),
+  ];
   useEffect(() => {
     void state.initialize();
   }, []);
@@ -211,7 +355,7 @@ export function App() {
         .getState()
         .tabs.some(
           (tab) =>
-            dirtyFor(tab).length ||
+            pendingCountFor(tab) > 0 ||
             ["queued", "running"].includes(tab.status) ||
             (tab.querySession && !tab.querySessionClosed),
         );
@@ -382,8 +526,8 @@ export function App() {
       state.notify("This page belongs to an earlier session. Refresh the table before editing.");
       return;
     }
-    const changes = dirtyFor(active);
-    if (!changes.length) {
+    const resultIds = active.pages.map((page) => page.result.id);
+    if (!dirtyStore.pendingCountForTab(active.id, resultIds)) {
       state.notify("There are no pending edits.");
       return;
     }
@@ -392,15 +536,32 @@ export function App() {
       return;
     }
     try {
-      const grouped = new Map<string, typeof changes>();
-      for (const change of changes)
+      const cellUpdates = dirtyFor(active);
+      const grouped = new Map<string, typeof cellUpdates>();
+      for (const change of cellUpdates)
         grouped.set(change.resultId, [...(grouped.get(change.resultId) ?? []), change]);
-      const preview = await client.call<ChangePreview>("prepare_changes_batch", {
-        sessionId: session.id,
-        inputs: [...grouped].map(([resultId, changes]) => ({
+      const deletes = resultIds
+        .map((resultId) => ({ resultId, rows: dirtyStore.deletesForResult(resultId) }))
+        .filter((entry) => entry.rows.length > 0);
+      const schemaColumns = active.schema?.columns ?? [];
+      const columnOrder = new Map(schemaColumns.map((column, index) => [column.id, index]));
+      const inserts = dirtyStore.insertsForTab(active.id).map((draft) => ({
+        values: Object.entries(draft.values)
+          .sort(([a], [b]) => (columnOrder.get(a) ?? 999999) - (columnOrder.get(b) ?? 999999))
+          .map(([column, value]) => ({ column, value })),
+      }));
+      const changes: TableChanges = {
+        resultId: active.pages[0]?.result.id ?? null,
+        updates: [...grouped].map(([resultId, items]) => ({
           resultId,
-          changes: changes.map(({ row, column, value }) => ({ row, column, value })),
+          changes: items.map(({ row, column, value }) => ({ row, column, value })),
         })),
+        deletes,
+        inserts,
+      };
+      const preview = await client.call<ChangePreview>("prepare_table_changes", {
+        sessionId: session.id,
+        changes,
       });
       setDialog({
         kind: "review",
@@ -409,9 +570,15 @@ export function App() {
         profile,
         tabId: active.id,
         onSuccess: () => {
-          for (const page of active.pages) dirtyStore.clear(page.result.id);
+          const latestTab = useStudio.getState().tabs.find((t) => t.id === active.id);
+          dirtyStore.clearTab(
+            active.id,
+            (latestTab ?? active).pages.map((page) => page.result.id),
+          );
           setSelectedCell(null);
-          void state.refreshTable(active.id);
+          if (latestTab && hasRawClauses(latestTab.query))
+            void applyTableQuery(active.id, latestTab.query, { force: true });
+          else void state.refreshTable(active.id);
           state.notify("Changes committed");
         },
       });
@@ -421,7 +588,7 @@ export function App() {
   }
   function confirmDiscard(active: StudioTab, action: () => void) {
     if (
-      dirtyFor(active).length ||
+      pendingCountFor(active) > 0 ||
       ["queued", "running"].includes(active.status) ||
       (active.querySession && !active.querySessionClosed)
     )
@@ -462,7 +629,7 @@ export function App() {
       state.tabs.some(
         (tab) =>
           tab.connectionId === profile.id &&
-          (dirtyFor(tab).length ||
+          (pendingCountFor(tab) > 0 ||
             ["queued", "running"].includes(tab.status) ||
             (tab.querySession && !tab.querySessionClosed)),
       )
@@ -476,8 +643,8 @@ export function App() {
       });
     else void action().catch((error) => state.notify(messageOf(error)));
   }
-  const actions = useRef({ runSql, reviewEdits, goToReferenced });
-  actions.current = { runSql, reviewEdits, goToReferenced };
+  const actions = useRef({ runSql, reviewEdits, goToReferenced, goToReferencing });
+  actions.current = { runSql, reviewEdits, goToReferenced, goToReferencing };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || references.current.dialog) return;
@@ -495,6 +662,9 @@ export function App() {
       } else if (key === "b" && event.shiftKey) {
         event.preventDefault();
         actions.current.goToReferenced();
+      } else if (key === "g" && event.shiftKey) {
+        event.preventDefault();
+        void actions.current.goToReferencing();
       } else if (key === "b") {
         event.preventDefault();
         useStudio.setState((state) => ({ sidebarVisible: !state.sidebarVisible }));
@@ -544,7 +714,9 @@ export function App() {
           onNew={(groupId) => setDialog({ kind: "connection", groupId })}
           onConnect={(profile) => setDialog({ kind: "connect", profile })}
           onEdit={(profile) => {
-            if (state.tabs.some((tab) => tab.connectionId === profile.id && dirtyFor(tab).length))
+            if (
+              state.tabs.some((tab) => tab.connectionId === profile.id && pendingCountFor(tab) > 0)
+            )
               setDialog({
                 kind: "confirm",
                 title: "Discard pending edits?",
@@ -628,7 +800,7 @@ export function App() {
                   <Gauge size={13} />
                 )}
                 <span title={tab.title}>{tab.title}</span>
-                {tab.kind === "table" && dirtyFor(tab).length > 0 && <i className="dirty-dot" />}
+                {tab.kind === "table" && pendingCountFor(tab) > 0 && <i className="dirty-dot" />}
                 {["queued", "running"].includes(tab.status) && (
                   <span className="tab-running">●</span>
                 )}
@@ -681,9 +853,11 @@ export function App() {
                 }
                 onSelect={setSelectedCell}
                 onOpenValue={(target) => setDialog({ kind: "value", target })}
+                onOpenColumns={() => setDialog({ kind: "columns", tabId: current.id })}
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
+                onQueryChange={(query, options) => void applyTableQuery(current.id, query, options)}
               />
             )}
           </section>
@@ -720,9 +894,25 @@ export function App() {
                           ? "Foreign key"
                           : "—"}
                     </dd>
+                    {selectedCell.deleted && (
+                      <>
+                        <dt>Row</dt>
+                        <dd>Marked for deletion</dd>
+                      </>
+                    )}
+                    {selectedCell.insert && (
+                      <>
+                        <dt>Row</dt>
+                        <dd>Staged insert</dd>
+                      </>
+                    )}
                   </dl>
                   <div className="inspector-value">
-                    {selectedCell.value === null ? (
+                    {selectedCell.insert?.usingDefault ? (
+                      <em>&lt;default&gt;</em>
+                    ) : selectedCell.insert?.unfilledRequired ? (
+                      <em>&lt;required&gt;</em>
+                    ) : selectedCell.value === null ? (
                       <em>NULL</em>
                     ) : (
                       <pre>{selectedCell.value.slice(0, 4000)}</pre>
@@ -738,6 +928,12 @@ export function App() {
                     <button className="button ghost small" onClick={goToReferenced}>
                       <ArrowUpRight size={12} />
                       Go to referenced row
+                    </button>
+                  )}
+                  {tableColumn && (
+                    <button className="button ghost small" onClick={() => void goToReferencing()}>
+                      <ArrowDownLeft size={12} />
+                      Go to referencing rows
                     </button>
                   )}
                 </>
@@ -837,7 +1033,8 @@ export function App() {
           preview={dialog.preview}
           profile={dialog.profile}
           onExecute={async (approval) => {
-            await executePrepared(dialog.tabId, dialog.plan, approval, dialog.onSuccess);
+            if (dialog.onApprove) await dialog.onApprove(approval);
+            else await executePrepared(dialog.tabId, dialog.plan, approval, dialog.onSuccess);
           }}
           onClose={() => setDialog(null)}
         />
@@ -845,6 +1042,23 @@ export function App() {
       {dialog?.kind === "value" && (
         <ValueDialog target={dialog.target} onClose={() => setDialog(null)} />
       )}
+      {dialog?.kind === "columns" &&
+        (() => {
+          const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
+          if (!targetTab?.connectionId || !targetTab.table || !targetTab.schema) return null;
+          return (
+            <TableColumnsDialog
+              connectionId={targetTab.connectionId}
+              table={targetTab.table}
+              columns={targetTab.schema.columns}
+              layout={findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table)}
+              onChange={(next) =>
+                state.setTableLayout(targetTab.connectionId!, targetTab.table!, next)
+              }
+              onClose={() => setDialog(null)}
+            />
+          );
+        })()}
       {dialog?.kind === "confirm" && (
         <Confirmation
           title={dialog.title}
@@ -873,6 +1087,32 @@ export function App() {
                 <span>
                   {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
                 </span>
+                <kbd>{key.name}</kbd>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
+      {dialog?.kind === "referencing" && (
+        <Modal
+          title="Go to referencing rows"
+          subtitle={`More than one foreign key references ${
+            state.tabs.find((t) => t.id === dialog.tabId)?.table?.name ?? "this table"
+          }`}
+          onClose={() => setDialog(null)}
+        >
+          <div className="palette-commands">
+            {dialog.keys.map((key) => (
+              <button
+                key={`${key.source.schema}.${key.source.name}:${key.name}`}
+                onClick={() => {
+                  setDialog(null);
+                  const tab = useStudio.getState().tabs.find((t) => t.id === dialog.tabId);
+                  if (tab) followReferencingKey(tab, key, dialog.target);
+                }}
+              >
+                <ArrowDownLeft size={16} />
+                <span>{`${key.source.schema}.${key.source.name} (${key.columns.join(", ")})`}</span>
                 <kbd>{key.name}</kbd>
               </button>
             ))}

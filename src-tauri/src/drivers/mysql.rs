@@ -12,8 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 mod catalog;
 mod values;
+pub(crate) use catalog::browse_sql;
 pub(crate) use values::MysqlDialect;
-pub use values::update_sql;
+pub use values::mutation_sql;
 use values::{column, text_row};
 
 // Conn's normal Drop drains pending results in a background task. Explicit
@@ -370,6 +371,9 @@ impl Driver for Mysql {
     }
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         self.table_schema(table).await
+    }
+    async fn referencing_keys(&self, table: &TableRef) -> AppResult<Vec<InboundForeignKey>> {
+        self.referencing_foreign_keys(table).await
     }
     async fn browse(
         &self,

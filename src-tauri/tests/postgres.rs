@@ -978,7 +978,7 @@ async fn browse_sorted_filtered_pages_match_reference() {
         (
             BrowseQuery {
                 sort: vec![sort("bucket", true), sort("label", false)],
-                filters: vec![],
+                ..Default::default()
             },
             "SELECT id FROM browse_sort ORDER BY bucket DESC NULLS FIRST, label ASC NULLS LAST, id",
         ),
@@ -990,17 +990,18 @@ async fn browse_sorted_filtered_pages_match_reference() {
                     op: FilterOp::NotEq,
                     value: Some("3".into()),
                 }],
+                ..Default::default()
             },
             "SELECT id FROM browse_sort WHERE bucket <> 3 ORDER BY label DESC NULLS FIRST, bucket ASC NULLS LAST, id",
         ),
         (
             BrowseQuery {
-                sort: vec![],
                 filters: vec![ColumnFilter {
                     column: "label".into(),
                     op: FilterOp::Contains,
                     value: Some("_%".into()),
                 }],
+                ..Default::default()
             },
             "SELECT id FROM browse_sort WHERE label LIKE '%!_!%%' ESCAPE '!' ORDER BY id",
         ),
@@ -1012,6 +1013,7 @@ async fn browse_sorted_filtered_pages_match_reference() {
                     op: FilterOp::IsNull,
                     value: None,
                 }],
+                ..Default::default()
             },
             "SELECT id FROM browse_sort WHERE label IS NULL ORDER BY bucket ASC NULLS LAST, id",
         ),
@@ -1026,12 +1028,12 @@ async fn browse_sorted_filtered_pages_match_reference() {
         }
     }
     let alpha = BrowseQuery {
-        sort: vec![],
         filters: vec![ColumnFilter {
             column: "label".into(),
             op: FilterOp::StartsWith,
             value: Some("ALP".into()),
         }],
+        ..Default::default()
     };
     let (ids, _) = browse_ids(&studio, &session, &table, &alpha).await;
     assert_eq!(
@@ -1045,12 +1047,12 @@ async fn browse_sorted_filtered_pages_match_reference() {
         "PostgreSQL text search is case-insensitive"
     );
     let hostile = BrowseQuery {
-        sort: vec![],
         filters: vec![ColumnFilter {
             column: "label".into(),
             op: FilterOp::Eq,
             value: Some("'; DROP TABLE browse_sort; --".into()),
         }],
+        ..Default::default()
     };
     assert!(
         browse_ids(&studio, &session, &table, &hostile)
@@ -1059,5 +1061,638 @@ async fn browse_sorted_filtered_pages_match_reference() {
             .is_empty()
     );
     assert_eq!(studio.usage().retained_bytes, 0);
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn raw_browse_clauses_preserve_types_and_enforce_safety_gates() {
+    let table = TableRef {
+        schema: "public".into(),
+        name: "browse_sort".into(),
+    };
+    let (_ro_root, ro_studio, ro_session) = setup(SafeMode::ReadOnly).await;
+    // Pure Read WHERE clause pages across multiple 500-row pages and resolves table-qualified columns.
+    let read_where = BrowseQuery {
+        where_clause: Some("browse_sort.bucket IS NOT NULL AND id > 10".into()),
+        ..Default::default()
+    };
+    assert!(
+        ro_studio
+            .prepare_browse(&ro_session.id, &table, &read_where)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (ids, pages) = browse_ids(&ro_studio, &ro_session, &table, &read_where).await;
+    assert!(pages > 1);
+    assert_eq!(
+        ids,
+        reference_ids(
+            &ro_studio,
+            &ro_session,
+            "SELECT id FROM browse_sort WHERE bucket IS NOT NULL AND id > 10 ORDER BY id"
+        )
+        .await
+    );
+
+    // Custom ORDER BY sorts numeric `id` numerically (not lexicographically as text) and returns one bounded page.
+    let custom_order = BrowseQuery {
+        where_clause: Some("id IN (2, 10, 100)".into()),
+        order_clause: Some("id DESC".into()),
+        ..Default::default()
+    };
+    let page = ro_studio
+        .browse_with(&ro_session.id, &table, None, &custom_order)
+        .await
+        .unwrap();
+    assert!(!page.has_more);
+    let got: Vec<String> = (0..page.result.retained_rows)
+        .map(|i| {
+            ro_studio.results.row(&page.result.id, i).unwrap()[0]
+                .clone()
+                .unwrap()
+        })
+        .collect();
+    ro_studio.release_result(&page.result.id);
+    assert_eq!(got, ["100", "10", "2"]);
+
+    // Stacked statements and non-Read functions are blocked in ReadOnly Safe Mode.
+    let stacked = BrowseQuery {
+        where_clause: Some("id = 1; SELECT 1".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        ro_studio
+            .prepare_browse(&ro_session.id, &table, &stacked)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+    let unclassified = BrowseQuery {
+        where_clause: Some("id = 1 AND current_setting('server_version_num') <> ''".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        ro_studio
+            .prepare_browse(&ro_session.id, &table, &unclassified)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
+    );
+    assert_eq!(
+        ro_studio
+            .browse_with(&ro_session.id, &table, None, &unclassified)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
+    );
+    ro_studio.shutdown();
+
+    // Writable profiles require one-use approval for non-Read expressions.
+    let (_rw_root, rw_studio, rw_session) = setup(SafeMode::Confirm).await;
+    assert_eq!(
+        rw_studio
+            .browse_with(&rw_session.id, &table, None, &unclassified)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+    let plan = rw_studio
+        .prepare_browse(&rw_session.id, &table, &unclassified)
+        .await
+        .unwrap()
+        .expect("unclassified clause must require approval");
+    assert!(plan.requires_approval);
+    let token = rw_studio.authorize(&plan.id, None, None).unwrap();
+    let approval = BrowseApproval {
+        plan_id: plan.id.clone(),
+        approval: token,
+    };
+    let approved_page = rw_studio
+        .browse_with_approval(&rw_session.id, &table, None, &unclassified, Some(&approval))
+        .await
+        .unwrap();
+    assert_eq!(approved_page.result.retained_rows, 1);
+    assert!(!approved_page.has_more);
+    rw_studio.release_result(&approved_page.result.id);
+    // Reusing the consumed one-use token fails closed.
+    assert_eq!(
+        rw_studio
+            .browse_with_approval(&rw_session.id, &table, None, &unclassified, Some(&approval))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    rw_studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn referencing_foreign_keys_preserve_composite_ordinals_and_filter_unreadable_tables() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let orders = TableRef {
+        schema: "public".into(),
+        name: "orders".into(),
+    };
+    let order_lines = TableRef {
+        schema: "public".into(),
+        name: "order_lines".into(),
+    };
+    let browse_sort = TableRef {
+        schema: "public".into(),
+        name: "browse_sort".into(),
+    };
+
+    let inbound_orders = studio
+        .referencing_foreign_keys(&session.id, &orders)
+        .await
+        .unwrap();
+    assert_eq!(
+        inbound_orders,
+        vec![
+            InboundForeignKey {
+                name: "line_notes_order_fk".into(),
+                source: TableRef {
+                    schema: "public".into(),
+                    name: "line_notes".into(),
+                },
+                columns: vec!["note_order".into()],
+                target_columns: vec!["id".into()],
+            },
+            InboundForeignKey {
+                name: "order_lines_order_id_fkey".into(),
+                source: order_lines.clone(),
+                columns: vec!["order_id".into()],
+                target_columns: vec!["id".into()],
+            },
+        ]
+    );
+
+    let inbound_lines = studio
+        .referencing_foreign_keys(&session.id, &order_lines)
+        .await
+        .unwrap();
+    assert_eq!(
+        inbound_lines,
+        vec![InboundForeignKey {
+            name: "line_notes_line_fk".into(),
+            source: TableRef {
+                schema: "public".into(),
+                name: "line_notes".into(),
+            },
+            columns: vec!["note_order".into(), "note_line".into()],
+            target_columns: vec!["order_id".into(), "line_no".into()],
+        }]
+    );
+
+    assert!(
+        studio
+            .referencing_foreign_keys(&session.id, &browse_sort)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        studio
+            .referencing_foreign_keys(
+                &session.id,
+                &TableRef {
+                    schema: "public".into(),
+                    name: "missing_table".into(),
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+
+    // Non-superuser role without SELECT on line_notes only sees order_lines referencing orders.
+    run(
+        &studio,
+        &session,
+        "DROP ROLE IF EXISTS joinery_inbound_limited;
+         CREATE ROLE joinery_inbound_limited LOGIN PASSWORD 'joinery-limited-only';
+         GRANT CONNECT ON DATABASE joinery TO joinery_inbound_limited;
+         GRANT USAGE ON SCHEMA public TO joinery_inbound_limited;
+         GRANT SELECT ON public.orders, public.order_lines TO joinery_inbound_limited;",
+    )
+    .await;
+
+    let mut limited_profile = studio.bootstrap().unwrap().profiles[0].clone();
+    limited_profile.id = new_id();
+    limited_profile.name = "Inbound limited".into();
+    limited_profile.username = "joinery_inbound_limited".into();
+    limited_profile.safe_mode = SafeMode::ReadOnly;
+    let saved = studio.save_profile(limited_profile, None).unwrap();
+    let limited_session = studio
+        .connect(
+            &saved.id,
+            ConnectionSecrets {
+                password: Some("joinery-limited-only".into()),
+                ssh_password: None,
+                key_passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+    let visible = studio
+        .referencing_foreign_keys(&limited_session.id, &orders)
+        .await
+        .unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].source, order_lines);
+    studio.disconnect(&limited_session.id);
+
+    run(
+        &studio,
+        &session,
+        "REVOKE ALL PRIVILEGES ON public.orders, public.order_lines FROM joinery_inbound_limited;
+         REVOKE USAGE ON SCHEMA public FROM joinery_inbound_limited;
+         REVOKE CONNECT ON DATABASE joinery FROM joinery_inbound_limited;
+         DROP ROLE joinery_inbound_limited;",
+    )
+    .await;
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn table_changes_insert_update_delete_atomically_and_conflict_check_deletes() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery_batch2_mutations, joinery_batch2_defaults;
+                 CREATE TABLE joinery_batch2_mutations (
+                   id INT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                   strict_seq INT GENERATED ALWAYS AS IDENTITY,
+                   label TEXT NOT NULL DEFAULT 'from-default',
+                   amount INT NOT NULL,
+                   doubled INT GENERATED ALWAYS AS (amount * 2) STORED,
+                   note TEXT
+                 );
+                 INSERT INTO joinery_batch2_mutations (label, amount, note)
+                 VALUES ('alpha', 10, 'keep'), ('beta', 20, 'delete-me');
+                 CREATE TABLE joinery_batch2_defaults (
+                   id SERIAL PRIMARY KEY,
+                   tag TEXT NOT NULL DEFAULT 'auto'
+                 );",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let table = TableRef {
+        schema: "public".into(),
+        name: "joinery_batch2_mutations".into(),
+    };
+    let schema = studio.schema(&session.id, &table).await.unwrap();
+    let col = |name: &str| schema.columns.iter().find(|c| c.name == name).unwrap();
+    assert!(!col("id").editable && col("id").insertable && col("id").has_default);
+    assert!(
+        !col("strict_seq").editable
+            && !col("strict_seq").insertable
+            && col("strict_seq").has_default
+    );
+    assert!(col("label").editable && col("label").insertable && col("label").has_default);
+    assert!(col("amount").editable && col("amount").insertable && !col("amount").has_default);
+    assert!(!col("doubled").editable && !col("doubled").insertable && col("doubled").has_default);
+    assert!(col("note").editable && col("note").insertable && !col("note").has_default);
+
+    let (_ro_root, ro_studio, ro_session) = setup(SafeMode::ReadOnly).await;
+    let ro_schema = ro_studio.schema(&ro_session.id, &table).await.unwrap();
+    assert!(
+        !ro_schema.editable
+            && ro_schema
+                .columns
+                .iter()
+                .all(|c| !c.editable && !c.insertable)
+    );
+    let ro_page = ro_studio
+        .browse(&ro_session.id, &table, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        ro_studio
+            .prepare_table_changes(
+                &ro_session.id,
+                TableChanges {
+                    result_id: Some(ro_page.result.id.clone()),
+                    updates: vec![],
+                    deletes: vec![ResultDeletes {
+                        result_id: ro_page.result.id.clone(),
+                        rows: vec![0],
+                    }],
+                    inserts: vec![],
+                },
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+    ro_studio.shutdown();
+
+    let page = studio.browse(&session.id, &table, None).await.unwrap();
+    assert_eq!(page.result.retained_rows, 2);
+
+    // Missing required column without default is rejected.
+    assert_eq!(
+        studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(page.result.id.clone()),
+                    updates: vec![],
+                    deletes: vec![],
+                    inserts: vec![RowInsert { values: vec![] }],
+                },
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+    // Non-insertable GENERATED ALWAYS column is rejected.
+    assert_eq!(
+        studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(page.result.id.clone()),
+                    updates: vec![],
+                    deletes: vec![],
+                    inserts: vec![RowInsert {
+                        values: vec![
+                            InsertValue {
+                                column: "c1".into(),
+                                value: Some("5".into()),
+                            },
+                            InsertValue {
+                                column: "c3".into(),
+                                value: Some("10".into()),
+                            },
+                        ],
+                    }],
+                },
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
+    );
+    // Overlapping update and delete on the same row is rejected.
+    assert_eq!(
+        studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(page.result.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: page.result.id.clone(),
+                        changes: vec![CellChange {
+                            row: 1,
+                            column: "c3".into(),
+                            value: Some("25".into()),
+                        }],
+                    }],
+                    deletes: vec![ResultDeletes {
+                        result_id: page.result.id.clone(),
+                        rows: vec![1],
+                    }],
+                    inserts: vec![],
+                },
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+
+    // Mixed atomic batch: update row 0, delete row 1, insert 2 rows.
+    let preview = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(page.result.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: page.result.id.clone(),
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: "c3".into(),
+                        value: Some("15".into()),
+                    }],
+                }],
+                deletes: vec![ResultDeletes {
+                    result_id: page.result.id.clone(),
+                    rows: vec![1],
+                }],
+                inserts: vec![
+                    RowInsert {
+                        values: vec![InsertValue {
+                            column: "c3".into(),
+                            value: Some("30".into()),
+                        }],
+                    },
+                    RowInsert {
+                        values: vec![
+                            InsertValue {
+                                column: "c0".into(),
+                                value: Some("99".into()),
+                            },
+                            InsertValue {
+                                column: "c2".into(),
+                                value: Some("explicit".into()),
+                            },
+                            InsertValue {
+                                column: "c3".into(),
+                                value: Some("40".into()),
+                            },
+                            InsertValue {
+                                column: "c5".into(),
+                                value: Some("custom".into()),
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+        .unwrap();
+    assert_eq!(preview.row_count, 4);
+    assert!(preview.sql.iter().any(|s| s.starts_with("DELETE FROM")));
+    assert!(preview.sql.iter().any(|s| s.starts_with("UPDATE")));
+    assert_eq!(
+        preview
+            .sql
+            .iter()
+            .filter(|s| s.starts_with("INSERT INTO"))
+            .count(),
+        2
+    );
+    let token = studio
+        .authorize(
+            &preview.plan.id,
+            None,
+            preview.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    let committed = finish(start(&studio, &preview.plan, Some(&token)).1).await;
+    assert_eq!(status(&committed), RunStatus::Completed);
+    studio.release_result(&page.result.id);
+
+    let after = studio.browse(&session.id, &table, None).await.unwrap();
+    assert_eq!(after.result.retained_rows, 3);
+    let r0 = studio.results.row(&after.result.id, 0).unwrap();
+    assert_eq!(r0[0].as_deref(), Some("1"));
+    assert_eq!(r0[2].as_deref(), Some("alpha"));
+    assert_eq!(r0[3].as_deref(), Some("15"));
+    assert_eq!(r0[4].as_deref(), Some("30"));
+    let r1 = studio.results.row(&after.result.id, 1).unwrap();
+    assert_eq!(r1[2].as_deref(), Some("from-default"));
+    assert_eq!(r1[3].as_deref(), Some("30"));
+    assert_eq!(r1[4].as_deref(), Some("60"));
+    assert_eq!(r1[5], None);
+    let r2 = studio.results.row(&after.result.id, 2).unwrap();
+    assert_eq!(r2[0].as_deref(), Some("99"));
+    assert_eq!(r2[2].as_deref(), Some("explicit"));
+    assert_eq!(r2[3].as_deref(), Some("40"));
+    assert_eq!(r2[4].as_deref(), Some("80"));
+    assert_eq!(r2[5].as_deref(), Some("custom"));
+
+    // Empty-table insert with 0 explicit values generates DEFAULT VALUES.
+    let defaults_table = TableRef {
+        schema: "public".into(),
+        name: "joinery_batch2_defaults".into(),
+    };
+    let empty_page = studio
+        .browse(&session.id, &defaults_table, None)
+        .await
+        .unwrap();
+    assert_eq!(empty_page.result.retained_rows, 0);
+    let defaults_preview = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(empty_page.result.id.clone()),
+                updates: vec![],
+                deletes: vec![],
+                inserts: vec![RowInsert { values: vec![] }],
+            },
+        )
+        .unwrap();
+    assert!(defaults_preview.sql[0].contains("DEFAULT VALUES"));
+    let defaults_token = studio
+        .authorize(
+            &defaults_preview.plan.id,
+            None,
+            defaults_preview.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &defaults_preview.plan, Some(&defaults_token)).1).await),
+        RunStatus::Completed
+    );
+    studio.release_result(&empty_page.result.id);
+    let defaults_after = studio
+        .browse(&session.id, &defaults_table, None)
+        .await
+        .unwrap();
+    assert_eq!(defaults_after.result.retained_rows, 1);
+    assert_eq!(
+        studio.results.row(&defaults_after.result.id, 0).unwrap()[1].as_deref(),
+        Some("auto")
+    );
+    studio.release_result(&defaults_after.result.id);
+
+    // Concurrent row modification causes FOR UPDATE conflict on Delete and rolls back the whole batch.
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "UPDATE joinery_batch2_mutations SET note = 'concurrent-touch' WHERE id = 99"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let stale_batch = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(after.result.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: after.result.id.clone(),
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: "c3".into(),
+                        value: Some("999".into()),
+                    }],
+                }],
+                deletes: vec![ResultDeletes {
+                    result_id: after.result.id.clone(),
+                    rows: vec![2],
+                }],
+                inserts: vec![RowInsert {
+                    values: vec![InsertValue {
+                        column: "c3".into(),
+                        value: Some("50".into()),
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+    let stale_token = studio
+        .authorize(
+            &stale_batch.plan.id,
+            None,
+            stale_batch.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    let conflict_events = finish(start(&studio, &stale_batch.plan, Some(&stale_token)).1).await;
+    assert!(
+        conflict_events.iter().any(|e| matches!(
+            e,
+            QueryEvent::Error {
+                error: AppError {
+                    code: ErrorCode::Conflict,
+                    ..
+                },
+                ..
+            }
+        )),
+        "{conflict_events:?}"
+    );
+    studio.release_result(&after.result.id);
+
+    let rolled_back = studio.browse(&session.id, &table, None).await.unwrap();
+    assert_eq!(rolled_back.result.retained_rows, 3);
+    assert_eq!(
+        studio.results.row(&rolled_back.result.id, 0).unwrap()[3].as_deref(),
+        Some("15")
+    );
+    assert_eq!(
+        studio.results.row(&rolled_back.result.id, 2).unwrap()[5].as_deref(),
+        Some("concurrent-touch")
+    );
+    studio.release_result(&rolled_back.result.id);
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE joinery_batch2_mutations, joinery_batch2_defaults"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
     studio.shutdown();
 }

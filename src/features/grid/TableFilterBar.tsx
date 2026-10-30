@@ -6,7 +6,9 @@ import {
   allowedOperators,
   describeFilter,
   describeSort,
+  hasRawClauses,
   needsValue,
+  normalizeClause,
   withFilter,
   withoutFilter,
 } from "./table-query";
@@ -27,10 +29,20 @@ export function TableFilterBar({ query, columns, disabledReason, searchNote, onC
   const [column, setColumn] = useState(columns[0]?.name ?? "");
   const [op, setOp] = useState<FilterOp>("eq");
   const [value, setValue] = useState("");
+  const [whereDraft, setWhereDraft] = useState(query.whereClause ?? "");
+  const [orderDraft, setOrderDraft] = useState(query.orderClause ?? "");
   const first = useRef<HTMLSelectElement>(null);
   const selected = columns.find((c) => c.name === column) ?? columns[0];
   const operators = selected ? allowedOperators(selected) : [];
   const disabled = disabledReason !== null;
+  const clausesDirty =
+    normalizeClause(whereDraft) !== normalizeClause(query.whereClause) ||
+    normalizeClause(orderDraft) !== normalizeClause(query.orderClause);
+
+  useEffect(() => {
+    setWhereDraft(query.whereClause ?? "");
+    setOrderDraft(query.orderClause ?? "");
+  }, [query.whereClause, query.orderClause]);
 
   useEffect(() => {
     if (adding) first.current?.focus();
@@ -51,6 +63,19 @@ export function TableFilterBar({ query, columns, disabledReason, searchNote, onC
     );
     setAdding(false);
     setValue("");
+  }
+
+  function submitClauses(event: React.FormEvent) {
+    event.preventDefault();
+    if (disabled) return;
+    const whereClause = normalizeClause(whereDraft);
+    const orderClause = normalizeClause(orderDraft);
+    onChange({
+      ...query,
+      sort: orderClause ? [] : query.sort,
+      whereClause,
+      orderClause,
+    });
   }
 
   return (
@@ -137,7 +162,61 @@ export function TableFilterBar({ query, columns, disabledReason, searchNote, onC
           Clear filters
         </button>
       )}
+      <form
+        className="sql-clause-form"
+        onSubmit={submitClauses}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.stopPropagation();
+            setWhereDraft(query.whereClause ?? "");
+            setOrderDraft(query.orderClause ?? "");
+          }
+        }}
+      >
+        <label className="sql-clause-field">
+          <span className="mono">WHERE</span>
+          <input
+            aria-label="WHERE clause"
+            className="mono"
+            value={whereDraft}
+            disabled={disabled}
+            placeholder="SQL predicate"
+            onChange={(event) => setWhereDraft(event.target.value)}
+          />
+        </label>
+        <label className="sql-clause-field">
+          <span className="mono">ORDER BY</span>
+          <input
+            aria-label="ORDER BY clause"
+            className="mono"
+            value={orderDraft}
+            disabled={disabled}
+            placeholder="SQL order"
+            onChange={(event) => setOrderDraft(event.target.value)}
+          />
+        </label>
+        <button className="button ghost small" type="submit" disabled={disabled || !clausesDirty}>
+          Run SQL clauses
+        </button>
+        {hasRawClauses(query) && (
+          <button
+            className="button ghost small"
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              setWhereDraft("");
+              setOrderDraft("");
+              onChange({ ...query, whereClause: null, orderClause: null });
+            }}
+          >
+            Reset SQL clauses
+          </button>
+        )}
+      </form>
       <span className="filter-spacer" />
+      {normalizeClause(query.orderClause) && (
+        <span className="filter-note">First 500 rows · custom ORDER BY</span>
+      )}
       {query.sort.length > 0 && (
         <span className="sort-summary">
           <ArrowUpDown size={11} aria-hidden="true" />

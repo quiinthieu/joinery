@@ -181,15 +181,41 @@ pub async fn table_schema(
 }
 
 #[tauri::command]
+pub async fn referencing_foreign_keys(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    table: TableRef,
+) -> AppResult<Vec<InboundForeignKey>> {
+    studio.referencing_foreign_keys(&session_id, &table).await
+}
+
+#[tauri::command]
+pub async fn prepare_browse_table(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    table: TableRef,
+    query: BrowseQuery,
+) -> AppResult<Option<PreparedPlan>> {
+    studio.prepare_browse(&session_id, &table, &query).await
+}
+
+#[tauri::command]
 pub async fn browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
     table: TableRef,
     after: Option<Vec<Option<String>>>,
     query: Option<BrowseQuery>,
+    approval: Option<BrowseApproval>,
 ) -> AppResult<TablePage> {
     studio
-        .browse_with(&session_id, &table, after, &query.unwrap_or_default())
+        .browse_with_approval(
+            &session_id,
+            &table,
+            after,
+            &query.unwrap_or_default(),
+            approval.as_ref(),
+        )
         .await
 }
 
@@ -233,6 +259,15 @@ pub async fn prepare_changes_batch(
     inputs: Vec<ResultChanges>,
 ) -> AppResult<ChangePreview> {
     studio.prepare_changes_batch(&session_id, inputs)
+}
+
+#[tauri::command]
+pub async fn prepare_table_changes(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    changes: TableChanges,
+) -> AppResult<ChangePreview> {
+    studio.prepare_table_changes(&session_id, changes)
 }
 
 #[tauri::command]
@@ -306,6 +341,8 @@ pub async fn native_smoke_fixture(studio: State<'_, Arc<Studio>>) -> AppResult<R
             primary_key: false,
             foreign_key: false,
             editable: false,
+            insertable: false,
+            has_default: false,
         })
         .collect();
     let result = studio.results.create("native-smoke", 0, columns, None)?;

@@ -60,6 +60,9 @@ export function workspaceSnapshot(): SavedWorkspace {
       title: tab.title,
       sql: tab.sql,
     }));
+  const tableLayouts = state.tableLayouts.filter((layout) =>
+    state.bootstrap?.profiles.some((profile) => profile.id === layout.connectionId),
+  );
   return {
     theme: state.theme,
     density: state.density,
@@ -69,6 +72,7 @@ export function workspaceSnapshot(): SavedWorkspace {
       ? state.activeTabId
       : null,
     drafts,
+    tableLayouts,
   };
 }
 
@@ -87,8 +91,21 @@ export function watchWorkspace() {
     previous = serialized;
     writer.schedule(workspace);
   };
+  const flushOnHide = () => {
+    if (document.visibilityState === "hidden") void writer.flush().catch(() => {});
+  };
+  const flushOnPageHide = () => {
+    void writer.flush().catch(() => {});
+  };
   changed();
-  return useStudio.subscribe(changed);
+  window.addEventListener("pagehide", flushOnPageHide);
+  document.addEventListener("visibilitychange", flushOnHide);
+  const unsubscribe = useStudio.subscribe(changed);
+  return () => {
+    unsubscribe();
+    window.removeEventListener("pagehide", flushOnPageHide);
+    document.removeEventListener("visibilitychange", flushOnHide);
+  };
 }
 export function flushWorkspace() {
   return writer.flush();

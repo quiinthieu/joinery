@@ -487,6 +487,8 @@ fn columns(value: &Value) -> AppResult<Vec<ColumnInfo>> {
                 primary_key: false,
                 foreign_key: false,
                 editable: false,
+                insertable: false,
+                has_default: false,
             })
         })
         .collect()

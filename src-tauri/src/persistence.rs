@@ -91,7 +91,7 @@ impl Persistence {
         let tx = connection.transaction().map_err(db_error)?;
         tx.execute("DELETE FROM profiles WHERE id=?1", [id])
             .map_err(db_error)?;
-        workspace::purge_drafts(&tx, id)?;
+        workspace::purge_connection(&tx, id)?;
         tx.commit().map_err(db_error)
     }
 

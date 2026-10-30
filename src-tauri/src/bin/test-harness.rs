@@ -164,13 +164,31 @@ async fn rpc(
                     .schema(&arg::<String>(&args, "sessionId")?, &arg(&args, "table")?)
                     .await?
             ),
+            "referencing_foreign_keys" => json!(
+                studio
+                    .referencing_foreign_keys(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg(&args, "table")?
+                    )
+                    .await?
+            ),
+            "prepare_browse_table" => json!(
+                studio
+                    .prepare_browse(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg(&args, "table")?,
+                        &arg(&args, "query")?
+                    )
+                    .await?
+            ),
             "browse_table" => json!(
                 studio
-                    .browse_with(
+                    .browse_with_approval(
                         &arg::<String>(&args, "sessionId")?,
                         &arg(&args, "table")?,
                         arg(&args, "after")?,
-                        &arg::<Option<BrowseQuery>>(&args, "query")?.unwrap_or_default()
+                        &arg::<Option<BrowseQuery>>(&args, "query")?.unwrap_or_default(),
+                        arg::<Option<BrowseApproval>>(&args, "approval")?.as_ref()
                     )
                     .await?
             ),
@@ -186,6 +204,10 @@ async fn rpc(
             "prepare_changes_batch" => json!(studio.prepare_changes_batch(
                 &arg::<String>(&args, "sessionId")?,
                 arg(&args, "inputs")?
+            )?),
+            "prepare_table_changes" => json!(studio.prepare_table_changes(
+                &arg::<String>(&args, "sessionId")?,
+                arg(&args, "changes")?
             )?),
             "processes" => json!(
                 studio

@@ -6,14 +6,20 @@
 //! predicate mirrors that order so pages neither skip nor repeat rows.
 
 use crate::domain::*;
+use sqlparser::{
+    dialect::{Dialect as SqlDialect, MySqlDialect, PostgreSqlDialect},
+    tokenizer::{Token, Tokenizer},
+};
 
 pub(crate) const MAX_SORT_KEYS: usize = 8;
 pub(crate) const MAX_FILTERS: usize = 16;
 pub(crate) const MAX_FILTER_VALUE_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_RAW_CLAUSE_BYTES: usize = 16 * 1024;
 const LIKE_ESCAPE: char = '!';
 
 /// Engine-specific SQL spelling. `index` is the zero-based bind position.
 pub(crate) trait Dialect {
+    fn engine(&self) -> EngineKind;
     /// Column reference usable in WHERE and ORDER BY of the browse query.
     fn column(&self, name: &str) -> String;
     /// Typed bind comparable with `column` using the column's own ordering,
@@ -79,6 +85,81 @@ impl Binds {
     }
 }
 
+fn validate_raw_clause(raw: &str, engine: EngineKind) -> AppResult<Option<String>> {
+    if raw.contains('\0') {
+        return Err(AppError::invalid("SQL clauses cannot contain NUL bytes"));
+    }
+    if raw.len() > MAX_RAW_CLAUSE_BYTES {
+        return Err(AppError::invalid(
+            "A table filter or order clause exceeds 16 KiB",
+        ));
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if engine == EngineKind::Mysql && crate::safety::has_mysql_executable_comment(trimmed) {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "MySQL executable comments are not supported. Submit their SQL explicitly for review.",
+        ));
+    }
+    let dialect: Box<dyn SqlDialect> = match engine {
+        EngineKind::Mysql => Box::new(MySqlDialect {}),
+        _ => Box::new(PostgreSqlDialect {}),
+    };
+    let tokens = Tokenizer::new(dialect.as_ref(), trimmed)
+        .tokenize()
+        .map_err(|_| {
+            AppError::invalid("The SQL clause contains an unterminated string or comment")
+        })?;
+    let mut has_content = false;
+    let mut paren_depth = 0usize;
+    for token in tokens {
+        match token {
+            Token::Whitespace(_) | Token::EOF => {}
+            Token::SemiColon => {
+                return Err(AppError::invalid(
+                    "Enter a single SQL expression without semicolons",
+                ));
+            }
+            Token::Placeholder(_) => {
+                return Err(AppError::invalid(
+                    "Bind placeholders cannot be used in table filter or order clauses",
+                ));
+            }
+            Token::Char('?') if engine == EngineKind::Mysql => {
+                return Err(AppError::invalid(
+                    "Bind placeholders cannot be used in table filter or order clauses",
+                ));
+            }
+            Token::LParen => {
+                has_content = true;
+                paren_depth += 1;
+            }
+            Token::RParen => {
+                if paren_depth == 0 {
+                    return Err(AppError::invalid(
+                        "Parentheses in the SQL clause are unbalanced",
+                    ));
+                }
+                has_content = true;
+                paren_depth -= 1;
+            }
+            _ => has_content = true,
+        }
+    }
+    if !has_content {
+        return Err(AppError::invalid("The SQL clause contains only comments"));
+    }
+    if paren_depth != 0 {
+        return Err(AppError::invalid(
+            "Parentheses in the SQL clause are unbalanced",
+        ));
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
 pub(crate) fn build(
     schema: &TableSchema,
     query: &BrowseQuery,
@@ -95,7 +176,20 @@ pub(crate) fn build(
             "Use at most {MAX_FILTERS} filters"
         )));
     }
-    let pageable = !schema.primary_key.is_empty()
+    let raw_where = query
+        .where_clause
+        .as_deref()
+        .map(|s| validate_raw_clause(s, dialect.engine()))
+        .transpose()?
+        .flatten();
+    let raw_order = query
+        .order_clause
+        .as_deref()
+        .map(|s| validate_raw_clause(s, dialect.engine()))
+        .transpose()?
+        .flatten();
+    let pageable = raw_order.is_none()
+        && !schema.primary_key.is_empty()
         && schema
             .primary_key
             .iter()
@@ -117,7 +211,9 @@ pub(crate) fn build(
                 key.column
             )));
         }
-        order.push((i, key.descending));
+        if raw_order.is_none() {
+            order.push((i, key.descending));
+        }
     }
     if pageable {
         for key in &schema.primary_key {
@@ -186,8 +282,16 @@ pub(crate) fn build(
         };
         predicates.push(predicate);
     }
+    if let Some(raw_where) = &raw_where {
+        predicates.push(format!("\n{raw_where}\n"));
+    }
 
     if let Some(after) = after {
+        if raw_order.is_some() {
+            return Err(AppError::invalid(
+                "Custom ORDER BY clauses return a single bounded page",
+            ));
+        }
         if !pageable || after.len() != order.len() {
             return Err(AppError::invalid("Invalid table paging key"));
         }
@@ -225,7 +329,9 @@ pub(crate) fn build(
                 .join(" AND ")
         )
     };
-    let order_sql = if order.is_empty() {
+    let order_sql = if let Some(raw_order) = raw_order {
+        format!(" ORDER BY {raw_order}\n")
+    } else if order.is_empty() {
         String::new()
     } else {
         format!(
@@ -329,6 +435,8 @@ mod tests {
             primary_key,
             foreign_key: false,
             editable: false,
+            insertable: false,
+            has_default: false,
         }
     }
 
@@ -372,20 +480,21 @@ mod tests {
 
     #[test]
     fn primary_key_only_keeps_the_row_value_fast_path() {
+        let schema = pg();
         let built = build(
-            &pg(),
+            &schema,
             &BrowseQuery::default(),
             Some(&[Some("10".into())]),
-            &PostgresDialect,
+            &PostgresDialect(&schema.table),
         )
         .unwrap();
         assert_eq!(
             built.where_sql,
-            " WHERE ((__joinery_source.\"id\") > (($1::text)::bigint))"
+            " WHERE ((\"public\".\"browse_sort\".\"id\") > (($1::text)::bigint))"
         );
         assert_eq!(
             built.order_sql,
-            " ORDER BY __joinery_source.\"id\" ASC NULLS LAST"
+            " ORDER BY \"public\".\"browse_sort\".\"id\" ASC NULLS LAST"
         );
         assert_eq!(built.binds, [Some("10".into())]);
         assert!(built.pageable);
@@ -393,35 +502,37 @@ mod tests {
 
     #[test]
     fn user_sort_adds_primary_key_tie_breaker_and_explicit_null_order() {
+        let schema = pg();
         let query = BrowseQuery {
             sort: vec![sort("bucket", true), sort("label", false)],
-            filters: vec![],
+            ..Default::default()
         };
-        let built = build(&pg(), &query, None, &PostgresDialect).unwrap();
+        let built = build(&schema, &query, None, &PostgresDialect(&schema.table)).unwrap();
         assert_eq!(
             built.order_sql,
-            " ORDER BY __joinery_source.\"bucket\" DESC NULLS FIRST,__joinery_source.\"label\" ASC NULLS LAST,__joinery_source.\"id\" ASC NULLS LAST"
+            " ORDER BY \"public\".\"browse_sort\".\"bucket\" DESC NULLS FIRST,\"public\".\"browse_sort\".\"label\" ASC NULLS LAST,\"public\".\"browse_sort\".\"id\" ASC NULLS LAST"
         );
         assert_eq!(built.keys, [1, 2, 0]);
     }
 
     #[test]
     fn seek_predicate_handles_null_cursor_values_in_both_directions() {
+        let schema = pg();
         let query = BrowseQuery {
             sort: vec![sort("bucket", true), sort("label", false)],
-            filters: vec![],
+            ..Default::default()
         };
         // bucket NULL (descending: NULLs first), label 'x' (ascending), id 7.
         let built = build(
-            &pg(),
+            &schema,
             &query,
             Some(&[None, Some("x".into()), Some("7".into())]),
-            &PostgresDialect,
+            &PostgresDialect(&schema.table),
         )
         .unwrap();
-        let b = "__joinery_source.\"bucket\"";
-        let l = "__joinery_source.\"label\"";
-        let i = "__joinery_source.\"id\"";
+        let b = "\"public\".\"browse_sort\".\"bucket\"";
+        let l = "\"public\".\"browse_sort\".\"label\"";
+        let i = "\"public\".\"browse_sort\".\"id\"";
         assert_eq!(
             built.where_sql,
             format!(
@@ -436,19 +547,20 @@ mod tests {
 
     #[test]
     fn ascending_null_cursor_value_only_continues_through_ties() {
+        let schema = pg();
         let query = BrowseQuery {
             sort: vec![sort("bucket", false)],
-            filters: vec![],
+            ..Default::default()
         };
         let built = build(
-            &pg(),
+            &schema,
             &query,
             Some(&[None, Some("7".into())]),
-            &PostgresDialect,
+            &PostgresDialect(&schema.table),
         )
         .unwrap();
-        let b = "__joinery_source.\"bucket\"";
-        let i = "__joinery_source.\"id\"";
+        let b = "\"public\".\"browse_sort\".\"bucket\"";
+        let i = "\"public\".\"browse_sort\".\"id\"";
         assert_eq!(
             built.where_sql,
             format!(" WHERE (({b} IS NULL AND ({i} > ($1::text)::bigint OR {i} IS NULL)))")
@@ -457,18 +569,19 @@ mod tests {
 
     #[test]
     fn filters_are_bound_and_like_patterns_are_escaped() {
+        let schema = pg();
         let query = BrowseQuery {
-            sort: vec![],
             filters: vec![
                 filter("label", FilterOp::Contains, Some("50%_off!")),
                 filter("bucket", FilterOp::Gte, Some("3")),
                 filter("payload", FilterOp::IsNull, None),
             ],
+            ..Default::default()
         };
-        let built = build(&pg(), &query, None, &PostgresDialect).unwrap();
+        let built = build(&schema, &query, None, &PostgresDialect(&schema.table)).unwrap();
         assert_eq!(
             built.where_sql,
-            " WHERE (__joinery_source.\"label\"::text ILIKE $1::text ESCAPE '!') AND (__joinery_source.\"bucket\" >= ($2::text)::bigint) AND (__joinery_source.\"payload\" IS NULL)"
+            " WHERE (\"public\".\"browse_sort\".\"label\"::text ILIKE $1::text ESCAPE '!') AND (\"public\".\"browse_sort\".\"bucket\" >= ($2::text)::bigint) AND (\"public\".\"browse_sort\".\"payload\" IS NULL)"
         );
         assert_eq!(
             built.binds,
@@ -478,90 +591,103 @@ mod tests {
 
     #[test]
     fn hostile_values_stay_bound_and_unknown_columns_are_rejected() {
+        let schema = pg();
         let hostile = "'); DROP TABLE browse_sort; --";
         let query = BrowseQuery {
-            sort: vec![],
             filters: vec![filter("label", FilterOp::Eq, Some(hostile))],
+            ..Default::default()
         };
-        let built = build(&pg(), &query, None, &PostgresDialect).unwrap();
+        let built = build(&schema, &query, None, &PostgresDialect(&schema.table)).unwrap();
         assert!(!built.where_sql.contains("DROP"));
         assert_eq!(built.binds, [Some(hostile.into())]);
         let unknown = BrowseQuery {
             sort: vec![sort("label\"; DROP TABLE x; --", false)],
-            filters: vec![],
+            ..Default::default()
         };
-        assert!(build(&pg(), &unknown, None, &PostgresDialect).is_err());
+        assert!(build(&schema, &unknown, None, &PostgresDialect(&schema.table)).is_err());
     }
 
     #[test]
     fn unsupported_operations_and_limits_are_rejected() {
-        let reject = |query: BrowseQuery| build(&pg(), &query, None, &PostgresDialect).is_err();
+        let schema = pg();
+        let reject = |query: BrowseQuery| {
+            build(&schema, &query, None, &PostgresDialect(&schema.table)).is_err()
+        };
         assert!(reject(BrowseQuery {
             sort: vec![sort("payload", false)],
-            filters: vec![],
+            ..Default::default()
         }));
         assert!(reject(BrowseQuery {
             sort: vec![sort("bucket", false), sort("bucket", true)],
-            filters: vec![],
+            ..Default::default()
         }));
         assert!(reject(BrowseQuery {
-            sort: vec![],
             filters: vec![filter("raw", FilterOp::Contains, Some("00"))],
+            ..Default::default()
         }));
         assert!(reject(BrowseQuery {
-            sort: vec![],
             filters: vec![filter("payload", FilterOp::Gt, Some("1"))],
+            ..Default::default()
         }));
         assert!(reject(BrowseQuery {
-            sort: vec![],
             filters: vec![filter("bucket", FilterOp::Eq, None)],
+            ..Default::default()
         }));
         assert!(reject(BrowseQuery {
-            sort: vec![],
             filters: vec![filter("bucket", FilterOp::IsNull, Some("1"))],
+            ..Default::default()
         }));
         assert!(reject(BrowseQuery {
-            sort: vec![],
             filters: vec![filter(
                 "label",
                 FilterOp::Eq,
                 Some(&"x".repeat(MAX_FILTER_VALUE_BYTES + 1))
             )],
+            ..Default::default()
         }));
         assert!(reject(BrowseQuery {
-            sort: vec![],
             filters: (0..=MAX_FILTERS)
                 .map(|_| filter("bucket", FilterOp::IsNull, None))
                 .collect(),
+            ..Default::default()
         }));
     }
 
     #[test]
     fn cursor_shape_is_validated() {
+        let schema = pg();
         let query = BrowseQuery {
             sort: vec![sort("bucket", false)],
-            filters: vec![],
+            ..Default::default()
         };
-        assert!(build(&pg(), &query, Some(&[Some("1".into())]), &PostgresDialect).is_err());
         assert!(
             build(
-                &pg(),
+                &schema,
+                &query,
+                Some(&[Some("1".into())]),
+                &PostgresDialect(&schema.table)
+            )
+            .is_err()
+        );
+        assert!(
+            build(
+                &schema,
                 &query,
                 Some(&[Some("1".into()), None]),
-                &PostgresDialect
+                &PostgresDialect(&schema.table)
             )
             .is_err()
         );
         let mut keyless = pg();
         keyless.primary_key.clear();
-        let built = build(&keyless, &query, None, &PostgresDialect).unwrap();
+        let built = build(&keyless, &query, None, &PostgresDialect(&keyless.table)).unwrap();
         assert!(!built.pageable);
         assert!(
             build(
                 &keyless,
                 &query,
                 Some(&[Some("1".into())]),
-                &PostgresDialect
+                &PostgresDialect(&keyless.table)
             )
             .is_err()
         );
@@ -573,6 +699,7 @@ mod tests {
         let query = BrowseQuery {
             sort: vec![sort("bucket", true), sort("label", false)],
             filters: vec![filter("label", FilterOp::StartsWith, Some("a"))],
+            ..Default::default()
         };
         let built = build(
             &schema,
@@ -593,5 +720,95 @@ mod tests {
         assert!(built.where_sql.contains("`bucket` < CAST(? AS SIGNED)"));
         assert!(built.where_sql.contains("`label` > ?"));
         assert_eq!(built.binds[0].as_deref(), Some("a%"));
+    }
+
+    #[test]
+    fn raw_where_preserves_paging_and_guards_line_comments_and_tokens() {
+        let schema = pg();
+        let dialect = PostgresDialect(&schema.table);
+        let query = BrowseQuery {
+            filters: vec![filter("bucket", FilterOp::Gte, Some("2"))],
+            where_clause: Some("label IS NOT NULL AND payload ? 'tier' -- keep ) safe".into()),
+            ..Default::default()
+        };
+        let built = build(&schema, &query, Some(&[Some("25".into())]), &dialect).unwrap();
+        assert!(built.pageable);
+        assert!(
+            built
+                .where_sql
+                .contains("(\nlabel IS NOT NULL AND payload ? 'tier' -- keep ) safe\n)")
+        );
+        assert_eq!(built.binds, [Some("2".into()), Some("25".into())]);
+
+        let custom_order = BrowseQuery {
+            where_clause: Some("bucket > 0".into()),
+            order_clause: Some("COALESCE(bucket, 0) DESC, id ASC -- keep LIMIT".into()),
+            ..Default::default()
+        };
+        let ordered = build(&schema, &custom_order, None, &dialect).unwrap();
+        assert!(!ordered.pageable);
+        assert_eq!(
+            ordered.order_sql,
+            " ORDER BY COALESCE(bucket, 0) DESC, id ASC -- keep LIMIT\n"
+        );
+        assert!(build(&schema, &custom_order, Some(&[Some("1".into())]), &dialect).is_err());
+
+        for bad in [
+            "1=1; DROP TABLE browse_sort",
+            "bucket = $1",
+            "1=1) UNION ALL SELECT 1",
+            "(bucket > 1",
+            "-- only a comment",
+            "label = 'unterminated",
+            &"x".repeat(MAX_RAW_CLAUSE_BYTES + 1),
+        ] {
+            assert!(
+                build(
+                    &schema,
+                    &BrowseQuery {
+                        where_clause: Some(bad.into()),
+                        ..Default::default()
+                    },
+                    None,
+                    &dialect,
+                )
+                .is_err(),
+                "expected PG rejection for {bad:?}"
+            );
+        }
+
+        let mysql_schema = super::tests::schema(("bigint", "int", "varchar(20)"));
+        assert!(
+            build(
+                &mysql_schema,
+                &BrowseQuery {
+                    where_clause: Some("label = '/*! harmless */'".into()),
+                    ..Default::default()
+                },
+                None,
+                &MysqlDialect,
+            )
+            .is_ok()
+        );
+        for bad in [
+            "bucket = ?",
+            "1=1 /*!50000 OR 2=2 */",
+            "1=1 /*M!100100 OR 2=2 */",
+            "1--/*!50000 OR 2=2 */1",
+        ] {
+            assert!(
+                build(
+                    &mysql_schema,
+                    &BrowseQuery {
+                        where_clause: Some(bad.into()),
+                        ..Default::default()
+                    },
+                    None,
+                    &MysqlDialect,
+                )
+                .is_err(),
+                "expected MySQL rejection for {bad:?}"
+            );
+        }
     }
 }

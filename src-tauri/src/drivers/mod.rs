@@ -16,9 +16,17 @@ pub trait QuerySink: Send {
 }
 
 #[derive(Clone, serde::Serialize)]
-pub struct RowMutation {
-    pub original: TextRow,
-    pub changes: Vec<(usize, Option<String>)>,
+pub enum RowMutation {
+    Update {
+        original: TextRow,
+        changes: Vec<(usize, Option<String>)>,
+    },
+    Delete {
+        original: TextRow,
+    },
+    Insert {
+        values: Vec<(usize, Option<String>)>,
+    },
 }
 
 pub struct BrowseRows {
@@ -65,6 +73,12 @@ pub trait Driver: Send + Sync {
     }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>>;
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema>;
+    async fn referencing_keys(&self, _table: &TableRef) -> AppResult<Vec<InboundForeignKey>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Referencing foreign-key discovery is unavailable for this engine",
+        ))
+    }
     async fn browse(
         &self,
         schema: &TableSchema,

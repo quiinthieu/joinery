@@ -180,12 +180,55 @@ pub struct BrowseQuery {
     pub sort: Vec<SortKey>,
     #[serde(default)]
     pub filters: Vec<ColumnFilter>,
+    /// Optional SQL predicate fragment; classified through `safety::prepare`.
+    #[serde(default)]
+    pub where_clause: Option<String>,
+    /// Optional SQL ORDER BY list; disables keyset continuation paging.
+    #[serde(default)]
+    pub order_clause: Option<String>,
 }
 
 impl BrowseQuery {
-    pub fn is_empty(&self) -> bool {
-        self.sort.is_empty() && self.filters.is_empty()
+    pub fn normalized(&self) -> Self {
+        Self {
+            sort: self.sort.clone(),
+            filters: self.filters.clone(),
+            where_clause: self
+                .where_clause
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            order_clause: self
+                .order_clause
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        }
     }
+
+    pub fn has_raw_clauses(&self) -> bool {
+        self.where_clause
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+            || self
+                .order_clause
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sort.is_empty() && self.filters.is_empty() && !self.has_raw_clauses()
+    }
+}
+
+/// One-use authorization token for a non-`Read` raw table browse clause.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseApproval {
+    pub plan_id: String,
+    pub approval: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -244,6 +287,10 @@ pub struct ColumnInfo {
     pub primary_key: bool,
     pub foreign_key: bool,
     pub editable: bool,
+    #[serde(default)]
+    pub insertable: bool,
+    #[serde(default)]
+    pub has_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
@@ -288,6 +335,41 @@ impl ForeignKey {
                     name,
                     columns: vec![column],
                     target,
+                    target_columns: vec![target_column],
+                }),
+            }
+        }
+        keys
+    }
+}
+
+/// One inbound foreign-key constraint referencing a target table.
+/// `columns[i]` on `source` references `target_columns[i]` on the current table,
+/// in constraint ordinal order, so composite keys keep their pairing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InboundForeignKey {
+    pub name: String,
+    pub source: TableRef,
+    pub columns: Vec<String>,
+    pub target_columns: Vec<String>,
+}
+
+impl InboundForeignKey {
+    /// Folds per-column catalog rows `(constraint, source, source column, target column)`
+    /// into constraints. Rows must be ordered by source table, constraint, and ordinal position.
+    pub fn group(rows: impl IntoIterator<Item = (String, TableRef, String, String)>) -> Vec<Self> {
+        let mut keys: Vec<Self> = Vec::new();
+        for (name, source, column, target_column) in rows {
+            match keys.last_mut() {
+                Some(key) if key.name == name && key.source == source => {
+                    key.columns.push(column);
+                    key.target_columns.push(target_column);
+                }
+                _ => keys.push(Self {
+                    name,
+                    source,
+                    columns: vec![column],
                     target_columns: vec![target_column],
                 }),
             }
@@ -405,6 +487,39 @@ pub struct ResultChanges {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct ResultDeletes {
+    pub result_id: String,
+    pub rows: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InsertValue {
+    pub column: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RowInsert {
+    pub values: Vec<InsertValue>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TableChanges {
+    #[serde(default)]
+    pub result_id: Option<String>,
+    #[serde(default)]
+    pub updates: Vec<ResultChanges>,
+    #[serde(default)]
+    pub deletes: Vec<ResultDeletes>,
+    #[serde(default)]
+    pub inserts: Vec<RowInsert>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct ChangePreview {
     pub plan: PreparedPlan,
     pub row_count: usize,
@@ -483,6 +598,16 @@ pub struct QueryDraft {
     pub sql: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedTableLayout {
+    pub connection_id: String,
+    pub table: TableRef,
+    pub column_order: Vec<String>,
+    pub hidden_columns: Vec<String>,
+    pub column_widths: std::collections::BTreeMap<String, u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedWorkspace {
@@ -492,6 +617,8 @@ pub struct SavedWorkspace {
     pub inspector_visible: bool,
     pub active_draft_id: Option<String>,
     pub drafts: Vec<QueryDraft>,
+    #[serde(default)]
+    pub table_layouts: Vec<SavedTableLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -660,5 +787,42 @@ mod tests {
             row("fk", "b", "right_table", "id"),
         ]);
         assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn inbound_foreign_keys_group_by_source_and_constraint_in_ordinal_order() {
+        let line_notes = TableRef {
+            schema: "public".into(),
+            name: "line_notes".into(),
+        };
+        let other_notes = TableRef {
+            schema: "alt".into(),
+            name: "line_notes".into(),
+        };
+        let keys = InboundForeignKey::group([
+            (
+                "line_notes_line_fk".into(),
+                line_notes.clone(),
+                "note_order".into(),
+                "order_id".into(),
+            ),
+            (
+                "line_notes_line_fk".into(),
+                line_notes.clone(),
+                "note_line".into(),
+                "line_no".into(),
+            ),
+            (
+                "line_notes_line_fk".into(),
+                other_notes.clone(),
+                "note_order".into(),
+                "order_id".into(),
+            ),
+        ]);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].source, line_notes);
+        assert_eq!(keys[0].columns, ["note_order", "note_line"]);
+        assert_eq!(keys[0].target_columns, ["order_id", "line_no"]);
+        assert_eq!(keys[1].source, other_notes);
     }
 }

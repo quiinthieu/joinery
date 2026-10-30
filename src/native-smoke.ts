@@ -1,7 +1,7 @@
 import { client, messageOf } from "./ipc/client";
 import { resultCache } from "./data/result-cache";
 import { useStudio } from "./state/studio";
-import type { ResourceUsage, ResultInfo } from "./ipc/generated";
+import type { BrowseQuery, ResourceUsage, ResultInfo, TableChanges } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
@@ -38,14 +38,59 @@ export async function runNativeSmoke() {
   try {
     await useStudio.getState().initialize();
     assert(useStudio.getState().bootstrap, "Native bootstrap failed");
-    for (const command of ["completion_catalog", "completion_schema"]) {
-      let denied = false;
-      try {
-        await client.call(command, {
+    for (const [command, args] of [
+      [
+        "completion_catalog",
+        {
           sessionId: "missing-native-fixture",
           revision: "obsolete",
           table: { schema: "public", name: "missing" },
-        });
+        },
+      ],
+      [
+        "completion_schema",
+        {
+          sessionId: "missing-native-fixture",
+          revision: "obsolete",
+          table: { schema: "public", name: "missing" },
+        },
+      ],
+      [
+        "referencing_foreign_keys",
+        {
+          sessionId: "missing-native-fixture",
+          table: { schema: "public", name: "missing" },
+        },
+      ],
+      [
+        "prepare_browse_table",
+        {
+          sessionId: "missing-native-fixture",
+          table: { schema: "public", name: "missing" },
+          query: {
+            sort: [],
+            filters: [],
+            whereClause: "1 = 1",
+            orderClause: null,
+          } satisfies BrowseQuery,
+        },
+      ],
+      [
+        "prepare_table_changes",
+        {
+          sessionId: "missing-native-fixture",
+          changes: {
+            resultId: "missing-result",
+            updates: [],
+            deletes: [],
+            inserts: [],
+          } satisfies TableChanges,
+        },
+      ],
+    ] as const) {
+      let denied = false;
+      try {
+        await client.call(command, args);
       } catch (error) {
         denied =
           !!error &&

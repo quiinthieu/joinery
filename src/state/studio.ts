@@ -2,10 +2,13 @@ import { create } from "zustand";
 import type {
   AppError,
   Bootstrap,
+  BrowseApproval,
   BrowseQuery,
   ConnectionProfile,
+  PreparedPlan,
   QueryEvent,
   ResultInfo,
+  SavedTableLayout,
   SessionInfo,
   TableInfo,
   TableRef,
@@ -14,7 +17,19 @@ import type {
 import { client, messageOf } from "../ipc/client";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
-import { EMPTY_QUERY, isEmptyQuery, sameQuery, tableTabTitle } from "../features/grid/table-query";
+import {
+  MAX_TABLE_LAYOUTS,
+  isDefaultTableLayout,
+  sameTableLayoutTarget,
+} from "../features/grid/table-layout";
+import {
+  EMPTY_QUERY,
+  hasRawClauses,
+  isEmptyQuery,
+  normalizeQuery,
+  sameQuery,
+  tableTabTitle,
+} from "../features/grid/table-query";
 
 export type TabKind = "query" | "table" | "benchmark" | "history" | "processes";
 export type TabStatus =
@@ -54,6 +69,11 @@ export interface StudioTab {
   querySessionClosed: boolean;
 }
 
+export type TableQueryOutcome =
+  | { kind: "applied" }
+  | { kind: "refused"; reason: string }
+  | { kind: "review"; plan: PreparedPlan; query: BrowseQuery };
+
 interface StudioState {
   bootstrap: Bootstrap | null;
   error: string | null;
@@ -62,6 +82,7 @@ interface StudioState {
   selectedConnectionId: string | null;
   tabs: StudioTab[];
   activeTabId: string | null;
+  tableLayouts: SavedTableLayout[];
   theme: "dark" | "light" | "contrast";
   density: "comfortable" | "compact";
   sidebarVisible: boolean;
@@ -70,6 +91,8 @@ interface StudioState {
   initialize(): Promise<void>;
   notify(message: string): void;
   setTheme(theme: StudioState["theme"]): void;
+  setTableLayout(connectionId: string, table: TableRef, layout: SavedTableLayout | null): void;
+  resetTableLayout(connectionId: string, table: TableRef): void;
   setSession(session: SessionInfo): void;
   bindQuerySession(tabId: string, session: SessionInfo): boolean;
   retireSession(sessionId: string): void;
@@ -79,11 +102,15 @@ interface StudioState {
   openQuery(connectionId?: string | null, sql?: string): string;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
   openTable(connectionId: string, table: TableRef, query?: BrowseQuery): Promise<void>;
-  /** Applies a new sort/filter; returns a reason when refused. */
-  setTableQuery(id: string, query: BrowseQuery): Promise<string | null>;
-  loadNextPage(id: string): Promise<void>;
+  /** Applies a new sort/filter or requests review for non-Read raw SQL clauses. */
+  setTableQuery(
+    id: string,
+    query: BrowseQuery,
+    options?: { force?: boolean; approval?: BrowseApproval },
+  ): Promise<TableQueryOutcome>;
+  loadNextPage(id: string, approval?: BrowseApproval): Promise<void>;
   ensureTablePage(id: string, row: number): Promise<void>;
-  refreshTable(id: string): Promise<void>;
+  refreshTable(id: string, approval?: BrowseApproval): Promise<void>;
   updateTab(
     id: string,
     update: Partial<StudioTab> | ((tab: StudioTab) => Partial<StudioTab>),
@@ -140,6 +167,11 @@ function requestIsCurrent(id: string, revision: number, connectionId: string, se
     state.sessions[connectionId]?.id === sessionId
   );
 }
+function asAppError(error: unknown): AppError {
+  if (error && typeof error === "object" && "code" in error && "message" in error)
+    return error as AppError;
+  return { code: "database", message: messageOf(error) };
+}
 function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
   if (!schema || JSON.stringify(schema.columns) !== JSON.stringify(result.columns)) {
     void client.call("release_result", { resultId: result.id }).catch(() => {});
@@ -155,6 +187,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   selectedConnectionId: null,
   tabs: [],
   activeTabId: null,
+  tableLayouts: [],
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
   density: "comfortable",
   sidebarVisible: true,
@@ -176,6 +209,14 @@ export const useStudio = create<StudioState>((set, get) => ({
             id: draft.id,
             sql: draft.sql,
           })) ?? [];
+      const restoredLayouts =
+        workspace?.tableLayouts
+          ?.filter(
+            (layout) =>
+              !isDefaultTableLayout(layout) &&
+              bootstrap.profiles.some((profile) => profile.id === layout.connectionId),
+          )
+          .slice(-MAX_TABLE_LAYOUTS) ?? [];
       const existing = get().tabs;
       const tabs = [
         ...restored.filter((draft) => !existing.some((tab) => tab.id === draft.id)),
@@ -191,6 +232,7 @@ export const useStudio = create<StudioState>((set, get) => ({
               sidebarVisible: workspace.sidebarVisible,
               inspectorVisible: workspace.inspectorVisible,
               tabs,
+              tableLayouts: restoredLayouts,
               activeTabId:
                 get().activeTabId ??
                 restored.find((draft) => draft.id === workspace.activeDraftId)?.id ??
@@ -212,6 +254,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     localStorage.setItem("joinery.theme", theme);
     document.documentElement.dataset.theme = theme;
     set({ theme });
+  },
+  setTableLayout(connectionId, table, layout) {
+    set((state) => {
+      const remaining = state.tableLayouts.filter(
+        (entry) => !sameTableLayoutTarget(entry, connectionId, table),
+      );
+      if (!layout || isDefaultTableLayout(layout)) return { tableLayouts: remaining };
+      return { tableLayouts: [...remaining, layout].slice(-MAX_TABLE_LAYOUTS) };
+    });
+  },
+  resetTableLayout(connectionId, table) {
+    get().setTableLayout(connectionId, table, null);
   },
   setSession(session) {
     set((state) => ({
@@ -316,7 +370,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
-  async openTable(connectionId, table, query = EMPTY_QUERY) {
+  async openTable(connectionId, table, rawQuery = EMPTY_QUERY) {
+    const query = normalizeQuery(rawQuery);
     const existing = get().tabs.find(
       (t) =>
         t.kind === "table" &&
@@ -335,20 +390,46 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     await get().refreshTable(next.id);
   },
-  async setTableQuery(id, query) {
+  async setTableQuery(id, rawQuery, options) {
     const current = get().tabs.find((t) => t.id === id);
-    if (!current?.table) return "This tab does not browse a table";
-    if (current.pages.some((page) => dirtyStore.hasResult(page.result.id)))
-      return "Review or discard pending edits before changing sort or filters";
-    if (sameQuery(current.query, query)) return null;
-    get().updateTab(id, { query });
-    await get().refreshTable(id);
-    return null;
+    if (!current?.table) return { kind: "refused", reason: "This tab does not browse a table" };
+    if (
+      dirtyStore.pendingCountForTab(
+        current.id,
+        current.pages.map((page) => page.result.id),
+      ) > 0
+    )
+      return {
+        kind: "refused",
+        reason: "Review or discard pending edits before changing sort or filters",
+      };
+    const session = current.connectionId ? get().sessions[current.connectionId] : null;
+    if (!session) return { kind: "refused", reason: "Connect to change sort or filters" };
+    const query = normalizeQuery(rawQuery);
+    if (!options?.force && !options?.approval && sameQuery(current.query, query))
+      return { kind: "applied" };
+    if (hasRawClauses(query) && !options?.approval) {
+      try {
+        const plan = await client.call<PreparedPlan | null>("prepare_browse_table", {
+          sessionId: session.id,
+          table: current.table,
+          query,
+        });
+        if (plan) return { kind: "review", plan, query };
+      } catch (error) {
+        get().updateTab(id, { error: asAppError(error) });
+        return { kind: "applied" };
+      }
+    }
+    get().updateTab(id, { query, error: null });
+    await get().refreshTable(id, options?.approval);
+    return { kind: "applied" };
   },
-  async refreshTable(id) {
+  async refreshTable(id, approval) {
     const current = get().tabs.find((t) => t.id === id),
       session = current?.connectionId ? get().sessions[current.connectionId] : null;
     if (!current?.table || !session) return;
+    dirtyStore.clearInserts(current.id);
     for (const page of current.pages) {
       resultCache.release(page.result.id);
       dirtyStore.clear(page.result.id);
@@ -375,17 +456,17 @@ export const useStudio = create<StudioState>((set, get) => ({
       });
       if (!requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id)) return;
       get().updateTab(id, { schema, loadingPage: false });
-      await get().loadNextPage(id);
+      await get().loadNextPage(id, approval);
     } catch (error) {
       if (requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: { code: "database", message: messageOf(error) },
+          error: asAppError(error),
           loadingPage: false,
           hasMore: false,
         });
     }
   },
-  async loadNextPage(id) {
+  async loadNextPage(id, approval) {
     const current = get().tabs.find((t) => t.id === id),
       session = current?.connectionId ? get().sessions[current.connectionId] : null;
     if (
@@ -406,6 +487,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         table: current.table,
         after,
         query: isEmptyQuery(current.query) ? null : current.query,
+        approval: approval ?? null,
       });
       if (
         !get().tabs.some((t) => t.id === id && t.revision === current.revision) ||
@@ -437,7 +519,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     } catch (error) {
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: { code: "database", message: messageOf(error) },
+          error: asAppError(error),
           hasMore: false,
         });
     } finally {
@@ -515,6 +597,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         .catch((error) => get().notify(messageOf(error)));
     else if (current.runId && ["queued", "running"].includes(current.status))
       void client.call("cancel_run", { runId: current.runId }).catch(() => {});
+    dirtyStore.clearInserts(current.id);
     for (const result of [...current.results, ...current.pages.map((p) => p.result)]) {
       dirtyStore.clear(result.id);
       resultCache.release(result.id);
@@ -540,6 +623,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       bootstrap: state.bootstrap
         ? { ...state.bootstrap, profiles: state.bootstrap.profiles.filter((p) => p.id !== id) }
         : null,
+      tableLayouts: state.tableLayouts.filter((layout) => layout.connectionId !== id),
       selectedConnectionId: state.selectedConnectionId === id ? null : state.selectedConnectionId,
     }));
   },
@@ -560,6 +644,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   resetConnectionResults(connectionId) {
     get().disconnected(connectionId);
     for (const tab of get().tabs.filter((t) => t.connectionId === connectionId)) {
+      dirtyStore.clearInserts(tab.id);
       for (const result of [...tab.results, ...tab.pages.map((p) => p.result)]) {
         resultCache.release(result.id);
         dirtyStore.clear(result.id);
