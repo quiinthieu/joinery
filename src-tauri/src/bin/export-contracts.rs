@@ -77,6 +77,8 @@ fn main() {
         ResourceUsage::decl(),
         ExportFormat::decl(),
         FileSelection::decl(),
+        OpenedSqlFile::decl(),
+        SavedSqlFile::decl(),
         ExportSource::decl(),
         ExportRequest::decl(),
         ExportEvent::decl(),

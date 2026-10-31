@@ -2485,6 +2485,73 @@ impl Studio {
             .map(Some)
     }
 
+    pub async fn open_sql_file(&self) -> AppResult<Option<OpenedSqlFile>> {
+        let Some(path) = self.file_dialog.pick_open_sql().await? else {
+            return Ok(None);
+        };
+        let read_path = path.clone();
+        let (file_name, content) =
+            tokio::task::spawn_blocking(move || FileCapabilities::read_sql_file_text(&read_path))
+                .await
+                .map_err(|_| AppError::internal("SQL file read task could not complete"))??;
+        let token = self.file_capabilities.mint_sql_file_grant(path)?;
+        Ok(Some(OpenedSqlFile {
+            token,
+            file_name,
+            content,
+        }))
+    }
+
+    pub async fn save_sql_file(
+        &self,
+        token: Option<&str>,
+        suggested_name: &str,
+        content: &str,
+    ) -> AppResult<Option<SavedSqlFile>> {
+        FileCapabilities::validate_sql_content(content)?;
+        if let Some(existing_token) = token.map(str::trim).filter(|t| !t.is_empty()) {
+            let path = self
+                .file_capabilities
+                .resolve_sql_file_grant(existing_token)?;
+            let owned = content.to_owned();
+            let file_name = tokio::task::spawn_blocking(move || {
+                FileCapabilities::write_sql_file_atomic(&path, &owned)
+            })
+            .await
+            .map_err(|_| AppError::internal("SQL file save task could not complete"))??;
+            return Ok(Some(SavedSqlFile {
+                token: existing_token.to_owned(),
+                file_name,
+            }));
+        }
+
+        let suggested = FileCapabilities::validate_sql_suggested_name(suggested_name)?;
+        let Some(path) = self.file_dialog.pick_save_sql(&suggested).await? else {
+            return Ok(None);
+        };
+        let new_token = self.file_capabilities.mint_sql_file_grant(path.clone())?;
+        let owned = content.to_owned();
+        let write_result = tokio::task::spawn_blocking(move || {
+            FileCapabilities::write_sql_file_atomic(&path, &owned)
+        })
+        .await
+        .map_err(|_| AppError::internal("SQL file save task could not complete"))?;
+        match write_result {
+            Ok(file_name) => Ok(Some(SavedSqlFile {
+                token: new_token,
+                file_name,
+            })),
+            Err(err) => {
+                self.file_capabilities.release_sql_file_grant(&new_token);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn release_sql_file_grant(&self, token: &str) {
+        self.file_capabilities.release_sql_file_grant(token);
+    }
+
     async fn verify_import_target(
         &self,
         session_id: &str,

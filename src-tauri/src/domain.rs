@@ -1028,6 +1028,21 @@ pub struct FileSelection {
     pub display_label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedSqlFile {
+    pub token: String,
+    pub file_name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSqlFile {
+    pub token: String,
+    pub file_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(
     tag = "kind",
