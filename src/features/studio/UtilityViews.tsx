@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
 import { Activity, History, RefreshCw, Search, ArrowUpRight } from "lucide-react";
-import type { HistoryEntry, ProcessInfo, TableSchema } from "../../ipc/generated";
+import type {
+  AuditEntry,
+  ConstraintKind,
+  HistoryEntry,
+  ObjectDetails,
+  ProcessInfo,
+  TableSchema,
+} from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
-import type { AuditEntry } from "../../ipc/generated";
 import { Modal, InlineError } from "../../components/ui/Modal";
+import { DependencySection } from "./ObjectInspectorView";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]),
@@ -348,7 +355,25 @@ export function ProcessesView({
   );
 }
 
-export function StructureView({ schema }: { schema: TableSchema | null }) {
+const CONSTRAINT_KIND_LABELS: Record<ConstraintKind, string> = {
+  primaryKey: "PRIMARY KEY",
+  foreignKey: "FOREIGN KEY",
+  unique: "UNIQUE",
+  check: "CHECK",
+  exclusion: "EXCLUDE",
+};
+
+export function StructureView({
+  schema,
+  details = null,
+  detailsError = null,
+  connectionId = null,
+}: {
+  schema: TableSchema | null;
+  details?: ObjectDetails | null;
+  detailsError?: string | null;
+  connectionId?: string | null;
+}) {
   if (!schema) return <div className="grid-empty">Loading table structure…</div>;
   return (
     <div className="structure-scroll">
@@ -416,6 +441,188 @@ export function StructureView({ schema }: { schema: TableSchema | null }) {
             ))}
           </tbody>
         </table>
+      )}
+      {detailsError && (
+        <div className="structure-details-error">
+          <div className="inline-error" role="alert">
+            {detailsError}
+          </div>
+        </div>
+      )}
+      {details && details.constraints.length > 0 && (
+        <table className="structure-table" aria-label="Constraints">
+          <thead>
+            <tr>
+              <th>Constraint</th>
+              <th>Kind</th>
+              <th>Columns</th>
+              <th>References</th>
+              <th>Definition</th>
+            </tr>
+          </thead>
+          <tbody>
+            {details.constraints.map((constraint) => (
+              <tr key={`${constraint.kind}:${constraint.name}`}>
+                <td className="mono">{constraint.name}</td>
+                <td>
+                  <span
+                    className={`key-badge ${constraint.kind === "foreignKey" ? "foreign" : ""}`}
+                  >
+                    {CONSTRAINT_KIND_LABELS[constraint.kind]}
+                  </span>
+                </td>
+                <td className="mono">
+                  {constraint.columns.length ? constraint.columns.join(", ") : "—"}
+                </td>
+                <td className="mono">
+                  {constraint.target ? (
+                    connectionId ? (
+                      <button
+                        type="button"
+                        className="structure-link-button"
+                        onClick={() =>
+                          void useStudio
+                            .getState()
+                            .openTable(connectionId, constraint.target!, undefined, "structure")
+                        }
+                      >
+                        {`${constraint.target.schema}.${constraint.target.name}${
+                          constraint.targetColumns.length
+                            ? ` (${constraint.targetColumns.join(", ")})`
+                            : ""
+                        }`}
+                      </button>
+                    ) : (
+                      `${constraint.target.schema}.${constraint.target.name}`
+                    )
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td>
+                  <code>{constraint.definition}</code>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {details && details.indexes.length > 0 && (
+        <table className="structure-table" aria-label="Indexes">
+          <thead>
+            <tr>
+              <th>Index</th>
+              <th>Method</th>
+              <th>Uniqueness</th>
+              <th>Keys / Expressions</th>
+              <th>Partial predicate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {details.indexes.map((index) => (
+              <tr key={index.name}>
+                <td className="mono">
+                  {connectionId ? (
+                    <button
+                      type="button"
+                      className="structure-link-button"
+                      onClick={() =>
+                        void useStudio.getState().openObject(
+                          connectionId,
+                          {
+                            schema: details.object.schema,
+                            name: index.name,
+                            kind: "index",
+                            identity: details.object.name,
+                          },
+                          "structure",
+                        )
+                      }
+                    >
+                      {index.name}
+                    </button>
+                  ) : (
+                    index.name
+                  )}
+                </td>
+                <td className="mono">{index.method}</td>
+                <td>
+                  {index.primary ? (
+                    <span className="key-badge">PRIMARY KEY</span>
+                  ) : index.unique ? (
+                    <span className="key-badge foreign">UNIQUE</span>
+                  ) : (
+                    "Non-unique"
+                  )}
+                </td>
+                <td className="mono">
+                  {index.expressions.length ? index.expressions.join(", ") : "—"}
+                </td>
+                <td className="mono">{index.predicate ? `WHERE ${index.predicate}` : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {details && details.triggers.length > 0 && (
+        <table className="structure-table" aria-label="Triggers">
+          <thead>
+            <tr>
+              <th>Trigger</th>
+              <th>Timing</th>
+              <th>Events</th>
+              <th>Orientation</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {details.triggers.map((trigger) => (
+              <tr key={trigger.name}>
+                <td className="mono">
+                  {connectionId ? (
+                    <button
+                      type="button"
+                      className="structure-link-button"
+                      onClick={() =>
+                        void useStudio.getState().openObject(
+                          connectionId,
+                          {
+                            schema: details.object.schema,
+                            name: trigger.name,
+                            kind: "trigger",
+                            identity: trigger.tableName,
+                          },
+                          "structure",
+                        )
+                      }
+                    >
+                      {trigger.name}
+                    </button>
+                  ) : (
+                    trigger.name
+                  )}
+                </td>
+                <td>{trigger.timing}</td>
+                <td>{trigger.events.join(" OR ")}</td>
+                <td>{`FOR EACH ${trigger.orientation}`}</td>
+                <td>
+                  <span className={`state-pill ${trigger.enabled ? "active" : ""}`}>
+                    {trigger.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {details && (
+        <div className="structure-dependencies">
+          <DependencySection
+            connectionId={connectionId}
+            uses={details.uses}
+            usedBy={details.usedBy}
+          />
+        </div>
       )}
     </div>
   );

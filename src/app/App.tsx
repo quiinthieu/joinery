@@ -881,6 +881,8 @@ export function App() {
                   <FileCode2 size={13} />
                 ) : tab.kind === "table" ? (
                   <Database size={13} />
+                ) : tab.kind === "object" ? (
+                  <Code2 size={13} />
                 ) : tab.kind === "history" ? (
                   <History size={13} />
                 ) : tab.kind === "processes" ? (
