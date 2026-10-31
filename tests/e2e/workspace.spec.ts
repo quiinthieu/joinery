@@ -16,7 +16,7 @@ test("opted-in drafts and preferences recover without reconnecting or executing"
   await page.getByRole("button", { name: "New connection", exact: true }).click();
   await page.getByLabel("Connection name", { exact: true }).fill(name);
   await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
-  await page.getByLabel("Port", { exact: true }).fill("55432");
+  await page.getByLabel("Port", { exact: true }).fill(process.env.JOINERY_POSTGRES_PORT ?? "55432");
   await page.getByLabel("Database", { exact: true }).fill("joinery");
   await page.getByLabel("Username", { exact: true }).fill("joinery");
   await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");

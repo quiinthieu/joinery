@@ -195,7 +195,29 @@ impl Studio {
             result_budget_bytes: RESULT_BUDGET,
             row_limit: ROW_LIMIT,
             workspace: self.persistence.workspace()?,
+            saved_queries: self.persistence.saved_queries()?,
+            bookmarks: self.persistence.bookmarks()?,
         })
+    }
+
+    pub fn save_saved_query(&self, input: SavedQueryInput) -> AppResult<SavedQuery> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_saved_query(input)
+    }
+
+    pub fn delete_saved_query(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.delete_saved_query(id)
+    }
+
+    pub fn save_bookmark(&self, label: &str, target: BookmarkTarget) -> AppResult<SavedBookmark> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_bookmark(label, target)
+    }
+
+    pub fn delete_bookmark(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.delete_bookmark(id)
     }
 
     pub fn metadata_backups(&self) -> AppResult<Vec<MetadataBackup>> {
@@ -979,6 +1001,16 @@ impl Studio {
             Action::Browse { .. } => {}
         }
         if serialized {
+            let observed_state = if matches!(stored.action, Action::Sql)
+                && !token.is_cancelled()
+                && !cancellation_sent.load(Ordering::Acquire)
+                && !session.driver.is_closed()
+                && !session.closed.load(Ordering::Acquire)
+            {
+                session.driver.session_state(&session.info.id).await.ok()
+            } else {
+                None
+            };
             let _gate = session.cancellation_gate.lock().await;
             // PostgreSQL's cancel protocol has no acknowledgement. Discard a session
             // after an explicit cancellation so a late request cannot hit the next run.
@@ -1004,6 +1036,8 @@ impl Studio {
                     session_id: session.info.id.clone(),
                     reason: reason.into(),
                 });
+            } else if let Some(state) = observed_state {
+                events(QueryEvent::SessionState { state });
             }
             *session.active_run.lock() = None;
         }
@@ -1071,6 +1105,185 @@ impl Studio {
         }
         cancellation_sent.store(true, Ordering::Release);
         session.driver.cancel().await
+    }
+
+    pub async fn session_contexts(&self, session_id: &str) -> AppResult<SessionContextOptions> {
+        let session = self.session(session_id)?;
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        self.build_session_contexts(&session).await
+    }
+
+    pub async fn switch_session_context(
+        &self,
+        session_id: &str,
+        target: &str,
+    ) -> AppResult<SessionContextOptions> {
+        let session = self.session(session_id)?;
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.switch_context(target).await?;
+        *session.completion.lock() = None;
+        self.plans
+            .lock()
+            .retain(|_, p| p.plan.session_id != session.info.id);
+        let _ = self
+            .persistence
+            .audit(&session.profile.id, "switch-context", target, "completed");
+        self.build_session_contexts(&session).await
+    }
+
+    pub async fn set_transaction_mode(
+        &self,
+        session_id: &str,
+        mode: TransactionMode,
+    ) -> AppResult<SessionRuntimeState> {
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.transactions {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Transactions are unavailable for this engine",
+            ));
+        }
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.set_transaction_mode(mode).await?;
+        let label = match mode {
+            TransactionMode::AutoCommit => "autoCommit",
+            TransactionMode::Manual => "manual",
+        };
+        let _ = self
+            .persistence
+            .audit(&session.profile.id, "transaction-mode", label, "completed");
+        session.driver.session_state(&session.info.id).await
+    }
+
+    pub async fn commit_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.transactions {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Transactions are unavailable for this engine",
+            ));
+        }
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.commit_transaction().await?;
+        *session.completion.lock() = None;
+        self.plans
+            .lock()
+            .retain(|_, p| p.plan.session_id != session.info.id);
+        let _ = self.persistence.audit(
+            &session.profile.id,
+            "commit-transaction",
+            &session.info.id,
+            "completed",
+        );
+        session.driver.session_state(&session.info.id).await
+    }
+
+    pub async fn rollback_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.transactions {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Transactions are unavailable for this engine",
+            ));
+        }
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.rollback_transaction().await?;
+        *session.completion.lock() = None;
+        self.plans
+            .lock()
+            .retain(|_, p| p.plan.session_id != session.info.id);
+        let _ = self.persistence.audit(
+            &session.profile.id,
+            "rollback-transaction",
+            &session.info.id,
+            "completed",
+        );
+        session.driver.session_state(&session.info.id).await
+    }
+
+    async fn build_session_contexts(
+        &self,
+        session: &Arc<Session>,
+    ) -> AppResult<SessionContextOptions> {
+        let state = session.driver.session_state(&session.info.id).await?;
+        let mut available = session.driver.list_contexts().await.unwrap_or_default();
+        if let Some(active) = &state.active_context
+            && !active.is_empty()
+            && !available.iter().any(|item| item == active)
+        {
+            available.insert(0, active.clone());
+        }
+        Ok(SessionContextOptions { state, available })
     }
 
     /// Read a bounded context snapshot on the existing editor execution lane.
@@ -2292,6 +2505,73 @@ impl Studio {
         self.file_capabilities
             .mint_read_grant(path, crate::import::MAX_IMPORT_BYTES)
             .map(Some)
+    }
+
+    pub async fn open_sql_file(&self) -> AppResult<Option<OpenedSqlFile>> {
+        let Some(path) = self.file_dialog.pick_open_sql().await? else {
+            return Ok(None);
+        };
+        let read_path = path.clone();
+        let (file_name, content) =
+            tokio::task::spawn_blocking(move || FileCapabilities::read_sql_file_text(&read_path))
+                .await
+                .map_err(|_| AppError::internal("SQL file read task could not complete"))??;
+        let token = self.file_capabilities.mint_sql_file_grant(path)?;
+        Ok(Some(OpenedSqlFile {
+            token,
+            file_name,
+            content,
+        }))
+    }
+
+    pub async fn save_sql_file(
+        &self,
+        token: Option<&str>,
+        suggested_name: &str,
+        content: &str,
+    ) -> AppResult<Option<SavedSqlFile>> {
+        FileCapabilities::validate_sql_content(content)?;
+        if let Some(existing_token) = token.map(str::trim).filter(|t| !t.is_empty()) {
+            let path = self
+                .file_capabilities
+                .resolve_sql_file_grant(existing_token)?;
+            let owned = content.to_owned();
+            let file_name = tokio::task::spawn_blocking(move || {
+                FileCapabilities::write_sql_file_atomic(&path, &owned)
+            })
+            .await
+            .map_err(|_| AppError::internal("SQL file save task could not complete"))??;
+            return Ok(Some(SavedSqlFile {
+                token: existing_token.to_owned(),
+                file_name,
+            }));
+        }
+
+        let suggested = FileCapabilities::validate_sql_suggested_name(suggested_name)?;
+        let Some(path) = self.file_dialog.pick_save_sql(&suggested).await? else {
+            return Ok(None);
+        };
+        let new_token = self.file_capabilities.mint_sql_file_grant(path.clone())?;
+        let owned = content.to_owned();
+        let write_result = tokio::task::spawn_blocking(move || {
+            FileCapabilities::write_sql_file_atomic(&path, &owned)
+        })
+        .await
+        .map_err(|_| AppError::internal("SQL file save task could not complete"))?;
+        match write_result {
+            Ok(file_name) => Ok(Some(SavedSqlFile {
+                token: new_token,
+                file_name,
+            })),
+            Err(err) => {
+                self.file_capabilities.release_sql_file_grant(&new_token);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn release_sql_file_grant(&self, token: &str) {
+        self.file_capabilities.release_sql_file_grant(token);
     }
 
     async fn verify_import_target(

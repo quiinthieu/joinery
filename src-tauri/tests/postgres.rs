@@ -2828,3 +2828,243 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL live-context fixture"]
+async fn postgres_manual_transactions_failed_state_grid_isolation_and_schema_switch() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let sibling = studio
+        .connect(
+            &session.connection_id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let cleanup = "DROP SCHEMA IF EXISTS r4_alt CASCADE;
+                   DROP TABLE IF EXISTS public.r4_tx_items;";
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     CREATE TABLE public.r4_tx_items (id bigint PRIMARY KEY, note text NOT NULL);
+                     INSERT INTO public.r4_tx_items VALUES (1, 'initial');
+                     CREATE SCHEMA r4_alt;
+                     CREATE TABLE r4_alt.r4_only_alt (id bigint PRIMARY KEY, label text NOT NULL);"
+                ),
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let initial = studio.session_contexts(&session.id).await.unwrap();
+    assert_eq!(initial.state.transaction_mode, TransactionMode::AutoCommit);
+    assert_eq!(initial.state.transaction_state, TransactionState::Idle);
+    assert_eq!(initial.state.context_kind, SessionContextKind::Schema);
+    assert_eq!(initial.state.active_context.as_deref(), Some("public"));
+    assert!(initial.available.contains(&"public".to_string()));
+    assert!(initial.available.contains(&"r4_alt".to_string()));
+
+    let manual = studio
+        .set_transaction_mode(&session.id, TransactionMode::Manual)
+        .await
+        .unwrap();
+    assert_eq!(manual.transaction_mode, TransactionMode::Manual);
+    assert_eq!(manual.transaction_state, TransactionState::Idle);
+
+    // First transactional write in Manual mode auto-BEGINs and stays uncommitted.
+    let insert_events = run(
+        &studio,
+        &session,
+        "INSERT INTO public.r4_tx_items VALUES (2, 'uncommitted')",
+    )
+    .await;
+    assert_eq!(status(&insert_events), RunStatus::Completed);
+    let emitted_state = insert_events
+        .iter()
+        .find_map(|e| match e {
+            QueryEvent::SessionState { state } => Some(state.clone()),
+            _ => None,
+        })
+        .expect("expected SessionState event after SQL execution");
+    assert_eq!(emitted_state.transaction_mode, TransactionMode::Manual);
+    assert_eq!(
+        emitted_state.transaction_state,
+        TransactionState::InTransaction
+    );
+
+    // Switching Manual -> AutoCommit while InTransaction is refused (no implicit commit).
+    assert_eq!(
+        studio
+            .set_transaction_mode(&session.id, TransactionMode::AutoCommit)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+
+    // Sibling session still sees only 1 row.
+    let sibling_count = result(
+        &run(
+            &studio,
+            &sibling,
+            "SELECT COUNT(*)::text FROM public.r4_tx_items",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&sibling_count.id, 0).unwrap()[0].as_deref(),
+        Some("1")
+    );
+
+    // Grid edit on `session` uses its own isolated commit connection without committing row 2.
+    let table = TableRef {
+        schema: "public".into(),
+        name: "r4_tx_items".into(),
+    };
+    let page = studio.browse(&session.id, &table, None).await.unwrap();
+    let preview = studio
+        .prepare_changes(
+            &session.id,
+            &page.result.id,
+            vec![CellChange {
+                row: 0,
+                column: "c1".into(),
+                value: Some("grid-updated".into()),
+            }],
+        )
+        .unwrap();
+    let grid_token = studio.authorize(&preview.plan.id, None, None).unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &preview.plan, Some(&grid_token)).1).await),
+        RunStatus::Completed
+    );
+    let sibling_row1 = result(
+        &run(
+            &studio,
+            &sibling,
+            "SELECT note, (SELECT COUNT(*)::text FROM public.r4_tx_items) FROM public.r4_tx_items WHERE id = 1",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&sibling_row1.id, 0).unwrap()[0].as_deref(),
+        Some("grid-updated")
+    );
+    assert_eq!(
+        studio.results.row(&sibling_row1.id, 0).unwrap()[1].as_deref(),
+        Some("1")
+    );
+
+    // Explicit rollback discards row 2 while preserving the grid commit on row 1.
+    let rolled_back = studio.rollback_transaction(&session.id).await.unwrap();
+    assert_eq!(rolled_back.transaction_state, TransactionState::Idle);
+
+    // Failed transaction (`25P02` aborted state) reports Failed and refuses Commit / schema switch.
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "INSERT INTO public.r4_tx_items VALUES (3, 'aborted')"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let failed_events = run(&studio, &session, "SELECT 1 / 0").await;
+    assert_eq!(status(&failed_events), RunStatus::Failed);
+    let failed_ctx = studio.session_contexts(&session.id).await.unwrap();
+    assert_eq!(failed_ctx.state.transaction_state, TransactionState::Failed);
+    assert_eq!(failed_ctx.state.active_context.as_deref(), Some("public"));
+    assert_eq!(
+        studio
+            .commit_transaction(&session.id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        studio
+            .switch_session_context(&session.id, "r4_alt")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let recovered = studio.rollback_transaction(&session.id).await.unwrap();
+    assert_eq!(recovered.transaction_state, TransactionState::Idle);
+
+    // Manual Commit persists row 4 across sessions, then allows switching back to AutoCommit.
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "INSERT INTO public.r4_tx_items VALUES (4, 'committed')"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let committed = studio.commit_transaction(&session.id).await.unwrap();
+    assert_eq!(committed.transaction_state, TransactionState::Idle);
+    let after_commit = result(
+        &run(
+            &studio,
+            &sibling,
+            "SELECT COUNT(*)::text FROM public.r4_tx_items",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&after_commit.id, 0).unwrap()[0].as_deref(),
+        Some("2")
+    );
+    let auto_again = studio
+        .set_transaction_mode(&session.id, TransactionMode::AutoCommit)
+        .await
+        .unwrap();
+    assert_eq!(auto_again.transaction_mode, TransactionMode::AutoCommit);
+
+    // Schema switcher updates `session` search_path and unqualified completion without touching `sibling`.
+    let switched = studio
+        .switch_session_context(&session.id, "r4_alt")
+        .await
+        .unwrap();
+    assert_eq!(switched.state.active_context.as_deref(), Some("r4_alt"));
+    let completion = studio.completion_catalog(&session.id).await.unwrap();
+    assert!(completion.unqualified_tables.contains(&TableRef {
+        schema: "r4_alt".into(),
+        name: "r4_only_alt".into(),
+    }));
+    assert!(!completion.unqualified_tables.contains(&TableRef {
+        schema: "public".into(),
+        name: "r4_tx_items".into(),
+    }));
+    assert_eq!(
+        studio
+            .session_contexts(&sibling.id)
+            .await
+            .unwrap()
+            .state
+            .active_context
+            .as_deref(),
+        Some("public")
+    );
+
+    let _ = studio.switch_session_context(&session.id, "public").await;
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

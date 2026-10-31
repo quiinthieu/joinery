@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   Activity,
+  Bookmark,
   Braces,
   ChevronDown,
   ChevronRight,
@@ -15,6 +16,7 @@ import {
   Search,
   Settings2,
   SquareTerminal,
+  Star,
   Table2,
   Unplug,
   Zap,
@@ -86,12 +88,14 @@ export function Sidebar({
   onEdit,
   onSettings,
   onDisconnect,
+  onOpenLibrary,
 }: {
   onNew(groupId?: string): void;
   onConnect(profile: ConnectionProfile): void;
   onEdit(profile: ConnectionProfile): void;
   onSettings(): void;
   onDisconnect(profile: ConnectionProfile): void;
+  onOpenLibrary?(tab: "saved" | "bookmarks" | "recents"): void;
 }) {
   const state = useStudio(
       useShallow(
@@ -100,6 +104,8 @@ export function Sidebar({
           sessions,
           catalog,
           objects,
+          savedQueries,
+          bookmarks,
           selectedConnectionId,
           selectConnection,
           refreshCatalog,
@@ -112,6 +118,8 @@ export function Sidebar({
           sessions,
           catalog,
           objects,
+          savedQueries,
+          bookmarks,
           selectedConnectionId,
           selectConnection,
           refreshCatalog,
@@ -489,6 +497,20 @@ export function Sidebar({
           <SquareTerminal size={15} />
           SQL Studio<span>⌘ T</span>
         </button>
+        {onOpenLibrary && (
+          <>
+            <button onClick={() => onOpenLibrary("saved")}>
+              <Bookmark size={15} />
+              Saved queries
+              {state.savedQueries.length > 0 && <span>{state.savedQueries.length}</span>}
+            </button>
+            <button onClick={() => onOpenLibrary("bookmarks")}>
+              <Star size={15} />
+              Bookmarks
+              {state.bookmarks.length > 0 && <span>{state.bookmarks.length}</span>}
+            </button>
+          </>
+        )}
         <button onClick={() => state.openUtility("history")}>
           <History size={15} />
           Query history

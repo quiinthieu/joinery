@@ -128,6 +128,19 @@ impl Snowflake {
         Ok(result)
     }
 
+    pub(super) async fn list_schemas(&self) -> AppResult<Vec<String>> {
+        let sql = format!(
+            "SELECT SCHEMA_NAME FROM {}.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME <> 'INFORMATION_SCHEMA' ORDER BY SCHEMA_NAME LIMIT 1001",
+            identifier(&self.database)?
+        );
+        let rows = self.query_rows(&sql, 1000).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.into_iter().next().flatten())
+            .filter(|name| simple_identifier(name))
+            .collect())
+    }
+
     pub(super) async fn catalog_tables(&self) -> AppResult<Vec<TableInfo>> {
         let sql = format!(
             "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ROW_COUNT,BYTES FROM {}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001",

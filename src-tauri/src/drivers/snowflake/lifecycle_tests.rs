@@ -95,7 +95,7 @@ async fn fixture(refresh: bool, expired: bool) -> (Arc<Snowflake>, Server) {
             .unwrap(),
         base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
         database: "DB".into(),
-        schema: "PUBLIC".into(),
+        schema: Mutex::new("PUBLIC".into()),
         role: "READ_ONLY".into(),
         warehouse: "WH".into(),
         query_tag: "Joinery/lifecycle-test".into(),

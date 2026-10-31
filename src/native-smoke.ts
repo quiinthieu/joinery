@@ -105,6 +105,38 @@ export async function runNativeSmoke() {
           } satisfies TableChanges,
         },
       ],
+      [
+        "session_contexts",
+        {
+          sessionId: "missing-native-fixture",
+        },
+      ],
+      [
+        "switch_session_context",
+        {
+          sessionId: "missing-native-fixture",
+          target: "public",
+        },
+      ],
+      [
+        "set_transaction_mode",
+        {
+          sessionId: "missing-native-fixture",
+          mode: "manual",
+        },
+      ],
+      [
+        "commit_transaction",
+        {
+          sessionId: "missing-native-fixture",
+        },
+      ],
+      [
+        "rollback_transaction",
+        {
+          sessionId: "missing-native-fixture",
+        },
+      ],
     ] as const) {
       let denied = false;
       try {
@@ -194,6 +226,44 @@ export async function runNativeSmoke() {
             },
           }),
       ],
+      ["open_sql_file", "invalidInput", () => client.call("open_sql_file")],
+      [
+        "save_sql_file",
+        "approvalExpired",
+        () =>
+          client.call("save_sql_file", {
+            token: "expired-native-smoke-sql-grant",
+            suggestedName: "smoke.sql",
+            content: "SELECT 1;",
+          }),
+      ],
+      [
+        "save_saved_query",
+        "invalidInput",
+        () =>
+          client.call("save_saved_query", {
+            input: { id: null, title: "   ", sql: "SELECT 1;", connectionId: null },
+          }),
+      ],
+      [
+        "delete_saved_query",
+        "notFound",
+        () => client.call("delete_saved_query", { id: "missing-native-smoke-query" }),
+      ],
+      [
+        "save_bookmark",
+        "invalidInput",
+        () =>
+          client.call("save_bookmark", {
+            label: "   ",
+            target: { kind: "savedQuery", savedQueryId: "missing" },
+          }),
+      ],
+      [
+        "delete_bookmark",
+        "notFound",
+        () => client.call("delete_bookmark", { id: "missing-native-smoke-bookmark" }),
+      ],
     ] as const) {
       let matched = false;
       try {
@@ -204,6 +274,7 @@ export async function runNativeSmoke() {
       }
       assert(matched, `Native ${command} must reach its Rust guard (${expectedCode})`);
     }
+    await client.call("release_sql_file_grant", { token: "missing-native-smoke-sql-grant" });
     report.bootstrapMs = performance.now() - started;
     const shellDeadline = performance.now() + 3000;
     while (

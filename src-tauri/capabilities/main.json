@@ -58,6 +58,18 @@
     "allow-pick-import-source",
     "allow-preview-csv-import",
     "allow-prepare-csv-import-batch",
-    "allow-compare-data"
+    "allow-compare-data",
+    "allow-session-contexts",
+    "allow-switch-session-context",
+    "allow-set-transaction-mode",
+    "allow-commit-transaction",
+    "allow-rollback-transaction",
+    "allow-open-sql-file",
+    "allow-save-sql-file",
+    "allow-release-sql-file-grant",
+    "allow-save-saved-query",
+    "allow-delete-saved-query",
+    "allow-save-bookmark",
+    "allow-delete-bookmark"
   ]
 }

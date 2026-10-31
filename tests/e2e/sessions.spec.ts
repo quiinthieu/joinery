@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+const PG_PORT = Number(process.env.JOINERY_POSTGRES_PORT ?? "55432");
+
 for (const [engine, port] of [
-  ["PostgreSQL", 55432],
+  ["PostgreSQL", PG_PORT],
   ["MySQL", 53306],
   ["MariaDB", 53307],
 ] as const) {

@@ -20,6 +20,8 @@ pub struct Postgres {
     tls: MakeRustlsConnect,
     tasks: Mutex<Vec<tokio::task::AbortHandle>>,
     edit_cancel: Mutex<Option<tokio_postgres::CancelToken>>,
+    tx_mode: Mutex<TransactionMode>,
+    cached_identity: Mutex<CompletionIdentity>,
     own_pid: i32,
 }
 
@@ -79,9 +81,18 @@ impl Postgres {
             let _ = connection.await;
         });
         let row = client
-            .query_one("SELECT version(),pg_backend_pid()", &[])
+            .query_one(
+                "SELECT version(),pg_backend_pid(),pg_catalog.current_database()::pg_catalog.text,current_user::pg_catalog.text,pg_catalog.current_schemas(true)::pg_catalog.text[]",
+                &[],
+            )
             .await
             .map_err(pg_error)?;
+        let initial_identity = CompletionIdentity {
+            database: row.get(2),
+            role: row.get(3),
+            search_path: row.get(4),
+            case_sensitive_table_names: None,
+        };
         let info = SessionInfo {
             id: session_id.into(),
             connection_id: profile.id.clone(),
@@ -108,8 +119,29 @@ impl Postgres {
             tls,
             tasks: Mutex::new(vec![task.abort_handle()]),
             edit_cancel: Mutex::new(None),
+            tx_mode: Mutex::new(TransactionMode::AutoCommit),
+            cached_identity: Mutex::new(initial_identity),
         };
         Ok((Arc::new(driver), info))
+    }
+
+    async fn observe_transaction_state(&self) -> AppResult<TransactionState> {
+        let meta = self.metadata().await?;
+        let _ = meta
+            .batch_execute("SELECT pg_catalog.pg_stat_clear_snapshot()")
+            .await;
+        let row = meta
+            .query_opt(
+                "SELECT COALESCE(state, 'idle') FROM pg_catalog.pg_stat_activity WHERE pid = $1",
+                &[&self.own_pid],
+            )
+            .await
+            .map_err(pg_error)?;
+        Ok(match row.as_ref().map(|r| r.get::<_, &str>(0)) {
+            Some("idle in transaction") => TransactionState::InTransaction,
+            Some("idle in transaction (aborted)") => TransactionState::Failed,
+            _ => TransactionState::Idle,
+        })
     }
 
     async fn metadata(&self) -> AppResult<&Client> {
@@ -137,6 +169,12 @@ impl Driver for Postgres {
         kind: StatementKind,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
+        if *self.tx_mode.lock() == TransactionMode::Manual
+            && should_auto_begin_postgres(sql, kind)
+            && self.observe_transaction_state().await? == TransactionState::Idle
+        {
+            self.client.batch_execute("BEGIN").await.map_err(pg_error)?;
+        }
         let metadata = if kind == StatementKind::Read {
             Some(
                 self.client
@@ -263,7 +301,141 @@ impl Driver for Postgres {
                 "The schema search path exceeds the completion budget",
             ));
         }
+        *self.cached_identity.lock() = identity.clone();
         Ok(identity)
+    }
+
+    async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        if self.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "The database connection closed",
+            ));
+        }
+        let transaction_state = self.observe_transaction_state().await?;
+        let transaction_mode = *self.tx_mode.lock();
+        let identity = if transaction_state == TransactionState::Failed {
+            self.cached_identity.lock().clone()
+        } else {
+            self.completion_identity().await?
+        };
+        Ok(SessionRuntimeState {
+            session_id: session_id.to_owned(),
+            transaction_mode,
+            transaction_state,
+            context_kind: SessionContextKind::Schema,
+            active_context: active_postgres_schema(&identity.search_path),
+            database: identity.database,
+            role: identity.role,
+            search_path: identity.search_path,
+        })
+    }
+
+    async fn list_contexts(&self) -> AppResult<Vec<String>> {
+        let rows = self
+            .metadata()
+            .await?
+            .query(
+                "SELECT n.nspname
+                 FROM pg_catalog.pg_namespace n
+                 WHERE n.nspname NOT LIKE 'pg\\_toast%'
+                   AND n.nspname NOT LIKE 'pg\\_temp%'
+                   AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+                 ORDER BY CASE
+                     WHEN n.nspname = 'public' THEN 0
+                     WHEN n.nspname = 'pg_catalog' THEN 2
+                     WHEN n.nspname = 'information_schema' THEN 3
+                     ELSE 1
+                 END, n.nspname
+                 LIMIT 1000",
+                &[],
+            )
+            .await
+            .map_err(pg_error)?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    async fn switch_context(&self, target: &str) -> AppResult<()> {
+        if target.is_empty() || target.chars().count() > 255 || target.contains('\0') {
+            return Err(AppError::invalid("Provide a valid PostgreSQL schema name"));
+        }
+        if self.observe_transaction_state().await? == TransactionState::Failed {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Roll back the failed transaction before switching schemas",
+            ));
+        }
+        let exists = self
+            .client
+            .query(
+                "SELECT 1
+                 FROM pg_catalog.pg_namespace n
+                 WHERE n.nspname = $1
+                   AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')",
+                &[&target],
+            )
+            .await
+            .map_err(pg_error)?;
+        if exists.is_empty() {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                format!("Schema \"{target}\" does not exist or is not accessible"),
+            ));
+        }
+        self.client
+            .query_one(
+                "SELECT pg_catalog.set_config(
+                    'search_path',
+                    pg_catalog.format('%I', $1::pg_catalog.text),
+                    false
+                )",
+                &[&target],
+            )
+            .await
+            .map_err(pg_error)?;
+        let _ = self.completion_identity().await?;
+        Ok(())
+    }
+
+    async fn set_transaction_mode(&self, mode: TransactionMode) -> AppResult<()> {
+        let state = self.observe_transaction_state().await?;
+        if mode == TransactionMode::AutoCommit && state != TransactionState::Idle {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Commit or roll back the open transaction before switching to auto-commit",
+            ));
+        }
+        *self.tx_mode.lock() = mode;
+        Ok(())
+    }
+
+    async fn commit_transaction(&self) -> AppResult<()> {
+        match self.observe_transaction_state().await? {
+            TransactionState::Idle => Err(AppError::new(
+                ErrorCode::Conflict,
+                "No transaction is currently open",
+            )),
+            TransactionState::Failed => Err(AppError::new(
+                ErrorCode::Conflict,
+                "This transaction has failed and can only be rolled back",
+            )),
+            TransactionState::InTransaction => {
+                self.client.batch_execute("COMMIT").await.map_err(pg_error)
+            }
+        }
+    }
+
+    async fn rollback_transaction(&self) -> AppResult<()> {
+        if self.observe_transaction_state().await? == TransactionState::Idle {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "No transaction is currently open",
+            ));
+        }
+        self.client
+            .batch_execute("ROLLBACK")
+            .await
+            .map_err(pg_error)
     }
     async fn completion_catalog(
         &self,
@@ -1026,4 +1198,183 @@ async fn referencing_keys_on(
                 .is_none_or(|&w| key.columns.len() == w)
         })
         .collect())
+}
+
+fn active_postgres_schema(search_path: &[String]) -> Option<String> {
+    search_path
+        .iter()
+        .find(|s| s.as_str() != "pg_catalog" && !s.starts_with("pg_temp"))
+        .or_else(|| search_path.first())
+        .cloned()
+}
+
+fn postgres_keyword_tokens(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut i = 0usize;
+    let mut tokens = Vec::new();
+    while i < bytes.len() && tokens.len() < 16 {
+        match bytes[i] {
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                let mut depth = 1usize;
+                while i + 1 < bytes.len() && depth > 0 {
+                    if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                    } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        i += 1;
+                        if bytes.get(i) == Some(&b'\'') {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        if bytes.get(i) == Some(&b'"') {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'$' => {
+                let tag_start = i;
+                let mut end = i + 1;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                if end < bytes.len() && bytes[end] == b'$' {
+                    let tag = &bytes[tag_start..=end];
+                    i = end + 1;
+                    while i + tag.len() <= bytes.len() && &bytes[i..i + tag.len()] != tag {
+                        i += 1;
+                    }
+                    i = (i + tag.len()).min(bytes.len());
+                } else {
+                    i += 1;
+                }
+            }
+            b if b.is_ascii_alphabetic() || b == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                tokens.push(sql[start..i].to_ascii_uppercase());
+            }
+            _ => i += 1,
+        }
+    }
+    tokens
+}
+
+fn should_auto_begin_postgres(sql: &str, kind: StatementKind) -> bool {
+    if kind == StatementKind::Transaction {
+        return false;
+    }
+    let tokens = postgres_keyword_tokens(sql);
+    let Some(first) = tokens.first().map(String::as_str) else {
+        return false;
+    };
+    if matches!(
+        first,
+        "BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "VACUUM" | "CLUSTER"
+    ) {
+        return false;
+    }
+    let second = tokens.get(1).map(String::as_str);
+    if first == "ALTER" && second == Some("SYSTEM") {
+        return false;
+    }
+    if matches!(first, "CREATE" | "DROP") && matches!(second, Some("DATABASE" | "TABLESPACE")) {
+        return false;
+    }
+    if matches!(first, "CREATE" | "DROP" | "REINDEX") && tokens.iter().any(|t| t == "CONCURRENTLY")
+    {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn active_schema_skips_implicit_pg_catalog_unless_explicit() {
+        assert_eq!(
+            active_postgres_schema(&["pg_catalog".into(), "public".into()]),
+            Some("public".into())
+        );
+        assert_eq!(
+            active_postgres_schema(&["pg_temp_4".into(), "pg_catalog".into(), "analytics".into()]),
+            Some("analytics".into())
+        );
+        assert_eq!(
+            active_postgres_schema(&["pg_catalog".into()]),
+            Some("pg_catalog".into())
+        );
+        assert_eq!(active_postgres_schema(&[]), None);
+    }
+
+    #[test]
+    fn auto_begin_skips_transaction_control_and_non_transactional_commands() {
+        assert!(should_auto_begin_postgres(
+            "SELECT * FROM orders",
+            StatementKind::Read
+        ));
+        assert!(should_auto_begin_postgres(
+            "/* comment */ INSERT INTO orders VALUES (1)",
+            StatementKind::Write
+        ));
+        assert!(!should_auto_begin_postgres(
+            "BEGIN",
+            StatementKind::Transaction
+        ));
+        assert!(!should_auto_begin_postgres(
+            "-- header\nVACUUM ANALYZE orders",
+            StatementKind::Unknown
+        ));
+        assert!(!should_auto_begin_postgres(
+            "CREATE INDEX CONCURRENTLY idx_orders ON orders (id)",
+            StatementKind::Ddl
+        ));
+        assert!(!should_auto_begin_postgres(
+            "CREATE DATABASE scratch",
+            StatementKind::Ddl
+        ));
+        assert!(!should_auto_begin_postgres(
+            "ALTER SYSTEM SET work_mem = '16MB'",
+            StatementKind::Unknown
+        ));
+    }
 }

@@ -3,6 +3,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::{Path, PathBuf};
 
+mod library;
 mod recovery;
 mod workspace;
 
@@ -89,9 +90,20 @@ impl Persistence {
     pub fn delete_profile(&self, id: &str) -> AppResult<()> {
         let mut connection = self.connection.lock();
         let tx = connection.transaction().map_err(db_error)?;
+        let existing_json: Option<String> = tx
+            .query_row("SELECT json FROM profiles WHERE id=?1", [id], |r| r.get(0))
+            .optional()
+            .map_err(db_error)?;
+        let purge_bound_queries = match existing_json {
+            Some(raw) => serde_json::from_str::<ConnectionProfile>(&raw)
+                .map(|p| p.environment == Environment::Production || !p.store_query_text)
+                .unwrap_or(true),
+            None => true,
+        };
         tx.execute("DELETE FROM profiles WHERE id=?1", [id])
             .map_err(db_error)?;
         workspace::purge_connection(&tx, id)?;
+        library::purge_connection(&tx, id, purge_bound_queries)?;
         tx.commit().map_err(db_error)
     }
 

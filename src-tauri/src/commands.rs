@@ -560,3 +560,110 @@ pub async fn compare_data(
 ) -> AppResult<DataCompareReport> {
     studio.compare_data(request).await
 }
+
+#[tauri::command]
+pub async fn session_contexts(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<SessionContextOptions> {
+    studio.session_contexts(&session_id).await
+}
+
+#[tauri::command]
+pub async fn switch_session_context(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    target: String,
+) -> AppResult<SessionContextOptions> {
+    studio.switch_session_context(&session_id, &target).await
+}
+
+#[tauri::command]
+pub async fn set_transaction_mode(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    mode: TransactionMode,
+) -> AppResult<SessionRuntimeState> {
+    studio.set_transaction_mode(&session_id, mode).await
+}
+
+#[tauri::command]
+pub async fn commit_transaction(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<SessionRuntimeState> {
+    studio.commit_transaction(&session_id).await
+}
+
+#[tauri::command]
+pub async fn rollback_transaction(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<SessionRuntimeState> {
+    studio.rollback_transaction(&session_id).await
+}
+
+#[tauri::command]
+pub async fn open_sql_file(studio: State<'_, Arc<Studio>>) -> AppResult<Option<OpenedSqlFile>> {
+    studio.open_sql_file().await
+}
+
+#[tauri::command]
+pub async fn save_sql_file(
+    studio: State<'_, Arc<Studio>>,
+    token: Option<String>,
+    suggested_name: String,
+    content: String,
+) -> AppResult<Option<SavedSqlFile>> {
+    studio
+        .save_sql_file(token.as_deref(), &suggested_name, &content)
+        .await
+}
+
+#[tauri::command]
+pub async fn release_sql_file_grant(
+    studio: State<'_, Arc<Studio>>,
+    token: String,
+) -> AppResult<()> {
+    studio.release_sql_file_grant(&token);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_saved_query(
+    studio: State<'_, Arc<Studio>>,
+    input: SavedQueryInput,
+) -> AppResult<SavedQuery> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_saved_query(input))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_saved_query(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_saved_query(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn save_bookmark(
+    studio: State<'_, Arc<Studio>>,
+    label: String,
+    target: BookmarkTarget,
+) -> AppResult<SavedBookmark> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_bookmark(&label, target))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_bookmark(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_bookmark(&id))
+        .await
+        .map_err(join_error)?
+}

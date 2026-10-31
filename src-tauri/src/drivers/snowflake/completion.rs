@@ -2,6 +2,7 @@ use super::*;
 
 impl Snowflake {
     pub(super) async fn live_completion_identity(&self) -> AppResult<CompletionIdentity> {
+        let expected_schema = self.current_schema();
         let rows = self.context_rows("SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), TO_JSON(CURRENT_SCHEMAS())").await?;
         let invalid = || {
             AppError::new(
@@ -16,7 +17,7 @@ impl Snowflake {
             .ok_or_else(invalid)?;
         if row[1].as_deref() != Some(&self.role)
             || row[2].as_deref() != Some(&self.database)
-            || row[3].as_deref() != Some(&self.schema)
+            || row[3].as_deref() != Some(expected_schema.as_str())
             || row[4].as_deref() != Some(&self.warehouse)
         {
             return Err(AppError::new(

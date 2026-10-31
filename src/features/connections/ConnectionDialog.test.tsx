@@ -182,6 +182,8 @@ test("a newly saved production profile can authorize changed settings after a fa
       passphraseConfigured: false,
       resultBudgetBytes: 64 * 1024 * 1024,
       rowLimit: 100000,
+      savedQueries: [],
+      bookmarks: [],
       workspace: null,
     },
   });

@@ -36,7 +36,7 @@ pub struct Snowflake {
     client: Client,
     base: Url,
     database: String,
-    schema: String,
+    schema: Mutex<String>,
     role: String,
     warehouse: String,
     query_tag: String,
@@ -133,7 +133,7 @@ impl Snowflake {
             client,
             base,
             database: profile.database.clone(),
-            schema: config.schema.clone(),
+            schema: Mutex::new(config.schema.clone()),
             role: config.role.clone(),
             warehouse: config.warehouse.clone(),
             query_tag: format!("Joinery/{session_id}"),
@@ -343,9 +343,23 @@ impl Snowflake {
         Ok((status, value))
     }
 
+    pub(super) fn current_schema(&self) -> String {
+        self.schema.lock().clone()
+    }
+
     async fn submit(&self, sql: &str, track_query: bool) -> AppResult<Value> {
+        let schema = self.current_schema();
+        self.submit_with_schema(sql, &schema, track_query).await
+    }
+
+    async fn submit_with_schema(
+        &self,
+        sql: &str,
+        schema: &str,
+        track_query: bool,
+    ) -> AppResult<Value> {
         let body = json!({"statement": sql, "timeout": 60, "database": self.database,
-            "schema": self.schema, "warehouse": self.warehouse, "role": self.role,
+            "schema": schema, "warehouse": self.warehouse, "role": self.role,
             "parameters": {"QUERY_TAG": self.query_tag}});
         let (mut status, mut value) = self
             .request_scoped(
@@ -587,6 +601,50 @@ impl Driver for Snowflake {
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         self.live_completion_identity().await
     }
+    async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        if self.is_closed() {
+            return Err(Self::sign_in_expired());
+        }
+        let schema = self.current_schema();
+        let qualified_schema = format!("{}.{schema}", self.database);
+        Ok(SessionRuntimeState {
+            session_id: session_id.to_owned(),
+            transaction_mode: TransactionMode::AutoCommit,
+            transaction_state: TransactionState::Idle,
+            context_kind: SessionContextKind::Schema,
+            active_context: Some(schema),
+            database: self.database.clone(),
+            role: self.role.clone(),
+            search_path: vec![qualified_schema],
+        })
+    }
+    async fn list_contexts(&self) -> AppResult<Vec<String>> {
+        self.list_schemas().await
+    }
+    async fn switch_context(&self, target: &str) -> AppResult<()> {
+        if !simple_identifier(target) {
+            return Err(AppError::invalid(
+                "Use an uppercase unquoted Snowflake schema name",
+            ));
+        }
+        let _lane = self.metadata_lane.lock().await;
+        let response = self
+            .submit_with_schema("SELECT CURRENT_SCHEMA()", target, false)
+            .await?;
+        let rows = decode_rows(&response)?;
+        let resolved = rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(|cell| cell.as_deref());
+        if resolved != Some(target) {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                format!("Snowflake schema \"{target}\" is unavailable"),
+            ));
+        }
+        *self.schema.lock() = target.to_owned();
+        Ok(())
+    }
     async fn completion_catalog(
         &self,
         identity: &CompletionIdentity,
@@ -733,7 +791,7 @@ mod tests {
                 .unwrap(),
             base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
             database: "DB".into(),
-            schema: "PUBLIC".into(),
+            schema: Mutex::new("PUBLIC".into()),
             role: "READ_ONLY".into(),
             warehouse: "WH".into(),
             query_tag: "Joinery/test".into(),

@@ -1,11 +1,13 @@
 import { test, expect, type Page } from "@playwright/test";
 
+const PG_PORT = process.env.JOINERY_POSTGRES_PORT ?? "55432";
+
 async function connect(page: Page, name: string, safeMode?: string) {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Connection name", { exact: true }).fill(name);
   await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
-  await page.getByLabel("Port", { exact: true }).fill("55432");
+  await page.getByLabel("Port", { exact: true }).fill(PG_PORT);
   await page.getByLabel("Database", { exact: true }).fill("joinery");
   await page.getByLabel("Username", { exact: true }).fill("joinery");
   await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");

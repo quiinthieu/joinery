@@ -2,7 +2,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
 import type { PreparedPlan, SessionInfo, TablePage, TableSchema } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
-import { useStudio, querySessionForTab } from "./studio";
+import { useStudio, querySessionForTab, isTabFileDirty, MAX_RECENT_LOCATIONS } from "./studio";
 import { workspaceSnapshot } from "./workspace";
 import { dirtyStore } from "../data/dirty-store";
 
@@ -79,6 +79,13 @@ beforeEach(() => {
     catalog: {},
     objects: {},
     sessions: { profile: session },
+    sessionPool: {},
+    sessionStates: {},
+    sessionContexts: {},
+    sessionContextRevision: {},
+    savedQueries: [],
+    bookmarks: [],
+    recentLocations: [],
   });
 });
 
@@ -261,6 +268,8 @@ test("a new tab opened during startup cannot overwrite recoverable drafts", asyn
     supportedEngines: [],
     resultBudgetBytes: 0,
     rowLimit: 0,
+    savedQueries: [],
+    bookmarks: [],
     workspace: {
       theme: "contrast",
       density: "compact",
@@ -512,4 +521,313 @@ test("openObject distinguishes overloaded routines and routes relations to table
   expect(tabs[1].title).toBe("r3_calc(integer)");
   expect(tabs[2].title).toBe("r3_calc(numeric, integer)");
   expect(useStudio.getState().activeTabId).toBe(tabs[1].id);
+});
+
+test("multiple consoles can attach to a named secondary session and only the last owner disconnects it on close", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const first = useStudio.getState().openQuery("profile", "SELECT 1");
+  const second = useStudio.getState().openQuery("profile", "SELECT 2");
+  const secondary = { ...session, id: "secondary-1" };
+
+  expect(useStudio.getState().bindQuerySession(first, secondary)).toBe(true);
+  useStudio.getState().renameQuerySession("secondary-1", "  Analytics   lane  ");
+  expect(useStudio.getState().sessionPool.profile).toEqual([
+    { info: secondary, label: "Analytics lane", primary: false },
+  ]);
+
+  expect(useStudio.getState().attachQuerySession(second, "secondary-1")).toBe(true);
+  expect(
+    querySessionForTab(
+      useStudio.getState().tabs.find((t) => t.id === second)!,
+      useStudio.getState().sessions,
+    )?.id,
+  ).toBe("secondary-1");
+
+  // Closing the first tab while `second` is still attached does NOT disconnect `secondary-1`.
+  useStudio.getState().closeTab(first);
+  expect(client.call).not.toHaveBeenCalledWith("disconnect", { sessionId: "secondary-1" });
+  expect(useStudio.getState().sessionPool.profile).toHaveLength(1);
+
+  // Closing the last attached tab disconnects `secondary-1` and removes it from `sessionPool`.
+  useStudio.getState().closeTab(second);
+  expect(client.call).toHaveBeenCalledWith("disconnect", { sessionId: "secondary-1" });
+  expect(useStudio.getState().sessionPool.profile).toBeUndefined();
+});
+
+test("retiring a shared secondary session marks every attached console disconnected without falling back to shared", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const first = useStudio.getState().openQuery("profile");
+  const second = useStudio.getState().openQuery("profile");
+  useStudio.getState().bindQuerySession(first, { ...session, id: "secondary-shared" });
+  useStudio.getState().attachQuerySession(second, "secondary-shared");
+
+  useStudio.getState().retireSession("secondary-shared");
+  const state = useStudio.getState();
+  for (const id of [first, second]) {
+    const tab = state.tabs.find((t) => t.id === id)!;
+    expect(tab.querySessionClosed).toBe(true);
+    expect(querySessionForTab(tab, state.sessions)).toBeUndefined();
+  }
+  expect(state.sessions.profile.id).toBe("session");
+});
+
+test("sessionState events and context/transaction commands update runtime state and context revisions", async () => {
+  const baseState = {
+    sessionId: "session",
+    transactionMode: "autoCommit" as const,
+    transactionState: "idle" as const,
+    contextKind: "schema" as const,
+    activeContext: "public",
+    database: "joinery",
+    role: "joinery",
+    searchPath: ["public", "pg_catalog"],
+  };
+  vi.mocked(client.call).mockImplementation(((command: string, args?: Record<string, unknown>) => {
+    if (command === "session_contexts") {
+      return Promise.resolve({ state: baseState, available: ["public", "analytics"] });
+    }
+    if (command === "switch_session_context") {
+      const target = String(args?.target ?? "public");
+      return Promise.resolve({
+        state: {
+          ...baseState,
+          activeContext: target,
+          searchPath: [target, "pg_catalog"],
+        },
+        available: ["public", "analytics"],
+      });
+    }
+    if (command === "set_transaction_mode") {
+      return Promise.resolve({
+        ...useStudio.getState().sessionStates.session,
+        transactionMode: "manual" as const,
+      });
+    }
+    if (command === "commit_transaction" || command === "rollback_transaction") {
+      return Promise.resolve({
+        ...baseState,
+        transactionMode: "manual" as const,
+        transactionState: "idle" as const,
+      });
+    }
+    return Promise.resolve(null);
+  }) as typeof client.call);
+
+  const tabId = useStudio.getState().openQuery("profile");
+  await useStudio.getState().refreshSessionContexts("session");
+  expect(useStudio.getState().sessionContexts.session).toEqual(["public", "analytics"]);
+  expect(useStudio.getState().sessionStates.session.activeContext).toBe("public");
+
+  await useStudio.getState().switchSessionContext("session", "analytics");
+  expect(useStudio.getState().sessionStates.session.activeContext).toBe("analytics");
+  expect(useStudio.getState().sessionContextRevision.session).toBe(1);
+
+  await useStudio.getState().setTransactionMode("session", "manual");
+  expect(useStudio.getState().sessionStates.session.transactionMode).toBe("manual");
+
+  // QueryEvent::sessionState updates transactionState and bumps revision when searchPath changes.
+  const rev = useStudio.getState().tabs.find((t) => t.id === tabId)!.revision;
+  useStudio.getState().applyEvents(
+    tabId,
+    [
+      {
+        type: "sessionState",
+        state: {
+          ...useStudio.getState().sessionStates.session,
+          transactionState: "inTransaction",
+          activeContext: "public",
+          searchPath: ["public", "pg_catalog"],
+        },
+      },
+    ],
+    rev,
+  );
+  expect(useStudio.getState().sessionStates.session.transactionState).toBe("inTransaction");
+  expect(useStudio.getState().sessionContextRevision.session).toBe(2);
+
+  await useStudio.getState().rollbackTransaction("session");
+  expect(useStudio.getState().sessionStates.session.transactionState).toBe("idle");
+  expect(useStudio.getState().sessionContextRevision.session).toBe(3);
+});
+
+test("file-backed SQL tabs track dirty state, release grants on Save As and close, and never persist to workspace drafts", async () => {
+  useStudio.setState({
+    bootstrap: {
+      profiles: [{ id: "profile", storeDrafts: true } as ConnectionProfile],
+      savedQueries: [],
+      bookmarks: [],
+    } as unknown as Bootstrap,
+  });
+  let saveCalls = 0;
+  vi.mocked(client.call).mockImplementation(((command: string) => {
+    if (command === "open_sql_file") {
+      return Promise.resolve({
+        token: "sql-grant-1",
+        fileName: "report.sql",
+        content: "SELECT 1;",
+      });
+    }
+    if (command === "save_sql_file") {
+      saveCalls += 1;
+      return Promise.resolve(
+        saveCalls === 1
+          ? { token: "sql-grant-1", fileName: "report.sql" }
+          : { token: "sql-grant-2", fileName: "report-v2.sql" },
+      );
+    }
+    return Promise.resolve(null);
+  }) as typeof client.call);
+
+  const regularId = useStudio.getState().openQuery("profile", "SELECT 'draft'");
+  const fileTabId = (await useStudio.getState().openSqlFile("profile"))!;
+  expect(fileTabId).toBeTruthy();
+
+  let fileTab = useStudio.getState().tabs.find((t) => t.id === fileTabId)!;
+  expect(isTabFileDirty(fileTab)).toBe(false);
+  expect(workspaceSnapshot().drafts.map((d) => d.id)).toEqual([regularId]);
+
+  useStudio.getState().updateTab(fileTabId, { sql: "SELECT 2;" });
+  fileTab = useStudio.getState().tabs.find((t) => t.id === fileTabId)!;
+  expect(isTabFileDirty(fileTab)).toBe(true);
+  expect(workspaceSnapshot().drafts.map((d) => d.id)).toEqual([regularId]);
+
+  // Save in-place reuses `sql-grant-1` and clears dirty state.
+  expect(await useStudio.getState().saveSqlFile(fileTabId)).toBe(true);
+  expect(client.call).toHaveBeenCalledWith("save_sql_file", {
+    token: "sql-grant-1",
+    suggestedName: "report.sql",
+    content: "SELECT 2;",
+  });
+  expect(isTabFileDirty(useStudio.getState().tabs.find((t) => t.id === fileTabId)!)).toBe(false);
+
+  // Save As passes `token: null`, rebinds to `sql-grant-2`, and releases `sql-grant-1`.
+  expect(await useStudio.getState().saveSqlFile(fileTabId, { saveAs: true })).toBe(true);
+  expect(client.call).toHaveBeenCalledWith("save_sql_file", {
+    token: null,
+    suggestedName: "report.sql",
+    content: "SELECT 2;",
+  });
+  expect(client.call).toHaveBeenCalledWith("release_sql_file_grant", { token: "sql-grant-1" });
+
+  // Closing the tab releases `sql-grant-2`.
+  useStudio.getState().closeTab(fileTabId);
+  expect(client.call).toHaveBeenCalledWith("release_sql_file_grant", { token: "sql-grant-2" });
+});
+
+test("saved queries, bookmarks, recent-locations ring buffer, and profile deletion privacy cleanup", async () => {
+  useStudio.setState({
+    bootstrap: {
+      profiles: [
+        {
+          id: "local-conn",
+          name: "Local DB",
+          environment: "local",
+          storeQueryText: true,
+          storeDrafts: true,
+        } as ConnectionProfile,
+        {
+          id: "prod-conn",
+          name: "Prod DB",
+          environment: "production",
+          storeQueryText: false,
+          storeDrafts: false,
+        } as ConnectionProfile,
+      ],
+      savedQueries: [],
+      bookmarks: [],
+    } as unknown as Bootstrap,
+    sessions: { "local-conn": { ...session, connectionId: "local-conn" } },
+  });
+
+  let sqSeq = 0;
+  let bmSeq = 0;
+  vi.mocked(client.call).mockImplementation(((command: string, args?: Record<string, unknown>) => {
+    if (command === "save_saved_query") {
+      const input = args?.input as {
+        id: string | null;
+        title: string;
+        sql: string;
+        connectionId: string | null;
+      };
+      return Promise.resolve({
+        id: input.id ?? `sq-${++sqSeq}`,
+        title: input.title,
+        sql: input.sql,
+        connectionId: input.connectionId,
+        updatedAtMs: 1000 + sqSeq,
+      });
+    }
+    if (command === "save_bookmark") {
+      return Promise.resolve({
+        id: `bm-${++bmSeq}`,
+        label: String(args?.label ?? ""),
+        target: args?.target,
+        createdAtMs: 2000 + bmSeq,
+      });
+    }
+    return Promise.resolve(null);
+  }) as typeof client.call);
+
+  const tabId = useStudio.getState().openQuery("local-conn", "SELECT 1");
+  const localSq = await useStudio
+    .getState()
+    .saveQueryToLibrary(
+      { id: null, title: "Local check", sql: "SELECT 1", connectionId: "local-conn" },
+      tabId,
+    );
+  const prodSq = await useStudio.getState().saveQueryToLibrary({
+    id: null,
+    title: "Prod check",
+    sql: "SELECT 2",
+    connectionId: "prod-conn",
+  });
+
+  // Reopening an already-open saved query focuses the existing tab instead of duplicating.
+  expect(useStudio.getState().openSavedQuery(localSq.id)).toBe(tabId);
+
+  // Toggle bookmarks on an object and a saved query.
+  expect(
+    await useStudio.getState().toggleBookmark(
+      {
+        kind: "object",
+        connectionId: "prod-conn",
+        object: { schema: "public", name: "audit_log", kind: "table", identity: null },
+      },
+      "public.audit_log",
+    ),
+  ).toBe(true);
+  expect(
+    await useStudio
+      .getState()
+      .toggleBookmark({ kind: "savedQuery", savedQueryId: prodSq.id }, "Prod check"),
+  ).toBe(true);
+  expect(useStudio.getState().bookmarks).toHaveLength(2);
+
+  // Opening a location on an offline connection returns `needsConnect` without throwing.
+  const offlineOutcome = await useStudio.getState().openLocation({
+    kind: "table",
+    connectionId: "prod-conn",
+    table: { schema: "public", name: "audit_log" },
+  });
+  expect(offlineOutcome.kind).toBe("needsConnect");
+
+  // Removing a production connection purges its saved queries and bookmarks; removing a local connection detaches its saved query.
+  useStudio.getState().removeConnection("prod-conn");
+  expect(useStudio.getState().savedQueries.map((q) => q.id)).toEqual([localSq.id]);
+  expect(useStudio.getState().bookmarks).toEqual([]);
+
+  useStudio.getState().removeConnection("local-conn");
+  expect(useStudio.getState().savedQueries[0]?.connectionId).toBeNull();
+
+  // Recent locations ring buffer caps strictly at 50 items and deduplicates by key.
+  for (let i = 0; i < 65; i += 1) {
+    useStudio.getState().recordRecentLocation({
+      key: `item:${i}`,
+      label: `Item ${i}`,
+      subtitle: "Fixture",
+      target: { kind: "savedQuery", savedQueryId: localSq.id },
+    });
+  }
+  expect(useStudio.getState().recentLocations).toHaveLength(MAX_RECENT_LOCATIONS);
+  expect(useStudio.getState().recentLocations[0]?.key).toBe("item:64");
 });

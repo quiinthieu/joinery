@@ -50,6 +50,8 @@ export function workspaceSnapshot(): SavedWorkspace {
     .filter(
       (tab) =>
         tab.kind === "query" &&
+        tab.fileToken === null &&
+        tab.fileName === null &&
         state.bootstrap?.profiles.some(
           (profile) => profile.id === tab.connectionId && profile.storeDrafts,
         ),

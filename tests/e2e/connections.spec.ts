@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+const PG_PORT = Number(process.env.JOINERY_POSTGRES_PORT ?? "55432");
+
 for (const method of ["mouse", "keyboard"] as const)
   test(`connection deletion by ${method} persists after reload`, async ({ page, request }) => {
     const headers = { Authorization: "Bearer joinery-disposable-browser-tests-only" };
@@ -9,7 +11,7 @@ for (const method of ["mouse", "keyboard"] as const)
       groupId: "local",
       engine: "postgres",
       host: "127.0.0.1",
-      port: 55432,
+      port: PG_PORT,
       database: "joinery",
       username: "joinery",
       environment: "local",
@@ -86,7 +88,7 @@ test("long connection lists scroll inside the sidebar without shifting the workb
             groupId: "local",
             engine: "postgres",
             host: "127.0.0.1",
-            port: 55432,
+            port: PG_PORT,
             database: "joinery",
             username: "joinery",
             environment: "local",

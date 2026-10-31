@@ -71,7 +71,7 @@ async fn query_with_partition(body: Vec<u8>) -> (AppResult<u64>, super::tests::S
             .unwrap(),
         base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
         database: "DB".into(),
-        schema: "PUBLIC".into(),
+        schema: Mutex::new("PUBLIC".into()),
         role: "READ_ONLY".into(),
         warehouse: "WH".into(),
         query_tag: "Joinery/compression-test".into(),

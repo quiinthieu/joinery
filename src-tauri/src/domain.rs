@@ -645,6 +645,9 @@ pub enum QueryEvent {
         session_id: String,
         reason: String,
     },
+    SessionState {
+        state: SessionRuntimeState,
+    },
     Error {
         error: AppError,
         statement_index: usize,
@@ -763,6 +766,55 @@ pub struct MetadataBackup {
     pub digest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedQuery {
+    pub id: String,
+    pub title: String,
+    pub sql: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedQueryInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub title: String,
+    pub sql: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BookmarkTarget {
+    Object {
+        connection_id: String,
+        object: DatabaseObjectRef,
+    },
+    SavedQuery {
+        saved_query_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedBookmark {
+    pub id: String,
+    pub label: String,
+    pub target: BookmarkTarget,
+    #[ts(type = "number")]
+    pub created_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
@@ -773,6 +825,10 @@ pub struct Bootstrap {
     pub result_budget_bytes: usize,
     pub row_limit: usize,
     pub workspace: Option<SavedWorkspace>,
+    #[serde(default)]
+    pub saved_queries: Vec<SavedQuery>,
+    #[serde(default)]
+    pub bookmarks: Vec<SavedBookmark>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -931,6 +987,52 @@ pub struct CompletionCatalog {
     pub unqualified_tables: Vec<TableRef>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionMode {
+    #[default]
+    AutoCommit,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionState {
+    #[default]
+    Idle,
+    InTransaction,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionContextKind {
+    #[default]
+    None,
+    Schema,
+    Database,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRuntimeState {
+    pub session_id: String,
+    pub transaction_mode: TransactionMode,
+    pub transaction_state: TransactionState,
+    pub context_kind: SessionContextKind,
+    pub active_context: Option<String>,
+    pub database: String,
+    pub role: String,
+    pub search_path: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContextOptions {
+    pub state: SessionRuntimeState,
+    pub available: Vec<String>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -977,6 +1079,21 @@ pub struct FileSelection {
     pub token: String,
     pub file_name: String,
     pub display_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedSqlFile {
+    pub token: String,
+    pub file_name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSqlFile {
+    pub token: String,
+    pub file_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

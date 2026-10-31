@@ -139,6 +139,9 @@ class PreviewClient implements StudioClient {
         supportedEngines: ["postgres"],
         resultBudgetBytes: 64 * 1024 * 1024,
         rowLimit: 100000,
+        workspace: null,
+        savedQueries: [],
+        bookmarks: [],
       } as T;
     if (command === "resource_usage")
       return { retainedBytes: 0, resultCount: 0, sessionCount: 0, activeRuns: 0 } as T;
