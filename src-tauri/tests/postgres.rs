@@ -2537,3 +2537,294 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_limits() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    assert!(session.capabilities.object_explorer);
+
+    let cleanup =
+        "DROP VIEW IF EXISTS public.r3_summary_v, public.r3_cycle_a, public.r3_cycle_b CASCADE;
+                   DROP TABLE IF EXISTS public.\"r3_Order \"\"Items\"\"\", public.r3_parent_orders CASCADE;
+                   DROP FUNCTION IF EXISTS public.r3_calc(integer) CASCADE;
+                   DROP FUNCTION IF EXISTS public.r3_calc(numeric, integer) CASCADE;
+                   DROP FUNCTION IF EXISTS public.r3_touch_fn() CASCADE;
+                   DROP PROCEDURE IF EXISTS public.r3_noop_proc(text) CASCADE;
+                   DROP SEQUENCE IF EXISTS public.r3_ticket_seq CASCADE;";
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "CREATE SEQUENCE public.r3_ticket_seq AS bigint INCREMENT BY 5 MINVALUE 10 MAXVALUE 99999 START WITH 10 CACHE 1 CYCLE;
+                 SELECT nextval('public.r3_ticket_seq');
+                 CREATE FUNCTION public.r3_calc(a integer) RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT a * 2';
+                 CREATE FUNCTION public.r3_calc(a numeric, b integer) RETURNS numeric LANGUAGE sql STABLE SECURITY DEFINER AS 'SELECT round(a, b)';
+                 CREATE PROCEDURE public.r3_noop_proc(IN label text) LANGUAGE sql AS 'SELECT 1';
+                 CREATE FUNCTION public.r3_touch_fn() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END';
+                 CREATE TABLE public.r3_parent_orders (
+                   id bigint PRIMARY KEY
+                 );
+                 CREATE TABLE public.\"r3_Order \"\"Items\"\"\" (
+                   id bigint PRIMARY KEY DEFAULT nextval('public.r3_ticket_seq'),
+                   order_id bigint NOT NULL REFERENCES public.r3_parent_orders(id),
+                   sku text NOT NULL UNIQUE,
+                   qty integer NOT NULL CHECK (qty > 0)
+                 );
+                 CREATE INDEX r3_idx_partial_expr ON public.\"r3_Order \"\"Items\"\"\" (lower(sku)) WHERE qty > 1;
+                 CREATE TRIGGER r3_items_audit_trg BEFORE INSERT OR UPDATE ON public.\"r3_Order \"\"Items\"\"\" FOR EACH ROW EXECUTE FUNCTION public.r3_touch_fn();
+                 CREATE VIEW public.r3_summary_v AS SELECT id, public.r3_calc(qty) AS doubled FROM public.\"r3_Order \"\"Items\"\"\";
+                 CREATE VIEW public.r3_cycle_a AS SELECT 1::integer AS x;
+                 CREATE VIEW public.r3_cycle_b AS SELECT x FROM public.r3_cycle_a;
+                 CREATE OR REPLACE VIEW public.r3_cycle_a AS SELECT x FROM public.r3_cycle_b WHERE false;",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let objects = studio.database_objects(&session.id).await.unwrap();
+    let overloads: Vec<_> = objects
+        .iter()
+        .filter(|o| o.object.schema == "public" && o.object.name == "r3_calc")
+        .collect();
+    assert_eq!(overloads.len(), 2);
+    assert!(
+        overloads
+            .iter()
+            .any(|o| o.object.identity.as_deref() == Some("a integer"))
+    );
+    assert!(
+        overloads
+            .iter()
+            .any(|o| o.object.identity.as_deref() == Some("a numeric, b integer"))
+    );
+    assert!(objects.iter().any(|o| {
+        o.object.name == "r3_noop_proc" && o.object.kind == DatabaseObjectKind::Procedure
+    }));
+    assert!(objects.iter().any(|o| {
+        o.object.name == "r3_ticket_seq" && o.object.kind == DatabaseObjectKind::Sequence
+    }));
+    assert!(objects.iter().any(|o| {
+        o.object.name == "r3_items_audit_trg"
+            && o.object.kind == DatabaseObjectKind::Trigger
+            && o.owner_table.as_deref() == Some("r3_Order \"Items\"")
+    }));
+    assert!(objects.iter().any(|o| {
+        o.object.name == "r3_idx_partial_expr" && o.object.kind == DatabaseObjectKind::Index
+    }));
+
+    // Table details: quoted DDL, constraints, partial/expression index, trigger, and dependencies
+    let table_details = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r3_Order \"Items\"".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        table_details
+            .constraints
+            .iter()
+            .any(|c| c.kind == ConstraintKind::Check && c.definition.contains("qty > 0"))
+    );
+    assert!(table_details.constraints.iter().any(|c| {
+        c.kind == ConstraintKind::ForeignKey
+            && c.target
+                .as_ref()
+                .is_some_and(|t| t.schema == "public" && t.name == "r3_parent_orders")
+    }));
+    let partial_idx = table_details
+        .indexes
+        .iter()
+        .find(|i| i.name == "r3_idx_partial_expr")
+        .expect("partial expression index present");
+    assert_eq!(partial_idx.expressions, vec!["lower(sku)"]);
+    assert_eq!(partial_idx.predicate.as_deref(), Some("qty > 1"));
+    let trig = table_details
+        .triggers
+        .iter()
+        .find(|t| t.name == "r3_items_audit_trg")
+        .expect("trigger present");
+    assert_eq!(trig.timing, "BEFORE");
+    assert_eq!(trig.events, vec!["INSERT", "UPDATE"]);
+    assert_eq!(trig.orientation, "ROW");
+    assert!(trig.enabled);
+    match &table_details.ddl {
+        ObjectDdlStatus::Available { ddl, truncated } => {
+            assert!(!truncated);
+            assert!(ddl.contains("CREATE TABLE \"public\".\"r3_Order \"\"Items\"\"\""));
+            assert!(ddl.contains("r3_idx_partial_expr"));
+        }
+        other => panic!("expected available table DDL, got {other:?}"),
+    }
+    assert!(table_details.uses.iter().any(|e| {
+        e.object.name == "r3_parent_orders" && e.object.kind == DatabaseObjectKind::Table
+    }));
+    assert!(
+        table_details
+            .uses
+            .iter()
+            .any(|e| e.object.name == "r3_ticket_seq"
+                && e.object.kind == DatabaseObjectKind::Sequence)
+    );
+    assert!(
+        table_details
+            .used_by
+            .iter()
+            .any(|e| e.object.name == "r3_summary_v" && e.object.kind == DatabaseObjectKind::View)
+    );
+
+    // Overloaded function inspection
+    let fn_int = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r3_calc".into(),
+                kind: DatabaseObjectKind::Function,
+                identity: Some("a integer".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let r_int = fn_int.routine.as_ref().unwrap();
+    assert_eq!(r_int.identity_arguments, "a integer");
+    assert_eq!(r_int.volatility.as_deref(), Some("IMMUTABLE"));
+    assert!(!r_int.security_definer);
+    assert!(
+        fn_int
+            .used_by
+            .iter()
+            .any(|e| e.object.name == "r3_summary_v" && e.object.kind == DatabaseObjectKind::View)
+    );
+
+    let fn_num = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r3_calc".into(),
+                kind: DatabaseObjectKind::Function,
+                identity: Some("a numeric, b integer".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let r_num = fn_num.routine.as_ref().unwrap();
+    assert_eq!(r_num.identity_arguments, "a numeric, b integer");
+    assert_eq!(r_num.volatility.as_deref(), Some("STABLE"));
+    assert!(r_num.security_definer);
+
+    // Cyclic views terminate cleanly without self-edges or duplicates
+    let cycle_a = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r3_cycle_a".into(),
+                kind: DatabaseObjectKind::View,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(cycle_a.uses.iter().all(|e| e.object.name != "r3_cycle_a"));
+    assert!(cycle_a.uses.iter().any(|e| e.object.name == "r3_cycle_b"));
+    assert!(
+        cycle_a
+            .used_by
+            .iter()
+            .any(|e| e.object.name == "r3_cycle_b")
+    );
+
+    // Sequence inspection by owner vs restricted role without USAGE/SELECT on sequence
+    let seq_owner = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r3_ticket_seq".into(),
+                kind: DatabaseObjectKind::Sequence,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        seq_owner.sequence.as_ref().unwrap().last_value.as_deref(),
+        Some("10")
+    );
+
+    run(
+        &studio,
+        &session,
+        "DROP ROLE IF EXISTS joinery_r3_limited;
+         CREATE ROLE joinery_r3_limited LOGIN PASSWORD 'joinery-r3-limited-only';
+         GRANT CONNECT ON DATABASE joinery TO joinery_r3_limited;
+         GRANT USAGE ON SCHEMA public TO joinery_r3_limited;",
+    )
+    .await;
+
+    let mut limited_profile = studio.bootstrap().unwrap().profiles[0].clone();
+    limited_profile.id = new_id();
+    limited_profile.name = "R3 limited".into();
+    limited_profile.username = "joinery_r3_limited".into();
+    limited_profile.safe_mode = SafeMode::ReadOnly;
+    let saved = studio.save_profile(limited_profile, None).unwrap();
+    let limited_session = studio
+        .connect(
+            &saved.id,
+            ConnectionSecrets {
+                password: Some("joinery-r3-limited-only".into()),
+                ssh_password: None,
+                key_passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+    let seq_limited = studio
+        .object_details(
+            &limited_session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r3_ticket_seq".into(),
+                kind: DatabaseObjectKind::Sequence,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(seq_limited.sequence.as_ref().unwrap().last_value, None);
+    assert!(matches!(seq_limited.ddl, ObjectDdlStatus::Available { .. }));
+    studio.disconnect(&limited_session.id);
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     REVOKE USAGE ON SCHEMA public FROM joinery_r3_limited;
+                     REVOKE CONNECT ON DATABASE joinery FROM joinery_r3_limited;
+                     DROP ROLE joinery_r3_limited;"
+                ),
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

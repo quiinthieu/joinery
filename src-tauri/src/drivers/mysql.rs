@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 mod catalog;
+mod explorer;
 mod values;
 pub(crate) use catalog::browse_sql;
 pub(crate) use values::MysqlDialect;
@@ -152,6 +153,7 @@ impl Mysql {
                     table_editing: true,
                     table_filtering: true,
                     processes: true,
+                    object_explorer: true,
                 },
             },
         ))
@@ -340,6 +342,12 @@ impl Driver for Mysql {
     }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         self.catalog_tables().await
+    }
+    async fn database_objects(&self) -> AppResult<Vec<DatabaseObjectSummary>> {
+        self.explorer_objects().await
+    }
+    async fn object_details(&self, object: &DatabaseObjectRef) -> AppResult<ObjectDetails> {
+        self.explorer_object_details(object).await
     }
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         self.bounded(async {

@@ -172,6 +172,23 @@ pub async fn catalog(
 }
 
 #[tauri::command]
+pub async fn database_objects(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<Vec<DatabaseObjectSummary>> {
+    studio.database_objects(&session_id).await
+}
+
+#[tauri::command]
+pub async fn object_details(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    object: DatabaseObjectRef,
+) -> AppResult<ObjectDetails> {
+    studio.object_details(&session_id, &object).await
+}
+
+#[tauri::command]
 pub async fn table_schema(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

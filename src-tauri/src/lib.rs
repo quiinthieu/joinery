@@ -106,6 +106,8 @@ pub fn run() {
             commands::completion_catalog,
             commands::completion_schema,
             commands::catalog,
+            commands::database_objects,
+            commands::object_details,
             commands::redis_scan,
             commands::redis_inspect,
             commands::table_schema,

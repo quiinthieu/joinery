@@ -5,6 +5,8 @@ import type {
   BrowseApproval,
   BrowseQuery,
   ConnectionProfile,
+  DatabaseObjectRef,
+  DatabaseObjectSummary,
   PreparedPlan,
   QueryEvent,
   ResultInfo,
@@ -17,6 +19,11 @@ import type {
 import { client, messageOf } from "../ipc/client";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
+import {
+  isTabularObjectKind,
+  objectTabTitle,
+  sameDatabaseObject,
+} from "../features/connections/explorer-tree";
 import {
   MAX_TABLE_LAYOUTS,
   isDefaultTableLayout,
@@ -31,7 +38,7 @@ import {
   tableTabTitle,
 } from "../features/grid/table-query";
 
-export type TabKind = "query" | "table" | "benchmark" | "history" | "processes";
+export type TabKind = "query" | "table" | "object" | "benchmark" | "history" | "processes";
 export type TabStatus =
   "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | "outcomeUnknown";
 export interface TablePageState {
@@ -52,6 +59,7 @@ export interface StudioTab {
   elapsedMs: number;
   error: AppError | null;
   table: TableRef | null;
+  object: DatabaseObjectRef | null;
   /** Server-side sort/filter for table tabs; never persisted. */
   query: BrowseQuery;
   schema: TableSchema | null;
@@ -61,7 +69,7 @@ export interface StudioTab {
   hasMore: boolean;
   nextKey: (string | null)[] | null;
   loadingPage: boolean;
-  view: "data" | "structure";
+  view: "data" | "structure" | "ddl";
   revision: number;
   metrics: Record<number, { affectedRows: string; elapsedMs: number }>;
   dataSessionId: string | null;
@@ -79,6 +87,7 @@ interface StudioState {
   error: string | null;
   sessions: Record<string, SessionInfo>;
   catalog: Record<string, TableInfo[]>;
+  objects: Record<string, DatabaseObjectSummary[]>;
   selectedConnectionId: string | null;
   tabs: StudioTab[];
   activeTabId: string | null;
@@ -101,7 +110,17 @@ interface StudioState {
   refreshCatalog(id: string): Promise<void>;
   openQuery(connectionId?: string | null, sql?: string): string;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
-  openTable(connectionId: string, table: TableRef, query?: BrowseQuery): Promise<void>;
+  openTable(
+    connectionId: string,
+    table: TableRef,
+    query?: BrowseQuery,
+    preferredView?: StudioTab["view"],
+  ): Promise<void>;
+  openObject(
+    connectionId: string,
+    object: DatabaseObjectRef,
+    preferredView?: StudioTab["view"],
+  ): Promise<void>;
   /** Applies a new sort/filter or requests review for non-Read raw SQL clauses. */
   setTableQuery(
     id: string,
@@ -137,6 +156,7 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     elapsedMs: 0,
     error: null,
     table: null,
+    object: null,
     query: EMPTY_QUERY,
     schema: null,
     pages: [],
@@ -184,6 +204,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   error: null,
   sessions: {},
   catalog: {},
+  objects: {},
   selectedConnectionId: null,
   tabs: [],
   activeTabId: null,
@@ -309,14 +330,22 @@ export const useStudio = create<StudioState>((set, get) => ({
     return true;
   },
   retireSession(sessionId) {
-    set((state) => ({
-      sessions: Object.fromEntries(
-        Object.entries(state.sessions).filter(([, s]) => s.id !== sessionId),
-      ),
-      tabs: state.tabs.map((t) =>
-        t.querySession?.id === sessionId ? { ...t, querySessionClosed: true } : t,
-      ),
-    }));
+    set((state) => {
+      const retiredConnections = Object.entries(state.sessions)
+        .filter(([, s]) => s.id === sessionId)
+        .map(([connId]) => connId);
+      const objects = { ...state.objects };
+      for (const connId of retiredConnections) delete objects[connId];
+      return {
+        sessions: Object.fromEntries(
+          Object.entries(state.sessions).filter(([, s]) => s.id !== sessionId),
+        ),
+        objects,
+        tabs: state.tabs.map((t) =>
+          t.querySession?.id === sessionId ? { ...t, querySessionClosed: true } : t,
+        ),
+      };
+    });
   },
   updateProfile(profile) {
     set((state) => ({
@@ -335,8 +364,19 @@ export const useStudio = create<StudioState>((set, get) => ({
     const session = get().sessions[id];
     if (!session) return;
     const catalog = await client.call<TableInfo[]>("catalog", { sessionId: session.id });
+    const objects = session.capabilities.objectExplorer
+      ? await client
+          .call<DatabaseObjectSummary[]>("database_objects", { sessionId: session.id })
+          .catch((error) => {
+            if ((error as Partial<AppError> | null)?.code === "unsupported") return [];
+            throw error;
+          })
+      : [];
     if (get().sessions[id]?.id === session.id)
-      set((state) => ({ catalog: { ...state.catalog, [id]: catalog } }));
+      set((state) => ({
+        catalog: { ...state.catalog, [id]: catalog },
+        objects: { ...state.objects, [id]: objects },
+      }));
   },
   openQuery(connectionId = get().selectedConnectionId, sql) {
     const count = get().tabs.filter((t) => t.kind === "query").length + 1;
@@ -370,7 +410,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
-  async openTable(connectionId, table, rawQuery = EMPTY_QUERY) {
+  async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView) {
     const query = normalizeQuery(rawQuery);
     const existing = get().tabs.find(
       (t) =>
@@ -381,14 +421,50 @@ export const useStudio = create<StudioState>((set, get) => ({
         sameQuery(t.query, query),
     );
     if (existing) {
-      set({ activeTabId: existing.id });
+      set((state) => ({
+        activeTabId: existing.id,
+        tabs: preferredView
+          ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
+          : state.tabs,
+      }));
       return;
     }
     const next = tab("table", tableTabTitle(table.name, query), connectionId);
     next.table = table;
     next.query = query;
+    if (preferredView) next.view = preferredView;
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     await get().refreshTable(next.id);
+  },
+  async openObject(connectionId, object, preferredView) {
+    if (isTabularObjectKind(object.kind)) {
+      await get().openTable(
+        connectionId,
+        { schema: object.schema, name: object.name },
+        EMPTY_QUERY,
+        preferredView,
+      );
+      return;
+    }
+    const existing = get().tabs.find(
+      (t) =>
+        t.kind === "object" &&
+        t.connectionId === connectionId &&
+        sameDatabaseObject(t.object, object),
+    );
+    if (existing) {
+      set((state) => ({
+        activeTabId: existing.id,
+        tabs: preferredView
+          ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
+          : state.tabs,
+      }));
+      return;
+    }
+    const next = tab("object", objectTabTitle(object), connectionId);
+    next.object = object;
+    next.view = preferredView ?? "structure";
+    set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
   async setTableQuery(id, rawQuery, options) {
     const current = get().tabs.find((t) => t.id === id);
@@ -619,20 +695,28 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (session) void client.call("disconnect", { sessionId: session.id });
     for (const t of state.tabs.filter((t) => t.connectionId === id)) get().closeTab(t.id);
     get().disconnected(id);
-    set((state) => ({
-      bootstrap: state.bootstrap
-        ? { ...state.bootstrap, profiles: state.bootstrap.profiles.filter((p) => p.id !== id) }
-        : null,
-      tableLayouts: state.tableLayouts.filter((layout) => layout.connectionId !== id),
-      selectedConnectionId: state.selectedConnectionId === id ? null : state.selectedConnectionId,
-    }));
+    set((state) => {
+      const catalog = { ...state.catalog };
+      delete catalog[id];
+      return {
+        catalog,
+        bootstrap: state.bootstrap
+          ? { ...state.bootstrap, profiles: state.bootstrap.profiles.filter((p) => p.id !== id) }
+          : null,
+        tableLayouts: state.tableLayouts.filter((layout) => layout.connectionId !== id),
+        selectedConnectionId: state.selectedConnectionId === id ? null : state.selectedConnectionId,
+      };
+    });
   },
   disconnected(connectionId) {
     set((state) => {
       const sessions = { ...state.sessions };
       delete sessions[connectionId];
+      const objects = { ...state.objects };
+      delete objects[connectionId];
       return {
         sessions,
+        objects,
         tabs: state.tabs.map((t) =>
           t.connectionId === connectionId && t.querySession
             ? { ...t, querySessionClosed: true }

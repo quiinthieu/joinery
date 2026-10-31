@@ -16,6 +16,7 @@ import {
   Code2,
   Columns3,
   Download,
+  FileCode2,
   Gauge,
   Loader2,
   Play,
@@ -29,7 +30,13 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import type { ConnectionProfile, SessionInfo, TableInfo } from "../ipc/generated";
+import type {
+  ConnectionProfile,
+  DatabaseObjectRef,
+  ObjectDetails,
+  SessionInfo,
+  TableInfo,
+} from "../ipc/generated";
 import type { StudioTab } from "../state/studio";
 import { useStudio, querySessionForTab } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
@@ -40,7 +47,13 @@ import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
+import {
+  DdlPanel,
+  ObjectInspectorView,
+  ObjectKindGlyph,
+} from "../features/studio/ObjectInspectorView";
 import { StructureView } from "../features/studio/UtilityViews";
+import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
 import { resultCache } from "../data/result-cache";
 import { tabNavigation } from "../components/ui/tabs";
@@ -92,8 +105,41 @@ export function Workbench({
     [runningTime, setRunningTime] = useState(0),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
+    [tableDetailsState, setTableDetailsState] = useState<{
+      key: string;
+      data: ObjectDetails;
+    } | null>(null),
+    [tableDetailsErrorState, setTableDetailsErrorState] = useState<{
+      key: string;
+      message: string;
+    } | null>(null),
+    [tableDetailsLoadingKey, setTableDetailsLoadingKey] = useState<string | null>(null),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
+  const objectExplorerSupported = Boolean(session?.capabilities.objectExplorer);
+  const tableCatalogMatch =
+    tab.kind === "table" && tab.table && tab.connectionId
+      ? state.catalog[tab.connectionId]?.find(
+          (entry) =>
+            entry.table.schema === tab.table!.schema && entry.table.name === tab.table!.name,
+        )
+      : undefined;
+  const tableObjectKind = tableCatalogMatch
+    ? tableInfoKindToObjectKind(tableCatalogMatch.kind)
+    : "table";
+  const tableObjectKey =
+    tab.kind === "table" && tab.table && session?.id
+      ? `${session.id}:${tab.id}:${tab.revision}:${tab.table.schema}:${tab.table.name}`
+      : null;
+  const activeTableDetails =
+    tableObjectKey && tableDetailsState?.key === tableObjectKey ? tableDetailsState.data : null;
+  const activeTableDetailsError =
+    tableObjectKey && tableDetailsErrorState?.key === tableObjectKey
+      ? tableDetailsErrorState.message
+      : null;
+  const activeTableDetailsLoading = Boolean(
+    tableObjectKey && tableDetailsLoadingKey === tableObjectKey,
+  );
   const running = tab.status === "running" || tab.status === "queued";
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const resultIds = tab.pages.map((page) => page.result.id);
@@ -223,6 +269,52 @@ export function Workbench({
     const timer = setInterval(() => setRunningTime(performance.now() - start), 200);
     return () => clearInterval(timer);
   }, [running, tab.id]);
+  useEffect(() => {
+    if (
+      tab.kind !== "table" ||
+      !tab.table ||
+      !session?.id ||
+      !objectExplorerSupported ||
+      (tab.view !== "structure" && tab.view !== "ddl") ||
+      !tableObjectKey
+    ) {
+      return;
+    }
+    if (tableDetailsState?.key === tableObjectKey) return;
+    const objectRef: DatabaseObjectRef = {
+      schema: tab.table.schema,
+      name: tab.table.name,
+      kind: tableObjectKind,
+      identity: null,
+    };
+    let active = true;
+    setTableDetailsLoadingKey(tableObjectKey);
+    setTableDetailsErrorState((prev) => (prev?.key === tableObjectKey ? null : prev));
+    void client
+      .call<ObjectDetails>("object_details", { sessionId: session.id, object: objectRef })
+      .then((data) => {
+        if (active) setTableDetailsState({ key: tableObjectKey, data });
+      })
+      .catch((error) => {
+        if (active) setTableDetailsErrorState({ key: tableObjectKey, message: messageOf(error) });
+      })
+      .finally(() => {
+        if (active) setTableDetailsLoadingKey((prev) => (prev === tableObjectKey ? null : prev));
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    objectExplorerSupported,
+    session?.id,
+    tab.kind,
+    tab.table?.name,
+    tab.table?.schema,
+    tab.view,
+    tableDetailsState?.key,
+    tableObjectKey,
+    tableObjectKind,
+  ]);
   function resizeEditor(event: React.PointerEvent) {
     const start = event.clientY,
       before = editorHeight.current;
@@ -251,6 +343,8 @@ export function Workbench({
             <Code2 size={15} />
           ) : tab.kind === "benchmark" ? (
             <Gauge size={15} />
+          ) : tab.kind === "object" && tab.object ? (
+            <ObjectKindGlyph kind={tab.object.kind} size={15} />
           ) : (
             <Table2 size={15} />
           )}
@@ -259,9 +353,11 @@ export function Workbench({
               ? "1,000,000 virtual rows"
               : tab.kind === "table"
                 ? `${tab.table?.schema}.${tab.table?.name}`
-                : profile?.engine === "redis"
-                  ? "Redis console"
-                  : "SQL editor"}
+                : tab.kind === "object" && tab.object
+                  ? `${tab.object.schema}.${objectTabTitle(tab.object)}`
+                  : profile?.engine === "redis"
+                    ? "Redis console"
+                    : "SQL editor"}
           </span>
           {tab.kind === "query" && (
             <select
@@ -409,6 +505,16 @@ export function Workbench({
                 </>
               )}
             </>
+          )}
+          {tab.kind === "object" && (
+            <button
+              className="button ghost small"
+              disabled={!session}
+              onClick={() => state.updateTab(tab.id, { revision: tab.revision + 1 })}
+            >
+              <RefreshCw size={13} />
+              Refresh
+            </button>
           )}
         </div>
       </div>
@@ -573,6 +679,16 @@ export function Workbench({
               <Code2 size={12} />
               Structure
             </button>
+            {objectExplorerSupported && (
+              <button
+                className={tab.view === "ddl" ? "active" : ""}
+                aria-pressed={tab.view === "ddl"}
+                onClick={() => state.updateTab(tab.id, { view: "ddl" })}
+              >
+                <FileCode2 size={12} />
+                DDL
+              </button>
+            )}
           </div>
           <div className="table-view-actions">
             {tableEditable && (
@@ -672,6 +788,30 @@ export function Workbench({
             </span>
           </div>
         </div>
+      ) : tab.kind === "object" ? (
+        <div className="results-header table-views">
+          <div className="result-tabs">
+            <button
+              className={tab.view !== "ddl" ? "active" : ""}
+              aria-pressed={tab.view !== "ddl"}
+              onClick={() => state.updateTab(tab.id, { view: "structure" })}
+            >
+              <Code2 size={12} />
+              Structure
+            </button>
+            <button
+              className={tab.view === "ddl" ? "active" : ""}
+              aria-pressed={tab.view === "ddl"}
+              onClick={() => state.updateTab(tab.id, { view: "ddl" })}
+            >
+              <FileCode2 size={12} />
+              DDL
+            </button>
+          </div>
+          <div className="table-view-actions">
+            <span className="result-caption">Read-only metadata</span>
+          </div>
+        </div>
       ) : (
         <div className="benchmark-note">
           <Gauge size={13} />
@@ -711,8 +851,24 @@ export function Workbench({
         id={`result-panel-${tab.id}`}
         aria-labelledby={tab.kind === "query" && result ? `result-tab-${result.id}` : undefined}
       >
-        {tab.kind === "table" && tab.view === "structure" ? (
-          <StructureView schema={tab.schema} />
+        {tab.kind === "object" ? (
+          <ObjectInspectorView key={tab.id} tab={tab} profile={profile} session={session} />
+        ) : tab.kind === "table" && tab.view === "structure" ? (
+          <StructureView
+            schema={tab.schema}
+            details={activeTableDetails}
+            detailsError={activeTableDetailsError}
+            connectionId={tab.connectionId}
+          />
+        ) : tab.kind === "table" && tab.view === "ddl" ? (
+          <div className="object-inspector-scroll">
+            <DdlPanel
+              connectionId={tab.connectionId}
+              ddlStatus={activeTableDetails?.ddl ?? null}
+              loading={activeTableDetailsLoading}
+              error={activeTableDetailsError}
+            />
+          </div>
         ) : tab.kind === "query" && !result ? (
           <div className="results-empty">
             <Table2 size={27} />
@@ -756,6 +912,11 @@ export function Workbench({
             <>
               <span className="status-dot completed" />
               1,000,000 rows · virtualized
+            </>
+          ) : tab.kind === "object" && tab.object ? (
+            <>
+              <ObjectKindGlyph kind={tab.object.kind} size={12} />
+              {`${tab.object.schema}.${objectTabTitle(tab.object)} · read-only metadata`}
             </>
           ) : tab.kind === "table" ? (
             <>

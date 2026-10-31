@@ -115,6 +115,7 @@ impl Redis {
                 table_editing: false,
                 table_filtering: false,
                 processes: false,
+                object_explorer: false,
             },
         };
         Ok((

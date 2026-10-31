@@ -25,6 +25,8 @@ fn main() {
             "completion_catalog",
             "completion_schema",
             "catalog",
+            "database_objects",
+            "object_details",
             "redis_scan",
             "redis_inspect",
             "table_schema",

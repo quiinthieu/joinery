@@ -168,6 +168,17 @@ async fn rpc(
             "completion_catalog" => json!(studio.completion_catalog(&arg::<String>(&args, "sessionId")?).await?),
             "completion_schema" => json!(studio.completion_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
+            "database_objects" => {
+                json!(studio.database_objects(&arg::<String>(&args, "sessionId")?).await?)
+            }
+            "object_details" => json!(
+                studio
+                    .object_details(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg(&args, "object")?
+                    )
+                    .await?
+            ),
             "table_schema" => json!(
                 studio
                     .schema(&arg::<String>(&args, "sessionId")?, &arg(&args, "table")?)
