@@ -945,6 +945,38 @@ kbd {
   font-size: 10.5px;
   flex-shrink: 0;
 }
+.bookmark-button.active {
+  color: var(--accent);
+}
+.library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.library-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+  border-radius: 6px;
+}
+.library-row.selected,
+.library-row:hover {
+  background: var(--surface-hover);
+}
+.library-row-main {
+  flex: 1;
+  min-width: 0;
+  background: transparent !important;
+}
+.library-row-delete {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.library-row-delete:hover {
+  opacity: 1;
+  color: var(--danger);
+}
 .read-policy {
   display: inline-flex;
   align-items: center;

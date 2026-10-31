@@ -5,6 +5,7 @@ import type {
   DatabaseObjectSummary,
   Environment,
   HistoryEntry,
+  SavedQuery,
   SessionInfo,
   TableInfo,
 } from "../../ipc/generated";
@@ -15,11 +16,12 @@ import {
   tableInfoKindToObjectKind,
 } from "../connections/explorer-tree";
 
-export type SearchScope = "all" | "objects" | "actions" | "history";
+export type SearchScope = "all" | "objects" | "saved" | "actions" | "history";
 
 export const SEARCH_SCOPES: readonly { id: SearchScope; label: string }[] = [
   { id: "all", label: "All" },
   { id: "objects", label: "Objects" },
+  { id: "saved", label: "Saved" },
   { id: "actions", label: "Actions" },
   { id: "history", label: "History" },
 ];
@@ -99,6 +101,14 @@ export type SearchResultItem<TIcon = unknown> =
     }
   | {
       id: string;
+      kind: "savedQuery";
+      savedQuery: SavedQuery;
+      label: string;
+      subtitle: string;
+      shortcut: string;
+    }
+  | {
+      id: string;
       kind: "history";
       entry: HistoryEntry;
       label: string;
@@ -117,6 +127,7 @@ export interface SearchEverywhereInput<TIcon = unknown> {
   sessions: Readonly<Record<string, SessionInfo | undefined>>;
   catalog: Readonly<Record<string, readonly TableInfo[] | undefined>>;
   objects: Readonly<Record<string, readonly DatabaseObjectSummary[] | undefined>>;
+  savedQueries?: readonly SavedQuery[];
   history: readonly HistoryEntry[];
   limit?: number;
 }
@@ -208,6 +219,7 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
 
   const includeActions = input.scope === "all" || input.scope === "actions";
   const includeObjects = input.scope === "all" || input.scope === "objects";
+  const includeSaved = input.scope === "all" || input.scope === "saved";
   const includeHistory = input.scope === "all" || input.scope === "history";
 
   const actionItems: {
@@ -356,6 +368,33 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
     }
   }
 
+  const savedItems: {
+    item: Extract<SearchResultItem<TIcon>, { kind: "savedQuery" }>;
+    primary: string;
+    haystack: string;
+  }[] = [];
+
+  if (includeSaved) {
+    for (const saved of input.savedQueries ?? []) {
+      const connName = saved.connectionId
+        ? (profileById.get(saved.connectionId)?.name ?? null)
+        : null;
+      const preview = formatHistorySingleLine(saved.sql, 1);
+      savedItems.push({
+        item: {
+          id: `saved:${saved.id}`,
+          kind: "savedQuery",
+          savedQuery: saved,
+          label: saved.title,
+          subtitle: `${connName ?? "Any connection"} · ${preview}`,
+          shortcut: "Saved query",
+        },
+        primary: saved.title,
+        haystack: `${saved.title} ${saved.sql} ${connName ?? ""} saved query library`,
+      });
+    }
+  }
+
   const historyItems: {
     item: Extract<SearchResultItem<TIcon>, { kind: "history" }>;
     primary: string;
@@ -388,6 +427,10 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
         if (out.length >= limit) break;
         out.push(a.item);
       }
+      for (const s of savedItems) {
+        if (out.length >= limit) break;
+        out.push(s.item);
+      }
       const objectCap = Math.min(limit - out.length, 24);
       for (let i = 0; i < objectItems.length && i < objectCap; i += 1) {
         out.push(objectItems[i].item);
@@ -400,6 +443,11 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
       for (const a of actionItems) {
         if (out.length >= limit) break;
         out.push(a.item);
+      }
+    } else if (input.scope === "saved") {
+      for (const s of savedItems) {
+        if (out.length >= limit) break;
+        out.push(s.item);
       }
     } else if (input.scope === "objects") {
       for (const o of objectItems) {
@@ -428,6 +476,20 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
     scored.push({
       item: a.item,
       score: base + (a.item.kind === "command" ? 12 : 8),
+      tieOrder: tieOrder++,
+    });
+  }
+
+  for (const s of savedItems) {
+    const base = scoreTextMatch(queryLower, tokens, s.primary, null, null, s.haystack);
+    if (base === null) continue;
+    const preferredBoost =
+      input.preferredConnectionId && s.item.savedQuery.connectionId === input.preferredConnectionId
+        ? 15
+        : 0;
+    scored.push({
+      item: s.item,
+      score: base + 14 + preferredBoost,
       tieOrder: tieOrder++,
     });
   }

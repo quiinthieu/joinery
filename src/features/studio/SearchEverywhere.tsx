@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  Bookmark,
   Code2,
   Database,
   FileCode2,
@@ -110,6 +111,7 @@ export function SearchEverywhere({
         sessions: state.sessions,
         catalog: state.catalog,
         objects: state.objects,
+        savedQueries: state.savedQueries,
         history,
       }),
     [
@@ -122,6 +124,7 @@ export function SearchEverywhere({
       state.bootstrap?.profiles,
       state.catalog,
       state.objects,
+      state.savedQueries,
       state.sessions,
       state.tabs,
     ],
@@ -154,6 +157,11 @@ export function SearchEverywhere({
         .catch((err) => useStudio.getState().notify(messageOf(err)));
       return;
     }
+    if (item.kind === "savedQuery") {
+      onClose();
+      useStudio.getState().openSavedQuery(item.savedQuery.id);
+      return;
+    }
     onClose();
     if (item.entry.sql) {
       useStudio.getState().openQuery(item.entry.connectionId, item.entry.sql);
@@ -179,9 +187,11 @@ export function SearchEverywhere({
       ? output.connectedConnectionCount === 0
         ? "Connect a database to search its tables, views, routines, triggers, and indexes"
         : "No matching database objects"
-      : scope === "history"
-        ? "No matching query history"
-        : "No matching commands";
+      : scope === "saved"
+        ? "No matching saved queries"
+        : scope === "history"
+          ? "No matching query history"
+          : "No matching commands";
 
   return (
     <Modal title="Command palette" onClose={onClose}>
@@ -194,9 +204,11 @@ export function SearchEverywhere({
           placeholder={
             scope === "objects"
               ? "Search tables, views, routines, triggers, indexes…"
-              : scope === "history"
-                ? "Search executed SQL or connection names…"
-                : "What would you like to do?"
+              : scope === "saved"
+                ? "Search saved queries in your library…"
+                : scope === "history"
+                  ? "Search executed SQL or connection names…"
+                  : "What would you like to do?"
           }
           value={search}
           onChange={(e) => {
@@ -296,6 +308,8 @@ export function SearchEverywhere({
                 <TabKindGlyph kind={item.tabKind} />
               ) : item.kind === "object" ? (
                 <ObjectKindGlyph kind={item.object.kind} size={15} />
+              ) : item.kind === "savedQuery" ? (
+                <Bookmark size={15} />
               ) : (
                 <History size={15} />
               )}

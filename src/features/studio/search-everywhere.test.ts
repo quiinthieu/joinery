@@ -298,4 +298,55 @@ describe("buildSearchEverywhereResults", () => {
     });
     expect(capped.items).toHaveLength(80);
   });
+
+  it("ranks saved queries in All and Saved scopes with preferred-connection affinity boost", () => {
+    const savedQueries = [
+      {
+        id: "sq-pg",
+        title: "Daily Revenue Rollup",
+        sql: "SELECT date_trunc('day', created_at), sum(amount) FROM public.orders GROUP BY 1;",
+        connectionId: "pg-1",
+        updatedAtMs: 1700000001000,
+      },
+      {
+        id: "sq-my",
+        title: "Daily Revenue Rollup",
+        sql: "SELECT DATE(created_at), SUM(amount) FROM joinery.orders GROUP BY 1;",
+        connectionId: "my-1",
+        updatedAtMs: 1700000002000,
+      },
+    ];
+
+    const savedOnly = buildSearchEverywhereResults({
+      query: "revenue",
+      scope: "saved",
+      commands,
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: "my-1",
+      profiles: [pgProfile, myProfile],
+      sessions,
+      catalog,
+      objects,
+      savedQueries,
+      history,
+    });
+    expect(savedOnly.items.map((item) => item.id)).toEqual(["saved:sq-my", "saved:sq-pg"]);
+
+    const allScope = buildSearchEverywhereResults({
+      query: "Daily Revenue Rollup",
+      scope: "all",
+      commands,
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: "pg-1",
+      profiles: [pgProfile, myProfile],
+      sessions,
+      catalog,
+      objects,
+      savedQueries,
+      history,
+    });
+    expect(allScope.items[0]?.id).toBe("saved:sq-pg");
+  });
 });

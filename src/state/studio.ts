@@ -1,15 +1,21 @@
 import { create } from "zustand";
 import type {
   AppError,
+  BookmarkTarget,
   Bootstrap,
   BrowseApproval,
   BrowseQuery,
   ConnectionProfile,
   DatabaseObjectRef,
   DatabaseObjectSummary,
+  OpenedSqlFile,
   PreparedPlan,
   QueryEvent,
   ResultInfo,
+  SavedBookmark,
+  SavedQuery,
+  SavedQueryInput,
+  SavedSqlFile,
   SavedTableLayout,
   SessionContextOptions,
   SessionInfo,
@@ -23,9 +29,11 @@ import { client, messageOf } from "../ipc/client";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
 import {
+  databaseObjectKey,
   isTabularObjectKind,
   objectTabTitle,
   sameDatabaseObject,
+  tableInfoKindToObjectKind,
 } from "../features/connections/explorer-tree";
 import {
   MAX_TABLE_LAYOUTS,
@@ -78,7 +86,30 @@ export interface StudioTab {
   dataSessionId: string | null;
   querySession: SessionInfo | null;
   querySessionClosed: boolean;
+  fileToken: string | null;
+  fileName: string | null;
+  savedSql: string | null;
+  savedQueryId: string | null;
 }
+
+export const MAX_RECENT_LOCATIONS = 50;
+
+export type RecentLocationTarget =
+  | { kind: "table"; connectionId: string; table: TableRef }
+  | { kind: "object"; connectionId: string; object: DatabaseObjectRef }
+  | { kind: "savedQuery"; savedQueryId: string }
+  | { kind: "tab"; tabId: string };
+
+export interface RecentLocation {
+  key: string;
+  label: string;
+  subtitle: string;
+  visitedAtMs: number;
+  target: RecentLocationTarget;
+}
+
+export type OpenLocationOutcome =
+  { kind: "opened" } | { kind: "needsConnect"; profile: ConnectionProfile } | { kind: "missing" };
 
 export type TableQueryOutcome =
   | { kind: "applied" }
@@ -105,6 +136,9 @@ interface StudioState {
   tabs: StudioTab[];
   activeTabId: string | null;
   tableLayouts: SavedTableLayout[];
+  savedQueries: SavedQuery[];
+  bookmarks: SavedBookmark[];
+  recentLocations: RecentLocation[];
   theme: "dark" | "light" | "contrast";
   density: "comfortable" | "compact";
   sidebarVisible: boolean;
@@ -131,6 +165,15 @@ interface StudioState {
   selectConnection(id: string): void;
   refreshCatalog(id: string): Promise<void>;
   openQuery(connectionId?: string | null, sql?: string): string;
+  openSqlFile(connectionId?: string | null): Promise<string | null>;
+  saveSqlFile(tabId: string, options?: { saveAs?: boolean }): Promise<boolean>;
+  saveQueryToLibrary(input: SavedQueryInput, attachTabId?: string): Promise<SavedQuery>;
+  deleteSavedQuery(id: string): Promise<void>;
+  openSavedQuery(id: string): string | null;
+  toggleBookmark(target: BookmarkTarget, label: string): Promise<boolean>;
+  deleteBookmark(id: string): Promise<void>;
+  openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
+  recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
   openTable(
     connectionId: string,
@@ -193,7 +236,69 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     dataSessionId: null,
     querySession: null,
     querySessionClosed: false,
+    fileToken: null,
+    fileName: null,
+    savedSql: null,
+    savedQueryId: null,
   };
+}
+export function isTabFileDirty(tab: StudioTab): boolean {
+  return tab.kind === "query" && tab.fileName !== null && tab.sql !== tab.savedSql;
+}
+export function bookmarkTargetKey(target: BookmarkTarget): string {
+  if (target.kind === "savedQuery") return `saved:${target.savedQueryId}`;
+  return `obj:${target.connectionId}:${databaseObjectKey(target.object)}`;
+}
+export function findBookmarkForTarget(
+  bookmarks: readonly SavedBookmark[],
+  target: BookmarkTarget,
+): SavedBookmark | undefined {
+  const key = bookmarkTargetKey(target);
+  return bookmarks.find((entry) => bookmarkTargetKey(entry.target) === key);
+}
+export function bookmarkTargetForTab(
+  tab: StudioTab,
+  catalog: Readonly<Record<string, readonly TableInfo[] | undefined>>,
+): { target: BookmarkTarget; defaultLabel: string } | null {
+  if (tab.kind === "table" && tab.connectionId && tab.table) {
+    const match = catalog[tab.connectionId]?.find(
+      (entry) => entry.table.schema === tab.table!.schema && entry.table.name === tab.table!.name,
+    );
+    const kind = match ? tableInfoKindToObjectKind(match.kind) : "table";
+    return {
+      target: {
+        kind: "object",
+        connectionId: tab.connectionId,
+        object: {
+          schema: tab.table.schema,
+          name: tab.table.name,
+          kind,
+          identity: null,
+        },
+      },
+      defaultLabel: `${tab.table.schema}.${tab.table.name}`,
+    };
+  }
+  if (tab.kind === "object" && tab.connectionId && tab.object) {
+    return {
+      target: {
+        kind: "object",
+        connectionId: tab.connectionId,
+        object: tab.object,
+      },
+      defaultLabel: `${tab.object.schema}.${objectTabTitle(tab.object)}`,
+    };
+  }
+  if (tab.kind === "query" && tab.savedQueryId) {
+    return {
+      target: {
+        kind: "savedQuery",
+        savedQueryId: tab.savedQueryId,
+      },
+      defaultLabel: tab.title,
+    };
+  }
+  return null;
 }
 export function querySessionForTab(tab: StudioTab, sessions: Record<string, SessionInfo>) {
   if (tab.kind === "query" && tab.querySession)
@@ -291,6 +396,9 @@ export const useStudio = create<StudioState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   tableLayouts: [],
+  savedQueries: [],
+  bookmarks: [],
+  recentLocations: [],
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
   density: "comfortable",
   sidebarVisible: true,
@@ -327,6 +435,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       ];
       set({
         bootstrap,
+        savedQueries: bootstrap.savedQueries ?? [],
+        bookmarks: bootstrap.bookmarks ?? [],
         error: null,
         ...(workspace
           ? {
@@ -669,6 +779,234 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     return next.id;
   },
+  recordRecentLocation(entry) {
+    const nextEntry: RecentLocation = { ...entry, visitedAtMs: Date.now() };
+    set((state) => ({
+      recentLocations: [
+        nextEntry,
+        ...state.recentLocations.filter((item) => item.key !== nextEntry.key),
+      ].slice(0, MAX_RECENT_LOCATIONS),
+    }));
+  },
+  async openSqlFile(connectionId = get().selectedConnectionId) {
+    const opened = await client.call<OpenedSqlFile | null>("open_sql_file");
+    if (!opened) return null;
+    const next = tab("query", opened.fileName, connectionId);
+    next.sql = opened.content;
+    next.fileToken = opened.token;
+    next.fileName = opened.fileName;
+    next.savedSql = opened.content;
+    set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
+    get().recordRecentLocation({
+      key: `tab:${next.id}`,
+      label: opened.fileName,
+      subtitle: "SQL file",
+      target: { kind: "tab", tabId: next.id },
+    });
+    get().notify(`Opened ${opened.fileName}`);
+    return next.id;
+  },
+  async saveSqlFile(tabId, options) {
+    const current = get().tabs.find((t) => t.id === tabId);
+    if (!current || current.kind !== "query") return false;
+    const previousToken = current.fileToken;
+    const contentToSave = current.sql;
+    const rawSuggested = current.fileName ?? `${current.title.trim() || "query"}.sql`;
+    const suggestedName = /\.sql$/i.test(rawSuggested) ? rawSuggested : `${rawSuggested}.sql`;
+    let saved: SavedSqlFile | null;
+    try {
+      saved = await client.call<SavedSqlFile | null>("save_sql_file", {
+        token: options?.saveAs ? null : previousToken,
+        suggestedName,
+        content: contentToSave,
+      });
+    } catch (error) {
+      if (
+        !options?.saveAs &&
+        previousToken &&
+        (error as Partial<AppError> | null)?.code === "approvalExpired"
+      ) {
+        saved = await client.call<SavedSqlFile | null>("save_sql_file", {
+          token: null,
+          suggestedName,
+          content: contentToSave,
+        });
+      } else {
+        throw error;
+      }
+    }
+    if (!saved) return false;
+    if (previousToken && previousToken !== saved.token) {
+      void client.call("release_sql_file_grant", { token: previousToken }).catch(() => {});
+    }
+    get().updateTab(tabId, {
+      fileToken: saved.token,
+      fileName: saved.fileName,
+      title: saved.fileName,
+      savedSql: contentToSave,
+    });
+    get().recordRecentLocation({
+      key: `tab:${tabId}`,
+      label: saved.fileName,
+      subtitle: "SQL file",
+      target: { kind: "tab", tabId },
+    });
+    get().notify(`Saved ${saved.fileName}`);
+    return true;
+  },
+  async saveQueryToLibrary(input, attachTabId) {
+    const saved = await client.call<SavedQuery>("save_saved_query", { input });
+    set((state) => {
+      const savedQueries = [
+        saved,
+        ...state.savedQueries.filter((entry) => entry.id !== saved.id),
+      ].sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+      const tabs = attachTabId
+        ? state.tabs.map((t) =>
+            t.id === attachTabId
+              ? {
+                  ...t,
+                  savedQueryId: saved.id,
+                  ...(t.fileName ? {} : { title: saved.title }),
+                }
+              : t,
+          )
+        : state.tabs;
+      return {
+        savedQueries,
+        tabs,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, savedQueries } : null,
+      };
+    });
+    const connName = saved.connectionId
+      ? (get().bootstrap?.profiles.find((p) => p.id === saved.connectionId)?.name ?? null)
+      : null;
+    get().recordRecentLocation({
+      key: `saved:${saved.id}`,
+      label: saved.title,
+      subtitle: `${connName ?? "Any connection"} · Saved query`,
+      target: { kind: "savedQuery", savedQueryId: saved.id },
+    });
+    get().notify(`Saved "${saved.title}" to library`);
+    return saved;
+  },
+  async deleteSavedQuery(id) {
+    await client.call("delete_saved_query", { id });
+    set((state) => {
+      const savedQueries = state.savedQueries.filter((entry) => entry.id !== id);
+      const bookmarks = state.bookmarks.filter(
+        (entry) => !(entry.target.kind === "savedQuery" && entry.target.savedQueryId === id),
+      );
+      return {
+        savedQueries,
+        bookmarks,
+        recentLocations: state.recentLocations.filter((entry) => entry.key !== `saved:${id}`),
+        tabs: state.tabs.map((t) => (t.savedQueryId === id ? { ...t, savedQueryId: null } : t)),
+        bootstrap: state.bootstrap ? { ...state.bootstrap, savedQueries, bookmarks } : null,
+      };
+    });
+    get().notify("Deleted saved query");
+  },
+  openSavedQuery(id) {
+    const state = get();
+    const entry = state.savedQueries.find((item) => item.id === id);
+    if (!entry) {
+      state.notify("This saved query is no longer in the library.");
+      return null;
+    }
+    const connName = entry.connectionId
+      ? (state.bootstrap?.profiles.find((p) => p.id === entry.connectionId)?.name ?? null)
+      : null;
+    const existing = state.tabs.find(
+      (t) => t.kind === "query" && t.savedQueryId === entry.id && t.fileName === null,
+    );
+    if (existing) {
+      set({ activeTabId: existing.id });
+      get().recordRecentLocation({
+        key: `saved:${entry.id}`,
+        label: entry.title,
+        subtitle: `${connName ?? "Any connection"} · Saved query`,
+        target: { kind: "savedQuery", savedQueryId: entry.id },
+      });
+      return existing.id;
+    }
+    const targetConnectionId =
+      entry.connectionId && state.bootstrap?.profiles.some((p) => p.id === entry.connectionId)
+        ? entry.connectionId
+        : state.selectedConnectionId;
+    const next = tab("query", entry.title, targetConnectionId);
+    next.sql = entry.sql;
+    next.savedQueryId = entry.id;
+    set((prev) => ({ tabs: [...prev.tabs, next], activeTabId: next.id }));
+    get().recordRecentLocation({
+      key: `saved:${entry.id}`,
+      label: entry.title,
+      subtitle: `${connName ?? "Any connection"} · Saved query`,
+      target: { kind: "savedQuery", savedQueryId: entry.id },
+    });
+    return next.id;
+  },
+  async toggleBookmark(target, label) {
+    const existing = findBookmarkForTarget(get().bookmarks, target);
+    if (existing) {
+      await get().deleteBookmark(existing.id);
+      get().notify(`Removed bookmark for ${existing.label}`);
+      return false;
+    }
+    const created = await client.call<SavedBookmark>("save_bookmark", { label, target });
+    set((state) => {
+      const bookmarks = [
+        created,
+        ...state.bookmarks.filter((entry) => entry.id !== created.id),
+      ].sort((a, b) => b.createdAtMs - a.createdAtMs);
+      return {
+        bookmarks,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, bookmarks } : null,
+      };
+    });
+    get().notify(`Bookmarked ${created.label}`);
+    return true;
+  },
+  async deleteBookmark(id) {
+    await client.call("delete_bookmark", { id });
+    set((state) => {
+      const bookmarks = state.bookmarks.filter((entry) => entry.id !== id);
+      return {
+        bookmarks,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, bookmarks } : null,
+      };
+    });
+  },
+  async openLocation(target) {
+    const state = get();
+    if (target.kind === "savedQuery") {
+      return state.openSavedQuery(target.savedQueryId) ? { kind: "opened" } : { kind: "missing" };
+    }
+    if (target.kind === "tab") {
+      const found = state.tabs.find((t) => t.id === target.tabId);
+      if (!found) {
+        state.notify("That tab has already been closed.");
+        return { kind: "missing" };
+      }
+      set({ activeTabId: found.id });
+      return { kind: "opened" };
+    }
+    const profile = state.bootstrap?.profiles.find((p) => p.id === target.connectionId);
+    if (!profile) {
+      state.notify("The connection profile for this item was deleted.");
+      return { kind: "missing" };
+    }
+    if (!state.sessions[profile.id]) {
+      state.selectConnection(profile.id);
+      return { kind: "needsConnect", profile };
+    }
+    if (target.kind === "table") {
+      await state.openTable(profile.id, target.table);
+      return { kind: "opened" };
+    }
+    await state.openObject(profile.id, target.object);
+    return { kind: "opened" };
+  },
   openUtility(kind) {
     const existing = get().tabs.find(
       (t) =>
@@ -687,6 +1025,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView) {
     const query = normalizeQuery(rawQuery);
+    const profileName =
+      get().bootstrap?.profiles.find((p) => p.id === connectionId)?.name ?? connectionId;
     const existing = get().tabs.find(
       (t) =>
         t.kind === "table" &&
@@ -702,6 +1042,12 @@ export const useStudio = create<StudioState>((set, get) => ({
           ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
           : state.tabs,
       }));
+      get().recordRecentLocation({
+        key: `table:${connectionId}:${table.schema}.${table.name}`,
+        label: `${table.schema}.${table.name}`,
+        subtitle: `${profileName} · Table`,
+        target: { kind: "table", connectionId, table },
+      });
       return;
     }
     const next = tab("table", tableTabTitle(table.name, query), connectionId);
@@ -709,6 +1055,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     next.query = query;
     if (preferredView) next.view = preferredView;
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
+    get().recordRecentLocation({
+      key: `table:${connectionId}:${table.schema}.${table.name}`,
+      label: `${table.schema}.${table.name}`,
+      subtitle: `${profileName} · Table`,
+      target: { kind: "table", connectionId, table },
+    });
     await get().refreshTable(next.id);
   },
   async openObject(connectionId, object, preferredView) {
@@ -721,6 +1073,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       );
       return;
     }
+    const profileName =
+      get().bootstrap?.profiles.find((p) => p.id === connectionId)?.name ?? connectionId;
     const existing = get().tabs.find(
       (t) =>
         t.kind === "object" &&
@@ -734,12 +1088,24 @@ export const useStudio = create<StudioState>((set, get) => ({
           ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
           : state.tabs,
       }));
+      get().recordRecentLocation({
+        key: `object:${connectionId}:${databaseObjectKey(object)}`,
+        label: `${object.schema}.${objectTabTitle(object)}`,
+        subtitle: `${profileName} · ${object.kind}`,
+        target: { kind: "object", connectionId, object },
+      });
       return;
     }
     const next = tab("object", objectTabTitle(object), connectionId);
     next.object = object;
     next.view = preferredView ?? "structure";
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
+    get().recordRecentLocation({
+      key: `object:${connectionId}:${databaseObjectKey(object)}`,
+      label: `${object.schema}.${objectTabTitle(object)}`,
+      subtitle: `${profileName} · ${object.kind}`,
+      target: { kind: "object", connectionId, object },
+    });
   },
   async setTableQuery(id, rawQuery, options) {
     const current = get().tabs.find((t) => t.id === id);
@@ -943,6 +1309,9 @@ export const useStudio = create<StudioState>((set, get) => ({
     const stateSnapshot = get();
     const current = stateSnapshot.tabs.find((t) => t.id === id);
     if (!current) return;
+    if (current.fileToken) {
+      void client.call("release_sql_file_grant", { token: current.fileToken }).catch(() => {});
+    }
     const disconnectSecondary =
       current.querySession &&
       !current.querySessionClosed &&
@@ -975,6 +1344,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       return {
         tabs,
         sessionPool,
+        recentLocations: state.recentLocations.filter((entry) => entry.key !== `tab:${id}`),
         ...(disconnectSecondary ? purgeSessionRuntimeMaps(state, [disconnectSecondary]) : {}),
         activeTabId:
           state.activeTabId === id ? (tabs[Math.max(0, index - 1)]?.id ?? null) : state.activeTabId,
@@ -983,6 +1353,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   removeConnection(id) {
     const state = get();
+    const deletedProfile = state.bootstrap?.profiles.find((p) => p.id === id);
+    const purgeSensitiveQueries = Boolean(
+      deletedProfile &&
+      (deletedProfile.environment === "production" || !deletedProfile.storeQueryText),
+    );
     const sessionIds = new Set<string>();
     if (state.sessions[id]) sessionIds.add(state.sessions[id].id);
     for (const entry of state.sessionPool[id] ?? []) sessionIds.add(entry.info.id);
@@ -996,10 +1371,51 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => {
       const catalog = { ...state.catalog };
       delete catalog[id];
+      const purgedQueryIds = new Set<string>();
+      const savedQueries = state.savedQueries.flatMap((entry) => {
+        if (entry.connectionId !== id) return [entry];
+        if (purgeSensitiveQueries) {
+          purgedQueryIds.add(entry.id);
+          return [];
+        }
+        return [{ ...entry, connectionId: null }];
+      });
+      const bookmarks = state.bookmarks.filter((entry) => {
+        if (entry.target.kind === "object" && entry.target.connectionId === id) return false;
+        if (entry.target.kind === "savedQuery" && purgedQueryIds.has(entry.target.savedQueryId))
+          return false;
+        return true;
+      });
+      const recentLocations = state.recentLocations.filter((entry) => {
+        if (
+          (entry.target.kind === "table" || entry.target.kind === "object") &&
+          entry.target.connectionId === id
+        )
+          return false;
+        if (entry.target.kind === "savedQuery" && purgedQueryIds.has(entry.target.savedQueryId))
+          return false;
+        return true;
+      });
       return {
         catalog,
+        savedQueries,
+        bookmarks,
+        recentLocations,
+        tabs:
+          purgedQueryIds.size > 0
+            ? state.tabs.map((t) =>
+                t.savedQueryId && purgedQueryIds.has(t.savedQueryId)
+                  ? { ...t, savedQueryId: null }
+                  : t,
+              )
+            : state.tabs,
         bootstrap: state.bootstrap
-          ? { ...state.bootstrap, profiles: state.bootstrap.profiles.filter((p) => p.id !== id) }
+          ? {
+              ...state.bootstrap,
+              profiles: state.bootstrap.profiles.filter((p) => p.id !== id),
+              savedQueries,
+              bookmarks,
+            }
           : null,
         tableLayouts: state.tableLayouts.filter((layout) => layout.connectionId !== id),
         selectedConnectionId: state.selectedConnectionId === id ? null : state.selectedConnectionId,

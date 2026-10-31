@@ -5,7 +5,10 @@ import {
   ArrowLeftRight,
   ArrowUpDown,
   ArrowUpRight,
+  Bookmark,
+  BookmarkPlus,
   Check,
+  Clock3,
   Code2,
   Columns3,
   Command,
@@ -14,6 +17,7 @@ import {
   Download,
   FileCode2,
   Filter,
+  FolderOpen,
   Gauge,
   History,
   Keyboard,
@@ -23,7 +27,9 @@ import {
   PanelRight,
   Plus,
   RotateCcw,
+  Save,
   Search,
+  Star,
   Upload,
   Wifi,
   X,
@@ -59,6 +65,8 @@ import {
   querySessionForTab,
   isLastOwnerOfSecondarySession,
   sessionHasOpenTransaction,
+  isTabFileDirty,
+  bookmarkTargetForTab,
   type StudioTab,
 } from "../state/studio";
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
@@ -79,6 +87,7 @@ import {
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import { SearchEverywhere } from "../features/studio/SearchEverywhere";
 import type { SearchScope } from "../features/studio/search-everywhere";
+import { LibraryModal, SaveQueryDialog, type LibraryTab } from "../features/studio/LibraryModal";
 import { Workbench, Welcome } from "./Workbench";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -103,6 +112,8 @@ type Dialog =
   | { kind: "export"; tabId: string }
   | { kind: "importCsv"; tabId: string }
   | { kind: "compare"; tabId?: string }
+  | { kind: "library"; tab: LibraryTab }
+  | { kind: "saveQuery"; tabId: string }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -454,6 +465,7 @@ export function App() {
         snap.tabs.some(
           (tab) =>
             pendingCountFor(tab) > 0 ||
+            isTabFileDirty(tab) ||
             ["queued", "running"].includes(tab.status) ||
             (tab.querySession && !tab.querySessionClosed),
         ) ||
@@ -683,16 +695,21 @@ export function App() {
     }
   }
   function confirmDiscard(active: StudioTab, action: () => void) {
+    const dirtyFile = isTabFileDirty(active);
     if (
       pendingCountFor(active) > 0 ||
+      dirtyFile ||
       ["queued", "running"].includes(active.status) ||
       isLastOwnerOfSecondarySession(useStudio.getState().tabs, active)
     )
       setDialog({
         kind: "confirm",
-        title: "Close this workspace?",
-        description:
-          "Pending edits will be discarded and running queries cancelled. Closing an isolated session rolls back its open transactions. Completed writes are not undone.",
+        title: dirtyFile
+          ? `Close ${active.fileName ?? "this workspace"}?`
+          : "Close this workspace?",
+        description: dirtyFile
+          ? `Unsaved changes in ${active.fileName} will be lost and running queries cancelled. Closing an isolated session rolls back its open transactions.`
+          : "Pending edits will be discarded and running queries cancelled. Closing an isolated session rolls back its open transactions. Completed writes are not undone.",
         action,
       });
     else action();
@@ -745,8 +762,55 @@ export function App() {
       });
     else void action().catch((error) => state.notify(messageOf(error)));
   }
-  const actions = useRef({ runSql, reviewEdits, goToReferenced, goToReferencing });
-  actions.current = { runSql, reviewEdits, goToReferenced, goToReferencing };
+  function handleOpenSqlFile() {
+    const active = references.current.current;
+    const connId = active?.connectionId ?? useStudio.getState().selectedConnectionId;
+    void useStudio
+      .getState()
+      .openSqlFile(connId)
+      .catch((error) => useStudio.getState().notify(messageOf(error)));
+  }
+  function handleSaveSqlFile(tabId: string, saveAs = false) {
+    void useStudio
+      .getState()
+      .saveSqlFile(tabId, { saveAs })
+      .catch((error) => useStudio.getState().notify(messageOf(error)));
+  }
+  function handleToggleBookmark(activeTab?: StudioTab) {
+    const snap = useStudio.getState();
+    const targetTab = activeTab ?? references.current.current;
+    if (!targetTab) return;
+    const candidate = bookmarkTargetForTab(targetTab, snap.catalog);
+    if (!candidate) {
+      if (targetTab.kind === "query") {
+        snap.notify("Save this query to the library first to bookmark it.");
+      } else {
+        snap.notify("Open a database object or saved query to bookmark it.");
+      }
+      return;
+    }
+    void snap
+      .toggleBookmark(candidate.target, candidate.defaultLabel)
+      .catch((error) => snap.notify(messageOf(error)));
+  }
+  const actions = useRef({
+    runSql,
+    reviewEdits,
+    goToReferenced,
+    goToReferencing,
+    handleOpenSqlFile,
+    handleSaveSqlFile,
+    handleToggleBookmark,
+  });
+  actions.current = {
+    runSql,
+    reviewEdits,
+    goToReferenced,
+    goToReferencing,
+    handleOpenSqlFile,
+    handleSaveSqlFile,
+    handleToggleBookmark,
+  };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || references.current.dialog) return;
@@ -758,6 +822,15 @@ export function App() {
       } else if (key === "o" && event.shiftKey) {
         event.preventDefault();
         setDialog({ kind: "palette", initialScope: "objects" });
+      } else if (key === "o" && !event.shiftKey) {
+        event.preventDefault();
+        actions.current.handleOpenSqlFile();
+      } else if (key === "e" && event.shiftKey) {
+        event.preventDefault();
+        setDialog({ kind: "library", tab: "recents" });
+      } else if (key === "d" && !event.shiftKey && active) {
+        event.preventDefault();
+        actions.current.handleToggleBookmark(active);
       } else if (key === "t") {
         event.preventDefault();
         useStudio.getState().openQuery();
@@ -779,9 +852,13 @@ export function App() {
       } else if (key === ",") {
         event.preventDefault();
         setDialog({ kind: "settings" });
-      } else if (key === "s") {
+      } else if (key === "s" && event.shiftKey && active?.kind === "query") {
         event.preventDefault();
-        void actions.current.reviewEdits();
+        actions.current.handleSaveSqlFile(active.id, true);
+      } else if (key === "s" && !event.shiftKey) {
+        event.preventDefault();
+        if (active?.kind === "query") actions.current.handleSaveSqlFile(active.id, false);
+        else void actions.current.reviewEdits();
       } else if (key === "." && active?.runId) {
         event.preventDefault();
         void client
@@ -833,6 +910,7 @@ export function App() {
           }}
           onSettings={() => setDialog({ kind: "settings" })}
           onDisconnect={disconnectProfile}
+          onOpenLibrary={(tab) => setDialog({ kind: "library", tab })}
         />
       )}
       <div className="main-shell">
@@ -907,7 +985,9 @@ export function App() {
                   <Gauge size={13} />
                 )}
                 <span title={tab.title}>{tab.title}</span>
-                {tab.kind === "table" && pendingCountFor(tab) > 0 && <i className="dirty-dot" />}
+                {((tab.kind === "table" && pendingCountFor(tab) > 0) || isTabFileDirty(tab)) && (
+                  <i className="dirty-dot" />
+                )}
                 {["queued", "running"].includes(tab.status) && (
                   <span className="tab-running">●</span>
                 )}
@@ -968,6 +1048,10 @@ export function App() {
                 onNewSession={() =>
                   profile && setDialog({ kind: "connect", profile, tabId: current.id })
                 }
+                onOpenSqlFile={handleOpenSqlFile}
+                onSaveSqlFile={(saveAs) => handleSaveSqlFile(current.id, Boolean(saveAs))}
+                onSaveToLibrary={() => setDialog({ kind: "saveQuery", tabId: current.id })}
+                onToggleBookmark={() => handleToggleBookmark(current)}
                 onQueryChange={(query, options) => void applyTableQuery(current.id, query, options)}
               />
             )}
@@ -1265,6 +1349,25 @@ export function App() {
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog?.kind === "library" && (
+        <LibraryModal
+          initialTab={dialog.tab}
+          onNeedsConnect={(targetProfile) => setDialog({ kind: "connect", profile: targetProfile })}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "saveQuery" &&
+        (() => {
+          const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
+          if (!targetTab || targetTab.kind !== "query") return null;
+          return (
+            <SaveQueryDialog
+              tab={targetTab}
+              profiles={state.bootstrap?.profiles ?? []}
+              onClose={() => setDialog(null)}
+            />
+          );
+        })()}
       {dialog?.kind === "confirm" && (
         <Confirmation
           title={dialog.title}
@@ -1339,6 +1442,64 @@ export function App() {
               shortcut: "⌘ T",
               icon: FileCode2,
               action: () => state.openQuery(),
+            },
+            {
+              label: "Open SQL file…",
+              shortcut: "⌘ O",
+              icon: FolderOpen,
+              action: () => handleOpenSqlFile(),
+            },
+            ...(current?.kind === "query"
+              ? [
+                  {
+                    label: "Save SQL file",
+                    shortcut: "⌘ S",
+                    icon: Save,
+                    action: () => handleSaveSqlFile(current.id, false),
+                  },
+                  {
+                    label: "Save SQL file as…",
+                    shortcut: "⇧⌘ S",
+                    icon: Save,
+                    action: () => handleSaveSqlFile(current.id, true),
+                  },
+                  {
+                    label: current.savedQueryId
+                      ? "Update query in library…"
+                      : "Save query to library…",
+                    shortcut: "",
+                    icon: BookmarkPlus,
+                    action: () => setDialog({ kind: "saveQuery", tabId: current.id }),
+                  },
+                ]
+              : []),
+            ...(current && bookmarkTargetForTab(current, state.catalog)
+              ? [
+                  {
+                    label: "Toggle bookmark",
+                    shortcut: "⌘ D",
+                    icon: Star,
+                    action: () => handleToggleBookmark(current),
+                  },
+                ]
+              : []),
+            {
+              label: "Saved queries library",
+              shortcut: "",
+              icon: Bookmark,
+              action: () => setDialog({ kind: "library", tab: "saved" }),
+            },
+            {
+              label: "Bookmarks",
+              shortcut: "",
+              icon: Star,
+              action: () => setDialog({ kind: "library", tab: "bookmarks" }),
+            },
+            {
+              label: "Recent locations",
+              shortcut: "⇧⌘ E",
+              icon: Clock3,
+              action: () => setDialog({ kind: "library", tab: "recents" }),
             },
             {
               label: "New database connection",

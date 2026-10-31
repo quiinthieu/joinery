@@ -10,6 +10,7 @@ import {
 import {
   ArrowLeftRight,
   ArrowRight,
+  BookmarkPlus,
   Check,
   ChevronDown,
   Clock3,
@@ -17,6 +18,7 @@ import {
   Columns3,
   Download,
   FileCode2,
+  FolderOpen,
   Gauge,
   Loader2,
   Pencil,
@@ -24,8 +26,10 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   ShieldCheck,
   Square,
+  Star,
   Table2,
   Trash2,
   Unplug,
@@ -46,6 +50,9 @@ import {
   querySessionForTab,
   isLastOwnerOfSecondarySession,
   sessionHasOpenTransaction,
+  isTabFileDirty,
+  bookmarkTargetForTab,
+  findBookmarkForTarget,
 } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
@@ -87,6 +94,10 @@ interface Props {
   onOpenImport(): void;
   onOpenCompare(): void;
   onNewSession(): void;
+  onOpenSqlFile(): void;
+  onSaveSqlFile(saveAs?: boolean): void;
+  onSaveToLibrary(): void;
+  onToggleBookmark(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
 
@@ -106,6 +117,10 @@ export function Workbench({
   onOpenImport,
   onOpenCompare,
   onNewSession,
+  onOpenSqlFile,
+  onSaveSqlFile,
+  onSaveToLibrary,
+  onToggleBookmark,
   onQueryChange,
 }: Props) {
   const state = useStudio(),
@@ -251,6 +266,11 @@ export function Workbench({
   const runtimeState = session ? state.sessionStates[session.id] : undefined;
   const txMode: TransactionMode = runtimeState?.transactionMode ?? "autoCommit";
   const txState = runtimeState?.transactionState ?? "idle";
+  const fileDirty = isTabFileDirty(tab);
+  const bookmarkCandidate = bookmarkTargetForTab(tab, state.catalog);
+  const activeBookmark = bookmarkCandidate
+    ? findBookmarkForTarget(state.bookmarks, bookmarkCandidate.target)
+    : undefined;
   function changeConnection(connectionId: string) {
     const lastOwner = isLastOwnerOfSecondarySession(state.tabs, tab);
     const apply = () => {
@@ -597,8 +617,58 @@ export function Workbench({
           )}
         </div>
         <div className="query-actions">
+          {bookmarkCandidate && (
+            <button
+              className={`icon-button bookmark-button ${activeBookmark ? "active" : ""}`}
+              aria-label={activeBookmark ? "Remove bookmark" : "Bookmark item"}
+              aria-pressed={Boolean(activeBookmark)}
+              title={activeBookmark ? "Remove bookmark · ⌘D" : "Bookmark · ⌘D"}
+              onClick={onToggleBookmark}
+            >
+              <Star size={14} fill={activeBookmark ? "currentColor" : "none"} />
+            </button>
+          )}
           {tab.kind === "query" && (
             <>
+              <button
+                className="button ghost small"
+                aria-label="Open SQL file"
+                title="Open SQL file · ⌘O"
+                disabled={running}
+                onClick={onOpenSqlFile}
+              >
+                <FolderOpen size={13} />
+                Open
+              </button>
+              <button
+                className="button ghost small"
+                aria-label="Save SQL file"
+                title="Save SQL file · ⌘S"
+                disabled={running}
+                onClick={() => onSaveSqlFile(false)}
+              >
+                <Save size={13} />
+                {fileDirty ? "Save ●" : "Save"}
+              </button>
+              <button
+                className="button ghost small"
+                aria-label="Save SQL file as"
+                title="Save SQL file as · ⇧⌘S"
+                disabled={running}
+                onClick={() => onSaveSqlFile(true)}
+              >
+                Save as
+              </button>
+              <button
+                className="button ghost small"
+                aria-label="Save query to library"
+                title="Save query to library"
+                disabled={running || !tab.sql.trim()}
+                onClick={onSaveToLibrary}
+              >
+                <BookmarkPlus size={13} />
+                {tab.savedQueryId ? "Update library" : "Save to library"}
+              </button>
               <button
                 className="button ghost small"
                 title="Format SQL · ⇧⌘F"
