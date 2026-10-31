@@ -165,8 +165,50 @@ Merged on `main` (`6445b0e`), unreleased.
 
 See matrix rows G03/G05/G07–G10 and `IMPLEMENTATION_STATUS.md` for evidence
 (`99` frontend tests, `102` standard Rust tests, `41` disposable integration
-tests, `37` Playwright workflows and clean-commit macOS native gates). Local on
-`feat/table-data-editing`; not yet pushed, merged or released.
+tests, `37` Playwright workflows and clean-commit macOS native gates). Merged on
+`main` via PR #27 (`94f63ba`); unreleased.
+
+### R2 Data movement result (merged in PR #28 `c8d8aa1`; unreleased)
+
+- Grid selection Copy-as (`CSV`, `TSV`, `JSON`, `NDJSON`, `SQL INSERT`,
+  `Markdown`; max 5,000 rows / 2 MiB), capability-gated Rust `.partial` streaming
+  export (`CSV`, `TSV`, `JSON`, `NDJSON`; max 1,000,000 rows / 512 MiB), upfront-validated
+  capability-gated CSV/TSV import into reviewed 500-row `ChangePlan` batches, and
+  key-aware bounded `LiveTable` / `RetainedResult` data comparison (including
+  cross-engine PostgreSQL ↔ MySQL/MariaDB).
+- Merged on `main` via PR #28 (`c8d8aa1`, all six PR checks green); unreleased.
+
+### R3 Explorer and object search result (merged in PR #29 `2625933`; unreleased)
+
+- Categorized WAI-ARIA keyboard object explorer (`Tables`, `Views`, `Materialized
+  views`, `Functions`, `Procedures`, `Sequences`, `Triggers`, `Indexes`) with
+  kind filter chips, bounded 256 KiB read-only DDL (`Copy DDL`, `Open in SQL
+  editor`), bounded 200-edge 1-hop `Uses` / `Used by` dependency chips, and
+  cross-connection `SearchEverywhere` (`⌘K` / `⇧⌘O`).
+- Merged on `main` via PR #29 (`2625933`, all six PR checks green); unreleased.
+
+### R4 Consoles, sessions and files result (2026-10-31, local branch `feat/consoles-sessions-files`)
+
+- Per-session active schema/database switcher (`M05`: PostgreSQL `search_path`,
+  MySQL/MariaDB `USE`, Snowflake stateless request-scoped schema verification)
+  invalidating and refreshing live CodeMirror completion per session.
+- Named & attachable multi-console session pool (`M06`: up to four total sessions
+  per connection, multi-console attachment to named secondary sessions or `Shared
+  session`, rename/disconnect controls, last-owner close lifecycle).
+- Per-session `Auto-commit` vs `Manual commit` transaction mode and explicit
+  `Commit` / `Rollback` controls (`X04`) driven by wire-level transaction state
+  (`Idle` | `InTransaction` | `Failed`) on PostgreSQL and MySQL/MariaDB while
+  keeping table-grid edits isolated on separate lanes.
+- Capability-gated `.sql` file Open (`⌘O`), atomic in-place Save (`⌘S` on query
+  tabs; `reviewEdits` preserved on table tabs) and Save As (`⇧⌘S`) via reusable
+  `GrantKind::SqlFile` tokens (`E14`: ≤ 4 MiB UTF-8, dirty indicator, unsaved-close
+  guard, zero raw paths over IPC, excluded from `SavedWorkspace.drafts`).
+- Local SQLite saved-queries library (`P03`: max 256, ≤ 256 KiB each / 4 MiB
+  total, privacy-safe detached default when `storeQueryText === false`,
+  `SearchEverywhere` `Saved` scope + `LibraryModal`), persistent object &
+  saved-query bookmarks (`P02`: `⌘D`, max 256, profile-delete cascade), and a
+  50-item in-memory Recent locations ring buffer (`⇧⌘E`).
+- Local on `feat/consoles-sessions-files`; not yet pushed, merged or released.
 
 ## Subsequent phases and blueprint cross-reference
 

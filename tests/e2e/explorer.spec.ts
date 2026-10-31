@@ -39,12 +39,14 @@ async function installClipboardMock(page: Page) {
   });
 }
 
+const PG_PORT = Number(process.env.JOINERY_POSTGRES_PORT ?? "55432");
+
 async function connectPostgres(page: Page, name: string, storeQueryText = false) {
   await page.getByRole("button", { name: "New connection", exact: true }).click();
   await page.getByLabel("Connection name", { exact: true }).fill(name);
   await page.getByLabel("Database engine").selectOption("postgres");
   await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
-  await page.getByLabel("Port", { exact: true }).fill("55432");
+  await page.getByLabel("Port", { exact: true }).fill(String(PG_PORT));
   await page.getByLabel("Database", { exact: true }).fill("joinery");
   await page.getByLabel("Username", { exact: true }).fill("joinery");
   await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
@@ -276,7 +278,7 @@ test("Search Everywhere jumps across simultaneous PostgreSQL and MySQL connectio
         groupId: "local",
         engine: "postgres",
         host: "127.0.0.1",
-        port: 55432,
+        port: PG_PORT,
         database: "joinery",
         username: "joinery",
         environment: "local",

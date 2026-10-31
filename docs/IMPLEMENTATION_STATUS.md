@@ -122,7 +122,7 @@ Grid browsing and commits use the login role independently of SQL-editor transac
 - Table pages: **500 rows or 2 MiB**, with keyset continuation from the last retained PK.
 - Raw result rows: **2 MiB viewer limit**; large write results are discarded while execution is drained to a known outcome.
 - Pending edits and review originals: **8 MiB**, at most 500 edited rows per commit.
-- File inputs and exports: bounded reads of regular CA/key files and capability-granted CSV/TSV import files (**16 MiB**, **5,000 rows**, 256 columns), plus capability-granted `.partial`-staged streaming exports (**1,000,000 rows** or **512 MiB** per job, at most two concurrent jobs); no arbitrary frontend filesystem path IPC.
+- File inputs, SQL files, library and exports: bounded reads of regular CA/key files, capability-granted `.sql` files (**4 MiB** UTF-8, max 64 active `GrantKind::SqlFile` grants, atomic sibling `.tmp` + `sync_all` + `rename`), capability-granted CSV/TSV import files (**16 MiB**, **5,000 rows**, 256 columns), capability-granted `.partial`-staged streaming exports (**1,000,000 rows** or **512 MiB** per job, at most two concurrent jobs), SQLite saved queries (**256 entries**, **256 KiB** each, **4 MiB** total), SQLite bookmarks (**256 entries**), and in-memory recent locations (**50 entries**); no arbitrary frontend filesystem path IPC.
 
 These bounds constrain owned buffers; they do not include WebView, operating-system frameworks, driver receive buffers, transient encoding, or JavaScript object overhead.
 
@@ -949,14 +949,14 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   qualification, Windows/Linux packaged runtime, Developer ID
   signing/notarization and representative performance gates remain open.
 
-## Explorer, object inspection, DDL/dependencies and Search Everywhere (local implementation)
+## Explorer, object inspection, DDL/dependencies and Search Everywhere (merged in PR #29; unreleased)
 
 Branch `feat/explorer-object-search` (`7595db4..26f5136`, from `origin/main`
 `c8d8aa1`) implements Milestone R3 (Explorer & object search: `N01`, `N02`,
-`N04`, `N05`, `N06`, `N07`, `P01`) locally. It is verified on disposable
-fixtures and clean-commit macOS native builds, unmerged, and unreleased
-(`v0.1.0-preview.15` remains the published and installed release; PRs #25, #26,
-#27 and #28 are merged on `main` and unreleased):
+`N04`, `N05`, `N06`, `N07`, `P01`) and merged on `main` via PR #29 (`2625933`,
+all six PR checks passing). `v0.1.0-preview.15` remains the published and
+installed release; PRs #25, #26, #27, #28 and #29 are merged on `main` and
+unreleased:
 
 - **Bounded object discovery, DDL and 1-hop dependency adapters (`7595db4`,
   `4058784`)**: `domain.rs` defines `DatabaseObjectKind` (`table`,
@@ -1054,5 +1054,101 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   `2de7c55277d78b3595d0c498a4dfe71759a2627a5f8658f9b89492fbb6be3da3`).
 - No production database connections, automatic SQL execution/replay or Safe
   Mode weakening were introduced. Live Snowflake/production account
+  qualification, Windows/Linux packaged runtime, Developer ID
+  signing/notarization and representative performance gates remain open.
+
+## Consoles, named session pool, transaction controls, capability-gated SQL files and query library (local implementation)
+
+Branch `feat/consoles-sessions-files` (`78a5283..HEAD`, from `origin/main`
+`2625933`) implements Milestone R4 (Consoles, sessions & files: `M05`, `M06`,
+`X04`, `E14`, `P02`, `P03`) locally. It is verified on disposable fixtures,
+standard/browser test suites and macOS native builds, unmerged, and unreleased
+(`v0.1.0-preview.15` remains the published and installed release; PRs #25–#29
+are merged on `main` and unreleased):
+
+- **Per-session transaction controls and active schema/database switching
+  (`78a5283`)**:
+  - `domain.rs` defines `TransactionMode` (`autoCommit`, `manual`),
+    `TransactionState` (`idle`, `inTransaction`, `failed`),
+    `SessionContextKind` (`postgresSchema`, `mysqlDatabase`, `snowflakeSchema`,
+    `none`), `SessionRuntimeState` and `QueryEvent::SessionState`.
+  - **PostgreSQL (`drivers/postgres.rs`)**: Tracks authoritative wire-level
+    `ReadyForQuery` status bytes (`I` → `Idle`, `T` → `InTransaction`, `E` →
+    `Failed`), auto-prepends `BEGIN` before transactional statements in `Manual`
+    mode when `Idle` (skipping `VACUUM`, `CREATE INDEX CONCURRENTLY`, `SET
+    SESSION` and explicit transaction control), executes `COMMIT` (`ReadOnly`
+    blocked; audit-logged) and `ROLLBACK` (always allowed, including `25P02`
+    failed-transaction recovery; audit-logged) on the session execution lane,
+    lists visible non-internal schemas, and switches active schema via
+    `select set_config('search_path', $1, false)` (preserving explicit
+    `pg_catalog` precedence when present).
+  - **MySQL 8.4 & MariaDB 11.4 (`drivers/mysql.rs`)**: Toggles `SET SESSION
+    autocommit = 0/1`, observes `SERVER_STATUS_IN_TRANS` from wire packets,
+    clears any phantom transaction opened by `SET SESSION autocommit = 0` itself
+    (`close_phantom_transaction`), executes explicit `COMMIT` / `ROLLBACK` on
+    the editor connection while keeping table-grid reads and reviewed
+    `ChangePlan` commits isolated on auxiliary connections, and switches active
+    database via escaped `USE`. Both PostgreSQL and MySQL refuse `Manual` →
+    `Auto-commit` transitions while `transactionState != Idle` with
+    `ErrorCode::Conflict`.
+  - **Snowflake (`drivers/snowflake.rs`)**: Lists schemas in the configured
+    database and verifies stateless request-scoped schema overrides without
+    claiming interactive transaction support (`transactions: false`).
+- **Capability-gated `.sql` file Open, Save and Save As (`25f8dd8`,
+  `5af049e`)**: `file_capability.rs` adds reusable `GrantKind::SqlFile` grants
+  (capped at **64** active tokens, **4 MiB** valid UTF-8 regular files,
+  rejecting symlinks and NUL bytes) and atomic sibling temp-file writes
+  (`.joinery-sql-<uuid>.tmp`, `0600` on Unix for new files or preserved existing
+  permissions, `sync_all`, then `rename`). Query tabs support `⌘O` (Open), `⌘S`
+  (in-place Save reusing `fileToken`, while `⌘S` on table tabs preserves
+  `reviewEdits`), and `⇧⌘S` (Save As, releasing any replaced token), render a
+  dirty indicator and unsaved-close/quit confirmation guard, never expose raw
+  filesystem paths over IPC, and are excluded from `SavedWorkspace.drafts`.
+- **Saved queries library, object bookmarks and recent locations (`c4135c4`,
+  `5af049e`)**: `persistence/library.rs` stores bounded JSON arrays under
+  `SCHEMA_VERSION = 1` `settings` keys `'saved-queries'` (**256** entries,
+  **256 KiB** SQL each, **4 MiB** total) and `'bookmarks'` (**256** entries,
+  deduplicated by canonical target), validated during `recovery::validate` and
+  cascading on `delete_profile` (purging production or `!storeQueryText` saved
+  queries while detaching non-production opted-in saved queries, and purging
+  profile bookmarks). `SaveQueryDialog`, `LibraryModal`, `Sidebar.tsx` and
+  `SearchEverywhere` (`Saved` scope) integrate saved queries, `⌘D` bookmark
+  toggling on tables/objects/saved queries, and an ephemeral **50-item**
+  in-memory `Recent locations` ring buffer (`⇧⌘E`).
+- **Named multi-console session pool & 12-command Tauri v2 ACL enrollment
+  (`c4135c4`, `8e5cf3d`, `5af049e`)**: `studio.ts` and `Workbench.tsx` manage a
+  named `sessionPool` (retaining Rust's four-session-per-connection cap) so
+  multiple consoles can attach to the same secondary session or `Shared
+  session`, rename/disconnect sessions, and disconnect a pooled session on close
+  only when closing its last attached owner. All 12 new R4 commands
+  (`session_contexts`, `switch_session_context`, `set_transaction_mode`,
+  `commit_transaction`, `rollback_transaction`, `open_sql_file`,
+  `save_sql_file`, `release_sql_file_grant`, `save_saved_query`,
+  `delete_saved_query`, `save_bookmark`, `delete_bookmark`) are enrolled across
+  `commands.rs`, `lib.rs`, `build.rs`, `capabilities/main.json` and
+  `bin/test-harness.rs`, and verified over real Tauri WebView IPC in
+  `src/native-smoke.ts`.
+
+Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
+
+- `pnpm validate` passes **122 frontend tests** (23 files) and **126 standard
+  Rust tests**, formatting, contracts, types, production build, Cargo check and
+  strict all-target/all-feature Clippy. Script unit tests
+  (`git-identity.test.mjs` 6/6 and `test_runtime_memory.py` 4/4) pass.
+- The disposable Rust integration suite (`postgres` 22, `mysql` 21 across MySQL
+  8.4 and MariaDB 11.4, `redis` 6, `ssh` 2) passes **51 of 51 executed tests**
+  on task-owned Compose project `joinery-r4` (including manual-commit auto-BEGIN,
+  PostgreSQL `25P02` failed-transaction rollback, MySQL phantom-transaction
+  cleanup, grid-commit isolation, and per-session schema/database switching).
+  Port 53407 remains held by the host agent process, so case-mode-1
+  `mysql_live_completion_uses_server_case_policy` was skipped locally. The
+  `joinery-r4` containers, network and volume were removed immediately after
+  browser verification (`down -v`).
+- With repository files held fixed, the complete Playwright suite passes **all
+  47 browser workflows** in a single run (`2.3m`), including all four
+  `consoles-files.spec.ts` workflows and all existing `sessions.spec.ts` and
+  `completion.spec.ts` regressions.
+- No production database connections, automatic SQL execution/replay, raw-path
+  IPC or Safe Mode weakening were introduced. Live Snowflake/production account
   qualification, Windows/Linux packaged runtime, Developer ID
   signing/notarization and representative performance gates remain open.

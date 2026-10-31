@@ -7,8 +7,10 @@ async function caret(editor: Locator, offset: number) {
   for (let i = 0; i < offset; i++) await editor.press("ArrowRight");
 }
 
+const PG_PORT = Number(process.env.JOINERY_POSTGRES_PORT ?? "55432");
+
 for (const [engine, port] of [
-  ["PostgreSQL", 55432],
+  ["PostgreSQL", PG_PORT],
   ["MySQL", 53306],
   ["MariaDB", 53307],
 ] as const) {
@@ -183,7 +185,7 @@ test("PostgreSQL completion follows effective search path, role and rollback", a
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Connection name", { exact: true }).fill("Live context fixture");
   await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
-  await page.getByLabel("Port", { exact: true }).fill("55432");
+  await page.getByLabel("Port", { exact: true }).fill(String(PG_PORT));
   await page.getByLabel("Database", { exact: true }).fill("joinery");
   await page.getByLabel("Username", { exact: true }).fill("joinery");
   await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");

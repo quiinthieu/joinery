@@ -27,6 +27,7 @@ export default defineConfig({
         JOINERY_TEST_BRIDGE: "1",
         JOINERY_TEST_TOKEN: token,
         JOINERY_TEST_DATA_ROOT: path.resolve(`.cache/e2e-${Date.now()}`),
+        JOINERY_POSTGRES_PORT: process.env.JOINERY_POSTGRES_PORT ?? "55432",
       },
     },
     {
