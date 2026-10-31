@@ -134,6 +134,18 @@ pub fn run() {
             commands::preview_csv_import,
             commands::prepare_csv_import_batch,
             commands::compare_data,
+            commands::session_contexts,
+            commands::switch_session_context,
+            commands::set_transaction_mode,
+            commands::commit_transaction,
+            commands::rollback_transaction,
+            commands::open_sql_file,
+            commands::save_sql_file,
+            commands::release_sql_file_grant,
+            commands::save_saved_query,
+            commands::delete_saved_query,
+            commands::save_bookmark,
+            commands::delete_bookmark,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

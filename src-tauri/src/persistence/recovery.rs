@@ -72,6 +72,8 @@ fn validate(connection: &Connection) -> AppResult<()> {
     }
     validate_schema(connection)?;
     super::workspace::read_workspace(connection)?;
+    super::library::read_saved_queries(connection)?;
+    super::library::read_bookmarks(connection)?;
     let unexpected: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND (type != 'table' OR name NOT IN ('profiles','groups','history','audit','settings'))", [], |r| r.get(0)).map_err(db_error)?;
     if unexpected != 0 {
         return Err(AppError::invalid(

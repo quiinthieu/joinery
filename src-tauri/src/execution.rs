@@ -195,7 +195,29 @@ impl Studio {
             result_budget_bytes: RESULT_BUDGET,
             row_limit: ROW_LIMIT,
             workspace: self.persistence.workspace()?,
+            saved_queries: self.persistence.saved_queries()?,
+            bookmarks: self.persistence.bookmarks()?,
         })
+    }
+
+    pub fn save_saved_query(&self, input: SavedQueryInput) -> AppResult<SavedQuery> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_saved_query(input)
+    }
+
+    pub fn delete_saved_query(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.delete_saved_query(id)
+    }
+
+    pub fn save_bookmark(&self, label: &str, target: BookmarkTarget) -> AppResult<SavedBookmark> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_bookmark(label, target)
+    }
+
+    pub fn delete_bookmark(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.delete_bookmark(id)
     }
 
     pub fn metadata_backups(&self) -> AppResult<Vec<MetadataBackup>> {

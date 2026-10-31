@@ -766,6 +766,55 @@ pub struct MetadataBackup {
     pub digest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedQuery {
+    pub id: String,
+    pub title: String,
+    pub sql: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedQueryInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub title: String,
+    pub sql: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BookmarkTarget {
+    Object {
+        connection_id: String,
+        object: DatabaseObjectRef,
+    },
+    SavedQuery {
+        saved_query_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedBookmark {
+    pub id: String,
+    pub label: String,
+    pub target: BookmarkTarget,
+    #[ts(type = "number")]
+    pub created_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
@@ -776,6 +825,10 @@ pub struct Bootstrap {
     pub result_budget_bytes: usize,
     pub row_limit: usize,
     pub workspace: Option<SavedWorkspace>,
+    #[serde(default)]
+    pub saved_queries: Vec<SavedQuery>,
+    #[serde(default)]
+    pub bookmarks: Vec<SavedBookmark>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -74,8 +74,18 @@ async fn rpc(
             "audit_log" => json!(studio.audit_log()?),
             "save_profile" => {
                 let profile: ConnectionProfile = arg(&args, "profile")?;
+                let pg_port = std::env::var("JOINERY_POSTGRES_PORT")
+                    .ok()
+                    .and_then(|v| v.parse::<u16>().ok())
+                    .unwrap_or(55432);
+                let allowed_fixture = match (profile.engine, profile.port) {
+                    (EngineKind::Postgres, port) => port == 55432 || port == pg_port,
+                    (EngineKind::Mysql, 53306 | 53307) => true,
+                    (EngineKind::Redis, 56379) => true,
+                    _ => false,
+                };
                 if profile.host != "127.0.0.1"
-                    || !matches!((profile.engine,profile.port),(EngineKind::Postgres,55432)|(EngineKind::Mysql,53306|53307)|(EngineKind::Redis,56379))
+                    || !allowed_fixture
                     || (profile.engine!=EngineKind::Redis && (profile.database!="joinery"||profile.username!="joinery"))
                     || (profile.engine==EngineKind::Redis && (profile.database!="0"||profile.username!="default"))
                     || profile.ssh.is_some()
@@ -326,7 +336,70 @@ async fn rpc(
                     .await?
             ),
             "compare_data" => json!(studio.compare_data(arg(&args, "request")?).await?),
+            "session_contexts" => json!(
+                studio
+                    .session_contexts(&arg::<String>(&args, "sessionId")?)
+                    .await?
+            ),
+            "switch_session_context" => json!(
+                studio
+                    .switch_session_context(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg::<String>(&args, "target")?
+                    )
+                    .await?
+            ),
+            "set_transaction_mode" => json!(
+                studio
+                    .set_transaction_mode(
+                        &arg::<String>(&args, "sessionId")?,
+                        arg(&args, "mode")?
+                    )
+                    .await?
+            ),
+            "commit_transaction" => json!(
+                studio
+                    .commit_transaction(&arg::<String>(&args, "sessionId")?)
+                    .await?
+            ),
+            "rollback_transaction" => json!(
+                studio
+                    .rollback_transaction(&arg::<String>(&args, "sessionId")?)
+                    .await?
+            ),
+            "open_sql_file" => json!(studio.open_sql_file().await?),
+            "save_sql_file" => json!(
+                studio
+                    .save_sql_file(
+                        arg::<Option<String>>(&args, "token")?.as_deref(),
+                        &arg::<String>(&args, "suggestedName")?,
+                        &arg::<String>(&args, "content")?
+                    )
+                    .await?
+            ),
+            "release_sql_file_grant" => {
+                studio.release_sql_file_grant(&arg::<String>(&args, "token")?);
+                Value::Null
+            }
+            "save_saved_query" => json!(studio.save_saved_query(arg(&args, "input")?)?),
+            "delete_saved_query" => {
+                studio.delete_saved_query(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "save_bookmark" => json!(studio.save_bookmark(
+                &arg::<String>(&args, "label")?,
+                arg(&args, "target")?
+            )?),
+            "delete_bookmark" => {
+                studio.delete_bookmark(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
+            "test_queue_open_file" => {
+                let file_name: Option<String> = arg(&args, "fileName")?;
+                state.sandbox.queue_open(file_name.as_deref())?;
+                Value::Null
+            }
             "test_queue_save_file" => {
                 let file_name: Option<String> = arg(&args, "fileName")?;
                 state.sandbox.queue_save(file_name.as_deref())?;
