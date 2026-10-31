@@ -70,6 +70,8 @@ import {
   withFilter,
 } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
+import { SearchEverywhere } from "../features/studio/SearchEverywhere";
+import type { SearchScope } from "../features/studio/search-everywhere";
 import { Workbench, Welcome } from "./Workbench";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -78,7 +80,7 @@ type Dialog =
   | { kind: "connection"; profile?: ConnectionProfile; groupId?: string }
   | { kind: "connect"; profile: ConnectionProfile; tabId?: string }
   | { kind: "settings" }
-  | { kind: "palette" }
+  | { kind: "palette"; initialScope?: SearchScope }
   | { kind: "value"; target: CellTarget }
   | {
       kind: "review";
@@ -741,7 +743,10 @@ export function App() {
         active = references.current.current;
       if (key === "k") {
         event.preventDefault();
-        setDialog({ kind: "palette" });
+        setDialog({ kind: "palette", initialScope: "all" });
+      } else if (key === "o" && event.shiftKey) {
+        event.preventDefault();
+        setDialog({ kind: "palette", initialScope: "objects" });
       } else if (key === "t") {
         event.preventDefault();
         useStudio.getState().openQuery();
@@ -1310,7 +1315,12 @@ export function App() {
         </Modal>
       )}
       {dialog?.kind === "palette" && (
-        <CommandPalette
+        <SearchEverywhere
+          initialScope={dialog.initialScope ?? "all"}
+          onActivateTab={(tabId) => {
+            useStudio.setState({ activeTabId: tabId });
+            setSelectedCell(null);
+          }}
           onClose={() => setDialog(null)}
           commands={[
             {
@@ -1390,56 +1400,6 @@ function Confirmation({
           Continue
         </button>
       </footer>
-    </Modal>
-  );
-}
-function CommandPalette({
-  commands,
-  onClose,
-}: {
-  commands: { label: string; shortcut: string; icon: typeof Code2; action(): unknown }[];
-  onClose(): void;
-}) {
-  const [search, setSearch] = useState("");
-  const matches = commands.filter((command) =>
-    command.label.toLowerCase().includes(search.toLowerCase()),
-  );
-  return (
-    <Modal title="Command palette" onClose={onClose}>
-      <div className="palette-search">
-        <Search size={17} />
-        <input
-          autoFocus
-          aria-label="Search commands"
-          placeholder="What would you like to do?"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && matches[0]) {
-              event.preventDefault();
-              event.stopPropagation();
-              onClose();
-              matches[0].action();
-            }
-          }}
-        />
-      </div>
-      <div className="palette-commands">
-        {matches.map(({ label, shortcut, icon: Icon, action }) => (
-          <button
-            key={label}
-            onClick={() => {
-              onClose();
-              action();
-            }}
-          >
-            <Icon size={16} />
-            <span>{label}</span>
-            <kbd>{shortcut}</kbd>
-          </button>
-        ))}
-        {!matches.length && <div className="grid-empty">No matching commands</div>}
-      </div>
     </Modal>
   );
 }

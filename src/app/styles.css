@@ -2023,27 +2023,89 @@ kbd {
   outline: none;
   font-size: 13px;
 }
+.palette-scopes-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--header);
+}
+.palette-scopes {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.palette-scopes > button {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.palette-scopes > button:hover,
+.palette-scopes > button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.palette-scopes > button.active {
+  background: var(--selection);
+  color: var(--accent);
+  font-weight: 550;
+}
+.palette-offline-note {
+  font-size: 10px;
+  color: var(--faint);
+  white-space: nowrap;
+}
 .palette-commands {
   padding: 9px;
+  max-height: 360px;
+  overflow-y: auto;
 }
 .palette-commands > button {
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 0 13px;
+  padding: 7px 13px;
   width: 100%;
-  height: 42px;
+  min-height: 42px;
   text-align: left;
   border-radius: 5px;
   color: var(--muted);
 }
 .palette-commands > button:hover,
-.palette-commands > button:focus-visible {
+.palette-commands > button:focus-visible,
+.palette-commands > button.selected {
   background: var(--selection);
   color: var(--text);
 }
+.palette-commands > button > svg {
+  flex-shrink: 0;
+}
 .palette-commands > button > span {
   flex: 1;
+  min-width: 0;
+}
+.palette-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.palette-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-item-subtitle {
+  font-size: 10px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-commands > button > kbd {
+  flex-shrink: 0;
 }
 .utility-view {
   flex: 1;
