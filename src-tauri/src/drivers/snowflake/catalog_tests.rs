@@ -58,7 +58,7 @@ async fn fixture(responses: Vec<Value>) -> (Snowflake, JoinHandle<Vec<(String, V
             .unwrap(),
         base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
         database: "DB".into(),
-        schema: "PUBLIC".into(),
+        schema: Mutex::new("PUBLIC".into()),
         role: "READ_ONLY".into(),
         warehouse: "WH".into(),
         query_tag: "Joinery/catalog-test".into(),
@@ -366,4 +366,54 @@ async fn invalid_object_identifiers_never_reach_the_server() {
         );
     }
     assert!(server.await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn schema_context_switch_is_stateless_and_verifies_resolution() {
+    let (driver, server) = fixture(vec![
+        json!({"resultSetMetaData":{"numRows":3},"data":[
+            ["ANALYTICS"],
+            ["PUBLIC"],
+            ["mixed_case_ignored"]
+        ]}),
+        json!({"resultSetMetaData":{"numRows":1},"data":[[null]]}),
+        json!({"resultSetMetaData":{"numRows":1},"data":[["ANALYTICS"]]}),
+    ])
+    .await;
+
+    let schemas = driver.list_contexts().await.unwrap();
+    assert_eq!(schemas, vec!["ANALYTICS", "PUBLIC"]);
+
+    // Lowercase or quoted names are rejected locally without contacting the server.
+    assert_eq!(
+        driver.switch_context("analytics").await.unwrap_err().code,
+        ErrorCode::InvalidInput
+    );
+
+    // If Snowflake does not resolve CURRENT_SCHEMA() to the target, state stays unchanged.
+    assert_eq!(
+        driver.switch_context("MISSING").await.unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        driver
+            .session_state("s-1")
+            .await
+            .unwrap()
+            .active_context
+            .as_deref(),
+        Some("PUBLIC")
+    );
+
+    // Verified switch updates request-scoped schema without issuing USE SCHEMA.
+    driver.switch_context("ANALYTICS").await.unwrap();
+    let state = driver.session_state("s-1").await.unwrap();
+    assert_eq!(state.active_context.as_deref(), Some("ANALYTICS"));
+    assert_eq!(state.search_path, vec!["DB.ANALYTICS"]);
+
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].1["schema"], "MISSING");
+    assert_eq!(requests[2].1["schema"], "ANALYTICS");
+    assert_eq!(requests[2].1["statement"], "SELECT CURRENT_SCHEMA()");
 }

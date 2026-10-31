@@ -1,6 +1,8 @@
 use super::*;
 use futures_util::future::BoxFuture;
-use mysql_async::{Conn, Opts, OptsBuilder, Params, Row, SslOpts, Value, prelude::Queryable};
+use mysql_async::{
+    Conn, Opts, OptsBuilder, Params, Row, SslOpts, Value, consts::StatusFlags, prelude::Queryable,
+};
 use std::{
     future::Future,
     ops::{Deref, DerefMut},
@@ -48,11 +50,19 @@ struct LiveConnection {
     connection: Mutex<Connection>,
     id: u32,
 }
+
+struct MysqlIdentityCache {
+    database: String,
+    role: String,
+    dirty: bool,
+}
+
 pub struct Mysql {
     editor: Arc<LiveConnection>,
     opts: Opts,
     own_id: u32,
     edit: parking_lot::Mutex<Option<Arc<LiveConnection>>>,
+    identity_cache: parking_lot::Mutex<MysqlIdentityCache>,
     cancel_requested: CancellationToken,
     closed: CancellationToken,
     read_only: bool,
@@ -124,6 +134,21 @@ impl Mysql {
             }
         }
         let own_id = conn.id();
+        let identity_rows = fetch_text(
+            &mut conn,
+            "SELECT COALESCE(DATABASE(),''),CURRENT_USER(),COALESCE(CURRENT_ROLE(),'NONE')",
+            1,
+            64 * 1024,
+        )
+        .await?;
+        let identity_row = identity_rows
+            .first()
+            .ok_or_else(|| AppError::internal("Missing session identity"))?;
+        let initial_cache = MysqlIdentityCache {
+            database: cell(identity_row, 0).to_owned(),
+            role: format!("{} ({})", cell(identity_row, 1), cell(identity_row, 2)),
+            dirty: false,
+        };
         Ok((
             Arc::new(Self {
                 editor: Arc::new(LiveConnection {
@@ -133,6 +158,7 @@ impl Mysql {
                 opts,
                 own_id,
                 edit: parking_lot::Mutex::new(None),
+                identity_cache: parking_lot::Mutex::new(initial_cache),
                 cancel_requested: CancellationToken::new(),
                 closed: CancellationToken::new(),
                 read_only: profile.safe_mode == SafeMode::ReadOnly,
@@ -183,6 +209,49 @@ impl Mysql {
             work(&mut conn).await
         })
         .await
+    }
+
+    pub(super) async fn close_phantom_transaction(conn: &mut Conn, was_in_trans: bool) {
+        if was_in_trans {
+            return;
+        }
+        if let Ok(post_flags) = observe_status_flags(conn).await
+            && !post_flags.contains(StatusFlags::SERVER_STATUS_AUTOCOMMIT)
+            && post_flags.contains(StatusFlags::SERVER_STATUS_IN_TRANS)
+        {
+            let _ = conn.query_drop("ROLLBACK").await;
+        }
+    }
+
+    async fn refresh_identity_if_needed(&self, conn: &mut Conn) -> AppResult<(String, String)> {
+        {
+            let cache = self.identity_cache.lock();
+            if !cache.dirty {
+                return Ok((cache.database.clone(), cache.role.clone()));
+            }
+        }
+        let was_in_trans = observe_status_flags(conn)
+            .await?
+            .contains(StatusFlags::SERVER_STATUS_IN_TRANS);
+        let rows = fetch_text(
+            conn,
+            "SELECT COALESCE(DATABASE(),''),CURRENT_USER(),COALESCE(CURRENT_ROLE(),'NONE')",
+            1,
+            64 * 1024,
+        )
+        .await;
+        Self::close_phantom_transaction(conn, was_in_trans).await;
+        let rows = rows?;
+        let row = rows
+            .first()
+            .ok_or_else(|| AppError::internal("Missing session identity"))?;
+        let database = cell(row, 0).to_owned();
+        let role = format!("{} ({})", cell(row, 1), cell(row, 2));
+        let mut cache = self.identity_cache.lock();
+        cache.database = database.clone();
+        cache.role = role.clone();
+        cache.dirty = false;
+        Ok((database, role))
     }
 }
 
@@ -292,6 +361,9 @@ impl Driver for Mysql {
                 ));
             }
         }
+        if mysql_may_change_identity(sql) {
+            self.identity_cache.lock().dirty = true;
+        }
         if self.closed.is_cancelled()
             || result.as_ref().is_err_and(|e| {
                 matches!(
@@ -352,7 +424,12 @@ impl Driver for Mysql {
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         self.bounded(async {
             let mut conn = self.editor.connection.lock().await;
-            let rows = fetch_text(&mut conn, "SELECT COALESCE(DATABASE(),''),CURRENT_USER(),COALESCE(CURRENT_ROLE(),'NONE'),@@lower_case_table_names", 1, 64*1024).await?;
+            let was_in_trans = observe_status_flags(&mut conn)
+                .await?
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS);
+            let rows = fetch_text(&mut conn, "SELECT COALESCE(DATABASE(),''),CURRENT_USER(),COALESCE(CURRENT_ROLE(),'NONE'),@@lower_case_table_names", 1, 64*1024).await;
+            Self::close_phantom_transaction(&mut conn, was_in_trans).await;
+            let rows = rows?;
             let row = rows.first().ok_or_else(|| AppError::internal("Missing session identity"))?;
             let case_sensitive = match cell(row,3) {
                 "0" => true,
@@ -360,13 +437,151 @@ impl Driver for Mysql {
                 _ => return Err(AppError::new(ErrorCode::Unsupported,"Unknown server identifier case rules")),
             };
             let database = cell(row,0).to_owned();
+            let role = format!("{} ({})",cell(row,1),cell(row,2));
+            {
+                let mut cache = self.identity_cache.lock();
+                cache.database = database.clone();
+                cache.role = role.clone();
+                cache.dirty = false;
+            }
             Ok(CompletionIdentity {
                 search_path: if database.is_empty() { vec![] } else { vec![database.clone()] },
                 database,
-                role: format!("{} ({})",cell(row,1),cell(row,2)),
+                role,
                 case_sensitive_table_names: Some(case_sensitive),
             })
         }).await
+    }
+    async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        let session_id = session_id.to_owned();
+        self.bounded(async move {
+            let mut conn = self.editor.connection.lock().await;
+            let (database, role) = self.refresh_identity_if_needed(&mut conn).await?;
+            let flags = observe_status_flags(&mut conn).await?;
+            let transaction_mode = if flags.contains(StatusFlags::SERVER_STATUS_AUTOCOMMIT) {
+                TransactionMode::AutoCommit
+            } else {
+                TransactionMode::Manual
+            };
+            let transaction_state = if flags.contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
+                TransactionState::InTransaction
+            } else {
+                TransactionState::Idle
+            };
+            let active_context = (!database.is_empty()).then(|| database.clone());
+            let search_path = active_context.clone().into_iter().collect();
+            Ok(SessionRuntimeState {
+                session_id,
+                transaction_mode,
+                transaction_state,
+                context_kind: SessionContextKind::Database,
+                active_context,
+                database,
+                role,
+                search_path,
+            })
+        })
+        .await
+    }
+    async fn list_contexts(&self) -> AppResult<Vec<String>> {
+        let rows = self
+            .metadata(|conn| {
+                Box::pin(fetch(
+                    conn,
+                    "SELECT SCHEMA_NAME
+                     FROM INFORMATION_SCHEMA.SCHEMATA
+                     WHERE LOWER(SCHEMA_NAME) NOT IN ('mysql', 'performance_schema', 'sys', 'information_schema')
+                     ORDER BY SCHEMA_NAME
+                     LIMIT 1000",
+                    vec![],
+                    1000,
+                    256 * 1024,
+                ))
+            })
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| cell(&r, 0).to_owned())
+            .filter(|s| !s.is_empty())
+            .collect())
+    }
+    async fn switch_context(&self, target: &str) -> AppResult<()> {
+        values::identifier(target)?;
+        let quoted = values::quote(target);
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            conn.query_drop(format!("USE {quoted}"))
+                .await
+                .map_err(|error| {
+                    let mapped = mysql_error(error);
+                    if mapped.code == ErrorCode::Database
+                        && mapped
+                            .message
+                            .to_ascii_lowercase()
+                            .contains("unknown database")
+                    {
+                        AppError::new(ErrorCode::NotFound, mapped.message)
+                    } else {
+                        mapped
+                    }
+                })?;
+            self.identity_cache.lock().dirty = true;
+            let _ = self.refresh_identity_if_needed(&mut conn).await?;
+            Ok(())
+        })
+        .await
+    }
+    async fn set_transaction_mode(&self, mode: TransactionMode) -> AppResult<()> {
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            let in_trans = observe_status_flags(&mut conn)
+                .await?
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS);
+            if mode == TransactionMode::AutoCommit && in_trans {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "Commit or roll back the open transaction before switching to auto-commit",
+                ));
+            }
+            let sql = match mode {
+                TransactionMode::AutoCommit => "SET SESSION autocommit = 1",
+                TransactionMode::Manual => "SET SESSION autocommit = 0",
+            };
+            conn.query_drop(sql).await.map_err(mysql_error)
+        })
+        .await
+    }
+    async fn commit_transaction(&self) -> AppResult<()> {
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            if !observe_status_flags(&mut conn)
+                .await?
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS)
+            {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "No transaction is currently open",
+                ));
+            }
+            conn.query_drop("COMMIT").await.map_err(mysql_error)
+        })
+        .await
+    }
+    async fn rollback_transaction(&self) -> AppResult<()> {
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            if !observe_status_flags(&mut conn)
+                .await?
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS)
+            {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "No transaction is currently open",
+                ));
+            }
+            conn.query_drop("ROLLBACK").await.map_err(mysql_error)
+        })
+        .await
     }
     async fn completion_catalog(
         &self,
@@ -514,6 +729,26 @@ fn closed() -> AppError {
         "The database connection closed. Reconnect before running another query.",
     )
 }
+async fn observe_status_flags(conn: &mut Conn) -> AppResult<StatusFlags> {
+    if let Some(ok) = conn.last_ok_packet() {
+        return Ok(ok.status_flags());
+    }
+    conn.ping().await.map_err(mysql_error)?;
+    Ok(conn
+        .last_ok_packet()
+        .map(|ok| ok.status_flags())
+        .unwrap_or_else(StatusFlags::empty))
+}
+
+fn mysql_may_change_identity(sql: &str) -> bool {
+    sql.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| {
+            token.eq_ignore_ascii_case("USE")
+                || token.eq_ignore_ascii_case("SET")
+                || token.eq_ignore_ascii_case("DROP")
+        })
+}
+
 fn mysql_error(error: mysql_async::Error) -> AppError {
     match error {
         mysql_async::Error::Server(error) => AppError::new(

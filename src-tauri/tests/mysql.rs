@@ -2493,3 +2493,229 @@ async fn object_explorer_inspects_mysql_and_mariadb_objects_ddl_and_dependencies
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB live-context fixtures"]
+async fn mysql_manual_transactions_grid_isolation_and_database_switch() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let sibling = studio
+            .connect(
+                &session.connection_id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery.r4_tx_items;
+                 CREATE TABLE joinery.r4_tx_items (id BIGINT PRIMARY KEY, note VARCHAR(64) NOT NULL) ENGINE=InnoDB;
+                 INSERT INTO joinery.r4_tx_items VALUES (1, 'initial');",
+            )
+            .await,
+        );
+
+        let initial = studio.session_contexts(&session.id).await.unwrap();
+        assert_eq!(initial.state.transaction_mode, TransactionMode::AutoCommit);
+        assert_eq!(initial.state.transaction_state, TransactionState::Idle);
+        assert_eq!(initial.state.context_kind, SessionContextKind::Database);
+        assert_eq!(initial.state.active_context.as_deref(), Some("joinery"));
+
+        let manual = studio
+            .set_transaction_mode(&session.id, TransactionMode::Manual)
+            .await
+            .unwrap();
+        assert_eq!(manual.transaction_mode, TransactionMode::Manual);
+        assert_eq!(manual.transaction_state, TransactionState::Idle);
+
+        // Live completion inspection while Manual & Idle must not leave a phantom transaction open.
+        let _ = studio.completion_catalog(&session.id).await.unwrap();
+        assert_eq!(
+            studio
+                .session_contexts(&session.id)
+                .await
+                .unwrap()
+                .state
+                .transaction_state,
+            TransactionState::Idle,
+            "port {port}: phantom transaction opened while idle"
+        );
+
+        let insert_events = run(
+            &studio,
+            &session,
+            "INSERT INTO joinery.r4_tx_items VALUES (2, 'uncommitted')",
+        )
+        .await;
+        completed(&insert_events);
+        let emitted = insert_events
+            .iter()
+            .find_map(|e| match e {
+                QueryEvent::SessionState { state } => Some(state.clone()),
+                _ => None,
+            })
+            .expect("expected SessionState event");
+        assert_eq!(emitted.transaction_state, TransactionState::InTransaction);
+
+        // Refuses Manual -> AutoCommit while InTransaction so MySQL never implicitly commits row 2.
+        assert_eq!(
+            studio
+                .set_transaction_mode(&session.id, TransactionMode::AutoCommit)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict,
+            "port {port}"
+        );
+
+        let sibling_before = result(
+            &run(
+                &studio,
+                &sibling,
+                "SELECT COUNT(*) FROM joinery.r4_tx_items",
+            )
+            .await,
+        );
+        assert_eq!(
+            studio.results.row(&sibling_before.id, 0).unwrap()[0].as_deref(),
+            Some("1"),
+            "port {port}"
+        );
+
+        // Grid commit uses an isolated auxiliary connection and does not commit row 2.
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "r4_tx_items".into(),
+        };
+        let page = studio.browse(&session.id, &table, None).await.unwrap();
+        let preview = studio
+            .prepare_changes(
+                &session.id,
+                &page.result.id,
+                vec![CellChange {
+                    row: 0,
+                    column: "c1".into(),
+                    value: Some("grid-updated".into()),
+                }],
+            )
+            .unwrap();
+        let grid_token = studio.authorize(&preview.plan.id, None, None).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        studio
+            .execute(
+                &preview.plan.id,
+                Some(&grid_token),
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut grid_events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            grid_events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&grid_events);
+
+        let sibling_grid = result(
+            &run(
+                &studio,
+                &sibling,
+                "SELECT note, (SELECT COUNT(*) FROM joinery.r4_tx_items) FROM joinery.r4_tx_items WHERE id = 1",
+            )
+            .await,
+        );
+        assert_eq!(
+            studio.results.row(&sibling_grid.id, 0).unwrap()[0].as_deref(),
+            Some("grid-updated"),
+            "port {port}"
+        );
+        assert_eq!(
+            studio.results.row(&sibling_grid.id, 0).unwrap()[1].as_deref(),
+            Some("1"),
+            "port {port}"
+        );
+
+        // Rollback discards row 2; subsequent Manual insert + Commit persists row 3.
+        let rolled = studio.rollback_transaction(&session.id).await.unwrap();
+        assert_eq!(rolled.transaction_state, TransactionState::Idle);
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "INSERT INTO joinery.r4_tx_items VALUES (3, 'committed')",
+            )
+            .await,
+        );
+        let committed = studio.commit_transaction(&session.id).await.unwrap();
+        assert_eq!(committed.transaction_state, TransactionState::Idle);
+        let sibling_after = result(
+            &run(
+                &studio,
+                &sibling,
+                "SELECT COUNT(*) FROM joinery.r4_tx_items",
+            )
+            .await,
+        );
+        assert_eq!(
+            studio.results.row(&sibling_after.id, 0).unwrap()[0].as_deref(),
+            Some("2"),
+            "port {port}"
+        );
+        let auto = studio
+            .set_transaction_mode(&session.id, TransactionMode::AutoCommit)
+            .await
+            .unwrap();
+        assert_eq!(auto.transaction_mode, TransactionMode::AutoCommit);
+
+        // Database context switch (`USE`) updates active database & completion without affecting `sibling`.
+        completed(&run(&studio, &session, "SET ROLE completion_reader").await);
+        let switched = studio
+            .switch_session_context(&session.id, "completion_alt")
+            .await
+            .unwrap();
+        assert_eq!(
+            switched.state.active_context.as_deref(),
+            Some("completion_alt"),
+            "port {port}"
+        );
+        let completion = studio.completion_catalog(&session.id).await.unwrap();
+        assert_eq!(completion.identity.database, "completion_alt");
+        assert!(
+            completion.unqualified_tables.contains(&TableRef {
+                schema: "completion_alt".into(),
+                name: "sample".into(),
+            }),
+            "port {port}"
+        );
+        assert_eq!(
+            studio
+                .session_contexts(&sibling.id)
+                .await
+                .unwrap()
+                .state
+                .active_context
+                .as_deref(),
+            Some("joinery"),
+            "port {port}"
+        );
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "SET ROLE NONE; USE joinery; DROP TABLE IF EXISTS joinery.r4_tx_items",
+            )
+            .await,
+        );
+        studio.shutdown();
+    }
+}

@@ -979,6 +979,16 @@ impl Studio {
             Action::Browse { .. } => {}
         }
         if serialized {
+            let observed_state = if matches!(stored.action, Action::Sql)
+                && !token.is_cancelled()
+                && !cancellation_sent.load(Ordering::Acquire)
+                && !session.driver.is_closed()
+                && !session.closed.load(Ordering::Acquire)
+            {
+                session.driver.session_state(&session.info.id).await.ok()
+            } else {
+                None
+            };
             let _gate = session.cancellation_gate.lock().await;
             // PostgreSQL's cancel protocol has no acknowledgement. Discard a session
             // after an explicit cancellation so a late request cannot hit the next run.
@@ -1004,6 +1014,8 @@ impl Studio {
                     session_id: session.info.id.clone(),
                     reason: reason.into(),
                 });
+            } else if let Some(state) = observed_state {
+                events(QueryEvent::SessionState { state });
             }
             *session.active_run.lock() = None;
         }
@@ -1071,6 +1083,185 @@ impl Studio {
         }
         cancellation_sent.store(true, Ordering::Release);
         session.driver.cancel().await
+    }
+
+    pub async fn session_contexts(&self, session_id: &str) -> AppResult<SessionContextOptions> {
+        let session = self.session(session_id)?;
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        self.build_session_contexts(&session).await
+    }
+
+    pub async fn switch_session_context(
+        &self,
+        session_id: &str,
+        target: &str,
+    ) -> AppResult<SessionContextOptions> {
+        let session = self.session(session_id)?;
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.switch_context(target).await?;
+        *session.completion.lock() = None;
+        self.plans
+            .lock()
+            .retain(|_, p| p.plan.session_id != session.info.id);
+        let _ = self
+            .persistence
+            .audit(&session.profile.id, "switch-context", target, "completed");
+        self.build_session_contexts(&session).await
+    }
+
+    pub async fn set_transaction_mode(
+        &self,
+        session_id: &str,
+        mode: TransactionMode,
+    ) -> AppResult<SessionRuntimeState> {
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.transactions {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Transactions are unavailable for this engine",
+            ));
+        }
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.set_transaction_mode(mode).await?;
+        let label = match mode {
+            TransactionMode::AutoCommit => "autoCommit",
+            TransactionMode::Manual => "manual",
+        };
+        let _ = self
+            .persistence
+            .audit(&session.profile.id, "transaction-mode", label, "completed");
+        session.driver.session_state(&session.info.id).await
+    }
+
+    pub async fn commit_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.transactions {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Transactions are unavailable for this engine",
+            ));
+        }
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.commit_transaction().await?;
+        *session.completion.lock() = None;
+        self.plans
+            .lock()
+            .retain(|_, p| p.plan.session_id != session.info.id);
+        let _ = self.persistence.audit(
+            &session.profile.id,
+            "commit-transaction",
+            &session.info.id,
+            "completed",
+        );
+        session.driver.session_state(&session.info.id).await
+    }
+
+    pub async fn rollback_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.transactions {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Transactions are unavailable for this engine",
+            ));
+        }
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session.driver.rollback_transaction().await?;
+        *session.completion.lock() = None;
+        self.plans
+            .lock()
+            .retain(|_, p| p.plan.session_id != session.info.id);
+        let _ = self.persistence.audit(
+            &session.profile.id,
+            "rollback-transaction",
+            &session.info.id,
+            "completed",
+        );
+        session.driver.session_state(&session.info.id).await
+    }
+
+    async fn build_session_contexts(
+        &self,
+        session: &Arc<Session>,
+    ) -> AppResult<SessionContextOptions> {
+        let state = session.driver.session_state(&session.info.id).await?;
+        let mut available = session.driver.list_contexts().await.unwrap_or_default();
+        if let Some(active) = &state.active_context
+            && !active.is_empty()
+            && !available.iter().any(|item| item == active)
+        {
+            available.insert(0, active.clone());
+        }
+        Ok(SessionContextOptions { state, available })
     }
 
     /// Read a bounded context snapshot on the existing editor execution lane.

@@ -71,6 +71,42 @@ pub trait Driver: Send + Sync {
             "Live completion metadata is unavailable for this engine",
         ))
     }
+    async fn session_state(&self, _session_id: &str) -> AppResult<SessionRuntimeState> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Session runtime context is unavailable for this engine",
+        ))
+    }
+    async fn list_contexts(&self) -> AppResult<Vec<String>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Database or schema switching is unavailable for this engine",
+        ))
+    }
+    async fn switch_context(&self, _target: &str) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Database or schema switching is unavailable for this engine",
+        ))
+    }
+    async fn set_transaction_mode(&self, _mode: TransactionMode) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Transaction mode controls are unavailable for this engine",
+        ))
+    }
+    async fn commit_transaction(&self) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Transactions are unavailable for this engine",
+        ))
+    }
+    async fn rollback_transaction(&self) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Transactions are unavailable for this engine",
+        ))
+    }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>>;
     async fn database_objects(&self) -> AppResult<Vec<DatabaseObjectSummary>> {
         Err(AppError::new(

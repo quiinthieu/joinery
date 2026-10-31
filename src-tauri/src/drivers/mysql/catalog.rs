@@ -5,7 +5,12 @@ impl Mysql {
     pub(super) async fn live_completion_catalog(&self) -> AppResult<CompletionRelations> {
         self.bounded(async {
             let mut conn = self.editor.connection.lock().await;
-            let rows = fetch_text(&mut conn,"SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,IF(@@lower_case_table_names=0,BINARY TABLE_SCHEMA=BINARY DATABASE(),LOWER(TABLE_SCHEMA)=LOWER(DATABASE())) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN ('mysql','performance_schema','sys') ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001", 10000, 2*1024*1024).await?;
+            let was_in_trans = observe_status_flags(&mut conn)
+                .await?
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS);
+            let rows = fetch_text(&mut conn,"SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,IF(@@lower_case_table_names=0,BINARY TABLE_SCHEMA=BINARY DATABASE(),LOWER(TABLE_SCHEMA)=LOWER(DATABASE())) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN ('mysql','performance_schema','sys') ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001", 10000, 2*1024*1024).await;
+            Self::close_phantom_transaction(&mut conn, was_in_trans).await;
+            let rows = rows?;
             let tables:Vec<TableInfo> = rows.iter().map(|r| TableInfo {
                 table: TableRef { schema: cell(r,0).into(),name: cell(r,1).into() },
                 kind: cell(r,2).into(),estimated_rows:None,total_bytes:None,
@@ -19,6 +24,9 @@ impl Mysql {
         identifier(&table.name)?;
         self.bounded(async {
             let mut conn = self.editor.connection.lock().await;
+            let was_in_trans = observe_status_flags(&mut conn)
+                .await?
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS);
             // SHOW resolves session-local temporary shadows; INFORMATION_SCHEMA
             // would describe the permanent table instead. Never execute SELECTs
             // against user objects to discover their columns.
@@ -28,7 +36,9 @@ impl Mysql {
                 4096,
                 1024 * 1024,
             )
-            .await?;
+            .await;
+            Self::close_phantom_transaction(&mut conn, was_in_trans).await;
+            let rows = rows?;
             let columns: Vec<ColumnInfo> = rows
                 .iter()
                 .filter(|r| {

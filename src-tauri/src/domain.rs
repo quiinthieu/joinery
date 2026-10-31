@@ -645,6 +645,9 @@ pub enum QueryEvent {
         session_id: String,
         reason: String,
     },
+    SessionState {
+        state: SessionRuntimeState,
+    },
     Error {
         error: AppError,
         statement_index: usize,
@@ -929,6 +932,52 @@ pub struct CompletionCatalog {
     pub tables: Vec<TableInfo>,
     /// Relations that resolve in the current engine's unqualified namespace.
     pub unqualified_tables: Vec<TableRef>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionMode {
+    #[default]
+    AutoCommit,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionState {
+    #[default]
+    Idle,
+    InTransaction,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionContextKind {
+    #[default]
+    None,
+    Schema,
+    Database,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRuntimeState {
+    pub session_id: String,
+    pub transaction_mode: TransactionMode,
+    pub transaction_state: TransactionState,
+    pub context_kind: SessionContextKind,
+    pub active_context: Option<String>,
+    pub database: String,
+    pub role: String,
+    pub search_path: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContextOptions {
+    pub state: SessionRuntimeState,
+    pub available: Vec<String>,
 }
 
 fn default_true() -> bool {
