@@ -574,7 +574,7 @@ Evidence (2026-10-31, macOS Apple Silicon, local Node 24 / Rust 1.99.1):
 
 ## Consoles, sessions, SQL files and library batch (Milestone R4) — local on feat/consoles-sessions-files (unmerged)
 
-Branch `feat/consoles-sessions-files` (`78a5283..HEAD`) from fetched
+Branch `feat/consoles-sessions-files` (`78a5283..79878e9`) from fetched
 `origin/main` `2625933` (PR #29). It implements Milestone R4 (Consoles,
 sessions & files: `M05`, `M06`, `X04`, `E14`, `P02`, `P03`) of
 [implementation-roadmap.md](implementation-roadmap.md) and is locally verified,
@@ -598,5 +598,6 @@ Evidence (2026-10-31, macOS Apple Silicon, local Node 24 / Rust 1.99.1):
 | Passed | `pnpm validate`: 122 frontend tests (23 files), 126 standard Rust tests, formatting, contracts, types, production build, Cargo check and strict Clippy; script tests (`git-identity.test.mjs` 6/6, `test_runtime_memory.py` 4/4) |
 | Passed | Ignored integration suite on task-owned disposable fixtures (`postgres` 22, `mysql` 21 across MySQL 8.4 & MariaDB 11.4, `redis` 6, `ssh` 2): **51 of 51 executed tests passed, 0 failed** (`joinery-r4` torn down via `down -v`) |
 | Passed | Full `pnpm test:e2e` with repository files held fixed: **all 47 browser workflows passed** in one run (`2.3m`), including all 4 new `consoles-files.spec.ts` workflows and all 3 `sessions.spec.ts` + 7 `completion.spec.ts` regressions |
+| Passed | Clean-commit (`79878e9`, `sourceDirty=false`) `pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature, `Joinery.app` `21.07 MiB`, bundle executable SHA-256 `2d16256a…f054`), `pnpm desktop:smoke:build` and `python3 scripts/native-smoke.py --runs 3 --cycles 10`: three hidden runs (`5,842 / 3,182 / 3,274 ms`), 30 cleanup cycles, main-process peak RSS `102.44–107.66 MiB`, fixture SHA-256 `06af4333…5f5a` (including WebView IPC ACL guards for all 12 new R4 commands) |
 | Blocked by environment | Case-mode-1 MariaDB fixture: port 53407 is held by the host agent process, so `mysql_live_completion_uses_server_case_policy` was skipped locally (covered by CI `integration` job); host port 55432 is held by an external process so local PostgreSQL fixtures ran on `JOINERY_POSTGRES_PORT=55433` |
 | Not executed | Production accounts, live Snowflake accounts, Windows/Linux packaged runtime, Developer ID signing/notarization, representative performance qualification |

@@ -1059,7 +1059,7 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
 
 ## Consoles, named session pool, transaction controls, capability-gated SQL files and query library (local implementation)
 
-Branch `feat/consoles-sessions-files` (`78a5283..HEAD`, from `origin/main`
+Branch `feat/consoles-sessions-files` (`78a5283..79878e9`, from `origin/main`
 `2625933`) implements Milestone R4 (Consoles, sessions & files: `M05`, `M06`,
 `X04`, `E14`, `P02`, `P03`) locally. It is verified on disposable fixtures,
 standard/browser test suites and macOS native builds, unmerged, and unreleased
@@ -1148,6 +1148,18 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   47 browser workflows** in a single run (`2.3m`), including all four
   `consoles-files.spec.ts` workflows and all existing `sessions.spec.ts` and
   `completion.spec.ts` regressions.
+- Clean-commit (`79878e9`, `sourceDirty=false`) `pnpm desktop:build`,
+  `pnpm desktop:bundle:mac` (strict ad-hoc signature verification on
+  `Joinery.app`, `21.07 MiB`, bundle executable SHA-256
+  `2d16256ab3ddca4958b57ef479aa73955b53085bf3ba12274fc4d7e7867ef054`, built in
+  an isolated target directory while preserving the user's running `Joinery.app`
+  instance), `pnpm desktop:smoke:build` and `python3 scripts/native-smoke.py
+  --runs 3 --cycles 10` all pass: three hidden processes (`5,842 / 3,182 /
+  3,274 ms`), 30 cleanup cycles, main-process peak RSS `102.44–107.66 MiB`,
+  native smoke binary SHA-256
+  `06af43336d6d4ad388e24040575cfba959263ebfdada56eee000a9290ed65f5a`
+  (`bundleBinarySha256`
+  `5c8827496e7c1dcb0811710a4e3979ac9d96c0e76f77f6ebc85fab3252d100c9`).
 - No production database connections, automatic SQL execution/replay, raw-path
   IPC or Safe Mode weakening were introduced. Live Snowflake/production account
   qualification, Windows/Linux packaged runtime, Developer ID
