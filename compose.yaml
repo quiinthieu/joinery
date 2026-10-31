@@ -19,7 +19,7 @@ services:
       MYSQL_DATABASE: joinery
       MYSQL_USER: joinery
       MYSQL_PASSWORD: joinery-local-only
-    command: ["--innodb-buffer-pool-size=64M", "--max-connections=30", "--ssl-ca=/tls/ca.pem", "--ssl-cert=/tls/server.pem", "--ssl-key=/tls/server-key.pem"]
+    command: ["--innodb-buffer-pool-size=64M", "--max-connections=30", "--log-bin-trust-function-creators=1", "--ssl-ca=/tls/ca.pem", "--ssl-cert=/tls/server.pem", "--ssl-key=/tls/server-key.pem"]
     ports:
       - "127.0.0.1:53306:3306"
     volumes:
@@ -38,7 +38,7 @@ services:
       MARIADB_DATABASE: joinery
       MARIADB_USER: joinery
       MARIADB_PASSWORD: joinery-local-only
-    command: ["--innodb-buffer-pool-size=64M", "--max-connections=30", "--ssl-ca=/tls/ca.pem", "--ssl-cert=/tls/server.pem", "--ssl-key=/tls/server-key.pem"]
+    command: ["--innodb-buffer-pool-size=64M", "--max-connections=30", "--log-bin-trust-function-creators=1", "--ssl-ca=/tls/ca.pem", "--ssl-cert=/tls/server.pem", "--ssl-key=/tls/server-key.pem"]
     ports:
       - "127.0.0.1:53307:3306"
     volumes:
@@ -57,7 +57,7 @@ services:
       MYSQL_DATABASE: joinery
       MYSQL_USER: joinery
       MYSQL_PASSWORD: joinery-local-only
-    command: ["--lower-case-table-names=1", "--innodb-buffer-pool-size=64M", "--max-connections=30"]
+    command: ["--lower-case-table-names=1", "--innodb-buffer-pool-size=64M", "--max-connections=30", "--log-bin-trust-function-creators=1"]
     ports:
       - "127.0.0.1:53406:3306"
     volumes:
@@ -75,7 +75,7 @@ services:
       MARIADB_DATABASE: joinery
       MARIADB_USER: joinery
       MARIADB_PASSWORD: joinery-local-only
-    command: ["--lower-case-table-names=1", "--innodb-buffer-pool-size=64M", "--max-connections=30"]
+    command: ["--lower-case-table-names=1", "--innodb-buffer-pool-size=64M", "--max-connections=30", "--log-bin-trust-function-creators=1"]
     ports:
       - "127.0.0.1:53407:3306"
     volumes:

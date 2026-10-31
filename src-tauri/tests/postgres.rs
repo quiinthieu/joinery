@@ -2546,7 +2546,7 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
 
     let cleanup =
         "DROP VIEW IF EXISTS public.r3_summary_v, public.r3_cycle_a, public.r3_cycle_b CASCADE;
-                   DROP TABLE IF EXISTS public.\"r3_Order \"\"Items\"\"\" CASCADE;
+                   DROP TABLE IF EXISTS public.\"r3_Order \"\"Items\"\"\", public.r3_parent_orders CASCADE;
                    DROP FUNCTION IF EXISTS public.r3_calc(integer) CASCADE;
                    DROP FUNCTION IF EXISTS public.r3_calc(numeric, integer) CASCADE;
                    DROP FUNCTION IF EXISTS public.r3_touch_fn() CASCADE;
@@ -2568,9 +2568,12 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
                  CREATE FUNCTION public.r3_calc(a numeric, b integer) RETURNS numeric LANGUAGE sql STABLE SECURITY DEFINER AS 'SELECT round(a, b)';
                  CREATE PROCEDURE public.r3_noop_proc(IN label text) LANGUAGE sql AS 'SELECT 1';
                  CREATE FUNCTION public.r3_touch_fn() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END';
+                 CREATE TABLE public.r3_parent_orders (
+                   id bigint PRIMARY KEY
+                 );
                  CREATE TABLE public.\"r3_Order \"\"Items\"\"\" (
                    id bigint PRIMARY KEY DEFAULT nextval('public.r3_ticket_seq'),
-                   order_id bigint NOT NULL REFERENCES public.orders(id),
+                   order_id bigint NOT NULL REFERENCES public.r3_parent_orders(id),
                    sku text NOT NULL UNIQUE,
                    qty integer NOT NULL CHECK (qty > 0)
                  );
@@ -2595,12 +2598,12 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
     assert!(
         overloads
             .iter()
-            .any(|o| o.object.identity.as_deref() == Some("integer"))
+            .any(|o| o.object.identity.as_deref() == Some("a integer"))
     );
     assert!(
         overloads
             .iter()
-            .any(|o| o.object.identity.as_deref() == Some("numeric, integer"))
+            .any(|o| o.object.identity.as_deref() == Some("a numeric, b integer"))
     );
     assert!(objects.iter().any(|o| {
         o.object.name == "r3_noop_proc" && o.object.kind == DatabaseObjectKind::Procedure
@@ -2640,7 +2643,7 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
         c.kind == ConstraintKind::ForeignKey
             && c.target
                 .as_ref()
-                .is_some_and(|t| t.schema == "public" && t.name == "orders")
+                .is_some_and(|t| t.schema == "public" && t.name == "r3_parent_orders")
     }));
     let partial_idx = table_details
         .indexes
@@ -2648,7 +2651,7 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
         .find(|i| i.name == "r3_idx_partial_expr")
         .expect("partial expression index present");
     assert_eq!(partial_idx.expressions, vec!["lower(sku)"]);
-    assert_eq!(partial_idx.predicate.as_deref(), Some("(qty > 1)"));
+    assert_eq!(partial_idx.predicate.as_deref(), Some("qty > 1"));
     let trig = table_details
         .triggers
         .iter()
@@ -2666,12 +2669,9 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
         }
         other => panic!("expected available table DDL, got {other:?}"),
     }
-    assert!(
-        table_details
-            .uses
-            .iter()
-            .any(|e| e.object.name == "orders" && e.object.kind == DatabaseObjectKind::Table)
-    );
+    assert!(table_details.uses.iter().any(|e| {
+        e.object.name == "r3_parent_orders" && e.object.kind == DatabaseObjectKind::Table
+    }));
     assert!(
         table_details
             .uses
@@ -2694,13 +2694,13 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
                 schema: "public".into(),
                 name: "r3_calc".into(),
                 kind: DatabaseObjectKind::Function,
-                identity: Some("integer".into()),
+                identity: Some("a integer".into()),
             },
         )
         .await
         .unwrap();
     let r_int = fn_int.routine.as_ref().unwrap();
-    assert_eq!(r_int.identity_arguments, "integer");
+    assert_eq!(r_int.identity_arguments, "a integer");
     assert_eq!(r_int.volatility.as_deref(), Some("IMMUTABLE"));
     assert!(!r_int.security_definer);
     assert!(
@@ -2717,13 +2717,13 @@ async fn object_explorer_discovers_overloads_ddl_dependencies_and_permission_lim
                 schema: "public".into(),
                 name: "r3_calc".into(),
                 kind: DatabaseObjectKind::Function,
-                identity: Some("numeric, integer".into()),
+                identity: Some("a numeric, b integer".into()),
             },
         )
         .await
         .unwrap();
     let r_num = fn_num.routine.as_ref().unwrap();
-    assert_eq!(r_num.identity_arguments, "numeric, integer");
+    assert_eq!(r_num.identity_arguments, "a numeric, b integer");
     assert_eq!(r_num.volatility.as_deref(), Some("STABLE"));
     assert!(r_num.security_definer);
 
