@@ -857,13 +857,13 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   Windows/Linux packaged runtime, Developer ID signing/notarization and
   representative performance gates remain open.
 
-## Data movement: copy-as, streaming export, reviewed CSV import and key-aware comparison (local implementation)
+## Data movement: copy-as, streaming export, reviewed CSV import and key-aware comparison (merged in PR #28; unreleased)
 
 Branch `feat/data-movement` (`a3020d7..34c51db`, from `origin/main` `94f63ba`)
-implements Milestone R2 (Data movement: `G11`, `G12`, `G13`) locally. It is
-verified on disposable fixtures and macOS native builds, unmerged, and
-unreleased (`v0.1.0-preview.15` remains the published and installed release;
-PRs #25, #26 and #27 are merged on `main` and unreleased):
+implements Milestone R2 (Data movement: `G11`, `G12`, `G13`) and merged on
+`main` via PR #28 (`c8d8aa1`, all six PR checks passing). `v0.1.0-preview.15`
+remains the published and installed release; PRs #25, #26, #27 and #28 are
+merged on `main` and unreleased:
 
 - **Selection Copy-as (`a3020d7`)**: `copy-format.ts` and `CopyAsMenu.tsx`
   format grid selections and retained pages as `CSV`, `TSV`, `JSON`, `NDJSON`,
@@ -945,6 +945,114 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   (`bundleBinarySha256`
   `44727e2f20eaa5be59d97ab50524d4e8a06164924266ef7520f361f8cbeda714`).
 - No production database connections, automatic SQL replay, raw-path IPC or Safe
+  Mode weakening were introduced. Live Snowflake/production account
+  qualification, Windows/Linux packaged runtime, Developer ID
+  signing/notarization and representative performance gates remain open.
+
+## Explorer, object inspection, DDL/dependencies and Search Everywhere (local implementation)
+
+Branch `feat/explorer-object-search` (`7595db4..26f5136`, from `origin/main`
+`c8d8aa1`) implements Milestone R3 (Explorer & object search: `N01`, `N02`,
+`N04`, `N05`, `N06`, `N07`, `P01`) locally. It is verified on disposable
+fixtures and clean-commit macOS native builds, unmerged, and unreleased
+(`v0.1.0-preview.15` remains the published and installed release; PRs #25, #26,
+#27 and #28 are merged on `main` and unreleased):
+
+- **Bounded object discovery, DDL and 1-hop dependency adapters (`7595db4`,
+  `4058784`)**: `domain.rs` defines `DatabaseObjectKind` (`table`,
+  `partitionedTable`, `view`, `materializedView`, `function`, `procedure`,
+  `sequence`, `trigger`, `index`), `DatabaseObjectRef`, `DatabaseObjectSummary`,
+  `ObjectDetails`, `ObjectDdlStatus` (`available` with `truncated` flag up to
+  **256 KiB** UTF-8 via `cap_ddl`, or `unavailable` with explicit `reason`),
+  `IndexInfo`, `ConstraintInfo`, `TriggerInfo`, `RoutineInfo`, `SequenceInfo`
+  and `DependencyEdge` (capped at **200 edges per direction** with self-edge and
+  duplicate removal via `normalize_dependency_edges`).
+  - **PostgreSQL (`drivers/postgres/explorer.rs`)**: Discovers up to **10,000**
+    schema-accessible functions, procedures (disambiguated by
+    `pg_get_function_identity_arguments`), sequences, non-internal triggers and
+    indexes alongside partitioned tables (`relkind = 'p'`). Synthesizes
+    deterministically quoted `CREATE TABLE` / `CREATE SEQUENCE` DDL, extracts
+    view/routine/index/trigger definitions via `pg_get_*def`, decodes `tgtype`
+    bitmasks, inspects expression and partial `WHERE` index predicates, checks
+    `pg_sequences.last_value` without failing when `USAGE`/`SELECT` is denied on
+    a sequence, and resolves 1-hop `Uses` / `Used by` edges across `pg_depend`,
+    `pg_rewrite`, `pg_constraint` and `pg_trigger` (terminating cleanly on
+    mutually cyclic views).
+  - **MySQL 8.4 & MariaDB 11.4 (`drivers/mysql/explorer.rs`)**: Excludes MariaDB
+    `TABLE_TYPE = 'SEQUENCE'` relations from base-table `catalog` and surfaces
+    them as `Sequence` objects (`SHOW CREATE SEQUENCE` + sequence table read),
+    discovers `information_schema` routines, triggers and indexes (including
+    prefix lengths and MySQL 8.4 functional key expressions), extracts bounded
+    `SHOW CREATE` definitions with privilege-denial fallback to
+    `ObjectDdlStatus::Unavailable`, and computes 1-hop `Uses` / `Used by` edges
+    across `KEY_COLUMN_USAGE`, `VIEW_TABLE_USAGE`, `VIEW_ROUTINE_USAGE` and
+    `TRIGGERS`. Disposable Compose MySQL/MariaDB services now pass
+    `--log-bin-trust-function-creators=1` so the non-`SUPER` fixture account can
+    exercise trigger and function DDL under MySQL 8.4 binary logging locally and
+    in CI.
+  - **Snowflake & Redis**: Snowflake advertises `objectExplorer: true` for
+    read-only table/view `Structure` inspection with explicit
+    `ObjectDdlStatus::Unavailable` (no unverified `GET_DDL` calls); Redis
+    advertises `objectExplorer: false`.
+- **Categorized sidebar explorer & WAI-ARIA keyboard tree (`53d9216`)**:
+  `explorer-tree.ts` and `Sidebar.tsx` group objects per schema into `Tables`,
+  `Views`, `Materialized views`, `Functions`, `Procedures`, `Sequences`,
+  `Triggers` and `Indexes`, add `All` / `Tables` / `Views` / `Routines` /
+  `Other` filter chips plus qualified/signature substring filtering, and
+  implement full roving-`tabIndex` WAI-ARIA keyboard tree navigation
+  (`ArrowRight`, `ArrowLeft`, `ArrowDown`, `ArrowUp`, `Home`, `End`, `Enter`).
+  `studio.ts` fetches `database_objects` alongside `catalog` without failing
+  sign-in if object discovery errors, and deduplicates `kind: "object"` tabs by
+  `connectionId + schema + kind + name + identity`.
+- **Object structure, read-only DDL and dependency inspector (`a60d3cf`)**:
+  `ObjectInspectorView.tsx`, `UtilityViews.tsx` (`StructureView`) and
+  `Workbench.tsx` add a `DDL` sub-view to table/view/materialized-view tabs,
+  enrich `StructureView` with `Constraints` (clickable FK targets), `Indexes`
+  (expressions, partial `WHERE` predicates, clickable index links) and
+  `Triggers` (clickable trigger links), and render dedicated inspector tabs for
+  routines, sequences, triggers and indexes with `Copy DDL`, `Open in SQL
+  editor` (never auto-executed) and clickable `Uses` / `Used by` dependency
+  chips.
+- **Cross-connection Search Everywhere (`26f5136`)**: `search-everywhere.ts` and
+  `SearchEverywhere.tsx` upgrade the command palette (`⌘K` opens `All`; `⇧⌘O`
+  opens `Objects`) with roving-`tabIndex` `All` / `Objects` / `Actions` /
+  `History` scope tabs and deterministic ranking (capped at **80** items) across
+  commands, open non-singleton workspace tabs, all currently connected sessions'
+  in-memory `catalog` + `objects` (never auto-connecting offline profiles, while
+  displaying connected vs offline counts in `Objects` scope), and recent
+  `HistoryEntry[]`.
+- **Tauri v2 capability ACL enrollment**: Enrolled `database_objects` and
+  `object_details` in `src-tauri/build.rs` and
+  `src-tauri/capabilities/main.json`, and verified both commands over real Tauri
+  WebView IPC disconnected-session guards in `src/native-smoke.ts`. Zero object
+  metadata, DDL text or dependency edges are written to SQLite.
+
+Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
+
+- `pnpm validate` passes **116 frontend tests** (23 files) and **120 standard
+  Rust tests**, formatting, contracts, types, production build, Cargo check and
+  strict all-target/all-feature Clippy. Script unit tests
+  (`git-identity.test.mjs` 6/6 and `test_runtime_memory.py` 4/4) pass.
+- The complete disposable Rust integration suite (`postgres` 21, `mysql` 21
+  across MySQL 8.4, MariaDB 11.4 and case-mode-1 folded servers on 53406/53407,
+  `redis` 6, `ssh` 2) passes **all 50 of 50 tests (0 skipped)** on task-owned
+  Compose project `joinery-r3`, which was torn down with `down -v` immediately
+  after browser verification.
+- With repository files held fixed, the complete Playwright suite passes **all
+  43 browser workflows** in a single run (`1.8m`), including both new
+  `explorer.spec.ts` workflows and existing `studio.spec.ts` palette focus-trap
+  regressions.
+- Clean-commit (`26f5136`, `sourceDirty=false`) `pnpm desktop:build`,
+  `pnpm desktop:bundle:mac` (strict ad-hoc signature verification on
+  `Joinery.app`, `20.66 MiB`, bundle executable SHA-256
+  `04d4ae8683ea8d8812a64848ed24956932ed02dd94755344200f86f3e3a2b000`),
+  `pnpm desktop:smoke:build` and `python3 scripts/native-smoke.py --runs 3
+  --cycles 10` all pass: three hidden processes (`6,622 / 3,010 / 3,034 ms`), 30
+  cleanup cycles, main-process peak RSS `106.89–107.41 MiB`, native smoke binary
+  SHA-256 `cc044b44582fbcf81b695d0b4734a24ca926da7660d61422ecaab351ac74b83c`
+  (`bundleBinarySha256`
+  `2de7c55277d78b3595d0c498a4dfe71759a2627a5f8658f9b89492fbb6be3da3`).
+- No production database connections, automatic SQL execution/replay or Safe
   Mode weakening were introduced. Live Snowflake/production account
   qualification, Windows/Linux packaged runtime, Developer ID
   signing/notarization and representative performance gates remain open.
