@@ -11,10 +11,13 @@ import type {
   QueryEvent,
   ResultInfo,
   SavedTableLayout,
+  SessionContextOptions,
   SessionInfo,
+  SessionRuntimeState,
   TableInfo,
   TableRef,
   TableSchema,
+  TransactionMode,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
 import { resultCache } from "../data/result-cache";
@@ -82,10 +85,20 @@ export type TableQueryOutcome =
   | { kind: "refused"; reason: string }
   | { kind: "review"; plan: PreparedPlan; query: BrowseQuery };
 
+export interface NamedSession {
+  info: SessionInfo;
+  label: string;
+  primary: boolean;
+}
+
 interface StudioState {
   bootstrap: Bootstrap | null;
   error: string | null;
   sessions: Record<string, SessionInfo>;
+  sessionPool: Record<string, NamedSession[]>;
+  sessionStates: Record<string, SessionRuntimeState>;
+  sessionContexts: Record<string, string[]>;
+  sessionContextRevision: Record<string, number>;
   catalog: Record<string, TableInfo[]>;
   objects: Record<string, DatabaseObjectSummary[]>;
   selectedConnectionId: string | null;
@@ -103,7 +116,16 @@ interface StudioState {
   setTableLayout(connectionId: string, table: TableRef, layout: SavedTableLayout | null): void;
   resetTableLayout(connectionId: string, table: TableRef): void;
   setSession(session: SessionInfo): void;
-  bindQuerySession(tabId: string, session: SessionInfo): boolean;
+  bindQuerySession(tabId: string, session: SessionInfo, label?: string): boolean;
+  attachQuerySession(tabId: string, sessionId: string | null): boolean;
+  renameQuerySession(sessionId: string, label: string): void;
+  disconnectQuerySession(sessionId: string): Promise<void>;
+  updateSessionLatency(sessionId: string, latencyMs: number): void;
+  refreshSessionContexts(sessionId: string): Promise<void>;
+  switchSessionContext(sessionId: string, target: string): Promise<void>;
+  setTransactionMode(sessionId: string, mode: TransactionMode): Promise<void>;
+  commitTransaction(sessionId: string): Promise<void>;
+  rollbackTransaction(sessionId: string): Promise<void>;
   retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
@@ -178,6 +200,62 @@ export function querySessionForTab(tab: StudioTab, sessions: Record<string, Sess
     return tab.querySessionClosed ? undefined : tab.querySession;
   return tab.connectionId ? sessions[tab.connectionId] : undefined;
 }
+export function isLastOwnerOfSecondarySession(tabs: readonly StudioTab[], tab: StudioTab): boolean {
+  if (!tab.querySession || tab.querySessionClosed) return false;
+  const sessionId = tab.querySession.id;
+  return !tabs.some(
+    (other) =>
+      other.id !== tab.id && other.querySession?.id === sessionId && !other.querySessionClosed,
+  );
+}
+export function sessionHasOpenTransaction(
+  sessionStates: Readonly<Record<string, SessionRuntimeState | undefined>>,
+  sessionId: string | null | undefined,
+): boolean {
+  if (!sessionId) return false;
+  const txState = sessionStates[sessionId]?.transactionState;
+  return txState === "inTransaction" || txState === "failed";
+}
+function isSessionActive(
+  state: Pick<StudioState, "sessions" | "sessionPool" | "tabs">,
+  sessionId: string,
+): boolean {
+  return (
+    Object.values(state.sessions).some((s) => s.id === sessionId) ||
+    Object.values(state.sessionPool).some((list) =>
+      list.some((entry) => entry.info.id === sessionId),
+    ) ||
+    state.tabs.some((t) => t.querySession?.id === sessionId && !t.querySessionClosed)
+  );
+}
+function normalizeSessionLabel(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  return raw
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+}
+function defaultSecondarySessionLabel(existing: readonly NamedSession[]): string {
+  if (!existing.some((entry) => entry.label === "Isolated session")) return "Isolated session";
+  let index = 2;
+  while (existing.some((entry) => entry.label === `Isolated session ${index}`)) index += 1;
+  return `Isolated session ${index}`;
+}
+function purgeSessionRuntimeMaps(
+  state: Pick<StudioState, "sessionStates" | "sessionContexts" | "sessionContextRevision">,
+  sessionIds: Iterable<string>,
+) {
+  const sessionStates = { ...state.sessionStates };
+  const sessionContexts = { ...state.sessionContexts };
+  const sessionContextRevision = { ...state.sessionContextRevision };
+  for (const id of sessionIds) {
+    delete sessionStates[id];
+    delete sessionContexts[id];
+    delete sessionContextRevision[id];
+  }
+  return { sessionStates, sessionContexts, sessionContextRevision };
+}
 const storedTheme = localStorage.getItem("joinery.theme");
 
 function requestIsCurrent(id: string, revision: number, connectionId: string, sessionId: string) {
@@ -203,6 +281,10 @@ export const useStudio = create<StudioState>((set, get) => ({
   bootstrap: null,
   error: null,
   sessions: {},
+  sessionPool: {},
+  sessionStates: {},
+  sessionContexts: {},
+  sessionContextRevision: {},
   catalog: {},
   objects: {},
   selectedConnectionId: null,
@@ -294,7 +376,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       selectedConnectionId: session.connectionId,
     }));
   },
-  bindQuerySession(tabId, session) {
+  bindQuerySession(tabId, session, preferredLabel) {
     const current = get().tabs.find((t) => t.id === tabId);
     if (
       !current ||
@@ -314,8 +396,67 @@ export const useStudio = create<StudioState>((set, get) => ({
       dirtyStore.clear(result.id);
       void client.call("release_result", { resultId: result.id }).catch(() => {});
     }
+    set((state) => {
+      const existing = (state.sessionPool[session.connectionId] ?? []).filter(
+        (entry) => entry.info.id !== session.id,
+      );
+      const normalized = preferredLabel ? normalizeSessionLabel(preferredLabel) : "";
+      const label = normalized || defaultSecondarySessionLabel(existing);
+      return {
+        sessionPool: {
+          ...state.sessionPool,
+          [session.connectionId]: [...existing, { info: session, label, primary: false }],
+        },
+        tabs: state.tabs.map((t) =>
+          t.id === tabId
+            ? {
+                ...t,
+                querySession: session,
+                querySessionClosed: false,
+                results: [],
+                activeResultId: null,
+                dataSessionId: null,
+                runId: null,
+                error: null,
+                status: "idle",
+                metrics: {},
+                elapsedMs: 0,
+                revision: current.revision + 1,
+              }
+            : t,
+        ),
+      };
+    });
+    return true;
+  },
+  attachQuerySession(tabId, sessionId) {
+    const state = get();
+    const current = state.tabs.find((t) => t.id === tabId);
+    if (
+      !current ||
+      current.kind !== "query" ||
+      !current.connectionId ||
+      ["queued", "running"].includes(current.status)
+    )
+      return false;
+    let targetInfo: SessionInfo | null = null;
+    if (sessionId !== null) {
+      const match = (state.sessionPool[current.connectionId] ?? []).find(
+        (entry) => entry.info.id === sessionId,
+      );
+      if (!match) return false;
+      if (current.querySession?.id === sessionId && !current.querySessionClosed) return true;
+      targetInfo = match.info;
+    } else if (!current.querySession && !current.querySessionClosed) {
+      return true;
+    }
+    for (const result of current.results) {
+      resultCache.release(result.id);
+      dirtyStore.clear(result.id);
+      void client.call("release_result", { resultId: result.id }).catch(() => {});
+    }
     get().updateTab(tabId, {
-      querySession: session,
+      querySession: targetInfo,
       querySessionClosed: false,
       results: [],
       activeResultId: null,
@@ -329,6 +470,133 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
     return true;
   },
+  renameQuerySession(sessionId, label) {
+    const normalized = normalizeSessionLabel(label);
+    if (!normalized) return;
+    set((state) => {
+      const nextPool: Record<string, NamedSession[]> = {};
+      for (const [connId, entries] of Object.entries(state.sessionPool)) {
+        nextPool[connId] = entries.map((entry) =>
+          entry.info.id === sessionId ? { ...entry, label: normalized } : entry,
+        );
+      }
+      return { sessionPool: nextPool };
+    });
+  },
+  async disconnectQuerySession(sessionId) {
+    try {
+      await client.call("disconnect", { sessionId });
+    } finally {
+      get().retireSession(sessionId);
+    }
+  },
+  updateSessionLatency(sessionId, latencyMs) {
+    set((state) => {
+      const sessions = { ...state.sessions };
+      for (const [connId, info] of Object.entries(sessions)) {
+        if (info.id === sessionId) sessions[connId] = { ...info, latencyMs };
+      }
+      const sessionPool: Record<string, NamedSession[]> = {};
+      for (const [connId, entries] of Object.entries(state.sessionPool)) {
+        sessionPool[connId] = entries.map((entry) =>
+          entry.info.id === sessionId ? { ...entry, info: { ...entry.info, latencyMs } } : entry,
+        );
+      }
+      const tabs = state.tabs.map((t) =>
+        t.querySession?.id === sessionId
+          ? { ...t, querySession: { ...t.querySession, latencyMs } }
+          : t,
+      );
+      return { sessions, sessionPool, tabs };
+    });
+  },
+  async refreshSessionContexts(sessionId) {
+    const options = await client
+      .call<SessionContextOptions | null>("session_contexts", {
+        sessionId,
+      })
+      .catch(() => null);
+    if (!options?.state) return;
+    set((state) => {
+      if (!isSessionActive(state, sessionId)) return {};
+      return {
+        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
+        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+      };
+    });
+  },
+  async switchSessionContext(sessionId, target) {
+    const options = await client.call<SessionContextOptions>("switch_session_context", {
+      sessionId,
+      target,
+    });
+    set((state) => {
+      if (!isSessionActive(state, sessionId)) return {};
+      return {
+        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
+        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+        sessionContextRevision: {
+          ...state.sessionContextRevision,
+          [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+        },
+      };
+    });
+  },
+  async setTransactionMode(sessionId, mode) {
+    const runtime = await client.call<SessionRuntimeState>("set_transaction_mode", {
+      sessionId,
+      mode,
+    });
+    set((state) => {
+      if (!isSessionActive(state, sessionId)) return {};
+      const prev = state.sessionStates[sessionId];
+      const contextChanged =
+        prev &&
+        (prev.activeContext !== runtime.activeContext ||
+          prev.database !== runtime.database ||
+          prev.role !== runtime.role ||
+          JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath));
+      return {
+        sessionStates: { ...state.sessionStates, [sessionId]: runtime },
+        ...(contextChanged
+          ? {
+              sessionContextRevision: {
+                ...state.sessionContextRevision,
+                [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+              },
+            }
+          : {}),
+      };
+    });
+  },
+  async commitTransaction(sessionId) {
+    const runtime = await client.call<SessionRuntimeState>("commit_transaction", { sessionId });
+    set((state) => {
+      if (!isSessionActive(state, sessionId)) return {};
+      return {
+        sessionStates: { ...state.sessionStates, [sessionId]: runtime },
+        sessionContextRevision: {
+          ...state.sessionContextRevision,
+          [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+        },
+      };
+    });
+    get().notify("Transaction committed");
+  },
+  async rollbackTransaction(sessionId) {
+    const runtime = await client.call<SessionRuntimeState>("rollback_transaction", { sessionId });
+    set((state) => {
+      if (!isSessionActive(state, sessionId)) return {};
+      return {
+        sessionStates: { ...state.sessionStates, [sessionId]: runtime },
+        sessionContextRevision: {
+          ...state.sessionContextRevision,
+          [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+        },
+      };
+    });
+    get().notify("Transaction rolled back");
+  },
   retireSession(sessionId) {
     set((state) => {
       const retiredConnections = Object.entries(state.sessions)
@@ -336,10 +604,17 @@ export const useStudio = create<StudioState>((set, get) => ({
         .map(([connId]) => connId);
       const objects = { ...state.objects };
       for (const connId of retiredConnections) delete objects[connId];
+      const sessionPool: Record<string, NamedSession[]> = {};
+      for (const [connId, entries] of Object.entries(state.sessionPool)) {
+        const remaining = entries.filter((entry) => entry.info.id !== sessionId);
+        if (remaining.length > 0) sessionPool[connId] = remaining;
+      }
       return {
         sessions: Object.fromEntries(
           Object.entries(state.sessions).filter(([, s]) => s.id !== sessionId),
         ),
+        sessionPool,
+        ...purgeSessionRuntimeMaps(state, [sessionId]),
         objects,
         tabs: state.tabs.map((t) =>
           t.querySession?.id === sessionId ? { ...t, querySessionClosed: true } : t,
@@ -665,11 +940,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     }));
   },
   closeTab(id) {
-    const current = get().tabs.find((t) => t.id === id);
+    const stateSnapshot = get();
+    const current = stateSnapshot.tabs.find((t) => t.id === id);
     if (!current) return;
-    if (current.querySession && !current.querySessionClosed)
+    const disconnectSecondary =
+      current.querySession &&
+      !current.querySessionClosed &&
+      isLastOwnerOfSecondarySession(stateSnapshot.tabs, current)
+        ? current.querySession.id
+        : null;
+    if (disconnectSecondary)
       void client
-        .call("disconnect", { sessionId: current.querySession.id })
+        .call("disconnect", { sessionId: disconnectSecondary })
         .catch((error) => get().notify(messageOf(error)));
     else if (current.runId && ["queued", "running"].includes(current.status))
       void client.call("cancel_run", { runId: current.runId }).catch(() => {});
@@ -682,8 +964,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => {
       const index = state.tabs.findIndex((t) => t.id === id),
         tabs = state.tabs.filter((t) => t.id !== id);
+      let sessionPool = state.sessionPool;
+      if (disconnectSecondary) {
+        sessionPool = {};
+        for (const [connId, entries] of Object.entries(state.sessionPool)) {
+          const remaining = entries.filter((entry) => entry.info.id !== disconnectSecondary);
+          if (remaining.length > 0) sessionPool[connId] = remaining;
+        }
+      }
       return {
         tabs,
+        sessionPool,
+        ...(disconnectSecondary ? purgeSessionRuntimeMaps(state, [disconnectSecondary]) : {}),
         activeTabId:
           state.activeTabId === id ? (tabs[Math.max(0, index - 1)]?.id ?? null) : state.activeTabId,
       };
@@ -691,10 +983,16 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   removeConnection(id) {
     const state = get();
-    const session = state.sessions[id];
-    if (session) void client.call("disconnect", { sessionId: session.id });
-    for (const t of state.tabs.filter((t) => t.connectionId === id)) get().closeTab(t.id);
+    const sessionIds = new Set<string>();
+    if (state.sessions[id]) sessionIds.add(state.sessions[id].id);
+    for (const entry of state.sessionPool[id] ?? []) sessionIds.add(entry.info.id);
+    for (const t of state.tabs) {
+      if (t.connectionId === id && t.querySession && !t.querySessionClosed)
+        sessionIds.add(t.querySession.id);
+    }
+    for (const sessionId of sessionIds) void client.call("disconnect", { sessionId });
     get().disconnected(id);
+    for (const t of get().tabs.filter((t) => t.connectionId === id)) get().closeTab(t.id);
     set((state) => {
       const catalog = { ...state.catalog };
       delete catalog[id];
@@ -710,12 +1008,22 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   disconnected(connectionId) {
     set((state) => {
+      const retiredIds = new Set<string>();
+      if (state.sessions[connectionId]) retiredIds.add(state.sessions[connectionId].id);
+      for (const entry of state.sessionPool[connectionId] ?? []) retiredIds.add(entry.info.id);
+      for (const t of state.tabs) {
+        if (t.connectionId === connectionId && t.querySession) retiredIds.add(t.querySession.id);
+      }
       const sessions = { ...state.sessions };
       delete sessions[connectionId];
+      const sessionPool = { ...state.sessionPool };
+      delete sessionPool[connectionId];
       const objects = { ...state.objects };
       delete objects[connectionId];
       return {
         sessions,
+        sessionPool,
+        ...purgeSessionRuntimeMaps(state, retiredIds),
         objects,
         tabs: state.tabs.map((t) =>
           t.connectionId === connectionId && t.querySession
@@ -752,12 +1060,38 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
   },
   applyEvents(tabId, events, revision) {
+    const runtimeUpdates: SessionRuntimeState[] = [];
     for (const event of events) {
       if (event.type === "sessionClosed") {
         get().retireSession(event.sessionId);
         get().notify(event.reason);
       }
       if (event.type === "notice") get().notify(event.message);
+      if (event.type === "sessionState") runtimeUpdates.push(event.state);
+    }
+    if (runtimeUpdates.length > 0) {
+      set((state) => {
+        let changed = false;
+        const sessionStates = { ...state.sessionStates };
+        const sessionContextRevision = { ...state.sessionContextRevision };
+        for (const runtime of runtimeUpdates) {
+          if (!isSessionActive(state, runtime.sessionId)) continue;
+          const prev = sessionStates[runtime.sessionId];
+          sessionStates[runtime.sessionId] = runtime;
+          changed = true;
+          if (
+            prev &&
+            (prev.activeContext !== runtime.activeContext ||
+              prev.database !== runtime.database ||
+              prev.role !== runtime.role ||
+              JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath))
+          ) {
+            sessionContextRevision[runtime.sessionId] =
+              (sessionContextRevision[runtime.sessionId] ?? 0) + 1;
+          }
+        }
+        return changed ? { sessionStates, sessionContextRevision } : {};
+      });
     }
     set((state) => {
       const current = state.tabs.find((t) => t.id === tabId);

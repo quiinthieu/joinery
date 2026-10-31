@@ -79,6 +79,10 @@ beforeEach(() => {
     catalog: {},
     objects: {},
     sessions: { profile: session },
+    sessionPool: {},
+    sessionStates: {},
+    sessionContexts: {},
+    sessionContextRevision: {},
   });
 });
 
@@ -261,6 +265,8 @@ test("a new tab opened during startup cannot overwrite recoverable drafts", asyn
     supportedEngines: [],
     resultBudgetBytes: 0,
     rowLimit: 0,
+    savedQueries: [],
+    bookmarks: [],
     workspace: {
       theme: "contrast",
       density: "compact",
@@ -512,4 +518,131 @@ test("openObject distinguishes overloaded routines and routes relations to table
   expect(tabs[1].title).toBe("r3_calc(integer)");
   expect(tabs[2].title).toBe("r3_calc(numeric, integer)");
   expect(useStudio.getState().activeTabId).toBe(tabs[1].id);
+});
+
+test("multiple consoles can attach to a named secondary session and only the last owner disconnects it on close", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const first = useStudio.getState().openQuery("profile", "SELECT 1");
+  const second = useStudio.getState().openQuery("profile", "SELECT 2");
+  const secondary = { ...session, id: "secondary-1" };
+
+  expect(useStudio.getState().bindQuerySession(first, secondary)).toBe(true);
+  useStudio.getState().renameQuerySession("secondary-1", "  Analytics   lane  ");
+  expect(useStudio.getState().sessionPool.profile).toEqual([
+    { info: secondary, label: "Analytics lane", primary: false },
+  ]);
+
+  expect(useStudio.getState().attachQuerySession(second, "secondary-1")).toBe(true);
+  expect(
+    querySessionForTab(
+      useStudio.getState().tabs.find((t) => t.id === second)!,
+      useStudio.getState().sessions,
+    )?.id,
+  ).toBe("secondary-1");
+
+  // Closing the first tab while `second` is still attached does NOT disconnect `secondary-1`.
+  useStudio.getState().closeTab(first);
+  expect(client.call).not.toHaveBeenCalledWith("disconnect", { sessionId: "secondary-1" });
+  expect(useStudio.getState().sessionPool.profile).toHaveLength(1);
+
+  // Closing the last attached tab disconnects `secondary-1` and removes it from `sessionPool`.
+  useStudio.getState().closeTab(second);
+  expect(client.call).toHaveBeenCalledWith("disconnect", { sessionId: "secondary-1" });
+  expect(useStudio.getState().sessionPool.profile).toBeUndefined();
+});
+
+test("retiring a shared secondary session marks every attached console disconnected without falling back to shared", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const first = useStudio.getState().openQuery("profile");
+  const second = useStudio.getState().openQuery("profile");
+  useStudio.getState().bindQuerySession(first, { ...session, id: "secondary-shared" });
+  useStudio.getState().attachQuerySession(second, "secondary-shared");
+
+  useStudio.getState().retireSession("secondary-shared");
+  const state = useStudio.getState();
+  for (const id of [first, second]) {
+    const tab = state.tabs.find((t) => t.id === id)!;
+    expect(tab.querySessionClosed).toBe(true);
+    expect(querySessionForTab(tab, state.sessions)).toBeUndefined();
+  }
+  expect(state.sessions.profile.id).toBe("session");
+});
+
+test("sessionState events and context/transaction commands update runtime state and context revisions", async () => {
+  const baseState = {
+    sessionId: "session",
+    transactionMode: "autoCommit" as const,
+    transactionState: "idle" as const,
+    contextKind: "schema" as const,
+    activeContext: "public",
+    database: "joinery",
+    role: "joinery",
+    searchPath: ["public", "pg_catalog"],
+  };
+  vi.mocked(client.call).mockImplementation(((command: string, args?: Record<string, unknown>) => {
+    if (command === "session_contexts") {
+      return Promise.resolve({ state: baseState, available: ["public", "analytics"] });
+    }
+    if (command === "switch_session_context") {
+      const target = String(args?.target ?? "public");
+      return Promise.resolve({
+        state: {
+          ...baseState,
+          activeContext: target,
+          searchPath: [target, "pg_catalog"],
+        },
+        available: ["public", "analytics"],
+      });
+    }
+    if (command === "set_transaction_mode") {
+      return Promise.resolve({
+        ...useStudio.getState().sessionStates.session,
+        transactionMode: "manual" as const,
+      });
+    }
+    if (command === "commit_transaction" || command === "rollback_transaction") {
+      return Promise.resolve({
+        ...baseState,
+        transactionMode: "manual" as const,
+        transactionState: "idle" as const,
+      });
+    }
+    return Promise.resolve(null);
+  }) as typeof client.call);
+
+  const tabId = useStudio.getState().openQuery("profile");
+  await useStudio.getState().refreshSessionContexts("session");
+  expect(useStudio.getState().sessionContexts.session).toEqual(["public", "analytics"]);
+  expect(useStudio.getState().sessionStates.session.activeContext).toBe("public");
+
+  await useStudio.getState().switchSessionContext("session", "analytics");
+  expect(useStudio.getState().sessionStates.session.activeContext).toBe("analytics");
+  expect(useStudio.getState().sessionContextRevision.session).toBe(1);
+
+  await useStudio.getState().setTransactionMode("session", "manual");
+  expect(useStudio.getState().sessionStates.session.transactionMode).toBe("manual");
+
+  // QueryEvent::sessionState updates transactionState and bumps revision when searchPath changes.
+  const rev = useStudio.getState().tabs.find((t) => t.id === tabId)!.revision;
+  useStudio.getState().applyEvents(
+    tabId,
+    [
+      {
+        type: "sessionState",
+        state: {
+          ...useStudio.getState().sessionStates.session,
+          transactionState: "inTransaction",
+          activeContext: "public",
+          searchPath: ["public", "pg_catalog"],
+        },
+      },
+    ],
+    rev,
+  );
+  expect(useStudio.getState().sessionStates.session.transactionState).toBe("inTransaction");
+  expect(useStudio.getState().sessionContextRevision.session).toBe(2);
+
+  await useStudio.getState().rollbackTransaction("session");
+  expect(useStudio.getState().sessionStates.session.transactionState).toBe("idle");
+  expect(useStudio.getState().sessionContextRevision.session).toBe(3);
 });

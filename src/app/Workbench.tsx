@@ -19,6 +19,7 @@ import {
   FileCode2,
   Gauge,
   Loader2,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -27,6 +28,7 @@ import {
   Square,
   Table2,
   Trash2,
+  Unplug,
   Upload,
   X,
 } from "lucide-react";
@@ -36,9 +38,15 @@ import type {
   ObjectDetails,
   SessionInfo,
   TableInfo,
+  TransactionMode,
 } from "../ipc/generated";
 import type { StudioTab } from "../state/studio";
-import { useStudio, querySessionForTab } from "../state/studio";
+import {
+  useStudio,
+  querySessionForTab,
+  isLastOwnerOfSecondarySession,
+  sessionHasOpenTransaction,
+} from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
@@ -114,6 +122,9 @@ export function Workbench({
       message: string;
     } | null>(null),
     [tableDetailsLoadingKey, setTableDetailsLoadingKey] = useState<string | null>(null),
+    [renamingSessionId, setRenamingSessionId] = useState<string | null>(null),
+    [renameDraft, setRenameDraft] = useState(""),
+    [txBusy, setTxBusy] = useState(false),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const objectExplorerSupported = Boolean(session?.capabilities.objectExplorer);
@@ -230,11 +241,22 @@ export function Workbench({
   function applyQuery(query: StudioTab["query"]) {
     onQueryChange(query);
   }
+  const pool = tab.connectionId ? (state.sessionPool[tab.connectionId] ?? []) : [];
+  const primarySession = tab.connectionId ? state.sessions[tab.connectionId] : undefined;
+  const totalSessions = (primarySession ? 1 : 0) + pool.length;
+  const activePoolEntry = tab.querySession
+    ? pool.find((entry) => entry.info.id === tab.querySession!.id)
+    : undefined;
+  const sessionLabel = activePoolEntry?.label ?? null;
+  const runtimeState = session ? state.sessionStates[session.id] : undefined;
+  const txMode: TransactionMode = runtimeState?.transactionMode ?? "autoCommit";
+  const txState = runtimeState?.transactionState ?? "idle";
   function changeConnection(connectionId: string) {
+    const lastOwner = isLastOwnerOfSecondarySession(state.tabs, tab);
     const apply = () => {
-      if (tab.querySession && !tab.querySessionClosed)
-        void client
-          .call("disconnect", { sessionId: tab.querySession.id })
+      if (lastOwner && tab.querySession && !tab.querySessionClosed)
+        void state
+          .disconnectQuerySession(tab.querySession.id)
           .catch((error) => state.notify(messageOf(error)));
       for (const result of tab.results) {
         resultCache.release(result.id);
@@ -254,7 +276,7 @@ export function Workbench({
       });
       onSelect(null);
     };
-    if (tab.querySession && !tab.querySessionClosed)
+    if (lastOwner)
       onConfirm(
         "Change query connection?",
         "This closes the isolated SQL session and rolls back its open transactions.",
@@ -390,15 +412,114 @@ export function Workbench({
                 {tab.querySession
                   ? tab.querySessionClosed
                     ? "Isolated session · disconnected"
-                    : "Isolated session"
+                    : sessionLabel && sessionLabel !== "Isolated session"
+                      ? `Isolated session · ${sessionLabel}`
+                      : "Isolated session"
                   : session
                     ? "Shared session"
                     : "Disconnected"}
               </span>
+              {(pool.length > 0 || Boolean(tab.querySession)) && (
+                <select
+                  aria-label="Console session"
+                  disabled={running}
+                  value={
+                    tab.querySession
+                      ? tab.querySessionClosed && !activePoolEntry
+                        ? "__disconnected__"
+                        : tab.querySession.id
+                      : "shared"
+                  }
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (value === "__disconnected__") return;
+                    setRenamingSessionId(null);
+                    state.attachQuerySession(tab.id, value === "shared" ? null : value);
+                  }}
+                >
+                  <option value="shared">Shared session</option>
+                  {pool.map((entry) => (
+                    <option key={entry.info.id} value={entry.info.id}>
+                      {entry.label}
+                    </option>
+                  ))}
+                  {tab.querySession && tab.querySessionClosed && !activePoolEntry && (
+                    <option value="__disconnected__" disabled>
+                      Isolated session (disconnected)
+                    </option>
+                  )}
+                </select>
+              )}
+              {tab.querySession &&
+                !tab.querySessionClosed &&
+                activePoolEntry &&
+                (renamingSessionId === tab.querySession.id ? (
+                  <input
+                    className="session-rename-input"
+                    aria-label="Console session name"
+                    value={renameDraft}
+                    autoFocus
+                    maxLength={40}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        state.renameQuerySession(tab.querySession!.id, renameDraft);
+                        setRenamingSessionId(null);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        setRenamingSessionId(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (renameDraft.trim())
+                        state.renameQuerySession(tab.querySession!.id, renameDraft);
+                      setRenamingSessionId(null);
+                    }}
+                  />
+                ) : (
+                  <>
+                    <button
+                      className="icon-button"
+                      aria-label="Rename console session"
+                      title="Rename console session"
+                      disabled={running}
+                      onClick={() => {
+                        setRenamingSessionId(tab.querySession!.id);
+                        setRenameDraft(activePoolEntry.label);
+                      }}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label="Disconnect console session"
+                      title="Disconnect console session"
+                      disabled={running}
+                      onClick={() => {
+                        const targetSessionId = tab.querySession!.id;
+                        const runDisconnect = () => {
+                          void state
+                            .disconnectQuerySession(targetSessionId)
+                            .catch((error) => state.notify(messageOf(error)));
+                        };
+                        if (sessionHasOpenTransaction(state.sessionStates, targetSessionId))
+                          onConfirm(
+                            "Disconnect console session?",
+                            "Disconnecting this session rolls back its open transaction.",
+                            runDisconnect,
+                          );
+                        else runDisconnect();
+                      }}
+                    >
+                      <Unplug size={12} />
+                    </button>
+                  </>
+                ))}
               {(!tab.querySession || tab.querySessionClosed) && (
                 <button
                   className="button ghost small"
-                  disabled={running || !tab.connectionId}
+                  disabled={running || !tab.connectionId || totalSessions >= 4}
                   aria-label={
                     tab.querySession ? "Reconnect isolated session" : "New isolated session"
                   }
@@ -407,6 +528,70 @@ export function Workbench({
                 >
                   {tab.querySession ? "Reconnect" : "New session"}
                 </button>
+              )}
+            </>
+          )}
+          {tab.kind === "query" && session?.capabilities.transactions && (
+            <>
+              <select
+                aria-label="Transaction mode"
+                value={txMode}
+                disabled={running || txBusy}
+                onChange={(event) => {
+                  const nextMode = event.target.value as TransactionMode;
+                  setTxBusy(true);
+                  void state
+                    .setTransactionMode(session.id, nextMode)
+                    .catch((error) => state.notify(messageOf(error)))
+                    .finally(() => setTxBusy(false));
+                }}
+              >
+                <option value="autoCommit">Auto-commit</option>
+                <option value="manual">Manual commit</option>
+              </select>
+              {txState !== "idle" && (
+                <span className={`tx-badge ${txState}`} aria-live="polite">
+                  {txState === "failed" ? "Failed transaction" : "In transaction"}
+                </span>
+              )}
+              {(txMode === "manual" || txState !== "idle") && (
+                <>
+                  <button
+                    className="button ghost small"
+                    aria-label="Commit transaction"
+                    disabled={
+                      running ||
+                      txBusy ||
+                      txState !== "inTransaction" ||
+                      profile?.safeMode === "readOnly"
+                    }
+                    onClick={() => {
+                      setTxBusy(true);
+                      void state
+                        .commitTransaction(session.id)
+                        .catch((error) => state.notify(messageOf(error)))
+                        .finally(() => setTxBusy(false));
+                    }}
+                  >
+                    <Check size={12} />
+                    Commit
+                  </button>
+                  <button
+                    className="button ghost small"
+                    aria-label="Rollback transaction"
+                    disabled={running || txBusy || txState === "idle"}
+                    onClick={() => {
+                      setTxBusy(true);
+                      void state
+                        .rollbackTransaction(session.id)
+                        .catch((error) => state.notify(messageOf(error)))
+                        .finally(() => setTxBusy(false));
+                    }}
+                  >
+                    <RotateCcw size={12} />
+                    Rollback
+                  </button>
+                </>
               )}
             </>
           )}
@@ -546,13 +731,14 @@ export function Workbench({
                 defaultSchema={
                   profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined
                 }
-                contextEpoch={JSON.stringify(
+                contextEpoch={JSON.stringify([
+                  session ? (state.sessionContextRevision[session.id] ?? 0) : 0,
                   state.tabs
                     .filter(
                       (t) => session && querySessionForTab(t, state.sessions)?.id === session.id,
                     )
                     .map((t) => [t.id, t.status, t.revision]),
-                )}
+                ])}
                 theme={state.theme}
               />
             </Suspense>

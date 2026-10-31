@@ -114,6 +114,13 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [live, setLive] = useState<CompletionCatalog | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [switchingContext, setSwitchingContext] = useState(false);
+  const runtimeState = useStudio((s) =>
+    props.sessionId ? s.sessionStates[props.sessionId] : undefined,
+  );
+  const availableContexts = useStudio((s) =>
+    props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
+  );
   const liveRef = useRef<CompletionCatalog | null>(null);
   const configure = () => {
     const config = latest.current;
@@ -303,7 +310,8 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     if (props.engine === "redis") return;
     completion.current?.configure(configure());
     if (view.current) closeCompletion(view.current);
-    if (props.sessionId)
+    if (props.sessionId) {
+      void useStudio.getState().refreshSessionContexts(props.sessionId);
       void client
         .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
         .then((snapshot) => {
@@ -315,44 +323,90 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         .catch((error) => {
           if (!cancelled) setContextError(messageOf(error));
         });
+    }
     return () => {
       cancelled = true;
     };
   }, [props.engine, props.sessionId, props.tables, props.contextEpoch, refresh]);
+  const currentContext = runtimeState?.activeContext ?? "";
+  const contextOptions =
+    availableContexts && availableContexts.length > 0
+      ? currentContext && !availableContexts.includes(currentContext)
+        ? [currentContext, ...availableContexts]
+        : availableContexts
+      : [];
+  const showContextSwitcher =
+    Boolean(props.sessionId) &&
+    contextOptions.length > 0 &&
+    runtimeState !== undefined &&
+    runtimeState.contextKind !== "none";
   return (
     <div className="sql-editor" style={{ display: "flex", flexDirection: "column" }}>
       {props.engine !== "redis" && props.sessionId && (
-        <div
-          aria-live="polite"
-          aria-atomic="true"
-          className="completion-context"
-          style={{
-            fontSize: 11,
-            padding: "4px 12px",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            minWidth: 0,
-          }}
-        >
-          <span
-            style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
-            title={contextError ?? live?.identity.searchPath.join(", ")}
+        <div className="editor-context-row">
+          {showContextSwitcher && (
+            <select
+              className="context-switcher"
+              aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
+              value={currentContext}
+              disabled={switchingContext}
+              onChange={(event) => {
+                const target = event.target.value;
+                if (!target || !props.sessionId || target === currentContext) return;
+                setSwitchingContext(true);
+                void useStudio
+                  .getState()
+                  .switchSessionContext(props.sessionId, target)
+                  .catch((error) => useStudio.getState().notify(messageOf(error)))
+                  .finally(() => setSwitchingContext(false));
+              }}
+            >
+              {!currentContext && <option value="">No active context</option>}
+              {contextOptions.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          )}
+          <div
+            aria-live="polite"
+            aria-atomic="true"
+            className="completion-context"
+            style={{
+              fontSize: 11,
+              padding: "4px 12px",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              minWidth: 0,
+              flex: 1,
+            }}
           >
-            {contextError
-              ? `Completion unavailable: ${contextError}`
-              : live
-                ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                : "Loading completion context…"}
-          </span>
-          <button
-            className="button ghost small"
-            style={{ flexShrink: 0 }}
-            aria-label="Refresh completion context"
-            onClick={() => setRefresh((n) => n + 1)}
-          >
-            Refresh
-          </button>
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                flex: 1,
+              }}
+              title={contextError ?? live?.identity.searchPath.join(", ")}
+            >
+              {contextError
+                ? `Completion unavailable: ${contextError}`
+                : live
+                  ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                  : "Loading completion context…"}
+            </span>
+            <button
+              className="button ghost small"
+              style={{ flexShrink: 0 }}
+              aria-label="Refresh completion context"
+              onClick={() => setRefresh((n) => n + 1)}
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       )}
       <div ref={host} style={{ flex: 1, minHeight: 0 }} />

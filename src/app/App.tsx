@@ -53,7 +53,14 @@ import type {
   ResourceUsage,
   TableChanges,
 } from "../ipc/generated";
-import { useStudio, beginEventBatch, querySessionForTab, type StudioTab } from "../state/studio";
+import {
+  useStudio,
+  beginEventBatch,
+  querySessionForTab,
+  isLastOwnerOfSecondarySession,
+  sessionHasOpenTransaction,
+  type StudioTab,
+} from "../state/studio";
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
@@ -441,15 +448,21 @@ export function App() {
     document.documentElement.dataset.density = state.density;
   }, [state.theme, state.density]);
   useEffect(() => {
-    const hasPendingWork = () =>
-      useStudio
-        .getState()
-        .tabs.some(
+    const hasPendingWork = () => {
+      const snap = useStudio.getState();
+      return (
+        snap.tabs.some(
           (tab) =>
             pendingCountFor(tab) > 0 ||
             ["queued", "running"].includes(tab.status) ||
             (tab.querySession && !tab.querySessionClosed),
-        );
+        ) ||
+        Object.values(snap.sessionPool).some((entries) => entries.length > 0) ||
+        Object.values(snap.sessionStates).some(
+          (st) => st.transactionState === "inTransaction" || st.transactionState === "failed",
+        )
+      );
+    };
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (hasPendingWork()) {
         event.preventDefault();
@@ -517,15 +530,7 @@ export function App() {
         void client
           .call<number>("health", { sessionId: session.id })
           .then((latencyMs) => {
-            const state = useStudio.getState();
-            const owner = state.tabs.find(
-              (t) => t.querySession?.id === session.id && !t.querySessionClosed,
-            );
-            if (owner) state.updateTab(owner.id, { querySession: { ...session, latencyMs } });
-            else {
-              const latest = state.sessions[session.connectionId];
-              if (latest?.id === session.id) state.setSession({ ...latest, latencyMs });
-            }
+            useStudio.getState().updateSessionLatency(session.id, latencyMs);
           })
           .catch(() => useStudio.getState().retireSession(session.id));
     }, 30000);
@@ -681,7 +686,7 @@ export function App() {
     if (
       pendingCountFor(active) > 0 ||
       ["queued", "running"].includes(active.status) ||
-      (active.querySession && !active.querySessionClosed)
+      isLastOwnerOfSecondarySession(useStudio.getState().tabs, active)
     )
       setDialog({
         kind: "confirm",
@@ -702,21 +707,27 @@ export function App() {
   }
   function disconnectProfile(profile: ConnectionProfile) {
     const action = async () => {
-      const session = useStudio.getState().sessions[profile.id];
-      const owned = useStudio
-        .getState()
-        .tabs.filter(
-          (t) => t.connectionId === profile.id && t.querySession && !t.querySessionClosed,
-        )
+      const snap = useStudio.getState();
+      const session = snap.sessions[profile.id];
+      const pooled = (snap.sessionPool[profile.id] ?? []).map((entry) => entry.info.id);
+      const owned = snap.tabs
+        .filter((t) => t.connectionId === profile.id && t.querySession && !t.querySessionClosed)
         .map((t) => t.querySession!.id);
       await Promise.all(
-        [...new Set([...(session ? [session.id] : []), ...owned])].map((sessionId) =>
+        [...new Set([...(session ? [session.id] : []), ...pooled, ...owned])].map((sessionId) =>
           client.call("disconnect", { sessionId }),
         ),
       );
       state.resetConnectionResults(profile.id);
     };
+    const primarySessionId = state.sessions[profile.id]?.id;
+    const pooledSessions = state.sessionPool[profile.id] ?? [];
     if (
+      pooledSessions.length > 0 ||
+      sessionHasOpenTransaction(state.sessionStates, primarySessionId) ||
+      pooledSessions.some((entry) =>
+        sessionHasOpenTransaction(state.sessionStates, entry.info.id),
+      ) ||
       state.tabs.some(
         (tab) =>
           tab.connectionId === profile.id &&
@@ -1353,6 +1364,56 @@ export function App() {
               icon: Command,
               action: () => setDialog({ kind: "settings" }),
             },
+            ...(current?.kind === "query" && session?.capabilities.transactions
+              ? (() => {
+                  const runtime = state.sessionStates[session.id];
+                  const txMode = runtime?.transactionMode ?? "autoCommit";
+                  const txState = runtime?.transactionState ?? "idle";
+                  return [
+                    {
+                      label:
+                        txMode === "manual"
+                          ? "Switch session to auto-commit"
+                          : "Switch session to manual commit",
+                      shortcut: "",
+                      icon: Activity,
+                      action: () =>
+                        void state
+                          .setTransactionMode(
+                            session.id,
+                            txMode === "manual" ? "autoCommit" : "manual",
+                          )
+                          .catch((error) => state.notify(messageOf(error))),
+                    },
+                    ...(txState === "inTransaction" && profile?.safeMode !== "readOnly"
+                      ? [
+                          {
+                            label: "Commit transaction",
+                            shortcut: "",
+                            icon: Check,
+                            action: () =>
+                              void state
+                                .commitTransaction(session.id)
+                                .catch((error) => state.notify(messageOf(error))),
+                          },
+                        ]
+                      : []),
+                    ...(txState !== "idle"
+                      ? [
+                          {
+                            label: "Rollback transaction",
+                            shortcut: "",
+                            icon: RotateCcw,
+                            action: () =>
+                              void state
+                                .rollbackTransaction(session.id)
+                                .catch((error) => state.notify(messageOf(error))),
+                          },
+                        ]
+                      : []),
+                  ];
+                })()
+              : []),
             ...tableCommands,
           ]}
         />
