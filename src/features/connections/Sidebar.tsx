@@ -1,24 +1,84 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
+  Activity,
+  Braces,
   ChevronDown,
   ChevronRight,
   Database,
+  Eye,
+  Hash,
+  History,
+  Layers,
+  ListTree,
+  Pencil,
   Plus,
   Search,
   Settings2,
-  Table2,
   SquareTerminal,
-  History,
-  Activity,
-  Pencil,
+  Table2,
   Unplug,
+  Zap,
 } from "lucide-react";
-import { useStudio } from "../../state/studio";
-import type { ConnectionProfile } from "../../ipc/generated";
-import { client } from "../../ipc/client";
 import { useShallow } from "zustand/react/shallow";
+import { useStudio } from "../../state/studio";
+import type {
+  ConnectionProfile,
+  DatabaseObjectKind,
+  DatabaseObjectSummary,
+  TableInfo,
+} from "../../ipc/generated";
 import { orderedGroups } from "./GroupManager";
-const EMPTY_TABLES: import("../../ipc/generated").TableInfo[] = [];
+import {
+  buildExplorerSchemas,
+  EXPLORER_FILTER_CHIPS,
+  flattenVisibleExplorerNodes,
+  resolveTreeKeyAction,
+  type ExplorerCategoryId,
+  type ExplorerFilterChip,
+} from "./explorer-tree";
+
+const EMPTY_TABLES: TableInfo[] = [];
+const EMPTY_OBJECTS: DatabaseObjectSummary[] = [];
+
+function ObjectKindIcon({ kind }: { kind: DatabaseObjectKind }) {
+  switch (kind) {
+    case "table":
+    case "partitionedTable":
+      return <Table2 size={13} />;
+    case "view":
+      return <Eye size={13} />;
+    case "materializedView":
+      return <Layers size={13} />;
+    case "function":
+    case "procedure":
+      return <Braces size={13} />;
+    case "sequence":
+      return <Hash size={13} />;
+    case "trigger":
+      return <Zap size={13} />;
+    case "index":
+      return <ListTree size={13} />;
+  }
+}
+
+function CategoryIcon({ category }: { category: ExplorerCategoryId }) {
+  switch (category) {
+    case "tables":
+      return <Table2 size={12} />;
+    case "views":
+      return <Eye size={12} />;
+    case "materializedViews":
+      return <Layers size={12} />;
+    case "routines":
+      return <Braces size={12} />;
+    case "sequences":
+      return <Hash size={12} />;
+    case "triggers":
+      return <Zap size={12} />;
+    case "indexes":
+      return <ListTree size={12} />;
+  }
+}
 
 export function Sidebar({
   onNew,
@@ -39,33 +99,41 @@ export function Sidebar({
           bootstrap,
           sessions,
           catalog,
+          objects,
           selectedConnectionId,
           selectConnection,
           refreshCatalog,
           notify,
           openQuery,
           openUtility,
-          openTable,
+          openObject,
         }) => ({
           bootstrap,
           sessions,
           catalog,
+          objects,
           selectedConnectionId,
           selectConnection,
           refreshCatalog,
           notify,
           openQuery,
           openUtility,
-          openTable,
+          openObject,
         }),
       ),
     ),
     [search, setSearch] = useState(""),
+    [filter, setFilter] = useState<ExplorerFilterChip>("all"),
     [collapsed, setCollapsed] = useState(new Set<string>()),
-    [schemas, setSchemas] = useState(new Set<string>());
+    [schemas, setSchemas] = useState(new Set<string>()),
+    [collapsedCategories, setCollapsedCategories] = useState(new Set<string>()),
+    [collapsedDuringSearch, setCollapsedDuringSearch] = useState(new Set<string>()),
+    treeRef = useRef<HTMLDivElement>(null);
+
   const selected = state.bootstrap?.profiles.find(
     (profile) => profile.id === state.selectedConnectionId,
   );
+  const selectedSession = selected ? state.sessions[selected.id] : undefined;
   const ordered = useMemo(
     () => orderedGroups(state.bootstrap?.groups ?? []),
     [state.bootstrap?.groups],
@@ -74,24 +142,114 @@ export function Sidebar({
   for (const { group } of ordered)
     if (group.parentId && (collapsed.has(group.parentId) || hiddenGroups.has(group.parentId)))
       hiddenGroups.add(group.id);
+
   const tables = selected ? (state.catalog[selected.id] ?? EMPTY_TABLES) : EMPTY_TABLES;
-  const grouped = useMemo(() => {
-    const groups = new Map<string, typeof tables>();
-    const needle = search.toLowerCase();
-    for (const table of tables)
-      if (`${table.table.schema}.${table.table.name}`.toLowerCase().includes(needle)) {
-        const list = groups.get(table.table.schema) ?? [];
-        list.push(table);
-        groups.set(table.table.schema, list);
-      }
-    return groups;
-  }, [tables, search]);
-  const toggle = (id: string) =>
-    setCollapsed((old) => {
+  const objects = selected ? (state.objects[selected.id] ?? EMPTY_OBJECTS) : EMPTY_OBJECTS;
+  const isSearching = Boolean(search.trim());
+
+  const schemaGroups = useMemo(
+    () => buildExplorerSchemas(tables, objects, filter, search),
+    [tables, objects, filter, search],
+  );
+
+  const isSchemaExpanded = (name: string) =>
+    isSearching ? !collapsedDuringSearch.has(`schema:${name}`) : schemas.has(name);
+  const isCategoryExpanded = (catKey: string) =>
+    isSearching ? !collapsedDuringSearch.has(`cat:${catKey}`) : !collapsedCategories.has(catKey);
+
+  const visibleNodes = useMemo(
+    () =>
+      flattenVisibleExplorerNodes(
+        schemaGroups,
+        (name) => (isSearching ? !collapsedDuringSearch.has(`schema:${name}`) : schemas.has(name)),
+        (catKey) =>
+          isSearching
+            ? !collapsedDuringSearch.has(`cat:${catKey}`)
+            : !collapsedCategories.has(catKey),
+      ),
+    [schemaGroups, isSearching, collapsedDuringSearch, schemas, collapsedCategories],
+  );
+
+  const setSchemaOpen = (name: string, open: boolean) => {
+    if (isSearching) {
+      setCollapsedDuringSearch((old) => {
+        const next = new Set(old);
+        if (open) next.delete(`schema:${name}`);
+        else next.add(`schema:${name}`);
+        return next;
+      });
+      return;
+    }
+    setSchemas((old) => {
       const next = new Set(old);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (open) next.add(name);
+      else next.delete(name);
       return next;
     });
+  };
+
+  const setCategoryOpen = (catKey: string, open: boolean) => {
+    if (isSearching) {
+      setCollapsedDuringSearch((old) => {
+        const next = new Set(old);
+        if (open) next.delete(`cat:${catKey}`);
+        else next.add(`cat:${catKey}`);
+        return next;
+      });
+      return;
+    }
+    setCollapsedCategories((old) => {
+      const next = new Set(old);
+      if (open) next.delete(catKey);
+      else next.add(catKey);
+      return next;
+    });
+  };
+
+  const toggleGroup = (id: string) =>
+    setCollapsed((old) => {
+      const next = new Set(old);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const handleTreeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const target = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>(
+      "[data-tree-node]",
+    );
+    const currentId = target?.dataset.treeNode;
+    if (!currentId) return;
+    const action = resolveTreeKeyAction(visibleNodes, currentId, event.key);
+    if (!action) return;
+    event.preventDefault();
+    switch (action.type) {
+      case "focus": {
+        const buttons = treeRef.current?.querySelectorAll<HTMLButtonElement>("[data-tree-node]");
+        if (!buttons) return;
+        for (const button of buttons) {
+          if (button.dataset.treeNode === action.nodeId) {
+            button.focus();
+            break;
+          }
+        }
+        break;
+      }
+      case "expandSchema":
+        setSchemaOpen(action.schema, true);
+        break;
+      case "collapseSchema":
+        setSchemaOpen(action.schema, false);
+        break;
+      case "expandCategory":
+        setCategoryOpen(action.categoryKey, true);
+        break;
+      case "collapseCategory":
+        setCategoryOpen(action.categoryKey, false);
+        break;
+    }
+  };
+
   return (
     <aside className="sidebar" aria-label="Connections and database explorer">
       <div className="sidebar-brand">
@@ -120,7 +278,7 @@ export function Sidebar({
               <div className="group-heading">
                 <button
                   className="group-toggle"
-                  onClick={() => toggle(group.id)}
+                  onClick={() => toggleGroup(group.id)}
                   aria-expanded={!collapsed.has(group.id)}
                 >
                   {collapsed.has(group.id) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
@@ -192,7 +350,7 @@ export function Sidebar({
       <div className="sidebar-divider" />
       <div className="sidebar-section-title">
         <span>DATABASE EXPLORER</span>
-        {selected && state.sessions[selected.id] && (
+        {selected && selectedSession && (
           <button
             className="icon-button"
             title="Refresh schema"
@@ -211,14 +369,32 @@ export function Sidebar({
         <Search size={13} />
         <input
           aria-label="Search tables"
-          placeholder="Find a table…"
+          placeholder="Find an object…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setCollapsedDuringSearch(new Set());
+          }}
         />
         <kbd>⌕</kbd>
       </div>
-      <div className="schema-tree">
-        {!selected || !state.sessions[selected.id] ? (
+      {selected && selectedSession && selected.engine !== "redis" && (
+        <div className="explorer-filters" role="group" aria-label="Object kind filter">
+          {EXPLORER_FILTER_CHIPS.map((chip) => (
+            <button
+              key={chip.id}
+              type="button"
+              className={`explorer-filter-chip ${filter === chip.id ? "active" : ""}`}
+              aria-pressed={filter === chip.id}
+              onClick={() => setFilter(chip.id)}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="schema-tree" ref={treeRef} onKeyDown={handleTreeKeyDown}>
+        {!selected || !selectedSession ? (
           <div className="explorer-empty">
             <Database size={23} />
             <span>
@@ -227,49 +403,85 @@ export function Sidebar({
               to explore its schema.
             </span>
           </div>
+        ) : schemaGroups.length === 0 ? (
+          <div className="explorer-empty">
+            <Database size={21} />
+            <span>
+              {isSearching || filter !== "all"
+                ? "No matching database objects."
+                : selected.engine === "redis"
+                  ? "Open SQL Studio to scan Redis keys."
+                  : "No readable schema objects found."}
+            </span>
+          </div>
         ) : (
-          [...grouped].map(([name, entries]) => (
-            <div className="schema-group" key={name}>
-              <button
-                className="schema-heading"
-                aria-expanded={Boolean(schemas.has(name) || search)}
-                onClick={() =>
-                  setSchemas((old) => {
-                    const next = new Set(old);
-                    next.has(name) ? next.delete(name) : next.add(name);
-                    return next;
-                  })
-                }
-              >
-                {schemas.has(name) || search ? (
-                  <ChevronDown size={12} />
-                ) : (
-                  <ChevronRight size={12} />
-                )}
-                <Database size={13} />
-                <span>{name}</span>
-                <span className="schema-count">{entries.length}</span>
-              </button>
-              {(schemas.has(name) || search) &&
-                entries.slice(0, 200).map(({ table }) => (
-                  <button
-                    key={table.name}
-                    className="table-link"
-                    onClick={() =>
-                      void state
-                        .openTable(selected.id, table)
-                        .catch((error) => state.notify(String(error.message ?? error)))
-                    }
-                  >
-                    <Table2 size={13} />
-                    <span>{table.name}</span>
-                  </button>
-                ))}
-              {(schemas.has(name) || search) && entries.length > 200 && (
-                <div className="tree-limit">Search to narrow {entries.length} tables</div>
-              )}
-            </div>
-          ))
+          schemaGroups.map((group) => {
+            const schemaOpen = isSchemaExpanded(group.schema);
+            return (
+              <div className="schema-group" key={group.schema}>
+                <button
+                  type="button"
+                  data-tree-node={`schema:${group.schema}`}
+                  className="schema-heading"
+                  aria-expanded={schemaOpen}
+                  onClick={() => setSchemaOpen(group.schema, !schemaOpen)}
+                >
+                  {schemaOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <Database size={13} />
+                  <span>{group.schema}</span>
+                  <span className="schema-count">{group.totalCount}</span>
+                </button>
+                {schemaOpen &&
+                  group.categories.map((cat) => {
+                    const catOpen = isCategoryExpanded(cat.key);
+                    return (
+                      <div className="explorer-category" key={cat.key}>
+                        <button
+                          type="button"
+                          data-tree-node={`cat:${cat.key}`}
+                          className="explorer-category-heading"
+                          aria-expanded={catOpen}
+                          onClick={() => setCategoryOpen(cat.key, !catOpen)}
+                        >
+                          {catOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                          <CategoryIcon category={cat.id} />
+                          <span>{cat.label}</span>
+                          <span className="schema-count">{cat.items.length}</span>
+                        </button>
+                        {catOpen &&
+                          cat.items.slice(0, 200).map((item) => (
+                            <button
+                              type="button"
+                              key={item.key}
+                              data-tree-node={`item:${item.key}`}
+                              className="table-link"
+                              title={item.tooltip}
+                              onClick={() =>
+                                void state
+                                  .openObject(selected.id, item.object)
+                                  .catch((error) => state.notify(String(error.message ?? error)))
+                              }
+                            >
+                              <ObjectKindIcon kind={item.object.kind} />
+                              <span>{item.primaryLabel}</span>
+                              {item.secondaryLabel && (
+                                <em className="explorer-item-badge" aria-hidden="true">
+                                  {item.secondaryLabel}
+                                </em>
+                              )}
+                            </button>
+                          ))}
+                        {catOpen && cat.items.length > 200 && (
+                          <div className="tree-limit">
+                            Search to narrow {cat.items.length} {cat.label.toLowerCase()}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+          })
         )}
       </div>
       <nav className="sidebar-tools">
@@ -283,7 +495,7 @@ export function Sidebar({
         </button>
         <button
           onClick={() => {
-            if (selected && state.sessions[selected.id]) state.openUtility("processes");
+            if (selected && selectedSession) state.openUtility("processes");
             else state.notify("Connect to a database to inspect processes.");
           }}
         >

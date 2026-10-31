@@ -76,6 +76,8 @@ beforeEach(() => {
     tabs: [],
     activeTabId: null,
     tableLayouts: [],
+    catalog: {},
+    objects: {},
     sessions: { profile: session },
   });
 });
@@ -419,4 +421,95 @@ test("table column layouts are included in workspace snapshots and purged when r
   useStudio.getState().removeConnection("profile");
   expect(useStudio.getState().tableLayouts).toEqual([]);
   expect(workspaceSnapshot().tableLayouts).toEqual([]);
+});
+
+test("refreshCatalog gates database_objects on objectExplorer capability and clears objects on disconnect", async () => {
+  vi.mocked(client.call).mockImplementation(((command: string) => {
+    if (command === "catalog") {
+      return Promise.resolve([
+        {
+          table: { schema: "public", name: "orders" },
+          kind: "r",
+          estimatedRows: 10,
+          totalBytes: 1,
+        },
+      ]);
+    }
+    if (command === "database_objects") {
+      return Promise.resolve([
+        {
+          object: { schema: "public", name: "calc", kind: "function", identity: "integer" },
+          ownerTable: null,
+          signature: "(integer) -> integer",
+          estimatedRows: null,
+          totalBytes: null,
+        },
+      ]);
+    }
+    return Promise.resolve(null);
+  }) as typeof client.call);
+
+  // Without objectExplorer capability (e.g. Snowflake / omitted mock), database_objects is never called
+  await useStudio.getState().refreshCatalog("profile");
+  expect(client.call).toHaveBeenCalledTimes(1);
+  expect(client.call).toHaveBeenCalledWith("catalog", { sessionId: "session" });
+  expect(useStudio.getState().objects.profile).toEqual([]);
+
+  // With objectExplorer: true, database_objects is fetched and stored
+  useStudio.setState({
+    sessions: {
+      profile: {
+        ...session,
+        capabilities: { ...session.capabilities, objectExplorer: true },
+      },
+    },
+  });
+  await useStudio.getState().refreshCatalog("profile");
+  expect(client.call).toHaveBeenCalledWith("database_objects", { sessionId: "session" });
+  expect(useStudio.getState().objects.profile).toHaveLength(1);
+
+  useStudio.getState().disconnected("profile");
+  expect(useStudio.getState().objects.profile).toBeUndefined();
+});
+
+test("openObject distinguishes overloaded routines and routes relations to table tabs", async () => {
+  const source = schema("id");
+  vi.mocked(client.call).mockImplementation(((command: string) =>
+    Promise.resolve(
+      command === "table_schema" ? source : command === "browse_table" ? page(source) : null,
+    )) as typeof client.call);
+
+  await useStudio
+    .getState()
+    .openObject(
+      "profile",
+      { schema: "public", name: "fixture", kind: "view", identity: null },
+      "ddl",
+    );
+  expect(useStudio.getState().tabs).toHaveLength(1);
+  expect(useStudio.getState().tabs[0].kind).toBe("table");
+  expect(useStudio.getState().tabs[0].view).toBe("ddl");
+
+  const fnInt = {
+    schema: "public",
+    name: "r3_calc",
+    kind: "function" as const,
+    identity: "integer",
+  };
+  const fnNum = {
+    schema: "public",
+    name: "r3_calc",
+    kind: "function" as const,
+    identity: "numeric, integer",
+  };
+  await useStudio.getState().openObject("profile", fnInt);
+  await useStudio.getState().openObject("profile", fnNum);
+  await useStudio.getState().openObject("profile", fnInt);
+
+  const tabs = useStudio.getState().tabs;
+  expect(tabs).toHaveLength(3);
+  expect(tabs[1].kind).toBe("object");
+  expect(tabs[1].title).toBe("r3_calc(integer)");
+  expect(tabs[2].title).toBe("r3_calc(numeric, integer)");
+  expect(useStudio.getState().activeTabId).toBe(tabs[1].id);
 });
