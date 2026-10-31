@@ -29,6 +29,8 @@
     "allow-execute-plan",
     "allow-cancel-run",
     "allow-catalog",
+    "allow-database-objects",
+    "allow-object-details",
     "allow-completion-catalog",
     "allow-completion-schema",
     "allow-redis-scan",

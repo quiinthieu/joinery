@@ -68,7 +68,7 @@ impl Mysql {
     }
     pub(super) async fn catalog_tables(&self) -> AppResult<Vec<TableInfo>> {
         let rows=self.metadata(|conn|Box::pin(fetch(conn,
-            "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,TABLE_ROWS,DATA_LENGTH+INDEX_LENGTH FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME LIMIT 10001",
+            "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,TABLE_ROWS,DATA_LENGTH+INDEX_LENGTH FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE<>'SEQUENCE' ORDER BY TABLE_NAME LIMIT 10001",
             vec![],10000,8*1024*1024))).await?;
         Ok(rows
             .into_iter()

@@ -1210,6 +1210,34 @@ impl Studio {
     pub async fn catalog(&self, session_id: &str) -> AppResult<Vec<TableInfo>> {
         self.session(session_id)?.driver.catalog().await
     }
+    pub async fn database_objects(
+        &self,
+        session_id: &str,
+    ) -> AppResult<Vec<DatabaseObjectSummary>> {
+        let mut objects = self.session(session_id)?.driver.database_objects().await?;
+        if objects.len() > 10_000 {
+            objects.truncate(10_000);
+        }
+        Ok(objects)
+    }
+    pub async fn object_details(
+        &self,
+        session_id: &str,
+        object: &DatabaseObjectRef,
+    ) -> AppResult<ObjectDetails> {
+        const MAX_OBJECT_DDL_BYTES: usize = 256 * 1024;
+        const MAX_OBJECT_DEPS: usize = 200;
+        let mut details = self
+            .session(session_id)?
+            .driver
+            .object_details(object)
+            .await?;
+        details.ddl = details.ddl.capped(MAX_OBJECT_DDL_BYTES);
+        details.uses = finalize_dependency_edges(&details.object, details.uses, MAX_OBJECT_DEPS);
+        details.used_by =
+            finalize_dependency_edges(&details.object, details.used_by, MAX_OBJECT_DEPS);
+        Ok(details)
+    }
     pub async fn schema(&self, session_id: &str, table: &TableRef) -> AppResult<TableSchema> {
         let session = self.session(session_id)?;
         self.schema_for_session(&session, table).await

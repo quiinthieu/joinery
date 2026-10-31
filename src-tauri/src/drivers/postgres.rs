@@ -11,6 +11,8 @@ use tokio::sync::OnceCell;
 use tokio_postgres::{Client, Config, SimpleQueryMessage, types::ToSql};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+mod explorer;
+
 pub struct Postgres {
     client: Client,
     metadata: OnceCell<Client>,
@@ -95,6 +97,7 @@ impl Postgres {
                 table_editing: true,
                 table_filtering: true,
                 processes: true,
+                object_explorer: true,
             },
         };
         let driver = Self {
@@ -326,6 +329,14 @@ impl Driver for Postgres {
 
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         schema_on(self.metadata().await?, table, false).await
+    }
+
+    async fn database_objects(&self) -> AppResult<Vec<DatabaseObjectSummary>> {
+        explorer::database_objects_on(self.metadata().await?).await
+    }
+
+    async fn object_details(&self, object: &DatabaseObjectRef) -> AppResult<ObjectDetails> {
+        explorer::object_details_on(self.metadata().await?, object).await
     }
 
     async fn referencing_keys(&self, table: &TableRef) -> AppResult<Vec<InboundForeignKey>> {

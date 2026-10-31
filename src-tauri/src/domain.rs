@@ -138,6 +138,10 @@ pub struct EngineCapabilities {
     /// Server-side typed sorting and filtering while browsing tables.
     pub table_filtering: bool,
     pub processes: bool,
+    /// Extended schema object explorer, DDL inspection, and object dependencies.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub object_explorer: bool,
 }
 
 /// One table-browser ordering key; primary-key tie-breakers are implicit.
@@ -386,6 +390,188 @@ pub struct TableSchema {
     pub primary_key: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>,
     pub editable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum DatabaseObjectKind {
+    Table,
+    PartitionedTable,
+    View,
+    MaterializedView,
+    Function,
+    Procedure,
+    Sequence,
+    Trigger,
+    Index,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseObjectRef {
+    pub schema: String,
+    pub name: String,
+    pub kind: DatabaseObjectKind,
+    /// Disambiguates overloaded PostgreSQL routines (identity argument types)
+    /// or table-scoped triggers and indexes (`owner_table`).
+    #[serde(default)]
+    pub identity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseObjectSummary {
+    pub object: DatabaseObjectRef,
+    pub owner_table: Option<String>,
+    pub signature: Option<String>,
+    pub estimated_rows: Option<f64>,
+    pub total_bytes: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    pub method: String,
+    pub unique: bool,
+    pub primary: bool,
+    pub expressions: Vec<String>,
+    pub predicate: Option<String>,
+    pub definition: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConstraintKind {
+    PrimaryKey,
+    ForeignKey,
+    Unique,
+    Check,
+    Exclusion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstraintInfo {
+    pub name: String,
+    pub kind: ConstraintKind,
+    pub columns: Vec<String>,
+    pub target: Option<TableRef>,
+    pub target_columns: Vec<String>,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerInfo {
+    pub name: String,
+    pub table_name: String,
+    pub timing: String,
+    pub events: Vec<String>,
+    pub orientation: String,
+    pub enabled: bool,
+    pub definition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutineInfo {
+    pub identity_arguments: String,
+    pub arguments: String,
+    pub return_type: Option<String>,
+    pub language: String,
+    pub volatility: Option<String>,
+    pub security_definer: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceInfo {
+    pub data_type: String,
+    pub start_value: String,
+    pub min_value: String,
+    pub max_value: String,
+    pub increment_by: String,
+    pub cache_size: String,
+    pub cycle: bool,
+    pub last_value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyEdge {
+    pub object: DatabaseObjectRef,
+    pub relation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ObjectDdlStatus {
+    Available { ddl: String, truncated: bool },
+    Unavailable { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectDetails {
+    pub object: DatabaseObjectRef,
+    pub owner_table: Option<TableRef>,
+    pub comment: Option<String>,
+    pub ddl: ObjectDdlStatus,
+    pub indexes: Vec<IndexInfo>,
+    pub constraints: Vec<ConstraintInfo>,
+    pub triggers: Vec<TriggerInfo>,
+    pub routine: Option<RoutineInfo>,
+    pub sequence: Option<SequenceInfo>,
+    pub uses: Vec<DependencyEdge>,
+    pub used_by: Vec<DependencyEdge>,
+}
+
+impl ObjectDdlStatus {
+    pub fn capped(self, max_bytes: usize) -> Self {
+        match self {
+            Self::Available { mut ddl, truncated } => {
+                if ddl.len() <= max_bytes {
+                    return Self::Available { ddl, truncated };
+                }
+                let mut end = max_bytes;
+                while end > 0 && !ddl.is_char_boundary(end) {
+                    end -= 1;
+                }
+                ddl.truncate(end);
+                Self::Available {
+                    ddl,
+                    truncated: true,
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+pub fn finalize_dependency_edges(
+    self_object: &DatabaseObjectRef,
+    edges: impl IntoIterator<Item = DependencyEdge>,
+    max_edges: usize,
+) -> Vec<DependencyEdge> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for edge in edges {
+        if edge.object == *self_object {
+            continue;
+        }
+        if seen.insert(edge.object.clone()) {
+            result.push(edge);
+            if result.len() >= max_edges {
+                break;
+            }
+        }
+    }
+    result
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1144,5 +1330,88 @@ mod tests {
         assert_eq!(keys[0].columns, ["note_order", "note_line"]);
         assert_eq!(keys[0].target_columns, ["order_id", "line_no"]);
         assert_eq!(keys[1].source, other_notes);
+    }
+
+    #[test]
+    fn ddl_capping_preserves_utf8_boundaries_and_marks_truncation() {
+        let ddl = ObjectDdlStatus::Available {
+            ddl: "CREATE VIEW v AS SELECT 'héllo世界';".into(),
+            truncated: false,
+        };
+        let intact = ddl.clone().capped(1024);
+        assert_eq!(intact, ddl);
+
+        // Cut right inside multi-byte 'é' / '世'
+        let cut = "SELECT 'é世界';";
+        let capped = ObjectDdlStatus::Available {
+            ddl: cut.into(),
+            truncated: false,
+        }
+        .capped(9);
+        match capped {
+            ObjectDdlStatus::Available { ddl, truncated } => {
+                assert!(truncated);
+                assert_eq!(ddl, "SELECT '");
+            }
+            ObjectDdlStatus::Unavailable { .. } => panic!("expected available DDL"),
+        }
+    }
+
+    #[test]
+    fn dependency_edges_filter_self_cycles_deduplicate_and_bound() {
+        let self_view = DatabaseObjectRef {
+            schema: "public".into(),
+            name: "v_cycle_a".into(),
+            kind: DatabaseObjectKind::View,
+            identity: None,
+        };
+        let mutual_view = DatabaseObjectRef {
+            schema: "public".into(),
+            name: "v_cycle_b".into(),
+            kind: DatabaseObjectKind::View,
+            identity: None,
+        };
+        let fn_int = DatabaseObjectRef {
+            schema: "public".into(),
+            name: "calc".into(),
+            kind: DatabaseObjectKind::Function,
+            identity: Some("integer".into()),
+        };
+        let fn_num = DatabaseObjectRef {
+            schema: "public".into(),
+            name: "calc".into(),
+            kind: DatabaseObjectKind::Function,
+            identity: Some("numeric, integer".into()),
+        };
+        let edges = finalize_dependency_edges(
+            &self_view,
+            vec![
+                DependencyEdge {
+                    object: self_view.clone(),
+                    relation: "rewrite self".into(),
+                },
+                DependencyEdge {
+                    object: mutual_view.clone(),
+                    relation: "view".into(),
+                },
+                DependencyEdge {
+                    object: mutual_view.clone(),
+                    relation: "duplicate".into(),
+                },
+                DependencyEdge {
+                    object: fn_int.clone(),
+                    relation: "function".into(),
+                },
+                DependencyEdge {
+                    object: fn_num.clone(),
+                    relation: "function".into(),
+                },
+            ],
+            2,
+        );
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].object, mutual_view);
+        assert_eq!(edges[0].relation, "view");
+        assert_eq!(edges[1].object, fn_int);
     }
 }

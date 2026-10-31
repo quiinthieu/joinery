@@ -72,6 +72,18 @@ pub trait Driver: Send + Sync {
         ))
     }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>>;
+    async fn database_objects(&self) -> AppResult<Vec<DatabaseObjectSummary>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Extended database object discovery is unavailable for this engine",
+        ))
+    }
+    async fn object_details(&self, _object: &DatabaseObjectRef) -> AppResult<ObjectDetails> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Database object details are unavailable for this engine",
+        ))
+    }
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema>;
     async fn referencing_keys(&self, _table: &TableRef) -> AppResult<Vec<InboundForeignKey>> {
         Err(AppError::new(

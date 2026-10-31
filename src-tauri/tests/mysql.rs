@@ -2217,3 +2217,279 @@ async fn mysql_mariadb_and_cross_engine_postgres_data_comparison() {
     completed(&run(&studio, &pg_s, "DROP TABLE public.joinery_r2_xengine_cmp").await);
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn object_explorer_inspects_mysql_and_mariadb_objects_ddl_and_dependencies() {
+    for port in [53306, 53307] {
+        let is_maria = port == 53307;
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        assert!(session.capabilities.object_explorer, "port {port}");
+
+        completed(&run(&studio, &session, "DROP VIEW IF EXISTS r3_child_view").await);
+        completed(&run(&studio, &session, "DROP TRIGGER IF EXISTS r3_child_bi_trg").await);
+        completed(&run(&studio, &session, "DROP TABLE IF EXISTS r3_child").await);
+        completed(&run(&studio, &session, "DROP TABLE IF EXISTS r3_parent").await);
+        completed(&run(&studio, &session, "DROP FUNCTION IF EXISTS r3_double_val").await);
+        completed(&run(&studio, &session, "DROP PROCEDURE IF EXISTS r3_ping_proc").await);
+        if is_maria {
+            completed(&run(&studio, &session, "DROP SEQUENCE IF EXISTS r3_maria_seq").await);
+        }
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE TABLE r3_parent (
+                   id BIGINT NOT NULL PRIMARY KEY,
+                   label VARCHAR(64) NOT NULL
+                 ) ENGINE=InnoDB",
+            )
+            .await,
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE TABLE r3_child (
+                   id BIGINT NOT NULL PRIMARY KEY,
+                   parent_id BIGINT NOT NULL,
+                   code VARCHAR(32) NOT NULL UNIQUE,
+                   amount INT NOT NULL,
+                   note VARCHAR(64) NULL,
+                   CONSTRAINT r3_child_parent_fk FOREIGN KEY (parent_id) REFERENCES r3_parent(id),
+                   CONSTRAINT r3_child_amt_chk CHECK (amount >= 0)
+                 ) ENGINE=InnoDB",
+            )
+            .await,
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE INDEX r3_idx_note_prefix ON r3_child (note(12))",
+            )
+            .await,
+        );
+        if !is_maria {
+            completed(
+                &run(
+                    &studio,
+                    &session,
+                    "CREATE INDEX r3_idx_lower_code ON r3_child ((LOWER(code)))",
+                )
+                .await,
+            );
+        }
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE TRIGGER r3_child_bi_trg BEFORE INSERT ON r3_child FOR EACH ROW SET NEW.amount = GREATEST(NEW.amount, 0)",
+            )
+            .await,
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE VIEW r3_child_view AS SELECT c.id, c.code, p.label FROM r3_child c JOIN r3_parent p ON p.id = c.parent_id",
+            )
+            .await,
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE FUNCTION r3_double_val(x INT) RETURNS INT DETERMINISTIC NO SQL RETURN x * 2",
+            )
+            .await,
+        );
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE PROCEDURE r3_ping_proc(IN tag VARCHAR(32)) SELECT tag",
+            )
+            .await,
+        );
+        if is_maria {
+            completed(
+                &run(
+                    &studio,
+                    &session,
+                    "CREATE SEQUENCE r3_maria_seq START WITH 100 INCREMENT BY 10 MINVALUE 10 MAXVALUE 9000 CYCLE",
+                )
+                .await,
+            );
+        }
+
+        let catalog = studio.catalog(&session.id).await.unwrap();
+        assert!(
+            !catalog.iter().any(|t| t.table.name == "r3_maria_seq"),
+            "sequences must not appear as normal tables on port {port}"
+        );
+
+        let objects = studio.database_objects(&session.id).await.unwrap();
+        assert!(
+            objects.iter().any(|o| o.object.name == "r3_double_val"
+                && o.object.kind == DatabaseObjectKind::Function),
+            "port {port}"
+        );
+        assert!(
+            objects.iter().any(|o| o.object.name == "r3_ping_proc"
+                && o.object.kind == DatabaseObjectKind::Procedure),
+            "port {port}"
+        );
+        assert!(
+            objects.iter().any(|o| o.object.name == "r3_child_bi_trg"
+                && o.object.kind == DatabaseObjectKind::Trigger),
+            "port {port}"
+        );
+        assert!(
+            objects.iter().any(|o| o.object.name == "r3_idx_note_prefix"
+                && o.object.kind == DatabaseObjectKind::Index),
+            "port {port}"
+        );
+
+        let child_details = studio
+            .object_details(
+                &session.id,
+                &DatabaseObjectRef {
+                    schema: "joinery".into(),
+                    name: "r3_child".into(),
+                    kind: DatabaseObjectKind::Table,
+                    identity: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            child_details
+                .constraints
+                .iter()
+                .any(|c| c.kind == ConstraintKind::Check),
+            "port {port}: {:?}",
+            child_details.constraints
+        );
+        assert!(
+            child_details
+                .indexes
+                .iter()
+                .any(|i| i.name == "r3_idx_note_prefix" && i.expressions == vec!["`note`(12)"]),
+            "port {port}: {:?}",
+            child_details.indexes
+        );
+        if !is_maria {
+            assert!(
+                child_details
+                    .indexes
+                    .iter()
+                    .any(|i| i.name == "r3_idx_lower_code" && !i.expressions.is_empty()),
+                "MySQL 8.4 functional index"
+            );
+        }
+        assert!(
+            child_details
+                .triggers
+                .iter()
+                .any(|t| t.name == "r3_child_bi_trg" && t.timing == "BEFORE"),
+            "port {port}"
+        );
+        assert!(
+            matches!(child_details.ddl, ObjectDdlStatus::Available { ref ddl, .. } if ddl.contains("CREATE TABLE")),
+            "port {port}"
+        );
+        assert!(
+            child_details
+                .uses
+                .iter()
+                .any(|e| e.object.name == "r3_parent"),
+            "port {port}"
+        );
+        assert!(
+            child_details
+                .used_by
+                .iter()
+                .any(|e| e.object.name == "r3_child_view"),
+            "port {port}: {:?}",
+            child_details.used_by
+        );
+
+        let view_details = studio
+            .object_details(
+                &session.id,
+                &DatabaseObjectRef {
+                    schema: "joinery".into(),
+                    name: "r3_child_view".into(),
+                    kind: DatabaseObjectKind::View,
+                    identity: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            view_details
+                .uses
+                .iter()
+                .any(|e| e.object.name == "r3_child"),
+            "port {port}: {:?}",
+            view_details.uses
+        );
+
+        let fn_details = studio
+            .object_details(
+                &session.id,
+                &DatabaseObjectRef {
+                    schema: "joinery".into(),
+                    name: "r3_double_val".into(),
+                    kind: DatabaseObjectKind::Function,
+                    identity: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fn_details.routine.as_ref().unwrap().volatility.as_deref(),
+            Some("DETERMINISTIC"),
+            "port {port}"
+        );
+        assert!(
+            matches!(fn_details.ddl, ObjectDdlStatus::Available { ref ddl, .. } if ddl.to_ascii_uppercase().contains("FUNCTION")),
+            "port {port}: {:?}",
+            fn_details.ddl
+        );
+
+        if is_maria {
+            assert!(objects.iter().any(|o| o.object.name == "r3_maria_seq"
+                && o.object.kind == DatabaseObjectKind::Sequence));
+            let seq_details = studio
+                .object_details(
+                    &session.id,
+                    &DatabaseObjectRef {
+                        schema: "joinery".into(),
+                        name: "r3_maria_seq".into(),
+                        kind: DatabaseObjectKind::Sequence,
+                        identity: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let seq = seq_details.sequence.expect("MariaDB sequence metadata");
+            assert_eq!(seq.start_value, "100");
+            assert_eq!(seq.increment_by, "10");
+            assert!(seq.cycle);
+        }
+
+        completed(&run(&studio, &session, "DROP VIEW IF EXISTS r3_child_view").await);
+        completed(&run(&studio, &session, "DROP TRIGGER IF EXISTS r3_child_bi_trg").await);
+        completed(&run(&studio, &session, "DROP TABLE IF EXISTS r3_child").await);
+        completed(&run(&studio, &session, "DROP TABLE IF EXISTS r3_parent").await);
+        completed(&run(&studio, &session, "DROP FUNCTION IF EXISTS r3_double_val").await);
+        completed(&run(&studio, &session, "DROP PROCEDURE IF EXISTS r3_ping_proc").await);
+        if is_maria {
+            completed(&run(&studio, &session, "DROP SEQUENCE IF EXISTS r3_maria_seq").await);
+        }
+        studio.shutdown();
+    }
+}
