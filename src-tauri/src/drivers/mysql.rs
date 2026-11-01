@@ -121,6 +121,20 @@ impl Mysql {
             version.ok_or_else(|| AppError::internal("The server returned no version"))?;
         let maria = version.to_ascii_lowercase().contains("mariadb");
         initialize(&mut conn, profile.safe_mode == SafeMode::ReadOnly, maria).await?;
+        // COM_STMT_PREPARE checks syntax/support without executing the SELECT.
+        // Never collect actual measurements during connection or change the
+        // user's optimizer/JSON-format settings to enable a plan action.
+        let actual_plan = if maria {
+            match conn.prep("ANALYZE FORMAT=JSON SELECT 1").await {
+                Ok(statement) => {
+                    conn.close(statement).await.map_err(mysql_error)?;
+                    Some(ActualPlanFormat::MariaDbJson)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         if profile.tls_mode == TlsMode::VerifyFull {
             let cipher: Option<(String, String)> = conn
                 .query_first("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
@@ -180,6 +194,7 @@ impl Mysql {
                     table_filtering: true,
                     processes: true,
                     object_explorer: true,
+                    actual_plan,
                 },
             },
         ))

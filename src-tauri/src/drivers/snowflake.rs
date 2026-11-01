@@ -178,6 +178,7 @@ impl Snowflake {
                 table_filtering: false,
                 processes: false,
                 object_explorer: false,
+                actual_plan: None,
             },
         };
         Ok((driver, info))

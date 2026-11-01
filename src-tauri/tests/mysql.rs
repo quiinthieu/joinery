@@ -82,6 +82,172 @@ async fn setup(port: u16, mode: SafeMode) -> (tempfile::TempDir, Arc<Studio>, Se
 }
 
 #[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn actual_plan_capability_is_mariadb_only_and_read_only_is_enforced() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        assert_eq!(
+            session.capabilities.actual_plan,
+            if port == 53307 {
+                Some(ActualPlanFormat::MariaDbJson)
+            } else {
+                None
+            }
+        );
+        assert_eq!(
+            studio
+                .prepare_explain(&session.id, "SELECT 1", true)
+                .unwrap_err()
+                .code,
+            if port == 53307 {
+                ErrorCode::PolicyBlocked
+            } else {
+                ErrorCode::Unsupported
+            }
+        );
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable MariaDB service"]
+async fn mariadb_actual_plan_requires_one_use_review_and_preserves_session_effects() {
+    let (_root, studio, session) = setup(53307, SafeMode::Silent).await;
+    completed(&run(&studio, &session, "CREATE TEMPORARY TABLE analyze_review_probe (id INT); INSERT INTO analyze_review_probe VALUES (1); SELECT LAST_INSERT_ID(0)").await);
+    let sql = "SELECT LAST_INSERT_ID(LAST_INSERT_ID()+1) FROM analyze_review_probe";
+    let plan = studio.prepare_explain(&session.id, sql, true).unwrap();
+    assert!(plan.requires_approval && !plan.requires_passphrase);
+    assert_eq!(
+        plan.statements[0].sql,
+        format!("ANALYZE FORMAT=JSON\n{sql}")
+    );
+    assert_eq!(
+        studio
+            .execute(&plan.id, None, Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+    let untouched = result(&run(&studio, &session, "SELECT LAST_INSERT_ID()").await);
+    assert_eq!(
+        studio.results.row(&untouched.id, 0).unwrap()[0].as_deref(),
+        Some("0")
+    );
+
+    let old = studio.prepare_explain(&session.id, sql, true).unwrap();
+    let old_token = studio.authorize(&old.id, None, None).unwrap();
+    let plan = studio.prepare_explain(&session.id, sql, true).unwrap();
+    assert_eq!(
+        studio
+            .execute(&old.id, Some(&old_token), Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    let events = execute(&studio, &plan).await;
+    completed(&events);
+    assert!(events.iter().any(|e| matches!(e, QueryEvent::PlanContext { state: Some(state), .. } if state.session_id == session.id && state.database == "joinery")));
+    let output = result(&events);
+    let raw = studio.results.row(&output.id, 0).unwrap()[0]
+        .clone()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed["query_block"]["r_loops"].as_u64(), Some(1));
+    assert!(parsed["query_block"]["r_total_time_ms"].is_number());
+    assert_eq!(
+        studio
+            .execute(&plan.id, None, Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    let called = result(&run(&studio, &session, "SELECT LAST_INSERT_ID()").await);
+    assert_eq!(
+        studio.results.row(&called.id, 0).unwrap()[0].as_deref(),
+        Some("1")
+    );
+    let direct = studio
+        .prepare_execution(&session.id, "ANALYZE FORMAT=JSON SELECT 1")
+        .unwrap();
+    assert!(direct.requires_approval);
+    let stale = studio
+        .prepare_explain(&session.id, "SELECT 1", true)
+        .unwrap();
+    studio.disconnect(&session.id);
+    assert_eq!(
+        studio.authorize(&stale.id, None, None).unwrap_err().code,
+        ErrorCode::ApprovalExpired
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable MariaDB service"]
+async fn mariadb_actual_plan_recovers_from_error_and_cancel_retires_the_session() {
+    let (_root, studio, session) = setup(53307, SafeMode::Silent).await;
+    let failed = studio
+        .prepare_explain(&session.id, "SELECT * FROM missing_analysis_table", true)
+        .unwrap();
+    assert!(execute(&studio, &failed).await.iter().any(|e| matches!(
+        e,
+        QueryEvent::Finished {
+            status: RunStatus::Failed,
+            ..
+        }
+    )));
+    let valid = studio
+        .prepare_explain(&session.id, "SELECT 1", true)
+        .unwrap();
+    completed(&execute(&studio, &valid).await);
+    let slow = studio
+        .prepare_explain(&session.id, "SELECT SLEEP(10)", true)
+        .unwrap();
+    let token = studio.authorize(&slow.id, None, None).unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let run_id = studio
+        .execute(
+            &slow.id,
+            Some(&token),
+            Arc::new(move |e| tx.send(e).is_ok()),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !matches!(
+            rx.recv().await.unwrap(),
+            QueryEvent::StatementStarted { .. }
+        ) {}
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    studio.cancel(&run_id).await.unwrap();
+    let mut closed = false;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = rx.recv().await {
+            match event {
+                QueryEvent::SessionClosed { .. } => closed = true,
+                QueryEvent::Finished { status, .. } => {
+                    assert_eq!(status, RunStatus::Cancelled);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(closed);
+    assert_eq!(
+        studio
+            .prepare_explain(&session.id, "SELECT 1", true)
+            .unwrap_err()
+            .code,
+        ErrorCode::ConnectionClosed
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB live-context fixtures"]
 async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
     for port in [53306, 53307] {

@@ -27,6 +27,7 @@ fn main() {
         SessionContextOptions::decl(),
         SessionInfo::decl(),
         EngineCapabilities::decl(),
+        ActualPlanFormat::decl(),
         StatementKind::decl(),
         StatementPlan::decl(),
         PreparedPlan::decl(),

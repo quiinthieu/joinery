@@ -109,6 +109,7 @@ impl Postgres {
                 table_filtering: true,
                 processes: true,
                 object_explorer: true,
+                actual_plan: Some(ActualPlanFormat::PostgresJson),
             },
         };
         let driver = Self {

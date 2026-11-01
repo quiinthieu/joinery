@@ -99,7 +99,8 @@ export function parseQueryPlan(raw: string): QueryPlan {
           ...metric(costs, "prefix_cost", "Prefix cost (optimizer units)"),
           ...metric(value, "r_rows", "Actual rows per loop"),
           ...metric(value, "r_loops", "Actual loops"),
-          ...metric(value, "r_total_time_ms", "Actual total", " ms"),
+          ...metric(value, "r_filtered", "Actual filtered", "%"),
+          ...metric(value, "r_total_time_ms", "Actual total including children", " ms"),
         ],
         children: Object.entries(value)
           .filter(([key, child]) => key !== "cost_info" && (record(child) || Array.isArray(child)))
@@ -108,6 +109,15 @@ export function parseQueryPlan(raw: string): QueryPlan {
       return [node];
     };
     result.roots = mysql(data.query_block, "$.query_block", "query_block", 0);
+    if (record(data.query_optimization)) {
+      result.timings = metric(
+        data.query_optimization,
+        "r_total_time_ms",
+        "Server optimization",
+        " ms",
+      );
+      if (result.timings.length) result.actual = true;
+    }
     return result;
   }
   throw new Error("Unrecognized plan format. The raw result is still available.");

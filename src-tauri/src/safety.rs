@@ -107,6 +107,7 @@ pub fn prepare(
     if profile.engine == EngineKind::Redis {
         return crate::drivers::redis::commands::prepare(session_id, profile, sql);
     }
+    let mut mysql_analysis = false;
     if profile.engine == EngineKind::Mysql {
         if has_mysql_executable_comment(sql) {
             return Err(AppError::new(
@@ -117,6 +118,31 @@ pub fn prepare(
         let tokens = Tokenizer::new(&MySqlDialect {}, sql)
             .tokenize()
             .map_err(|_| AppError::invalid("The SQL contains an unterminated token"))?;
+        // MariaDB's ANALYZE FORMAT=JSON and some MySQL EXPLAIN options are
+        // outside sqlparser's grammar. Detect their execution gate before
+        // AST fallback, including later statements, without matching literals
+        // or comments. EXPLAIN containing ANALYZE is conservatively reviewed.
+        let mut start = true;
+        let mut explain = false;
+        for token in &tokens {
+            match token {
+                Token::Whitespace(_) | Token::EOF => {}
+                Token::SemiColon => {
+                    start = true;
+                    explain = false;
+                }
+                Token::Word(word) if word.quote_style.is_none() => {
+                    if word.value.eq_ignore_ascii_case("ANALYZE") && (start || explain) {
+                        mysql_analysis = true;
+                    }
+                    if start {
+                        explain = word.value.eq_ignore_ascii_case("EXPLAIN");
+                    }
+                    start = false;
+                }
+                _ => start = false,
+            }
+        }
         let words = tokens
             .iter()
             .filter_map(|t| {
@@ -158,7 +184,7 @@ pub fn prepare(
             ));
         }
     };
-    let mut executes_analysis = false;
+    let mut executes_analysis = mysql_analysis;
     let statements = match Parser::parse_sql(dialect.as_ref(), sql) {
         Ok(ast) => {
             let parts = split_sql(dialect.as_ref(), sql)?;
@@ -203,7 +229,11 @@ pub fn prepare(
         // profiles. Set it before the plan is stored and fingerprinted.
         plan.requires_approval = true;
         plan.warnings.push(
-            "EXPLAIN ANALYZE executes the query. Side effects occur normally; execution may add profiling overhead.".into(),
+            if mysql_analysis {
+                "ANALYZE executes the statement. Side effects occur normally; execution may add profiling overhead."
+            } else {
+                "EXPLAIN ANALYZE executes the query. Side effects occur normally; execution may add profiling overhead."
+            }.into(),
         );
     }
     Ok(plan)
@@ -615,7 +645,7 @@ mod tests {
     fn estimated_plans_keep_existing_nested_statement_and_function_guards() {
         let readonly = profile(SafeMode::ReadOnly, Environment::Local);
         let simple =
-            crate::query_plan::explain_sql(EngineKind::Postgres, "SELECT 1", false).unwrap();
+            crate::query_plan::explain_sql(EngineKind::Postgres, "SELECT 1", false, None).unwrap();
         let plan = prepare("s", &readonly, &simple).unwrap();
         assert!(!plan.requires_approval);
         for sql in [
@@ -624,11 +654,48 @@ mod tests {
             "SELECT * FROM a FOR UPDATE",
         ] {
             let explained =
-                crate::query_plan::explain_sql(EngineKind::Postgres, sql, false).unwrap();
+                crate::query_plan::explain_sql(EngineKind::Postgres, sql, false, None).unwrap();
             assert!(prepare("s", &readonly, &explained).is_err(), "{sql}");
             let production = profile(SafeMode::Silent, Environment::Production);
             let plan = prepare("s", &production, &explained).unwrap();
             assert!(plan.requires_approval && plan.requires_passphrase, "{sql}");
+        }
+    }
+
+    #[test]
+    fn mariadb_analysis_requires_review_even_when_parsing_falls_back() {
+        let mut p = profile(SafeMode::Silent, Environment::Local);
+        p.engine = EngineKind::Mysql;
+        for sql in [
+            "ANALYZE FORMAT=JSON SELECT 1",
+            "/* analysis */ ANALYZE FORMAT = JSON SELECT 'é; value'",
+            "SELECT 1; -- next\n ANALYZE FORMAT=JSON SELECT 2",
+            "ANALYZE SELECT 1",
+            "EXPLAIN ANALYZE FORMAT=JSON SELECT 1",
+        ] {
+            let plan = prepare("s", &p, sql).unwrap();
+            assert!(plan.requires_approval, "{sql}");
+            assert!(
+                plan.warnings.iter().any(|w| w.contains("executes")),
+                "{sql}"
+            );
+            p.safe_mode = SafeMode::ReadOnly;
+            assert_eq!(
+                prepare("s", &p, sql).unwrap_err().code,
+                ErrorCode::PolicyBlocked
+            );
+            p.safe_mode = SafeMode::Silent;
+            p.environment = Environment::Production;
+            let production = prepare("s", &p, sql).unwrap();
+            assert!(production.requires_approval && production.requires_passphrase);
+            p.environment = Environment::Local;
+        }
+        for sql in [
+            "SELECT 'ANALYZE FORMAT=JSON'",
+            "SELECT 1 /* ANALYZE SELECT 2 */",
+            "SELECT `analyze` FROM sample",
+        ] {
+            assert!(!prepare("s", &p, sql).unwrap().requires_approval, "{sql}");
         }
     }
 

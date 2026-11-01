@@ -50,6 +50,22 @@ function prepared(sql: string): PreparedPlan {
 }
 
 describe("plan snapshot identity", () => {
+  it("compares MariaDB generated estimates and actuals using the observed session", () => {
+    const maria = { ...session, engine: "mysql", serverVersion: "11.4.13-MariaDB" } as SessionInfo;
+    const estimated = planSourceForExecution(
+      prepared("EXPLAIN FORMAT=JSON\nSELECT 1"),
+      maria,
+      runtime,
+    )!;
+    const actual = planSourceForExecution(
+      prepared("ANALYZE FORMAT=JSON\nSELECT 1"),
+      maria,
+      runtime,
+    )!;
+    expect(actual.query).toBe("SELECT 1");
+    expect(actual.executedSql).toBe("ANALYZE FORMAT=JSON\nSELECT 1");
+    expect(planMismatch(estimated, actual)).toBeNull();
+  });
   it("uses exact executed query bytes and recognizes only generated single-query wrappers", () => {
     const sql = "/* é */ SELECT 'a; b'; -- retain";
     const estimated = planSourceForExecution(

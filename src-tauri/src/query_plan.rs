@@ -1,4 +1,4 @@
-use crate::domain::{AppError, AppResult, EngineKind, ErrorCode};
+use crate::domain::{ActualPlanFormat, AppError, AppResult, EngineKind, ErrorCode};
 use sqlparser::{
     ast::Statement,
     dialect::{Dialect, MySqlDialect, PostgreSqlDialect},
@@ -7,7 +7,12 @@ use sqlparser::{
 
 /// Validate the complete input before adding EXPLAIN so a second statement
 /// can never escape the wrapper. Executing plans still require safety review.
-pub(crate) fn explain_sql(engine: EngineKind, sql: &str, analyze: bool) -> AppResult<String> {
+pub(crate) fn explain_sql(
+    engine: EngineKind,
+    sql: &str,
+    analyze: bool,
+    actual_plan: Option<ActualPlanFormat>,
+) -> AppResult<String> {
     let (dialect, prefix): (Box<dyn Dialect>, &str) = match (engine, analyze) {
         (EngineKind::Postgres, false) => (Box::new(PostgreSqlDialect {}), "EXPLAIN (FORMAT JSON)"),
         (EngineKind::Postgres, true) => (
@@ -15,11 +20,14 @@ pub(crate) fn explain_sql(engine: EngineKind, sql: &str, analyze: bool) -> AppRe
             "EXPLAIN (ANALYZE, FORMAT JSON)",
         ),
         (EngineKind::Mysql, false) => (Box::new(MySqlDialect {}), "EXPLAIN FORMAT=JSON"),
+        (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MariaDbJson) => {
+            (Box::new(MySqlDialect {}), "ANALYZE FORMAT=JSON")
+        }
         _ => {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
                 if analyze {
-                    "Actual plans are available for PostgreSQL only."
+                    "Actual plans are available for PostgreSQL and capability-checked MariaDB sessions."
                 } else {
                     "Estimated plans are available for PostgreSQL and MySQL/MariaDB."
                 },
@@ -50,7 +58,7 @@ mod tests {
     fn accepts_one_query_without_rewriting_literals_or_comments() {
         for engine in [EngineKind::Postgres, EngineKind::Mysql] {
             let sql = "/* keep */ WITH q AS (SELECT ';' AS value) SELECT * FROM q; -- end";
-            let output = explain_sql(engine, sql, false).unwrap();
+            let output = explain_sql(engine, sql, false, None).unwrap();
             assert!(output.ends_with(sql));
             assert!(!output.contains("ANALYZE"));
         }
@@ -69,33 +77,51 @@ mod tests {
                 "SELECT '",
             ] {
                 assert!(
-                    explain_sql(engine, sql, false).is_err(),
+                    explain_sql(engine, sql, false, None).is_err(),
                     "{engine:?}: {sql}"
                 );
             }
         }
-        assert!(explain_sql(EngineKind::Mysql, "SELECT 1 /*!; DELETE FROM t */", false).is_err());
-        assert!(explain_sql(EngineKind::Mysql, "SELECT 1 /*M!; DELETE FROM t */", false).is_err());
+        assert!(
+            explain_sql(
+                EngineKind::Mysql,
+                "SELECT 1 /*!; DELETE FROM t */",
+                false,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            explain_sql(
+                EngineKind::Mysql,
+                "SELECT 1 /*M!; DELETE FROM t */",
+                false,
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn unsupported_engines_and_oversized_input_fail_closed() {
         for engine in [EngineKind::Snowflake, EngineKind::Redis] {
-            assert!(explain_sql(engine, "SELECT 1", false).is_err());
+            assert!(explain_sql(engine, "SELECT 1", false, None).is_err());
         }
-        assert!(explain_sql(EngineKind::Postgres, &" ".repeat(1024 * 1024), false).is_err());
+        assert!(explain_sql(EngineKind::Postgres, &" ".repeat(1024 * 1024), false, None).is_err());
     }
 
     #[test]
-    fn actual_plan_is_postgres_only_and_validates_the_whole_query() {
+    fn actual_plan_requires_a_supported_engine_format_and_validates_the_whole_query() {
         let sql = "/* preserve */ SELECT 'é; value'; -- end";
         assert_eq!(
-            explain_sql(EngineKind::Postgres, sql, true).unwrap(),
+            explain_sql(EngineKind::Postgres, sql, true, None).unwrap(),
             format!("EXPLAIN (ANALYZE, FORMAT JSON)\n{sql}")
         );
         for engine in [EngineKind::Mysql, EngineKind::Snowflake, EngineKind::Redis] {
             assert_eq!(
-                explain_sql(engine, "SELECT 1", true).unwrap_err().code,
+                explain_sql(engine, "SELECT 1", true, None)
+                    .unwrap_err()
+                    .code,
                 ErrorCode::Unsupported
             );
         }
@@ -106,9 +132,38 @@ mod tests {
             "SELECT '",
         ] {
             assert!(
-                explain_sql(EngineKind::Postgres, sql, true).is_err(),
+                explain_sql(EngineKind::Postgres, sql, true, None).is_err(),
                 "{sql}"
             );
         }
+        let format = Some(ActualPlanFormat::MariaDbJson);
+        assert_eq!(
+            explain_sql(EngineKind::Mysql, sql, true, format).unwrap(),
+            format!("ANALYZE FORMAT=JSON\n{sql}")
+        );
+        for sql in [
+            "SELECT 1; SELECT 2",
+            "DELETE FROM t",
+            "ANALYZE SELECT 1",
+            "SELECT 1 /*!; DELETE FROM t */",
+            "SELECT 1 /*M!; DELETE FROM t */",
+            "SELECT '",
+        ] {
+            assert!(
+                explain_sql(EngineKind::Mysql, sql, true, format).is_err(),
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            explain_sql(
+                EngineKind::Mysql,
+                sql,
+                true,
+                Some(ActualPlanFormat::PostgresJson)
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
     }
 }

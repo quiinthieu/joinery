@@ -142,6 +142,17 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub object_explorer: bool,
+    /// Executing plan format available to this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub actual_plan: Option<ActualPlanFormat>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ActualPlanFormat {
+    PostgresJson,
+    MariaDbJson,
 }
 
 /// One table-browser ordering key; primary-key tie-breakers are implicit.

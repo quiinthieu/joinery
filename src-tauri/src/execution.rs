@@ -730,7 +730,12 @@ impl Studio {
         analyze: bool,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
-        let explained = crate::query_plan::explain_sql(session.profile.engine, sql, analyze)?;
+        let explained = crate::query_plan::explain_sql(
+            session.profile.engine,
+            sql,
+            analyze,
+            session.info.capabilities.actual_plan,
+        )?;
         self.prepare_execution(session_id, &explained)
     }
 
@@ -920,6 +925,7 @@ impl Studio {
                 "EXPLAIN (FORMAT JSON)\n",
                 "EXPLAIN (ANALYZE, FORMAT JSON)\n",
                 "EXPLAIN FORMAT=JSON\n",
+                "ANALYZE FORMAT=JSON\n",
             ]
             .iter()
             .any(|prefix| stored.plan.statements[0].sql.starts_with(prefix))

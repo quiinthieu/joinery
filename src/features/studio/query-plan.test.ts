@@ -77,12 +77,14 @@ describe("query plan display adapters", () => {
   it("handles MariaDB's different row fields and does not treat unknown metrics as times", () => {
     const plan = parseQueryPlan(
       JSON.stringify({
+        query_optimization: { r_total_time_ms: 0.25 },
         query_block: {
           table: {
             table_name: "sample",
             rows: 20,
             r_rows: 3,
             r_loops: 2,
+            r_filtered: 50,
             r_total_time_ms: 1.25,
             future_metric: 99,
             cost_info: { query_cost: "not numeric" },
@@ -95,8 +97,23 @@ describe("query plan display adapters", () => {
       { label: "Estimated rows", value: "20" },
       { label: "Actual rows per loop", value: "3" },
       { label: "Actual loops", value: "2" },
-      { label: "Actual total", value: "1.25 ms" },
+      { label: "Actual filtered", value: "50%" },
+      { label: "Actual total including children", value: "1.25 ms" },
     ]);
+    expect(plan.timings).toEqual([{ label: "Server optimization", value: "0.25 ms" }]);
+  });
+
+  it("recognizes MariaDB optimization-only actuals without inventing execution metrics", () => {
+    const plan = parseQueryPlan(
+      JSON.stringify({
+        query_optimization: { r_total_time_ms: 0 },
+        query_block: { table: { message: "No tables used" } },
+      }),
+    );
+    expect(plan.actual).toBe(true);
+    expect(plan.timings).toEqual([{ label: "Server optimization", value: "0 ms" }]);
+    expect(plan.roots[0].metrics).toEqual([]);
+    expect(plan.roots[0].children[0].metrics).toEqual([]);
   });
 
   it("fails closed on malformed or unsupported shapes and bounded resource violations", () => {

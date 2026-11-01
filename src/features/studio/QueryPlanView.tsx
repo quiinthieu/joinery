@@ -8,7 +8,7 @@ export function isQueryPlanResult(result: ResultInfo) {
   return (
     result.retainedRows === 1 &&
     result.columns.length === 1 &&
-    ["QUERY PLAN", "EXPLAIN"].includes(result.columns[0].name.toUpperCase())
+    ["QUERY PLAN", "EXPLAIN", "ANALYZE"].includes(result.columns[0].name.toUpperCase())
   );
 }
 

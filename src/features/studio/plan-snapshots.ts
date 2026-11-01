@@ -42,7 +42,7 @@ export function planSourceForExecution(
   const prefixes =
     session.engine === "postgres"
       ? ["EXPLAIN (FORMAT JSON)\n", "EXPLAIN (ANALYZE, FORMAT JSON)\n"]
-      : ["EXPLAIN FORMAT=JSON\n"];
+      : ["EXPLAIN FORMAT=JSON\n", "ANALYZE FORMAT=JSON\n"];
   const prefix = prefixes.find((value) => executedSql.startsWith(value));
   if (!prefix) return;
   return {
