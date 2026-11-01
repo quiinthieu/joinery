@@ -62,6 +62,131 @@ describe("scope-correct alias rename", () => {
     );
   });
 
+  test.each(["postgres", "mysql", "snowflake"] as const)(
+    "%s follows outer references in earlier ON clauses before a later alias shadows them",
+    (engine) => {
+      const state = stateWithCaret(
+        "SELECT |o.id FROM orders o WHERE EXISTS (SELECT o.id FROM customers x JOIN orders y ON y.id = o.id JOIN orders o ON o.id = x.id WHERE o.id = y.id)",
+        engine,
+      );
+      const target = analyzeAliasRename(state, state.selection.main.head, engine);
+      expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+        "SELECT renamed.id FROM orders renamed WHERE EXISTS (SELECT o.id FROM customers x JOIN orders y ON y.id = renamed.id JOIN orders o ON o.id = x.id WHERE o.id = y.id)".replaceAll(
+          "renamed",
+          engine === "snowflake" ? '"renamed"' : "renamed",
+        ),
+      );
+      expect(target.occurrences).toHaveLength(3);
+      expect(() => target.preview(state, engine === "snowflake" ? "Y" : "y")).toThrow(
+        /capture|conflict/i,
+      );
+    },
+  );
+
+  test("renames a later local declaration without adopting earlier correlated references", () => {
+    const state = stateWithCaret(
+      "SELECT o.id FROM orders o WHERE EXISTS (SELECT o.id FROM customers x JOIN orders y ON y.id = o.id JOIN orders |o ON o.id = x.id WHERE o.id = y.id)",
+    );
+    const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+    expect(
+      state.update({ changes: target.preview(state, "local_rows") }).state.doc.toString(),
+    ).toBe(
+      "SELECT o.id FROM orders o WHERE EXISTS (SELECT local_rows.id FROM customers x JOIN orders y ON y.id = o.id JOIN orders local_rows ON local_rows.id = x.id WHERE local_rows.id = y.id)",
+    );
+    expect(target.occurrences).toHaveLength(4);
+  });
+
+  test.each(["postgres", "mysql", "snowflake"] as const)(
+    "%s uses JOIN operands rather than preceding comma groups in ON subqueries",
+    (engine) => {
+      const state = stateWithCaret(
+        "SELECT |o.id FROM orders o WHERE EXISTS (SELECT o.id FROM orders o, customers x JOIN orders y ON EXISTS (SELECT 1 WHERE y.id = o.id) WHERE o.id = x.id)",
+        engine,
+      );
+      const target = analyzeAliasRename(state, state.selection.main.head, engine);
+      expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+        "SELECT renamed.id FROM orders renamed WHERE EXISTS (SELECT o.id FROM orders o, customers x JOIN orders y ON EXISTS (SELECT 1 WHERE y.id = renamed.id) WHERE o.id = x.id)".replaceAll(
+          "renamed",
+          engine === "snowflake" ? '"renamed"' : "renamed",
+        ),
+      );
+    },
+  );
+
+  test("keeps unresolved later qualifiers unresolved and rejects replacement capture in earlier ON", () => {
+    const state = stateWithCaret(
+      "SELECT |o.id FROM orders o JOIN customers x ON x.id = n.id JOIN orders n ON n.id = o.id",
+    );
+    const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+    expect(target.occurrences).toHaveLength(3);
+    expect(() => target.preview(state, "n")).toThrow(/capture|conflict/i);
+    expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+      "SELECT renamed.id FROM orders renamed JOIN customers x ON x.id = n.id JOIN orders n ON n.id = renamed.id",
+    );
+    const unbound = stateWithCaret(
+      "SELECT |o.id FROM orders o, customers x JOIN orders y ON y.id = n.id",
+    );
+    const separate = analyzeAliasRename(unbound, unbound.selection.main.head, "postgres");
+    // The comma-group alias remains outside this ON, including after replacement.
+    expect(separate.preview(unbound, "n")).toHaveLength(2);
+  });
+
+  test("preserves nested JOIN association when ON clauses close pending joins", () => {
+    const state = stateWithCaret(
+      "SELECT |o.id FROM orders o WHERE EXISTS (SELECT o.id FROM orders o JOIN customers x JOIN orders y ON y.id = o.id ON x.id = o.id)",
+    );
+    const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+    expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+      "SELECT renamed.id FROM orders renamed WHERE EXISTS (SELECT o.id FROM orders o JOIN customers x JOIN orders y ON y.id = renamed.id ON x.id = o.id)",
+    );
+  });
+
+  test("retains CROSS/NATURAL/USING operands for later joins and restores full scope after FROM", () => {
+    for (const join of [
+      "CROSS JOIN customers x",
+      "NATURAL JOIN customers x",
+      "JOIN customers x USING (id)",
+    ]) {
+      const state = stateWithCaret(
+        `SELECT |o.id FROM orders o ${join} LEFT JOIN orders y ON y.id = o.id WHERE o.id > 0 ORDER BY o.id`,
+      );
+      const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+      expect(target.occurrences).toHaveLength(5);
+      expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+        `SELECT renamed.id FROM orders renamed ${join} LEFT JOIN orders y ON y.id = renamed.id WHERE renamed.id > 0 ORDER BY renamed.id`,
+      );
+    }
+  });
+
+  test("supports MySQL CROSS JOIN conditions and keeps preceding CROSS joins left-associated", () => {
+    for (const join of [
+      "CROSS JOIN customers x ON x.id = o.id",
+      "CROSS JOIN customers x USING (id)",
+      "CROSS JOIN customers x JOIN orders y ON y.id = o.id",
+    ]) {
+      const state = stateWithCaret(`SELECT |o.id FROM orders o ${join}`, "mysql");
+      const target = analyzeAliasRename(state, state.selection.main.head, "mysql");
+      expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+        `SELECT renamed.id FROM orders renamed ${join.replaceAll("o.id", "renamed.id")}`,
+      );
+    }
+  });
+
+  test.each(["postgres", "mysql"] as const)(
+    "%s keeps a completed CROSS JOIN's local shadow in a later ON",
+    (engine) => {
+      const state = stateWithCaret(
+        "SELECT |o.id FROM orders o WHERE EXISTS (SELECT o.id FROM orders o CROSS JOIN customers x JOIN orders y ON y.id = o.id WHERE o.id = x.id)",
+        engine,
+      );
+      const target = analyzeAliasRename(state, state.selection.main.head, engine);
+      expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+        "SELECT renamed.id FROM orders renamed WHERE EXISTS (SELECT o.id FROM orders o CROSS JOIN customers x JOIN orders y ON y.id = o.id WHERE o.id = x.id)",
+      );
+      expect(target.occurrences).toHaveLength(2);
+    },
+  );
+
   test("rejects same-scope collisions, captured outer references and previously unbound qualifiers", () => {
     for (const marked of [
       "SELECT |o.id FROM orders o JOIN customers n ON o.id = n.id",
@@ -113,7 +238,7 @@ describe("scope-correct alias rename", () => {
     "SELECT |o.id FROM generate_series(1, 2) o",
     "WITH removed AS (DELETE FROM orders o RETURNING o.id) SELECT |o.id FROM orders o",
     "SELECT |o.id FROM orders o JOIN (customers c JOIN orders x ON c.id = x.id) j ON true",
-    "SELECT |o.id FROM orders o WHERE EXISTS (SELECT x.id FROM customers x JOIN orders y ON y.id = o.id JOIN orders o ON o.id = x.id)",
+    "SELECT |o.id FROM orders o JOIN customers x USING (id) AS joined_columns",
     "UPDATE orders |o SET id = 1",
     "SELECT o.|id FROM orders o",
     "SELECT '|o.id' FROM orders o",

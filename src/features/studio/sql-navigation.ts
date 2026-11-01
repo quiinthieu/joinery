@@ -1037,15 +1037,6 @@ export function analyzeAliasRename(
       if (binding.aliasToken) declarations.set(binding.aliasToken.from, binding);
     }
     if (new Set(scope.map((item) => item.nameKey)).size !== scope.length) throw unsupported();
-    // Earlier JOIN ON clauses cannot see a later relation. Do not infer their
-    // correlated names from a whole-query binding set when an outer name is hidden.
-    if (
-      scope.length > 1 &&
-      scope.some((binding) =>
-        outer.some((parent) => parent.some((item) => item.nameKey === binding.nameKey)),
-      )
-    )
-      throw unsupported();
     allScopes.push(scope);
     // WITH bodies and non-lateral FROM bodies cannot see this query's FROM aliases.
     for (const [index, token] of list.entries()) {
@@ -1058,6 +1049,96 @@ export function analyzeAliasRename(
     }
     scan(block, [scope, ...outer], depth, scope);
   }
+  function joinEnvironments(list: SqlToken[], scope: Scope, outer: Scope[]) {
+    const environments = new Map<number, Scope[]>();
+    const atoms = new Map(
+      scope.map((binding) => [binding.relationTokens[0]?.from ?? binding.bodyToken!.from, binding]),
+    );
+    // Each pending JOIN owns its left operand. A subsequent ON closes the nearest
+    // pending JOIN, so a JOIN b JOIN c ON ... ON ... keeps b/c separate from a.
+    const pending: { left: Scope; implicit: boolean; cross: boolean }[] = [];
+    let operand: Scope = [];
+    let condition: Scope[] | undefined;
+    let inFrom = false;
+    let needsRelation = false;
+    const finish = () => {
+      if (needsRelation || (engine !== "mysql" && pending.length)) throw unsupported();
+      pending.length = 0;
+    };
+    for (const [index, token] of list.entries()) {
+      const kw = keywordUpper(token);
+      if (kw === "FROM") {
+        if (inFrom) throw unsupported();
+        inFrom = true;
+        needsRelation = true;
+      } else if (!inFrom) continue;
+      else if (
+        [
+          "WHERE",
+          "GROUP",
+          "ORDER",
+          "HAVING",
+          "LIMIT",
+          "OFFSET",
+          "WINDOW",
+          "QUALIFY",
+          "FOR",
+          "FETCH",
+        ].includes(kw)
+      ) {
+        finish();
+        break;
+      } else if (token.text === ",") {
+        // JOIN binds more tightly than comma: earlier comma groups are not ON operands.
+        finish();
+        operand = [];
+        condition = undefined;
+        needsRelation = true;
+      } else if (kw === "JOIN") {
+        if (needsRelation || !operand.length) throw unsupported();
+        const modifiers: string[] = [];
+        for (let previous = index - 1; previous >= 0; previous--) {
+          const modifier = keywordUpper(list[previous]);
+          if (!["NATURAL", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS"].includes(modifier))
+            break;
+          modifiers.push(modifier);
+        }
+        pending.push({
+          left: operand,
+          implicit: modifiers.includes("CROSS") || modifiers.includes("NATURAL"),
+          cross: modifiers.includes("CROSS"),
+        });
+        operand = [];
+        condition = undefined;
+        needsRelation = true;
+      } else if (kw === "ON" || kw === "USING") {
+        const join = pending.pop();
+        if (!join || needsRelation) throw unsupported();
+        operand = [...join.left, ...operand];
+        condition = [operand, ...outer];
+        if (kw === "USING" && keywordUpper(list[index + 2]) === "AS") throw unsupported();
+      } else if (atoms.has(token.from)) {
+        if (!needsRelation) throw unsupported();
+        const binding = atoms.get(token.from)!;
+        operand = [binding];
+        needsRelation = false;
+        const end =
+          binding.aliasToken?.to ?? binding.bodyToken?.to ?? binding.relationTokens.at(-1)!.to;
+        const following = list.find((item) => item.from >= end);
+        // MySQL also allows CROSS JOIN ... ON/USING, equivalent to INNER JOIN.
+        if (
+          engine === "mysql" &&
+          pending.at(-1)?.cross &&
+          ["ON", "USING"].includes(keywordUpper(following))
+        )
+          pending[pending.length - 1].implicit = false;
+        while (pending.at(-1)?.implicit) operand = [...pending.pop()!.left, ...operand];
+      }
+      if (condition) environments.set(token.from, condition);
+    }
+    if (inFrom) finish();
+    return environments;
+  }
   function scan(list: SqlToken[], env: Scope[], depth: number, scope: Scope = []) {
     const relationNames = new Set(
       scope.flatMap((binding) => binding.relationTokens.map((token) => token.from)),
@@ -1065,10 +1146,12 @@ export function analyzeAliasRename(
     const bodies = new Set(
       scope.flatMap((binding) => (binding.bodyToken ? [binding.bodyToken.from] : [])),
     );
+    const environments = scope.length ? joinEnvironments(list, scope, env.slice(1)) : new Map();
     for (let index = 0; index < list.length; index++) {
       const token = list[index];
+      const tokenEnv: Scope[] = environments.get(token.from) ?? env;
       if (token.children) {
-        visit(token.children, bodies.has(token.from) ? env.slice(1) : env, depth + 1);
+        visit(token.children, bodies.has(token.from) ? tokenEnv.slice(1) : tokenEnv, depth + 1);
         continue;
       }
       if (
@@ -1081,8 +1164,8 @@ export function analyzeAliasRename(
       const qualified = list[index + 1]?.text === ".";
       references.push({
         token,
-        env,
-        binding: resolve(env, key(token)),
+        env: tokenEnv,
+        binding: resolve(tokenEnv, key(token)),
         qualified,
         unsupported:
           qualified &&

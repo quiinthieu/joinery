@@ -41,6 +41,66 @@ for (const [engine, port] of [
   ["MySQL", 53306],
   ["MariaDB", 53307],
 ] as const) {
+  test(`${engine} ordered JOIN renames preserve correlated query results`, async ({ page }) => {
+    const errors: string[] = [];
+    let executions = 0;
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (/\/rpc\/(prepare_execution|execute_plan)$/.test(request.url())) executions++;
+    });
+    await connect(page, engine, port);
+    const editor = page.getByRole("textbox", { name: "SQL editor" });
+    const table = engine === "PostgreSQL" ? "public.orders" : "joinery.sample";
+    const prefix = `WITH src AS (SELECT id FROM ${table} ORDER BY id LIMIT 2) `;
+    const min = "(SELECT MIN(id) FROM src)",
+      max = "(SELECT MAX(id) FROM src)";
+    for (const [body, renamedBody] of [
+      [
+        `SELECT o.id FROM src o WHERE EXISTS (SELECT o.id FROM src x JOIN src y ON y.id = o.id AND y.id = ${min} JOIN src o ON o.id = x.id WHERE o.id = ${max})`,
+        `SELECT renamed.id FROM src renamed WHERE EXISTS (SELECT o.id FROM src x JOIN src y ON y.id = renamed.id AND y.id = ${min} JOIN src o ON o.id = x.id WHERE o.id = ${max})`,
+      ],
+      [
+        `SELECT o.id FROM src o WHERE EXISTS (SELECT o.id FROM src o, src x JOIN src y ON EXISTS (SELECT 1 WHERE y.id = o.id AND y.id = ${min}) WHERE o.id = ${max})`,
+        `SELECT renamed.id FROM src renamed WHERE EXISTS (SELECT o.id FROM src o, src x JOIN src y ON EXISTS (SELECT 1 WHERE y.id = renamed.id AND y.id = ${min}) WHERE o.id = ${max})`,
+      ],
+      [
+        `SELECT o.id FROM src o WHERE EXISTS (SELECT o.id FROM src o JOIN src x JOIN src y ON y.id = o.id AND y.id = ${min} ON x.id = o.id WHERE o.id = ${max})`,
+        `SELECT renamed.id FROM src renamed WHERE EXISTS (SELECT o.id FROM src o JOIN src x JOIN src y ON y.id = renamed.id AND y.id = ${min} ON x.id = o.id WHERE o.id = ${max})`,
+      ],
+    ]) {
+      const original = prefix + body;
+      const run = async () => {
+        const response = page.waitForResponse((r) => r.url().endsWith("/rpc/execute_plan"));
+        await editor.press("ControlOrMeta+Enter");
+        expect((await response).ok()).toBe(true);
+        await expect(page.locator(".result-footer")).toContainText("1 rows");
+        // Results can arrive before the finished/session-context events. A preview
+        // started during that transition must invalidate rather than apply stale edits.
+        await expect(page.locator(".run-button")).toBeVisible();
+        await expect(page.locator(".completion-context")).not.toContainText("Loading");
+        await expect(page.locator(".query-error")).toHaveCount(0);
+      };
+      await placeCaret(editor, prefix + body.replace("SELECT o.id", "SELECT |o.id"));
+      await run();
+      const before = executions;
+      await editor.press("Shift+F6");
+      const dialog = page.getByRole("dialog", { name: "Rename SQL alias" });
+      await expect(dialog).toContainText("3 local occurrences");
+      await dialog.getByLabel("New alias").fill("y");
+      await expect(dialog.getByRole("alert")).toContainText("capture");
+      await expect(dialog.getByRole("button", { name: "Apply rename" })).toBeDisabled();
+      await dialog.getByLabel("New alias").fill("renamed");
+      await expect(page.locator('.cm-content[aria-label="SQL editor"]')).toHaveText(original);
+      await dialog.getByRole("button", { name: "Apply rename" }).click();
+      await expect(editor).toHaveText(prefix + renamedBody);
+      expect(executions).toBe(before);
+      await run();
+      await editor.press("ControlOrMeta+z");
+      await expect(editor).toHaveText(original);
+    }
+    expect(errors).toEqual([]);
+  });
+
   test(`${engine} alias rename previews, rejects capture and applies as one undo without execution`, async ({
     page,
   }) => {
