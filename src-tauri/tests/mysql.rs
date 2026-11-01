@@ -2995,3 +2995,95 @@ async fn mysql_manual_transactions_grid_isolation_and_database_switch() {
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_map_syntax_lines_and_multistatement_errors_to_utf16_spans() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        // sqlparser accepts a trailing wildcard; both servers require a bare
+        // wildcard first. This reaches a real server syntax error after splitting.
+        let syntax_sql = "SELECT '🧪';\nSELECT '🚀',\n  * FROM sample";
+        let events = run(&studio, &session, syntax_sql).await;
+        let (err, stmt_idx) = events
+            .iter()
+            .find_map(|event| match event {
+                QueryEvent::Error {
+                    error,
+                    statement_index,
+                } => Some((error, *statement_index)),
+                _ => None,
+            })
+            .expect("expected syntax QueryEvent::Error");
+        assert_eq!(stmt_idx, 1, "port {port}");
+        let loc = err
+            .location
+            .as_ref()
+            .expect("expected syntax ErrorLocation");
+        assert_eq!(loc.statement_index, Some(1), "port {port}");
+        assert_eq!(loc.sql_state.as_deref(), Some("42000"), "port {port}");
+        assert_eq!(loc.span.line, 3, "port {port}");
+        let units: Vec<u16> = syntax_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[loc.span.start_utf16..loc.span.end_utf16]).unwrap(),
+            "*",
+            "port {port}"
+        );
+
+        let runtime_sql = "SELECT '🧪';\n  SELECT missing_mysql_col FROM sample";
+        let runtime_events = run(&studio, &session, runtime_sql).await;
+        let runtime_err = runtime_events
+            .iter()
+            .find_map(|event| match event {
+                QueryEvent::Error { error, .. } => Some(error),
+                _ => None,
+            })
+            .expect("expected runtime QueryEvent::Error");
+        let runtime_loc = runtime_err
+            .location
+            .as_ref()
+            .expect("expected runtime ErrorLocation");
+        assert_eq!(runtime_loc.statement_index, Some(1), "port {port}");
+        assert_eq!(
+            runtime_loc.sql_state.as_deref(),
+            Some("42S22"),
+            "port {port}"
+        );
+        let runtime_units: Vec<u16> = runtime_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(
+                &runtime_units[runtime_loc.span.start_utf16..runtime_loc.span.end_utf16]
+            )
+            .unwrap(),
+            "SELECT missing_mysql_col FROM sample",
+            "port {port}"
+        );
+        // An unparsed batch is submitted intact. Leading whitespace must not
+        // shift server positions a second time. A server-sanitized snippet
+        // falls back to the reported line instead of inventing token precision.
+        let fallback_sql = "  \n  SELEC '🧪'";
+        let events = run(&studio, &session, fallback_sql).await;
+        let error = events
+            .iter()
+            .find_map(|event| match event {
+                QueryEvent::Error { error, .. } => Some(error),
+                _ => None,
+            })
+            .unwrap();
+        let location = error.location.as_ref().unwrap();
+        assert_eq!(location.statement_index, Some(0), "port {port}");
+        assert_eq!(location.sql_state.as_deref(), Some("42000"), "port {port}");
+        assert_eq!(
+            (location.span.line, location.span.column),
+            (2, 3),
+            "port {port}: {error:?}"
+        );
+        let units: Vec<u16> = fallback_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[location.span.start_utf16..location.span.end_utf16]).unwrap(),
+            "SELEC '🧪'",
+            "port {port}"
+        );
+        studio.shutdown();
+    }
+}

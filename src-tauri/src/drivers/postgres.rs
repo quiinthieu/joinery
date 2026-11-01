@@ -181,7 +181,7 @@ impl Driver for Postgres {
                 self.client
                     .prepare(sql)
                     .await
-                    .map_err(pg_error)?
+                    .map_err(|e| pg_sql_error(e, sql))?
                     .columns()
                     .iter()
                     .enumerate()
@@ -191,7 +191,11 @@ impl Driver for Postgres {
         } else {
             None
         };
-        let stream = self.client.simple_query_raw(sql).await.map_err(pg_error)?;
+        let stream = self
+            .client
+            .simple_query_raw(sql)
+            .await
+            .map_err(|e| pg_sql_error(e, sql))?;
         futures_util::pin_mut!(stream);
         let mut pending = Vec::new();
         let mut pending_bytes = 0usize;
@@ -206,7 +210,7 @@ impl Driver for Postgres {
                     sink.complete(total)?;
                     return Ok(total);
                 }
-                Err(error) => return Err(pg_error(error)),
+                Err(error) => return Err(pg_sql_error(error, sql)),
             };
             match message {
                 SimpleQueryMessage::RowDescription(columns) => {
@@ -1031,6 +1035,59 @@ fn pg_error(error: tokio_postgres::Error) -> AppError {
             ErrorCode::ConnectionFailed,
             format!("Could not communicate with PostgreSQL: {error}"),
         )
+    }
+}
+
+pub(crate) fn pg_sql_error(error: tokio_postgres::Error, sql: &str) -> AppError {
+    pg_sql_error_mapped(error, sql, sql, None, 0)
+}
+
+pub(crate) fn pg_sql_error_mapped(
+    error: tokio_postgres::Error,
+    original_sql: &str,
+    rewritten_sql: &str,
+    rewrite_map: Option<&crate::sql_text::RewriteMap>,
+    prefix_chars: usize,
+) -> AppError {
+    if let Some(db) = error.as_db_error() {
+        let state = db.code().code();
+        let code = match state {
+            "57014" => ErrorCode::Cancelled,
+            "42501" => ErrorCode::PermissionDenied,
+            _ => ErrorCode::Database,
+        };
+        let base = AppError::new(code, db.message());
+        if code == ErrorCode::Cancelled {
+            return base;
+        }
+        let span = match db.position() {
+            Some(tokio_postgres::error::ErrorPosition::Original(pos)) => {
+                let adjusted = (*pos as usize).saturating_sub(prefix_chars);
+                if adjusted == 0 {
+                    crate::sql_text::trimmed_span(original_sql)
+                } else if let Some(map) = rewrite_map {
+                    map.span_from_rewritten_pg_char_pos(
+                        original_sql,
+                        rewritten_sql,
+                        adjusted as u32,
+                    )
+                } else {
+                    crate::sql_text::span_from_pg_char_pos(original_sql, adjusted as u32)
+                }
+            }
+            Some(tokio_postgres::error::ErrorPosition::Internal { .. }) | None => {
+                crate::sql_text::trimmed_span(original_sql)
+            }
+        };
+        base.with_location(ErrorLocation {
+            span,
+            statement_index: None,
+            sql_state: Some(state.to_owned()),
+            detail: db.detail().filter(|s| !s.is_empty()).map(str::to_owned),
+            hint: db.hint().filter(|s| !s.is_empty()).map(str::to_owned),
+        })
+    } else {
+        pg_error(error)
     }
 }
 

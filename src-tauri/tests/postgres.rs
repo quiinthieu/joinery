@@ -3358,3 +3358,59 @@ async fn first_batch_timing_is_absent_without_rows_and_survives_later_failure() 
     }
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn server_error_positions_map_multibyte_unicode_and_multistatement_offsets_to_utf16() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let sql = "SELECT '🧪';\nSELECT 'café', '日本語', '🧪🚀',\n  missing_column FROM orders";
+    let events = run(&studio, &session, sql).await;
+    assert_eq!(status(&events), RunStatus::Failed);
+    let (err, stmt_idx) = events
+        .iter()
+        .find_map(|event| match event {
+            QueryEvent::Error {
+                error,
+                statement_index,
+            } => Some((error, *statement_index)),
+            _ => None,
+        })
+        .expect("expected QueryEvent::Error");
+    assert_eq!(stmt_idx, 1);
+    let loc = err.location.as_ref().expect("expected ErrorLocation");
+    assert_eq!(loc.statement_index, Some(1));
+    assert_eq!(loc.sql_state.as_deref(), Some("42703"));
+    assert_eq!((loc.span.line, loc.span.column), (3, 3));
+    let units: Vec<u16> = sql.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16(&units[loc.span.start_utf16..loc.span.end_utf16]).unwrap(),
+        "missing_column"
+    );
+
+    // Runtime division-by-zero without DbError::position falls back to failing statement span.
+    let runtime_sql = "SELECT '🧪';\n  SELECT 1 / 0";
+    let runtime_events = run(&studio, &session, runtime_sql).await;
+    assert_eq!(status(&runtime_events), RunStatus::Failed);
+    let runtime_err = runtime_events
+        .iter()
+        .find_map(|event| match event {
+            QueryEvent::Error { error, .. } => Some(error),
+            _ => None,
+        })
+        .expect("expected runtime QueryEvent::Error");
+    let runtime_loc = runtime_err
+        .location
+        .as_ref()
+        .expect("expected runtime ErrorLocation");
+    assert_eq!(runtime_loc.statement_index, Some(1));
+    assert_eq!(runtime_loc.sql_state.as_deref(), Some("22012"));
+    let runtime_units: Vec<u16> = runtime_sql.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16(
+            &runtime_units[runtime_loc.span.start_utf16..runtime_loc.span.end_utf16]
+        )
+        .unwrap(),
+        "SELECT 1 / 0"
+    );
+    studio.shutdown();
+}

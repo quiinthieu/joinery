@@ -1,4 +1,4 @@
-use crate::domain::{ActualPlanFormat, AppError, AppResult, EngineKind, ErrorCode};
+use crate::domain::{ActualPlanFormat, AppError, AppResult, EngineKind, ErrorCode, ErrorLocation};
 use sqlparser::{
     ast::Statement,
     dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect},
@@ -44,8 +44,20 @@ pub(crate) fn explain_sql(
     if engine == EngineKind::Mysql && crate::safety::has_mysql_executable_comment(sql) {
         return Err(AppError::invalid("Executable comments cannot be explained"));
     }
-    let statements = Parser::parse_sql(dialect.as_ref(), sql)
-        .map_err(|_| AppError::invalid("Select one complete query to explain"))?;
+    let statements = Parser::parse_sql(dialect.as_ref(), sql).map_err(|error| {
+        let detail = error.to_string();
+        let mut error = AppError::invalid("Select one complete query to explain");
+        if let Some(span) = crate::sql_text::span_from_sqlparser_error(sql, &detail) {
+            error = error.with_location(ErrorLocation {
+                span,
+                statement_index: Some(0),
+                sql_state: None,
+                detail: Some(detail),
+                hint: None,
+            });
+        }
+        error
+    })?;
     if statements.len() != 1 || !matches!(&statements[0], Statement::Query(_)) {
         return Err(AppError::invalid(
             "Select one SELECT or WITH query to explain",
@@ -57,6 +69,24 @@ pub(crate) fn explain_sql(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_validation_exposes_location_in_the_unwrapped_unicode_query() {
+        let sql = "/* 🧪 café */\nSELEC 1";
+        for engine in [
+            EngineKind::Postgres,
+            EngineKind::Mysql,
+            EngineKind::Snowflake,
+        ] {
+            let error = explain_sql(engine, sql, false, None).unwrap_err();
+            let json = serde_json::to_value(error).unwrap();
+            assert_eq!(json["code"], "invalidInput");
+            assert_eq!(json["location"]["span"]["line"], 2, "{engine:?}");
+            assert_eq!(json["location"]["span"]["column"], 1, "{engine:?}");
+            assert_eq!(json["location"]["span"]["startUtf16"], 14, "{engine:?}");
+            assert_eq!(json["location"]["span"]["endUtf16"], 19, "{engine:?}");
+        }
+    }
 
     #[test]
     fn accepts_one_query_without_rewriting_literals_or_comments() {

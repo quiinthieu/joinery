@@ -257,12 +257,44 @@ pub enum StatementKind {
     Unknown,
 }
 
+/// Half-open UTF-16 code-unit range `[start_utf16, end_utf16)` plus 1-based
+/// Unicode scalar line and column coordinates within the submitted SQL buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlSpan {
+    pub start_utf16: usize,
+    pub end_utf16: usize,
+    pub line: u32,
+    pub column: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorLocation {
+    pub span: SqlSpan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub statement_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sql_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementPlan {
     pub sql: String,
     pub kind: StatementKind,
     pub missing_where: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub span: Option<SqlSpan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -929,6 +961,9 @@ pub enum ErrorCode {
 pub struct AppError {
     pub code: ErrorCode,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<ErrorLocation>")]
+    pub location: Option<Box<ErrorLocation>>,
 }
 
 impl AppError {
@@ -936,7 +971,12 @@ impl AppError {
         Self {
             code,
             message: message.into(),
+            location: None,
         }
+    }
+    pub fn with_location(mut self, location: ErrorLocation) -> Self {
+        self.location = Some(Box::new(location));
+        self
     }
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidInput, message)

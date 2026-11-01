@@ -29,6 +29,8 @@ fn main() {
         EngineCapabilities::decl(),
         ActualPlanFormat::decl(),
         StatementKind::decl(),
+        SqlSpan::decl(),
+        ErrorLocation::decl(),
         StatementPlan::decl(),
         PreparedPlan::decl(),
         ColumnKind::decl(),

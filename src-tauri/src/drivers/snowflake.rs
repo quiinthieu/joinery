@@ -336,10 +336,31 @@ impl Snowflake {
                 })
                 .filter(|message| !message.is_empty())
                 .unwrap_or_else(|| "Check account access, role, warehouse, and SQL.".into());
-            return Err(AppError::new(
+            let sql_state = value
+                .get("sqlState")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && s.len() <= 16)
+                .map(str::to_owned);
+            let mut err = AppError::new(
                 ErrorCode::Database,
                 format!("Snowflake rejected the request: {detail}"),
-            ));
+            );
+            if let Some(state) = sql_state {
+                err.location = Some(Box::new(ErrorLocation {
+                    span: SqlSpan {
+                        start_utf16: 0,
+                        end_utf16: 0,
+                        line: 1,
+                        column: 1,
+                    },
+                    statement_index: None,
+                    sql_state: Some(state),
+                    detail: None,
+                    hint: None,
+                }));
+            }
+            return Err(err);
         }
         Ok((status, value))
     }
@@ -428,6 +449,26 @@ fn same(value: &Option<String>, expected: &str) -> bool {
     value
         .as_deref()
         .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+}
+
+pub(crate) fn attach_snowflake_sql_location(mut err: AppError, sql: &str) -> AppError {
+    if matches!(
+        err.code,
+        ErrorCode::Cancelled | ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
+    ) {
+        err.location = None;
+        return err;
+    }
+    let sql_state = err.location.take().and_then(|loc| loc.sql_state);
+    let span = crate::sql_text::span_from_snowflake_error(sql, &err.message)
+        .unwrap_or_else(|| crate::sql_text::trimmed_span(sql));
+    err.with_location(ErrorLocation {
+        span,
+        statement_index: None,
+        sql_state,
+        detail: None,
+        hint: None,
+    })
 }
 
 fn decode_rows(value: &Value) -> AppResult<Vec<TextRow>> {
@@ -528,7 +569,10 @@ impl Driver for Snowflake {
             return Err(Self::cancelled());
         }
         let outcome = async {
-            let first = self.submit(sql, true).await?;
+            let first = self
+                .submit(sql, true)
+                .await
+                .map_err(|err| attach_snowflake_sql_location(err, sql))?;
             let columns = columns(&first)?;
             sink.describe(columns)?;
             let mut count = 0u64;
@@ -849,5 +893,35 @@ mod tests {
         );
         assert_eq!(rows[0][1], None);
         assert_eq!(rows[0][2].as_deref(), Some("0.000000000000001"));
+    }
+
+    #[test]
+    fn attaches_snowflake_compilation_line_and_position_to_error_location() {
+        let sql = "SELECT '🧪'\nFROM ORDERS\nWHERE MISSING_COL = 1";
+        let raw = AppError::new(
+            ErrorCode::Database,
+            "Snowflake rejected the request: SQL compilation error: error line 3 at position 6 invalid identifier 'MISSING_COL'",
+        )
+        .with_location(ErrorLocation {
+            span: SqlSpan {
+                start_utf16: 0,
+                end_utf16: 0,
+                line: 1,
+                column: 1,
+            },
+            statement_index: None,
+            sql_state: Some("42S22".into()),
+            detail: None,
+            hint: None,
+        });
+        let mapped = attach_snowflake_sql_location(raw, sql);
+        let loc = mapped.location.expect("snowflake location");
+        assert_eq!(loc.sql_state.as_deref(), Some("42S22"));
+        assert_eq!((loc.span.line, loc.span.column), (3, 7));
+        let units: Vec<u16> = sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[loc.span.start_utf16..loc.span.end_utf16]).unwrap(),
+            "MISSING_COL"
+        );
     }
 }

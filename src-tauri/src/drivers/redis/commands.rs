@@ -4,6 +4,7 @@ pub struct Command {
     pub args: Vec<Vec<u8>>,
     pub kind: StatementKind,
     pub source: String,
+    pub span: SqlSpan,
 }
 
 // A newline ends a command outside quotes. Semicolons are ordinary argument
@@ -68,10 +69,18 @@ pub fn parse(source: &str) -> AppResult<Vec<Command>> {
             if byte.is_none() || matches!(byte, Some(b'\n' | b'\r')) {
                 if !args.is_empty() {
                     let kind = classify(&args)?;
+                    let slice = &source[start..i];
+                    let leading = slice.len() - slice.trim_start().len();
+                    let trimmed = slice.trim();
                     commands.push(Command {
                         args: std::mem::take(&mut args),
                         kind,
-                        source: source[start..i].trim().into(),
+                        source: trimmed.into(),
+                        span: crate::sql_text::span_for_byte_range(
+                            source,
+                            start + leading,
+                            start + leading + trimmed.len(),
+                        ),
                     });
                     if commands.len() > 32 {
                         return Err(AppError::invalid(
@@ -114,6 +123,7 @@ pub fn prepare(
                 sql: c.source,
                 kind: c.kind,
                 missing_where: false,
+                span: Some(c.span),
             })
             .collect(),
     )?;

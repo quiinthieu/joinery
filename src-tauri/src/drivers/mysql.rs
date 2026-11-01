@@ -333,7 +333,7 @@ impl Driver for Mysql {
             if self.cancel_requested.is_cancelled() { return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled before submission")); }
             conn.query_drop("SET NAMES utf8mb4; SET SESSION sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'; SET SESSION time_zone='+00:00'").await.map_err(mysql_error)?;
             if self.cancel_requested.is_cancelled() { return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled before submission")); }
-            let mut result=conn.query_iter(sql).await.map_err(mysql_error)?;
+            let mut result=conn.query_iter(sql).await.map_err(|e| mysql_sql_error(e, sql))?;
             if cancelled_read_or_analysis && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
             let mut total=0u64;
             // next() returns None at a result-set boundary and advances to the
@@ -343,7 +343,7 @@ impl Driver for Mysql {
                 let affected=if columns.is_empty() {result.affected_rows()}else{0};
                 if !columns.is_empty() { sink.describe(columns.iter().enumerate().map(|(i,c)|column(i,c)).collect())?; }
                 let mut pending=Vec::new();let mut bytes=0;let mut retaining=true;
-                while let Some(row)=result.next().await.map_err(mysql_error)? {
+                while let Some(row)=result.next().await.map_err(|e| mysql_sql_error(e, sql))? {
                     if !retaining {continue;}
                     let row=text_row(row)?;
                     let size=row.iter().map(|v|v.as_ref().map_or(5,|v|v.len()+5)).sum::<usize>();
@@ -363,7 +363,7 @@ impl Driver for Mysql {
                 total=total.saturating_add(affected);sink.complete(affected)?;
                 if result.is_empty() {break;}
             }
-            result.drop_result().await.map_err(mysql_error)?;
+            result.drop_result().await.map_err(|e| mysql_sql_error(e, sql))?;
             if cancelled_read_or_analysis && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
             Ok(total)
         }).await;
@@ -788,4 +788,32 @@ fn mysql_error(error: mysql_async::Error) -> AppError {
             "The MySQL connection failed or closed. Check network, authentication, and verified TLS settings.",
         ),
     }
+}
+
+pub(crate) fn mysql_sql_error(error: mysql_async::Error, sql: &str) -> AppError {
+    let sql_state = match &error {
+        mysql_async::Error::Server(server) if !server.state.is_empty() => {
+            Some(server.state.clone())
+        }
+        _ => None,
+    };
+    let is_server = matches!(&error, mysql_async::Error::Server(_));
+    let base = mysql_error(error);
+    if !is_server || base.code == ErrorCode::Cancelled {
+        return base;
+    }
+    // MySQL and MariaDB count syntax-error lines after stripping leading
+    // whitespace from the submitted statement. Preserve the editor's origin.
+    let body = sql.trim_start();
+    let origin = crate::sql_text::span_for_byte_range(sql, sql.len() - body.len(), sql.len());
+    let span = crate::sql_text::span_from_mysql_error(body, &base.message)
+        .map(|span| crate::sql_text::shift_child_span(origin, span))
+        .unwrap_or_else(|| crate::sql_text::trimmed_span(sql));
+    base.with_location(ErrorLocation {
+        span,
+        statement_index: None,
+        sql_state,
+        detail: None,
+        hint: None,
+    })
 }

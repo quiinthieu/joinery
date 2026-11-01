@@ -113,8 +113,16 @@ pub fn prepare(
     if profile.engine == EngineKind::Snowflake
         && let Some(query) = sql.strip_prefix("EXPLAIN USING JSON\n")
     {
-        crate::query_plan::explain_sql(profile.engine, query, false, None)?;
-        let inner = prepare(session_id, profile, query)?;
+        let query_span =
+            crate::sql_text::span_for_byte_range(sql, sql.len() - query.len(), sql.len());
+        let shift_error = |mut error: AppError| {
+            if let Some(location) = error.location.as_mut() {
+                location.span = crate::sql_text::shift_child_span(query_span, location.span);
+            }
+            error
+        };
+        crate::query_plan::explain_sql(profile.engine, query, false, None).map_err(shift_error)?;
+        let inner = prepare(session_id, profile, query).map_err(shift_error)?;
         if inner.statements.len() != 1 || inner.statements[0].kind != StatementKind::Read {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
@@ -128,6 +136,7 @@ pub fn prepare(
                 sql: sql.to_owned(),
                 kind: StatementKind::Read,
                 missing_where: false,
+                span: Some(crate::sql_text::span_for_byte_range(sql, 0, sql.len())),
             }],
         );
     }
@@ -141,7 +150,9 @@ pub fn prepare(
         }
         let tokens = Tokenizer::new(&MySqlDialect {}, sql)
             .tokenize()
-            .map_err(|_| AppError::invalid("The SQL contains an unterminated token"))?;
+            .map_err(|e| {
+                tokenizer_error(sql, "The SQL contains an unterminated token", e.location)
+            })?;
         mysql_analysis = mysql_analysis_tokens(&tokens);
         let words = tokens
             .iter()
@@ -185,9 +196,10 @@ pub fn prepare(
         }
     };
     let mut executes_analysis = mysql_analysis;
+    let mut parser_error_location: Option<ErrorLocation> = None;
     let statements = match Parser::parse_sql(dialect.as_ref(), sql) {
         Ok(ast) => {
-            let parts = split_sql(dialect.as_ref(), sql)?;
+            let parts = split_sql_spanned(dialect.as_ref(), sql)?;
             if ast.is_empty() {
                 return Err(AppError::invalid("The query contains only comments"));
             }
@@ -199,7 +211,7 @@ pub fn prepare(
             }
             ast.iter()
                 .zip(parts)
-                .map(|(statement, sql)| {
+                .map(|(statement, (sql, span))| {
                     let mut classification = Classification {
                         engine: Some(profile.engine),
                         ..Default::default()
@@ -210,20 +222,43 @@ pub fn prepare(
                         sql,
                         kind: classification.kind.unwrap_or(StatementKind::Unknown),
                         missing_where: classification.missing_where,
+                        span: Some(span),
                     }
                 })
                 .collect::<Vec<_>>()
         }
-        Err(_) => vec![StatementPlan {
-            sql: sql.to_string(),
-            kind: StatementKind::Unknown,
-            missing_where: false,
-        }],
+        Err(err) => {
+            let err_text = err.to_string();
+            if let Some(span) = crate::sql_text::span_from_sqlparser_error(sql, &err_text) {
+                parser_error_location = Some(ErrorLocation {
+                    span,
+                    statement_index: Some(0),
+                    sql_state: None,
+                    detail: Some(err_text),
+                    hint: None,
+                });
+            }
+            vec![StatementPlan {
+                sql: sql.to_string(),
+                kind: StatementKind::Unknown,
+                missing_where: false,
+                // Parser fallback submits the complete original buffer, including
+                // leading whitespace. Its span must share that same origin.
+                span: Some(crate::sql_text::span_for_byte_range(sql, 0, sql.len())),
+            }]
+        }
     };
     if statements.len() > 100 {
         return Err(AppError::invalid("Run at most 100 statements in one batch"));
     }
-    let mut plan = plan_for_statements(session_id, profile, statements)?;
+    let mut plan = plan_for_statements(session_id, profile, statements).map_err(|mut err| {
+        if err.location.is_none()
+            && let Some(loc) = parser_error_location.take()
+        {
+            err.location = Some(Box::new(loc));
+        }
+        err
+    })?;
     if executes_analysis {
         // This gate also applies to SQL entered directly, including Silent
         // profiles. Set it before the plan is stored and fingerprinted.
@@ -282,12 +317,30 @@ pub(crate) fn plan_for_statements(
     statements: Vec<StatementPlan>,
 ) -> AppResult<PreparedPlan> {
     let mode = effective_mode(profile);
-    let unsafe_batch = statements.iter().any(needs_authorization);
-    if mode == SafeMode::ReadOnly && unsafe_batch {
-        return Err(AppError::new(
+    let first_unsafe = statements
+        .iter()
+        .enumerate()
+        .find(|(_, s)| needs_authorization(s));
+    let unsafe_batch = first_unsafe.is_some();
+    if mode == SafeMode::ReadOnly
+        && let Some((idx, stmt)) = first_unsafe
+    {
+        let mut err = AppError::new(
             ErrorCode::PolicyBlocked,
             "This connection is read-only. The batch contains a write, a session change, or SQL that could not be classified.",
-        ));
+        );
+        if stmt.kind != StatementKind::Unknown
+            && let Some(span) = stmt.span
+        {
+            err.location = Some(Box::new(ErrorLocation {
+                span,
+                statement_index: Some(idx),
+                sql_state: None,
+                detail: None,
+                hint: None,
+            }));
+        }
+        return Err(err);
     }
     let mut warnings = Vec::new();
     if statements.iter().any(|s| s.missing_where) {
@@ -337,9 +390,22 @@ pub fn quote_identifier(identifier: &str) -> String {
 }
 
 pub fn split_sql(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<String>> {
+    Ok(split_sql_spanned(dialect, sql)?
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect())
+}
+
+pub fn split_sql_spanned(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(String, SqlSpan)>> {
     let tokens = Tokenizer::new(dialect, sql)
         .tokenize_with_location()
-        .map_err(|_| AppError::invalid("The SQL contains an unterminated string or comment"))?;
+        .map_err(|e| {
+            tokenizer_error(
+                sql,
+                "The SQL contains an unterminated string or comment",
+                e.location,
+            )
+        })?;
     let mut parts = Vec::new();
     let mut start = 0;
     let mut content = false;
@@ -347,8 +413,8 @@ pub fn split_sql(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<String>> {
         match token.token {
             Token::SemiColon => {
                 let end = byte_offset(sql, token.span.start);
-                if content {
-                    parts.push(sql[start..end].trim().to_string());
+                if content && let Some(part) = trimmed_part(sql, start, end) {
+                    parts.push(part);
                 }
                 start = end + 1;
                 content = false;
@@ -357,10 +423,36 @@ pub fn split_sql(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<String>> {
             _ => content = true,
         }
     }
-    if content {
-        parts.push(sql[start..].trim().to_string());
+    if content && let Some(part) = trimmed_part(sql, start, sql.len()) {
+        parts.push(part);
     }
     Ok(parts)
+}
+
+fn trimmed_part(sql: &str, start: usize, end: usize) -> Option<(String, SqlSpan)> {
+    let slice = &sql[start..end];
+    let leading = slice.len() - slice.trim_start().len();
+    let trimmed = slice.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let trimmed_start = start + leading;
+    let trimmed_end = trimmed_start + trimmed.len();
+    Some((
+        trimmed.to_string(),
+        crate::sql_text::span_for_byte_range(sql, trimmed_start, trimmed_end),
+    ))
+}
+
+fn tokenizer_error(sql: &str, message: &str, location: Location) -> AppError {
+    let span = crate::sql_text::span_from_line_char_col(sql, location.line, location.column);
+    AppError::invalid(message).with_location(ErrorLocation {
+        span,
+        statement_index: Some(0),
+        sql_state: None,
+        detail: None,
+        hint: None,
+    })
 }
 
 fn byte_offset(sql: &str, location: Location) -> usize {
@@ -561,6 +653,19 @@ fn unrestricted(selection: Option<&sqlparser::ast::Expr>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialized_policy_error_exposes_unicode_parser_location() {
+        let sql = "SELECT '🧪';\n  SELEC broken";
+        let error =
+            prepare("s", &profile(SafeMode::ReadOnly, Environment::Local), sql).unwrap_err();
+        let json = serde_json::to_value(error).unwrap();
+        assert_eq!(json["code"], "policyBlocked");
+        assert_eq!(json["location"]["span"]["line"], 2);
+        assert_eq!(json["location"]["span"]["column"], 3);
+        assert_eq!(json["location"]["span"]["startUtf16"], 15);
+        assert_eq!(json["location"]["span"]["endUtf16"], 20);
+    }
     pub fn profile(mode: SafeMode, environment: Environment) -> ConnectionProfile {
         ConnectionProfile {
             id: new_id(),
@@ -675,6 +780,43 @@ mod tests {
                 "{query}"
             );
         }
+    }
+
+    #[test]
+    fn direct_snowflake_wrapper_shifts_parser_and_policy_locations_once() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Local);
+        p.engine = EngineKind::Snowflake;
+        for (query, expected, line) in [
+            ("/* 🧪 */\nSELEC 1", "SELEC", 3),
+            (
+                "/* 🧪 */ SELECT 1 INTO new_table",
+                "/* 🧪 */ SELECT 1 INTO new_table",
+                2,
+            ),
+        ] {
+            let sql = format!("EXPLAIN USING JSON\n{query}");
+            let error = prepare("s", &p, &sql).unwrap_err();
+            let location = error.location.expect("wrapper error location");
+            let units: Vec<u16> = sql.encode_utf16().collect();
+            assert_eq!(
+                String::from_utf16(&units[location.span.start_utf16..location.span.end_utf16])
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(location.span.line, line);
+        }
+    }
+
+    #[test]
+    fn parser_fallback_retains_the_submitted_buffer_origin() {
+        let sql = " \n  SELEC '🧪'";
+        let plan = prepare("s", &profile(SafeMode::Silent, Environment::Local), sql).unwrap();
+        assert_eq!(plan.statements.len(), 1);
+        assert_eq!(plan.statements[0].sql, sql);
+        let origin = plan.statements[0].span.unwrap();
+        assert_eq!(origin.start_utf16, 0);
+        let child = crate::sql_text::span_from_line_char_col(sql, 2, 3);
+        assert_eq!(crate::sql_text::shift_child_span(origin, child), child);
     }
     #[test]
     fn comments_do_not_turn_a_write_into_a_read() {
@@ -811,5 +953,73 @@ mod tests {
             let plan = prepare("s", &profile(SafeMode::ReadOnly, Environment::Local), sql).unwrap();
             assert!(!plan.requires_approval, "{sql}");
         }
+    }
+    #[test]
+    fn attaches_utf16_statement_spans_and_error_locations_on_syntax_and_policy_errors() {
+        let batch = "SELECT '🧪';\n  SELECT 42";
+        let plan = prepare("s", &profile(SafeMode::Silent, Environment::Local), batch).unwrap();
+        assert_eq!(plan.statements.len(), 2);
+        let units: Vec<u16> = batch.encode_utf16().collect();
+        let s0 = plan.statements[0].span.unwrap();
+        let s1 = plan.statements[1].span.unwrap();
+        assert_eq!(
+            String::from_utf16(&units[s0.start_utf16..s0.end_utf16]).unwrap(),
+            "SELECT '🧪'"
+        );
+        assert_eq!(
+            String::from_utf16(&units[s1.start_utf16..s1.end_utf16]).unwrap(),
+            "SELECT 42"
+        );
+        assert_eq!((s1.line, s1.column), (2, 3));
+
+        // MySQL unterminated string reports exact UTF-16 tokenizer location
+        let mut mysql_prof = profile(SafeMode::Silent, Environment::Local);
+        mysql_prof.engine = EngineKind::Mysql;
+        let bad_quote = "SELECT 1;\nSELECT 'unterminated";
+        let quote_err = prepare("s", &mysql_prof, bad_quote).unwrap_err();
+        assert_eq!(quote_err.code, ErrorCode::InvalidInput);
+        let quote_loc = quote_err.location.expect("tokenizer error location");
+        assert_eq!(quote_loc.span.line, 2);
+
+        // ReadOnly syntax error maps sqlparser Line/Column to offending token in UTF-16
+        let ro_syntax_sql = "SELECT '🧪';\n  SELEC broken FROM orders";
+        let ro_syntax_err = prepare(
+            "s",
+            &profile(SafeMode::ReadOnly, Environment::Local),
+            ro_syntax_sql,
+        )
+        .unwrap_err();
+        assert_eq!(ro_syntax_err.code, ErrorCode::PolicyBlocked);
+        let ro_syntax_loc = ro_syntax_err.location.expect("readonly syntax location");
+        assert_eq!((ro_syntax_loc.span.line, ro_syntax_loc.span.column), (2, 3));
+        let syntax_units: Vec<u16> = ro_syntax_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(
+                &syntax_units[ro_syntax_loc.span.start_utf16..ro_syntax_loc.span.end_utf16]
+            )
+            .unwrap(),
+            "SELEC"
+        );
+
+        // ReadOnly write failure on statement index 1 reports statement_index and exact statement span
+        let ro_write_sql = "SELECT '🧪';\n  DELETE FROM orders WHERE id = 1";
+        let ro_write_err = prepare(
+            "s",
+            &profile(SafeMode::ReadOnly, Environment::Local),
+            ro_write_sql,
+        )
+        .unwrap_err();
+        assert_eq!(ro_write_err.code, ErrorCode::PolicyBlocked);
+        let ro_write_loc = ro_write_err.location.expect("readonly policy location");
+        assert_eq!(ro_write_loc.statement_index, Some(1));
+        assert_eq!((ro_write_loc.span.line, ro_write_loc.span.column), (2, 3));
+        let write_units: Vec<u16> = ro_write_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(
+                &write_units[ro_write_loc.span.start_utf16..ro_write_loc.span.end_utf16]
+            )
+            .unwrap(),
+            "DELETE FROM orders WHERE id = 1"
+        );
     }
 }

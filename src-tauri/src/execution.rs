@@ -983,7 +983,7 @@ impl Studio {
                                 elapsed_ms: clock.elapsed().as_millis() as u32,
                             });
                         }
-                        Err(error) => {
+                        Err(mut error) => {
                             sink.fail();
                             if matches!(
                                 error.code,
@@ -991,11 +991,21 @@ impl Studio {
                             ) && safety::needs_authorization(statement)
                             {
                                 status = RunStatus::OutcomeUnknown;
+                                let mut unknown = AppError::new(
+                                    ErrorCode::OutcomeUnknown,
+                                    "The connection was lost during a write. Verify its outcome before retrying.",
+                                );
+                                if let Some(stmt_span) = statement.span {
+                                    unknown.location = Some(Box::new(ErrorLocation {
+                                        span: stmt_span,
+                                        statement_index: Some(index),
+                                        sql_state: None,
+                                        detail: None,
+                                        hint: None,
+                                    }));
+                                }
                                 events(QueryEvent::Error {
-                                    error: AppError::new(
-                                        ErrorCode::OutcomeUnknown,
-                                        "The connection was lost during a write. Verify its outcome before retrying.",
-                                    ),
+                                    error: unknown,
                                     statement_index: index,
                                 });
                             } else {
@@ -1006,6 +1016,25 @@ impl Studio {
                                 } else {
                                     RunStatus::Failed
                                 };
+                                if error.code != ErrorCode::Cancelled {
+                                    if let Some(mut loc) = error.location.take() {
+                                        if let Some(stmt_span) = statement.span {
+                                            loc.span = crate::sql_text::shift_child_span(
+                                                stmt_span, loc.span,
+                                            );
+                                        }
+                                        loc.statement_index = Some(index);
+                                        error.location = Some(loc);
+                                    } else if let Some(stmt_span) = statement.span {
+                                        error.location = Some(Box::new(ErrorLocation {
+                                            span: stmt_span,
+                                            statement_index: Some(index),
+                                            sql_state: None,
+                                            detail: None,
+                                            hint: None,
+                                        }));
+                                    }
+                                }
                                 events(QueryEvent::Error {
                                     error,
                                     statement_index: index,
@@ -2052,6 +2081,7 @@ impl Studio {
                 sql: sql.clone(),
                 kind: StatementKind::Write,
                 missing_where: false,
+                span: None,
             })
             .collect();
         let mut plan = safety::plan_for_statements(session_id, &session.profile, statements)?;
@@ -2743,6 +2773,7 @@ impl Studio {
                 sql: stmt.clone(),
                 kind: StatementKind::Write,
                 missing_where: false,
+                span: None,
             })
             .collect();
 

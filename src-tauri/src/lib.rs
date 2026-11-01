@@ -15,6 +15,7 @@ mod query_plan;
 pub mod results;
 pub mod safety;
 pub mod secrets;
+pub mod sql_text;
 pub mod ssh;
 
 #[cfg(feature = "desktop")]
