@@ -224,6 +224,8 @@ interface StudioState {
     highlightedColumn?: string,
     catalogRevision?: string,
   ): void;
+  openLinkedSessionObject(inspectorId: string, object: DatabaseObjectRef): void;
+  appendSessionDdl(inspectorId: string, ddl: string): boolean;
   /** Applies a new sort/filter or requests review for non-Read raw SQL clauses. */
   setTableQuery(
     id: string,
@@ -1211,6 +1213,36 @@ export const useStudio = create<StudioState>((set, get) => ({
       target: { kind: "table", connectionId, table },
     });
     await get().refreshTable(next.id);
+  },
+  openLinkedSessionObject(inspectorId, object) {
+    const state = get();
+    const inspector = state.tabs.find((entry) => entry.id === inspectorId);
+    if (!inspector?.metadataOrigin?.catalogRevision || !metadataSessionForTab(inspector, state))
+      return;
+    get().openSessionObject(
+      inspector.metadataOrigin.tabId,
+      object,
+      undefined,
+      inspector.metadataOrigin.catalogRevision,
+    );
+  },
+  appendSessionDdl(inspectorId, ddl) {
+    const state = get();
+    const inspector = state.tabs.find((entry) => entry.id === inspectorId);
+    if (!inspector?.metadataOrigin?.catalogRevision || !metadataSessionForTab(inspector, state))
+      return false;
+    const source = state.tabs.find((entry) => entry.id === inspector.metadataOrigin!.tabId)!;
+    if (!ddl.trim() || ["queued", "running"].includes(source.status)) return false;
+    // Preserve the editor text, file dirty tracking, results and session ownership.
+    set({
+      tabs: state.tabs.map((entry) =>
+        entry.id === source.id
+          ? { ...entry, sql: entry.sql + (entry.sql ? "\n\n" : "") + ddl }
+          : entry,
+      ),
+      activeTabId: source.id,
+    });
+    return true;
   },
   openSessionObject(tabId, object, highlightedColumn, catalogRevision) {
     const state = get();

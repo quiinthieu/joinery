@@ -1,5 +1,10 @@
-import { useEffect, useState } from "react";
-import type { CompletionCatalog, ObjectDetails, TableSchema } from "../../ipc/generated";
+import { useEffect, useRef, useState } from "react";
+import type {
+  CompletionCatalog,
+  DatabaseObjectRef,
+  ObjectDetails,
+  TableSchema,
+} from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { metadataSessionForTab, useStudio, type StudioTab } from "../../state/studio";
 import { isTabularObjectKind } from "../connections/explorer-tree";
@@ -13,6 +18,52 @@ export function SessionStructureView({ tab }: { tab: StudioTab }) {
   const target = tab.object;
   const origin = tab.metadataOrigin!;
   const key = JSON.stringify([session?.id, origin.catalogRevision, tab.id, tab.revision, target]);
+  const action = useRef({ key, mounted: true, pending: false });
+  action.current.key = key;
+  useEffect(() => {
+    action.current.mounted = true;
+    return () => {
+      action.current.mounted = false;
+    };
+  }, []);
+  const withCurrentOrigin = async (apply: () => void) => {
+    if (action.current.pending || !session) return;
+    action.current.pending = true;
+    const stillCurrent = () => {
+      const live = useStudio.getState();
+      return (
+        action.current.mounted &&
+        action.current.key === key &&
+        live.tabs.some((entry) => entry.id === tab.id && entry.revision === tab.revision) &&
+        metadataSessionForTab(tab, live)?.id === session.id
+      );
+    };
+    try {
+      if (!stillCurrent()) return;
+      const catalog = await client.call<CompletionCatalog>("completion_catalog", {
+        sessionId: session.id,
+      });
+      if (!stillCurrent()) return;
+      if (catalog.revision !== origin.catalogRevision)
+        throw new Error("Console context changed. Navigate from the console again.");
+      apply();
+    } catch (err) {
+      if (stillCurrent()) useStudio.getState().notify(messageOf(err));
+    } finally {
+      action.current.pending = false;
+    }
+  };
+  const onOpenObject = (object: DatabaseObjectRef) => {
+    void withCurrentOrigin(() => useStudio.getState().openLinkedSessionObject(tab.id, object));
+  };
+  const onOpenInEditor = (ddl: string) => {
+    void withCurrentOrigin(() => {
+      if (!useStudio.getState().appendSessionDdl(tab.id, ddl))
+        useStudio
+          .getState()
+          .notify("Source console is unavailable or running. Return to it before appending DDL.");
+    });
+  };
   const [result, setResult] = useState<{
     key: string;
     schema: TableSchema | null;
@@ -89,6 +140,8 @@ export function SessionStructureView({ tab }: { tab: StudioTab }) {
         ddlStatus={current.details?.ddl ?? null}
         loading={false}
         error={current.error}
+        onOpenInEditor={onOpenInEditor}
+        openLabel="Append DDL to source console"
       />
     );
   if (current.schema)
@@ -98,6 +151,7 @@ export function SessionStructureView({ tab }: { tab: StudioTab }) {
         details={current.details}
         detailsError={current.error}
         highlightedColumn={tab.highlightedColumn}
+        onOpenObject={onOpenObject}
       />
     );
   if (current.details)
@@ -106,6 +160,9 @@ export function SessionStructureView({ tab }: { tab: StudioTab }) {
         tab={{ ...tab, connectionId: null }}
         session={session}
         providedDetails={current.details}
+        onOpenObject={onOpenObject}
+        onOpenInEditor={onOpenInEditor}
+        openLabel="Append DDL to source console"
       />
     );
   return <div className="grid-empty">Extended object details unavailable for this engine.</div>;

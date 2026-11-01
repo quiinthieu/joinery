@@ -296,6 +296,9 @@ test("two isolated Structure inspectors remain separate from the primary console
     await page.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.locator(".completion-context")).toContainText("joinery");
+    const sourceId = (await page
+      .locator('.workspace-tabs [role="tab"][aria-selected="true"]')
+      .getAttribute("id"))!;
     const sessionId = await page.getByLabel("Console session", { exact: true }).inputValue();
     ids.push(sessionId);
     const editor = page.getByRole("textbox", { name: "SQL editor" });
@@ -309,9 +312,69 @@ test("two isolated Structure inspectors remain separate from the primary console
         .locator('.workspace-tabs [role="tab"][aria-selected="true"]')
         .getAttribute("id"))!,
     );
+    const follow = async (link: Locator, name: string, kind: string) => {
+      const request = page.waitForRequest((r) => {
+        if (!r.url().endsWith("/rpc/object_details")) return false;
+        const object = r.postDataJSON().object;
+        return object.name === name && object.kind === kind;
+      });
+      await link.click();
+      expect((await request).postDataJSON()).toMatchObject({ sessionId, object: { name, kind } });
+    };
+    await follow(
+      page
+        .getByRole("table", { name: "Indexes" })
+        .getByRole("button", { name: "orders_pkey", exact: true }),
+      "orders_pkey",
+      "index",
+    );
+    await expect(page.getByLabel("Index properties")).toContainText("btree");
+    await follow(
+      page
+        .locator(".object-summary-head")
+        .getByRole("button", { name: "public.orders", exact: true }),
+      "orders",
+      "table",
+    );
+    await follow(
+      page
+        .getByRole("table", { name: "Triggers" })
+        .getByRole("button", { name: "inspector_touch", exact: true }),
+      "inspector_touch",
+      "trigger",
+    );
+    await expect(page.getByLabel("Trigger properties")).toContainText("INSERT");
+    await follow(
+      page
+        .getByLabel("Object dependencies")
+        .getByRole("button", { name: /public\.inspector_touch_fn/ }),
+      "inspector_touch_fn",
+      "function",
+    );
+    await expect(page.getByLabel("Routine properties")).toContainText("plpgsql");
+    await page.locator(`#${sourceId}`).click();
+    await placeCaret(editor, "SELECT o.|id FROM public.orders o;");
+    await editor.press("F12");
+    await follow(
+      page
+        .getByRole("table", { name: "Constraints" })
+        .getByRole("button", { name: "public.customers (id)", exact: true }),
+      "customers",
+      "table",
+    );
+    await expect(page.getByRole("table", { name: "Constraints" })).toContainText("customers_pkey");
+    await page.locator(`#${sourceId}`).click();
+    await placeCaret(editor, "SELECT o.|id FROM public.orders o;");
+    await editor.press("F12");
     await page.getByRole("button", { name: "DDL", exact: true }).click();
     await expect(page.locator(".ddl-panel")).toContainText("CREATE TABLE");
-    await expect(page.getByRole("button", { name: "Open in SQL editor" })).toHaveCount(0);
+    const ddl = await page.getByLabel("Object DDL").innerText();
+    await page.getByRole("button", { name: "Append DDL to source console", exact: true }).click();
+    await expect(page.locator(`#${sourceId}`)).toHaveAttribute("aria-selected", "true");
+    await expect
+      .poll(async () => (await editor.locator(".cm-line").allTextContents()).join("\n"))
+      .toBe("SELECT o.id FROM public.orders o;\n\n" + ddl);
+    await expect(page.getByLabel("Console session", { exact: true })).toHaveValue(sessionId);
   }
   expect(ids[0]).not.toBe(ids[1]);
   expect(inspectorIds[0]).not.toBe(inspectorIds[1]);
@@ -323,7 +386,15 @@ test("two isolated Structure inspectors remain separate from the primary console
   await editor.press("F12");
   expect(ids).not.toContain((await details).postDataJSON().sessionId);
   await expect(page.locator('tr[data-highlighted="true"]')).toContainText("id");
-  await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(6);
+  await page.getByRole("button", { name: "DDL", exact: true }).click();
+  const ddl = await page.getByLabel("Object DDL").innerText();
+  await page.getByRole("button", { name: "Append DDL to source console", exact: true }).click();
+  await expect(page.locator(`#${primaryId}`)).toHaveAttribute("aria-selected", "true");
+  await expect
+    .poll(async () => (await editor.locator(".cm-line").allTextContents()).join("\n"))
+    .toBe("SELECT o.id FROM public.orders o;\n\n" + ddl);
+  await expect(page.locator(".query-session")).toContainText("Shared session");
+  await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(14);
   expect(executions).toEqual([]);
   expect(errors).toEqual([]);
 });

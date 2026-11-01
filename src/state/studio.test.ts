@@ -1014,3 +1014,75 @@ test("metadata loses its session after context changes, rebinding, or source clo
   state.closeTab(id);
   expect(metadataSessionForTab(inspector, useStudio.getState())).toBeUndefined();
 });
+
+test("linked inspectors retain their origin and append DDL without replacing SQL or session ownership", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile", "SELECT 'unfinished work'; -- keep this");
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  state.updateTab(id, {
+    fileToken: "grant",
+    fileName: "work.sql",
+    savedSql: "SELECT 'unfinished work';",
+  });
+  state.openSessionObject(
+    id,
+    { schema: "public", name: "orders", kind: "table", identity: null },
+    undefined,
+    "observed",
+  );
+  const first = useStudio.getState().tabs.at(-1)!;
+  state.openLinkedSessionObject(first.id, {
+    schema: "public",
+    name: "orders_pkey",
+    kind: "index",
+    identity: "orders",
+  });
+  const linked = useStudio.getState().tabs.at(-1)!;
+  expect(linked.metadataOrigin).toEqual(first.metadataOrigin);
+  expect(linked.querySession).toBeNull();
+  expect(state.appendSessionDdl(linked.id, "CREATE INDEX example ON orders(id);")).toBe(true);
+  const source = useStudio.getState().tabs.find((t) => t.id === id)!;
+  expect(source.sql).toBe(
+    "SELECT 'unfinished work'; -- keep this\n\nCREATE INDEX example ON orders(id);",
+  );
+  expect(source.querySession?.id).toBe("isolated");
+  expect(isTabFileDirty(source)).toBe(true);
+  expect(useStudio.getState().activeTabId).toBe(id);
+  expect(useStudio.getState().tabs).toHaveLength(3);
+  expect(client.call).not.toHaveBeenCalled();
+});
+
+test.each(["rebound", "context", "closed", "running"])(
+  "inspector actions reject a %s source without primary fallback",
+  (change) => {
+    const state = useStudio.getState();
+    const id = state.openQuery("profile", "SELECT 42;");
+    state.bindQuerySession(id, { ...session, id: "isolated" });
+    state.openSessionObject(
+      id,
+      { schema: "public", name: "orders", kind: "table", identity: null },
+      undefined,
+      "observed",
+    );
+    const inspector = useStudio.getState().tabs.at(-1)!;
+    if (change === "rebound") state.attachQuerySession(id, null);
+    if (change === "context") useStudio.setState({ sessionContextRevision: { isolated: 1 } });
+    if (change === "closed") state.closeTab(id);
+    if (change === "running") state.updateTab(id, { status: "running" });
+    const before = useStudio.getState().tabs;
+    expect(state.appendSessionDdl(inspector.id, "DROP TABLE orders;")).toBe(false);
+    if (change !== "running") {
+      state.openLinkedSessionObject(inspector.id, {
+        schema: "public",
+        name: "customers",
+        kind: "table",
+        identity: null,
+      });
+      expect(useStudio.getState().tabs).toEqual(before);
+    }
+    expect(useStudio.getState().tabs.find((t) => t.id === id)?.sql ?? "SELECT 42;").toBe(
+      "SELECT 42;",
+    );
+    expect(client.call).not.toHaveBeenCalledWith("prepare_execution", expect.anything());
+  },
+);
