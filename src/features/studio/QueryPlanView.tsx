@@ -4,11 +4,12 @@ import { resultCache } from "../../data/result-cache";
 import { parseQueryPlan, type PlanNode, type QueryPlan } from "./query-plan";
 import { planMismatch, planSnapshots, type PlanSource } from "./plan-snapshots";
 
-export function isQueryPlanResult(result: ResultInfo) {
+export function isQueryPlanResult(result: ResultInfo, source?: PlanSource) {
   return (
     result.retainedRows === 1 &&
     result.columns.length === 1 &&
-    ["QUERY PLAN", "EXPLAIN", "ANALYZE"].includes(result.columns[0].name.toUpperCase())
+    (["QUERY PLAN", "EXPLAIN", "ANALYZE"].includes(result.columns[0].name.toUpperCase()) ||
+      (result.columns[0].name.toUpperCase() === "CONTENT" && source?.engine === "snowflake"))
   );
 }
 
@@ -43,6 +44,16 @@ function Node({ node, depth }: { node: PlanNode; depth: number }) {
 function PlanTree({ plan }: { plan: QueryPlan }) {
   return (
     <>
+      {!!plan.estimates?.length && (
+        <dl className="plan-timings" aria-label="Global pruning estimates">
+          {plan.estimates.map((metric) => (
+            <div key={metric.label}>
+              <dt>{metric.label}</dt>
+              <dd>{metric.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
       {plan.timings.length > 0 && (
         <dl className="plan-timings">
           {plan.timings.map((metric) => (
@@ -127,6 +138,7 @@ export function QueryPlanView({
               !raw ||
               !parsed?.plan ||
               !source ||
+              !!source.comparisonUnavailable ||
               !canCapture ||
               snapshots.some((row) => row.resultId === result.id)
             }
@@ -216,10 +228,15 @@ export function QueryPlanView({
           context to keep a snapshot.
         </p>
       )}
+      {source?.comparisonUnavailable && <p className="plan-note">{source.comparisonUnavailable}</p>}
       {notice && <p role="status">{notice}</p>}
       {source && (
         <details className="plan-source">
-          <summary>Executed SQL and observed context</summary>
+          <summary>
+            {source.comparisonUnavailable
+              ? "Executed SQL and context availability"
+              : "Executed SQL and observed context"}
+          </summary>
           <pre className="plan-source-text">{source.executedSql}</pre>
           <p>
             {source.engine} · {source.serverVersion} · Session {source.sessionId}
@@ -263,8 +280,9 @@ export function QueryPlanView({
       ) : parsed?.plan ? (
         <>
           <p className="plan-note">
-            {parsed.plan.engine} · Costs use engine optimizer units, not milliseconds. Row estimates
-            and actual measurements are shown separately.
+            {parsed.plan.engine === "Snowflake"
+              ? "Snowflake logical plan · Assigned partitions and bytes are compile-time upper-bound estimates; runtime pruning can reduce them. Shared operators are expanded once per step with references for additional parents. Logical structure does not imply execution order. No actual rows or timing measurements are available. Warehouse size can affect the plan; compilation may consume Cloud Services credits."
+              : `${parsed.plan.engine} · Costs use engine optimizer units, not milliseconds. Row estimates and actual measurements are shown separately.`}
           </p>
           <PlanTree plan={parsed.plan} />
         </>

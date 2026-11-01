@@ -582,7 +582,7 @@ export function App() {
       metrics: {},
       revision,
       dataSessionId: plan.sessionId,
-      planSource: undefined,
+      planSource: planSourceForExecution(plan, executionSession, undefined),
       runMetrics: undefined,
       clientStartedAt: performance.now(),
       clientElapsedMs: undefined,

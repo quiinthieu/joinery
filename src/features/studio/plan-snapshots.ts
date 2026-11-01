@@ -4,13 +4,14 @@ import { parseQueryPlan } from "./query-plan";
 export const MAX_PLAN_SNAPSHOTS = 10;
 export const PLAN_SNAPSHOT_BUDGET = 2 * 1024 * 1024;
 export interface PlanSource {
-  engine: "postgres" | "mysql";
+  engine: "postgres" | "mysql" | "snowflake";
   serverVersion: string;
   connectionId: string;
   sessionId: string;
   context: string;
   query: string;
   executedSql: string;
+  comparisonUnavailable?: string;
 }
 export interface PlanSnapshot {
   id: number;
@@ -31,14 +32,28 @@ export function planSourceForExecution(
 ): PlanSource | undefined {
   if (
     !session ||
-    !runtime ||
     plan.sessionId !== session.id ||
-    runtime.sessionId !== session.id ||
-    !["postgres", "mysql"].includes(session.engine) ||
+    !["postgres", "mysql", "snowflake"].includes(session.engine) ||
     plan.statements.length !== 1
   )
     return;
   const executedSql = plan.statements[0].sql;
+  if (session.engine === "snowflake") {
+    const prefix = "EXPLAIN USING JSON\n";
+    if (!executedSql.startsWith(prefix)) return;
+    return {
+      engine: "snowflake",
+      serverVersion: session.serverVersion,
+      connectionId: session.connectionId,
+      sessionId: session.id,
+      context: "Session context is not independently observed for Snowflake plans.",
+      query: executedSql.slice(prefix.length),
+      executedSql,
+      comparisonUnavailable:
+        "Snowflake snapshots require observed warehouse and session context; comparison is unavailable.",
+    };
+  }
+  if (!runtime || runtime.sessionId !== session.id) return;
   const prefixes =
     session.engine === "postgres"
       ? ["EXPLAIN (FORMAT JSON)\n", "EXPLAIN (ANALYZE, FORMAT JSON)\n"]
@@ -67,6 +82,8 @@ export function planMismatch(
   left: Readonly<PlanSource>,
   right: Readonly<PlanSource>,
 ): string | null {
+  if (left.comparisonUnavailable || right.comparisonUnavailable)
+    return left.comparisonUnavailable ?? right.comparisonUnavailable!;
   if (left.engine !== right.engine || left.serverVersion !== right.serverVersion)
     return "Different engine or server version";
   if (left.connectionId !== right.connectionId || left.sessionId !== right.sessionId)
@@ -95,6 +112,11 @@ export class PlanSnapshotStore {
     this.listeners.forEach((listener) => listener());
   }
   capture(ownerTabId: string, resultId: string, source: PlanSource, raw: string) {
+    if (source.engine === "snowflake" || source.comparisonUnavailable)
+      throw new Error(
+        source.comparisonUnavailable ??
+          "Snowflake snapshots require observed warehouse and session context.",
+      );
     const existing = this.rows.find((row) => row.resultId === resultId);
     if (existing) return { saved: existing, evicted: 0 };
     const bytes = new TextEncoder().encode(
@@ -103,7 +125,8 @@ export class PlanSnapshotStore {
     if (bytes > PLAN_SNAPSHOT_BUDGET)
       throw new Error("Plan snapshot exceeds the shared 2 MiB budget.");
     const parsed = parseQueryPlan(raw);
-    if ((source.engine === "postgres") !== (parsed.engine === "PostgreSQL"))
+    const engines = { postgres: "PostgreSQL", mysql: "MySQL/MariaDB" };
+    if (engines[source.engine] !== parsed.engine)
       throw new Error("Plan format does not match its execution engine.");
     const saved: PlanSnapshot = Object.freeze({
       id: ++this.sequence,

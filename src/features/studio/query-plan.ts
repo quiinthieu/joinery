@@ -1,4 +1,5 @@
 import { parseMysqlTreePlan } from "./mysql-tree-plan";
+import { parseSnowflakePlan } from "./snowflake-plan";
 
 export interface PlanNode {
   path: string;
@@ -8,11 +9,12 @@ export interface PlanNode {
   children: PlanNode[];
 }
 export interface QueryPlan {
-  engine: "PostgreSQL" | "MySQL/MariaDB";
+  engine: "PostgreSQL" | "MySQL/MariaDB" | "Snowflake";
   format: "json" | "tree";
   actual: boolean;
   roots: PlanNode[];
   timings: { label: string; value: string }[];
+  estimates?: { label: string; value: string }[];
 }
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
@@ -32,6 +34,8 @@ export function parseQueryPlan(raw: string): QueryPlan {
   } catch {
     throw new Error("This result is not a supported query plan. Use the data grid or raw view.");
   }
+  if (record(data) && ("Operations" in data || "GlobalStats" in data))
+    return parseSnowflakePlan(data);
   let visited = 0;
   const check = (depth: number) => {
     if (++visited > 2000 || depth > 40)

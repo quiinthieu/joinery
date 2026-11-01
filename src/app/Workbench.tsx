@@ -708,7 +708,7 @@ export function Workbench({
                   Run<kbd>⌘ ↵</kbd>
                 </button>
               )}
-              {profile && ["postgres", "mysql"].includes(profile.engine) && (
+              {profile && ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
                 <button
                   className="button ghost small"
                   disabled={running || !session}
@@ -911,7 +911,7 @@ export function Workbench({
           <div className="table-view-actions">
             {result && result.columns.length > 0 && (
               <>
-                {isQueryPlanResult(result) && (
+                {isQueryPlanResult(result, tab.planSource) && (
                   <button
                     className="button ghost small"
                     aria-pressed={planResultId === result.id}
@@ -1174,7 +1174,7 @@ export function Workbench({
           </div>
         ) : tab.kind === "query" &&
           result &&
-          isQueryPlanResult(result) &&
+          isQueryPlanResult(result, tab.planSource) &&
           planResultId === result.id ? (
           <QueryPlanView
             key={result.id}

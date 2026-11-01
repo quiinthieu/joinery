@@ -107,6 +107,30 @@ pub fn prepare(
     if profile.engine == EngineKind::Redis {
         return crate::drivers::redis::commands::prepare(session_id, profile, sql);
     }
+    // sqlparser does not support Snowflake's USING JSON syntax. Recognize
+    // only our exact wrapper, validate the entire inner query, then apply the
+    // existing read classification. Never whitelist an EXPLAIN prefix alone.
+    if profile.engine == EngineKind::Snowflake
+        && let Some(query) = sql.strip_prefix("EXPLAIN USING JSON\n")
+    {
+        crate::query_plan::explain_sql(profile.engine, query, false, None)?;
+        let inner = prepare(session_id, profile, query)?;
+        if inner.statements.len() != 1 || inner.statements[0].kind != StatementKind::Read {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Explain requires one read-only query",
+            ));
+        }
+        return plan_for_statements(
+            session_id,
+            profile,
+            vec![StatementPlan {
+                sql: sql.to_owned(),
+                kind: StatementKind::Read,
+                missing_where: false,
+            }],
+        );
+    }
     let mut mysql_analysis = false;
     if profile.engine == EngineKind::Mysql {
         if has_mysql_executable_comment(sql) {
@@ -625,6 +649,30 @@ mod tests {
             assert_eq!(
                 prepare("s", &p, sql).unwrap_err().code,
                 ErrorCode::PolicyBlocked
+            );
+        }
+    }
+    #[test]
+    fn generated_snowflake_explain_is_read_only_without_allowing_a_batch_escape() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Local);
+        p.engine = EngineKind::Snowflake;
+        let sql = "EXPLAIN USING JSON\n/* preserve */ SELECT 'é;' AS note, id FROM lab.public.events QUALIFY ROW_NUMBER() OVER (ORDER BY id)=1; -- end";
+        let plan = prepare("s", &p, sql).unwrap();
+        assert_eq!(plan.statements.len(), 1);
+        assert_eq!(plan.statements[0].sql, sql);
+        assert_eq!(plan.statements[0].kind, StatementKind::Read);
+        assert!(!plan.requires_approval);
+        for query in [
+            "SELECT 1; DELETE FROM t",
+            "SELECT 1; SELECT 2",
+            "DELETE FROM t",
+            "EXPLAIN SELECT 1",
+            "SELECT '",
+            "SELECT 1 INTO new_table",
+        ] {
+            assert!(
+                prepare("s", &p, &format!("EXPLAIN USING JSON\n{query}")).is_err(),
+                "{query}"
             );
         }
     }

@@ -1,7 +1,7 @@
 use crate::domain::{ActualPlanFormat, AppError, AppResult, EngineKind, ErrorCode};
 use sqlparser::{
     ast::Statement,
-    dialect::{Dialect, MySqlDialect, PostgreSqlDialect},
+    dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect},
     parser::Parser,
 };
 
@@ -20,6 +20,7 @@ pub(crate) fn explain_sql(
             "EXPLAIN (ANALYZE, FORMAT JSON)",
         ),
         (EngineKind::Mysql, false) => (Box::new(MySqlDialect {}), "EXPLAIN FORMAT=JSON"),
+        (EngineKind::Snowflake, false) => (Box::new(SnowflakeDialect {}), "EXPLAIN USING JSON"),
         (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MariaDbJson) => {
             (Box::new(MySqlDialect {}), "ANALYZE FORMAT=JSON")
         }
@@ -32,7 +33,7 @@ pub(crate) fn explain_sql(
                 if analyze {
                     "Actual plans are available for PostgreSQL and capability-checked MySQL/MariaDB sessions."
                 } else {
-                    "Estimated plans are available for PostgreSQL and MySQL/MariaDB."
+                    "Estimated plans are available for PostgreSQL, MySQL/MariaDB, and Snowflake."
                 },
             ));
         }
@@ -107,10 +108,25 @@ mod tests {
 
     #[test]
     fn unsupported_engines_and_oversized_input_fail_closed() {
-        for engine in [EngineKind::Snowflake, EngineKind::Redis] {
-            assert!(explain_sql(engine, "SELECT 1", false, None).is_err());
-        }
+        assert!(explain_sql(EngineKind::Redis, "SELECT 1", false, None).is_err());
         assert!(explain_sql(EngineKind::Postgres, &" ".repeat(1024 * 1024), false, None).is_err());
+    }
+
+    #[test]
+    fn snowflake_estimate_preserves_query() {
+        let sql = "/* keep é */ SELECT 'a;b' AS note, id FROM lab.public.events QUALIFY ROW_NUMBER() OVER (ORDER BY id)=1; -- keep";
+        let explained = explain_sql(EngineKind::Snowflake, sql, false, None).unwrap();
+        assert_eq!(explained, format!("EXPLAIN USING JSON\n{sql}"));
+        for sql in [
+            "SELECT 1; DELETE FROM t",
+            "SELECT 1; SELECT 2",
+            "DELETE FROM t",
+            "EXPLAIN SELECT 1",
+            "SELECT '",
+        ] {
+            assert!(explain_sql(EngineKind::Snowflake, sql, false, None).is_err());
+        }
+        assert!(explain_sql(EngineKind::Snowflake, &" ".repeat(1024 * 1024), false, None).is_err());
     }
 
     #[test]

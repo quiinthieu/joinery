@@ -50,6 +50,44 @@ function prepared(sql: string): PreparedPlan {
 }
 
 describe("plan snapshot identity", () => {
+  it("recognizes Snowflake generated execution without inventing comparable warehouse context", () => {
+    const snowflake = {
+      ...session,
+      engine: "snowflake",
+      serverVersion: "synthetic",
+    } as SessionInfo;
+    const execution = planSourceForExecution(
+      prepared("EXPLAIN USING JSON\nSELECT 1"),
+      snowflake,
+      undefined,
+    )!;
+    expect(execution.engine).toBe("snowflake");
+    expect(execution.query).toBe("SELECT 1");
+    expect(execution.comparisonUnavailable).toContain("warehouse");
+    expect(planMismatch(execution, execution)).toContain("warehouse");
+    const store = new PlanSnapshotStore();
+    expect(() =>
+      store.capture(
+        "t",
+        "sf",
+        execution,
+        '{"GlobalStats":{},"Operations":[[{"id":0,"operation":"Result"}]]}',
+      ),
+    ).toThrow("warehouse");
+    expect(store.snapshot()).toHaveLength(0);
+    expect(
+      planSourceForExecution(prepared("SELECT 'content'"), snowflake, runtime),
+    ).toBeUndefined();
+    // Exact engine checks must reject Snowflake JSON attached to a MySQL execution.
+    expect(() =>
+      store.capture(
+        "t",
+        "mismatch",
+        { ...source, engine: "mysql" },
+        '{"GlobalStats":{},"Operations":[[{"id":0,"operation":"Result"}]]}',
+      ),
+    ).toThrow("engine");
+  });
   it("compares MariaDB generated estimates and actuals using the observed session", () => {
     const maria = { ...session, engine: "mysql", serverVersion: "11.4.13-MariaDB" } as SessionInfo;
     const estimated = planSourceForExecution(
