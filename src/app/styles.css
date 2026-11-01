@@ -3595,3 +3595,83 @@ kbd {
   justify-content: flex-end;
   padding-top: 4px;
 }
+.format-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.managed-snippets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+.managed-snippet {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 11px;
+}
+.snippet-trigger-code {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.snippet-engine-pill {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--selection);
+  color: var(--muted);
+  font-size: 9.5px;
+}
+.snippet-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.snippet-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.snippet-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.modal .snippet-template-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 68px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+@media (max-width: 620px) {
+  .format-settings-grid,
+  .snippet-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.preference-recovery-lock {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}

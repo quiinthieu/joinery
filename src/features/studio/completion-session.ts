@@ -1,6 +1,6 @@
 import type { EditorState } from "@codemirror/state";
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
-import type { EngineKind, TableInfo, TableRef, TableSchema } from "../../ipc/generated";
+import type { EngineKind, SqlSnippet, TableInfo, TableRef, TableSchema } from "../../ipc/generated";
 import type { CompletionItem } from "../../data/completion-index";
 import type {
   CompletionRequest,
@@ -19,11 +19,13 @@ import {
   type SqlScope,
 } from "./sql-context";
 import { identifierValue, quoteIdentifier } from "./sql-identifiers";
+import { snippetCompletions } from "./sql-snippets";
 
 interface Configuration {
   engine: EngineKind;
   sessionId: string | null;
   tables: TableInfo[];
+  snippets?: readonly SqlSnippet[];
   database?: string;
   defaultSchema?: string;
   searchPath?: string[];
@@ -163,8 +165,14 @@ export class CompletionSession {
       previous.unqualifiedTables === config.unqualifiedTables &&
       previous.caseSensitiveTableNames === config.caseSensitiveTableNames &&
       previous.contextRevision === config.contextRevision
-    )
+    ) {
+      if (previous.snippets !== config.snippets) {
+        this.configuration = config;
+        this.cancelPending();
+        return true;
+      }
       return false;
+    }
     this.configuration = config;
     this.context++;
     this.cancel();
@@ -330,16 +338,34 @@ export class CompletionSession {
             config.tables,
             this.lookup,
           );
+    const barePrefix =
+      pending.target.parts.length === 1 && !pending.target.parts[0].quoted
+        ? pending.target.parts[0].value.toLowerCase()
+        : null;
+    const snippetOptions =
+      engine === "redis" || barePrefix === null || (barePrefix.length === 0 && fkOptions.length > 0)
+        ? []
+        : snippetCompletions(engine, pending.target, config.snippets ?? []);
+    const exactSnippets =
+      barePrefix && barePrefix.length > 0
+        ? snippetOptions.filter((option) => option.label.toLowerCase() === barePrefix)
+        : [];
+    const prefixSnippets =
+      barePrefix && barePrefix.length > 0
+        ? snippetOptions.filter((option) => option.label.toLowerCase() !== barePrefix)
+        : snippetOptions;
     pending.finish({
       from: 0,
       filter: false,
       options: [
         ...fkOptions,
+        ...exactSnippets,
         ...message.items.map((item) => {
           if (!item.path || item.apply) return item;
           const label = item.path.map((part) => quoteIdentifier(part, engine)).join(".");
           return { ...item, label, apply: label + (item.type === "namespace" ? "." : "") };
         }),
+        ...prefixSnippets,
       ],
     });
   }

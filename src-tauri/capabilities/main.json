@@ -72,6 +72,9 @@
     "allow-save-saved-query",
     "allow-delete-saved-query",
     "allow-save-bookmark",
-    "allow-delete-bookmark"
+    "allow-delete-bookmark",
+    "allow-save-sql-format-settings",
+    "allow-save-sql-snippet",
+    "allow-delete-sql-snippet"
   ]
 }

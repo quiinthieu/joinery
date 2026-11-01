@@ -151,6 +151,9 @@ pub fn run() {
             commands::delete_saved_query,
             commands::save_bookmark,
             commands::delete_bookmark,
+            commands::save_sql_format_settings,
+            commands::save_sql_snippet,
+            commands::delete_sql_snippet,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

@@ -21,12 +21,16 @@ import type {
   SessionContextOptions,
   SessionInfo,
   SessionRuntimeState,
+  SqlFormatSettings,
+  SqlSnippet,
+  SqlSnippetInput,
   TableInfo,
   TableRef,
   TableSchema,
   TransactionMode,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
+import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
 import {
@@ -131,6 +135,11 @@ export interface NamedSession {
   primary: boolean;
 }
 
+let sqlFormatSaveTail: Promise<void> = Promise.resolve();
+let sqlFormatSaveSequence = 0;
+let sqlFormatPending = 0;
+let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
+
 interface StudioState {
   bootstrap: Bootstrap | null;
   error: string | null;
@@ -147,6 +156,8 @@ interface StudioState {
   tableLayouts: SavedTableLayout[];
   savedQueries: SavedQuery[];
   bookmarks: SavedBookmark[];
+  sqlFormatSettings: SqlFormatSettings;
+  sqlSnippets: SqlSnippet[];
   recentLocations: RecentLocation[];
   theme: "dark" | "light" | "contrast";
   density: "comfortable" | "compact";
@@ -181,6 +192,9 @@ interface StudioState {
   openSavedQuery(id: string): string | null;
   toggleBookmark(target: BookmarkTarget, label: string): Promise<boolean>;
   deleteBookmark(id: string): Promise<void>;
+  saveSqlFormatSettings(settings: SqlFormatSettings): Promise<SqlFormatSettings>;
+  saveSqlSnippet(input: SqlSnippetInput): Promise<SqlSnippet>;
+  deleteSqlSnippet(id: string): Promise<void>;
   openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
@@ -413,6 +427,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   tableLayouts: [],
   savedQueries: [],
   bookmarks: [],
+  sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
+  sqlSnippets: [],
   recentLocations: [],
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
   density: "comfortable",
@@ -452,6 +468,8 @@ export const useStudio = create<StudioState>((set, get) => ({
         bootstrap,
         savedQueries: bootstrap.savedQueries ?? [],
         bookmarks: bootstrap.bookmarks ?? [],
+        sqlFormatSettings: bootstrap.sqlFormatSettings ?? DEFAULT_SQL_FORMAT_SETTINGS,
+        sqlSnippets: bootstrap.sqlSnippets ?? [],
         error: null,
         ...(workspace
           ? {
@@ -1000,6 +1018,71 @@ export const useStudio = create<StudioState>((set, get) => ({
       return {
         bookmarks,
         bootstrap: state.bootstrap ? { ...state.bootstrap, bookmarks } : null,
+      };
+    });
+  },
+  async saveSqlFormatSettings(settings) {
+    const sequence = ++sqlFormatSaveSequence;
+    if (sqlFormatPending === 0) sqlFormatPersisted = get().sqlFormatSettings;
+    sqlFormatPending++;
+    set((state) => ({
+      sqlFormatSettings: settings,
+      bootstrap: state.bootstrap ? { ...state.bootstrap, sqlFormatSettings: settings } : null,
+    }));
+    const operation = sqlFormatSaveTail.then(async () => {
+      try {
+        const saved = await client.call<SqlFormatSettings>("save_sql_format_settings", {
+          settings,
+        });
+        sqlFormatPersisted = saved;
+        if (sequence === sqlFormatSaveSequence) {
+          set((state) => ({
+            sqlFormatSettings: saved,
+            bootstrap: state.bootstrap ? { ...state.bootstrap, sqlFormatSettings: saved } : null,
+          }));
+        }
+        return saved;
+      } catch (error) {
+        if (sequence === sqlFormatSaveSequence) {
+          set((state) => ({
+            sqlFormatSettings: sqlFormatPersisted,
+            bootstrap: state.bootstrap
+              ? { ...state.bootstrap, sqlFormatSettings: sqlFormatPersisted }
+              : null,
+          }));
+        }
+        throw error;
+      } finally {
+        sqlFormatPending--;
+      }
+    });
+    sqlFormatSaveTail = operation.then(
+      () => {},
+      () => {},
+    );
+    return operation;
+  },
+  async saveSqlSnippet(input) {
+    const saved = await client.call<SqlSnippet>("save_sql_snippet", { input });
+    set((state) => {
+      const sqlSnippets = [
+        saved,
+        ...state.sqlSnippets.filter((entry) => entry.id !== saved.id),
+      ].sort((a, b) => a.trigger.toLowerCase().localeCompare(b.trigger.toLowerCase()));
+      return {
+        sqlSnippets,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, sqlSnippets } : null,
+      };
+    });
+    return saved;
+  },
+  async deleteSqlSnippet(id) {
+    await client.call("delete_sql_snippet", { id });
+    set((state) => {
+      const sqlSnippets = state.sqlSnippets.filter((entry) => entry.id !== id);
+      return {
+        sqlSnippets,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, sqlSnippets } : null,
       };
     });
   },

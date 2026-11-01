@@ -217,7 +217,27 @@ impl Studio {
             workspace: self.persistence.workspace()?,
             saved_queries: self.persistence.saved_queries()?,
             bookmarks: self.persistence.bookmarks()?,
+            sql_format_settings: self.persistence.sql_format_settings()?,
+            sql_snippets: self.persistence.sql_snippets()?,
         })
+    }
+
+    pub fn save_sql_format_settings(
+        &self,
+        settings: SqlFormatSettings,
+    ) -> AppResult<SqlFormatSettings> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_sql_format_settings(settings)
+    }
+
+    pub fn save_sql_snippet(&self, input: SqlSnippetInput) -> AppResult<SqlSnippet> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_sql_snippet(input)
+    }
+
+    pub fn delete_sql_snippet(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.delete_sql_snippet(id)
     }
 
     pub fn save_saved_query(&self, input: SavedQueryInput) -> AppResult<SavedQuery> {

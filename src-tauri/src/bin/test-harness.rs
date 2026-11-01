@@ -405,6 +405,14 @@ async fn rpc(
                 studio.delete_bookmark(&arg::<String>(&args, "id")?)?;
                 Value::Null
             }
+            "save_sql_format_settings" => {
+                json!(studio.save_sql_format_settings(arg(&args, "settings")?)?)
+            }
+            "save_sql_snippet" => json!(studio.save_sql_snippet(arg(&args, "input")?)?),
+            "delete_sql_snippet" => {
+                studio.delete_sql_snippet(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
             "test_queue_open_file" => {
                 let file_name: Option<String> = arg(&args, "fileName")?;

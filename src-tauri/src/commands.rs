@@ -687,3 +687,33 @@ pub async fn delete_bookmark(studio: State<'_, Arc<Studio>>, id: String) -> AppR
         .await
         .map_err(join_error)?
 }
+
+#[tauri::command]
+pub async fn save_sql_format_settings(
+    studio: State<'_, Arc<Studio>>,
+    settings: SqlFormatSettings,
+) -> AppResult<SqlFormatSettings> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_sql_format_settings(settings))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn save_sql_snippet(
+    studio: State<'_, Arc<Studio>>,
+    input: SqlSnippetInput,
+) -> AppResult<SqlSnippet> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_sql_snippet(input))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_sql_snippet(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_sql_snippet(&id))
+        .await
+        .map_err(join_error)?
+}

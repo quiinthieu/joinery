@@ -9,6 +9,11 @@ pub const MAX_SAVED_QUERY_SQL_BYTES: usize = 256 * 1024;
 pub const MAX_SAVED_QUERIES_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BOOKMARKS: usize = 256;
 pub const MAX_BOOKMARK_LABEL_CHARS: usize = 160;
+pub const MAX_SQL_SNIPPETS: usize = 128;
+pub const MAX_SQL_SNIPPET_TRIGGER_CHARS: usize = 32;
+pub const MAX_SQL_SNIPPET_TITLE_CHARS: usize = 120;
+pub const MAX_SQL_SNIPPET_BODY_BYTES: usize = 16 * 1024;
+pub const MAX_SQL_SNIPPETS_TOTAL_BYTES: usize = 512 * 1024;
 const MAX_OBJECT_IDENTIFIER_BYTES: usize = 256;
 const MAX_OBJECT_IDENTITY_BYTES: usize = 512;
 
@@ -179,6 +184,163 @@ fn write_bookmarks(connection: &Connection, items: &[SavedBookmark]) -> AppResul
     connection
         .execute(
             "INSERT INTO settings(key,value) VALUES('bookmarks',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![value],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
+fn validate_sql_format_settings(settings: &SqlFormatSettings) -> AppResult<()> {
+    if !matches!(settings.indent_width, 2 | 4) {
+        return Err(AppError::invalid("SQL indent width must be 2 or 4 spaces"));
+    }
+    if !matches!(settings.lines_between_queries, 1 | 2) {
+        return Err(AppError::invalid(
+            "SQL lines between queries must be 1 or 2",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn read_sql_format_settings(connection: &Connection) -> AppResult<SqlFormatSettings> {
+    let json: Option<String> = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key='sql-format-settings'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some(json) = json else {
+        return Ok(SqlFormatSettings::default());
+    };
+    if json.len() > 4096 {
+        return Err(AppError::invalid("SQL format settings are too large"));
+    }
+    let settings: SqlFormatSettings = serde_json::from_str(&json)
+        .map_err(|_| AppError::invalid("SQL format settings are invalid"))?;
+    validate_sql_format_settings(&settings)?;
+    Ok(settings)
+}
+
+fn write_sql_format_settings(
+    connection: &Connection,
+    settings: &SqlFormatSettings,
+) -> AppResult<()> {
+    validate_sql_format_settings(settings)?;
+    let value = serde_json::to_string(settings)
+        .map_err(|_| AppError::internal("Could not encode SQL format settings"))?;
+    connection
+        .execute(
+            "INSERT INTO settings(key,value) VALUES('sql-format-settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![value],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
+fn valid_snippet_trigger(trigger: &str) -> bool {
+    let bytes = trigger.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_SQL_SNIPPET_TRIGGER_CHARS {
+        return false;
+    }
+    let first = bytes[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
+fn validate_sql_snippets(items: &[SqlSnippet]) -> AppResult<()> {
+    if items.len() > MAX_SQL_SNIPPETS {
+        return Err(AppError::new(
+            ErrorCode::ResultLimitReached,
+            "At most 128 SQL snippets may be stored",
+        ));
+    }
+    let mut ids = HashSet::with_capacity(items.len());
+    let mut trigger_keys = HashSet::with_capacity(items.len());
+    let mut total_bytes = 0usize;
+    for item in items {
+        let title_chars = item.title.trim().chars().count();
+        if uuid::Uuid::parse_str(&item.id).is_err()
+            || !ids.insert(item.id.as_str())
+            || !valid_snippet_trigger(&item.trigger)
+            || item.title.trim().is_empty()
+            || title_chars > MAX_SQL_SNIPPET_TITLE_CHARS
+            || item.title.chars().any(char::is_control)
+            || item.body.trim().is_empty()
+            || item.body.contains('\0')
+            || item.engine == Some(EngineKind::Redis)
+        {
+            return Err(AppError::invalid("A SQL snippet record is invalid"));
+        }
+        if !trigger_keys.insert((item.trigger.to_ascii_lowercase(), item.engine)) {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "A SQL snippet with that trigger already exists for this engine",
+            ));
+        }
+        if item.body.len() > MAX_SQL_SNIPPET_BODY_BYTES {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "Each SQL snippet is limited to 16 KiB",
+            ));
+        }
+        total_bytes = total_bytes
+            .saturating_add(item.trigger.len())
+            .saturating_add(item.title.len())
+            .saturating_add(item.body.len());
+        if total_bytes > MAX_SQL_SNIPPETS_TOTAL_BYTES {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "SQL snippets are limited to 512 KiB in total",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn read_sql_snippets(connection: &Connection) -> AppResult<Vec<SqlSnippet>> {
+    let json: Option<String> = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key='sql-snippets'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some(json) = json else {
+        return Ok(Vec::new());
+    };
+    if json.len() > MAX_SQL_SNIPPETS_TOTAL_BYTES * 6 + 65_536 {
+        return Err(AppError::invalid("SQL snippets are too large"));
+    }
+    let items: Vec<SqlSnippet> =
+        serde_json::from_str(&json).map_err(|_| AppError::invalid("SQL snippets are invalid"))?;
+    validate_sql_snippets(&items)?;
+    Ok(items)
+}
+
+fn write_sql_snippets(connection: &Connection, items: &[SqlSnippet]) -> AppResult<()> {
+    validate_sql_snippets(items)?;
+    if serde_json::to_string(items)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX)
+        > MAX_SQL_SNIPPETS_TOTAL_BYTES
+    {
+        return Err(AppError::new(
+            ErrorCode::ResultLimitReached,
+            "SQL snippets are limited to 512 KiB in total",
+        ));
+    }
+    let value = serde_json::to_string(items)
+        .map_err(|_| AppError::internal("Could not encode SQL snippets"))?;
+    connection
+        .execute(
+            "INSERT INTO settings(key,value) VALUES('sql-snippets',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             params![value],
         )
         .map_err(db_error)?;
@@ -437,6 +599,120 @@ impl Persistence {
         write_bookmarks(&tx, &items)?;
         tx.commit().map_err(db_error)
     }
+
+    pub fn sql_format_settings(&self) -> AppResult<SqlFormatSettings> {
+        read_sql_format_settings(&self.connection.lock())
+    }
+
+    pub fn save_sql_format_settings(
+        &self,
+        settings: SqlFormatSettings,
+    ) -> AppResult<SqlFormatSettings> {
+        validate_sql_format_settings(&settings)?;
+        let conn = self.connection.lock();
+        write_sql_format_settings(&conn, &settings)?;
+        Ok(settings)
+    }
+
+    pub fn sql_snippets(&self) -> AppResult<Vec<SqlSnippet>> {
+        read_sql_snippets(&self.connection.lock())
+    }
+
+    pub fn save_sql_snippet(&self, input: SqlSnippetInput) -> AppResult<SqlSnippet> {
+        let trigger = input.trigger.trim().to_owned();
+        if !valid_snippet_trigger(&trigger) {
+            return Err(AppError::invalid(
+                "Snippet trigger must match [A-Za-z_][A-Za-z0-9_]{0,31}",
+            ));
+        }
+        let title = clean_single_line(&input.title, MAX_SQL_SNIPPET_TITLE_CHARS, "snippet title")?;
+        if input.body.trim().is_empty() || input.body.contains('\0') {
+            return Err(AppError::invalid(
+                "Provide a non-empty UTF-8 SQL snippet template",
+            ));
+        }
+        if input.body.len() > MAX_SQL_SNIPPET_BODY_BYTES {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "Each SQL snippet is limited to 16 KiB",
+            ));
+        }
+        if input.engine == Some(EngineKind::Redis) {
+            return Err(AppError::invalid(
+                "SQL snippets apply to PostgreSQL, MySQL, and Snowflake only",
+            ));
+        }
+        let requested_id = input
+            .id
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        if let Some(ref id) = requested_id
+            && uuid::Uuid::parse_str(id).is_err()
+        {
+            return Err(AppError::invalid("Invalid SQL snippet identifier"));
+        }
+
+        let mut conn = self.connection.lock();
+        let tx = conn.transaction().map_err(db_error)?;
+        let mut items = read_sql_snippets(&tx)?;
+        let updated_at_ms = now_ms();
+        let saved = if let Some(ref existing_id) = requested_id
+            && let Some(pos) = items.iter().position(|s| &s.id == existing_id)
+        {
+            let entry = SqlSnippet {
+                id: existing_id.clone(),
+                trigger,
+                title,
+                body: input.body,
+                engine: input.engine,
+                updated_at_ms,
+            };
+            items[pos] = entry.clone();
+            entry
+        } else {
+            if items.len() >= MAX_SQL_SNIPPETS {
+                return Err(AppError::new(
+                    ErrorCode::ResultLimitReached,
+                    "At most 128 SQL snippets may be stored",
+                ));
+            }
+            let entry = SqlSnippet {
+                id: requested_id.unwrap_or_else(new_id),
+                trigger,
+                title,
+                body: input.body,
+                engine: input.engine,
+                updated_at_ms,
+            };
+            items.push(entry.clone());
+            entry
+        };
+        items.sort_by(|a, b| {
+            a.trigger
+                .to_ascii_lowercase()
+                .cmp(&b.trigger.to_ascii_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        write_sql_snippets(&tx, &items)?;
+        tx.commit().map_err(db_error)?;
+        Ok(saved)
+    }
+
+    pub fn delete_sql_snippet(&self, id: &str) -> AppResult<()> {
+        let mut conn = self.connection.lock();
+        let tx = conn.transaction().map_err(db_error)?;
+        let mut items = read_sql_snippets(&tx)?;
+        let before = items.len();
+        items.retain(|s| s.id != id);
+        if items.len() == before {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                "SQL snippet no longer exists",
+            ));
+        }
+        write_sql_snippets(&tx, &items)?;
+        tx.commit().map_err(db_error)
+    }
 }
 
 #[cfg(test)]
@@ -675,6 +951,173 @@ mod tests {
         // Corrupt settings('saved-queries') in live DB and verify create_metadata_backup rejects it
         store
             .set_setting("saved-queries", "[{\"unexpected\":true}]")
+            .unwrap();
+        assert_eq!(
+            store.create_metadata_backup().unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn sql_format_settings_and_snippets_validate_bounds_triggers_and_backup_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Persistence::open(dir.path()).unwrap();
+
+        assert_eq!(
+            store.sql_format_settings().unwrap(),
+            SqlFormatSettings {
+                keyword_case: SqlKeywordCase::Upper,
+                indent_width: 2,
+                lines_between_queries: 1,
+            }
+        );
+
+        let updated_fmt = store
+            .save_sql_format_settings(SqlFormatSettings {
+                keyword_case: SqlKeywordCase::Lower,
+                indent_width: 4,
+                lines_between_queries: 2,
+            })
+            .unwrap();
+        assert_eq!(store.sql_format_settings().unwrap(), updated_fmt);
+
+        assert_eq!(
+            store
+                .save_sql_format_settings(SqlFormatSettings {
+                    keyword_case: SqlKeywordCase::Preserve,
+                    indent_width: 3,
+                    lines_between_queries: 1,
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            store
+                .save_sql_format_settings(SqlFormatSettings {
+                    keyword_case: SqlKeywordCase::Preserve,
+                    indent_width: 2,
+                    lines_between_queries: 5,
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+
+        let snip_all = store
+            .save_sql_snippet(SqlSnippetInput {
+                id: None,
+                trigger: "  active_users  ".into(),
+                title: "  Active Users  ".into(),
+                body: "SELECT * FROM ${1:users} WHERE active = TRUE;".into(),
+                engine: None,
+            })
+            .unwrap();
+        assert_eq!(snip_all.trigger, "active_users");
+        assert_eq!(snip_all.title, "Active Users");
+
+        // Same trigger scoped to a specific SQL engine is allowed, while duplicate (trigger, engine) conflicts.
+        let snip_pg = store
+            .save_sql_snippet(SqlSnippetInput {
+                id: None,
+                trigger: "active_users".into(),
+                title: "PG Active Users".into(),
+                body: "SELECT * FROM public.${1:users} WHERE active;".into(),
+                engine: Some(EngineKind::Postgres),
+            })
+            .unwrap();
+        assert_eq!(snip_pg.engine, Some(EngineKind::Postgres));
+        assert_eq!(
+            store
+                .save_sql_snippet(SqlSnippetInput {
+                    id: None,
+                    trigger: "ACTIVE_USERS".into(),
+                    title: "Duplicate".into(),
+                    body: "SELECT 1;".into(),
+                    engine: None,
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+
+        // Reject invalid triggers, Redis engine, and >16 KiB bodies.
+        assert_eq!(
+            store
+                .save_sql_snippet(SqlSnippetInput {
+                    id: None,
+                    trigger: "1bad trigger".into(),
+                    title: "Bad".into(),
+                    body: "SELECT 1;".into(),
+                    engine: None,
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            store
+                .save_sql_snippet(SqlSnippetInput {
+                    id: None,
+                    trigger: "redis_get".into(),
+                    title: "Redis".into(),
+                    body: "GET foo".into(),
+                    engine: Some(EngineKind::Redis),
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            store
+                .save_sql_snippet(SqlSnippetInput {
+                    id: None,
+                    trigger: "huge".into(),
+                    title: "Huge".into(),
+                    body: "x".repeat(MAX_SQL_SNIPPET_BODY_BYTES + 1),
+                    engine: None,
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::ResultLimitReached
+        );
+
+        // Update existing snippet in place and verify backup/restore preserves both settings.
+        let snip_updated = store
+            .save_sql_snippet(SqlSnippetInput {
+                id: Some(snip_all.id.clone()),
+                trigger: "active_users".into(),
+                title: "Active Users v2".into(),
+                body: "SELECT id FROM ${1:users} WHERE active = TRUE;".into(),
+                engine: None,
+            })
+            .unwrap();
+        assert_eq!(snip_updated.id, snip_all.id);
+        assert_eq!(store.sql_snippets().unwrap().len(), 2);
+
+        let backup = store.create_metadata_backup().unwrap();
+        store.delete_sql_snippet(&snip_pg.id).unwrap();
+        assert_eq!(store.sql_snippets().unwrap().len(), 1);
+        store
+            .restore_metadata_backup(&backup.id, &backup.digest)
+            .unwrap();
+        assert_eq!(store.sql_snippets().unwrap().len(), 2);
+        assert_eq!(store.sql_format_settings().unwrap(), updated_fmt);
+
+        // Corrupt 'sql-format-settings' and 'sql-snippets' must fail backup/recovery validation.
+        store
+            .set_setting(
+                "sql-format-settings",
+                r#"{"keywordCase":"upper","indentWidth":8,"linesBetweenQueries":1}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            store.create_metadata_backup().unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+        store.save_sql_format_settings(updated_fmt).unwrap();
+        store
+            .set_setting("sql-snippets", r#"[{"unexpected":true}]"#)
             .unwrap();
         assert_eq!(
             store.create_metadata_backup().unwrap_err().code,

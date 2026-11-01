@@ -43,6 +43,12 @@ import type {
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import type { CompletionResponse } from "../../data/completion-protocol";
+import {
+  prepareEditorFormatJob,
+  resolveEditorFormatReplacement,
+  sqlFormatterLanguage,
+  type EditorFormatJob,
+} from "../../data/sql-format";
 import { useStudio } from "../../state/studio";
 import { selectedStatement, selectedStatementSlice } from "./sql-context";
 import {
@@ -271,6 +277,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const availableContexts = useStudio((s) =>
     props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
   );
+  const sqlSnippets = useStudio((s) => s.sqlSnippets);
+  const snippetsRef = useRef(sqlSnippets);
+  snippetsRef.current = sqlSnippets;
   const liveRef = useRef<CompletionCatalog | null>(null);
   const liveObjectsRef = useRef<DatabaseObjectSummary[]>([]);
   const schemaCacheRef = useRef<Map<string, TableSchema>>(new Map());
@@ -290,6 +299,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     return {
       ...config,
       tables: snapshot?.tables ?? [],
+      snippets: snippetsRef.current,
       sessionId: snapshot ? config.sessionId : null,
       database: snapshot?.identity.database,
       searchPath: snapshot?.identity.searchPath,
@@ -305,7 +315,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const completion = useRef<CompletionSession | null>(null),
     formatter = useRef<Worker | null>(null),
     sequence = useRef(0);
-  const formatting = useRef<{ id: number; source: string } | null>(null);
+  const formatting = useRef<EditorFormatJob | null>(null);
 
   const loadTableSchemaCached = async (
     sessionId: string,
@@ -539,7 +549,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         view.current?.focus();
       },
       format() {
-        if (!view.current || latest.current.engine === "redis") return;
+        const editor = view.current;
+        const language = sqlFormatterLanguage(latest.current.engine);
+        if (!editor || !language) return;
         if (!formatter.current) {
           formatter.current = new Worker(
             new URL("../../workers/formatter.worker.ts", import.meta.url),
@@ -548,32 +560,34 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           formatter.current.onmessage = ({
             data,
           }: MessageEvent<{ id: number; sql?: string; error?: string }>) => {
-            if (data.id !== formatting.current?.id) return;
+            const job = formatting.current;
+            if (!job || data.id !== job.id) return;
+            formatting.current = null;
             if (data.error) {
               useStudio.getState().notify(data.error);
               return;
             }
-            const editor = view.current;
-            if (
-              editor &&
-              data.sql !== undefined &&
-              editor.state.doc.toString() === formatting.current.source
-            )
-              editor.dispatch({
-                changes: { from: 0, to: editor.state.doc.length, insert: data.sql },
-              });
+            const currentEditor = view.current;
+            if (!currentEditor || data.sql === undefined) return;
+            const replacement = resolveEditorFormatReplacement(currentEditor.state, job, data.sql);
+            if (!replacement) return;
+            currentEditor.dispatch({
+              changes: {
+                from: replacement.from,
+                to: replacement.to,
+                insert: replacement.insert,
+              },
+              ...(replacement.selection ? { selection: replacement.selection } : {}),
+            });
           };
         }
-        formatting.current = { id: ++sequence.current, source: view.current.state.doc.toString() };
+        const job = prepareEditorFormatJob(editor.state, ++sequence.current);
+        formatting.current = job;
         formatter.current.postMessage({
-          id: formatting.current.id,
-          sql: formatting.current.source,
-          language:
-            latest.current.engine === "postgres"
-              ? "postgresql"
-              : latest.current.engine === "mysql"
-                ? "mysql"
-                : "snowflake",
+          id: job.id,
+          sql: job.source,
+          language,
+          settings: useStudio.getState().sqlFormatSettings,
         });
       },
     }),
@@ -704,6 +718,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         EditorView.updateListener.of((update) => {
           if (update.docChanged || update.selectionSet) session.update(update.state);
           if (update.docChanged) {
+            formatting.current = null;
             clearNavigation();
             latest.current.onChange(update.state.doc.toString());
           }
@@ -760,11 +775,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     });
   }, [props.engine]);
   useEffect(() => {
+    formatting.current = null;
+  }, [props.engine, props.sessionId]);
+  useEffect(() => {
     if (completion.current?.configure(configure()) && view.current) {
       closeCompletion(view.current);
       completion.current.update(view.current.state);
     }
-  }, [props.tables, props.sessionId, props.engine, props.database, props.defaultSchema, live]);
+  }, [
+    props.tables,
+    props.sessionId,
+    props.engine,
+    props.database,
+    props.defaultSchema,
+    live,
+    sqlSnippets,
+  ]);
   useEffect(() => {
     let cancelled = false;
     clearNavigation();

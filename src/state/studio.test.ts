@@ -87,8 +87,39 @@ beforeEach(() => {
     sessionContextRevision: {},
     savedQueries: [],
     bookmarks: [],
+    sqlFormatSettings: {
+      keywordCase: "upper",
+      indentWidth: 2,
+      linesBetweenQueries: 1,
+    },
+    sqlSnippets: [],
     recentLocations: [],
   });
+});
+
+test("format preferences serialize writes and retain the latest successful settings on failure", async () => {
+  const initial = useStudio.getState().sqlFormatSettings;
+  const firstSettings = { ...initial, keywordCase: "lower" as const };
+  const latestSettings = { ...firstSettings, indentWidth: 4 };
+  let finishFirst!: (settings: typeof initial) => void;
+  vi.mocked(client.call).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishFirst = resolve;
+      }),
+  );
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Metadata disk full"));
+  const first = useStudio.getState().saveSqlFormatSettings(firstSettings);
+  const latest = useStudio.getState().saveSqlFormatSettings(latestSettings);
+  const rejected = expect(latest).rejects.toThrow("Metadata disk full");
+  await Promise.resolve();
+  expect(client.call).toHaveBeenCalledTimes(1);
+  expect(useStudio.getState().sqlFormatSettings).toEqual(latestSettings);
+  finishFirst(firstSettings);
+  await first;
+  await rejected;
+  expect(client.call).toHaveBeenCalledTimes(2);
+  expect(useStudio.getState().sqlFormatSettings).toEqual(firstSettings);
 });
 
 test("plan captures survive result replacement but close/retire release their owners and metadata", () => {
@@ -322,6 +353,12 @@ test("a new tab opened during startup cannot overwrite recoverable drafts", asyn
     rowLimit: 0,
     savedQueries: [],
     bookmarks: [],
+    sqlFormatSettings: {
+      keywordCase: "upper",
+      indentWidth: 2,
+      linesBetweenQueries: 1,
+    },
+    sqlSnippets: [],
     workspace: {
       theme: "contrast",
       density: "compact",

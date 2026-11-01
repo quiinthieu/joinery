@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum EngineKind {
     Postgres,
@@ -908,6 +908,58 @@ pub struct SavedBookmark {
     pub created_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SqlKeywordCase {
+    Preserve,
+    #[default]
+    Upper,
+    Lower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFormatSettings {
+    pub keyword_case: SqlKeywordCase,
+    pub indent_width: u8,
+    pub lines_between_queries: u8,
+}
+
+impl Default for SqlFormatSettings {
+    fn default() -> Self {
+        Self {
+            keyword_case: SqlKeywordCase::Upper,
+            indent_width: 2,
+            lines_between_queries: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlSnippet {
+    pub id: String,
+    pub trigger: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub engine: Option<EngineKind>,
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlSnippetInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub trigger: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub engine: Option<EngineKind>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
@@ -922,6 +974,10 @@ pub struct Bootstrap {
     pub saved_queries: Vec<SavedQuery>,
     #[serde(default)]
     pub bookmarks: Vec<SavedBookmark>,
+    #[serde(default)]
+    pub sql_format_settings: SqlFormatSettings,
+    #[serde(default)]
+    pub sql_snippets: Vec<SqlSnippet>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

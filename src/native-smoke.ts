@@ -1,7 +1,13 @@
 import { client, messageOf } from "./ipc/client";
 import { resultCache } from "./data/result-cache";
 import { useStudio } from "./state/studio";
-import type { BrowseQuery, ResourceUsage, ResultInfo, TableChanges } from "./ipc/generated";
+import type {
+  Bootstrap,
+  BrowseQuery,
+  ResourceUsage,
+  ResultInfo,
+  TableChanges,
+} from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
@@ -266,6 +272,33 @@ export async function runNativeSmoke() {
         "notFound",
         () => client.call("delete_bookmark", { id: "missing-native-smoke-bookmark" }),
       ],
+      [
+        "save_sql_format_settings",
+        "invalidInput",
+        () =>
+          client.call("save_sql_format_settings", {
+            settings: { keywordCase: "upper", indentWidth: 3, linesBetweenQueries: 1 },
+          }),
+      ],
+      [
+        "save_sql_snippet",
+        "invalidInput",
+        () =>
+          client.call("save_sql_snippet", {
+            input: {
+              id: null,
+              trigger: "1invalid",
+              title: "Smoke invalid trigger",
+              body: "SELECT 1;",
+              engine: null,
+            },
+          }),
+      ],
+      [
+        "delete_sql_snippet",
+        "notFound",
+        () => client.call("delete_sql_snippet", { id: "missing-native-smoke-snippet" }),
+      ],
     ] as const) {
       let matched = false;
       try {
@@ -276,6 +309,43 @@ export async function runNativeSmoke() {
       }
       assert(matched, `Native ${command} must reach its Rust guard (${expectedCode})`);
     }
+    const extractedParams = await client.call<{ key: string }[]>("extract_query_params", {
+      engine: "postgres",
+      sql: "SELECT * FROM orders WHERE id = :order_id AND status = $1",
+    });
+    assert(
+      extractedParams.length === 2 &&
+        extractedParams[0]?.key === "order_id" &&
+        extractedParams[1]?.key === "$1",
+      "Native extract_query_params failed",
+    );
+    const originalFormat = useStudio.getState().sqlFormatSettings;
+    const savedFormat = await useStudio.getState().saveSqlFormatSettings({
+      keywordCase: "lower",
+      indentWidth: 4,
+      linesBetweenQueries: 2,
+    });
+    const savedSnippet = await useStudio.getState().saveSqlSnippet({
+      id: null,
+      trigger: "native_probe",
+      title: "Native 🧪 template",
+      body: "SELECT ${1:1} AS ${2:answer};${0}",
+      engine: "postgres",
+    });
+    const reloaded = await client.call<Bootstrap>("bootstrap");
+    assert(
+      reloaded.sqlFormatSettings.keywordCase === "lower" &&
+        reloaded.sqlFormatSettings.indentWidth === 4 &&
+        reloaded.sqlSnippets.some(
+          (s) =>
+            s.id === savedSnippet.id &&
+            s.body === savedSnippet.body &&
+            s.title === savedSnippet.title,
+        ),
+      "Native formatting/snippet persistence failed",
+    );
+    await useStudio.getState().deleteSqlSnippet(savedSnippet.id);
+    await useStudio.getState().saveSqlFormatSettings(originalFormat);
     await client.call("release_sql_file_grant", { token: "missing-native-smoke-sql-grant" });
     report.bootstrapMs = performance.now() - started;
     const shellDeadline = performance.now() + 3000;
@@ -329,9 +399,9 @@ export async function runNativeSmoke() {
     report.binaryBytes = buffer.byteLength;
     const formatted = (await workerRoundtrip(
       new Worker(new URL("./workers/formatter.worker.ts", import.meta.url), { type: "module" }),
-      { id: 1, sql: "select 1", language: "postgresql" },
+      { id: 1, sql: "SELECT 1, 2", language: "postgresql", settings: savedFormat },
     )) as { sql?: string };
-    assert(formatted.sql?.includes("SELECT"), "Native SQL formatter failed");
+    assert(formatted.sql?.startsWith("select\n    1,"), "Native SQL formatter settings failed");
     const completionWorker = new Worker(
       new URL("./workers/completion.worker.ts", import.meta.url),
       { type: "module" },
@@ -462,6 +532,7 @@ export async function runNativeSmoke() {
       "NULL and empty",
       "Unicode",
       "formatter worker",
+      "format and snippet persistence",
       "scoped completion worker and quoted acceptance",
       "CodeMirror",
       "Canvas grid",

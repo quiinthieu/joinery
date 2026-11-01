@@ -1654,6 +1654,14 @@ export function App() {
                   ...(profile?.engine !== "redis"
                     ? [
                         {
+                          label: "Format SQL",
+                          shortcut: "⇧⌘ F",
+                          icon: Code2,
+                          action: () => {
+                            editor.current?.format();
+                          },
+                        },
+                        {
                           label: "Go to SQL definition",
                           shortcut: "F12",
                           icon: ArrowUpRight,
