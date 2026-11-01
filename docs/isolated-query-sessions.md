@@ -159,3 +159,21 @@ browser flows, including distinct inspectors on two isolated sessions plus the
 primary. The clean-source hidden native baseline passes three processes / 30
 cleanup cycles; the new interactions are browser-tested, not native UI-qualified.
 Local, unmerged, unreleased and not installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).
+
+## Context-preserving inspector actions — local `34c001a`
+
+Linked foreign-key, dependency, index, trigger and owner-table inspectors carry
+the same frozen source console/session/catalog origin. They do not own sessions
+or browse table data. Every continuation rechecks the current catalog and source
+lifecycle. Closure, rebinding, context changes, denial and obsolete replies cannot
+adopt the primary session or alter source text.
+
+**Append DDL to source console** explicitly appends displayed DDL after existing
+SQL and returns to the original console. File dirty tracking, retained results
+and session ownership are preserved. Queued/running or unavailable sources reject
+append; no SQL is prepared or executed. Validation passes 253 frontend / 156 Rust,
+six navigation browser flows (two isolated chains plus primary), one PostgreSQL
+inspector fixture and three native synthetic processes / 30 cleanup cycles.
+New interactions remain browser-tested, not native UI-qualified. Local,
+unmerged, unreleased and not installed. Next is bounded alias rename preview.
+See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-preserving-inspector-actions-2-november-2026).

@@ -307,3 +307,14 @@ inspector interactions remain browser-tested. Prior broad plan/browser/fixture/
 normal-bundle evidence retains its exact revisions. Context-preserving metadata
 links and bounded editor refactoring are next; Snowflake capture remains gated
 on observed identity and explicit external qualification. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).
+
+Inspector continuation `34c001a` preserves R6 authorization, immutable bindings
+and exact selected-source origins. Linked metadata retains its originating
+console/session/context; explicit DDL append preserves source SQL and never
+prepares or executes it. Current-origin/catalog checks reject stale continuations.
+Validation passes 253 frontend / 156 Rust, six SQL navigation flows, one PostgreSQL
+inspector fixture and the clean-source native synthetic baseline (three processes
+/ 30 cycles); new interactions are browser-tested. Prior broad qualification
+retains its exact revisions. Scope-correct alias rename preview is next;
+Snowflake capture still requires observed identity and explicit external scope.
+See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-preserving-inspector-actions-2-november-2026).

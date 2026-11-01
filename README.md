@@ -190,8 +190,10 @@ Symbol navigation remains partial: ambiguous names and routine overloads are
 not guessed. Object/column jumps now open read-only Structure/DDL inspectors
 bound to the originating console session and observed context, including isolated
 consoles. Context changes, source closure and reconnect require navigating again;
-inspector dependency links and opening DDL in a console remain withheld until
-they can preserve that origin.
+inspector dependency, owner, index and trigger links preserve that origin.
+**Append DDL to source console** explicitly appends to the still-bound console,
+preserving its SQL and session without executing anything. Stale, closed or
+rebound sources are rejected; running consoles cannot receive DDL.
 Recorded R5 commit `bb77b0f` remains readable; its former worktree/branch are
 absent and its former uncommitted documentation was not recovered. Full
 DataGrip replacement still needs the remaining

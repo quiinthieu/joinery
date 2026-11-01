@@ -9,10 +9,11 @@ per-engine styles persist with validated recovery. Named CTE/derived-table
 outputs now resolve to local declarations and proven source metadata. Wildcards,
 expressions and unsupported shapes remain withheld. Console object/column jumps
 now retain the originating session and observed catalog revision in read-only
-Structure/DDL tabs; late metadata cannot adopt the primary session. The prior
-combined source passed 66 ignored local fixtures and a normal ad-hoc macOS bundle build. R5 and
-R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last
-verified release;
+Structure/DDL tabs; linked objects retain that origin and explicit DDL append
+preserves the source SQL/session without execution. Late metadata cannot adopt
+the primary session. The prior combined source passed 66 ignored local fixtures
+and a normal ad-hoc macOS bundle build. R5 and R6 remain partial, unmerged,
+unpublished and not installed. Preview.15 is the last verified release;
 its current installed revision was not requalified. The canonical owner-private
 Site records exact tested, merged, published and installed states. Full
 multi-engine v1.0 qualification remains pending.
@@ -1930,3 +1931,46 @@ metadata-startup flake did not recur in these six flows; its cause remains open.
 A fresh `origin/main` fetch remains `a0ba1a6`. The live GitHub release refresh was
 blocked by automatic approval policy, so preview.15 remains **last verified**;
 the installed application was not requalified.
+
+## R5 follow-up: context-preserving inspector actions (2 November 2026)
+
+Code `34c001a57019619a1da9db215e117c3eb16b15f7`, tree `bd6ca32dff2965ff8e4905cd2117e8d1906177cf`, continues console-bound Structure
+through foreign-key, index, trigger, dependency and owner-table links. Every
+linked inspector retains the frozen source tab, session, frontend context epoch
+and observed catalog revision. It never owns a session, browses table data or
+substitutes the primary session. Normal explorer navigation retains its routing.
+
+**Append DDL to source console** checks the current catalog before explicitly
+appending the displayed DDL after existing SQL and returning to the source tab.
+It preserves the file token/name, saved baseline/dirty tracking, retained results
+and query-session ownership. No preparation or execution request is made. Empty
+DDL, a closed/rebound/disconnected/context-changed source, a queued/running
+console, denied metadata, a changed catalog or an obsolete inspector action
+cannot append. Current-origin checks run before and after the asynchronous
+catalog read; pending actions are serialized and unmounted/refreshed results
+are discarded. Database execution still follows the existing Rust approvals.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | Five new store regressions initially failed because linked-session navigation and source DDL append actions did not exist. They now verify preserved SQL/file dirty tracking/session ownership and rejected invalid/busy sources |
+| Passed | `pnpm validate`: 253 frontend tests / 34 files, 156 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy. The final browser-only assertion fixes also pass their formatting check |
+| Focused regressions | 16 additional frontend cases cover linked target identity, all five link types, source closure/rebinding/context changes, denied/changed catalog replies, inspector refresh and DDL append without SQL loss or execution |
+| Browser | All six SQL navigation flows pass on fresh disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4. The expanded PostgreSQL flow follows index → owner table → trigger → function, follows a foreign key and appends exact DDL back to each of two isolated source consoles; the primary console also appends to itself. Each linked details request uses the originating session, all three retain existing SQL/session selection, and the flow sees no browse/prepare/execute requests or page errors. Test assertions restore the caret after editor remount, await the intended object's request and compare CodeMirror lines with newlines preserved |
+| Fixture | The PostgreSQL trigger/function chain is initialized by the tracked disposable fixture. The existing ignored object-explorer regression also passes against this database, covering overloaded identities, DDL, dependencies and permission limits; this is one additional fixture check, not a rerun of all 66 |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `199fcfc2c361e5e4ff912d4ddec5d9a083e5a79ca79317ee2833624d53732a94`; isolated ad-hoc bundle executable SHA-256 `58c8282b7492c9a22d75ff8cdb7f46ce0b39db7943d1de1915626ff4887a30c0`. This remains the synthetic IPC/worker/cleanup baseline; new inspector interaction evidence is browser-based, not native UI qualification |
+| Prior qualification | Full 86-flow browser suite belongs to `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc distribution bundle belong to `b80b6c7`; those broader checks were not rerun on this source. Earlier formatting, named-output and initial console Structure evidence retains its revisions |
+| Open | Scope-correct refactoring, broader semantic analysis/projection shapes, context-aware templates/style controls, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Bounded alias rename preview (E10): prove the declaration/reference scope, preview edits and require explicit apply; preserve quoting/case and reject ambiguous/unsupported or stale document/session/context cases. One undo must restore the original text. Never rename a database object or execute SQL. Then continue remaining R5/R6/R7/R8 |
+
+Logs: `.cache/r5-inspector-actions-validate.log`,
+`.cache/r5-inspector-actions-browser.log`,
+`.cache/r5-inspector-actions-postgres-inspector.log`,
+`.cache/r5-inspector-actions-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-inspector-actions-native-evidence.json`. Local, unmerged, unreleased
+and not installed. Owned database fixtures were stopped and removed; user
+services were preserved. No hooks or execution gates were bypassed. The earlier
+metadata-startup flake did not recur in these six flows; its cause remains open.
+The fetched `origin/main` remains `a0ba1a6`. Release metadata was not refreshed
+in this slice; preview.15 remains last verified, and the installed application
+was not requalified. Application push, merge, release and installation remain
+separate authorized steps.

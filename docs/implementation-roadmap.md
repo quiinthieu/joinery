@@ -218,17 +218,20 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `fe518fb` integrates six R5 slices plus per-engine formatting,
-named outputs and console-bound Structure follow-ups, alongside seven R6 slices.
-R5/R6 remain partial, local, unmerged, unreleased and not installed. Validation
-passes 237 frontend / 156 standard Rust and all six SQL navigation flows on
-PostgreSQL/MySQL/MariaDB, including two isolated sessions plus the primary.
-A clean-source macOS hidden baseline passes three processes / 30 cleanup cycles;
-new inspector interactions are browser-tested. The full 86-flow browser run
-belongs to `db5cd1b`; all 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc
-macOS bundle passed on `b80b6c7`. Context-preserving inspector links are next,
-followed by bounded refactoring/semantics and R7/R8. Release/platform/external gates
-remain open. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).
+Current candidate `34c001a` integrates six R5 slices plus per-engine formatting,
+named outputs, console-bound Structure and context-preserving inspector actions,
+alongside seven R6 slices. R5/R6 remain partial, local, unmerged, unreleased and
+not installed. Validation passes 253 frontend / 156 standard Rust, all six SQL
+navigation flows on PostgreSQL/MySQL/MariaDB and one ignored PostgreSQL inspector
+fixture. Two isolated consoles retain their sessions through linked objects;
+those consoles and the primary preserve SQL/session on explicit DDL append.
+A clean-source
+macOS hidden baseline passes three processes / 30 cleanup cycles; new inspector
+interactions are browser-tested. The full 86-flow browser run belongs to
+`db5cd1b`; all 66 ignored fixtures and the normal ad-hoc macOS bundle passed on
+`b80b6c7`. Bounded alias rename preview is next, followed by wider semantics,
+templates and R7/R8. Release/platform/external gates remain open. See
+[current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-preserving-inspector-actions-2-november-2026).
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -363,18 +366,30 @@ executing SQL. Existing inspector links and DDL-to-editor actions are withheld i
 this path until they preserve the origin. Standard checks, six real navigation
 flows and the native synthetic baseline pass. See [evidence and limits](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).
 
-### Next bounded editor slice: context-preserving inspector links
+### R5 context-preserving inspector actions (local `34c001a`)
 
-1. Carry the frozen metadata origin through dependency, owner-table, index and
-   trigger links. Opening another object must remain read-only on that session,
-   with current-origin checks and no primary-session fallback or data browse.
-2. Offer explicit DDL insertion only into a still-open source console bound to
-   that session/context. Preserve existing SQL (new source-bound tab or reviewed
-   insertion), never execute it and retain normal Rust approval paths.
-3. Reproduce the withheld actions, test closure/rebinding/context and denied
-   metadata, and exercise linked objects on two isolated sessions plus primary.
-4. Then plan a bounded scope-correct alias rename preview (E10), broader semantic
-   inference/templates and remaining R5/R6/R7/R8. Keep unsupported cases explicit.
+Foreign-key, dependency, owner-table, index and trigger links now retain the
+frozen originating console/session/context. Explicit DDL append preserves source
+SQL, file dirty tracking and session ownership; it never executes. Fresh catalog
+checks reject stale/denied actions, source lifecycle changes and obsolete replies;
+queued/running consoles cannot receive DDL. Standard checks, six navigation flows,
+one real inspector fixture and the native synthetic baseline pass. See
+[evidence and limits](IMPLEMENTATION_STATUS.md#r5-follow-up-context-preserving-inspector-actions-2-november-2026).
+
+### Next bounded editor slice: scope-correct alias rename preview
+
+1. Reuse proven alias declaration/reference scopes. Start with an explicit,
+   bounded supported shape, preserving dialect quoting/case and respecting
+   shadowing, subqueries and CTE boundaries. Withhold ambiguous/unsupported cases.
+2. Present exact text edits for review and require explicit Apply. Recheck the
+   current document, console/session and context before applying once. Preserve
+   selection and unrelated text; one undo restores the original SQL. Never
+   rename a database object or execute SQL.
+3. Reproduce scope/staleness failures in unit tests, then exercise PostgreSQL,
+   MySQL/MariaDB browser editing, preview/cancel/apply/undo and unsupported cases.
+   Keep parsing/scans bounded and existing SQL execution approvals intact.
+4. Continue broader semantics/templates and remaining R5/R6/R7/R8 only after this
+   bounded slice is verified; keep all release and qualification states explicit.
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -500,12 +515,13 @@ R6 remains partial, local, unmerged and unreleased.
 ### R6 next slices
 
 1. Six R5 slices and seven R6 slices now include per-engine styles and named
-   CTE/derived-table outputs plus console-bound Structure (`fe518fb`).
+   CTE/derived-table outputs, console Structure and inspector continuation
+   (`34c001a`).
    Standard checks, six SQL navigation browser flows and the clean-source native
    baseline pass. Prior combined-source
    qualification passed all 66 ignored local SQL/Redis/SSH fixtures and a normal ad-hoc macOS
    bundle on `b80b6c7`; the full 86-flow browser suite passed on `db5cd1b`.
-   Next: context-preserving inspector links and bounded refactoring/semantics,
+   Next: scope-correct alias rename preview and broader semantics/templates,
    then richer template variables and remaining R5/R6/R7/R8 scope. Preserve
    conservative ambiguity handling, every preparation/approval path and exact
    editor origins. Keep the earlier startup flake open until its cause is known.
