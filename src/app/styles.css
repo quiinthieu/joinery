@@ -1451,10 +1451,43 @@ kbd {
   padding: 10px 17px;
   flex-shrink: 0;
 }
-.query-error > span:nth-child(2) {
+.query-error > span:nth-child(2),
+.query-error-body {
   flex: 1;
+  min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.query-error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.query-error-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.query-error-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  font-size: 9.5px;
+  font-weight: 550;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+.query-error-detail {
+  font-size: 10px;
+  opacity: 0.85;
+}
+.query-error-jump {
+  flex-shrink: 0;
+  color: var(--danger);
+  border-color: #c17c7040;
 }
 .error-symbol {
   width: 15px;

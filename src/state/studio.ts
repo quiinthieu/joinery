@@ -1,3 +1,4 @@
+import type { SqlExecutionOrigin } from "../features/studio/sql-navigation";
 import { create } from "zustand";
 import type {
   AppError,
@@ -60,6 +61,7 @@ export interface TablePageState {
   after: (string | null)[] | null;
 }
 export interface StudioTab {
+  errorOrigin?: SqlExecutionOrigin;
   id: string;
   kind: TabKind;
   title: string;
@@ -1320,9 +1322,18 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   updateTab(id, update) {
     set((state) => ({
-      tabs: state.tabs.map((t) =>
-        t.id === id ? { ...t, ...(typeof update === "function" ? update(t) : update) } : t,
-      ),
+      tabs: state.tabs.map((t) => {
+        if (t.id !== id) return t;
+        const patch = typeof update === "function" ? update(t) : update;
+        const changedSql = patch.sql !== undefined && patch.sql !== t.sql;
+        return {
+          ...t,
+          ...patch,
+          ...(changedSql || (patch.error === null && !patch.errorOrigin)
+            ? { errorOrigin: undefined }
+            : {}),
+        };
+      }),
     }));
   },
   closeTab(id) {

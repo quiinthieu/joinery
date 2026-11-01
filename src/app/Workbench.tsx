@@ -63,6 +63,7 @@ import { CopyAsMenu } from "../features/grid/CopyAsMenu";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
+import { resolveExecutionError } from "../features/studio/sql-navigation";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import {
   DdlPanel,
@@ -87,9 +88,9 @@ interface Props {
   session?: SessionInfo;
   editorRef: RefObject<EditorHandle>;
   gridRef: RefObject<DatabaseGridHandle>;
-  onRun(sql?: string): void;
-  onExplain(sql: string): void;
-  onAnalyze(sql: string): void;
+  onRun(sql?: string, fromUtf16?: number): void;
+  onExplain(): void;
+  onAnalyze(): void;
   onOpenParameters(slots: QueryParamSlot[]): void;
   onReview(): void;
   onConfirm(title: string, description: string, action: () => void): void;
@@ -716,7 +717,7 @@ export function Workbench({
                   className="button ghost small"
                   disabled={running || !session}
                   title="Estimate the selected query or current statement without ANALYZE"
-                  onClick={() => onExplain(editorRef.current?.selection() ?? tab.sql)}
+                  onClick={onExplain}
                 >
                   <Gauge size={13} />
                   Explain
@@ -729,7 +730,7 @@ export function Workbench({
                   className="button ghost small"
                   disabled={running || !session}
                   title="Executes the selected query or current statement after review to collect actual measurements"
-                  onClick={() => onAnalyze(editorRef.current?.selection() ?? tab.sql)}
+                  onClick={onAnalyze}
                 >
                   <Gauge size={13} />
                   Analyze
@@ -740,7 +741,7 @@ export function Workbench({
                 title="Run all statements · ⇧⌘↵"
                 aria-label="Run all statements"
                 disabled={running || !session}
-                onClick={() => onRun(tab.sql)}
+                onClick={() => onRun(tab.sql, 0)}
               >
                 <ChevronDown size={13} />
               </button>
@@ -814,7 +815,7 @@ export function Workbench({
           readOnly={profile.safeMode === "readOnly"}
           onCommand={(command) => {
             state.updateTab(tab.id, { sql: command });
-            onRun(command);
+            onRun(command, 0);
           }}
         />
       )}
@@ -829,6 +830,8 @@ export function Workbench({
                 onChange={(sql) => state.updateTab(tab.id, { sql })}
                 onRun={onRun}
                 onOpenParameters={onOpenParameters}
+                error={tab.error}
+                errorOrigin={tab.errorOrigin}
                 engine={profile?.engine ?? "postgres"}
                 sessionId={session?.id ?? null}
                 tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}
@@ -1136,22 +1139,62 @@ export function Workbench({
           onChange={applyQuery}
         />
       )}
-      {tab.error && (
-        <div
-          className={`query-error ${tab.error.code === "outcomeUnknown" ? "uncertain" : ""}`}
-          role="alert"
-        >
-          <span className="error-symbol">!</span>
-          <span>{tab.error.message}</span>
-          <button
-            className="icon-button"
-            aria-label="Dismiss query error"
-            onClick={() => state.updateTab(tab.id, { error: null })}
-          >
-            <X size={12} />
-          </button>
-        </div>
-      )}
+      {tab.error &&
+        (() => {
+          const resolvedError =
+            tab.kind === "query" && tab.error.location && profile?.engine !== "redis"
+              ? resolveExecutionError(tab.sql, tab.error, tab.errorOrigin)
+              : null;
+          const loc = tab.error.location;
+          return (
+            <div
+              className={`query-error ${tab.error.code === "outcomeUnknown" ? "uncertain" : ""}`}
+              role="alert"
+            >
+              <span className="error-symbol">!</span>
+              <div className="query-error-body">
+                <div className="query-error-main">
+                  <span>{tab.error.message}</span>
+                  {resolvedError && (
+                    <span className="query-error-badge">
+                      Line {resolvedError.line}, Col {resolvedError.column}
+                    </span>
+                  )}
+                  {loc?.statementIndex !== undefined && (
+                    <span className="query-error-badge">Statement {loc.statementIndex + 1}</span>
+                  )}
+                  {loc?.sqlState && (
+                    <span className="query-error-badge">SQLSTATE {loc.sqlState}</span>
+                  )}
+                </div>
+                {loc?.detail && !tab.error.message.includes(loc.detail) && (
+                  <div className="query-error-detail">Detail: {loc.detail}</div>
+                )}
+                {loc?.hint && !tab.error.message.includes(loc.hint) && (
+                  <div className="query-error-detail">Hint: {loc.hint}</div>
+                )}
+              </div>
+              {resolvedError && (
+                <button
+                  type="button"
+                  className="button ghost small query-error-jump"
+                  onClick={() =>
+                    editorRef.current?.revealRange(resolvedError.from, resolvedError.to)
+                  }
+                >
+                  Jump to error
+                </button>
+              )}
+              <button
+                className="icon-button"
+                aria-label="Dismiss query error"
+                onClick={() => state.updateTab(tab.id, { error: null })}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })()}
       <div
         className="result-panel"
         role={tab.kind === "query" && result ? "tabpanel" : undefined}

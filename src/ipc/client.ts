@@ -1,5 +1,5 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { AppError, ExportEvent, ExportRequest, QueryEvent } from "./generated";
+import type { AppError, ErrorCode, ExportEvent, ExportRequest, QueryEvent } from "./generated";
 
 export interface StudioClient {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -175,4 +175,22 @@ export const desktopAvailable = isTauri() || import.meta.env.MODE === "integrati
 export function messageOf(error: unknown): string {
   if (error && typeof error === "object" && "message" in error) return String(error.message);
   return String(error);
+}
+export function appErrorOf(error: unknown, fallbackCode: ErrorCode = "database"): AppError {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const candidate = error as AppError;
+    return {
+      code: candidate.code,
+      message: candidate.message,
+      ...(candidate.location ? { location: candidate.location } : {}),
+    };
+  }
+  return { code: fallbackCode, message: messageOf(error) };
 }

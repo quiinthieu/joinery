@@ -1,7 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorState, Compartment, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import {
+  Decoration,
+  type DecorationSet,
   EditorView,
+  GutterMarker,
+  gutter,
   keymap,
   lineNumbers,
   highlightActiveLine,
@@ -26,6 +30,7 @@ import {
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { sql } from "@codemirror/lang-sql";
 import type {
+  AppError,
   CompletionCatalog,
   EngineKind,
   QueryParamSlot,
@@ -35,20 +40,30 @@ import type {
 import { client, messageOf } from "../../ipc/client";
 import type { CompletionResponse } from "../../data/completion-protocol";
 import { useStudio } from "../../state/studio";
-import { selectedStatement } from "./sql-context";
+import { selectedStatement, selectedStatementSlice } from "./sql-context";
+import {
+  adjacentStatement,
+  resolveExecutionError,
+  type SqlExecutionOrigin,
+} from "./sql-navigation";
 import { sqlDialect } from "./sql-identifiers";
 import { CompletionSession } from "./completion-session";
 
 export interface EditorHandle {
   selection(): string;
+  executionSlice(): { sql: string; fromUtf16: number };
+  revealRange(fromUtf16: number, toUtf16: number): void;
+  navigateStatement(direction: -1 | 1): boolean;
   focus(): void;
   format(): void;
 }
 interface Props {
   value: string;
   onChange(value: string): void;
-  onRun(sql: string): void;
+  onRun(sql: string, fromUtf16?: number): void;
   onOpenParameters?(slots: QueryParamSlot[]): void;
+  error?: AppError | null;
+  errorOrigin?: SqlExecutionOrigin;
   engine: EngineKind;
   sessionId: string | null;
   tables: TableInfo[];
@@ -59,6 +74,82 @@ interface Props {
 }
 const themeCompartment = new Compartment(),
   languageCompartment = new Compartment();
+
+interface EditorErrorMark {
+  from: number;
+  to: number;
+  message: string;
+}
+
+const setEditorErrorEffect = StateEffect.define<EditorErrorMark | null>();
+
+const errorStateField = StateField.define<EditorErrorMark | null>({
+  create() {
+    return null;
+  },
+  update(current, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setEditorErrorEffect)) {
+        if (!effect.value) return null;
+        const max = tr.state.doc.length;
+        return {
+          from: Math.max(0, Math.min(max, effect.value.from)),
+          to: Math.max(0, Math.min(max, effect.value.to)),
+          message: effect.value.message,
+        };
+      }
+    }
+    return tr.docChanged ? null : current;
+  },
+  provide: (field) =>
+    EditorView.decorations.compute([field], (state): DecorationSet => {
+      const mark = state.field(field);
+      if (!mark || mark.to <= mark.from || mark.to > state.doc.length) return Decoration.none;
+      return Decoration.set([
+        Decoration.mark({
+          class: "cm-sql-error-mark",
+          attributes: { title: mark.message },
+        }).range(mark.from, mark.to),
+      ]);
+    }),
+});
+
+class SqlErrorGutterMarker extends GutterMarker {
+  constructor(readonly message: string) {
+    super();
+  }
+  eq(other: SqlErrorGutterMarker) {
+    return this.message === other.message;
+  }
+  toDOM() {
+    const badge = document.createElement("span");
+    badge.className = "cm-sql-error-gutter";
+    badge.textContent = "!";
+    badge.title = this.message;
+    badge.setAttribute("aria-hidden", "true");
+    return badge;
+  }
+}
+
+const errorGutterExtension = gutter({
+  class: "cm-sql-error-gutter-col",
+  markers(editorView) {
+    const mark = editorView.state.field(errorStateField);
+    if (!mark) return RangeSet.empty;
+    const line = editorView.state.doc.lineAt(Math.min(mark.from, editorView.state.doc.length));
+    return RangeSet.of([new SqlErrorGutterMarker(mark.message).range(line.from)]);
+  },
+});
+
+function moveCaretToAdjacentStatement(editor: EditorView, direction: -1 | 1): boolean {
+  const target = adjacentStatement(editor.state, direction);
+  if (!target) return false;
+  editor.dispatch({
+    selection: { anchor: target.from },
+    effects: EditorView.scrollIntoView(target.from, { y: "center" }),
+  });
+  return true;
+}
 
 function editorTheme(theme: string) {
   const dark = theme !== "light";
@@ -99,6 +190,35 @@ function editorTheme(theme: string) {
         border: "1px solid var(--border)",
         borderRadius: "8px",
         boxShadow: "0 12px 30px #0003",
+      },
+      ".cm-sql-error-mark": {
+        textDecoration: "underline wavy var(--danger)",
+        textDecorationSkipInk: "none",
+        textUnderlineOffset: "3px",
+        backgroundColor: dark ? "#d9776c1f" : "#c2413618",
+        borderRadius: "2px",
+      },
+      ".cm-sql-error-gutter-col": {
+        width: "14px",
+      },
+      ".cm-sql-error-gutter-col .cm-gutterElement": {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "0",
+      },
+      ".cm-sql-error-gutter": {
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: "12px",
+        height: "12px",
+        borderRadius: "50%",
+        backgroundColor: "var(--danger)",
+        color: "#fff",
+        fontSize: "9px",
+        fontWeight: "700",
+        lineHeight: "1",
       },
     },
     { dark },
@@ -161,8 +281,36 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         const editor = view.current;
         if (!editor) return latest.current.value;
         return latest.current.engine === "redis"
-          ? redisSelection(editor.state)
+          ? redisSelectionSlice(editor.state).sql
           : selectedStatement(editor.state);
+      },
+      executionSlice() {
+        const editor = view.current;
+        if (!editor) return { sql: latest.current.value, fromUtf16: 0 };
+        if (latest.current.engine === "redis") {
+          return redisSelectionSlice(editor.state);
+        }
+        const slice = selectedStatementSlice(editor.state);
+        return { sql: slice.sql, fromUtf16: slice.fromUtf16 };
+      },
+      revealRange(fromUtf16: number, toUtf16: number) {
+        const editor = view.current;
+        if (!editor) return;
+        const max = editor.state.doc.length;
+        const from = Math.max(0, Math.min(max, Math.trunc(fromUtf16)));
+        const to = Math.max(from, Math.min(max, Math.trunc(toUtf16)));
+        editor.dispatch({
+          selection: to > from ? { anchor: to, head: from } : { anchor: from },
+          effects: EditorView.scrollIntoView(from, { y: "center" }),
+        });
+        editor.focus();
+      },
+      navigateStatement(direction: -1 | 1) {
+        const editor = view.current;
+        if (!editor || latest.current.engine === "redis") return false;
+        const moved = moveCaretToAdjacentStatement(editor, direction);
+        if (moved) editor.focus();
+        return moved;
       },
       focus() {
         view.current?.focus();
@@ -231,6 +379,8 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     const state = EditorState.create({
       doc: latest.current.value,
       extensions: [
+        errorStateField,
+        errorGutterExtension,
         lineNumbers(),
         highlightActiveLineGutter(),
         history(),
@@ -254,16 +404,36 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             key: "Mod-Enter",
             run: (editor) => {
               try {
-                latest.current.onRun(
+                const slice =
                   latest.current.engine === "redis"
-                    ? redisSelection(editor.state)
-                    : selectedStatement(editor.state),
-                );
+                    ? redisSelectionSlice(editor.state)
+                    : selectedStatementSlice(editor.state);
+                latest.current.onRun(slice.sql, slice.fromUtf16);
               } catch (error) {
                 useStudio.getState().notify(messageOf(error));
               }
               return true;
             },
+          },
+          {
+            key: "Alt-Mod-ArrowUp",
+            run: (editor) =>
+              latest.current.engine !== "redis" && moveCaretToAdjacentStatement(editor, -1),
+          },
+          {
+            key: "Ctrl-Alt-ArrowUp",
+            run: (editor) =>
+              latest.current.engine !== "redis" && moveCaretToAdjacentStatement(editor, -1),
+          },
+          {
+            key: "Alt-Mod-ArrowDown",
+            run: (editor) =>
+              latest.current.engine !== "redis" && moveCaretToAdjacentStatement(editor, 1),
+          },
+          {
+            key: "Ctrl-Alt-ArrowDown",
+            run: (editor) =>
+              latest.current.engine !== "redis" && moveCaretToAdjacentStatement(editor, 1),
           },
           ...closeBracketsKeymap,
           ...defaultKeymap,
@@ -294,6 +464,27 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     if (editor && editor.state.doc.toString() !== props.value)
       editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: props.value } });
   }, [props.value]);
+  useEffect(() => {
+    const editor = view.current;
+    if (!editor) return;
+    const resolved =
+      props.engine === "redis"
+        ? null
+        : resolveExecutionError(editor.state.doc.toString(), props.error, props.errorOrigin);
+    if (!resolved) {
+      if (editor.state.field(errorStateField) !== null) {
+        editor.dispatch({ effects: setEditorErrorEffect.of(null) });
+      }
+      return;
+    }
+    editor.dispatch({
+      effects: setEditorErrorEffect.of({
+        from: resolved.from,
+        to: resolved.to,
+        message: props.error!.message,
+      }),
+    });
+  }, [props.engine, props.error, props.errorOrigin, props.value]);
   useEffect(() => {
     view.current?.dispatch({
       effects: themeCompartment.reconfigure([editorTheme(props.theme), highlighting(props.theme)]),
@@ -461,11 +652,13 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   );
 });
 
-function redisSelection(state: EditorState) {
+function redisSelectionSlice(state: EditorState): { sql: string; fromUtf16: number } {
   const selection = state.selection.main;
-  return selection.empty
-    ? state.doc.lineAt(selection.head).text
-    : state.sliceDoc(selection.from, selection.to);
+  if (!selection.empty) {
+    return { sql: state.sliceDoc(selection.from, selection.to), fromUtf16: selection.from };
+  }
+  const line = state.doc.lineAt(selection.head);
+  return { sql: line.text, fromUtf16: line.from };
 }
 
 function editorLanguage(engine: EngineKind) {

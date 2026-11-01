@@ -9,18 +9,46 @@ import {
   type Identifier,
 } from "./sql-identifiers";
 
-export function selectedStatement(state: EditorState): string {
+export interface StatementSlice {
+  sql: string;
+  fromUtf16: number;
+  toUtf16: number;
+}
+
+export function selectedStatementSlice(state: EditorState): StatementSlice {
   const selected = state.selection.main;
-  if (!selected.empty) return state.sliceDoc(selected.from, selected.to);
+  if (!selected.empty) {
+    return {
+      sql: state.sliceDoc(selected.from, selected.to),
+      fromUtf16: selected.from,
+      toUtf16: selected.to,
+    };
+  }
   const tree = ensureSyntaxTree(state, state.doc.length, 75);
   if (!tree) throw new Error("Select the SQL to run while this large document finishes parsing.");
   let previous: { from: number; to: number } | null = null;
   for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
     if (node.name !== "Statement") continue;
-    if (selected.head < node.to) return state.sliceDoc(node.from, node.to);
+    if (selected.head < node.to) {
+      return {
+        sql: state.sliceDoc(node.from, node.to),
+        fromUtf16: node.from,
+        toUtf16: node.to,
+      };
+    }
     previous = node;
   }
-  return previous ? state.sliceDoc(previous.from, previous.to) : "";
+  return previous
+    ? {
+        sql: state.sliceDoc(previous.from, previous.to),
+        fromUtf16: previous.from,
+        toUtf16: previous.to,
+      }
+    : { sql: "", fromUtf16: 0, toUtf16: 0 };
+}
+
+export function selectedStatement(state: EditorState): string {
+  return selectedStatementSlice(state).sql;
 }
 
 export function tableLookup(
