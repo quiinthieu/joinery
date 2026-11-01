@@ -621,6 +621,17 @@ pub enum QueryEvent {
     Started {
         run_id: String,
     },
+    RunMetrics {
+        run_id: String,
+        queue_ms: u32,
+        active_ms: u32,
+        first_row_ms: Option<u32>,
+        total_ms: u32,
+    },
+    PlanContext {
+        run_id: String,
+        state: Option<SessionRuntimeState>,
+    },
     StatementStarted {
         run_id: String,
         index: usize,

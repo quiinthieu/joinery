@@ -883,3 +883,44 @@ test("saved queries, bookmarks, recent-locations ring buffer, and profile deleti
   expect(useStudio.getState().recentLocations).toHaveLength(MAX_RECENT_LOCATIONS);
   expect(useStudio.getState().recentLocations[0]?.key).toBe("item:64");
 });
+
+test("execution timings retain measured zero, reject foreign/stale runs and stay out of restoration", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.updateTab(id, { revision: 7, clientStartedAt: performance.now() - 100 });
+  const metrics = {
+    type: "runMetrics",
+    runId: "run",
+    queueMs: 40,
+    activeMs: 0,
+    firstRowMs: null,
+    totalMs: 40,
+  } as const;
+  state.applyEvents(
+    id,
+    [
+      { type: "started", runId: "run" },
+      { ...metrics, runId: "other" },
+    ],
+    7,
+  );
+  expect(useStudio.getState().tabs[0].runMetrics).toBeUndefined();
+  state.applyEvents(id, [metrics], 6);
+  expect(useStudio.getState().tabs[0].runMetrics).toBeUndefined();
+  state.applyEvents(
+    id,
+    [metrics, { type: "finished", runId: "run", status: "completed", elapsedMs: 40 }],
+    7,
+  );
+  const tab = useStudio.getState().tabs[0];
+  expect(tab.runMetrics?.activeMs).toBe(0);
+  expect(tab.runMetrics?.firstRowMs).toBeNull();
+  expect(tab.clientElapsedMs).toBeGreaterThanOrEqual(100);
+  const persisted = JSON.stringify(workspaceSnapshot());
+  expect(persisted).not.toContain("runMetrics");
+  expect(persisted).not.toContain("clientStartedAt");
+  expect(persisted).not.toContain("clientElapsedMs");
+  state.bindQuerySession(id, session);
+  expect(useStudio.getState().tabs[0].runMetrics).toBeUndefined();
+  expect(useStudio.getState().tabs[0].clientElapsedMs).toBeUndefined();
+});

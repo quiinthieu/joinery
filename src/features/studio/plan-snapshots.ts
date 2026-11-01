@@ -28,7 +28,6 @@ export function planSourceForExecution(
   plan: PreparedPlan,
   session: SessionInfo | undefined,
   runtime: SessionRuntimeState | undefined,
-  contextRevision: number,
 ): PlanSource | undefined {
   if (
     !session ||
@@ -58,7 +57,6 @@ export function planSourceForExecution(
       searchPath: runtime.searchPath,
       transactionMode: runtime.transactionMode,
       transactionState: runtime.transactionState,
-      contextRevision,
     }),
     query: executedSql.slice(prefix.length),
     executedSql,

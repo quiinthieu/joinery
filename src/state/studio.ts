@@ -71,6 +71,9 @@ export interface StudioTab {
   status: TabStatus;
   runId: string | null;
   elapsedMs: number;
+  runMetrics?: Extract<QueryEvent, { type: "runMetrics" }>;
+  clientStartedAt?: number;
+  clientElapsedMs?: number;
   error: AppError | null;
   table: TableRef | null;
   object: DatabaseObjectRef | null;
@@ -222,6 +225,9 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     status: "idle",
     runId: null,
     elapsedMs: 0,
+    runMetrics: undefined,
+    clientStartedAt: undefined,
+    clientElapsedMs: undefined,
     error: null,
     table: null,
     object: null,
@@ -535,6 +541,9 @@ export const useStudio = create<StudioState>((set, get) => ({
                 status: "idle",
                 metrics: {},
                 elapsedMs: 0,
+                runMetrics: undefined,
+                clientStartedAt: undefined,
+                clientElapsedMs: undefined,
                 revision: current.revision + 1,
               }
             : t,
@@ -581,6 +590,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       status: "idle",
       metrics: {},
       elapsedMs: 0,
+      runMetrics: undefined,
+      clientStartedAt: undefined,
+      clientElapsedMs: undefined,
       revision: current.revision + 1,
     });
     return true;
@@ -1556,7 +1568,10 @@ export const useStudio = create<StudioState>((set, get) => ({
             [event.index]: { affectedRows: event.affectedRows, elapsedMs: event.elapsedMs },
           };
         }
+        if (event.type === "runMetrics" && event.runId === next.runId) next.runMetrics = event;
         if (event.type === "finished") {
+          if (next.clientStartedAt !== undefined)
+            next.clientElapsedMs = Math.max(0, performance.now() - next.clientStartedAt);
           next.status = event.status;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;

@@ -1,3 +1,4 @@
+import { ExecutionTiming } from "../features/studio/ExecutionTiming";
 import {
   lazy,
   Suspense,
@@ -947,7 +948,11 @@ export function Workbench({
               ) : (
                 <>
                   <Clock3 size={12} />
-                  {tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}
+                  {tab.runMetrics
+                    ? `Backend total ${tab.runMetrics.totalMs} ms`
+                    : tab.clientElapsedMs !== undefined
+                      ? `Client ${Math.round(tab.clientElapsedMs)} ms`
+                      : "Ready when you are"}
                 </>
               )}
             </span>
@@ -1110,6 +1115,9 @@ export function Workbench({
           <Gauge size={13} />
           Generated on demand · no database connection · constant row storage
         </div>
+      )}
+      {tab.kind === "query" && tab.clientStartedAt !== undefined && (
+        <ExecutionTiming metrics={tab.runMetrics} clientElapsedMs={tab.clientElapsedMs} />
       )}
       {filtering && tab.view === "data" && (
         <TableFilterBar

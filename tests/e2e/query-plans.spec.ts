@@ -55,6 +55,21 @@ for (const [label, engine, port] of [
     await page.getByRole("button", { name: "Explain", exact: true }).click();
     await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
     await expect(page.locator(".query-error")).toHaveCount(0);
+    await page.getByText("Execution timing", { exact: true }).click();
+    const timing = page.locator(".execution-timing");
+    for (const label of [
+      "Queue wait",
+      "Backend active",
+      "Backend total",
+      "First row batch",
+      "Client elapsed",
+    ])
+      await expect(
+        timing
+          .locator("dl > div")
+          .filter({ has: page.getByText(label, { exact: true }) })
+          .locator("dd"),
+      ).toHaveText(/^\d+ ms$/);
     await expect(editor).toHaveText(sql);
     await page.getByRole("button", { name: "View plan", exact: true }).click();
     const plan = page.getByRole("region", { name: "Query execution plan" });
@@ -259,4 +274,54 @@ test("PostgreSQL actual plan recovers from an error and cancellation retires its
   await expect(page.locator(".query-session")).toContainText(/disconnected/i);
   await expect(page.getByRole("button", { name: "Analyze", exact: true })).toBeDisabled();
   expect(errors).toEqual([]);
+});
+
+test("execution timing distinguishes empty/error results and keeps first batch through a later error", async ({
+  page,
+}) => {
+  await connectForAnalysis(page);
+  const editor = page.getByRole("textbox", { name: "SQL editor" });
+  const run = async (sql: string, status: string) => {
+    await editor.fill(sql);
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    await expect(page.locator(`.result-footer .status-dot.${status}`)).toBeVisible();
+  };
+  await run("SELECT 1 WHERE false", "completed");
+  await page.getByText("Execution timing", { exact: true }).click();
+  const timing = page.locator(".execution-timing");
+  const value = (label: string) =>
+    timing
+      .locator("dl > div")
+      .filter({ has: page.getByText(label, { exact: true }) })
+      .locator("dd");
+  await expect(value("First row batch")).toHaveText("Unavailable");
+  await expect(value("Backend total")).toHaveText(/^\d+ ms$/);
+  await run("SELECT 1 / 0", "failed");
+  await expect(value("First row batch")).toHaveText("Unavailable");
+  await expect(value("Client elapsed")).toHaveText(/^\d+ ms$/);
+  await run("SELECT 1 WHERE false; SELECT 42; SELECT 1 / 0", "failed");
+  await expect(value("First row batch")).toHaveText(/^\d+ ms$/);
+  await expect(page.locator(".query-error")).toContainText("division by zero");
+});
+
+test("a missing backend context observation withholds snapshot capture", async ({ page }) => {
+  await connectForAnalysis(page);
+  await page.route("**/events/*", async (route) => {
+    const response = await route.fetch();
+    const events = await response.json();
+    await route.fulfill({
+      response,
+      json: events.map((event: { type: string }) =>
+        event.type === "planContext" ? { ...event, state: null } : event,
+      ),
+    });
+  });
+  await page.getByRole("textbox", { name: "SQL editor" }).fill("SELECT 42");
+  await page.getByRole("button", { name: "Explain", exact: true }).click();
+  await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
+  await page.getByRole("button", { name: "View plan", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "Query execution plan" }).locator(".plan-tree"),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Keep snapshot", exact: true })).toBeDisabled();
 });

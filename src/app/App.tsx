@@ -582,16 +582,21 @@ export function App() {
       metrics: {},
       revision,
       dataSessionId: plan.sessionId,
-      planSource: planSourceForExecution(
-        plan,
-        executionSession,
-        executionState.sessionStates[plan.sessionId],
-        executionState.sessionContextRevision[plan.sessionId] ?? 0,
-      ),
+      planSource: undefined,
+      runMetrics: undefined,
+      clientStartedAt: performance.now(),
+      clientElapsedMs: undefined,
     });
     const batch = beginEventBatch(tabId);
     try {
       const runId = await client.execute(plan.id, approval, (event) => {
+        if (event.type === "planContext") {
+          const latest = useStudio.getState().tabs.find((tab) => tab.id === tabId);
+          if (latest?.revision === revision && (!latest.runId || latest.runId === event.runId))
+            state.updateTab(tabId, {
+              planSource: planSourceForExecution(plan, executionSession, event.state ?? undefined),
+            });
+        }
         batch(event);
         if (event.type === "finished" && event.status === "completed") onSuccess?.();
       });
@@ -603,6 +608,10 @@ export function App() {
       if (useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision === revision)
         state.updateTab(tabId, {
           status: "failed",
+          clientElapsedMs:
+            performance.now() -
+            (useStudio.getState().tabs.find((tab) => tab.id === tabId)?.clientStartedAt ??
+              performance.now()),
           error: { code: "database", message: messageOf(error) },
         });
     }

@@ -3317,3 +3317,31 @@ kbd {
   overflow-wrap: anywhere;
   line-height: 1.6;
 }
+
+.execution-timing {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.execution-timing summary {
+  cursor: pointer;
+}
+.execution-timing dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 8px 0;
+}
+.execution-timing dl div {
+  display: flex;
+  gap: 8px;
+}
+.execution-timing dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.execution-timing p {
+  max-width: 90ch;
+  color: var(--muted);
+  margin: 8px 0;
+}

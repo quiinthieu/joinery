@@ -899,6 +899,9 @@ impl Studio {
         } else {
             None
         };
+        let active_started = Instant::now();
+        let queue_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+        let mut first_row_ms = None;
         if serialized {
             *session.completion.lock() = None;
             let _gate = session.cancellation_gate.lock().await;
@@ -908,6 +911,30 @@ impl Studio {
             run_id: run_id.clone(),
         }) {
             token.cancel();
+        }
+        // Observe on the same serialized editor lane as the plan itself. An
+        // unavailable observation must never fall back to frontend cached state.
+        if matches!(stored.action, Action::Sql)
+            && stored.plan.statements.len() == 1
+            && [
+                "EXPLAIN (FORMAT JSON)\n",
+                "EXPLAIN (ANALYZE, FORMAT JSON)\n",
+                "EXPLAIN FORMAT=JSON\n",
+            ]
+            .iter()
+            .any(|prefix| stored.plan.statements[0].sql.starts_with(prefix))
+        {
+            let state = if token.is_cancelled() || session.closed.load(Ordering::Acquire) {
+                None
+            } else {
+                session.driver.session_state(&session.info.id).await.ok()
+            };
+            if !events(QueryEvent::PlanContext {
+                run_id: run_id.clone(),
+                state,
+            }) {
+                token.cancel();
+            }
         }
         match &stored.action {
             Action::Sql => {
@@ -932,6 +959,8 @@ impl Studio {
                         current: None,
                         truncated: false,
                         viewer_closed: false,
+                        active_started,
+                        first_row_ms: &mut first_row_ms,
                         events: &events,
                     };
                     let outcome = session
@@ -1052,7 +1081,21 @@ impl Studio {
             }
             *session.active_run.lock() = None;
         }
-        let elapsed_ms = started.elapsed().as_millis() as u32;
+        let ended = Instant::now();
+        let elapsed_ms = ended
+            .duration_since(started)
+            .as_millis()
+            .min(u32::MAX as u128) as u32;
+        events(QueryEvent::RunMetrics {
+            run_id: run_id.clone(),
+            queue_ms,
+            active_ms: ended
+                .duration_since(active_started)
+                .as_millis()
+                .min(u32::MAX as u128) as u32,
+            first_row_ms,
+            total_ms: elapsed_ms,
+        });
         let sql = if session.profile.store_query_text && matches!(stored.action, Action::Sql) {
             Some(
                 stored
@@ -3104,6 +3147,8 @@ struct Output<'a> {
     current: Option<String>,
     truncated: bool,
     viewer_closed: bool,
+    active_started: Instant,
+    first_row_ms: &'a mut Option<u32>,
     events: &'a EventHandler,
 }
 impl Output<'_> {
@@ -3163,6 +3208,14 @@ impl QuerySink for Output<'_> {
             .current
             .as_deref()
             .ok_or_else(|| AppError::internal("Rows arrived before column metadata"))?;
+        if !rows.is_empty() && self.first_row_ms.is_none() {
+            *self.first_row_ms = Some(
+                self.active_started
+                    .elapsed()
+                    .as_millis()
+                    .min(u32::MAX as u128) as u32,
+            );
+        }
         let retained = match self.studio.results.append(id, rows) {
             Ok(value) => value,
             Err(error) => {

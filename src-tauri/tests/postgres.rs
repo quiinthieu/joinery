@@ -257,6 +257,13 @@ async fn actual_plan_error_recovery_and_cancellation_use_the_owned_session() {
     studio.cancel(&id).await.unwrap();
     let events = finish(events).await;
     assert_eq!(status(&events), RunStatus::Cancelled);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        QueryEvent::RunMetrics {
+            first_row_ms: None,
+            ..
+        }
+    )));
     assert!(
         events
             .iter()
@@ -454,7 +461,20 @@ async fn queued_cancellation_does_not_cancel_the_active_query() {
     studio.cancel(&queued_id).await.unwrap();
     let events = finish(first).await;
     assert_eq!(status(&events), RunStatus::Completed);
-    assert_eq!(status(&finish(queued_rx).await), RunStatus::Cancelled);
+    let cancelled = finish(queued_rx).await;
+    assert_eq!(status(&cancelled), RunStatus::Cancelled);
+    assert!(cancelled.iter().any(|event| matches!(
+        event,
+        QueryEvent::RunMetrics {
+            first_row_ms: None,
+            ..
+        }
+    )));
+    assert!(
+        !cancelled
+            .iter()
+            .any(|event| matches!(event, QueryEvent::StatementStarted { .. }))
+    );
     assert_eq!(
         status(&run(&studio, &session, "SELECT 3").await),
         RunStatus::Completed
@@ -3218,5 +3238,85 @@ async fn postgres_manual_transactions_failed_state_grid_isolation_and_schema_swi
         status(&run(&studio, &session, cleanup).await),
         RunStatus::Completed
     );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn plan_context_and_timings_are_observed_after_the_queue() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let plan = studio
+        .prepare_execution(
+            &session.id,
+            "SELECT pg_sleep(0.35); SET search_path TO pg_catalog",
+        )
+        .unwrap();
+    let (_, mut first) = start(&studio, &plan, None);
+    while !matches!(
+        first.recv().await.unwrap(),
+        QueryEvent::StatementStarted { .. }
+    ) {}
+    let plan = studio
+        .prepare_explain(&session.id, "SELECT 42", false)
+        .unwrap();
+    let (_, queued) = start(&studio, &plan, None);
+    assert_eq!(status(&finish(first).await), RunStatus::Completed);
+    let events = finish(queued).await;
+    assert_eq!(status(&events), RunStatus::Completed);
+    let observed = events
+        .iter()
+        .find_map(|event| match event {
+            QueryEvent::PlanContext { state, .. } => state.as_ref(),
+            _ => None,
+        })
+        .expect("context observed under the execution lane");
+    assert_eq!(observed.session_id, session.id);
+    assert_eq!(observed.search_path, vec!["pg_catalog"]);
+    let metrics = events
+        .iter()
+        .find_map(|event| match event {
+            QueryEvent::RunMetrics {
+                queue_ms,
+                active_ms,
+                first_row_ms,
+                total_ms,
+                ..
+            } => Some((*queue_ms, *active_ms, *first_row_ms, *total_ms)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        metrics.0 >= 200,
+        "queue must include the preceding sleep: {metrics:?}"
+    );
+    assert!(metrics.2.is_some_and(|first| first <= metrics.1));
+    assert!(metrics.3 >= metrics.0 && metrics.3 >= metrics.1);
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn first_batch_timing_is_absent_without_rows_and_survives_later_failure() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    for (sql, expected_status, rows) in [
+        ("SELECT 1 WHERE false", RunStatus::Completed, false),
+        ("SELECT 1 / 0", RunStatus::Failed, false),
+        (
+            "SELECT 1 WHERE false; SELECT 42; SELECT 1 / 0",
+            RunStatus::Failed,
+            true,
+        ),
+    ] {
+        let events = run(&studio, &session, sql).await;
+        assert_eq!(status(&events), expected_status);
+        let first = events
+            .iter()
+            .find_map(|event| match event {
+                QueryEvent::RunMetrics { first_row_ms, .. } => Some(first_row_ms),
+                _ => None,
+            })
+            .expect("terminal metrics even on failure");
+        assert_eq!(first.is_some(), rows, "{sql}");
+    }
     studio.shutdown();
 }

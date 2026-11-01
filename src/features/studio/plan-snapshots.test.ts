@@ -56,29 +56,25 @@ describe("plan snapshot identity", () => {
       prepared(`EXPLAIN (FORMAT JSON)\n${sql}`),
       session,
       runtime,
-      0,
     )!;
     const actual = planSourceForExecution(
       prepared(`EXPLAIN (ANALYZE, FORMAT JSON)\n${sql}`),
       session,
       runtime,
-      0,
     )!;
     expect(estimated.query).toBe(sql);
     expect(actual.executedSql).toBe(`EXPLAIN (ANALYZE, FORMAT JSON)\n${sql}`);
     expect(planMismatch(estimated, actual)).toBeNull();
+    expect(planSourceForExecution(prepared("EXPLAIN SELECT 1"), session, runtime)).toBeUndefined();
     expect(
-      planSourceForExecution(prepared("EXPLAIN SELECT 1"), session, runtime, 0),
+      planSourceForExecution(prepared(source.executedSql), session, undefined),
     ).toBeUndefined();
     expect(
-      planSourceForExecution(prepared(source.executedSql), session, undefined, 0),
-    ).toBeUndefined();
-    expect(
-      planSourceForExecution(prepared(source.executedSql), { ...session, id: "other" }, runtime, 0),
+      planSourceForExecution(prepared(source.executedSql), { ...session, id: "other" }, runtime),
     ).toBeUndefined();
     const batch = prepared(source.executedSql);
     batch.statements.push({ sql: "SELECT 2", kind: "read", missingWhere: false });
-    expect(planSourceForExecution(batch, session, runtime, 0)).toBeUndefined();
+    expect(planSourceForExecution(batch, session, runtime)).toBeUndefined();
   });
   it("rejects differing engine, version, connection, session, context and exact query", () => {
     for (const patch of [
@@ -90,18 +86,18 @@ describe("plan snapshot identity", () => {
       { query: "SELECT 1 " },
     ] as Partial<PlanSource>[])
       expect(planMismatch(source, { ...source, ...patch })).toBeTruthy();
-    const a = planSourceForExecution(prepared(source.executedSql), session, runtime, 1)!;
+    const a = planSourceForExecution(prepared(source.executedSql), session, runtime)!;
     for (const r of [
       { ...runtime, role: "different" },
       { ...runtime, searchPath: ["private", "public"] },
     ]) {
       expect(
-        planMismatch(a, planSourceForExecution(prepared(source.executedSql), session, r, 1)!),
+        planMismatch(a, planSourceForExecution(prepared(source.executedSql), session, r)!),
       ).toContain("context");
     }
     expect(
-      planMismatch(a, planSourceForExecution(prepared(source.executedSql), session, runtime, 2)!),
-    ).toContain("context");
+      planMismatch(a, planSourceForExecution(prepared(source.executedSql), session, runtime)!),
+    ).toBeNull();
   });
 });
 
