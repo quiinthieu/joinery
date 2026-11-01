@@ -153,6 +153,7 @@ pub struct EngineCapabilities {
 pub enum ActualPlanFormat {
     PostgresJson,
     MariaDbJson,
+    MysqlTree,
 }
 
 /// One table-browser ordering key; primary-key tie-breakers are implicit.

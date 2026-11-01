@@ -161,7 +161,9 @@ export function QueryPlanView({
             aria-pressed={view === "raw"}
             onClick={() => setView("raw")}
           >
-            Raw JSON
+            {raw?.trimStart().startsWith("->") || baselinePlan?.format === "tree"
+              ? "Raw plan"
+              : "Raw JSON"}
           </button>
         </div>
       </div>

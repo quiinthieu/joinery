@@ -66,6 +66,28 @@ describe("plan snapshot identity", () => {
     expect(actual.executedSql).toBe("ANALYZE FORMAT=JSON\nSELECT 1");
     expect(planMismatch(estimated, actual)).toBeNull();
   });
+  it("compares MySQL JSON estimates with exact TREE actuals without rewriting raw tokens", () => {
+    const mysql = { ...session, engine: "mysql", serverVersion: "8.4.13" } as SessionInfo;
+    const estimate = planSourceForExecution(
+      prepared("EXPLAIN FORMAT=JSON\nSELECT 1"),
+      mysql,
+      runtime,
+    )!;
+    const actual = planSourceForExecution(
+      prepared("EXPLAIN ANALYZE FORMAT=TREE\nSELECT 1"),
+      mysql,
+      runtime,
+    )!;
+    expect(planMismatch(estimate, actual)).toBeNull();
+    const store = new PlanSnapshotStore();
+    const tree =
+      "-> Rows fetched before execution  (cost=0..0 rows=1) (actual time=84e-6..84e-6 rows=1 loops=1)\n";
+    const saved = store.capture("tab", "tree", actual, tree).saved;
+    expect(saved.raw).toBe(tree);
+    expect(saved.source.executedSql).toBe("EXPLAIN ANALYZE FORMAT=TREE\nSELECT 1");
+    store.removeSession(mysql.id);
+    expect(store.retainedBytes).toBe(0);
+  });
   it("uses exact executed query bytes and recognizes only generated single-query wrappers", () => {
     const sql = "/* é */ SELECT 'a; b'; -- retain";
     const estimated = planSourceForExecution(

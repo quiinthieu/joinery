@@ -926,6 +926,7 @@ impl Studio {
                 "EXPLAIN (ANALYZE, FORMAT JSON)\n",
                 "EXPLAIN FORMAT=JSON\n",
                 "ANALYZE FORMAT=JSON\n",
+                "EXPLAIN ANALYZE FORMAT=TREE\n",
             ]
             .iter()
             .any(|prefix| stored.plan.statements[0].sql.starts_with(prefix))

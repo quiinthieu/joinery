@@ -23,11 +23,14 @@ pub(crate) fn explain_sql(
         (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MariaDbJson) => {
             (Box::new(MySqlDialect {}), "ANALYZE FORMAT=JSON")
         }
+        (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MysqlTree) => {
+            (Box::new(MySqlDialect {}), "EXPLAIN ANALYZE FORMAT=TREE")
+        }
         _ => {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
                 if analyze {
-                    "Actual plans are available for PostgreSQL and capability-checked MariaDB sessions."
+                    "Actual plans are available for PostgreSQL and capability-checked MySQL/MariaDB sessions."
                 } else {
                     "Estimated plans are available for PostgreSQL and MySQL/MariaDB."
                 },
@@ -141,6 +144,16 @@ mod tests {
             explain_sql(EngineKind::Mysql, sql, true, format).unwrap(),
             format!("ANALYZE FORMAT=JSON\n{sql}")
         );
+        assert_eq!(
+            explain_sql(
+                EngineKind::Mysql,
+                sql,
+                true,
+                Some(ActualPlanFormat::MysqlTree)
+            )
+            .unwrap(),
+            format!("EXPLAIN ANALYZE FORMAT=TREE\n{sql}")
+        );
         for sql in [
             "SELECT 1; SELECT 2",
             "DELETE FROM t",
@@ -151,6 +164,16 @@ mod tests {
         ] {
             assert!(
                 explain_sql(EngineKind::Mysql, sql, true, format).is_err(),
+                "{sql}"
+            );
+            assert!(
+                explain_sql(
+                    EngineKind::Mysql,
+                    sql,
+                    true,
+                    Some(ActualPlanFormat::MysqlTree)
+                )
+                .is_err(),
                 "{sql}"
             );
         }

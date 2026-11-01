@@ -1,6 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function connectForAnalysis(page: Page, engine: "PostgreSQL" | "MariaDB" = "PostgreSQL") {
+async function connectForAnalysis(
+  page: Page,
+  engine: "PostgreSQL" | "MySQL" | "MariaDB" = "PostgreSQL",
+) {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page
@@ -10,7 +13,13 @@ async function connectForAnalysis(page: Page, engine: "PostgreSQL" | "MariaDB" =
   await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
   await page
     .getByLabel("Port", { exact: true })
-    .fill(engine === "PostgreSQL" ? (process.env.JOINERY_POSTGRES_PORT ?? "55432") : "53307");
+    .fill(
+      engine === "PostgreSQL"
+        ? (process.env.JOINERY_POSTGRES_PORT ?? "55432")
+        : engine === "MySQL"
+          ? "53306"
+          : "53307",
+    );
   await page.getByLabel("Database", { exact: true }).fill("joinery");
   await page.getByLabel("Username", { exact: true }).fill("joinery");
   await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
@@ -110,19 +119,15 @@ for (const [label, engine, port] of [
     await page.getByRole("button", { name: "Explain", exact: true }).click();
     await expect(page.locator(".query-error")).toContainText("one SELECT or WITH query");
     await expect(page.locator(".result-tabs [role=tab]")).toHaveCount(1);
-    if (engine === "postgres" || label === "MariaDB") {
-      await editor.fill("SELECT 1");
-      await page.getByRole("button", { name: "Analyze", exact: true }).click();
-      await expect(page.locator(".query-error")).toContainText("read-only");
-      await expect(page.getByRole("dialog")).toHaveCount(0);
-    } else {
-      await expect(page.getByRole("button", { name: "Analyze", exact: true })).toHaveCount(0);
-    }
+    await editor.fill("SELECT 1");
+    await page.getByRole("button", { name: "Analyze", exact: true }).click();
+    await expect(page.locator(".query-error")).toContainText("read-only");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 }
 
-for (const engine of ["PostgreSQL", "MariaDB"] as const) {
+for (const engine of ["PostgreSQL", "MySQL", "MariaDB"] as const) {
   test(`${engine} snapshots compare estimates with actuals, reject mismatches and clear on disconnect`, async ({
     page,
   }) => {
@@ -165,7 +170,9 @@ for (const engine of ["PostgreSQL", "MariaDB"] as const) {
     await expect(page.getByRole("region", { name: "Current plan", exact: true })).toContainText(
       "Actual rows per loop",
     );
-    await page.getByRole("button", { name: "Raw JSON", exact: true }).click();
+    await page
+      .getByRole("button", { name: engine === "MySQL" ? "Raw plan" : "Raw JSON", exact: true })
+      .click();
     const kept = JSON.parse(
       await page
         .getByRole("region", { name: "Snapshot plan", exact: true })
@@ -185,7 +192,9 @@ for (const engine of ["PostgreSQL", "MariaDB"] as const) {
     await expect(page.getByRole("region", { name: "Plan comparison", exact: true })).toHaveCount(0);
 
     // Session cancellation must remove prior captures and prevent recapture.
-    await editor.fill(engine === "PostgreSQL" ? "SELECT pg_sleep(10)" : "SELECT SLEEP(10)");
+    await editor.fill(
+      engine === "PostgreSQL" ? "SELECT pg_sleep(10)" : "SELECT 1 WHERE SLEEP(10)=0",
+    );
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
     await page
       .getByRole("dialog")
@@ -229,7 +238,7 @@ for (const engine of ["PostgreSQL", "MariaDB"] as const) {
         : "ANALYZE executes the statement",
     );
     await expect(review.locator(".sql-preview")).toHaveText(
-      `${engine === "PostgreSQL" ? "EXPLAIN (ANALYZE, FORMAT JSON)" : "ANALYZE FORMAT=JSON"}\n${sql}`,
+      `${engine === "PostgreSQL" ? "EXPLAIN (ANALYZE, FORMAT JSON)" : engine === "MySQL" ? "EXPLAIN ANALYZE FORMAT=TREE" : "ANALYZE FORMAT=JSON"}\n${sql}`,
     );
     expect(executions).toBe(0);
     await review.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -249,17 +258,29 @@ for (const engine of ["PostgreSQL", "MariaDB"] as const) {
     await expect(plan).toContainText("Actual rows per loop");
     await expect(plan).toContainText("Actual loops");
     await expect(plan).toContainText(
-      engine === "PostgreSQL" ? "Server execution" : "Actual total including children",
+      engine === "PostgreSQL"
+        ? "Server execution"
+        : engine === "MySQL"
+          ? "Actual total per loop including children"
+          : "Actual total including children",
     );
-    await page.getByRole("button", { name: "Raw JSON", exact: true }).click();
-    const raw = JSON.parse(await plan.locator(".plan-raw").innerText());
+    await page
+      .getByRole("button", { name: engine === "MySQL" ? "Raw plan" : "Raw JSON", exact: true })
+      .click();
+    const rawText = await plan.locator(".plan-raw").innerText();
+    const raw = engine === "MySQL" ? null : JSON.parse(rawText);
     if (engine === "PostgreSQL") {
       expect(raw[0].Plan["Actual Rows"]).toBe(1);
       expect(raw[0].Plan["Actual Loops"]).toBe(1);
       expect(raw[0]["Execution Time"]).toBeGreaterThanOrEqual(0);
     } else {
-      expect(raw.query_block.r_loops).toBe(1);
-      expect(raw.query_block.r_total_time_ms).toBeGreaterThanOrEqual(0);
+      if (engine === "MySQL") {
+        expect(rawText).toMatch(/^-> Limit:/);
+        expect(rawText).toContain("loops=1");
+      } else {
+        expect(raw.query_block.r_loops).toBe(1);
+        expect(raw.query_block.r_total_time_ms).toBeGreaterThanOrEqual(0);
+      }
       await page.getByRole("button", { name: "Tree", exact: true }).click();
       await page.getByRole("button", { name: "Keep snapshot", exact: true }).click();
       await expect(plan).toContainText("1/10 snapshots");
@@ -270,7 +291,9 @@ for (const engine of ["PostgreSQL", "MariaDB"] as const) {
     await editor.fill(
       engine === "PostgreSQL"
         ? "EXPLAIN (ANALYZE, FORMAT JSON) SELECT 1"
-        : "ANALYZE FORMAT=JSON SELECT 1",
+        : engine === "MySQL"
+          ? "DESC ANALYZE FORMAT=TREE FOR SCHEMA joinery SELECT 1"
+          : "ANALYZE FORMAT=JSON SELECT 1",
     );
     await page.getByRole("button", { name: "Run all statements", exact: true }).click();
     await expect(review).toContainText(
@@ -307,7 +330,7 @@ for (const engine of ["PostgreSQL", "MariaDB"] as const) {
     await analyze("SELECT 1");
     await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
     await expect(page.locator(".query-error")).toHaveCount(0);
-    await analyze(engine === "PostgreSQL" ? "SELECT pg_sleep(10)" : "SELECT SLEEP(10)");
+    await analyze(engine === "PostgreSQL" ? "SELECT pg_sleep(10)" : "SELECT 1 WHERE SLEEP(10)=0");
     await expect(page.locator(".result-footer .status-dot.running")).toBeVisible();
     await page.getByRole("button", { name: /Cancel/ }).click();
     await expect(page.locator(".result-footer .status-dot.cancelled")).toBeVisible();

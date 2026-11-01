@@ -2,6 +2,74 @@ import { describe, expect, it } from "vitest";
 import { parseQueryPlan } from "./query-plan";
 
 describe("query plan display adapters", () => {
+  it("reads MySQL TREE iterators with inclusive per-loop times and unexecuted children", () => {
+    const raw =
+      "-> Nested loop inner join  (cost=0.81 rows=1) (actual time=0.0414..0.0414 rows=0 loops=1)\n" +
+      "    -> Filter: (a.id < 3)  (cost=0.46 rows=1) (actual time=0.0405..0.0405 rows=0 loops=1)\n" +
+      "        -> Covering index range scan on a using PRIMARY over (id < 3)  (cost=0.46 rows=1) (actual time=0.00921..0.00921 rows=0 loops=1)\n" +
+      "    -> Single-row covering index lookup on b using PRIMARY (id=a.id)  (cost=0.35 rows=1) (never executed)\n";
+    const plan = parseQueryPlan(raw);
+    expect(plan.actual).toBe(true);
+    expect(plan.format).toBe("tree");
+    expect(plan.timings).toEqual([]);
+    expect(plan.roots[0].children).toHaveLength(2);
+    expect(plan.roots[0].metrics).toContainEqual({
+      label: "Actual total per loop including children",
+      value: "0.0414 ms",
+    });
+    expect(plan.roots[0].children[0].children[0].metrics).toContainEqual({
+      label: "Actual rows per loop",
+      value: "0",
+    });
+    expect(plan.roots[0].children[1].metrics).toContainEqual({
+      label: "Execution",
+      value: "Never executed",
+    });
+    expect(plan.roots[0].children[1].metrics.some((x) => x.label === "Actual loops")).toBe(false);
+  });
+
+  it("preserves MySQL engineering tokens, cost ranges, missing costs and iterator labels", () => {
+    const plan = parseQueryPlan(
+      "-> Hash  (actual time=0..209e-6 rows=2.5 loops=4)\n    -> Rows fetched before execution  (cost=0..0 rows=1) (actual time=84e-6..1.23e+9 rows=1 loops=1)\n",
+    );
+    expect(plan.roots[0].label).toBe("Hash");
+    expect(plan.roots[0].metrics).toEqual([
+      { label: "Actual first row per loop", value: "0 ms" },
+      { label: "Actual total per loop including children", value: "209e-6 ms" },
+      { label: "Actual rows per loop", value: "2.5" },
+      { label: "Actual loops", value: "4" },
+    ]);
+    expect(plan.roots[0].children[0].metrics).toContainEqual({
+      label: "Startup cost (optimizer units)",
+      value: "0",
+    });
+    expect(plan.roots[0].children[0].metrics).toContainEqual({
+      label: "Total cost (optimizer units)",
+      value: "0",
+    });
+  });
+
+  it("keeps unsupported MySQL TREE text in raw view and bounds its hierarchy", () => {
+    for (const raw of [
+      "-> Unknown",
+      "    -> Orphan  (cost=1 rows=1)",
+      "-> Root  (cost=1 rows=1)\n        -> Skipped parent",
+      "-> Root  (cost=1 rows=1)\nunrecognized continuation",
+      "-> Root  (actual time=1e999..2 rows=1 loops=1)",
+    ])
+      expect(() => parseQueryPlan(raw)).toThrow();
+    expect(() =>
+      parseQueryPlan(
+        Array.from({ length: 42 }, (_, i) => "    ".repeat(i) + "-> Hash  (cost=1 rows=1)").join(
+          "\n",
+        ),
+      ),
+    ).toThrow("complexity");
+    expect(() =>
+      parseQueryPlan("-> Root  (cost=1 rows=1)\n" + "    -> Child  (cost=1 rows=1)\n".repeat(2000)),
+    ).toThrow("complexity");
+  });
+
   it("keeps PostgreSQL estimates, actual per-loop measurements and server timings distinct", () => {
     const plan = parseQueryPlan(
       JSON.stringify([

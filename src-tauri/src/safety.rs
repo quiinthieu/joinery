@@ -118,31 +118,7 @@ pub fn prepare(
         let tokens = Tokenizer::new(&MySqlDialect {}, sql)
             .tokenize()
             .map_err(|_| AppError::invalid("The SQL contains an unterminated token"))?;
-        // MariaDB's ANALYZE FORMAT=JSON and some MySQL EXPLAIN options are
-        // outside sqlparser's grammar. Detect their execution gate before
-        // AST fallback, including later statements, without matching literals
-        // or comments. EXPLAIN containing ANALYZE is conservatively reviewed.
-        let mut start = true;
-        let mut explain = false;
-        for token in &tokens {
-            match token {
-                Token::Whitespace(_) | Token::EOF => {}
-                Token::SemiColon => {
-                    start = true;
-                    explain = false;
-                }
-                Token::Word(word) if word.quote_style.is_none() => {
-                    if word.value.eq_ignore_ascii_case("ANALYZE") && (start || explain) {
-                        mysql_analysis = true;
-                    }
-                    if start {
-                        explain = word.value.eq_ignore_ascii_case("EXPLAIN");
-                    }
-                    start = false;
-                }
-                _ => start = false,
-            }
-        }
+        mysql_analysis = mysql_analysis_tokens(&tokens);
         let words = tokens
             .iter()
             .filter_map(|t| {
@@ -237,6 +213,43 @@ pub fn prepare(
         );
     }
     Ok(plan)
+}
+
+/// MySQL may return a partial analysis result rather than an error after KILL.
+/// Share the conservative pre-parser gate with its cancellation checkpoint.
+pub(crate) fn mysql_executes_analysis(sql: &str) -> bool {
+    Tokenizer::new(&MySqlDialect {}, sql)
+        .tokenize()
+        .is_ok_and(|tokens| mysql_analysis_tokens(&tokens))
+}
+
+fn mysql_analysis_tokens(tokens: &[Token]) -> bool {
+    // Includes MariaDB syntax and EXPLAIN's DESC/DESCRIBE aliases, even when
+    // sqlparser cannot parse options such as FOR SCHEMA. Quoted text is inert.
+    let mut start = true;
+    let mut explain = false;
+    for token in tokens {
+        match token {
+            Token::Whitespace(_) | Token::EOF => {}
+            Token::SemiColon => {
+                start = true;
+                explain = false;
+            }
+            Token::Word(word) if word.quote_style.is_none() => {
+                if word.value.eq_ignore_ascii_case("ANALYZE") && (start || explain) {
+                    return true;
+                }
+                if start {
+                    explain = ["EXPLAIN", "DESC", "DESCRIBE"]
+                        .iter()
+                        .any(|alias| word.value.eq_ignore_ascii_case(alias));
+                }
+                start = false;
+            }
+            _ => start = false,
+        }
+    }
+    false
 }
 
 pub(crate) fn plan_for_statements(
@@ -663,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn mariadb_analysis_requires_review_even_when_parsing_falls_back() {
+    fn mysql_and_mariadb_analysis_requires_review_even_when_parsing_falls_back() {
         let mut p = profile(SafeMode::Silent, Environment::Local);
         p.engine = EngineKind::Mysql;
         for sql in [
@@ -672,6 +685,11 @@ mod tests {
             "SELECT 1; -- next\n ANALYZE FORMAT=JSON SELECT 2",
             "ANALYZE SELECT 1",
             "EXPLAIN ANALYZE FORMAT=JSON SELECT 1",
+            "EXPLAIN ANALYZE FORMAT=TREE SELECT 1",
+            "DESC ANALYZE FORMAT=TREE SELECT 1",
+            "DESC ANALYZE FORMAT=TREE FOR SCHEMA joinery SELECT 1",
+            "DESCRIBE ANALYZE FORMAT=TREE FOR DATABASE joinery SELECT 1",
+            "SELECT 1; DESCRIBE /* review */ ANALYZE FORMAT=TREE SELECT 1",
         ] {
             let plan = prepare("s", &p, sql).unwrap();
             assert!(plan.requires_approval, "{sql}");
@@ -694,6 +712,7 @@ mod tests {
             "SELECT 'ANALYZE FORMAT=JSON'",
             "SELECT 1 /* ANALYZE SELECT 2 */",
             "SELECT `analyze` FROM sample",
+            "DESC `analyze`",
         ] {
             assert!(!prepare("s", &p, sql).unwrap().requires_approval, "{sql}");
         }

@@ -1,3 +1,5 @@
+import { parseMysqlTreePlan } from "./mysql-tree-plan";
+
 export interface PlanNode {
   path: string;
   label: string;
@@ -7,6 +9,7 @@ export interface PlanNode {
 }
 export interface QueryPlan {
   engine: "PostgreSQL" | "MySQL/MariaDB";
+  format: "json" | "tree";
   actual: boolean;
   roots: PlanNode[];
   timings: { label: string; value: string }[];
@@ -18,22 +21,29 @@ const number = (value: unknown) =>
   (typeof value === "number" && Number.isFinite(value)) ||
   (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value));
 
-/** Bounded display adapter. Unknown fields remain available in the original JSON. */
+/** Bounded display adapter. Original JSON or TREE text stays available unchanged. */
 export function parseQueryPlan(raw: string): QueryPlan {
   if (new TextEncoder().encode(raw).length > 512 * 1024)
     throw new Error("Plan exceeds the 512 KiB tree-view limit. Use the data grid or export.");
+  if (raw.trimStart().startsWith("->")) return parseMysqlTreePlan(raw);
   let data: unknown;
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error("This result is not a JSON query plan. Use the data grid or raw view.");
+    throw new Error("This result is not a supported query plan. Use the data grid or raw view.");
   }
   let visited = 0;
   const check = (depth: number) => {
     if (++visited > 2000 || depth > 40)
       throw new Error("Plan exceeds the tree-view complexity limit. Use the raw view.");
   };
-  const result: QueryPlan = { engine: "PostgreSQL", actual: false, roots: [], timings: [] };
+  const result: QueryPlan = {
+    engine: "PostgreSQL",
+    format: "json",
+    actual: false,
+    roots: [],
+    timings: [],
+  };
   const metric = (source: RecordValue, key: string, label: string, suffix = "") =>
     number(source[key]) ? [{ label, value: `${source[key]}${suffix}` }] : [];
   if (Array.isArray(data) && data.length === 1 && record(data[0]) && record(data[0].Plan)) {

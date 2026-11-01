@@ -124,16 +124,23 @@ impl Mysql {
         // COM_STMT_PREPARE checks syntax/support without executing the SELECT.
         // Never collect actual measurements during connection or change the
         // user's optimizer/JSON-format settings to enable a plan action.
-        let actual_plan = if maria {
-            match conn.prep("ANALYZE FORMAT=JSON SELECT 1").await {
-                Ok(statement) => {
-                    conn.close(statement).await.map_err(mysql_error)?;
-                    Some(ActualPlanFormat::MariaDbJson)
-                }
-                Err(_) => None,
-            }
+        let (probe, format) = if maria {
+            (
+                "ANALYZE FORMAT=JSON SELECT 1",
+                ActualPlanFormat::MariaDbJson,
+            )
         } else {
-            None
+            (
+                "EXPLAIN ANALYZE FORMAT=TREE SELECT 1",
+                ActualPlanFormat::MysqlTree,
+            )
+        };
+        let actual_plan = match conn.prep(probe).await {
+            Ok(statement) => {
+                conn.close(statement).await.map_err(mysql_error)?;
+                Some(format)
+            }
+            Err(_) => None,
         };
         if profile.tls_mode == TlsMode::VerifyFull {
             let cipher: Option<(String, String)> = conn
@@ -318,6 +325,8 @@ impl Driver for Mysql {
         kind: StatementKind,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
+        let cancelled_read_or_analysis =
+            kind == StatementKind::Read || crate::safety::mysql_executes_analysis(sql);
         let mut editor = self.editor.connection.lock().await;
         let conn = &mut *editor;
         let mut result=self.bounded(async {
@@ -325,7 +334,7 @@ impl Driver for Mysql {
             conn.query_drop("SET NAMES utf8mb4; SET SESSION sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'; SET SESSION time_zone='+00:00'").await.map_err(mysql_error)?;
             if self.cancel_requested.is_cancelled() { return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled before submission")); }
             let mut result=conn.query_iter(sql).await.map_err(mysql_error)?;
-            if kind==StatementKind::Read && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
+            if cancelled_read_or_analysis && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
             let mut total=0u64;
             // next() returns None at a result-set boundary and advances to the
             // next set. Always consume every set, including write RETURNING rows.
@@ -355,7 +364,7 @@ impl Driver for Mysql {
                 if result.is_empty() {break;}
             }
             result.drop_result().await.map_err(mysql_error)?;
-            if kind==StatementKind::Read && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
+            if cancelled_read_or_analysis && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
             Ok(total)
         }).await;
         if result.as_ref().is_err_and(|e| {

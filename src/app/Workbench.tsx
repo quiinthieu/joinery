@@ -720,7 +720,8 @@ export function Workbench({
                 </button>
               )}
               {(profile?.engine === "postgres" ||
-                session?.capabilities.actualPlan === "mariaDbJson") && (
+                session?.capabilities.actualPlan === "mariaDbJson" ||
+                session?.capabilities.actualPlan === "mysqlTree") && (
                 <button
                   className="button ghost small"
                   disabled={running || !session}
