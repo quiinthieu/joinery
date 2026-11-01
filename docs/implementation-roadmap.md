@@ -218,15 +218,16 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `d39b89b` integrates six R5 slices with per-engine formatting
-styles, alongside seven R6 slices. R5/R6 remain partial, local, unmerged,
-unreleased and not installed. Validation passes 196 frontend / 156 standard Rust
-and three expanded PostgreSQL/MySQL/MariaDB editor flows. A clean-source macOS
-hidden baseline passes three processes / 30 cleanup cycles. The full 86-flow
-browser run belongs to `db5cd1b`; all 66 ignored SQL/Redis/SSH fixtures and the
-normal ad-hoc macOS bundle passed on `b80b6c7`, immediately before this style
-follow-up. Remaining semantic editor/analysis gaps and release/platform/external
-qualification are next. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-per-engine-formatting-styles-2-november-2026).
+Current candidate `c32f0c2` integrates six R5 slices plus per-engine formatting
+and named-output follow-ups, alongside seven R6 slices. R5/R6 remain partial,
+local, unmerged, unreleased and not installed. Validation passes 228 frontend /
+156 standard Rust and all five SQL navigation flows on PostgreSQL/MySQL/MariaDB.
+A clean-source macOS hidden baseline passes three processes / 30 cleanup cycles;
+new navigation interactions are browser-tested. The full 86-flow browser run
+belongs to `db5cd1b`; all 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc
+macOS bundle passed on `b80b6c7`. Secondary-session Structure navigation is next,
+followed by remaining semantic editor/analysis and R7/R8 work. Release/platform/
+external gates remain open. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-named-query-outputs-2-november-2026).
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -338,19 +339,29 @@ selection and reset; standard checks and the clean-source native persistence/
 worker baseline pass. Broader style controls and context-aware template variables
 remain open. See [evidence and limits](IMPLEMENTATION_STATUS.md#r5-follow-up-per-engine-formatting-styles-2-november-2026).
 
-### Next bounded editor slice: named projection outputs
+### R5 named-output follow-up (local `c32f0c2`)
 
-1. Resolve directly named SELECT outputs through CTEs and derived tables using
-   the existing scoped bindings and current-session metadata. Explicit CTE column
-   lists remain authoritative; require a unique proven output before navigation.
-2. Cover nested scopes, quoted/case-sensitive names, duplicate output names,
-   wildcard expansion and unavailable metadata. Withhold ambiguous, expression-
-   derived or unsupported outputs rather than inventing a binding.
-3. Invalidate results after document/context/session changes. Keep the existing
-   bounded work and cancellation behavior; do not alter execution or plan review.
-4. Reproduce the gap, add focused regressions and exercise supported resolution
-   in disposable SQL browser fixtures. Then assess secondary-session Structure
-   navigation as a separate slice before broader templates or R7 design tools.
+Directly named SELECT columns now resolve through CTEs and derived tables using
+current-session metadata. Full explicit CTE column lists are authoritative.
+Definitions jump to local declarations, usages retain scoped identities and docs
+label source metadata. Nested/quoted names, ambiguity, unavailable metadata and
+unsupported shapes have regressions; wildcards, expressions and set-operation
+outputs remain withheld. Metadata follows bodies within the existing fetch cap.
+Inference has explicit recursion/body/output/token limits and action-local memoization.
+Standard checks, five real navigation browser flows and the native synthetic
+baseline pass. See [evidence and limits](IMPLEMENTATION_STATUS.md#r5-follow-up-named-query-outputs-2-november-2026).
+
+### Next bounded editor slice: secondary-session Structure navigation
+
+1. Carry the originating console's session, connection and observed context into
+   object/column Structure tabs. Do not attach to or substitute the primary session.
+2. Fetch schema/object details on that session; isolate cache identities and reject
+   late replies after edits, session closure, reconnect or context changes.
+3. Enable only supported read-only Structure views. Preserve local declaration
+   jumps, capability degradation, exact editor origins and every execution gate.
+4. Reproduce the current withheld jump, add focused regressions and exercise two
+   independent console sessions plus the primary session in disposable browser
+   fixtures. Broader semantic inference/templates remain separate follow-ups.
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -475,12 +486,12 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Six R5 slices and seven R6 slices now include per-engine format styles
-   (`d39b89b`). Standard checks, three expanded real editor browser flows and
-   the clean-source native baseline pass. Prior combined-source qualification
-   passed all 66 ignored local SQL/Redis/SSH fixtures and a normal ad-hoc macOS
+1. Six R5 slices and seven R6 slices now include per-engine styles and named
+   CTE/derived-table outputs (`c32f0c2`). Standard checks, five SQL navigation
+   browser flows and the clean-source native baseline pass. Prior combined-source
+   qualification passed all 66 ignored local SQL/Redis/SSH fixtures and a normal ad-hoc macOS
    bundle on `b80b6c7`; the full 86-flow browser suite passed on `db5cd1b`.
-   Next: semantic/projection inference and secondary-session Structure navigation,
+   Next: secondary-session Structure navigation and broader semantic inference,
    then richer template variables and remaining R5/R6/R7/R8 scope. Preserve
    conservative ambiguity handling, every preparation/approval path and exact
    editor origins. Keep the earlier startup flake open until its cause is known.

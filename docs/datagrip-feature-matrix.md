@@ -140,12 +140,12 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
 | E09 SQL formatting — DG-F | `sql-format.ts`, formatter worker, Preferences | PARTIAL / H | Selection/document formatting, global and per-dialect case/indent/spacing, inheritance/reset, stale-reply rejection, serialized saves and bind compatibility. Broader style controls remain open | P2 / Medium | Editor selections; PMS; local | Selection/newline/undo, literal/comment/bind preservation, ordered saves, inheritance/reset/recovery and three real engine flows; local `d39b89b`, unmerged / hold |
 | E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
-| E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias jumps, metadata-backed columns/objects, per-candidate scoped references; ambiguous and overloaded names withheld. Secondary consoles use docs without primary-session Structure jumps; projection inference remains open | P1 / High | E02/N06; PMS; read | Nested shadows/correlation, ambiguity, case/search path, stale replies and five real symbol browser flows; local `8ef9dfb`, unmerged / hold |
+| E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias/output jumps, proven direct-column outputs through CTEs/derived tables and per-candidate references. Expressions, wildcards, set-operation outputs and ambiguity are withheld. Secondary-session Structure navigation remains open | P1 / High | E02/N06; PMS; read | Nested output scopes/lists, duplicate/unknown names, case/search path, stale replies and five real symbol browser flows; local `c32f0c2`, unmerged / hold |
 | E12 Snippets/live templates — DG-T | `sql-snippets.ts`, Preferences, bounded SQLite metadata | PARTIAL / H | Built-ins and global/engine custom templates, override precedence, Tab/Shift+Tab and final cursor stop; no automatic execution. Context-aware variables/semantic placement remain open | P2 / Medium | Existing editor/persistence; PMS; local | Expansion, scope precedence, real CRUD/reload/explicit-run flows and validated backup/restore; local `db5cd1b`, unmerged / hold |
 | E13 Statement navigation — DG-X | `sql-context.ts`, `sql-navigation.ts`, editor/palette | PARTIAL / H | Caret/selection execution and dialect-tree previous/next statement navigation verified locally; incomplete parsing withholds navigation; representative large-document performance remains open | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, dialect ranges and real diagnostics/navigation flows; local `65530c0` and current regressions, unmerged / hold |
 | E14 Multiple consoles/files — DG-S, DG-SQ | `file_capability.rs` (`GrantKind::SqlFile`), `studio.ts` (`openSqlFile`, `saveSqlFile`, `isTabFileDirty`), `workspace.ts`, `Workbench.tsx`, `App.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Multiple consoles with named session attachment plus capability-gated `.sql` file Open (`⌘O`), atomic in-place Save (`⌘S` on query tabs; `reviewEdits` preserved on table tabs) and Save As (`⇧⌘S`) via reusable `GrantKind::SqlFile` tokens (max 64 grants, ≤ 4 MiB UTF-8, symlink/NUL rejection, sibling `.tmp` + `sync_all` + `rename`, dirty dot, unsaved-close/quit guard, zero raw paths over IPC, excluded from `SavedWorkspace.drafts`) | P1 / High | M06, native file capability; PMSR; local | Rust `sql_file_capabilities` unit test, `studio.test.ts` dirty/draft-exclusion tests, and browser Open/dirty-guard/Save/Save-As workflow; merged in PR #30 (`a0ba1a6`) / hold until released |
 | E15 Query parameters — DG-P | `params.rs`, `ParameterDialog.tsx`, immutable execution plans and engine adapters | PARTIAL / H | Named/positional typed values and NULL, bounded transient drafts, exact reviewed bindings, parameterized Explain/Analyze and binding-aware comparison verified on PG/MySQL/MariaDB; Snowflake transport remains synthetic and wider engine/native UI qualification remains open | P1 / High | Typed execution request; PMS by capability; gate | Scanner exclusions, precision/Unicode/budget rejection, all kinds/NULL, reviewed writes, one-use/stale approvals, template-only history; six browser flows; local `39359e7`, unmerged / hold |
-| E16 Context documentation — DG-DOC | `SqlNavigationOverlay.tsx`, current-console catalog/details | PARTIAL / H | F1 metadata at caret, types/PK/FK, comments and routine/sequence details where available; object-level dependents; denied/stale metadata explicit. Full semantic inference and Snowflake/live breadth remain open | P2 / Medium | E11; PMS; read | Edit/refresh/close races, denied metadata, focus/Escape and secondary-session boundary; local `8ef9dfb`, unmerged / hold |
+| E16 Context documentation — DG-DOC | `SqlNavigationOverlay.tsx`, current-console catalog/details | PARTIAL / H | F1 catalog metadata and proven CTE/derived-output source column/type; local output declarations/usages, object-level dependents and explicit denied/stale metadata. Broader semantic inference and Snowflake/live breadth remain open | P2 / Medium | E11; PMS; read | Output/source distinction, edit/refresh/close races, denied metadata, focus/Escape and secondary-session boundary; local `c32f0c2`, unmerged / hold |
 
 ## Query execution
 
@@ -798,3 +798,21 @@ fixtures and a normal ad-hoc macOS bundle; `db5cd1b` passed all 86 browser flows
 Those prior counts remain tied to their revisions. Context variables, broader
 semantic inference, native UI/external/platform/performance and delivery gates
 remain open. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-per-engine-formatting-styles-2-november-2026).
+
+### Named-output follow-up — local `c32f0c2`
+
+E11/E16 remain partial. Direct-column outputs through CTEs and derived tables now
+have local definitions/usages and proven source documentation; full CTE column
+lists rename outputs. Source constraints are not implied on derived results.
+Inference requires current metadata and is bounded/memoized per action. Nested
+scopes, quoted/case names, duplicate/unknown outputs and stale responses have
+regressions. Wildcards, expressions, set operations, partial lists and table-valued
+functions remain withheld. Secondary-session Structure navigation is next.
+
+Validation passes 228 frontend / 156 standard Rust, five expanded SQL navigation
+browser flows and the clean-source native baseline (three processes / 30 cleanup
+cycles). Navigation interaction evidence is headless browser, not native UI.
+Prior full browser, ignored fixture and normal bundle counts retain their source
+revisions. Local, unmerged, unreleased and not installed; broader semantic,
+native/platform/external/accessibility/performance and delivery gates remain open.
+See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-named-query-outputs-2-november-2026).

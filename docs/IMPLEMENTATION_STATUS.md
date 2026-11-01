@@ -5,7 +5,9 @@ integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
 query parameters, inline error/statement navigation and SQL definitions/usages/
 quick documentation, selection formatting/settings and snippets. Format saves
 are serialized with rollback to the last successful settings. Global and
-per-engine styles persist with validated recovery. The prior combined source
+per-engine styles persist with validated recovery. Named CTE/derived-table
+outputs now resolve to local declarations and proven source metadata. Wildcards,
+expressions and unsupported shapes remain withheld. The prior combined source
 passed 66 ignored local fixtures and a normal ad-hoc macOS bundle build. R5 and
 R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last
 verified release;
@@ -1843,3 +1845,40 @@ Logs: `.cache/r5-dialect-validate.log`, `.cache/r5-dialect-browser-exact.log`,
 `.cache/r5-dialect-native-evidence.json`. Local, unmerged, unreleased and not
 installed. No hooks or policy gates were bypassed. The earlier metadata-startup
 flake did not recur in these three browser flows; its cause remains open.
+
+## R5 follow-up: named query outputs (2 November 2026)
+
+Code `c32f0c2da1740b1b05347efcb986ca7170d46ba2`, tree `ef633488c3cbb5cd5a129bff6b0e6df0c89ab828`, resolves directly named
+SELECT columns through CTEs and derived tables. F12 selects the local output
+declaration; Shift+F12 lists references belonging to that declaration; F1 shows
+the proven source column and source type. Explicit full CTE column lists rename
+outputs authoritatively. Nested CTEs, aliases, quoted names and engine-specific
+column casing retain scoped identities. Source primary keys/nullability are not
+asserted as constraints on a derived result.
+
+Metadata dependencies now follow query bodies before the existing eight-schema
+fetch limit. Per-action inference is memoized and bounded to 16 levels, 128 query
+bodies, 256 outputs per body and 2,048 SELECT-list tokens. Existing 500-usage /
+10,000-name-token bounds and edit/context/session stale-result guards remain.
+Unknown and duplicate names are withheld; local bindings shadow catalog names.
+Expression outputs, wildcards, set-operation outputs, table-valued functions,
+partial CTE column lists and relation alias-column lists remain unsupported.
+An unsupported output shape conservatively withholds that relation's inferred
+outputs. No editor SQL is executed by navigation; R6 policy/origins are unchanged.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | `recent.order_id` returned no symbol before inference despite `SELECT o.id AS order_id FROM orders o`; the recorded regression now resolves its local declaration, source and three occurrences |
+| Passed | `pnpm validate`: 228 frontend tests / 33 files, 156 standard Rust tests (135 core plus 21 other checks), contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused regressions | 31 resolver cases cover direct/renamed/nested outputs, explicit lists, local declarations, duplicate/shadowed names, unknown metadata, quoted/case behavior, unsupported shapes and bounded recursion. An overlay regression labels source metadata without implying output constraints. An initial combined run exposed missing DOM cleanup between overlay tests; cleanup is now explicit and the complete run passes |
+| Browser | All five SQL navigation flows pass on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4. Three expanded flows cover inferred CTE outputs, explicit CTE lists and derived-table outputs with docs/usages/local definition jumps and no execution requests. A delayed source-schema response after an edit is discarded; metadata-denial/refresh and isolated-console protections still pass. Zero page errors |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `5292adff4fb9c1714db98366fa396d4543440bfc7cd16f3eba31b649043666af`; isolated ad-hoc bundle executable SHA-256 `93972d0ec65d9313cbc2646e5241789e38863076626a3ffa468311cd93f7f504`. Existing synthetic IPC/worker/cleanup baseline only; the new navigation interactions are browser-tested, not native UI-qualified |
+| Prior qualification | Full 86-flow browser suite belongs to `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc distribution bundle belong to `b80b6c7`; those broader checks were not rerun on this later source. Per-engine style checks remain recorded on `d39b89b` |
+| Open | Broader semantic analysis/projection shapes, secondary-session Structure navigation, context-aware templates/style controls, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Route Structure navigation through the originating console's session and context, with cache/stale-result isolation and disposable browser coverage, as the next bounded slice. Then continue remaining R5/R6 and R7/R8. Application push, merge, release and installation remain separate authorized steps |
+
+Logs: `.cache/r5-projection-validate.log`, `.cache/r5-projection-browser.log`,
+`.cache/r5-projection-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-projection-native-evidence.json`. Local, unmerged, unreleased and not
+installed. No hooks or authorization gates were bypassed. The earlier metadata-
+startup flake did not recur in these five browser flows; its cause remains open.

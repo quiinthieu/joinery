@@ -282,10 +282,18 @@ per-engine preferences with 196 frontend / 156 Rust, three expanded real editor
 browser flows and a clean-source native baseline (three processes / 30 cycles).
 It does not change R6 authorization; the prior full 86-flow browser run and
 combined fixture/bundle counts retain their recorded revisions. Next continue
-semantic/projection inference and secondary-session Structure navigation; keep
+secondary-session Structure navigation and broader semantic inference; keep
 the earlier metadata-startup flake open and design observed Snowflake warehouse/
 session identity before enabling snapshots. See the
 [roadmap](implementation-roadmap.md#r6-next-slices).
 This local candidate is unmerged, unpublished, not installed and not externally
 qualified. PostgreSQL's execution and measurement semantics are documented in
 the [official EXPLAIN reference](https://www.postgresql.org/docs/current/sql-explain.html).
+
+Named-output follow-up `c32f0c2` adds bounded CTE/derived-table local navigation
+without changing R6 execution, preparation, approval or exact-source contracts.
+Standard checks pass 228 frontend / 156 Rust and five SQL navigation browser flows;
+the clean-source native synthetic baseline passes three processes / 30 cycles.
+The new output interactions are browser-tested. Prior full plan/browser/fixture/
+normal-bundle qualification retains its recorded revisions; no new external or
+release qualification is implied. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-named-query-outputs-2-november-2026).
