@@ -1,11 +1,12 @@
 # Implementation and release status
 
-Updated 2026-10-29. The source includes PostgreSQL, MySQL/MariaDB,
-standalone Redis and the read-only Snowflake SQL/catalog pilot. Preview.6 added
-metadata startup/version protection. The current hardening slice adds Snowflake
-OAuth/cancellation/disconnect fixes, dialog keyboard fixes and process-crash
-recovery coverage. The canonical Site records exact verification, merge and
-published download states. Full multi-engine v1.0 qualification remains pending.
+Updated 2026-11-01. R1–R4 are merged but unreleased. The local R6 branch now
+integrates R5 FK JOIN completion and structured Unicode diagnostics; typed
+parameters and the remaining editor features are next. R5 and R6 remain partial,
+unmerged, unpublished and not installed. Preview.15 is the last verified release;
+its current installed revision was not requalified. The canonical owner-private
+Site records exact tested, merged, published and installed states. Full
+multi-engine v1.0 qualification remains pending.
 
 ## Recovery and accessibility continuation
 
@@ -1494,4 +1495,64 @@ Logs: `.cache/r5-joins-before.log`, `r5-joins-validate.log`,
 `joinery-assess-r5-integration` uses isolated PostgreSQL port 55433; no production
 account is used. The earlier metadata-startup failure did not recur in this
 validation; its cause remains open. See the
+[remaining integration sequence](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: structured Unicode diagnostics (1 November 2026)
+
+Code `ce7a7fa480e2bb8b3692801b935fd17d4b539366`, tree
+`9bc2dd4ebb97d758bb0641fd42fbcf1f744aa107`, integrates recorded `581c527`
+with the existing seven R6 slices and the preceding FK JOIN slice. Optional
+`AppError.location` carries a half-open UTF-16 range, one-based Unicode scalar
+line/column, statement index, SQLSTATE and available PostgreSQL detail/hint.
+Generated contracts preserve compatibility with errors and plans lacking spans.
+
+PostgreSQL server character positions map across accented text, CJK, emoji and
+later batch statements. MySQL/MariaDB syntax messages supply best-effort token
+or line ranges; unavailable positions use the failing statement. Their leading
+whitespace normalization is mapped back explicitly. A server-sanitized snippet
+falls back to its reported line instead of claiming token precision. Snowflake
+compilation positions and SQLSTATE have synthetic adapter coverage only.
+Cancellation retains its existing terminal behavior without SQL error markers.
+
+ReadOnly parser/policy failures carry locations without changing classification
+or authorization. Parser fallback still submits one complete unclassified batch;
+its span starts at the submitted buffer origin, including leading whitespace.
+Generated row-change plans carry no invented editor range. Explain validation
+reports parser positions in the unwrapped input; directly entered Snowflake
+wrappers shift inner parser/policy locations once. Runtime locations refer to
+the prepared SQL buffer; editor selection and generated-wrapper origin handling
+must be reconciled when integrating markers and typed parameter execution.
+Inline editor markers and error navigation are not implemented in this slice.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Two preimplementation serialized-location tests fail with absent `location`; both pass after integration. Additional regressions cover fallback origins and direct Snowflake wrapper offsets |
+| Passed | `pnpm validate`: 152 frontend tests in 28 files; 146 standard Rust tests (125 core plus 21 integration/unit checks); contracts, TypeScript, production build, formatting, desktop compilation and strict all-target/all-feature Clippy |
+| Passed | All 27 PostgreSQL and 27 MySQL/MariaDB ignored fixture tests, including both case-folded instances, review/one-use authorization, cancellation, context, FK completion and the new Unicode diagnostics. PostgreSQL 18.6, MySQL 8.4 and MariaDB 11.4; no production account |
+| Passed | Twenty-two headless browser flows: three new real diagnostic/correction flows, three FK flows, fourteen plan/timing flows and two synthetic Snowflake plan flows. Serialized UTF-16 ranges and SQLSTATE survive transport; each failed query is corrected and completes on the same session. Zero page errors in new flows |
+| Passed | Hidden native build records the exact code/tree above with `sourceDirty: false`; three macOS arm64 WebView runs / 30 cleanup cycles pass. Synthetic integration baseline only; no representative performance claim |
+| Local only | `feat/estimated-query-plans`, unmerged, unpublished and not installed. Fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Not rerun | Full browser suite, separate Redis/PostgreSQL-SSH ignored suites, normal distribution bundle verification and external/platform gates. Earlier `48dfb21` distribution evidence remains historical |
+| Open | Typed parameters with all R6 preparation/approval paths, editor markers/navigation/formatting/snippets, metadata-startup flake cause, observed Snowflake snapshot context, live accounts, release/install/signing/platform/accessibility/performance qualification |
+
+Integration corrections: the recorded PostgreSQL diagnostic test referenced a
+MySQL-only fixture table; it now uses `orders`. The recorded MySQL "syntax"
+query was actually a missing-column query; a parser-accepted trailing wildcard
+now reaches a real server syntax error on both engines. The added leading-space
+fixture reproduced a position error and passes after origin normalization.
+Initial strict Clippy found two explicit loop counters in the imported mapper;
+both now use indexed iteration. The first full MySQL run omitted
+`JOINERY_TEST_PORT=55433` for its cross-engine PostgreSQL test (26 passed, one
+connection failure); all 27 pass with the correct fixture port. No product gate
+or hook was bypassed. The earlier metadata-startup failure did not recur during
+this validation; its cause remains open.
+
+Logs: `.cache/r5-diagnostics-before.log`, `r5-diagnostics-validate.log`,
+`r5-diagnostics-postgres.log`, `r5-diagnostics-mysql.log`,
+`r5-diagnostics-all-postgres.log`, `r5-diagnostics-all-mysql-final.log`,
+`r5-diagnostics-browser.log`, `r5-diagnostics-native-build.log`,
+`r5-diagnostics-native-runs.log` and `.cache/native-smoke/{build,runs}.json`.
+Owned Compose project `joinery-assess-r5-diagnostics` (PostgreSQL port 55433),
+its five containers and disposable volume were removed after checks. Other
+running services were preserved. Continue with the
 [remaining integration sequence](implementation-roadmap.md#r6-next-slices).

@@ -218,6 +218,12 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
+Current candidate `ce7a7fa` integrates FK JOIN completion and structured Unicode
+diagnostics. R5 and R6 remain partial, local, unmerged and unreleased. Validation
+passes 152 frontend / 146 standard Rust, 54 SQL fixture and 22 relevant browser
+tests, plus three hidden native runs / 30 cleanup cycles. Typed parameters and
+the remaining editor UI are next; see the exact slice evidence below.
+
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
 Recorded `40c59a7` plus the SQL alias correction from `41957ea` now coexist with
@@ -233,6 +239,22 @@ The browser check caught and fixed the PostgreSQL built-in-token alias defect.
 Native/package gates and full integration suites were not rerun on this source.
 R5 remains partial, local, unmerged and unreleased; see
 [exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-live-fk-join-completion-1-november-2026).
+
+### R5 integration slice 2: Unicode diagnostics (local `ce7a7fa`)
+
+Recorded `581c527` now coexists with the current R6 safety and cancellation
+paths. Error DTOs and engine adapters retain UTF-16 ranges, statement identity
+and available server diagnostics. PostgreSQL positions are character-based;
+MySQL/MariaDB use best-effort syntax token/line ranges or whole-statement
+fallback. Leading whitespace and unclassified-batch origins are covered by
+live regression tests. Direct Snowflake wrapper validation shifts locations
+once; Snowflake server diagnostics remain synthetic qualification.
+
+All 54 SQL fixture tests and 22 diagnostic/FK/plan browser flows pass, including
+mandatory analysis review and cancellation. Standard validation and three hidden
+native runs pass for the exact code/tree. Inline markers/navigation and typed
+parameters remain pending, including editor-selection and generated-wrapper
+origin mapping. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-structured-unicode-diagnostics-1-november-2026).
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -357,11 +379,13 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Continue R5 integration after the verified FK JOIN slice: structured Unicode
-   diagnostics (`581c527`), typed parameters (`9cfefa2`), then editor markers,
+1. Continue R5 integration after verified FK JOIN and backend Unicode diagnostics
+   (`ce7a7fa`, from `581c527`): typed parameters (`9cfefa2`), then editor markers,
    navigation, formatting and snippets from recorded `bb77b0f`. Reconcile
    parameter preparation with every R6 `prepare_explain`/one-use approval path;
    preserve exact SQL, review requirements, production and ReadOnly gates.
+   Map parameter substitutions, editor selections and generated Explain wrappers
+   back to the original editor buffer before enabling marker/navigation claims.
    The SQL alias part of `41957ea` is already integrated; its format-save changes
    remain pending. Do not reuse old test counts or assume dirty docs recovered.
    Investigate the earlier concurrent metadata-startup flake, then qualify the
