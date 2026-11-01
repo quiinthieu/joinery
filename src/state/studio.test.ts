@@ -5,6 +5,7 @@ import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import { useStudio, querySessionForTab, isTabFileDirty, MAX_RECENT_LOCATIONS } from "./studio";
 import { workspaceSnapshot } from "./workspace";
 import { dirtyStore } from "../data/dirty-store";
+import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
 
 vi.mock("../ipc/client", () => ({
   client: { call: vi.fn() },
@@ -70,6 +71,7 @@ function tableTab() {
   return id;
 }
 beforeEach(() => {
+  planSnapshots.clear();
   vi.clearAllMocks();
   useStudio.setState({
     bootstrap: null,
@@ -87,6 +89,56 @@ beforeEach(() => {
     bookmarks: [],
     recentLocations: [],
   });
+});
+
+test("plan captures survive result replacement but close/retire release their owners and metadata", () => {
+  const state = useStudio.getState();
+  const a = state.openQuery("profile"),
+    b = state.openQuery("profile");
+  const source: PlanSource = {
+    engine: "postgres",
+    serverVersion: "18",
+    connectionId: "profile",
+    sessionId: "session",
+    context: "known",
+    query: "SELECT 'snapshot-only-secret'",
+    executedSql: "EXPLAIN (FORMAT JSON)\nSELECT 'snapshot-only-secret'",
+  };
+  const raw = '[{"Plan":{"Node Type":"Result","Plan Rows":1}}]';
+  state.updateTab(a, { planSource: source });
+  state.updateTab(b, { planSource: source });
+  planSnapshots.capture(a, "ra", source, raw);
+  planSnapshots.capture(b, "rb", source, raw);
+  state.updateTab(a, { results: [], planSource: undefined });
+  expect(planSnapshots.snapshot()).toHaveLength(2);
+  expect(JSON.stringify(workspaceSnapshot())).not.toContain("snapshot-only-secret");
+  state.closeTab(a);
+  expect(planSnapshots.snapshot().map((row) => row.ownerTabId)).toEqual([b]);
+  state.retireSession("session");
+  expect(planSnapshots.retainedBytes).toBe(0);
+  expect(useStudio.getState().tabs.find((tab) => tab.id === b)?.planSource).toBeUndefined();
+});
+
+test("disconnecting a connection clears its snapshots without affecting another connection", () => {
+  const source: PlanSource = {
+    engine: "postgres",
+    serverVersion: "18",
+    connectionId: "profile",
+    sessionId: "session",
+    context: "known",
+    query: "SELECT 1",
+    executedSql: "EXPLAIN (FORMAT JSON)\nSELECT 1",
+  };
+  const raw = '[{"Plan":{"Node Type":"Result"}}]';
+  planSnapshots.capture("a", "ra", source, raw);
+  planSnapshots.capture(
+    "b",
+    "rb",
+    { ...source, connectionId: "other", sessionId: "other-session" },
+    raw,
+  );
+  useStudio.getState().disconnected("profile");
+  expect(planSnapshots.snapshot().map((row) => row.resultId)).toEqual(["rb"]);
 });
 
 test("an isolated query session replaces only its tab binding and releases old results", () => {

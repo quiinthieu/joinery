@@ -3235,6 +3235,39 @@ kbd {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
+}
+.plan-snapshot-toolbar,
+.plan-snapshot-toolbar label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.plan-snapshot-toolbar {
+  margin-top: 12px;
+}
+.plan-snapshot-toolbar select {
+  max-width: 100%;
+}
+.plan-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+.plan-comparison > section {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+}
+.plan-source summary {
+  cursor: pointer;
+}
+@media (max-width: 900px) {
+  .plan-comparison {
+    grid-template-columns: 1fr;
+  }
 }
 .plan-note {
   color: var(--muted);
@@ -3278,7 +3311,8 @@ kbd {
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
-.plan-raw {
+.plan-raw,
+.plan-source-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.6;

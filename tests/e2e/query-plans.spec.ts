@@ -67,6 +67,20 @@ for (const [label, engine, port] of [
     expect(engine === "postgres" ? parsed[0].Plan : parsed.query_block).toBeTruthy();
     await page.getByRole("button", { name: "Tree", exact: true }).click();
     await expect(plan.locator(".plan-tree")).toBeVisible();
+    await page.getByRole("button", { name: "Keep snapshot", exact: true }).click();
+    await expect(plan).toContainText("1/10 snapshots");
+    await page.getByRole("button", { name: "Explain", exact: true }).click();
+    await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
+    await page.getByRole("button", { name: "View plan", exact: true }).click();
+    const baseline = page.getByLabel("Compare with snapshot");
+    const snapshotId = await baseline.locator("option").nth(1).getAttribute("value");
+    await baseline.selectOption(snapshotId!);
+    await expect(page.getByRole("region", { name: "Plan comparison", exact: true })).toBeVisible();
+    await expect(plan.locator(".plan-tree")).toHaveCount(2);
+    await page.getByRole("button", { name: "Raw JSON", exact: true }).click();
+    await expect(plan.locator(".plan-raw")).toHaveCount(2);
+    await page.getByRole("button", { name: "Remove selected snapshot", exact: true }).click();
+    await expect(plan).toContainText("0/10 snapshots");
     await page.getByRole("button", { name: "Data grid", exact: true }).click();
     await expect(page.locator(".grid-host")).toBeVisible();
 
@@ -87,6 +101,86 @@ for (const [label, engine, port] of [
     expect(errors).toEqual([]);
   });
 }
+
+test("PostgreSQL snapshots compare estimates with actuals, reject mismatches and clear on disconnect", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  let executions = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/execute_plan")) executions++;
+  });
+  await connectForAnalysis(page);
+  const editor = page.getByRole("textbox", { name: "SQL editor" });
+  const sql = "SELECT * FROM public.orders LIMIT 1";
+  const explain = async (query: string) => {
+    await editor.fill(query);
+    await page.getByRole("button", { name: "Explain", exact: true }).click();
+    await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
+    await page.getByRole("button", { name: "View plan", exact: true }).click();
+  };
+  await explain(sql);
+  // Capturing after editing must retain the executed SQL, not editor text.
+  await editor.fill("SELECT 2");
+  await page.getByRole("button", { name: "Keep snapshot", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "Query execution plan" }).getByRole("status"),
+  ).toContainText("Kept snapshot");
+  expect(executions).toBe(1);
+  await editor.fill(sql);
+  await page.getByRole("button", { name: "Analyze", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Authorize and run", exact: true })
+    .click();
+  await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
+  await page.getByRole("button", { name: "View plan", exact: true }).click();
+  const baseline = page.getByLabel("Compare with snapshot");
+  await baseline.selectOption((await baseline.locator("option").nth(1).getAttribute("value"))!);
+  await expect(page.getByRole("region", { name: "Snapshot plan", exact: true })).toContainText(
+    "Estimated",
+  );
+  await expect(page.getByRole("region", { name: "Current plan", exact: true })).toContainText(
+    "Actual rows per loop",
+  );
+  await page.getByRole("button", { name: "Raw JSON", exact: true }).click();
+  const kept = JSON.parse(
+    await page
+      .getByRole("region", { name: "Snapshot plan", exact: true })
+      .locator(".plan-raw")
+      .innerText(),
+  );
+  expect(kept[0].Plan["Actual Rows"]).toBeUndefined();
+  expect(executions).toBe(2);
+  await page.getByRole("button", { name: "Tree", exact: true }).click();
+  expect(executions).toBe(2);
+
+  await explain("SELECT 2");
+  await expect(baseline.locator("option").nth(1)).toHaveJSProperty("disabled", true);
+  await expect(baseline.locator("option").nth(1)).toContainText("Different query text");
+  await expect(page.getByRole("region", { name: "Plan comparison", exact: true })).toHaveCount(0);
+
+  // Session cancellation must remove prior captures and prevent recapture.
+  await editor.fill("SELECT pg_sleep(10)");
+  await page.getByRole("button", { name: "Analyze", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Authorize and run", exact: true })
+    .click();
+  await expect(page.locator(".result-footer .status-dot.running")).toBeVisible();
+  await page.getByRole("button", { name: /Cancel/ }).click();
+  await expect(page.locator(".query-session")).toContainText(/disconnected/i);
+  await page.getByRole("button", { name: "PostgreSQL analysis", exact: true }).click();
+  await page.getByRole("dialog").getByLabel("Password", { exact: true }).fill("joinery-local-only");
+  await page.getByRole("dialog").getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await explain(sql);
+  await expect(page.getByRole("region", { name: "Query execution plan" })).toContainText(
+    "0/10 snapshots",
+  );
+  expect(errors).toEqual([]);
+});
 
 test("PostgreSQL actual plan requires review on Silent, preserves SQL, and shows actual metrics", async ({
   page,

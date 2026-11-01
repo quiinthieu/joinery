@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { planSourceForExecution } from "../features/studio/plan-snapshots";
 import {
   Activity,
   ArrowDownLeft,
@@ -572,6 +573,8 @@ export function App() {
       state.updateTab(tabId, { results: [], activeResultId: null });
     }
     const revision = active.revision + 1;
+    const executionState = useStudio.getState();
+    const executionSession = querySessionForTab(active, executionState.sessions);
     state.updateTab(tabId, {
       status: "queued",
       error: null,
@@ -579,6 +582,12 @@ export function App() {
       metrics: {},
       revision,
       dataSessionId: plan.sessionId,
+      planSource: planSourceForExecution(
+        plan,
+        executionSession,
+        executionState.sessionStates[plan.sessionId],
+        executionState.sessionContextRevision[plan.sessionId] ?? 0,
+      ),
     });
     const batch = beginEventBatch(tabId);
     try {

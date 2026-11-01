@@ -1166,7 +1166,13 @@ export function Workbench({
           result &&
           isQueryPlanResult(result) &&
           planResultId === result.id ? (
-          <QueryPlanView key={result.id} result={result} />
+          <QueryPlanView
+            key={result.id}
+            result={result}
+            ownerTabId={tab.id}
+            source={tab.planSource}
+            canCapture={tab.status === "completed" && session?.id === tab.planSource?.sessionId}
+          />
         ) : tab.kind === "query" && !result ? (
           <div className="results-empty">
             <Table2 size={27} />

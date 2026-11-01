@@ -49,6 +49,8 @@ import {
   tableTabTitle,
 } from "../features/grid/table-query";
 
+import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
+
 export type TabKind = "query" | "table" | "object" | "benchmark" | "history" | "processes";
 export type TabStatus =
   "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | "outcomeUnknown";
@@ -64,6 +66,7 @@ export interface StudioTab {
   connectionId: string | null;
   sql: string;
   results: ResultInfo[];
+  planSource?: PlanSource;
   activeResultId: string | null;
   status: TabStatus;
   runId: string | null;
@@ -524,6 +527,7 @@ export const useStudio = create<StudioState>((set, get) => ({
                 querySession: session,
                 querySessionClosed: false,
                 results: [],
+                planSource: undefined,
                 activeResultId: null,
                 dataSessionId: null,
                 runId: null,
@@ -569,6 +573,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       querySession: targetInfo,
       querySessionClosed: false,
       results: [],
+      planSource: undefined,
       activeResultId: null,
       dataSessionId: null,
       runId: null,
@@ -708,6 +713,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().notify("Transaction rolled back");
   },
   retireSession(sessionId) {
+    planSnapshots.removeSession(sessionId);
     set((state) => {
       const retiredConnections = Object.entries(state.sessions)
         .filter(([, s]) => s.id === sessionId)
@@ -726,9 +732,11 @@ export const useStudio = create<StudioState>((set, get) => ({
         sessionPool,
         ...purgeSessionRuntimeMaps(state, [sessionId]),
         objects,
-        tabs: state.tabs.map((t) =>
-          t.querySession?.id === sessionId ? { ...t, querySessionClosed: true } : t,
-        ),
+        tabs: state.tabs.map((t) => ({
+          ...t,
+          ...(t.querySession?.id === sessionId ? { querySessionClosed: true } : {}),
+          ...(t.planSource?.sessionId === sessionId ? { planSource: undefined } : {}),
+        })),
       };
     });
   },
@@ -1306,6 +1314,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     }));
   },
   closeTab(id) {
+    planSnapshots.removeOwner(id);
     const stateSnapshot = get();
     const current = stateSnapshot.tabs.find((t) => t.id === id);
     if (!current) return;
@@ -1423,6 +1432,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   disconnected(connectionId) {
+    planSnapshots.removeConnection(connectionId);
     set((state) => {
       const retiredIds = new Set<string>();
       if (state.sessions[connectionId]) retiredIds.add(state.sessions[connectionId].id);
@@ -1442,8 +1452,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         ...purgeSessionRuntimeMaps(state, retiredIds),
         objects,
         tabs: state.tabs.map((t) =>
-          t.connectionId === connectionId && t.querySession
-            ? { ...t, querySessionClosed: true }
+          t.connectionId === connectionId
+            ? {
+                ...t,
+                planSource: undefined,
+                ...(t.querySession ? { querySessionClosed: true } : {}),
+              }
             : t,
         ),
       };
@@ -1460,6 +1474,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       get().updateTab(tab.id, {
         results: [],
+        planSource: undefined,
         pages: [],
         pageKeys: {},
         loadedRows: 0,
