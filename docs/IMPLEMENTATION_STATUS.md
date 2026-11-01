@@ -2062,3 +2062,62 @@ Fetched `origin/main` is still `a0ba1a6`; preview.15 remains the last verified
 published application release, without a fresh release metadata check here.
 Local, unmerged, unreleased and not installed. No application push, merge,
 release or installation occurred.
+
+## R5 follow-up: bounded CTE rename (2 November 2026)
+
+Code `072e4ff3c9ce57988ce16c59f2dd4fd87aa2f78a`, tree `1f4ebf3f4327eec3adee933e0f7b2cfa032568bc`, extends
+Shift-F6 / **Rename alias / CTE** to nonrecursive SELECT CTEs. Declaration,
+unqualified FROM/JOIN relation uses and implicit qualified references share a
+scope identity. Earlier WITH entries become visible after their body; later
+siblings cannot capture an earlier body. Explicit aliases remain independent;
+schema-qualified physical tables, comments, strings and other statements are
+preserved. PostgreSQL nested WITH shadowing, explicit output lists and
+MATERIALIZED / NOT MATERIALIZED are covered. Quoted identifiers retain escaped
+delimiters. Proposed-name simulation checks every CTE/physical relation use and
+every relevant qualifier, including unresolved names, for changed binding.
+
+Preview lists the entire edit set and requires explicit Apply. One isolated
+transaction gives one-step undo; stale document/editor/session/context/catalog
+identity is rejected. Dialog run shortcuts cannot execute. This changes SQL text,
+never database objects or authorization. Existing bounds remain 65,536 UTF-16
+statement units / 4,096 tokens / 16 levels / 64 query bodies / 500 edits, with
+128-unit replacement names plus PostgreSQL 63-byte / MySQL-family 64-character
+limits. Recursive WITH, DML, set operations, whole-row/bare-name ambiguity,
+LATERAL/APPLY, functions, alias-column lists, parenthesized joins and unsupported
+modifiers remain withheld. This is bounded lexical analysis, not full SQL validation.
+
+**Engine boundary reproduced:** PostgreSQL 18 and MySQL 8.4 execute the outer-CTE
+read in an inner WITH definition; MariaDB 11.4 reports missing table `src`.
+This occurs both with a later same-name inner CTE and with a distinct inner name.
+The shared MySQL/MariaDB editor dialect therefore withholds nested WITH beneath
+an outer CTE scope for both alias and CTE rename, even for some valid MySQL SQL.
+It retains ordered top-level CTE entries and nested SELECT subqueries. The
+browser suite explicitly asserts both unsupported forms offer no rename and send
+no execution request. No backend-version detection or broader compatibility is claimed.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Initial missing-feature suite: 20 failures / 98 passes. Two intermediate browser runs exposed the MariaDB boundary above; direct CLI probes confirmed it. The unsupported scope is now rejected, rather than applying edits under another engine's resolution rules |
+| Passed | `pnpm validate`: 327 frontend tests / 35 files, 156 standard Rust tests, contracts, types, frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused unit/UI | 37 additional cases: 36 analyzer cases plus the CTE dialog case. Ordered WITH visibility, declaration/relation/qualifier entry points, explicit aliases, physical relations, nested PostgreSQL shadowing, capture/unresolved names, quoting/limits/stale documents, unsupported shared-MySQL scopes, recursive/DML/set/whole-row/LATERAL rejection and complete edit bounds |
+| Browser | All fifteen focused flows pass on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4. Three new CTE flows each compare three original/renamed query pairs through decoded Arrow values, including exact `9007199254740992` / `9007199254740993` text on MySQL-family fixtures. Preview/cancel/Apply/one undo, quoting, sibling/alias collision, shortcut isolation, document/context invalidation, unsupported/recursive rejection and zero requests during rename pass. All twelve previous alias/JOIN/navigation flows pass; zero page errors |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `5e7efdfabcad243851d7b9d01b758e74c9ddf0917dfd0dc71f4441bd900697ec`; isolated ad-hoc bundle executable SHA-256 `d81323ba7b4c40522d427d995cf98da273bd11ff805755fd0167f713d4024814`. Synthetic IPC/worker/cleanup baseline only; CTE rename interaction evidence is browser-based, not native UI qualification |
+| Prior evidence | Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc distribution bundle: `b80b6c7`. None is relabeled as rerun here. Snowflake checks are local dialect evidence only |
+| Open | Broader refactoring, semantic inspections/templates and remaining R5/R6/R7/R8; observed Snowflake identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates |
+| Next | Bounded on-demand missing qualified-column inspection using successful current-session direct-table schema metadata, with user-selected real-column correction, exact preview/Apply/stale checks/undo and no execution. Withhold ambiguous, denied, partial or unsupported metadata; then continue richer templates and remaining roadmap |
+
+Logs: `.cache/r5-cte-rename-before.log`,
+`.cache/r5-cte-rename-validate-qualified.log`,
+`.cache/r5-cte-rename-browser-qualified.log`,
+`.cache/r5-cte-rename-native-{build,runs}.log`.
+Immutable native evidence: `.cache/r5-cte-rename-native-evidence.json`.
+Reference semantics: [PostgreSQL SELECT](https://www.postgresql.org/docs/18/sql-select.html),
+[MySQL 8.4 WITH](https://dev.mysql.com/doc/refman/8.4/en/with.html), and
+[MariaDB WITH](https://mariadb.com/docs/server/reference/sql-statements/data-manipulation/selecting-data/common-table-expressions/with).
+The precise MariaDB limitation above is fixture-derived, not inferred from those docs.
+Owned fixtures were removed; user services were preserved. No external account
+was queried. Fetched `origin/main` remains `a0ba1a6`; preview.15 is the last
+verified release, without a fresh release/installed-version qualification here.
+The earlier metadata-startup flake did not recur in fifteen focused flows; its
+cause remains open. Local, unmerged, unreleased and not installed. No application
+push, merge, release or installation occurred.

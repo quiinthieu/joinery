@@ -218,18 +218,21 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `1edc2d7` integrates six R5 slices plus formatting, named
-outputs, console-bound inspectors and bounded alias rename, alongside seven R6
-slices. R5/R6 remain partial, local, unmerged, unreleased and not installed.
-Validation passes 290 frontend / 156 standard Rust and twelve focused browser
-flows on PostgreSQL/MySQL/MariaDB. Alias rename now models each JOIN condition's
-operands, comma precedence and nested JOIN association, preserving earlier outer
-correlation and later local shadowing. Three new browser flows compare results
-before/after explicit rename; rename itself sends no execution request.
-The prior clean-source native baseline belongs to `e052626` (three processes /
-30 cleanup cycles), not this source. Prior broad qualification retains its revisions.
-Bounded CTE rename is next, then broader semantics/templates and remaining
-R5/R6/R7/R8. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).
+Current candidate `072e4ff` integrates six R5 slices plus formatting, named
+outputs, console-bound inspectors and bounded alias/CTE rename, alongside seven
+R6 slices. R5/R6 remain partial, local, unmerged, unreleased and not installed.
+Validation passes 327 frontend / 156 standard Rust and fifteen focused browser
+flows on PostgreSQL/MySQL/MariaDB. Nonrecursive CTE rename follows ordered WITH
+entries, relation uses and implicit qualifiers, preserving explicit aliases and
+physical tables. PostgreSQL nested WITH shadowing is covered. Nested WITH under
+an outer CTE scope is withheld in the shared MySQL/MariaDB dialect after fixture
+probes exposed different outer-CTE visibility. Preview/Apply/undo, capture and
+stale-context guards remain in force; rename sends no execution request.
+The clean-source native synthetic baseline passes three processes / 30 cleanup
+cycles for this code/tree; native rename interaction remains unqualified.
+Prior broad qualification retains its revisions. Next: bounded semantic
+inspections with explicit corrections, then richer templates and remaining
+R5/R6/R7/R8. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -396,18 +399,35 @@ only explicit test reads before/after rename across all three disposable engines
 No new native, full-suite, distribution or external qualification is claimed.
 See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).
 
-### Next bounded editor slice: CTE rename
+### R5 bounded CTE rename (local `072e4ff`)
 
-1. Prove CTE declaration/relation scope across ordered WITH entries, nested WITH
-   shadowing and explicit aliases. Distinguish CTE relation names from physical
-   tables and alias references; do not infer occurrences from capped navigation.
-2. Preview the complete edit set, including qualified references when an unaliased
-   CTE supplies the qualifier. Simulate proposed-name shadowing/capture, preserve
-   dialect quoting and reject stale documents/session/context or incomplete scans.
-3. Require explicit Apply and one-step undo. Exercise PostgreSQL/MySQL/MariaDB
-   before/after reads on disposable fixtures. Keep recursive/unsupported shapes
-   explicit until independently proven, then continue semantics/templates and
-   remaining R5/R6/R7/R8. Published/installed/external/native gates stay distinct.
+Shift-F6 / Rename alias / CTE previews the declaration, proven relation uses and
+unaliased qualifiers; explicit relation aliases retain their independent identity.
+Ordered WITH visibility, PostgreSQL nested shadowing, physical-table separation,
+quoted delimiters, output lists and proposed-name capture have regressions.
+Recursive and unsupported shapes stay withheld. The shared MySQL/MariaDB dialect
+also withholds nested WITH beneath an outer CTE scope: direct probes on the
+11.4 fixture fail to resolve outer CTEs in nested definitions where MySQL 8.4
+and PostgreSQL 18 succeed. No version-specific semantic rule is guessed.
+Standard checks, fifteen focused browser flows and the clean native synthetic
+baseline pass. Browser checks compare decoded result values before/after explicit
+rename; preview/Apply never prepares or executes SQL. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
+
+### Next bounded editor slice: semantic inspections and explicit corrections
+
+1. Start with an on-demand inspection of qualified columns on uniquely resolved
+   direct base tables in a bounded SELECT. Report a missing column only after a
+   successful schema read from the current console/session/context. Denied,
+   stale, partial, derived/CTE and ambiguous metadata must withhold the claim.
+2. Let the user choose a real catalog column and preview the exact quoted edit.
+   Require explicit Apply, current document/context identity and one-step undo;
+   retain SQL errors separately and never prepare/execute through inspection.
+3. Reproduce missing/ambiguous/stale cases, exercise permission degradation and
+   before/after explicit fixture reads on PostgreSQL/MySQL/MariaDB. Keep broad
+   inference and automatic fixes out of this first acceptance. Then continue
+   context-aware templates and remaining R5/R6/R7/R8. Published, installed,
+   external, accessibility and native UI gates stay distinct.
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -534,14 +554,15 @@ R6 remains partial, local, unmerged and unreleased.
 
 1. Six R5 slices and seven R6 slices now include per-engine styles and named
    CTE/derived-table outputs, console Structure, inspector continuation and
-   bounded alias rename and ordered JOIN visibility (`1edc2d7`).
-   Standard checks and twelve focused browser flows pass. The prior clean-source
-   native baseline belongs to `e052626`. Prior combined-source
-   qualification passed all 66 ignored local SQL/Redis/SSH fixtures and a normal ad-hoc macOS
-   bundle on `b80b6c7`; the full 86-flow browser suite passed on `db5cd1b`.
-   Next: bounded CTE rename and broader semantics/templates,
-   then richer template variables and remaining R5/R6/R7/R8 scope. Preserve
-   conservative ambiguity handling, every preparation/approval path and exact
+   bounded alias/CTE rename with ordered JOIN/WITH visibility (`072e4ff`).
+   Standard checks and fifteen focused browser flows pass. The clean-source
+   native synthetic baseline passes three processes / 30 cycles on this revision.
+   Prior combined-source qualification passed all 66 ignored local SQL/Redis/SSH
+   fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
+   suite passed on `db5cd1b`.
+   Next: bounded direct-table qualified-column inspections with explicit
+   correction preview, then richer template variables and remaining R5/R6/R7/R8
+   scope. Preserve conservative ambiguity handling, every preparation/approval path and exact
    editor origins. Keep the earlier startup flake open until its cause is known.
    Application merge, release and installation remain separate authorized gates.
 2. Design observed Snowflake warehouse/session identity before snapshot support.

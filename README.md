@@ -195,7 +195,7 @@ inspector dependency, owner, index and trigger links preserve that origin.
 preserving its SQL and session without executing anything. Stale, closed or
 rebound sources are rejected; running consoles cannot receive DDL.
 
-**Rename alias** (Shift-F6) now previews declaration and qualified-reference
+**Rename alias / CTE** (Shift-F6) previews declaration, relation and qualified-reference
 edits in supported SELECT statements. Explicit Apply preserves comments, other
 statements and nested shadowing; one undo restores the original SQL. Collisions,
 capture, stale documents/contexts and unsupported shapes are rejected. This is
@@ -204,6 +204,12 @@ conditions now follow their actual operands: earlier ON clauses retain correlate
 outer references, comma groups stay separate, and nested JOIN association is
 preserved. Later local aliases keep their own references. See
 [ordered JOIN evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).
+Nonrecursive CTE rename follows ordered WITH entries and implicit qualifiers
+while preserving explicit aliases and physical tables. PostgreSQL nested WITH
+shadowing is covered; nested WITH under an outer CTE scope is withheld in the
+shared MySQL/MariaDB dialect after fixture probes exposed different visibility.
+Recursive and other unsupported forms stay withheld. See
+[CTE rename evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
 
 Recorded R5 commit `bb77b0f` remains readable; its former worktree/branch are
 absent and its former uncommitted documentation was not recovered. Full
