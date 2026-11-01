@@ -26,6 +26,7 @@ fn main() {
             "cancel_run",
             "completion_catalog",
             "completion_schema",
+            "inspection_schema",
             "catalog",
             "database_objects",
             "object_details",
