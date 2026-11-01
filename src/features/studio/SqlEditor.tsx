@@ -418,7 +418,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   };
 
   const performGoToSymbol = (symbol: ResolvedSqlSymbol) => {
-    if (symbol.kind === "cte" || symbol.kind === "alias") {
+    if (symbol.kind === "cte" || symbol.kind === "alias" || symbol.kind === "projection") {
       clearNavigation();
       revealEditorRange(symbol.declarationSpan.from, symbol.declarationSpan.to);
       return;

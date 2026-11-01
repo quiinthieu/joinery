@@ -35,6 +35,8 @@ function symbolTitle(symbol: ResolvedSqlSymbol): { badge: string; title: string 
   switch (symbol.kind) {
     case "cte":
       return { badge: "CTE", title: symbol.name };
+    case "projection":
+      return { badge: "OUTPUT COLUMN", title: `${symbol.relationName}.${symbol.name}` };
     case "alias":
       return {
         badge: "ALIAS",
@@ -179,6 +181,31 @@ export function SqlNavigationOverlay({
               <dt>Columns</dt>
               <dd className="mono">
                 {symbol.columns.length > 0 ? symbol.columns.join(", ") : "Not declared explicitly"}
+              </dd>
+              <dt>Local usages</dt>
+              <dd>{symbol.occurrences.length} in current statement</dd>
+            </dl>
+          )}
+
+          {symbol.kind === "projection" && (
+            <dl className="sql-nav-dl">
+              <dt>Construct</dt>
+              <dd>Named query output</dd>
+              {declarationOcc && (
+                <>
+                  <dt>Declared at</dt>
+                  <dd>
+                    Line {declarationOcc.line}, Col {declarationOcc.column}
+                  </dd>
+                </>
+              )}
+              <dt>Source column</dt>
+              <dd className="mono">
+                {symbol.sourceTable.schema}.{symbol.sourceTable.name}.{symbol.sourceColumn.name}
+              </dd>
+              <dt>Source type</dt>
+              <dd>
+                <code>{symbol.sourceColumn.databaseType}</code>
               </dd>
               <dt>Local usages</dt>
               <dd>{symbol.occurrences.length} in current statement</dd>

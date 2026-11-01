@@ -56,9 +56,29 @@ for (const [engine, port] of [
       .getAttribute("id"))!;
     const editor = page.getByRole("textbox", { name: "SQL editor" });
     const table = engine === "PostgreSQL" ? "public.orders" : "joinery.sample";
+    const docs = page.getByRole("region", { name: "Quick SQL documentation" });
+    const usages = page.getByRole("region", { name: "SQL symbol usages" });
+    // Start with an unloaded source schema: navigation must follow the body to fetch it.
+    for (const marked of [
+      `WITH recent AS (SELECT s.id AS order_key FROM ${table} s) SELECT r.|order_key FROM recent r WHERE r.order_key > 0;`,
+      `WITH recent(order_key) AS (SELECT s.id FROM ${table} s) SELECT r.|order_key FROM recent r WHERE r.order_key > 0;`,
+      `SELECT d.|order_key FROM (SELECT s.id AS order_key FROM ${table} s) d WHERE d.order_key > 0;`,
+    ]) {
+      await placeCaret(editor, marked);
+      await editor.press("F1");
+      await expect(docs).toContainText("OUTPUT COLUMN");
+      await expect(docs).toContainText(`${table}.id`);
+      await expect(docs).toContainText("Source type");
+      await page.keyboard.press("Escape");
+      await editor.press("Shift+F12");
+      await expect(usages.locator(".sql-nav-loc")).toHaveCount(3);
+      await page.keyboard.press("Escape");
+      await editor.press("F12");
+      expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("order_key");
+      await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(1);
+    }
     await placeCaret(editor, `SELECT s.|id FROM ${table} s WHERE s.id > 0; -- 🧪 日本語`);
     await editor.press("F1");
-    const docs = page.getByRole("region", { name: "Quick SQL documentation" });
     await expect(docs).toContainText(`${table}.id`);
     await expect(docs).toContainText("PRIMARY KEY");
     await expect(docs).toBeFocused();
@@ -66,7 +86,6 @@ for (const [engine, port] of [
     await expect(editor).toBeFocused();
 
     await editor.press("Shift+F12");
-    const usages = page.getByRole("region", { name: "SQL symbol usages" });
     await expect(usages.locator(".sql-nav-loc")).toHaveCount(2);
     await usages
       .getByRole("button", { name: /Ln 1, Col/ })
@@ -117,7 +136,10 @@ test("PostgreSQL ignores stale schema/details replies and reports denied metadat
     await held;
     await route.fulfill({ response });
   });
-  await placeCaret(editor, "SELECT o.|id FROM public.orders o;");
+  await placeCaret(
+    editor,
+    "WITH recent AS (SELECT id AS order_key FROM public.orders) SELECT recent.|order_key FROM recent;",
+  );
   await editor.press("F12");
   await saw;
   await editor.fill("SELECT 42;");

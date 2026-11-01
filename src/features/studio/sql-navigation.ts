@@ -64,6 +64,16 @@ export type ResolvedSqlSymbol = { usagesLimited?: boolean } & (
       occurrences: SqlLocalOccurrence[];
     }
   | {
+      kind: "projection";
+      name: string;
+      relationName: string;
+      tokenSpan: StatementRange;
+      declarationSpan: StatementRange;
+      sourceTable: TableRef;
+      sourceColumn: ColumnInfo;
+      occurrences: SqlLocalOccurrence[];
+    }
+  | {
       kind: "column";
       name: string;
       tokenSpan: StatementRange;
@@ -426,6 +436,8 @@ interface CteDefinition {
   key: string;
   nameToken: SqlToken;
   columns: string[];
+  columnTokens: SqlToken[];
+  bodyToken: SqlToken;
   visibleFrom: number;
   visibleTo: number;
 }
@@ -439,6 +451,8 @@ interface DetailedBinding {
   name: string;
   nameKey: string;
   derived: boolean;
+  bodyToken?: SqlToken;
+  columnAliases?: boolean;
   cte?: CteDefinition;
   table?: TableRef;
 }
@@ -508,11 +522,13 @@ function collectCtesInList(
       const name = identifierValue(ident, engine);
       const key = normalizeSymbolKey(ident, engine);
       const columns: string[] = [];
+      const columnTokens: SqlToken[] = [];
       if (list[i]?.children) {
         for (const colTok of cleanTokens(list[i].children!)) {
           if (colTok.text === ",") continue;
           if (isSymbolNameToken(colTok)) {
             columns.push(identifierValue(readIdentifier(colTok.text), engine));
+            columnTokens.push(colTok);
           }
         }
         i += 1;
@@ -526,6 +542,8 @@ function collectCtesInList(
         key,
         nameToken,
         columns,
+        columnTokens,
+        bodyToken,
         visibleFrom: recursive ? nameToken.from : bodyToken.to,
         visibleTo: scopeTo,
       });
@@ -650,8 +668,11 @@ function parseDetailedBindings(
       }
     }
     let derived = false;
+    let bodyToken: SqlToken | undefined;
     if (block[next]?.children) {
       derived = kw !== "INTO";
+      // A table-valued function's argument list is not a derived SELECT.
+      if (derived && parts.length === 0) bodyToken = block[next];
       next += 1;
     }
     if (!parts.length && !derived) continue;
@@ -662,7 +683,8 @@ function parseDetailedBindings(
       !RESERVED_NON_SYMBOL_KEYWORDS.has(block[next].text.toUpperCase())
         ? block[next++]
         : undefined;
-    if (aliasToken && block[next]?.children) {
+    const columnAliases = !!(aliasToken && block[next]?.children);
+    if (columnAliases) {
       derived = true;
       next += 1;
     }
@@ -688,12 +710,193 @@ function parseDetailedBindings(
       name,
       nameKey,
       derived,
+      bodyToken,
+      columnAliases,
       cte,
       table,
     });
     i = next - 1;
   }
   return bindings;
+}
+
+interface ProjectionOutput {
+  ident: Identifier;
+  declaration: SqlToken;
+  aliasDeclaration: boolean;
+  relationName: string;
+  sourceTable: TableRef;
+  sourceColumn: ColumnInfo;
+}
+
+/** Statement-local, bounded inference. Unknown outputs never mean an absent column. */
+function projectionResolver(
+  tokens: readonly SqlToken[],
+  statementEnd: number,
+  context: SqlSymbolContext,
+  lookup: TableLookup,
+) {
+  const cache = new Map<number, ProjectionOutput[] | null>();
+  const { allCtes } = ctesAt(tokens, statementEnd, statementEnd, context.engine);
+  const ctesByBody = new Map(allCtes.map((cte) => [cte.bodyToken.from, cte]));
+
+  function outputs(binding: DetailedBinding, depth = 0): ProjectionOutput[] | null {
+    if (binding.columnAliases) return null;
+    const body = binding.cte?.bodyToken ?? binding.bodyToken;
+    if (!body?.children || depth >= 16) return null;
+    if (cache.has(body.from)) return cache.get(body.from)!;
+    if (cache.size >= 128) return null;
+    // Install the unknown value before descending, including recursive CTEs.
+    cache.set(body.from, null);
+    const raw = cleanTokens(body.children);
+    if (raw.some((t) => ["UNION", "INTERSECT", "EXCEPT"].includes(keywordUpper(t)))) return null;
+    const block = queryBlockTokensAt(raw, body.to - 1);
+    if (keywordUpper(block[0]) !== "SELECT") return null;
+    const from = block.findIndex((t) => keywordUpper(t) === "FROM");
+    if (from < 0) return null;
+    let start = ["DISTINCT", "ALL"].includes(keywordUpper(block[1])) ? 2 : 1;
+    const select = block.slice(start, from);
+    if (!select.length || select.length > 2048) return null;
+    const visible = ctesAt(tokens, statementEnd, block[0].from, context.engine).visibleCtes;
+    const bindings = parseDetailedBindings(block, visible, lookup);
+    const cte = ctesByBody.get(body.from);
+    const relationName = cte?.name ?? binding.aliasName ?? "subquery";
+    const result: ProjectionOutput[] = [];
+    start = 0;
+    for (let i = 0; i <= select.length; i += 1) {
+      if (i < select.length && select[i].text !== ",") continue;
+      const item = select.slice(start, i);
+      start = i + 1;
+      let alias: SqlToken | undefined;
+      if (item.length >= 3 && keywordUpper(item.at(-2)) === "AS") {
+        alias = item.pop();
+        item.pop();
+      } else if (item.length >= 2 && isRelationDeclName(item.at(-1)) && item.at(-2)?.text !== ".") {
+        alias = item.pop();
+      }
+      if (alias && !isSymbolNameToken(alias)) return null;
+      if (!item.length || item.length > 7 || item.length % 2 === 0) return null;
+      for (let j = 0; j < item.length; j += 1) {
+        if (j % 2 === 0 ? !isSymbolNameToken(item[j]) : item[j].text !== ".") return null;
+      }
+      const names = item.filter((_, j) => j % 2 === 0);
+      const parts = names.map((t) => readIdentifier(t.text));
+      let source: ReturnType<typeof column> = { known: false };
+      if (parts.length === 1) {
+        const candidates = bindings.map((b) => column(b, parts[0], depth + 1));
+        if (candidates.some((c) => !c.known)) return null;
+        const owners = candidates.filter((c) => c.source);
+        if (owners.length === 1) source = owners[0];
+      } else if (parts.length === 2) {
+        const owners = bindings.filter(
+          (b) => b.nameKey === normalizeSymbolKey(parts[0], context.engine),
+        );
+        if (owners.length === 1) source = column(owners[0], parts[1], depth + 1);
+      } else {
+        // Schema-qualified columns still need a matching, unaliased FROM binding.
+        const table = lookup.resolve(parts.slice(0, -1));
+        const owners = table
+          ? bindings.filter(
+              (b) => !b.aliasToken && b.table && schemaCacheKey(b.table) === schemaCacheKey(table),
+            )
+          : [];
+        if (owners.length === 1) source = column(owners[0], parts.at(-1)!, depth + 1);
+      }
+      if (!source.source) return null;
+      const declaration = alias ?? names.at(-1)!;
+      result.push({
+        ident: readIdentifier(declaration.text),
+        declaration,
+        aliasDeclaration: !!alias,
+        relationName,
+        sourceTable: source.source.table,
+        sourceColumn: source.source.column,
+      });
+      if (result.length > 256) return null;
+    }
+    if (cte?.columnTokens.length) {
+      // Partial column lists and alias-column lists are deliberately not inferred.
+      if (cte.columnTokens.length !== result.length) return null;
+      for (let i = 0; i < result.length; i += 1) {
+        result[i] = {
+          ...result[i],
+          ident: readIdentifier(cte.columnTokens[i].text),
+          declaration: cte.columnTokens[i],
+          aliasDeclaration: true,
+        };
+      }
+    }
+    cache.set(body.from, result);
+    return result;
+  }
+
+  function column(
+    binding: DetailedBinding,
+    ident: Identifier,
+    depth = 0,
+  ): {
+    known: boolean;
+    source?: { table: TableRef; column: ColumnInfo };
+    output?: ProjectionOutput;
+  } {
+    if (binding.table) {
+      const schema = context.schemas?.get(schemaCacheKey(binding.table));
+      if (!schema) return { known: false };
+      const found = findColumnInSchema(schema, ident, context.engine);
+      return { known: true, source: found ? { table: binding.table, column: found } : undefined };
+    }
+    const projected = outputs(binding, depth);
+    if (!projected) return { known: false };
+    const matches = projected.filter((o) =>
+      sameNormalizedName(identifierValue(o.ident, context.engine), ident, context.engine, false),
+    );
+    if (matches.length > 1) return { known: false };
+    const output = matches[0];
+    return {
+      known: true,
+      output,
+      source: output
+        ? {
+            table: output.sourceTable,
+            column: output.sourceColumn,
+          }
+        : undefined,
+    };
+  }
+
+  function declarationAt(token: SqlToken): ProjectionOutput | undefined {
+    for (const cte of allCtes) {
+      if (token.from < cte.nameToken.to || token.to > cte.bodyToken.to) continue;
+      const projected = outputs({
+        cte,
+        derived: false,
+        relationTokens: [],
+        parts: [],
+        name: cte.name,
+        nameKey: cte.key,
+      });
+      const found = projected?.find((o) => o.aliasDeclaration && o.declaration.from === token.from);
+      if (found) return found;
+    }
+    for (const scope of queryScopesAt(tokens, token.from)) {
+      const visible = ctesAt(
+        tokens,
+        statementEnd,
+        scope[0]?.from ?? token.from,
+        context.engine,
+      ).visibleCtes;
+      for (const binding of parseDetailedBindings(scope, visible, lookup)) {
+        const body = binding.bodyToken;
+        if (!body || token.from <= body.from || token.to >= body.to) continue;
+        const found = outputs(binding)?.find(
+          (o) => o.aliasDeclaration && o.declaration.from === token.from,
+        );
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+  return { outputs, column, declarationAt };
 }
 
 function makeOccurrence(
@@ -860,7 +1063,7 @@ function findColumnInSchema(
   );
 }
 
-function ctesAt(tokens: SqlToken[], end: number, pos: number, engine: EngineKind) {
+function ctesAt(tokens: readonly SqlToken[], end: number, pos: number, engine: EngineKind) {
   const allCtes: CteDefinition[] = [];
   collectCtesInList(tokens, end, engine, allCtes);
   const visibleCtes = new Map<string, CteDefinition>();
@@ -897,9 +1100,24 @@ export function tablesNeededForNavigationAt(
     const preferred = located
       ? bindings.find((b) => b.nameKey === normalizeSymbolKey(located.parts[0], context.engine))
       : undefined;
-    if (preferred?.table) needed.set(schemaCacheKey(preferred.table), preferred.table);
-    for (const b of bindings) if (b.table) needed.set(schemaCacheKey(b.table), b.table);
-    if (located) {
+    const visited = new Set<number>();
+    const visit = (binding: DetailedBinding, depth = 0) => {
+      if (binding.table) needed.set(schemaCacheKey(binding.table), binding.table);
+      const body = binding.cte?.bodyToken ?? binding.bodyToken;
+      if (!body?.children || depth >= 16 || visited.has(body.from) || visited.size >= 128) return;
+      visited.add(body.from);
+      const block = queryBlockTokensAt(body.children, body.to - 1);
+      const visible = ctesAt(
+        stmt.tokens,
+        stmt.to,
+        block[0]?.from ?? body.from,
+        context.engine,
+      ).visibleCtes;
+      for (const inner of parseDetailedBindings(block, visible, lookup)) visit(inner, depth + 1);
+    };
+    if (preferred) visit(preferred);
+    for (const binding of bindings) visit(binding);
+    if (located && !preferred) {
       for (let len = 1; len <= Math.min(3, located.parts.length); len += 1) {
         const resolved = lookup.resolve(located.parts.slice(0, len));
         if (resolved) needed.set(schemaCacheKey(resolved), resolved);
@@ -918,6 +1136,7 @@ function resolveSymbolCore(
   pos: number,
   context: SqlSymbolContext,
   lookup = buildLookup(context),
+  projectionCache = new Map<number, ReturnType<typeof projectionResolver>>(),
 ): ResolvedSqlSymbol | null {
   if (context.engine === "redis") return null;
   const tree = ensureSyntaxTree(state, state.doc.length, 75);
@@ -941,6 +1160,11 @@ function resolveSymbolCore(
   const tokenSpan = { from: clickedToken.from, to: clickedToken.to };
 
   const { allCtes, visibleCtes } = ctesAt(stmt.tokens, stmt.to, pos, engine);
+  let projections = projectionCache.get(stmt.from);
+  if (!projections) {
+    projections = projectionResolver(stmt.tokens, stmt.to, context, lookup);
+    projectionCache.set(stmt.from, projections);
+  }
 
   const scopes = queryScopesAt(stmt.tokens, pos);
   const block = scopes[0] ?? [];
@@ -1027,6 +1251,17 @@ function resolveSymbolCore(
     };
   };
 
+  const buildProjectionResult = (output: ProjectionOutput): ResolvedSqlSymbol => ({
+    kind: "projection",
+    name: identifierValue(output.ident, engine),
+    relationName: output.relationName,
+    tokenSpan,
+    declarationSpan: { from: output.declaration.from, to: output.declaration.to },
+    sourceTable: output.sourceTable,
+    sourceColumn: output.sourceColumn,
+    occurrences: [],
+  });
+
   // 1. Direct hit on CTE declaration name
   const directCte = allCtes.find(
     (cte) => clickedToken.from === cte.nameToken.from && clickedToken.to === cte.nameToken.to,
@@ -1058,7 +1293,11 @@ function resolveSymbolCore(
         meta.totalBytes,
       );
     }
+    return null;
   }
+
+  const directProjection = projections.declarationAt(clickedToken);
+  if (directProjection) return buildProjectionResult(directProjection);
 
   // 4. Dotted chain (alias.col, table.col, schema.table, schema.table.col, schema.fn(...))
   if (located.chainTokens.length >= 2) {
@@ -1096,9 +1335,11 @@ function resolveSymbolCore(
           }
         } else if (clickedIndex === 1) {
           if (bound.table) return buildColumnResult(bound.table, parts[1]);
-          if (bound.cte) return null;
+          const output = projections.column(bound, parts[1]).output;
+          return output ? buildProjectionResult(output) : null;
         }
       }
+      if (matchingBindings.length > 0) return null;
       const resolvedTable = lookup.resolve(parts);
       if (resolvedTable) {
         const meta = tableToObjectMeta(resolvedTable, context);
@@ -1206,14 +1447,19 @@ function resolveSymbolCore(
   // repeated relations prevent an assertion of unique ownership.
   for (const scope of scopes) {
     const scopedBindings = parseDetailedBindings(scope, visibleCtes, lookup);
-    if (scopedBindings.some((b) => !b.table || !context.schemas?.has(schemaCacheKey(b.table))))
-      return null;
-    const owners = scopedBindings.filter(
-      (b) =>
-        b.table && findColumnInSchema(context.schemas?.get(schemaCacheKey(b.table)), ident, engine),
-    );
+    const candidates = scopedBindings.map((binding) => ({
+      binding,
+      resolved: projections.column(binding, ident),
+    }));
+    if (candidates.some((c) => !c.resolved.known)) return null;
+    const owners = candidates.filter((c) => c.resolved.source);
     if (owners.length > 1) return null;
-    if (owners.length === 1) return buildColumnResult(owners[0].table!, ident);
+    if (owners.length === 1) {
+      const owner = owners[0];
+      return owner.resolved.output
+        ? buildProjectionResult(owner.resolved.output)
+        : buildColumnResult(owner.binding.table!, ident);
+    }
   }
 
   const cteMatch = visibleCtes.get(key);
@@ -1236,8 +1482,13 @@ function resolveSymbolCore(
 }
 
 function symbolIdentity(symbol: ResolvedSqlSymbol): string {
-  if (symbol.kind === "alias" || symbol.kind === "cte") {
-    return `${symbol.kind}:${symbol.declarationSpan.from}:${symbol.declarationSpan.to}`;
+  if (symbol.kind === "alias" || symbol.kind === "cte" || symbol.kind === "projection") {
+    return JSON.stringify([
+      symbol.kind,
+      symbol.declarationSpan.from,
+      symbol.declarationSpan.to,
+      symbol.name,
+    ]);
   }
   if (symbol.kind === "column")
     return JSON.stringify([symbol.kind, symbol.table.schema, symbol.table.name, symbol.name]);
@@ -1257,14 +1508,18 @@ export function resolveSymbolAt(
   context: SqlSymbolContext,
 ): ResolvedSqlSymbol | null {
   const lookup = buildLookup(context);
-  const symbol = resolveSymbolCore(state, pos, context, lookup);
+  const projectionCache = new Map<number, ReturnType<typeof projectionResolver>>();
+  const symbol = resolveSymbolCore(state, pos, context, lookup, projectionCache);
   if (!symbol) return null;
   const identity = symbolIdentity(symbol);
   const blocks =
     symbol.kind === "object"
       ? allStatementTokenBlocks(state)
       : [statementTokensAt(state, pos)].filter((b) => b !== null);
-  const occurrences: SqlLocalOccurrence[] = [];
+  const occurrences: SqlLocalOccurrence[] =
+    symbol.kind === "projection"
+      ? [makeOccurrence(state, symbol.declarationSpan.from, symbol.declarationSpan.to, true)]
+      : [];
   let inspected = 0;
   for (const block of blocks) {
     walkChains(block.tokens, (chain) => {
@@ -1272,13 +1527,13 @@ export function resolveSymbolAt(
       let matched: { from: number; to: number; declaration: boolean } | null = null;
       for (const token of chain) {
         inspected += 1;
-        const candidate = resolveSymbolCore(state, token.from, context, lookup);
+        const candidate = resolveSymbolCore(state, token.from, context, lookup, projectionCache);
         if (!candidate || symbolIdentity(candidate) !== identity) continue;
         if (symbol.kind === "object") {
           matched = { from: chain[0].from, to: token.to, declaration: false };
         } else {
           const declaration =
-            (symbol.kind === "cte" || symbol.kind === "alias") &&
+            (symbol.kind === "cte" || symbol.kind === "alias" || symbol.kind === "projection") &&
             token.from === symbol.declarationSpan.from;
           matched = { from: token.from, to: token.to, declaration };
           break;

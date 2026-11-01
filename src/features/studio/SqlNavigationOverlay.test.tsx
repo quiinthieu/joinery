@@ -1,9 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ObjectDetails, TableSchema } from "../../ipc/generated";
 import { SqlNavigationOverlay } from "./SqlNavigationOverlay";
 import { StructureView } from "./UtilityViews";
 import type { ResolvedSqlSymbol } from "./sql-navigation";
+
+afterEach(cleanup);
 
 const ordersSchema: TableSchema = {
   table: { schema: "public", name: "orders" },
@@ -66,6 +68,50 @@ const sampleDetails: ObjectDetails = {
 };
 
 describe("SqlNavigationOverlay and StructureView column highlight", () => {
+  it("documents a local output without asserting source constraints on the result", () => {
+    const onOpenDefinition = vi.fn();
+    render(
+      <SqlNavigationOverlay
+        mode="docs"
+        symbol={{
+          kind: "projection",
+          name: "order_key",
+          relationName: "recent",
+          tokenSpan: { from: 80, to: 89 },
+          declarationSpan: { from: 30, to: 39 },
+          sourceTable: ordersSchema.table,
+          sourceColumn: ordersSchema.columns[0],
+          occurrences: [
+            {
+              from: 30,
+              to: 39,
+              line: 1,
+              column: 31,
+              lineText: "SELECT id AS order_key",
+              isDeclaration: true,
+            },
+          ],
+        }}
+        objectDetails={null}
+        objectDetailsLoading={false}
+        objectDetailsError={null}
+        objectExplorerSupported={false}
+        onJumpInEditor={vi.fn()}
+        onOpenDefinition={onOpenDefinition}
+        onSwitchMode={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("recent.order_key")).toBeTruthy();
+    expect(screen.getByText("public.orders.id")).toBeTruthy();
+    expect(screen.getByText("int8")).toBeTruthy();
+    expect(screen.getByText("Line 1, Col 31")).toBeTruthy();
+    expect(screen.queryByText("PRIMARY KEY")).toBeNull();
+    expect(screen.queryByText("Nullable")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Definition" }));
+    expect(onOpenDefinition).toHaveBeenCalledOnce();
+  });
+
   it("renders quick documentation for columns and switches to local + database usages", () => {
     const columnSymbol: ResolvedSqlSymbol = {
       kind: "column",

@@ -431,6 +431,171 @@ function samplePgSymbolContext(): SqlSymbolContext {
 }
 
 describe("resolveSymbolAt and tablesNeededForNavigationAt", () => {
+  test("resolves named CTE outputs to their local declaration and proven source", () => {
+    const state = stateWithCaret(
+      "WITH recent AS (SELECT o.id AS order_id FROM orders o) SELECT r.|order_id FROM recent r WHERE r.order_id > 0;",
+    );
+    const symbol = resolveSymbolAt(state, state.selection.main.head, samplePgSymbolContext());
+    expect(symbol).toMatchObject({
+      kind: "projection",
+      name: "order_id",
+      relationName: "recent",
+      sourceTable: { schema: "public", name: "orders" },
+      sourceColumn: { name: "id", databaseType: "int8" },
+      declarationSpan: { from: 31, to: 39 },
+    });
+    expect(symbol?.occurrences).toHaveLength(3);
+    expect(symbol?.occurrences.filter((o) => o.isDeclaration)).toHaveLength(1);
+    expect(
+      tablesNeededForNavigationAt(state, state.selection.main.head, {
+        ...samplePgSymbolContext(),
+        schemas: new Map(),
+      }),
+    ).toEqual([{ schema: "public", name: "orders" }]);
+  });
+
+  test.each([
+    ["WITH recent AS (SELECT id FROM orders) SELECT recent.|id FROM recent;", "id", "recent", "id"],
+    [
+      "WITH recent(order_id) AS (SELECT id FROM orders) SELECT |order_id FROM recent;",
+      "order_id",
+      "recent",
+      "id",
+    ],
+    [
+      "WITH recent(order_id) AS (SELECT id AS ignored FROM orders) SELECT r.|order_id FROM recent r;",
+      "order_id",
+      "recent",
+      "id",
+    ],
+    ["SELECT d.|order_id FROM (SELECT id order_id FROM orders) d;", "order_id", "d", "id"],
+    ["SELECT |order_id FROM (SELECT o.id AS order_id FROM orders o) d;", "order_id", "d", "id"],
+    [
+      "WITH a AS (SELECT id AS order_id FROM orders), b AS (SELECT order_id AS result_id FROM a) SELECT b.|result_id FROM b;",
+      "result_id",
+      "b",
+      "id",
+    ],
+    [
+      "WITH a AS (SELECT id FROM orders) SELECT d.|result_id FROM (SELECT a.id AS result_id FROM a) d;",
+      "result_id",
+      "d",
+      "id",
+    ],
+    [
+      'WITH "Recent"("OrderID") AS (SELECT id FROM orders) SELECT r.|"OrderID" FROM "Recent" r;',
+      "OrderID",
+      "Recent",
+      "id",
+    ],
+    [
+      "WITH a AS (SELECT status FROM orders) SELECT |status FROM a JOIN customers c ON true;",
+      "status",
+      "a",
+      "status",
+    ],
+    [
+      "WITH a AS (SELECT id AS |order_id FROM orders) SELECT a.order_id FROM a;",
+      "order_id",
+      "a",
+      "id",
+    ],
+    ["SELECT d.order_id FROM (SELECT id AS |order_id FROM orders) d;", "order_id", "d", "id"],
+    [
+      "WITH a(|order_id) AS (SELECT id FROM orders) SELECT a.order_id FROM a;",
+      "order_id",
+      "a",
+      "id",
+    ],
+  ])("resolves the unique named output in %s", (query, name, relationName, sourceName) => {
+    const state = stateWithCaret(query);
+    const symbol = resolveSymbolAt(state, state.selection.main.head, samplePgSymbolContext());
+    expect(symbol).toMatchObject({
+      kind: "projection",
+      name,
+      relationName,
+      sourceTable: { schema: "public", name: "orders" },
+      sourceColumn: { name: sourceName },
+    });
+    if (symbol?.kind !== "projection") throw new Error("Expected named output");
+    expect(symbol.occurrences.some((o) => o.isDeclaration)).toBe(true);
+    expect(
+      state.sliceDoc(symbol.declarationSpan.from, symbol.declarationSpan.to).replaceAll('"', ""),
+    ).toBe(name);
+  });
+
+  test.each([
+    "WITH a AS (SELECT id AS x, customer_id AS x FROM orders) SELECT a.|x FROM a;",
+    "SELECT |id FROM (SELECT id FROM orders) a JOIN customers c ON true;",
+    "WITH a AS (SELECT id + 1 AS x FROM orders) SELECT a.|x FROM a;",
+    "WITH a(x) AS (SELECT id + 1 FROM orders) SELECT a.|x FROM a;",
+    "WITH a AS (SELECT * FROM orders) SELECT a.|id FROM a;",
+    "WITH a AS (SELECT o.* FROM orders o) SELECT a.|id FROM a;",
+    "WITH a AS (SELECT id FROM orders UNION SELECT id FROM customers) SELECT a.|id FROM a;",
+    "WITH RECURSIVE a(id) AS (SELECT id FROM a) SELECT a.|id FROM a;",
+    "WITH a AS (SELECT id FROM b), b AS (SELECT id FROM orders) SELECT a.|id FROM a;",
+    "WITH a(x) AS (SELECT id, status FROM orders) SELECT a.|x FROM a;",
+    "SELECT d.|id FROM (SELECT id FROM orders) d(renamed);",
+    "SELECT d.|id FROM generate_series(1, 3) d;",
+    'WITH a AS (SELECT id AS "OrderID" FROM orders) SELECT a.|orderid FROM a;',
+    "WITH a AS (SELECT missing FROM orders) SELECT a.|missing FROM a;",
+    "SELECT |id FROM orders o JOIN (SELECT id FROM unavailable) d ON true;",
+  ])("withholds ambiguous or unsupported output in %s", (query) => {
+    const state = stateWithCaret(query);
+    expect(resolveSymbolAt(state, state.selection.main.head, samplePgSymbolContext())).toBeNull();
+  });
+
+  test("keeps nested output declarations distinct and does not leak a shadowed catalog name", () => {
+    const state = stateWithCaret(
+      "WITH a AS (SELECT id AS x FROM orders) SELECT a.|x FROM a WHERE EXISTS (WITH a AS (SELECT customer_id AS x FROM orders) SELECT a.x FROM a);",
+    );
+    const symbol = resolveSymbolAt(state, state.selection.main.head, samplePgSymbolContext());
+    expect(symbol).toMatchObject({ kind: "projection", sourceColumn: { name: "id" } });
+    expect(symbol?.occurrences).toHaveLength(2);
+    const innerPos = state.doc.toString().lastIndexOf("a.x") + 2;
+    const inner = resolveSymbolAt(state, innerPos, samplePgSymbolContext());
+    expect(inner).toMatchObject({ kind: "projection", sourceColumn: { name: "customer_id" } });
+    expect(inner?.occurrences).toHaveLength(2);
+
+    const shadowed = stateWithCaret(
+      'SELECT "public".|orders FROM (SELECT missing FROM customers) AS "public";',
+    );
+    expect(
+      resolveSymbolAt(shadowed, shadowed.selection.main.head, samplePgSymbolContext()),
+    ).toBeNull();
+  });
+
+  test("requires current source schemas and bounds nested projection inference", () => {
+    const ctx = samplePgSymbolContext();
+    const state = stateWithCaret("WITH a AS (SELECT id FROM orders) SELECT a.|id FROM a;");
+    expect(
+      resolveSymbolAt(state, state.selection.main.head, { ...ctx, schemas: new Map() }),
+    ).toBeNull();
+    const chain = Array.from(
+      { length: 20 },
+      (_, i) => `a${i} AS (SELECT id FROM ${i ? `a${i - 1}` : "orders"})`,
+    ).join(", ");
+    const deep = stateWithCaret(`WITH ${chain} SELECT a19.|id FROM a19;`);
+    expect(resolveSymbolAt(deep, deep.selection.main.head, ctx)).toBeNull();
+  });
+
+  test("honors MySQL case-insensitive output names independently of table casing", () => {
+    const ctx = {
+      ...samplePgSymbolContext(),
+      engine: "mysql" as const,
+      caseSensitiveTableNames: true,
+    };
+    const state = stateWithCaret(
+      "WITH recent AS (SELECT `ID` AS `OrderID` FROM public.orders) SELECT recent.|orderid FROM recent;",
+      "mysql",
+    );
+    expect(resolveSymbolAt(state, state.selection.main.head, ctx)).toMatchObject({
+      kind: "projection",
+      name: "OrderID",
+      sourceColumn: { name: "id" },
+    });
+  });
+
   test("resolves CTE declarations and references with declaration span and local occurrences", () => {
     const ctx = samplePgSymbolContext();
     const doc =
