@@ -1304,3 +1304,50 @@ and is removed after checks. The unrelated R5 worktree remains intact. This
 application candidate is local, unmerged, unpublished and not installed.
 R6 remains partial; independent engine adapters and integrated qualification
 continue in the [roadmap](implementation-roadmap.md#r6-next-slices).
+
+## R6 reviewed MariaDB actual plans (1 November 2026)
+
+Code `c660bc4` adds MariaDB `ANALYZE FORMAT=JSON` through the existing owned
+session, immutable review and one-use approval path. A server-family check plus
+protocol preparation of a fixed constant SELECT enables the capability; the
+statement is closed without execution. No optimizer or output settings change.
+The action validates one complete SELECT/WITH query before wrapping it.
+
+A reproduced regression showed directly entered MariaDB analysis could pass
+Silent mode without review when sqlparser fell back to Unknown. Token detection
+now enforces mandatory review for statement-leading ANALYZE and conservative
+EXPLAIN/ANALYZE forms before fallback, including later batch statements. Quoted
+text/comments remain unaffected. ReadOnly blocks executing analysis; production
+retains its passphrase. Tests prove unapproved execution leaves a session-local
+counter unchanged, approved analysis runs once on its temporary-table session,
+stale/disconnected approvals expire, errors recover and cancellation retires
+the session. MariaDB results use the ANALYZE column for existing plan views and
+observed-context snapshot comparison.
+
+MariaDB actual rows are averages per loop; actual filtering is a percentage;
+node total time includes children and must not be summed. Optimization time is
+separate; constant plans can report it without execution/row metrics. No missing
+measurement is invented. See [the plan contract](query-plans.md).
+
+| State | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 138 frontend tests / 26 files, 133 standard Rust tests (112 core plus 21 integration), contracts/types/build, Prettier, Cargo formatting/check and strict all-target/all-feature Clippy |
+| Passed | All 26 PostgreSQL fixture tests and 24 MySQL/MariaDB base fixture tests on PostgreSQL 18, MySQL 8.4.13 and MariaDB 11.4.13; includes three new capability/approval/session tests, TLS-through-SSH, live context, transactions, grid, explorer and data movement. Separate case-folded fixture excluded |
+| Passed | Fifteen browser workflows: eleven plan/timing flows plus four console/file regressions. MariaDB covers review cancellation without execute, unchanged SQL, raw/tree/grid, direct-SQL review, ReadOnly denial, estimated/actual snapshots without replay, mismatch/cleanup, error recovery and cancellation retirement |
+| Passed | Five display-adapter and seven snapshot identity/store tests include inclusive timing, optimization-only actuals with zero and generated MariaDB query identity |
+| Passed | Clean-source `c660bc4c23b8c6b8a59a9a084d7910705b5177c3` macOS production bundle with strict ad-hoc signature verification; executable 21,950,016 bytes (20.93 MiB), SHA-256 `7b63b0eb9c798bd014d33f774f205d8c32ac650b87d1f5fea11f49022c486a7a` |
+| Passed | Three hidden native synthetic runs / 30 cleanup cycles; 5754 / 3094 / 3081 ms, peak main-process RSS 106.64–107.36 MiB. Baseline IPC/cache/session cleanup passes. This fixture does not exercise MariaDB plan UI/transport or qualify cold visible startup, total idle memory or FPS |
+| Provenance | Native fixture revision `c660bc4c23b8c6b8a59a9a084d7910705b5177c3`, tree `ece4030c7129decc40970b2c7e8d161078c581a2`, `sourceDirty: false`, binary SHA-256 `2556fda558a7c1455f247a93fc8b8acb89df9fbfd08a88c1c46228dbf7be263c`, ad-hoc bundle binary SHA-256 `2639673f4b703fc203e79da09abc7abbbe1a8fbee121814b9e4a983563850e6f` |
+| Scope | MariaDB capability/action qualified on 11.4.13 only. MySQL 8.4.13 defaults to `explain_json_format_version=1` and rejects JSON analysis (1235); a separate disposable session using version 2 returns a different JSON-v2 contract. This probe does not enable a MySQL action or change application connection settings |
+| Unmerged / unpublished | R6 is local on `feat/estimated-query-plans`, separate from the preserved R5 candidate. R1–R4 are merged but absent from preview.15. No application push, merge, release or installation in this slice |
+| Open | Case-folded fixture, Redis/SSH ignored suites and full browser suite for this slice; independent R5 review/integration; installed revision; live Snowflake; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology; representative total-memory/cold-start/FPS qualification |
+
+Logs: `.cache/mariadb-validate.log`, `mariadb-all-base-fixtures-final.log`,
+`mariadb-postgres-fixtures.log`, `mariadb-browser-final.log`,
+`mariadb-engine-contracts.json`, `mariadb-macos-bundle.log`,
+`mariadb-bundle-evidence.json`, `mariadb-native-build.log`,
+`mariadb-native-runs.log`, and `.cache/native-smoke/{build,runs}.json`.
+The initial fixture run used the browser port variable; rerunning with the Rust
+suite's `JOINERY_TEST_PORT=55433` resolves those connection failures. Final
+held-source MySQL/MariaDB base suite passes 24/24 in 5.67 s; browser 15/15 in
+54.3 s. Disposable project `joinery-assess-actual` uses PostgreSQL port 55433.

@@ -284,12 +284,32 @@ cancellation and unavailable-context capture denial. Clean-source macOS gates
 are recorded in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-execution-timing-and-observed-plan-context-1-november-2026).
 This branch remains separate from R5, unmerged and unreleased.
 
+### R6 slice 5: reviewed MariaDB actual plans (local `c660bc4`)
+
+MariaDB's Analyze action uses `ANALYZE FORMAT=JSON` only when a prepare-only
+server capability check succeeds. It never executes analysis on connection
+or changes optimizer/output settings. Explicit review applies even on Silent,
+including directly entered SQL that falls outside the AST grammar. ReadOnly
+and production policy remain authoritative; one-use approval, owned temporary
+state, error recovery, cancellation retirement and observed-context comparison
+are verified. MariaDB inclusive node time, average rows per loop, filtering and
+optimization remain distinct from PostgreSQL's metrics.
+
+Standard validation passes 138 frontend and 133 standard Rust tests. All 26
+PostgreSQL and 24 MySQL/MariaDB base fixtures pass, plus fifteen relevant browser
+workflows. The separate case-folded fixture was excluded. Exact macOS gates are
+recorded in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-reviewed-mariadb-actual-plans-1-november-2026).
+MariaDB qualification is bounded to 11.4.13. R6 stays partial, local and separate
+from the preserved R5 candidate.
+
 ### R6 next slices
 
-1. Qualify MySQL and MariaDB actual plans as independent capability/version
-   adapters. Verify official syntax, executing semantics and output contracts
-   against disposable fixtures before exposing actions. Require explicit review;
-   unsupported combinations must fail clearly. Do not assume JSON compatibility.
+1. Qualify MySQL actual plans independently. The 8.4.13 fixture defaults to
+   `explain_json_format_version=1`, which rejects JSON analysis; a disposable
+   session set to version 2 returns a separate JSON-v2 shape. Qualify TREE or a
+   supported JSON-v2 path without silently changing a user's output/optimizer
+   settings. Bound parsing, retain raw values and require explicit review;
+   unsupported combinations fail clearly. A version string alone is insufficient.
 2. Add Snowflake estimated plans as a separate read-only adapter with a bounded
    raw/normalized contract and mocked transport evidence. Live account
    qualification requires explicit external scope.
@@ -297,17 +317,12 @@ This branch remains separate from R5, unmerged and unreleased.
    preparation signatures, full relevant fixtures/browser regression and native
    qualification. Preserve separate merge, release and installed-version gates.
 
-The next adapter spike starts with MariaDB's `ANALYZE FORMAT=JSON`, whose
-[official contract](https://mariadb.com/docs/server/reference/sql-statements/administrative-sql-statements/analyze-and-explain-statements/analyze-format-json)
-executes the query and distinguishes average `r_rows`, loop count and inclusive
-node time. MySQL needs an exact-version/output probe: the
-[8.4 manual](https://dev.mysql.com/doc/refman/8.4/en/explain.html) and
-[Oracle's JSON-v2 explanation](https://blogs.oracle.com/mysql/new-json-format-for-explain)
-describe different format/version conditions. Record actual fixture version,
-JSON-format setting availability, raw shape and executing semantics before
-choosing an adapter. Do not mutate a user's optimizer/output settings or expose
-an action from a version string alone. This research is planning evidence,
-not completed engine qualification.
+The MariaDB adapter follows its
+[official analysis contract](https://mariadb.com/docs/server/reference/sql-statements/administrative-sql-statements/analyze-and-explain-statements/analyze-format-json).
+The independent MySQL probe clarifies the format/version conditions discussed
+in the [8.4 EXPLAIN manual](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
+and [Oracle's JSON-v2 explanation](https://blogs.oracle.com/mysql/new-json-format-for-explain).
+The MySQL probe is planning evidence, not completed adapter qualification.
 
 R7 schema/design and R8 remaining productivity follow these R6 slices. Release,
 platform, security, accessibility, recovery and performance qualification run
