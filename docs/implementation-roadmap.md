@@ -187,7 +187,7 @@ tests, `37` Playwright workflows and clean-commit macOS native gates). Merged on
   cross-connection `SearchEverywhere` (`⌘K` / `⇧⌘O`).
 - Merged on `main` via PR #29 (`2625933`, all six PR checks green); unreleased.
 
-### R4 Consoles, sessions and files result (2026-10-31, local branch `feat/consoles-sessions-files`)
+### R4 Consoles, sessions and files result (merged in PR #30 `a0ba1a6`; unreleased)
 
 - Per-session active schema/database switcher (`M05`: PostgreSQL `search_path`,
   MySQL/MariaDB `USE`, Snowflake stateless request-scoped schema verification)
@@ -208,7 +208,52 @@ tests, `37` Playwright workflows and clean-commit macOS native gates). Merged on
   `SearchEverywhere` `Saved` scope + `LibraryModal`), persistent object &
   saved-query bookmarks (`P02`: `⌘D`, max 256, profile-delete cascade), and a
   50-item in-memory Recent locations ring buffer (`⇧⌘E`).
-- Local on `feat/consoles-sessions-files`; not yet pushed, merged or released.
+- Merged on `main` via PR #30 (`a0ba1a6`) on 31 October; unreleased.
+
+## Assessment and next slices (1 November 2026)
+
+R1–R4 are merged but absent from the latest published preview. R5 already exists
+on `feat/editor-intelligence` at `bb77b0f` (eight commits); its sibling worktree
+and four uncommitted documentation files were preserved. Its local record
+reports 146 frontend, 139 standard Rust, 56 disposable fixture and 49 browser
+passes plus clean-commit macOS gates. Those are the candidate's recorded
+results, not an independent rerun. Review and reconcile that candidate before
+integration; do not duplicate it.
+
+### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
+
+Commit `fad0341`, based on fetched `origin/main` `a0ba1a6`, adds a single-query
+estimated-plan action for PostgreSQL and MySQL/MariaDB, routed through existing
+Rust authorization and cancellation. Bounded tree/raw views share the retained
+JSON result; optimizer costs, estimated rows and actual per-loop metrics retain
+distinct labels. See [query-plans.md](query-plans.md) for the contract and bounds.
+
+Validation passes 126 frontend tests and 130 standard Rust tests, plus seven
+relevant browser workflows (three live-engine plan flows and four session/file
+regressions), macOS bundling and three hidden native runs / 30 cleanup cycles.
+This branch does not contain R5. It is unmerged and unreleased; R6 is partial.
+
+### R6 slice 2: explicitly reviewed actual plans
+
+1. Start with PostgreSQL single-query `EXPLAIN (ANALYZE, FORMAT JSON)`. The UI
+   must state that analysis executes the query. Require one-use review even for
+   a Silent local profile; production passphrases and read-only restrictions
+   remain enforced in Rust. Keep the exact reviewed SQL in the immutable plan.
+2. Use the existing owned-session execution/cancellation path. Exercise denied
+   approval, stale/disconnected sessions, error recovery and cancellation on
+   disposable fixtures. Never automatically replay or run analysis on editor
+   changes. Display estimates versus actuals, loops and server milliseconds.
+3. Add MySQL and MariaDB as separate capability/version adapters after proving
+   their syntax and output contracts. JSON actual-plan support must not be
+   assumed interchangeable. Snowflake plans remain a separate read-only slice.
+4. Follow with bounded in-memory plan snapshots/comparison, explicit compatible
+   engine/query identity, unknown-field raw access and documented retention
+   limits. Add queue, first-row, client elapsed and server metrics with distinct
+   units and scope; do not derive one metric from another.
+
+R7 schema/design and R8 remaining productivity follow these R6 slices. Release,
+platform, security, accessibility, recovery and performance qualification run
+throughout; application publication and installation remain separate actions.
 
 ## Subsequent phases and blueprint cross-reference
 

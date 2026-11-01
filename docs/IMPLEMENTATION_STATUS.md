@@ -1057,14 +1057,14 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   qualification, Windows/Linux packaged runtime, Developer ID
   signing/notarization and representative performance gates remain open.
 
-## Consoles, named session pool, transaction controls, capability-gated SQL files and query library (local implementation)
+## Consoles, named session pool, transaction controls, capability-gated SQL files and query library (merged, unreleased)
 
 Branch `feat/consoles-sessions-files` (`78a5283..79878e9`, from `origin/main`
 `2625933`) implements Milestone R4 (Consoles, sessions & files: `M05`, `M06`,
-`X04`, `E14`, `P02`, `P03`) locally. It is verified on disposable fixtures,
-standard/browser test suites and macOS native builds, unmerged, and unreleased
-(`v0.1.0-preview.15` remains the published and installed release; PRs #25–#29
-are merged on `main` and unreleased):
+`X04`, `E14`, `P02`, `P03`). It merged via PR #30 (`a0ba1a6`) on
+31 October. The following local verification is historical; R1–R4 are now
+merged and unreleased. `v0.1.0-preview.15` remains the latest published release;
+installation was not requalified in the 1 November assessment:
 
 - **Per-session transaction controls and active schema/database switching
   (`78a5283`)**:
@@ -1164,3 +1164,39 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   IPC or Safe Mode weakening were introduced. Live Snowflake/production account
   qualification, Windows/Linux packaged runtime, Developer ID
   signing/notarization and representative performance gates remain open.
+
+## Current assessment and R6 estimated plans (1 November 2026)
+
+Fetched `origin/main` is `a0ba1a6` (R4, PR #30). R1–R4 are merged but absent
+from preview.15, confirmed against the GitHub release list. The installed app's
+exact preview revision was not requalified. Joinery is an advanced preview, not
+yet a demonstrated full DataGrip replacement.
+
+The separate `feat/editor-intelligence` candidate at `bb77b0f` contains eight
+R5 commits. Its four uncommitted documentation files and existing processes
+were preserved. Its local record reports 146 frontend, 139 standard Rust,
+56 disposable fixture and 49 browser passes plus clean-commit macOS gates.
+These recorded R5 outcomes were not independently rerun here. The current
+R6 branch does not contain that candidate; integration must reconcile the
+typed-parameter `prepare_execution` signature before qualification.
+
+The first R6 slice is implemented in `fad0341` on `feat/estimated-query-plans`
+from `a0ba1a6`. [query-plans.md](query-plans.md) records its bounded scope.
+It is local, unmerged, unpublished and not installed. Executing ANALYZE,
+comparison, richer timing and Snowflake plans remain open.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 126 frontend tests (24 files), 130 standard Rust tests (109 core + 21 others), formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Seven browser workflows on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4: three `query-plans.spec.ts` flows plus four `consoles-files.spec.ts` regressions. Estimated action, isolated session, unchanged SQL, raw/tree/grid round-trip and explicit batch rejection pass |
+| Passed | `pnpm test:git` 6/6; runtime-memory script tests 4/4; identity and diff checks |
+| Passed | Clean-source `fad0341` macOS production bundle (21.07 MiB) and strict ad-hoc signature verification; executable SHA-256 `5e6e9f94ea4e02cc395978ca4e007251b31fc906dc17e8c6713d91140807e65f` |
+| Passed | Clean-source `pnpm desktop:smoke:build` and three hidden native runs / 30 cleanup cycles: `3,827 / 3,083 / 3,139 ms`, main-process peak RSS `106.17–106.86 MiB`; actual WebView IPC reaches the `prepare_explain` session guard; fixture SHA-256 `2a562b46d1bc9f52bd30c1857d88f8cf4cdd45924e851275002572e09088dbcd` |
+| Environment resolved | Node 26.7.0's experimental global web storage broke five existing jsdom suites. Validation passes with `NODE_OPTIONS=--no-experimental-webstorage` and `/opt/homebrew/bin` first on PATH; no application workaround was added |
+| Not executed | Full ignored Rust integration suite and full browser suite for this R6 slice; complete independent R5 rerun; installed app revision; production/live Snowflake accounts; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative performance gates |
+
+Native evidence is synthetic, hidden and main-process-only; it does not qualify
+cold visible startup, total idle memory or display FPS. Disposable Compose
+project `joinery-assess-r6` uses isolated PostgreSQL port 55433 and was removed
+after the browser checks. No production connections or automatic SQL replay
+were introduced.
