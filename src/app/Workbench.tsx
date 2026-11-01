@@ -87,6 +87,7 @@ interface Props {
   gridRef: RefObject<DatabaseGridHandle>;
   onRun(sql?: string): void;
   onExplain(sql: string): void;
+  onAnalyze(sql: string): void;
   onReview(): void;
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
@@ -111,6 +112,7 @@ export function Workbench({
   gridRef,
   onRun,
   onExplain,
+  onAnalyze,
   onReview,
   onConfirm,
   onSelect,
@@ -714,6 +716,17 @@ export function Workbench({
                 >
                   <Gauge size={13} />
                   Explain
+                </button>
+              )}
+              {profile?.engine === "postgres" && (
+                <button
+                  className="button ghost small"
+                  disabled={running || !session}
+                  title="Executes the selected query or current statement after review to collect actual measurements"
+                  onClick={() => onAnalyze(editorRef.current?.selection() ?? tab.sql)}
+                >
+                  <Gauge size={13} />
+                  Analyze
                 </button>
               )}
               <button

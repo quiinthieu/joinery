@@ -129,8 +129,9 @@ pub async fn prepare_explain(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
     sql: String,
+    analyze: Option<bool>,
 ) -> AppResult<PreparedPlan> {
-    studio.prepare_explain(&session_id, &sql)
+    studio.prepare_explain(&session_id, &sql, analyze.unwrap_or(false))
 }
 
 #[tauri::command]

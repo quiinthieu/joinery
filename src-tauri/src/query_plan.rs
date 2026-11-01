@@ -5,16 +5,24 @@ use sqlparser::{
     parser::Parser,
 };
 
-/// Generate an estimated plan only. Validate the complete input before adding
-/// EXPLAIN so a second statement can never escape the wrapper.
-pub(crate) fn estimated_sql(engine: EngineKind, sql: &str) -> AppResult<String> {
-    let (dialect, prefix): (Box<dyn Dialect>, &str) = match engine {
-        EngineKind::Postgres => (Box::new(PostgreSqlDialect {}), "EXPLAIN (FORMAT JSON)"),
-        EngineKind::Mysql => (Box::new(MySqlDialect {}), "EXPLAIN FORMAT=JSON"),
+/// Validate the complete input before adding EXPLAIN so a second statement
+/// can never escape the wrapper. Executing plans still require safety review.
+pub(crate) fn explain_sql(engine: EngineKind, sql: &str, analyze: bool) -> AppResult<String> {
+    let (dialect, prefix): (Box<dyn Dialect>, &str) = match (engine, analyze) {
+        (EngineKind::Postgres, false) => (Box::new(PostgreSqlDialect {}), "EXPLAIN (FORMAT JSON)"),
+        (EngineKind::Postgres, true) => (
+            Box::new(PostgreSqlDialect {}),
+            "EXPLAIN (ANALYZE, FORMAT JSON)",
+        ),
+        (EngineKind::Mysql, false) => (Box::new(MySqlDialect {}), "EXPLAIN FORMAT=JSON"),
         _ => {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
-                "Estimated plans are available for PostgreSQL and MySQL/MariaDB.",
+                if analyze {
+                    "Actual plans are available for PostgreSQL only."
+                } else {
+                    "Estimated plans are available for PostgreSQL and MySQL/MariaDB."
+                },
             ));
         }
     };
@@ -42,7 +50,7 @@ mod tests {
     fn accepts_one_query_without_rewriting_literals_or_comments() {
         for engine in [EngineKind::Postgres, EngineKind::Mysql] {
             let sql = "/* keep */ WITH q AS (SELECT ';' AS value) SELECT * FROM q; -- end";
-            let output = estimated_sql(engine, sql).unwrap();
+            let output = explain_sql(engine, sql, false).unwrap();
             assert!(output.ends_with(sql));
             assert!(!output.contains("ANALYZE"));
         }
@@ -60,18 +68,47 @@ mod tests {
                 "-- nothing",
                 "SELECT '",
             ] {
-                assert!(estimated_sql(engine, sql).is_err(), "{engine:?}: {sql}");
+                assert!(
+                    explain_sql(engine, sql, false).is_err(),
+                    "{engine:?}: {sql}"
+                );
             }
         }
-        assert!(estimated_sql(EngineKind::Mysql, "SELECT 1 /*!; DELETE FROM t */").is_err());
-        assert!(estimated_sql(EngineKind::Mysql, "SELECT 1 /*M!; DELETE FROM t */").is_err());
+        assert!(explain_sql(EngineKind::Mysql, "SELECT 1 /*!; DELETE FROM t */", false).is_err());
+        assert!(explain_sql(EngineKind::Mysql, "SELECT 1 /*M!; DELETE FROM t */", false).is_err());
     }
 
     #[test]
     fn unsupported_engines_and_oversized_input_fail_closed() {
         for engine in [EngineKind::Snowflake, EngineKind::Redis] {
-            assert!(estimated_sql(engine, "SELECT 1").is_err());
+            assert!(explain_sql(engine, "SELECT 1", false).is_err());
         }
-        assert!(estimated_sql(EngineKind::Postgres, &" ".repeat(1024 * 1024)).is_err());
+        assert!(explain_sql(EngineKind::Postgres, &" ".repeat(1024 * 1024), false).is_err());
+    }
+
+    #[test]
+    fn actual_plan_is_postgres_only_and_validates_the_whole_query() {
+        let sql = "/* preserve */ SELECT 'é; value'; -- end";
+        assert_eq!(
+            explain_sql(EngineKind::Postgres, sql, true).unwrap(),
+            format!("EXPLAIN (ANALYZE, FORMAT JSON)\n{sql}")
+        );
+        for engine in [EngineKind::Mysql, EngineKind::Snowflake, EngineKind::Redis] {
+            assert_eq!(
+                explain_sql(engine, "SELECT 1", true).unwrap_err().code,
+                ErrorCode::Unsupported
+            );
+        }
+        for sql in [
+            "SELECT 1; SELECT 2",
+            "DELETE FROM t",
+            "EXPLAIN SELECT 1",
+            "SELECT '",
+        ] {
+            assert!(
+                explain_sql(EngineKind::Postgres, sql, true).is_err(),
+                "{sql}"
+            );
+        }
     }
 }

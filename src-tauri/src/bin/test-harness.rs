@@ -126,7 +126,8 @@ async fn rpc(
             )?),
             "prepare_explain" => json!(studio.prepare_explain(
                 &arg::<String>(&args, "sessionId")?,
-                &arg::<String>(&args, "sql")?
+                &arg::<String>(&args, "sql")?,
+                arg::<Option<bool>>(&args, "analyze")?.unwrap_or(false)
             )?),
             "authorize_plan" => json!(studio.authorize(
                 &arg::<String>(&args, "planId")?,

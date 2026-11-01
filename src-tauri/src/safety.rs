@@ -158,6 +158,7 @@ pub fn prepare(
             ));
         }
     };
+    let mut executes_analysis = false;
     let statements = match Parser::parse_sql(dialect.as_ref(), sql) {
         Ok(ast) => {
             let parts = split_sql(dialect.as_ref(), sql)?;
@@ -178,6 +179,7 @@ pub fn prepare(
                         ..Default::default()
                     };
                     let _ = statement.visit(&mut classification);
+                    executes_analysis |= classification.executes_analysis;
                     StatementPlan {
                         sql,
                         kind: classification.kind.unwrap_or(StatementKind::Unknown),
@@ -195,7 +197,16 @@ pub fn prepare(
     if statements.len() > 100 {
         return Err(AppError::invalid("Run at most 100 statements in one batch"));
     }
-    plan_for_statements(session_id, profile, statements)
+    let mut plan = plan_for_statements(session_id, profile, statements)?;
+    if executes_analysis {
+        // This gate also applies to SQL entered directly, including Silent
+        // profiles. Set it before the plan is stored and fingerprinted.
+        plan.requires_approval = true;
+        plan.warnings.push(
+            "EXPLAIN ANALYZE executes the query. Side effects occur normally; execution may add profiling overhead.".into(),
+        );
+    }
+    Ok(plan)
 }
 
 pub(crate) fn plan_for_statements(
@@ -305,6 +316,7 @@ struct Classification {
     engine: Option<EngineKind>,
     kind: Option<StatementKind>,
     missing_where: bool,
+    executes_analysis: bool,
 }
 impl Classification {
     fn raise(&mut self, kind: StatementKind) {
@@ -348,7 +360,26 @@ impl Visitor for Classification {
             | Statement::ShowDatabases { .. }
             | Statement::ShowCreate { .. }
             | Statement::ShowProcessList { .. } => self.raise(StatementKind::Read),
-            Statement::Explain { analyze: false, .. } => self.raise(StatementKind::Read),
+            Statement::Explain {
+                analyze, options, ..
+            } => {
+                let executes = *analyze
+                    || options.as_deref().unwrap_or_default().iter().any(|option| {
+                        option.name.value.eq_ignore_ascii_case("analyze")
+                            && !option.arg.as_ref().is_some_and(|arg| {
+                                matches!(
+                                    arg.to_string().to_ascii_lowercase().as_str(),
+                                    "false" | "off" | "0" | "'false'" | "'off'" | "'0'"
+                                )
+                            })
+                    });
+                self.executes_analysis |= executes;
+                self.raise(if executes {
+                    StatementKind::Unknown
+                } else {
+                    StatementKind::Read
+                });
+            }
             _ => {
                 let first = statement
                     .to_string()
@@ -583,7 +614,8 @@ mod tests {
     #[test]
     fn estimated_plans_keep_existing_nested_statement_and_function_guards() {
         let readonly = profile(SafeMode::ReadOnly, Environment::Local);
-        let simple = crate::query_plan::estimated_sql(EngineKind::Postgres, "SELECT 1").unwrap();
+        let simple =
+            crate::query_plan::explain_sql(EngineKind::Postgres, "SELECT 1", false).unwrap();
         let plan = prepare("s", &readonly, &simple).unwrap();
         assert!(!plan.requires_approval);
         for sql in [
@@ -591,11 +623,59 @@ mod tests {
             "WITH gone AS (DELETE FROM a RETURNING *) SELECT * FROM gone",
             "SELECT * FROM a FOR UPDATE",
         ] {
-            let explained = crate::query_plan::estimated_sql(EngineKind::Postgres, sql).unwrap();
+            let explained =
+                crate::query_plan::explain_sql(EngineKind::Postgres, sql, false).unwrap();
             assert!(prepare("s", &readonly, &explained).is_err(), "{sql}");
             let production = profile(SafeMode::Silent, Environment::Production);
             let plan = prepare("s", &production, &explained).unwrap();
             assert!(plan.requires_approval && plan.requires_passphrase, "{sql}");
+        }
+    }
+
+    #[test]
+    fn executing_explain_requires_review_even_in_silent_mode() {
+        for sql in [
+            "EXPLAIN ANALYZE SELECT 1",
+            "EXPLAIN (ANALYZE, FORMAT JSON) SELECT 1",
+            "EXPLAIN (ANALYZE TRUE, FORMAT JSON) SELECT 1",
+            "EXPLAIN (ANALYZE 'on') SELECT 1",
+            "SELECT 1; EXPLAIN (ANALYZE 1) SELECT 2",
+        ] {
+            let plan = prepare("s", &profile(SafeMode::Silent, Environment::Local), sql).unwrap();
+            assert!(plan.requires_approval, "{sql}");
+            assert!(!plan.requires_passphrase, "{sql}");
+            assert!(
+                plan.warnings
+                    .iter()
+                    .any(|w| w.contains("executes the query")),
+                "{sql}"
+            );
+            assert_eq!(
+                prepare("s", &profile(SafeMode::ReadOnly, Environment::Local), sql)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PolicyBlocked,
+                "{sql}"
+            );
+            let production = prepare(
+                "s",
+                &profile(SafeMode::Silent, Environment::Production),
+                sql,
+            )
+            .unwrap();
+            assert!(
+                production.requires_approval && production.requires_passphrase,
+                "{sql}"
+            );
+        }
+        for sql in [
+            "EXPLAIN (ANALYZE FALSE, FORMAT JSON) SELECT 1",
+            "EXPLAIN (ANALYZE 'off') SELECT 1",
+            "EXPLAIN (ANALYZE 0) SELECT 1",
+            "EXPLAIN SELECT 'ANALYZE'",
+        ] {
+            let plan = prepare("s", &profile(SafeMode::ReadOnly, Environment::Local), sql).unwrap();
+            assert!(!plan.requires_approval, "{sql}");
         }
     }
 }

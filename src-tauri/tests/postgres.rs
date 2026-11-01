@@ -122,6 +122,158 @@ fn result(events: &[QueryEvent]) -> ResultInfo {
 
 #[tokio::test]
 #[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn actual_plan_requires_one_use_review_and_keeps_session_identity() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "CREATE TEMP SEQUENCE analyze_review_probe"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let sql = "SELECT nextval('analyze_review_probe')";
+    let plan = studio.prepare_explain(&session.id, sql, true).unwrap();
+    assert!(plan.requires_approval && !plan.requires_passphrase);
+    assert_eq!(plan.session_id, session.id);
+    assert_eq!(
+        plan.statements[0].sql,
+        format!("EXPLAIN (ANALYZE, FORMAT JSON)\n{sql}")
+    );
+    assert_eq!(
+        studio
+            .execute(&plan.id, None, Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+    let untouched = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT is_called FROM analyze_review_probe",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&untouched.id, 0).unwrap()[0].as_deref(),
+        Some("f")
+    );
+
+    // A replacement preview invalidates the old approval, even on Silent.
+    let old = studio.prepare_explain(&session.id, sql, true).unwrap();
+    let old_token = studio.authorize(&old.id, None, None).unwrap();
+    let plan = studio.prepare_explain(&session.id, sql, true).unwrap();
+    assert_eq!(
+        studio
+            .execute(&old.id, Some(&old_token), Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    let token = studio.authorize(&plan.id, None, None).unwrap();
+    let events = finish(start(&studio, &plan, Some(&token)).1).await;
+    assert_eq!(status(&events), RunStatus::Completed);
+    let output = result(&events);
+    let raw = studio.results.row(&output.id, 0).unwrap()[0]
+        .clone()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed[0]["Plan"]["Actual Rows"].as_f64(), Some(1.0));
+    assert_eq!(parsed[0]["Plan"]["Actual Loops"].as_f64(), Some(1.0));
+    assert!(parsed[0]["Execution Time"].is_number());
+    assert_eq!(
+        studio
+            .execute(&plan.id, Some(&token), Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    let called = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT last_value FROM analyze_review_probe",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&called.id, 0).unwrap()[0].as_deref(),
+        Some("1")
+    );
+
+    let stale = studio
+        .prepare_explain(&session.id, "SELECT 1", true)
+        .unwrap();
+    studio.disconnect(&session.id);
+    assert_eq!(
+        studio.authorize(&stale.id, None, None).unwrap_err().code,
+        ErrorCode::ApprovalExpired
+    );
+    assert_eq!(
+        studio
+            .prepare_explain(&session.id, "SELECT 1", true)
+            .unwrap_err()
+            .code,
+        ErrorCode::ConnectionClosed
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn actual_plan_error_recovery_and_cancellation_use_the_owned_session() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let plan = studio
+        .prepare_explain(&session.id, "SELECT 1 / 0", true)
+        .unwrap();
+    let token = studio.authorize(&plan.id, None, None).unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &plan, Some(&token)).1).await),
+        RunStatus::Failed
+    );
+    let plan = studio
+        .prepare_explain(&session.id, "SELECT 1", true)
+        .unwrap();
+    let token = studio.authorize(&plan.id, None, None).unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &plan, Some(&token)).1).await),
+        RunStatus::Completed
+    );
+
+    let plan = studio
+        .prepare_explain(&session.id, "SELECT pg_sleep(10)", true)
+        .unwrap();
+    let token = studio.authorize(&plan.id, None, None).unwrap();
+    let (id, mut events) = start(&studio, &plan, Some(&token));
+    while !matches!(
+        events.recv().await.unwrap(),
+        QueryEvent::StatementStarted { .. }
+    ) {}
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    studio.cancel(&id).await.unwrap();
+    let events = finish(events).await;
+    assert_eq!(status(&events), RunStatus::Cancelled);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, QueryEvent::SessionClosed { .. }))
+    );
+    assert_eq!(
+        studio
+            .prepare_explain(&session.id, "SELECT 1", true)
+            .unwrap_err()
+            .code,
+        ErrorCode::ConnectionClosed
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
 async fn repeated_connect_run_release_disconnect_returns_resource_counters_to_zero() {
     let (_root, studio, initial) = setup(SafeMode::ReadOnly).await;
     let profile_id = studio.bootstrap().unwrap().profiles[0].id.clone();
