@@ -212,13 +212,27 @@ tests, `37` Playwright workflows and clean-commit macOS native gates). Merged on
 
 ## Assessment and next slices (1 November 2026)
 
-R1–R4 are merged but absent from the latest published preview. R5 already exists
-on `feat/editor-intelligence` at `bb77b0f` (eight commits); its sibling worktree
-and four uncommitted documentation files were preserved. Its local record
-reports 146 frontend, 139 standard Rust, 56 disposable fixture and 49 browser
-passes plus clean-commit macOS gates. Those are the candidate's recorded
-results, not an independent rerun. Review and reconcile that candidate before
-integration; do not duplicate it.
+R1–R4 are merged but absent from the last verified preview. Recorded R5 commit
+`bb77b0f` remains readable; its former worktree/branch are now absent and former
+dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
+56 fixture and 49 browser passes plus macOS gates) are not current qualification.
+Integration is proceeding by reviewed feature group on the R6 branch.
+
+### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
+
+Recorded `40c59a7` plus the SQL alias correction from `41957ea` now coexist with
+the seven R6 slices. Permission-filtered outbound/inbound metadata preserves
+composite pairs and temporary shadows. Scoped JOIN/initial ON suggestions handle
+multiple/self relationships, aliases and quoting without executing SQL.
+Snowflake FK metadata and advanced output inference remain outside this slice.
+
+Validation passes 152 frontend / 136 standard Rust tests, two live metadata
+fixture tests spanning PostgreSQL/MySQL/MariaDB, and fourteen completion/
+Snowflake browser flows, including nine inserted-and-executed composite joins.
+The browser check caught and fixed the PostgreSQL built-in-token alias defect.
+Native/package gates and full integration suites were not rerun on this source.
+R5 remains partial, local, unmerged and unreleased; see
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-live-fk-join-completion-1-november-2026).
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -343,14 +357,16 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Reconcile recorded R5 commit `bb77b0fc785d7a0076a3aa6d2457ac4da09d5ce9`
-   with R6, including typed-parameter preparation signatures. Current Git/Orca
-   inventories no longer contain its former worktree or editor-intelligence
-   branch; the commit object remains readable. Do not assume former dirty docs
-   were recovered or old test counts are current. Review and validate the
-   integrated source, investigate the earlier concurrent metadata-startup flake,
-   then run full relevant fixtures/browser/native qualification. Merge, release
-   and installed-version gates remain separate.
+1. Continue R5 integration after the verified FK JOIN slice: structured Unicode
+   diagnostics (`581c527`), typed parameters (`9cfefa2`), then editor markers,
+   navigation, formatting and snippets from recorded `bb77b0f`. Reconcile
+   parameter preparation with every R6 `prepare_explain`/one-use approval path;
+   preserve exact SQL, review requirements, production and ReadOnly gates.
+   The SQL alias part of `41957ea` is already integrated; its format-save changes
+   remain pending. Do not reuse old test counts or assume dirty docs recovered.
+   Investigate the earlier concurrent metadata-startup flake, then qualify the
+   combined source with relevant full fixture/browser/native checks. Merge,
+   release and installed-version gates remain separate.
 2. Design observed Snowflake warehouse/session identity before snapshot support.
    Keep capture explicitly unavailable meanwhile. Live read-only account
    qualification requires explicit external scope; mock evidence is local only.
@@ -399,5 +415,6 @@ tables, signing setup or external accounts are prerequisites for the first slice
 
 Snowflake remains read-only; Redis Cluster/Sentinel/streams/PubSub and external
 MySQL process killing remain unsupported. Arbitrary SQL results remain read-only.
-Full derived/CTE output inference, live session-context tracking for remaining
-engines and JOIN generation remain open after the PostgreSQL context workflow.
+Full derived/CTE output inference and wider engine/context qualification remain
+open. Direct-base-table PostgreSQL/MySQL/MariaDB FK JOIN assistance is locally
+verified in the first R5 integration slice above.

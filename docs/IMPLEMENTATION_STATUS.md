@@ -1456,3 +1456,42 @@ Logs: `.cache/snowflake-plans-validate-complete.log`,
 `snowflake-plans-native-runs.log`, and `.cache/native-smoke/{build,runs}.json`.
 See [query-plan semantics](query-plans.md#snowflake-estimated-logical-plans) and
 [the next slices](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: live FK JOIN completion (1 November 2026)
+
+Code `e0dad5f12461fdfdecae073be62fe74d3f57f004` restores the first R5 feature
+group onto the R6 branch, using recorded `40c59a7` and the SQL alias correction
+from `41957ea`. It does not incorporate the remaining editor-intelligence
+commits. Former worktree/branch absence and unrecovered dirty docs remain as
+recorded above; the source commit `bb77b0f` is readable.
+
+PostgreSQL/MySQL/MariaDB completion now obtains permission-filtered outbound
+and inbound constraints on the actual editor session. Ordered composite pairs
+stay grouped; incomplete or denied relationships are withheld. Temporary
+shadows do not inherit permanent-table relationships. MySQL metadata cleanup
+retains the existing transaction-state behavior. Snowflake supplies no FK
+relationships in this slice.
+
+JOIN target and initial ON completion insert explicit equality predicates from
+known relationships. Multiple constraints remain distinct; self joins choose
+noncolliding aliases; quoting and CTE shadows are respected. CROSS/NATURAL JOIN
+does not receive an ON clause. Existing query-block/token/depth/schema-read and
+response-revision bounds remain. This is direct-base-table assistance, not
+derived/CTE output inference. Accepting a suggestion never runs SQL.
+
+| State | Evidence |
+|---|---|
+| Reproduced | Three added frontend tests failed before implementation. The first browser run exposed PostgreSQL's `ln` alias being tokenized as a built-in and discarded; the recorded alias correction and a dedicated unit regression fix it |
+| Passed | `pnpm validate` on supported Node 26.7 with `NODE_OPTIONS=--no-experimental-webstorage`: 152 frontend tests / 28 files, 136 standard Rust tests (115 core + 21 integration), contracts/types/build, Prettier, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Two ignored live-completion fixture tests: PostgreSQL 18.6 and one test looping MySQL 8.4 / MariaDB 11.4. Covers outbound/inbound/composite metadata, temporary shadows and existing role/grant/search-path/database/rollback behavior |
+| Passed | Fourteen headless browser workflows: three new FK flows (nine accepted-and-executed outbound/inbound/ON composite joins), seven existing completion flows and four synthetic Snowflake flows. Zero page errors in new flows. PostgreSQL safely generates `ln2` for a new alias; a reverse-join test that assumed `ln` was corrected before the passing run |
+| Local only | Code is on `feat/estimated-query-plans`, unmerged, unpublished and not installed. Fetched `origin/main` remains `a0ba1a6`. R5 is partly integrated; R6 stays partial |
+| Not rerun | Full ignored fixture/full browser suites, prior eighteen plan/timing/console browser workflows and native/package gates on this source. The preceding `48dfb21` native evidence is historical, not qualification of this revision |
+| Open | Remaining R5 diagnostics, typed parameters and R6 authorization compatibility, editor navigation/formatting/snippets; earlier metadata-startup flake investigation; integrated native/fixture/browser qualification; Snowflake observed context and live accounts; release/install/platform/signing/accessibility/performance gates |
+
+Logs: `.cache/r5-joins-before.log`, `r5-joins-validate.log`,
+`r5-joins-fixtures.log` and `r5-joins-browser.log`. Disposable Compose project
+`joinery-assess-r5-integration` uses isolated PostgreSQL port 55433; no production
+account is used. The earlier metadata-startup failure did not recur in this
+validation; its cause remains open. See the
+[remaining integration sequence](implementation-roadmap.md#r6-next-slices).

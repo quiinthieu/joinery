@@ -205,7 +205,7 @@ time, per-loop total, or timing delta is inferred from these measurements.
 
 ## Verification and remaining work
 
-Current Snowflake continuation: `pnpm validate` passes 148 frontend tests in
+Snowflake-only code `48dfb21`: `pnpm validate` passes 148 frontend tests in
 28 files and 136 standard Rust tests (115 core + 21 integration), with complete
 build/types/formatting/check/strict Clippy. Four synthetic Snowflake browser
 flows pass: two new plan workflows plus existing catalog/completion and
@@ -221,9 +221,16 @@ fixtures and eighteen plan/timing/console browser workflows remain prior
 evidence; they were not rerun for this Snowflake-only transport slice. Current
 native provenance and unrun gates are in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-snowflake-estimated-logical-plans-1-november-2026).
 
-Next: reconcile the recorded R5 commit with R6, investigate the earlier metadata
-startup flake before integrated qualification, and design observed Snowflake
-warehouse/session identity before enabling its snapshots. See the
+The first R5 integration slice `e0dad5f` adds live FK JOIN completion. Current
+standard validation passes 152 frontend / 136 Rust, two live metadata fixture
+tests and fourteen completion/Snowflake browser flows. Other R6 plan/timing
+browser suites and native/package gates were not rerun for this slice; the
+earlier native provenance remains specific to `48dfb21`.
+
+Next: integrate the remaining R5 diagnostics/parameters/editor features while
+preserving every R6 preparation and authorization contract, investigate the
+earlier metadata startup flake before integrated qualification, and design
+observed Snowflake warehouse/session identity before enabling its snapshots. See the
 [roadmap](implementation-roadmap.md#r6-next-slices).
 This local candidate is unmerged, unpublished, not installed and not externally
 qualified. PostgreSQL's execution and measurement semantics are documented in
