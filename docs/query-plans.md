@@ -238,7 +238,19 @@ runtime positions still refer to prepared SQL. Original editor selection and
 generated-wrapper mapping must be integrated with parameters/markers. See
 [exact diagnostics evidence](IMPLEMENTATION_STATUS.md#r5-integration-structured-unicode-diagnostics-1-november-2026).
 
-Next: integrate the remaining R5 parameters/editor features while
+The typed-parameter integration `39359e7` now routes Explain and Analyze through
+the same immutable Rust binding plan as query execution. Exact reviewed types,
+values and NULL participate in one-use approval; mandatory Analyze review and
+ReadOnly/production gates remain enforced. PostgreSQL prepares the underlying
+query for EXPLAIN EXECUTE; MySQL/MariaDB use protocol binds, and Snowflake SQL
+API binding coverage remains synthetic. Snapshots require matching canonical
+binding digests and never retain a separate value copy. Generated Explain error
+prefixes map back to input query coordinates; full editor-selection markers
+remain pending. Validation passes 156 frontend / 154 Rust, all 58 SQL fixture
+tests and 23 relevant browser flows; see
+[exact parameter evidence](IMPLEMENTATION_STATUS.md#r5-integration-typed-query-parameters-1-november-2026).
+
+Next: integrate the remaining R5 editor features while
 preserving every R6 preparation and authorization contract, investigate the
 earlier metadata startup flake before integrated qualification, and design
 observed Snowflake warehouse/session identity before enabling its snapshots. See the

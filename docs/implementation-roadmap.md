@@ -218,11 +218,12 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `ce7a7fa` integrates FK JOIN completion and structured Unicode
-diagnostics. R5 and R6 remain partial, local, unmerged and unreleased. Validation
-passes 152 frontend / 146 standard Rust, 54 SQL fixture and 22 relevant browser
-tests, plus three hidden native runs / 30 cleanup cycles. Typed parameters and
-the remaining editor UI are next; see the exact slice evidence below.
+Current candidate `39359e7` integrates FK JOIN completion, structured Unicode
+diagnostics and typed query parameters. R5 and R6 remain partial, local, unmerged
+and unreleased. Validation passes 156 frontend / 154 standard Rust, all 58 SQL
+fixture tests and 23 relevant browser flows. The clean-source native build and
+three hidden WebView runs / 30 cleanup cycles pass. Inline markers and
+statement/error navigation are next; see the slice evidence below.
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -255,6 +256,23 @@ mandatory analysis review and cancellation. Standard validation and three hidden
 native runs pass for the exact code/tree. Inline markers/navigation and typed
 parameters remain pending, including editor-selection and generated-wrapper
 origin mapping. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-structured-unicode-diagnostics-1-november-2026).
+
+### R5 integration slice 3: typed parameters (local `39359e7`)
+
+Recorded `9cfefa2` now uses the common Rust plan store for query execution,
+Explain and Analyze. Named/positional scanning excludes SQL strings/comments;
+all values/types/NULL are validated before review. Bindings are immutable and
+part of approval identity. Parameter drafts stay transient per tab, and history
+keeps templates only. Snapshot comparison rejects different canonical bindings.
+PostgreSQL uses typed SQL PREPARE/EXECUTE with encoded constants; MySQL/MariaDB
+use protocol parameters; Snowflake SQL API bindings have synthetic coverage only.
+
+Rewritten error locations map back to original placeholders; generated Explain
+prefixes map to their input query. Inline markers and selection-to-editor origin
+mapping remain pending. All 58 SQL fixture tests and 23 parameter/plan/timing/
+diagnostic browser flows pass, plus 156 frontend and 154 standard Rust tests.
+Clean-source native evidence and precise scope are in
+[implementation evidence](IMPLEMENTATION_STATUS.md#r5-integration-typed-query-parameters-1-november-2026).
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -379,13 +397,13 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Continue R5 integration after verified FK JOIN and backend Unicode diagnostics
-   (`ce7a7fa`, from `581c527`): typed parameters (`9cfefa2`), then editor markers,
-   navigation, formatting and snippets from recorded `bb77b0f`. Reconcile
-   parameter preparation with every R6 `prepare_explain`/one-use approval path;
-   preserve exact SQL, review requirements, production and ReadOnly gates.
-   Map parameter substitutions, editor selections and generated Explain wrappers
-   back to the original editor buffer before enabling marker/navigation claims.
+1. Continue R5 integration after verified FK JOIN, backend Unicode diagnostics
+   and typed parameters (`39359e7`, from `9cfefa2`). Next integrate inline markers
+   and statement/error navigation (`655d8b7`), then definition/usages/context
+   documentation, selection formatting, snippets and format-save serialization
+   from recorded `bb77b0f`. Preserve every R6 preparation/approval path.
+   Reconcile editor-selection origins with original SQL, substitutions and
+   generated Explain wrappers before claiming marker/navigation support.
    The SQL alias part of `41957ea` is already integrated; its format-save changes
    remain pending. Do not reuse old test counts or assume dirty docs recovered.
    Investigate the earlier concurrent metadata-startup flake, then qualify the

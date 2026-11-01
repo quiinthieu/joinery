@@ -136,7 +136,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / shipped in preview.12; see hub |
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
 | E06 FK JOIN suggestions — DG-E, DG-FK | D, E; `completion_fks_on`, `joinCompletions` | PARTIAL / H | Direct-base-table outbound/inbound composite JOIN and initial ON insertion verified on PG/MySQL/MariaDB; multiple/self constraints and quoting covered. Snowflake relationships and advanced output inference remain open | P1 / High | E03/E04/N03; PM; read | Two live metadata fixtures and three browser flows execute nine inserted composite joins; local `e0dad5f`, unmerged / hold |
-| E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline markers/navigation and selection/generated-wrapper origin integration remain pending | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; three real browser error/correction flows; local `ce7a7fa`, unmerged / hold |
+| E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline markers/navigation and editor-selection origin integration remain pending; typed substitutions and generated Explain input origins are mapped | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; three real browser error/correction flows; local `ce7a7fa`, unmerged / hold |
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
 | E09 SQL formatting — DG-F | E, formatter.worker.ts | PARTIAL / H | Whole-document worker formatting exists; selection formatting and per-dialect settings missing | P2 / Medium | Editor selections; PMS; local | Comments/literals unchanged and stale formatter results ignored / hold |
 | E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
@@ -144,7 +144,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E12 Snippets/live templates — DG-T | E | MISSING / H | Local dialect-aware templates with keyboard placeholders | P2 / Medium | Existing editor/persistence; PMS; local | Expansion/undo and no automatic execution / hold |
 | E13 Statement navigation — DG-X | E selectedStatement | PARTIAL / H | Caret/selection execution exists; next/previous statement navigation missing | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, large documents / hold |
 | E14 Multiple consoles/files — DG-S, DG-SQ | `file_capability.rs` (`GrantKind::SqlFile`), `studio.ts` (`openSqlFile`, `saveSqlFile`, `isTabFileDirty`), `workspace.ts`, `Workbench.tsx`, `App.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Multiple consoles with named session attachment plus capability-gated `.sql` file Open (`⌘O`), atomic in-place Save (`⌘S` on query tabs; `reviewEdits` preserved on table tabs) and Save As (`⇧⌘S`) via reusable `GrantKind::SqlFile` tokens (max 64 grants, ≤ 4 MiB UTF-8, symlink/NUL rejection, sibling `.tmp` + `sync_all` + `rename`, dirty dot, unsaved-close/quit guard, zero raw paths over IPC, excluded from `SavedWorkspace.drafts`) | P1 / High | M06, native file capability; PMSR; local | Rust `sql_file_capabilities` unit test, `studio.test.ts` dirty/draft-exclusion tests, and browser Open/dirty-guard/Save/Save-As workflow; merged in PR #30 (`a0ba1a6`) / hold until released |
-| E15 Query parameters — DG-P | X; no typed editor parameter workflow | MISSING / H | Bind values through engine adapters and include bindings in reviewed plan | P1 / High | Typed execution request; PMS by capability; gate | Literal/comment exclusion, NULL/types, approval digest / hold |
+| E15 Query parameters — DG-P | `params.rs`, `ParameterDialog.tsx`, immutable execution plans and engine adapters | PARTIAL / H | Named/positional typed values and NULL, bounded transient drafts, exact reviewed bindings, parameterized Explain/Analyze and binding-aware comparison verified on PG/MySQL/MariaDB; Snowflake transport remains synthetic and wider engine/native UI qualification remains open | P1 / High | Typed execution request; PMS by capability; gate | Scanner exclusions, precision/Unicode/budget rejection, all kinds/NULL, reviewed writes, one-use/stale approvals, template-only history; six browser flows; local `39359e7`, unmerged / hold |
 | E16 Context documentation — DG-DOC | E, N | MISSING / H | Metadata documentation at caret with permission-aware fallback | P2 / Medium | E11; PMS; read | Correct object, stale/denied metadata / hold |
 
 ## Query execution
@@ -710,3 +710,21 @@ and executed. The browser check reproduced PostgreSQL dropping the `ln` alias;
 the pulled-forward alias fix has a dedicated regression. Other R5 features are
 still recorded source pending integration. Full-suite/native/release and external
 gates remain open; see [exact scope and evidence](IMPLEMENTATION_STATUS.md#r5-integration-live-fk-join-completion-1-november-2026).
+
+### R5 integration: typed query parameters — local `39359e7`
+
+E15 now has bounded typed editor workflows, integrated with all R6 preparation
+and one-use approval paths. Rust canonicalizes values/types/NULL and stores
+immutable bindings with template SQL. Changed bindings reject old approvals and
+snapshot comparison. Drafts remain transient; metadata/history stores templates
+only. Rewritten positions and generated Explain input origins map back before
+future inline editor markers. PostgreSQL uses typed SQL PREPARE/EXECUTE with
+hex-encoded constants, MySQL/MariaDB protocol binds, and Snowflake synthetic
+SQL API bindings; no live Snowflake account qualification is claimed.
+
+Validation passes 156 frontend / 154 standard Rust, all 58 SQL fixture tests and
+23 relevant browser flows, including six new parameter flows. The exact clean
+native baseline and remaining gaps are recorded in
+[implementation evidence](IMPLEMENTATION_STATUS.md#r5-integration-typed-query-parameters-1-november-2026).
+R5/R6 remain partial, local, unmerged, unreleased and not installed. Inline
+markers/navigation, remaining editor features and full qualification continue.

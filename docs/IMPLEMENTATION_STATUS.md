@@ -1,8 +1,8 @@
 # Implementation and release status
 
 Updated 2026-11-01. R1–R4 are merged but unreleased. The local R6 branch now
-integrates R5 FK JOIN completion and structured Unicode diagnostics; typed
-parameters and the remaining editor features are next. R5 and R6 remain partial,
+integrates R5 FK JOIN completion, structured Unicode diagnostics and typed
+query parameters; inline markers/navigation and remaining editor features are next. R5 and R6 remain partial,
 unmerged, unpublished and not installed. Preview.15 is the last verified release;
 its current installed revision was not requalified. The canonical owner-private
 Site records exact tested, merged, published and installed states. Full
@@ -1555,4 +1555,77 @@ Logs: `.cache/r5-diagnostics-before.log`, `r5-diagnostics-validate.log`,
 Owned Compose project `joinery-assess-r5-diagnostics` (PostgreSQL port 55433),
 its five containers and disposable volume were removed after checks. Other
 running services were preserved. Continue with the
+[remaining integration sequence](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: typed query parameters (1 November 2026)
+
+Code `39359e7cfd0dbc33bb9a12e08bd8ca69c04d3c89`, tree
+`81e80804552df82933f72b164b32ac6c25575145`, integrates recorded `9cfefa2`
+with the existing R5 diagnostics/JOIN and seven R6 slices. Named `:name`,
+PostgreSQL `$n`, and MySQL/Snowflake `?` placeholders are scanned outside
+strings, quoted identifiers and comments. Snowflake also accepts `$n`. PostgreSQL
+casts, assignment and JSONB question operators remain SQL; MySQL executable
+comments remain rejected. Positional question marks are numbered across batches.
+
+A transient per-tab dialog accepts text, signed 64-bit integers, decimals,
+booleans, UUIDs, dates, timestamps, JSON and explicit typed NULL. Rust validates
+all values, rejects duplicates/missing/unexpected inputs and canonicalizes
+bindings before storing an immutable execution plan. Limits are 64 distinct
+parameters, 1,024 occurrences, 256 KiB total input value bytes and an 8 MiB
+prepared-plan payload budget; repeated binds are checked before cloning. Invalid
+Unicode calendar values cannot panic; excessive Snowflake decimal precision and
+MySQL fractional timestamp precision are rejected rather than truncated.
+
+The reviewed SQL template, types and canonical values participate in one-use
+approval identity. Changed values expire the prior plan; execution accepts no
+replacement bindings. ReadOnly, production passphrase and mandatory Analyze
+review remain authoritative, including Silent profiles. Parameter drafts clear
+when tabs close; values are absent from persisted workspace/history/audit/local
+metadata in the regression checks. Returned results, plans and server messages
+can naturally contain the submitted values.
+
+PostgreSQL uses typed SQL PREPARE and EXECUTE with hex-encoded UTF-8 constant
+expressions, preserving exact text output; this is not a claim of binary-protocol
+binding. Generated plans prepare the underlying query and use EXPLAIN EXECUTE
+with the same options and bindings. Prepared names are deallocated after success
+or after failed-transaction recovery. MySQL/MariaDB use protocol parameters and
+explicit casts; Snowflake uses SQL API bindings with typed expressions. Snowflake
+transport and rewritten diagnostics have synthetic coverage only, with no live
+account qualification. Redis has no SQL-parameter workflow.
+
+Explain and Analyze use the common parameter dialog and Rust plan store. Plan
+snapshots retain a canonical binding digest and reject comparisons for different
+bindings without retaining a separate copy of the values. Rewritten backend
+positions map to original placeholders; generated Explain prefix coordinates
+map to its submitted input query. PostgreSQL errors referring to EXECUTE internals
+fall back to the complete query rather than inventing token precision. Inline
+markers and mapping from an editor selection to the full editor remain pending.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | A new snapshot regression accepted different bindings before the identity fix; it now rejects them. Additional regressions cover Unicode calendar input, repeated-bind budgets, prototype-shaped parameter names and closed-tab draft cleanup |
+| Passed | `pnpm validate`: 156 frontend tests / 29 files, 154 standard Rust tests (133 core plus 21 integration/unit checks), contracts, TypeScript, production frontend build, formatting, desktop compilation and strict all-target/all-feature Clippy |
+| Passed | All 29 PostgreSQL and 29 MySQL/MariaDB ignored SQL fixture tests, including both case-folded instances. New tests cover all parameter kinds/NULL, exact large values, reviewed writes, Unicode positions, parameterized estimates/analysis, stale approvals and generated-wrapper origins. PostgreSQL 18.6, MySQL 8.4 and MariaDB 11.4; no production account |
+| Passed | Twenty-three relevant headless browser flows: six new parameter flows, fourteen existing plan/timing flows and three error/correction flows. New flows execute reviewed injection-shaped text and large integers, verify template-only history, retain editor SQL, require Analyze review and reject snapshots with different bindings. Zero page errors in new flows |
+| Passed | Hidden macOS arm64 WebView build records the exact clean code/tree above (`sourceDirty: false`); three fresh runs / 30 cleanup cycles pass. Synthetic integration baseline only, with no representative performance or native parameter-dialog qualification claim |
+| Local only | `feat/estimated-query-plans`, unmerged, unpublished and not installed. Fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Not rerun | Full browser suite, dedicated FK/completion/Snowflake browser suites, separate Redis/PostgreSQL-SSH ignored suites, normal distribution bundle verification and external/platform gates. Earlier `48dfb21` normal distribution evidence remains historical |
+| Open | Inline markers/navigation and selected-buffer origins, definition/usages/documentation, selection formatting/snippets/settings, metadata-startup flake cause, observed Snowflake snapshot context, live accounts, release/install/signing/platform/accessibility/performance qualification |
+
+Integration corrections: PostgreSQL SQL PREPARE cannot prepare EXPLAIN directly;
+the adapter now prepares its underlying query. The imported PostgreSQL boolean
+expectation now matches its existing text protocol (`t`). Initial strict Clippy
+reported an explicit counter and a helper below the test module; both are fixed.
+The first browser run passed 20 flows but failed three assertions because
+Playwright treated a disabled option as enabled; those checks now assert the
+actual disabled attribute and all three pass. No product gate or hook was bypassed.
+The earlier metadata-startup failure did not recur; its cause remains open.
+
+Logs: `.cache/r5-params-{validate,pg-full,mysql-full,browser,browser-rerun}.log`,
+`r5-params-snapshots-before.log`, `r5-params-native-build.log`,
+`r5-params-native-runs.log`, `r5-params-native-evidence.json` and
+`.cache/native-smoke/{build,runs}.json`.
+Owned Compose project `joinery-assess-r5-params` (PostgreSQL port 55433), its
+five containers and disposable volume were removed after checks. Other running
+services were preserved. Continue with the
 [remaining integration sequence](implementation-roadmap.md#r6-next-slices).
