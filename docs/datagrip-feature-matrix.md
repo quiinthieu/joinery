@@ -136,7 +136,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / shipped in preview.12; see hub |
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
 | E06 FK JOIN suggestions — DG-E, DG-FK | D, E; `completion_fks_on`, `joinCompletions` | PARTIAL / H | Direct-base-table outbound/inbound composite JOIN and initial ON insertion verified on PG/MySQL/MariaDB; multiple/self constraints and quoting covered. Snowflake relationships and advanced output inference remain open | P1 / High | E03/E04/N03; PM; read | Two live metadata fixtures and three browser flows execute nine inserted composite joins; local `e0dad5f`, unmerged / hold |
-| E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline markers/navigation and editor-selection origin integration remain pending; typed substitutions and generated Explain input origins are mapped | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; three real browser error/correction flows; local `ce7a7fa`, unmerged / hold |
+| E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline marks, gutters, SQLSTATE/details, jumps and statement navigation now use exact submitted source identity; Unicode/CRLF, parameters and Explain origins are reconciled; edits and delayed errors cannot mark changed SQL | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; six real diagnostics/navigation browser flows plus twelve focused unit cases; local `65530c0`, unmerged / hold |
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
 | E09 SQL formatting — DG-F | E, formatter.worker.ts | PARTIAL / H | Whole-document worker formatting exists; selection formatting and per-dialect settings missing | P2 / Medium | Editor selections; PMS; local | Comments/literals unchanged and stale formatter results ignored / hold |
 | E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
@@ -728,3 +728,22 @@ native baseline and remaining gaps are recorded in
 [implementation evidence](IMPLEMENTATION_STATUS.md#r5-integration-typed-query-parameters-1-november-2026).
 R5/R6 remain partial, local, unmerged, unreleased and not installed. Inline
 markers/navigation, remaining editor features and full qualification continue.
+
+### R5 integration: inline diagnostics/navigation — local `65530c0`
+
+E07/X08 now include wavy marks, gutter badges, Unicode line/column, SQLSTATE,
+submitted-batch statement index, detail/hint, error jumps and previous/next SQL
+statement navigation. Exact full source/slice identity passes through parameters
+and review. Backend placeholder/Explain mappings are shifted once into the
+editor, including CRLF/bare CR conversion. Edits clear markers; delayed errors,
+malformed spans and source mismatches cannot mark changed text. Navigation uses
+the configured dialect tree and waits for parsing rather than guessing.
+
+Current validation passes 168 frontend / 154 standard Rust and 26 database
+browser flows (six diagnostics/navigation, six parameters, fourteen plan/timing).
+The 58 ignored SQL fixture passes remain specific to prior `39359e7` and were
+not rerun for this frontend slice. Clean-source macOS arm64 hidden build and
+three WebView runs / 30 cleanup cycles pass; synthetic baseline only. R5/R6 remain
+partial, local, unmerged, unreleased and not installed. Definition/usages/context documentation,
+selection formatting, snippets and format-save serialization remain next;
+[exact evidence and limitations](IMPLEMENTATION_STATUS.md#r5-integration-inline-diagnostics-and-navigation-1-november-2026).

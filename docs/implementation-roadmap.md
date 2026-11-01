@@ -218,12 +218,14 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `39359e7` integrates FK JOIN completion, structured Unicode
-diagnostics and typed query parameters. R5 and R6 remain partial, local, unmerged
-and unreleased. Validation passes 156 frontend / 154 standard Rust, all 58 SQL
-fixture tests and 23 relevant browser flows. The clean-source native build and
-three hidden WebView runs / 30 cleanup cycles pass. Inline markers and
-statement/error navigation are next; see the slice evidence below.
+Current candidate `65530c0` integrates FK JOIN completion, structured Unicode
+diagnostics, typed parameters and inline error/statement navigation. R5 and R6
+remain partial, local, unmerged and unreleased. Current validation passes 168
+frontend / 154 standard Rust and 26 relevant database browser flows. The 58 SQL
+fixture passes belong to preceding `39359e7` and were not rerun for this frontend
+slice. Clean-source macOS arm64 hidden build and three WebView runs / 30 cleanup
+cycles pass; synthetic baseline only. Definition/usages/context documentation, selection
+formatting, snippets and format-save serialization are next.
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -273,6 +275,22 @@ mapping remain pending. All 58 SQL fixture tests and 23 parameter/plan/timing/
 diagnostic browser flows pass, plus 156 frontend and 154 standard Rust tests.
 Clean-source native evidence and precise scope are in
 [implementation evidence](IMPLEMENTATION_STATUS.md#r5-integration-typed-query-parameters-1-november-2026).
+
+### R5 integration slice 4: inline diagnostics/navigation (local `65530c0`)
+
+Recorded `655d8b7` now coexists with parameters and R6 preparation/approval paths.
+Wavy marks, error gutters, SQLSTATE/location details and Jump to error use exact
+submitted source identity. Current-statement and selection offsets pass through
+parameter/review dialogs. Original placeholder and generated Explain input
+coordinates are shifted once; CRLF/bare CR map to CodeMirror newline units.
+Changed documents and malformed/out-of-slice locations cannot receive marks.
+Statement navigation uses the active dialect parser and has no lexical guess
+while parsing remains incomplete. Redis command behavior is preserved.
+
+Twelve focused unit cases and six diagnostic browser flows pass, including
+parameterized Run/Explain/Analyze and a late error after an edit. Twenty existing
+parameter/plan/timing browser flows and standard validation also pass. See
+[exact evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-inline-diagnostics-and-navigation-1-november-2026).
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -397,17 +415,15 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Continue R5 integration after verified FK JOIN, backend Unicode diagnostics
-   and typed parameters (`39359e7`, from `9cfefa2`). Next integrate inline markers
-   and statement/error navigation (`655d8b7`), then definition/usages/context
-   documentation, selection formatting, snippets and format-save serialization
-   from recorded `bb77b0f`. Preserve every R6 preparation/approval path.
-   Reconcile editor-selection origins with original SQL, substitutions and
-   generated Explain wrappers before claiming marker/navigation support.
-   The SQL alias part of `41957ea` is already integrated; its format-save changes
-   remain pending. Do not reuse old test counts or assume dirty docs recovered.
-   Investigate the earlier concurrent metadata-startup flake, then qualify the
-   combined source with relevant full fixture/browser/native checks. Merge,
+1. Continue R5 after verified FK JOIN, backend diagnostics, typed parameters and
+   inline error/statement navigation (`65530c0`). Next integrate definition/usages/
+   context documentation (`b5a744d`), selection formatting/settings/snippets
+   (`3ca2ad2`), then format-save serialization (`41957ea`) and relevant recorded
+   `bb77b0f` regressions. Preserve every R6 preparation/approval path and exact
+   editor source identity. The SQL alias part of `41957ea` is already integrated.
+   Do not reuse old counts or assume former dirty documentation was recovered.
+   Investigate the earlier metadata-startup flake, then qualify the combined
+   source with relevant full fixture/browser/native checks. Merge, application
    release and installed-version gates remain separate.
 2. Design observed Snowflake warehouse/session identity before snapshot support.
    Keep capture explicitly unavailable meanwhile. Live read-only account

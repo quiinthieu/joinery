@@ -250,10 +250,23 @@ remain pending. Validation passes 156 frontend / 154 Rust, all 58 SQL fixture
 tests and 23 relevant browser flows; see
 [exact parameter evidence](IMPLEMENTATION_STATUS.md#r5-integration-typed-query-parameters-1-november-2026).
 
-Next: integrate the remaining R5 editor features while
-preserving every R6 preparation and authorization contract, investigate the
-earlier metadata startup flake before integrated qualification, and design
-observed Snowflake warehouse/session identity before enabling its snapshots. See the
+Inline integration `65530c0` now carries exact document/slice origins through the
+parameter and review dialogs for Run, Explain and Analyze. Structured errors keep
+their backend input-query coordinates; the editor applies the slice offset once
+and converts file line endings into CodeMirror newline units. Error marks and jumps
+reject changed documents and invalid source spans. Real
+PostgreSQL/MySQL/MariaDB flows cover selected parameterized Explain/Analyze errors
+and a delayed error after editing. All 26 relevant browser flows and standard
+validation (168 frontend / 154 Rust) pass; the prior 58 ignored SQL fixture passes
+were not rerun for this frontend-only change. Clean-source macOS arm64 hidden
+build and three WebView runs / 30 cleanup cycles pass; synthetic baseline only. See
+[inline evidence](IMPLEMENTATION_STATUS.md#r5-integration-inline-diagnostics-and-navigation-1-november-2026).
+
+Next: integrate remaining definition/usages/context documentation, selection
+formatting, snippets and format-save serialization while preserving every R6
+preparation and authorization contract. Investigate the earlier metadata-startup
+flake before combined qualification, and design observed Snowflake warehouse/
+session identity before enabling snapshots. See the
 [roadmap](implementation-roadmap.md#r6-next-slices).
 This local candidate is unmerged, unpublished, not installed and not externally
 qualified. PostgreSQL's execution and measurement semantics are documented in

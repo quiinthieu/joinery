@@ -1,9 +1,9 @@
 # Implementation and release status
 
 Updated 2026-11-01. R1–R4 are merged but unreleased. The local R6 branch now
-integrates R5 FK JOIN completion, structured Unicode diagnostics and typed
-query parameters; inline markers/navigation and remaining editor features are next. R5 and R6 remain partial,
-unmerged, unpublished and not installed. Preview.15 is the last verified release;
+integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
+query parameters and inline error/statement navigation. Remaining editor features
+are next. R5 and R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last verified release;
 its current installed revision was not requalified. The canonical owner-private
 Site records exact tested, merged, published and installed states. Full
 multi-engine v1.0 qualification remains pending.
@@ -1629,3 +1629,42 @@ Owned Compose project `joinery-assess-r5-params` (PostgreSQL port 55433), its
 five containers and disposable volume were removed after checks. Other running
 services were preserved. Continue with the
 [remaining integration sequence](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: inline diagnostics and navigation (1 November 2026)
+
+Code `65530c035c25586415ce0b6ba40de6bf14817187`, tree
+`3848d35d774b6e62953c7c027b165067a3ed49b1`, integrates recorded `655d8b7`
+with the current R6/parameter branch. Error underlines, gutter badges, Unicode
+line/column, submitted-batch statement index, SQLSTATE, detail/hint and **Jump to
+error** preserve structured parser/policy/server diagnostics. Previous/next SQL
+statement navigation uses the active CodeMirror dialect tree (`⌥⌘↑/↓` or
+`Ctrl+Alt+↑/↓`) and command palette. It does not guess statement boundaries while
+a large document is still parsing. Redis keeps its command console behavior.
+
+Execution captures the exact submitted slice, full source and UTF-16 offset.
+That origin travels through parameter entry, preparation and one-use review.
+Backend coordinates already map substitutions and generated Explain wrappers to
+input SQL; the frontend adds the editor offset once. CRLF/bare CR file positions
+convert to CodeMirror newline units. Invalid/out-of-slice spans, absent origins
+and changed documents have no marker or jump. Editing clears the captured origin;
+an old error arriving after an edit may display its message but cannot mark the
+new text. Origins are transient and do not enter workspace snapshots.
+
+| State | Evidence for this source |
+|---|---|
+| Regression baseline | Recorded navigation tests could not import the absent module before integration. Twelve focused cases now cover dialect statement ranges, selection offsets, Unicode/CRLF/bare CR, source identity, malformed spans and EOF |
+| Passed | `pnpm validate`: 168 frontend tests / 30 files, 154 standard Rust tests (133 core plus 21 integration/unit checks), contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Passed | All 26 relevant real PostgreSQL/MySQL/MariaDB headless browser flows: six diagnostics/navigation flows, six parameter flows and fourteen plan/timing flows. Diagnostics cover batches, current statements, explicit selections, parameterized Run/Explain/Analyze, exact jump selection, edit invalidation and a delayed PostgreSQL error arriving after a replacement edit; zero page errors in the new flows |
+| Native | Hidden macOS arm64 build records the exact clean code/tree above (`sourceDirty: false`); three fresh processes / 30 cleanup cycles pass (3.77 / 3.06 / 3.05 seconds). Fixture SHA-256 `0c8cc85395f5c8cc5ad58faa850489e20d1a29013f2d53ada8caa682d8047e0f`. Synthetic baseline only; no native error-UI, total-memory, cold-start or display-FPS qualification |
+| Local only | `feat/estimated-query-plans`, unmerged, unreleased and not installed. Fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Prior evidence | All 58 ignored SQL fixture passes belong to `39359e7`; no ignored SQL/Redis/SSH fixture suite was rerun for this frontend-only slice. Current browser checks use fresh PostgreSQL 18, MySQL 8.4 and MariaDB 11.4 fixtures |
+| Not rerun | Full browser suite, dedicated FK/completion/Snowflake suites, normal distribution bundle verification, live accounts and platform/accessibility/performance gates. Native baseline does not qualify the error UI or representative performance |
+| Next | Definition/usages/context documentation (`b5a744d`), selection formatting/settings/snippets (`3ca2ad2`), format-save serialization (`41957ea`) and relevant recorded `bb77b0f` regressions. Investigate the earlier metadata-startup flake and qualify the combined source before authorized delivery |
+
+The first and final 26-flow browser runs passed. The final run includes the
+line-ending correction and delayed-error case. No hooks or product safety gates
+were bypassed. The earlier metadata-startup failure did not recur; its cause
+remains open. Logs are `.cache/r5-inline-{validate-final,browser-final,native-build,native-runs}.log`
+and immutable `.cache/r5-inline-native-evidence.json`. Owned Compose project
+`joinery-assess-r5-inline`, its three containers and disposable volume were removed.
+Other services and the installed application were preserved.
