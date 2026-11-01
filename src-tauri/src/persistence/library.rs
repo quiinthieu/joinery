@@ -190,14 +190,27 @@ fn write_bookmarks(connection: &Connection, items: &[SavedBookmark]) -> AppResul
     Ok(())
 }
 
-fn validate_sql_format_settings(settings: &SqlFormatSettings) -> AppResult<()> {
-    if !matches!(settings.indent_width, 2 | 4) {
+fn validate_sql_format_style(indent_width: u8, lines_between_queries: u8) -> AppResult<()> {
+    if !matches!(indent_width, 2 | 4) {
         return Err(AppError::invalid("SQL indent width must be 2 or 4 spaces"));
     }
-    if !matches!(settings.lines_between_queries, 1 | 2) {
+    if !matches!(lines_between_queries, 1 | 2) {
         return Err(AppError::invalid(
             "SQL lines between queries must be 1 or 2",
         ));
+    }
+    Ok(())
+}
+
+fn validate_sql_format_settings(settings: &SqlFormatSettings) -> AppResult<()> {
+    validate_sql_format_style(settings.indent_width, settings.lines_between_queries)?;
+    if let Some(dialects) = settings.dialects {
+        for style in [dialects.postgres, dialects.mysql, dialects.snowflake]
+            .into_iter()
+            .flatten()
+        {
+            validate_sql_format_style(style.indent_width, style.lines_between_queries)?;
+        }
     }
     Ok(())
 }
@@ -959,6 +972,55 @@ mod tests {
     }
 
     #[test]
+    fn sql_dialect_styles_migrate_validate_and_survive_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Persistence::open(dir.path()).unwrap();
+        let legacy = r#"{"keywordCase":"upper","indentWidth":2,"linesBetweenQueries":1}"#;
+        store.set_setting("sql-format-settings", legacy).unwrap();
+        assert_eq!(
+            store.sql_format_settings().unwrap(),
+            SqlFormatSettings::default()
+        );
+
+        let configured: SqlFormatSettings = serde_json::from_str(
+            r#"{"keywordCase":"upper","indentWidth":2,"linesBetweenQueries":1,"dialects":{"postgres":{"keywordCase":"lower","indentWidth":4,"linesBetweenQueries":2},"mysql":{"keywordCase":"preserve","indentWidth":2,"linesBetweenQueries":1},"snowflake":{"keywordCase":"upper","indentWidth":4,"linesBetweenQueries":1}}}"#,
+        ).unwrap();
+        store.save_sql_format_settings(configured).unwrap();
+        let backup = store.create_metadata_backup().unwrap();
+        store
+            .save_sql_format_settings(SqlFormatSettings::default())
+            .unwrap();
+        store
+            .restore_metadata_backup(&backup.id, &backup.digest)
+            .unwrap();
+        assert_eq!(store.sql_format_settings().unwrap(), configured);
+
+        for engine in ["postgres", "mysql", "snowflake", "redis"] {
+            for style in [
+                r#"{"keywordCase":"lower","indentWidth":3,"linesBetweenQueries":1}"#,
+                r#"{"keywordCase":"lower","indentWidth":2,"linesBetweenQueries":5}"#,
+                r#"{"keywordCase":"title","indentWidth":2,"linesBetweenQueries":1}"#,
+                r#"{"keywordCase":"lower"}"#,
+            ] {
+                let json = format!(
+                    r#"{{"keywordCase":"upper","indentWidth":2,"linesBetweenQueries":1,"dialects":{{"{engine}":{style}}}}}"#,
+                );
+                store.set_setting("sql-format-settings", &json).unwrap();
+                assert_eq!(
+                    store.sql_format_settings().unwrap_err().code,
+                    ErrorCode::InvalidInput
+                );
+                assert_eq!(
+                    store.create_metadata_backup().unwrap_err().code,
+                    ErrorCode::InvalidInput
+                );
+            }
+        }
+        store.set_setting("sql-format-settings", legacy).unwrap();
+        assert_eq!(store.sql_format_settings().unwrap().dialects, None);
+    }
+
+    #[test]
     fn sql_format_settings_and_snippets_validate_bounds_triggers_and_backup_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let store = Persistence::open(dir.path()).unwrap();
@@ -969,6 +1031,7 @@ mod tests {
                 keyword_case: SqlKeywordCase::Upper,
                 indent_width: 2,
                 lines_between_queries: 1,
+                dialects: None,
             }
         );
 
@@ -977,6 +1040,7 @@ mod tests {
                 keyword_case: SqlKeywordCase::Lower,
                 indent_width: 4,
                 lines_between_queries: 2,
+                dialects: None,
             })
             .unwrap();
         assert_eq!(store.sql_format_settings().unwrap(), updated_fmt);
@@ -987,6 +1051,7 @@ mod tests {
                     keyword_case: SqlKeywordCase::Preserve,
                     indent_width: 3,
                     lines_between_queries: 1,
+                    dialects: None,
                 })
                 .unwrap_err()
                 .code,
@@ -998,6 +1063,7 @@ mod tests {
                     keyword_case: SqlKeywordCase::Preserve,
                     indent_width: 2,
                     lines_between_queries: 5,
+                    dialects: None,
                 })
                 .unwrap_err()
                 .code,

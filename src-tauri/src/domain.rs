@@ -923,6 +923,31 @@ pub struct SqlFormatSettings {
     pub keyword_case: SqlKeywordCase,
     pub indent_width: u8,
     pub lines_between_queries: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub dialects: Option<SqlFormatDialects>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFormatStyle {
+    pub keyword_case: SqlKeywordCase,
+    pub indent_width: u8,
+    pub lines_between_queries: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFormatDialects {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub postgres: Option<SqlFormatStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mysql: Option<SqlFormatStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake: Option<SqlFormatStyle>,
 }
 
 impl Default for SqlFormatSettings {
@@ -931,6 +956,7 @@ impl Default for SqlFormatSettings {
             keyword_case: SqlKeywordCase::Upper,
             indent_width: 2,
             lines_between_queries: 1,
+            dialects: None,
         }
     }
 }

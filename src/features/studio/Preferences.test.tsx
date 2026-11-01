@@ -157,3 +157,43 @@ test("rapid preference changes compose and persist in order, with actionable sav
   await screen.findByText("Could not save metadata");
   expect(useStudio.getState().sqlFormatSettings.keywordCase).toBe("lower");
 });
+
+test("engine styles inherit, stay independent, persist across scope switches and reset", async () => {
+  vi.mocked(client.call).mockImplementation((command, args) =>
+    Promise.resolve(command === "save_sql_format_settings" ? args?.settings : []),
+  );
+  render(<Preferences onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Formatting style"), { target: { value: "postgres" } });
+  expect(screen.queryByRole("button", { name: "Use global defaults" })).toBeNull();
+  fireEvent.change(screen.getByLabelText("SQL keyword case"), { target: { value: "lower" } });
+  fireEvent.change(screen.getByLabelText("SQL indent width"), { target: { value: "4" } });
+  fireEvent.change(screen.getByLabelText("Formatting style"), { target: { value: "mysql" } });
+  expect((screen.getByLabelText("SQL keyword case") as HTMLSelectElement).value).toBe("upper");
+  fireEvent.change(screen.getByLabelText("SQL keyword case"), { target: { value: "preserve" } });
+  fireEvent.change(screen.getByLabelText("Formatting style"), { target: { value: "global" } });
+  fireEvent.change(screen.getByLabelText("Lines between SQL queries"), { target: { value: "2" } });
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  expect(useStudio.getState().sqlFormatSettings).toEqual({
+    ...DEFAULT_SQL_FORMAT_SETTINGS,
+    linesBetweenQueries: 2,
+    dialects: {
+      postgres: { keywordCase: "lower", indentWidth: 4, linesBetweenQueries: 1 },
+      mysql: { keywordCase: "preserve", indentWidth: 2, linesBetweenQueries: 1 },
+    },
+  });
+  fireEvent.change(screen.getByLabelText("Formatting style"), { target: { value: "postgres" } });
+  expect((screen.getByLabelText("Lines between SQL queries") as HTMLSelectElement).value).toBe("1");
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Style reset could not be saved"));
+  fireEvent.click(screen.getByRole("button", { name: "Use global defaults" }));
+  await screen.findByText("Style reset could not be saved");
+  expect((screen.getByLabelText("SQL keyword case") as HTMLSelectElement).value).toBe("lower");
+  fireEvent.click(screen.getByRole("button", { name: "Use global defaults" }));
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  expect((screen.getByLabelText("Lines between SQL queries") as HTMLSelectElement).value).toBe("2");
+  expect(useStudio.getState().sqlFormatSettings.dialects?.postgres).toBeUndefined();
+  expect(useStudio.getState().sqlFormatSettings.dialects?.mysql?.keywordCase).toBe("preserve");
+  fireEvent.change(screen.getByLabelText("Formatting style"), { target: { value: "mysql" } });
+  fireEvent.click(screen.getByRole("button", { name: "Use global defaults" }));
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  expect(useStudio.getState().sqlFormatSettings.dialects).toBeUndefined();
+});

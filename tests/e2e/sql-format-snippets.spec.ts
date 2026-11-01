@@ -44,6 +44,11 @@ for (const engine of ["PostgreSQL", "MySQL", "MariaDB"] as const) {
     const editor = page.getByRole("textbox", { name: "SQL editor" });
     await page.getByRole("button", { name: /^Preferences/ }).click();
     const prefs = page.getByRole("dialog", { name: "Preferences" });
+    const scope = engine === "PostgreSQL" ? "postgres" : "mysql";
+    await prefs.getByLabel("Formatting style").selectOption(scope);
+    const reset = prefs.getByRole("button", { name: "Use global defaults" });
+    if (await reset.count()) await reset.click();
+    await prefs.getByLabel("Formatting style").selectOption("global");
     await prefs.getByLabel("SQL keyword case").selectOption("lower");
     await prefs.getByLabel("SQL indent width").selectOption("4");
     await prefs.getByLabel("Lines between SQL queries").selectOption("2");
@@ -124,6 +129,33 @@ for (const engine of ["PostgreSQL", "MySQL", "MariaDB"] as const) {
     );
     await prefs.getByRole("button", { name: `Delete snippet ${trigger}` }).click();
     await expect(prefs.getByRole("button", { name: `Edit snippet ${trigger}` })).toHaveCount(0);
+
+    // A dialect style persists separately from global defaults and is selected
+    // automatically by the active console, including MariaDB's MySQL dialect.
+    await prefs.getByLabel("Formatting style").selectOption(scope);
+    await prefs.getByLabel("SQL keyword case").selectOption("upper");
+    await prefs.getByLabel("SQL indent width").selectOption("2");
+    await prefs.getByRole("button", { name: "Done", exact: true }).click();
+    await page.reload();
+    await page.getByRole("button", { name: /^Preferences/ }).click();
+    await expect(prefs.getByLabel("SQL keyword case")).toHaveValue("lower");
+    await expect(prefs.getByLabel("SQL indent width")).toHaveValue("4");
+    await prefs.getByLabel("Formatting style").selectOption(scope);
+    await expect(prefs.getByLabel("SQL keyword case")).toHaveValue("upper");
+    await expect(prefs.getByLabel("SQL indent width")).toHaveValue("2");
+    await prefs.getByRole("button", { name: "Done", exact: true }).click();
+    await page.getByRole("button", { name: "New query tab" }).click();
+    await page.getByLabel("Query connection").selectOption({ label: `${engine} format snippets` });
+    await editor.fill("select 7 as answer;");
+    await page.getByRole("button", { name: "Format", exact: true }).click();
+    await expect(editor).toHaveText("SELECT  7 AS answer;");
+    await page.getByRole("button", { name: /^Preferences/ }).click();
+    await prefs.getByLabel("Formatting style").selectOption(scope);
+    await prefs.getByRole("button", { name: "Use global defaults" }).click();
+    await expect(prefs.getByRole("button", { name: "Use global defaults" })).toHaveCount(0);
+    await prefs.getByRole("button", { name: "Done", exact: true }).click();
+    await page.getByRole("button", { name: "Format", exact: true }).click();
+    await expect(editor).toHaveText("select    7 as answer;");
     expect(errors).toEqual([]);
   });
 }

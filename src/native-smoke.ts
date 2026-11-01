@@ -324,6 +324,11 @@ export async function runNativeSmoke() {
       keywordCase: "lower",
       indentWidth: 4,
       linesBetweenQueries: 2,
+      dialects: {
+        postgres: { keywordCase: "lower", indentWidth: 4, linesBetweenQueries: 2 },
+        mysql: { keywordCase: "upper", indentWidth: 2, linesBetweenQueries: 1 },
+        snowflake: { keywordCase: "preserve", indentWidth: 4, linesBetweenQueries: 1 },
+      },
     });
     const savedSnippet = await useStudio.getState().saveSqlSnippet({
       id: null,
@@ -336,6 +341,8 @@ export async function runNativeSmoke() {
     assert(
       reloaded.sqlFormatSettings.keywordCase === "lower" &&
         reloaded.sqlFormatSettings.indentWidth === 4 &&
+        JSON.stringify(reloaded.sqlFormatSettings.dialects) ===
+          JSON.stringify(savedFormat.dialects) &&
         reloaded.sqlSnippets.some(
           (s) =>
             s.id === savedSnippet.id &&

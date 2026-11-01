@@ -49,6 +49,21 @@ test("formats SQL text honoring keyword case, indent width, and lines between qu
   expect(preserved).toContain("Select\n  id\nFrom\n  orders");
 });
 
+test("dialect styles override global formatting without leaking into another engine", () => {
+  const settings = {
+    ...DEFAULT_SQL_FORMAT_SETTINGS,
+    dialects: {
+      postgres: { keywordCase: "lower" as const, indentWidth: 4, linesBetweenQueries: 2 },
+      snowflake: { keywordCase: "preserve" as const, indentWidth: 4, linesBetweenQueries: 1 },
+    },
+  };
+  const raw = "Select id From orders; Select total From orders;";
+  expect(formatSqlText(raw, "postgresql", settings)).toContain("select\n    id");
+  expect(formatSqlText(raw, "postgresql", settings)).toContain(";\n\n\nselect");
+  expect(formatSqlText(raw, "mysql", settings)).toContain("SELECT\n  id");
+  expect(formatSqlText(raw, "snowflake", settings)).toContain("Select\n    id");
+});
+
 test("selection formatting replaces only the selected range and preserves trailing line breaks", () => {
   const before = "select   1  from dual;\n";
   const middle = "select id, total from orders where total > 10;\n";

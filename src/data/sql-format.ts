@@ -1,14 +1,39 @@
 import type { EditorState, Text } from "@codemirror/state";
 import { format } from "sql-formatter";
-import type { EngineKind, SqlFormatSettings } from "../ipc/generated";
+import type { EngineKind, SqlFormatSettings, SqlFormatStyle } from "../ipc/generated";
 
 export type SqlFormatterDialect = "postgresql" | "mysql" | "snowflake";
+export type SqlFormatScope = "global" | "postgres" | "mysql" | "snowflake";
 
 export const DEFAULT_SQL_FORMAT_SETTINGS: SqlFormatSettings = {
   keywordCase: "upper",
   indentWidth: 2,
   linesBetweenQueries: 1,
 };
+
+export function sqlFormatStyle(settings: SqlFormatSettings, scope: SqlFormatScope): SqlFormatStyle {
+  const override = scope === "global" ? undefined : settings.dialects?.[scope];
+  return (
+    override ?? {
+      keywordCase: settings.keywordCase,
+      indentWidth: settings.indentWidth,
+      linesBetweenQueries: settings.linesBetweenQueries,
+    }
+  );
+}
+
+export function updateSqlFormatStyle(
+  settings: SqlFormatSettings,
+  scope: SqlFormatScope,
+  patch: Partial<SqlFormatStyle> | null,
+): SqlFormatSettings {
+  if (scope === "global") return { ...settings, ...patch };
+  const dialects = { ...settings.dialects };
+  if (patch) dialects[scope] = { ...sqlFormatStyle(settings, scope), ...patch };
+  else delete dialects[scope];
+  const { dialects: _old, ...defaults } = settings;
+  return Object.keys(dialects).length ? { ...defaults, dialects } : defaults;
+}
 
 export function sqlFormatterLanguage(engine: EngineKind): SqlFormatterDialect | null {
   switch (engine) {
@@ -28,11 +53,12 @@ export function formatSqlText(
   language: SqlFormatterDialect,
   settings: SqlFormatSettings = DEFAULT_SQL_FORMAT_SETTINGS,
 ): string {
+  const style = sqlFormatStyle(settings, language === "postgresql" ? "postgres" : language);
   return format(sql, {
     language,
-    keywordCase: settings.keywordCase,
-    tabWidth: settings.indentWidth,
-    linesBetweenQueries: settings.linesBetweenQueries,
+    keywordCase: style.keywordCase,
+    tabWidth: style.indentWidth,
+    linesBetweenQueries: style.linesBetweenQueries,
     // Match Joinery's bind syntax without consuming casts or Snowflake paths.
     // Keeping the original token text also preserves case-sensitive bind keys.
     paramTypes: {

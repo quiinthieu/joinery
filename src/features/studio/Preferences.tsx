@@ -12,14 +12,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
-import type {
-  EngineKind,
-  SqlFormatSettings,
-  SqlKeywordCase,
-  SqlSnippet,
-} from "../../ipc/generated";
+import type { EngineKind, SqlFormatStyle, SqlKeywordCase, SqlSnippet } from "../../ipc/generated";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
 import { useStudio } from "../../state/studio";
+import { sqlFormatStyle, updateSqlFormatStyle, type SqlFormatScope } from "../../data/sql-format";
 import { GroupManager } from "../connections/GroupManager";
 import { MetadataRecovery } from "./MetadataRecovery";
 
@@ -44,6 +40,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
     [error, setError] = useState<string | null>(null),
     [formatError, setFormatError] = useState<string | null>(null),
     [formatPending, setFormatPending] = useState(0),
+    [formatScope, setFormatScope] = useState<SqlFormatScope>("global"),
     [editingSnippetId, setEditingSnippetId] = useState<string | null>(null),
     [snippetTrigger, setSnippetTrigger] = useState(""),
     [snippetTitle, setSnippetTitle] = useState(""),
@@ -67,14 +64,16 @@ export function Preferences({ onClose }: { onClose(): void }) {
       setBusy(false);
     }
   }
-  async function updateFormatSettings(patch: Partial<SqlFormatSettings>) {
+  const formatStyle = sqlFormatStyle(state.sqlFormatSettings, formatScope);
+  const hasFormatOverride =
+    formatScope !== "global" && !!state.sqlFormatSettings.dialects?.[formatScope];
+  async function updateFormatSettings(patch: Partial<SqlFormatStyle> | null) {
     setFormatError(null);
     setFormatPending((pending) => pending + 1);
     try {
-      await state.saveSqlFormatSettings({
-        ...useStudio.getState().sqlFormatSettings,
-        ...patch,
-      });
+      await state.saveSqlFormatSettings(
+        updateSqlFormatStyle(useStudio.getState().sqlFormatSettings, formatScope, patch),
+      );
     } catch (err) {
       setFormatError(messageOf(err));
     } finally {
@@ -188,13 +187,34 @@ export function Preferences({ onClose }: { onClose(): void }) {
             Format SQL (⇧⌘F) formats the active selection when text is highlighted, or the full
             console otherwise.
           </p>
+          <label>
+            Formatting style
+            <select
+              aria-label="Formatting style"
+              disabled={busy || snippetBusy}
+              value={formatScope}
+              onChange={(event) => setFormatScope(event.target.value as SqlFormatScope)}
+            >
+              <option value="global">Global defaults</option>
+              <option value="postgres">PostgreSQL</option>
+              <option value="mysql">MySQL / MariaDB</option>
+              <option value="snowflake">Snowflake</option>
+            </select>
+          </label>
+          {formatScope !== "global" && (
+            <p className="form-note">
+              {hasFormatOverride
+                ? "This engine uses a custom style."
+                : "This engine inherits global defaults. Changing a field creates a custom style."}
+            </p>
+          )}
           <div className="format-settings-grid">
             <label>
               SQL keyword case
               <select
                 aria-label="SQL keyword case"
                 disabled={busy || snippetBusy}
-                value={state.sqlFormatSettings.keywordCase}
+                value={formatStyle.keywordCase}
                 onChange={(event) =>
                   void updateFormatSettings({
                     keywordCase: event.target.value as SqlKeywordCase,
@@ -211,7 +231,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
               <select
                 aria-label="SQL indent width"
                 disabled={busy || snippetBusy}
-                value={String(state.sqlFormatSettings.indentWidth)}
+                value={String(formatStyle.indentWidth)}
                 onChange={(event) =>
                   void updateFormatSettings({
                     indentWidth: Number(event.target.value),
@@ -227,7 +247,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
               <select
                 aria-label="Lines between SQL queries"
                 disabled={busy || snippetBusy}
-                value={String(state.sqlFormatSettings.linesBetweenQueries)}
+                value={String(formatStyle.linesBetweenQueries)}
                 onChange={(event) =>
                   void updateFormatSettings({
                     linesBetweenQueries: Number(event.target.value),
@@ -239,6 +259,16 @@ export function Preferences({ onClose }: { onClose(): void }) {
               </select>
             </label>
           </div>
+          {hasFormatOverride && (
+            <button
+              type="button"
+              className="button ghost small"
+              disabled={busy || snippetBusy}
+              onClick={() => void updateFormatSettings(null)}
+            >
+              Use global defaults
+            </button>
+          )}
           <InlineError message={formatError} />
           {formatPending > 0 && <p role="status">Saving formatting preferences…</p>}
         </section>

@@ -80,6 +80,8 @@ fn main() {
         BookmarkTarget::decl(),
         SavedBookmark::decl(),
         SqlKeywordCase::decl(),
+        SqlFormatStyle::decl(),
+        SqlFormatDialects::decl(),
         SqlFormatSettings::decl(),
         SqlSnippet::decl(),
         SqlSnippetInput::decl(),
