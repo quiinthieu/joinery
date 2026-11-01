@@ -1270,3 +1270,37 @@ unrelated documentation edits remain intact. The application is local,
 unmerged, unpublished and not installed. R6 remains partial; the
 [next slices](implementation-roadmap.md#r6-next-slices) cover distinct metrics
 and independent engine adapters.
+
+## R6 execution timing and observed plan context (1 November 2026)
+
+Code `cb1ca1a` separates query queue wait, backend active/total, first
+nonempty driver row batch and client request-to-finish duration. Zero remains
+valid; unavailable rows/backend/server metrics remain unavailable. Batch timing
+is not first-wire-row or render latency. PostgreSQL server plan times remain
+separate. No server/network/render metrics are derived. See the exact
+[measurement scopes](query-plans.md#execution-timing).
+
+Plan capture identity now uses Rust-observed context immediately before the
+recognized plan runs, after acquiring its serialized editor lane. Queued session
+changes therefore precede observation. Failure withholds capture instead of
+using frontend cache; ordinary plan viewing remains available. The extra
+metadata probe is included in active time. Data state and unobserved settings
+remain outside the comparison guarantee.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 136 frontend tests (26 files), 132 standard Rust tests, formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Full disposable PostgreSQL 18 fixture suite: 26 tests, including new queued context/timing and empty/error/multi-result tests; active and queued cancellation now assert unavailable first batch when no rows arrive. Existing approval/session, safety, grid, data movement, context and cleanup tests pass |
+| Passed | Twelve relevant browser workflows on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4: eight plan/timing flows and four console/file regressions. Metrics are visible on all three engines; unavailable context withholds capture while preserving tree view; empty/error/multi-result timing is exercised end to end |
+| Passed | New frontend state/presentation tests distinguish measured zero from unavailable, reject stale/foreign-run measurements, clear timings on rebinding and exclude them from workspace restoration |
+| Passed | Clean-source `cb1ca1a65e1edb5ab06810024f943f267e49d688` macOS production bundle with strict ad-hoc signature verification; executable 20.93 MiB, SHA-256 `ec91600fbb003a9a440448264b802731295a490ffb08906617afb04ada0107a7` |
+| Passed | Three hidden native synthetic integration runs / 30 cleanup cycles; 5805 / 3135 / 3146 ms, peak main-process RSS 106.17–107.25 MiB. Existing IPC/cache/session cleanup checks pass; this fixture does not exercise the timing disclosure/plan comparison UI or qualify cold visible startup, total idle memory or FPS |
+| Provenance | Native fixture revision `cb1ca1a65e1edb5ab06810024f943f267e49d688`, tree `3c0a1f709d288656953a13610014e11040fcd826`, `sourceDirty: false`, binary SHA-256 `b710563e97c23f5b0f23caaf21228de8afee3513116a9ccf02416d73fc18d6ef`, ad-hoc bundle binary SHA-256 `e75c049f9f58f179a330731fe213ef607ab78289411d1c1718325e04fc82700b` |
+| Environment | Node 26.7.0 uses `NODE_OPTIONS=--no-experimental-webstorage`; no application workaround. Final sources held fixed for validation/fixture/browser checks |
+| Open | Full MySQL/MariaDB/Redis/SSH ignored suites and full browser suite for this slice; independent R5 rerun/integration; installed revision; live Snowflake; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative total-memory/cold-start/FPS qualification |
+
+Disposable Compose project `joinery-assess-timing` uses PostgreSQL port 55433
+and is removed after checks. The unrelated R5 worktree remains intact. This
+application candidate is local, unmerged, unpublished and not installed.
+R6 remains partial; independent engine adapters and integrated qualification
+continue in the [roadmap](implementation-roadmap.md#r6-next-slices).

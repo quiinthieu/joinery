@@ -267,27 +267,47 @@ invalid input, mismatch, exact numeric text, cleanup and persistence exclusion.
 See [verification evidence](IMPLEMENTATION_STATUS.md#r6-bounded-plan-snapshots-and-comparison-1-november-2026).
 This branch remains separate from R5, unmerged and unreleased.
 
+### R6 slice 4: execution timing and observed plan context (local `cb1ca1a`)
+
+Query runs separately measure queue wait, backend active/total, first nonempty
+row batch and client request-to-finish time. Missing values remain unavailable;
+zero remains visible. Driver batch delivery is not first-wire-row latency or
+render time. Server planning/execution values stay separate in PostgreSQL plans.
+Plan capture now uses context observed by Rust after acquiring the editor lane;
+unavailable observations withhold capture rather than reusing frontend state.
+Database state and unobserved settings remain outside this identity guarantee.
+
+Standard validation passes 136 frontend tests and 132 standard Rust tests.
+All 26 PostgreSQL fixture tests and twelve relevant browser flows pass; these
+include queued context changes, empty/error/multi-result timing, active/queued
+cancellation and unavailable-context capture denial. Clean-source macOS gates
+are recorded in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-execution-timing-and-observed-plan-context-1-november-2026).
+This branch remains separate from R5, unmerged and unreleased.
+
 ### R6 next slices
 
-1. Add queue, first-row, client elapsed and server metrics with distinct units
-   and scope. Use explicit per-run event timestamps/measurements; retain missing
-   values as unavailable. Do not derive one metric from another or present
-   per-loop values as totals. Test failed/cancelled/empty/multi-result runs,
-   queue cancellation, absent server measurements and session/result cleanup.
-   Current `Studio::run_plan` starts its elapsed clock before the session lane
-   and emits `Started` after acquiring it; `QueryEvent` exposes only statement
-   and finished elapsed values today. Add monotonic backend measurements at the
-   real queue/first-row boundaries and versioned generated contracts. Keep the
-   frontend request-to-terminal duration separately named, revision/run scoped,
-   and non-persistent. A statement without rows has no first-row value; server
-   execution/planning timings come only from supported server measurements.
-   Capture backend context at the actual execution boundary where supported;
-   today plan comparison binds the frontend observation at request time, so
-   queued/unobserved context changes remain an explicit limitation.
-2. Add MySQL and MariaDB actual plans as independent capability/version adapters
-   after proving syntax, execution semantics and output contracts. Do not assume
-   JSON actual-plan compatibility. Require explicit review and fixture evidence
-   per adapter. Snowflake plans remain a separate read-only slice.
+1. Qualify MySQL and MariaDB actual plans as independent capability/version
+   adapters. Verify official syntax, executing semantics and output contracts
+   against disposable fixtures before exposing actions. Require explicit review;
+   unsupported combinations must fail clearly. Do not assume JSON compatibility.
+2. Add Snowflake estimated plans as a separate read-only adapter with a bounded
+   raw/normalized contract and mocked transport evidence. Live account
+   qualification requires explicit external scope.
+3. Reconcile R5 and R6 into an integrated candidate, including typed-parameter
+   preparation signatures, full relevant fixtures/browser regression and native
+   qualification. Preserve separate merge, release and installed-version gates.
+
+The next adapter spike starts with MariaDB's `ANALYZE FORMAT=JSON`, whose
+[official contract](https://mariadb.com/docs/server/reference/sql-statements/administrative-sql-statements/analyze-and-explain-statements/analyze-format-json)
+executes the query and distinguishes average `r_rows`, loop count and inclusive
+node time. MySQL needs an exact-version/output probe: the
+[8.4 manual](https://dev.mysql.com/doc/refman/8.4/en/explain.html) and
+[Oracle's JSON-v2 explanation](https://blogs.oracle.com/mysql/new-json-format-for-explain)
+describe different format/version conditions. Record actual fixture version,
+JSON-format setting availability, raw shape and executing semantics before
+choosing an adapter. Do not mutate a user's optimizer/output settings or expose
+an action from a version string alone. This research is planning evidence,
+not completed engine qualification.
 
 R7 schema/design and R8 remaining productivity follow these R6 slices. Release,
 platform, security, accessibility, recovery and performance qualification run

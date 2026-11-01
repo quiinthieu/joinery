@@ -73,7 +73,7 @@ are payload limits, not total JavaScript memory measurements.
 Identity comes from the immutable prepared execution, not the current editor.
 Only recognized single-query generated wrappers with known session context can
 be captured. Engine/version, connection/session, observed database, role,
-search path, active context, transaction mode/state and context revision must
+search path, active context, transaction mode/state must
 match; underlying query bytes must match exactly. The known estimated/actual
 wrapper is removed only for this query identity comparison. Incompatible
 snapshots remain listed with a disabled reason. Arbitrary manually entered
@@ -82,13 +82,44 @@ EXPLAIN results remain viewable but are not assumed comparable.
 Compatible plans display independent trees or exact raw JSON side by side.
 Estimates, per-loop measurements and optimizer costs keep their original labels;
 no node pairing by position, guessed delta or cost-to-millisecond conversion.
-The context is the frontend's last observation at the execution request, not
-an atomic server-context snapshot; queued or unobserved session changes can
-differ. The comparison does not prove equal database state or settings.
+Context is observed by Rust after acquiring the serialized editor lane,
+immediately before executing a recognized single-plan wrapper. This includes
+preceding queued session changes. The identity uses that run's observation,
+never frontend cached context or the current editor. Failed or unavailable
+observation disables capture while retaining ordinary plan viewing. The probe
+adds a metadata round trip and is included in backend active time. It is not a
+transactional database snapshot: data and unobserved settings can still differ.
 Captures preserve unknown fields and exact raw numeric tokens, survive ordinary
 result replacement, and clear with their owning tab, session retirement or
 connection disconnect. Individual removal and clear-all are explicit actions.
 Snapshots and execution metadata are excluded from workspace persistence.
+
+## Execution timing
+
+The query results **Execution timing** disclosure shows independently measured
+scopes in milliseconds. Backend durations are monotonic, floored and saturated
+to `u32::MAX`; client elapsed is monotonic and rounded for display. Zero is a
+valid measurement, distinct from unavailable.
+
+| Metric | Scope |
+|---|---|
+| Queue wait | Backend run-task entry to acquisition of the editor execution lane; excludes scheduling before that task starts |
+| Backend active | Lane acquisition through query execution, observed context and terminal session cleanup/state checks |
+| Backend total | Task entry to that same terminal checkpoint; excludes history/audit persistence and event delivery |
+| First row batch | Lane acquisition to the first nonempty batch delivered by a driver to the result sink, across all statements in the run; excludes queue wait |
+| Client elapsed | Immediately before the execute request through application of its finished event, including IPC/poll delivery and event batching; failed execute requests measure through rejection |
+
+First row batch is not time to the first wire row or screen paint: drivers may
+buffer an entire result before delivering a batch. It remains unavailable for
+empty results, pre-row errors and cancellations without rows. A later statement
+failure does not erase an earlier batch measurement. Transport failures without
+backend metrics keep those values unavailable. Stale revisions and foreign-run
+metrics cannot overwrite current measurements. Timings are transient and clear
+when a console is rebound; they are excluded from workspace restoration.
+
+PostgreSQL plan `Planning Time` / `Execution Time` remain separately labeled
+server values. No general server execution time, network duration, rendering
+time, per-loop total, or timing delta is inferred from these measurements.
 
 ## Verification and remaining work
 
@@ -96,20 +127,19 @@ Four frontend adapter tests cover engine shapes, metric labels, unknown
 formats and complexity limits. Four Rust wrapper tests and Safe Mode
 regressions cover byte preservation, complete-query rejection, nested risks
 and mandatory analysis review, including PostgreSQL's parenthesized options.
-Two PostgreSQL fixture tests from the prior unchanged-backend slice prove
-no unapproved execution, one-use/stale
+The complete 26-test PostgreSQL fixture suite includes the two approval/session
+fixtures proving no unapproved execution, one-use/stale
 approval, owned temporary state, disconnect invalidation, errors and cancellation.
-Six disposable-engine plan browser flows and four console/file regressions
+Eight disposable-engine plan/timing browser flows and four console/file regressions
 pass. Six snapshot unit tests and two studio lifecycle tests cover exact query
 identity, context/engine mismatch, count/byte eviction, invalid input, cleanup
 and persistence exclusion. Browser flows verify estimated/actual comparison,
 editor changes, no execution on capture/comparison, mismatch rejection and
 cancellation/disconnect/reconnect cleanup. Exact standard validation and
 macOS bundle/hidden-native evidence are in
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md#r6-bounded-plan-snapshots-and-comparison-1-november-2026).
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md#r6-execution-timing-and-observed-plan-context-1-november-2026).
 
-Next: distinct queue, first-row, client/server timing,
-and independent engine/version contracts for MySQL/MariaDB actual plans and
+Next: independent engine/version contracts for MySQL/MariaDB actual plans and
 Snowflake plans. See the [roadmap](implementation-roadmap.md#r6-next-slices).
 This local candidate is unmerged, unpublished, not installed and not externally
 qualified. PostgreSQL's execution and measurement semantics are documented in
