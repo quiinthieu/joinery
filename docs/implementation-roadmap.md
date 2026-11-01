@@ -218,14 +218,14 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `65530c0` integrates FK JOIN completion, structured Unicode
-diagnostics, typed parameters and inline error/statement navigation. R5 and R6
-remain partial, local, unmerged and unreleased. Current validation passes 168
-frontend / 154 standard Rust and 26 relevant database browser flows. The 58 SQL
-fixture passes belong to preceding `39359e7` and were not rerun for this frontend
-slice. Clean-source macOS arm64 hidden build and three WebView runs / 30 cleanup
-cycles pass; synthetic baseline only. Definition/usages/context documentation, selection
-formatting, snippets and format-save serialization are next.
+Current candidate `8ef9dfb` integrates five R5 slices: FK JOIN completion,
+structured Unicode diagnostics, typed parameters, inline error/statement navigation
+and SQL definitions/usages/quick documentation. R5 and R6 remain partial, local,
+unmerged, unreleased and not installed. Current validation passes 183 frontend /
+154 standard Rust and 46 relevant database browser flows. Prior 58 ignored SQL
+fixture passes remain specific to `39359e7`. Clean-source macOS arm64 hidden
+build and three WebView runs / 30 cleanup cycles pass; synthetic baseline only.
+Selection formatting/settings, snippets and format-save serialization are next.
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -291,6 +291,23 @@ Twelve focused unit cases and six diagnostic browser flows pass, including
 parameterized Run/Explain/Analyze and a late error after an edit. Twenty existing
 parameter/plan/timing browser flows and standard validation also pass. See
 [exact evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-inline-diagnostics-and-navigation-1-november-2026).
+
+### R5 integration slice 5: definitions/usages/documentation (local `8ef9dfb`)
+
+Recorded `b5a744d` now coexists with R6 and exact execution origins. F12 and
+Cmd/Ctrl-click navigate CTE/table-alias declarations and primary-session object
+structure; Shift+F12 lists scoped editor references; F1 shows current-session
+metadata. Nested shadows, correlated bindings, unknown/ambiguous columns and
+routine overloads are handled conservatively. Projection inference and complete
+semantic SQL analysis remain open. Database dependents are object-level results.
+
+Edits, refreshes, session/context changes and close reject obsolete replies.
+Secondary consoles retain quick docs/local declaration jumps; object Structure
+navigation is withheld because Structure currently uses the primary session.
+Reference results have a visible 500-entry / 10,000-name-token bound. Standard
+validation and 46 browser flows pass, including five new symbol flows; clean-source
+macOS baseline passes three fresh processes / 30 cleanup cycles. See
+[exact evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-sql-definitions-usages-and-documentation-1-november-2026).
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -415,9 +432,8 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Continue R5 after verified FK JOIN, backend diagnostics, typed parameters and
-   inline error/statement navigation (`65530c0`). Next integrate definition/usages/
-   context documentation (`b5a744d`), selection formatting/settings/snippets
+1. Continue R5 after five verified slices, including definitions/usages/quick
+   documentation (`8ef9dfb`). Next integrate selection formatting/settings/snippets
    (`3ca2ad2`), then format-save serialization (`41957ea`) and relevant recorded
    `bb77b0f` regressions. Preserve every R6 preparation/approval path and exact
    editor source identity. The SQL alias part of `41957ea` is already integrated.

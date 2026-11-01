@@ -262,8 +262,15 @@ were not rerun for this frontend-only change. Clean-source macOS arm64 hidden
 build and three WebView runs / 30 cleanup cycles pass; synthetic baseline only. See
 [inline evidence](IMPLEMENTATION_STATUS.md#r5-integration-inline-diagnostics-and-navigation-1-november-2026).
 
-Next: integrate remaining definition/usages/context documentation, selection
-formatting, snippets and format-save serialization while preserving every R6
+SQL symbol integration `8ef9dfb` adds scoped definitions/usages and quick
+documentation without changing plan preparation or authorization. Final
+validation passes 183 frontend / 154 Rust and 46 relevant real database browser
+flows, including all fourteen plan/timing and six parameter flows. Clean-source
+macOS baseline passes three processes / 30 cleanup cycles. See
+[symbol evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-sql-definitions-usages-and-documentation-1-november-2026).
+
+Next: integrate selection formatting/settings, snippets and format-save
+serialization while preserving every R6
 preparation and authorization contract. Investigate the earlier metadata-startup
 flake before combined qualification, and design observed Snowflake warehouse/
 session identity before enabling snapshots. See the

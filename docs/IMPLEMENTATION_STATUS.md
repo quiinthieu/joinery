@@ -2,7 +2,8 @@
 
 Updated 2026-11-01. R1–R4 are merged but unreleased. The local R6 branch now
 integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
-query parameters and inline error/statement navigation. Remaining editor features
+query parameters, inline error/statement navigation and SQL definitions/usages/
+quick documentation. Selection formatting/settings and snippets
 are next. R5 and R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last verified release;
 its current installed revision was not requalified. The canonical owner-private
 Site records exact tested, merged, published and installed states. Full
@@ -1668,3 +1669,62 @@ remains open. Logs are `.cache/r5-inline-{validate-final,browser-final,native-bu
 and immutable `.cache/r5-inline-native-evidence.json`. Owned Compose project
 `joinery-assess-r5-inline`, its three containers and disposable volume were removed.
 Other services and the installed application were preserved.
+
+## R5 integration: SQL definitions, usages and documentation (1 November 2026)
+
+Code `8ef9dfb94c3c9a9962bb6e1761bb1979e0822334`, tree
+`9114c4d221ae05af10efbd5aa8ed71c245a50212`, integrates recorded
+`b5a744d` with the current R6/parameter/error-origin paths. **F12** or
+Cmd/Ctrl-click navigates CTE/table-alias declarations and primary-session object
+structure, highlighting the resolved column. **Shift+F12** lists editor references;
+**F1**, the Docs button and command palette show quick metadata documentation.
+No action prepares or executes the editor SQL. Opening an existing Structure tab
+retains its normal bounded metadata/table-read behavior.
+
+Resolution uses the configured dialect syntax tree and current console catalog,
+search path, database and identifier case policy. Usage candidates are resolved
+in their own scopes, so nested alias/CTE shadows and correlated references do
+not share references merely because their spelling matches. Columns require
+known metadata and unambiguous ownership; ambiguous bare self-join columns, unknown/derived bindings,
+explicit projection aliases and overloaded routines are not guessed. Unique
+routines retain catalog identity. Strings/comments are excluded. This is a
+bounded resolver, not complete SQL semantic analysis or inferred projection
+lineage. CTEs without an explicit column list do not claim inferred columns.
+
+Quick docs include available column types/nullability/PK/FK, object comments,
+routine/sequence metadata and object-level database dependents. Missing or denied
+metadata stays unavailable; dependency results are not column lineage. Schema
+loads are limited to eight relevant tables per action. Editor references stop
+at 500 entries or 10,000 name tokens and display a limit notice. Parsing retains
+its 75 ms availability bound; large-query/catalog responsiveness is unqualified.
+
+Edits, refreshes, context/session changes, close and unmount invalidate pending
+navigation. Refresh replaces the schema cache; old promises cannot populate its
+replacement. Catalog and detail reads use the console's session. Structure tabs
+currently use the profile's primary session, so secondary-console object/column
+Structure navigation is explicitly unavailable rather than inspecting another
+session. Quick docs and local declaration jumps remain available there.
+
+| State | Evidence for this source |
+|---|---|
+| Regression baseline | Missing symbol APIs failed the recorded tests before integration. Added cases reproduced incorrect nested scopes, unknown/ambiguous columns, routine overload/search-path resolution and projection-alias ownership before correction |
+| Passed | `pnpm validate`: 183 frontend tests / 31 files, 154 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy. The navigation module has 25 cases (13 symbol cases plus 12 prior diagnostic/statement cases); two overlay/Structure cases also pass |
+| Passed | Final 46 real database browser flows on PostgreSQL 18, MySQL 8.4 and MariaDB 11.4: five symbol flows, seven completion, three FK JOIN, six diagnostics, six parameters, fourteen plan/timing, three sessions and two explorer/search. New flows verify docs, focus/Escape, usage selection, declaration/column jumps, zero editor execution, edit/refresh/close invalidation, denied metadata and the secondary-session boundary |
+| Native | Clean-source macOS arm64 hidden build records the code/tree above (`sourceDirty: false`); three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `8c794a99f55f1da76ff370df3bb5dbf8ce711c43bd87b71478bb9053ea587f46`. Synthetic baseline only; this does not qualify native symbol UI, total memory, cold start or display FPS |
+| Local only | `feat/estimated-query-plans`, unmerged, unreleased and not installed; fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Prior evidence | The 58 ignored SQL fixture passes belong to `39359e7`; no ignored SQL/Redis/SSH suite was rerun for this frontend slice. Completion/FK/session/explorer browser regressions were rerun on the final source |
+| Open | Complete semantic binding, projected/derived columns, routine argument-type overload selection, secondary-session Structure navigation, full browser suite, dedicated Snowflake suite/live accounts, normal distribution bundle, Windows/Linux runtime, signing/notarization, accessibility and representative performance |
+| Next | Selection formatting/settings/snippets (`3ca2ad2`), format-save serialization (`41957ea`), and relevant recorded `bb77b0f` regressions. Preserve R6 authorization and exact editor origins; investigate the earlier metadata-startup flake and qualify the combined source before authorized delivery |
+
+Earlier browser attempts exposed test synchronization/count assumptions: background
+completion can issue concurrent schema reads. The final stale-response regression
+holds all old replies and injects a stale type marker; refreshed docs retain the
+current type. The final 46-flow run holds source fixed and passes. No hooks or
+product safety gates were bypassed. Logs are
+`.cache/r5-symbol-validate-session-final.log`,
+`.cache/r5-symbol-browser-final-46.log`, and
+`.cache/r5-symbol-native-{build,runs}.log`; immutable native evidence is
+`.cache/r5-symbol-native-evidence.json`. Owned disposable Compose project
+`joinery-assess-r5-symbols` was removed after checks; user services and the installed
+application were preserved. The earlier metadata-startup flake did not recur;
+its cause remains open.

@@ -140,12 +140,12 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
 | E09 SQL formatting — DG-F | E, formatter.worker.ts | PARTIAL / H | Whole-document worker formatting exists; selection formatting and per-dialect settings missing | P2 / Medium | Editor selections; PMS; local | Comments/literals unchanged and stale formatter results ignored / hold |
 | E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
-| E11 Go to definition and usages — DG-SE | E, N | MISSING / H | Resolve identifiers to metadata/editor locations | P1 / High | E02/N06; PMS; read | Ambiguity and inaccessible objects / hold |
+| E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias jumps, metadata-backed columns/objects, per-candidate scoped references; ambiguous and overloaded names withheld. Secondary consoles use docs without primary-session Structure jumps; projection inference remains open | P1 / High | E02/N06; PMS; read | Nested shadows/correlation, ambiguity, case/search path, stale replies and five real symbol browser flows; local `8ef9dfb`, unmerged / hold |
 | E12 Snippets/live templates — DG-T | E | MISSING / H | Local dialect-aware templates with keyboard placeholders | P2 / Medium | Existing editor/persistence; PMS; local | Expansion/undo and no automatic execution / hold |
-| E13 Statement navigation — DG-X | E selectedStatement | PARTIAL / H | Caret/selection execution exists; next/previous statement navigation missing | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, large documents / hold |
+| E13 Statement navigation — DG-X | `sql-context.ts`, `sql-navigation.ts`, editor/palette | PARTIAL / H | Caret/selection execution and dialect-tree previous/next statement navigation verified locally; incomplete parsing withholds navigation; representative large-document performance remains open | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, dialect ranges and real diagnostics/navigation flows; local `65530c0` and current regressions, unmerged / hold |
 | E14 Multiple consoles/files — DG-S, DG-SQ | `file_capability.rs` (`GrantKind::SqlFile`), `studio.ts` (`openSqlFile`, `saveSqlFile`, `isTabFileDirty`), `workspace.ts`, `Workbench.tsx`, `App.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Multiple consoles with named session attachment plus capability-gated `.sql` file Open (`⌘O`), atomic in-place Save (`⌘S` on query tabs; `reviewEdits` preserved on table tabs) and Save As (`⇧⌘S`) via reusable `GrantKind::SqlFile` tokens (max 64 grants, ≤ 4 MiB UTF-8, symlink/NUL rejection, sibling `.tmp` + `sync_all` + `rename`, dirty dot, unsaved-close/quit guard, zero raw paths over IPC, excluded from `SavedWorkspace.drafts`) | P1 / High | M06, native file capability; PMSR; local | Rust `sql_file_capabilities` unit test, `studio.test.ts` dirty/draft-exclusion tests, and browser Open/dirty-guard/Save/Save-As workflow; merged in PR #30 (`a0ba1a6`) / hold until released |
 | E15 Query parameters — DG-P | `params.rs`, `ParameterDialog.tsx`, immutable execution plans and engine adapters | PARTIAL / H | Named/positional typed values and NULL, bounded transient drafts, exact reviewed bindings, parameterized Explain/Analyze and binding-aware comparison verified on PG/MySQL/MariaDB; Snowflake transport remains synthetic and wider engine/native UI qualification remains open | P1 / High | Typed execution request; PMS by capability; gate | Scanner exclusions, precision/Unicode/budget rejection, all kinds/NULL, reviewed writes, one-use/stale approvals, template-only history; six browser flows; local `39359e7`, unmerged / hold |
-| E16 Context documentation — DG-DOC | E, N | MISSING / H | Metadata documentation at caret with permission-aware fallback | P2 / Medium | E11; PMS; read | Correct object, stale/denied metadata / hold |
+| E16 Context documentation — DG-DOC | `SqlNavigationOverlay.tsx`, current-console catalog/details | PARTIAL / H | F1 metadata at caret, types/PK/FK, comments and routine/sequence details where available; object-level dependents; denied/stale metadata explicit. Full semantic inference and Snowflake/live breadth remain open | P2 / Medium | E11; PMS; read | Edit/refresh/close races, denied metadata, focus/Escape and secondary-session boundary; local `8ef9dfb`, unmerged / hold |
 
 ## Query execution
 
@@ -747,3 +747,24 @@ three WebView runs / 30 cleanup cycles pass; synthetic baseline only. R5/R6 rema
 partial, local, unmerged, unreleased and not installed. Definition/usages/context documentation,
 selection formatting, snippets and format-save serialization remain next;
 [exact evidence and limitations](IMPLEMENTATION_STATUS.md#r5-integration-inline-diagnostics-and-navigation-1-november-2026).
+
+### R5 integration: SQL definitions/usages/documentation — local `8ef9dfb`
+
+E11/E16 are now partial: F12/Cmd/Ctrl-click navigates local declarations and
+primary-session structure/columns; Shift+F12 lists scope-resolved editor
+references; F1 and Docs show available current-session metadata. Ambiguous
+columns, unknown bindings, projection aliases and routine overloads are not
+guessed. Nested scopes, correlated names and search paths have regressions.
+Database dependents are object-level, not column lineage. Secondary-console
+object Structure navigation is withheld; quick docs remain available.
+
+Edits/context refresh/session changes/close invalidate requests and replace the
+schema cache. References are bounded to 500 entries / 10,000 name tokens with a
+visible notice. Validation passes 183 frontend / 154 standard Rust and 46 real
+database browser flows, including five symbol flows. Clean-source macOS baseline
+passes three processes / 30 cleanup cycles. Prior ignored fixture counts remain
+historical; full semantic analysis, inference, secondary-session structure,
+Snowflake/live breadth and release/platform/performance gates remain open. R5/R6
+are partial, local, unmerged, unreleased and not installed. Next are selection
+formatting/settings, snippets and format-save serialization. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-sql-definitions-usages-and-documentation-1-november-2026).
