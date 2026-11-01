@@ -13,7 +13,13 @@ import {
   drawSelection,
   rectangularSelection,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+  isolateHistory,
+} from "@codemirror/commands";
 import {
   bracketMatching,
   HighlightStyle,
@@ -53,6 +59,8 @@ import { useStudio } from "../../state/studio";
 import { selectedStatement, selectedStatementSlice } from "./sql-context";
 import {
   adjacentStatement,
+  analyzeAliasRename,
+  type AliasRenameTarget,
   resolveExecutionError,
   type SqlExecutionOrigin,
   resolveSymbolAt,
@@ -62,6 +70,7 @@ import {
   type SqlSymbolContext,
 } from "./sql-navigation";
 import { SqlNavigationOverlay } from "./SqlNavigationOverlay";
+import { SqlAliasRenameDialog } from "./SqlAliasRenameDialog";
 import { sqlDialect } from "./sql-identifiers";
 import { CompletionSession } from "./completion-session";
 
@@ -275,6 +284,14 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [navDetails, setNavDetails] = useState<ObjectDetails | null>(null);
   const [navDetailsLoading, setNavDetailsLoading] = useState(false);
   const [navDetailsError, setNavDetailsError] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [rename, setRename] = useState<{
+    target: AliasRenameTarget;
+    editor: EditorView;
+    state: EditorState;
+    context: string;
+    sequence: number;
+  } | null>(null);
   const runtimeState = useStudio((s) =>
     props.sessionId ? s.sessionStates[props.sessionId] : undefined,
   );
@@ -295,6 +312,8 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     setNavDetails(null);
     setNavDetailsLoading(false);
     setNavDetailsError(null);
+    setRename(null);
+    setRenameError(null);
   };
   const configure = () => {
     const config = latest.current;
@@ -502,13 +521,72 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     return true;
   };
 
+  const renameContext = () =>
+    JSON.stringify([
+      latest.current.engine,
+      latest.current.sessionId,
+      latest.current.contextEpoch,
+      liveRef.current?.revision,
+    ]);
+  const runAliasRename = () => {
+    clearNavigation();
+    const editor = view.current;
+    if (!editor || latest.current.engine === "redis") return false;
+    try {
+      const target = analyzeAliasRename(
+        editor.state,
+        editor.state.selection.main.head,
+        latest.current.engine,
+      );
+      setRename({
+        target,
+        editor,
+        state: editor.state,
+        context: renameContext(),
+        sequence: navRequestSeq.current,
+      });
+    } catch (cause) {
+      setRenameError(messageOf(cause));
+    }
+    return true;
+  };
+  const closeRename = () => {
+    const editor = rename?.editor;
+    setRename(null);
+    queueMicrotask(() => {
+      if (editor && view.current === editor) editor.focus();
+    });
+  };
+  const applyRename = (name: string) => {
+    if (!rename) return;
+    try {
+      if (
+        rename.editor !== view.current ||
+        rename.context !== renameContext() ||
+        rename.sequence !== navRequestSeq.current
+      )
+        throw new Error("The SQL context changed. Start a new rename preview.");
+      const changes = rename.target.preview(rename.editor.state, name);
+      rename.editor.dispatch({
+        changes,
+        annotations: isolateHistory.of("full"),
+        userEvent: "input.rename",
+      });
+      closeRename();
+    } catch (cause) {
+      closeRename();
+      setRenameError(messageOf(cause));
+    }
+  };
   const navActionsRef = useRef({
     runGoToDefinition,
     runOpenOverlay,
+    runAliasRename,
   });
   navActionsRef.current = {
     runGoToDefinition,
     runOpenOverlay,
+    runAliasRename,
   };
 
   useImperativeHandle(
@@ -669,6 +747,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             key: "Ctrl-Alt-ArrowDown",
             run: (editor) =>
               latest.current.engine !== "redis" && moveCaretToAdjacentStatement(editor, 1),
+          },
+          {
+            key: "Shift-F6",
+            run: () => navActionsRef.current.runAliasRename(),
           },
           {
             key: "F12",
@@ -957,6 +1039,16 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 type="button"
                 className="button ghost small"
                 style={{ flexShrink: 0 }}
+                title="Rename SQL alias · Shift-F6"
+                aria-label="Rename SQL alias"
+                onClick={() => navActionsRef.current.runAliasRename()}
+              >
+                Rename alias
+              </button>
+              <button
+                type="button"
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
                 title="Quick SQL documentation · F1"
                 aria-label="Quick SQL documentation"
                 onClick={() => void navActionsRef.current.runOpenOverlay("docs")}
@@ -976,6 +1068,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             </div>
           </div>
         )}
+      {renameError && (
+        <div role="alert" style={{ padding: 8 }}>
+          {renameError}{" "}
+          <button type="button" className="button ghost small" onClick={() => setRenameError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {rename && (
+        <SqlAliasRenameDialog
+          target={rename.target}
+          state={rename.state}
+          onApply={applyRename}
+          onClose={closeRename}
+        />
+      )}
       {navOverlay && (
         <SqlNavigationOverlay
           mode={navOverlay.mode}

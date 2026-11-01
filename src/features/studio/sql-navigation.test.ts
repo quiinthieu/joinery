@@ -20,8 +20,130 @@ import {
   resolveSymbolAt,
   schemaCacheKey,
   tablesNeededForNavigationAt,
+  analyzeAliasRename,
   type SqlSymbolContext,
 } from "./sql-navigation";
+
+describe("scope-correct alias rename", () => {
+  test("previews only the declaration and qualified references, preserving comments and other statements", () => {
+    const state = stateWithCaret(
+      "SELECT |o.id, o.* FROM public.orders AS o WHERE o.id > 0; -- o.id\nSELECT 'o.id';",
+    );
+    const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+    const changes = target.preview(state, "order_rows");
+    expect(changes).toHaveLength(4);
+    expect(state.update({ changes }).state.doc.toString()).toBe(
+      "SELECT order_rows.id, order_rows.* FROM public.orders AS order_rows WHERE order_rows.id > 0; -- o.id\nSELECT 'o.id';",
+    );
+  });
+
+  test("preserves nested shadowing and follows proven correlated references", () => {
+    const state = stateWithCaret(
+      "SELECT |o.id FROM orders o WHERE EXISTS (SELECT o.id FROM customers o WHERE o.id > 0) AND EXISTS (SELECT x.id FROM customers x WHERE x.id = o.id)",
+    );
+    const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+    expect(
+      state.update({ changes: target.preview(state, "orders_alias") }).state.doc.toString(),
+    ).toBe(
+      "SELECT orders_alias.id FROM orders orders_alias WHERE EXISTS (SELECT o.id FROM customers o WHERE o.id > 0) AND EXISTS (SELECT x.id FROM customers x WHERE x.id = orders_alias.id)",
+    );
+    expect(() => target.preview(state, "x")).toThrow(/capture|conflict/i);
+  });
+
+  test("keeps CTE and non-lateral derived bodies outside the containing FROM scope", () => {
+    const state = stateWithCaret(
+      "WITH c AS (SELECT o.id FROM orders o) SELECT |o.id FROM c o JOIN (SELECT o.id FROM other o) d ON d.id = o.id",
+    );
+    const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+    expect(
+      state.update({ changes: target.preview(state, "outer_alias") }).state.doc.toString(),
+    ).toBe(
+      "WITH c AS (SELECT o.id FROM orders o) SELECT outer_alias.id FROM c outer_alias JOIN (SELECT o.id FROM other o) d ON d.id = outer_alias.id",
+    );
+  });
+
+  test("rejects same-scope collisions, captured outer references and previously unbound qualifiers", () => {
+    for (const marked of [
+      "SELECT |o.id FROM orders o JOIN customers n ON o.id = n.id",
+      "SELECT n.id FROM orders n WHERE EXISTS (SELECT |o.id FROM customers o WHERE o.id = n.id)",
+      "SELECT |o.id, n.unknown FROM orders o",
+    ]) {
+      const state = stateWithCaret(marked);
+      const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+      expect(() => target.preview(state, "n")).toThrow(/capture|conflict/i);
+    }
+  });
+
+  test.each(["postgres", "mysql", "snowflake"] as const)(
+    "preserves %s quoting and escapes replacement delimiters",
+    (engine) => {
+      const quote = engine === "mysql" ? "`" : '"';
+      const state = stateWithCaret(
+        `SELECT |${quote}Old${quote}.id FROM orders ${quote}Old${quote}`,
+        engine,
+      );
+      const target = analyzeAliasRename(state, state.selection.main.head, engine);
+      const name = `New${quote}Name`;
+      const changes = target.preview(state, name);
+      expect(changes.map((x) => x.insert)).toEqual([
+        `${quote}New${quote}${quote}Name${quote}`,
+        `${quote}New${quote}${quote}Name${quote}`,
+      ]);
+    },
+  );
+
+  test("rejects document changes even when text is restored, invalid names and no-op renames", () => {
+    const state = stateWithCaret("SELECT |o.id FROM orders o");
+    const target = analyzeAliasRename(state, state.selection.main.head, "postgres");
+    const changed = state.update({ changes: { from: 0, insert: " " } }).state;
+    expect(() => target.preview(changed, "n")).toThrow(/changed/i);
+    expect(() =>
+      target.preview(changed.update({ changes: { from: 0, to: 1 } }).state, "n"),
+    ).toThrow(/changed/i);
+    for (const name of ["", "o", "bad\nname", "x".repeat(129)])
+      expect(() => target.preview(state, name)).toThrow();
+    expect(target.preview(state, "select").map((x) => x.insert)).toEqual(['"select"', '"select"']);
+  });
+
+  test.each([
+    "SELECT |o FROM orders o",
+    "SELECT |o.id FROM orders o JOIN customers o ON true",
+    "SELECT |o.id FROM orders o UNION SELECT x.id FROM orders x",
+    "SELECT |o.id FROM orders o JOIN LATERAL (SELECT o.id) x ON true",
+    "SELECT |o.id FROM generate_series(1, 2) o",
+    "WITH removed AS (DELETE FROM orders o RETURNING o.id) SELECT |o.id FROM orders o",
+    "SELECT |o.id FROM orders o JOIN (customers c JOIN orders x ON c.id = x.id) j ON true",
+    "SELECT |o.id FROM orders o WHERE EXISTS (SELECT x.id FROM customers x JOIN orders y ON y.id = o.id JOIN orders o ON o.id = x.id)",
+    "UPDATE orders |o SET id = 1",
+    "SELECT o.|id FROM orders o",
+    "SELECT '|o.id' FROM orders o",
+    "SELECT |o.id FROM orders o WHERE (",
+  ])("withholds unsupported or ambiguous source: %s", (marked) => {
+    const state = stateWithCaret(marked);
+    expect(() => analyzeAliasRename(state, state.selection.main.head, "postgres")).toThrow();
+  });
+
+  test("never offers a truncated edit list", () => {
+    const state = stateWithCaret(`SELECT |o.id${", o.id".repeat(501)} FROM orders o`);
+    expect(() => analyzeAliasRename(state, state.selection.main.head, "postgres")).toThrow(
+      /limit|large/i,
+    );
+  });
+
+  test("rejects names the database would truncate and conservatively folds MySQL aliases", () => {
+    const pg = stateWithCaret("SELECT |o.id FROM orders o");
+    const target = analyzeAliasRename(pg, pg.selection.main.head, "postgres");
+    expect(() => target.preview(pg, "あ".repeat(22))).toThrow(/length limit/);
+    const mysql = stateWithCaret(
+      "SELECT |`Old`.id FROM orders `Old` JOIN customers `Other` ON Old.id = Other.id",
+      "mysql",
+    );
+    const alias = analyzeAliasRename(mysql, mysql.selection.main.head, "mysql");
+    expect(() => alias.preview(mysql, "OTHER")).toThrow(/conflict/);
+    expect(() => alias.preview(mysql, "x".repeat(65))).toThrow(/length limit/);
+    expect(alias.preview(mysql, "new_name")).toHaveLength(3);
+  });
+});
 
 function stateWithCaret(text: string, engine: EngineKind = "postgres") {
   const position = text.indexOf("|");

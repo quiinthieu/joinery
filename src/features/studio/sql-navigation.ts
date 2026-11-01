@@ -19,7 +19,12 @@ import {
   type SqlToken,
   type TableLookup,
 } from "./sql-context";
-import { identifierValue, readIdentifier, type Identifier } from "./sql-identifiers";
+import {
+  identifierValue,
+  quoteIdentifier,
+  readIdentifier,
+  type Identifier,
+} from "./sql-identifiers";
 
 export interface StatementRange {
   from: number;
@@ -910,6 +915,239 @@ function makeOccurrence(
   const column = [...cmLine.text.slice(0, from - cmLine.from)].length + 1;
   const lineText = cmLine.text.trim().slice(0, 120);
   return { from, to, line, column, lineText, isDeclaration };
+}
+
+export interface AliasRenameTarget {
+  name: string;
+  occurrences: SqlLocalOccurrence[];
+  preview(state: EditorState, name: string): { from: number; to: number; insert: string }[];
+}
+
+/** A complete, bounded local edit analysis. Never reuse the capped navigation usages. */
+export function analyzeAliasRename(
+  state: EditorState,
+  pos: number,
+  engine: EngineKind,
+): AliasRenameTarget {
+  const unsupported = () => new Error("Alias rename cannot safely analyze this SQL shape.");
+  const tokens = statementTokensAt(state, pos)?.tokens;
+  if (!tokens) throw new Error("Statement is incomplete or exceeds the rename analysis limit.");
+  const tree = ensureSyntaxTree(state, state.doc.length, 75);
+  if (!tree) throw unsupported();
+  const first = tokens[0]?.from ?? pos;
+  const last = tokens.at(-1)?.to ?? pos;
+  let invalid = false;
+  tree.iterate({
+    from: first,
+    to: last,
+    enter(node) {
+      // Lezer's SQL lexer inserts an empty identifier after the dot in alias.*.
+      if (
+        node.type.isError &&
+        !(node.from === node.to && state.sliceDoc(node.from - 1, node.from + 1) === ".*")
+      )
+        invalid = true;
+    },
+  });
+  if (invalid) throw unsupported();
+
+  type Scope = DetailedBinding[];
+  type Reference = {
+    token: SqlToken;
+    env: Scope[];
+    binding?: DetailedBinding;
+    qualified: boolean;
+    unsupported: boolean;
+  };
+  const references: Reference[] = [];
+  const declarations = new Map<number, DetailedBinding>();
+  const allScopes: Scope[] = [];
+  const key = (token: SqlToken) => {
+    const value = identifierValue(readIdentifier(token.text), engine);
+    return engine === "mysql" ? value.toLowerCase() : value;
+  };
+  const exceedsIdentifierLimit = (name: string) =>
+    (engine === "postgres" && new TextEncoder().encode(name).length > 63) ||
+    (engine === "mysql" && [...name].length > 64);
+  const resolve = (env: Scope[], name: string, target?: DetailedBinding, replacement?: string) => {
+    for (const scope of env) {
+      const binding = scope.find((item) => (item === target ? replacement : item.nameKey) === name);
+      if (binding) return binding;
+    }
+    return undefined;
+  };
+  const forbidden = new Set([
+    "UNION",
+    "INTERSECT",
+    "EXCEPT",
+    "MINUS",
+    "LATERAL",
+    "APPLY",
+    "PIVOT",
+    "UNPIVOT",
+    "MATCH_RECOGNIZE",
+    "TABLESAMPLE",
+    "ASOF",
+    "STRAIGHT_JOIN",
+    "INTO",
+    "CONNECT",
+    "START",
+    "MODEL",
+    "ONLY",
+  ]);
+  let queryCount = 0;
+  function visit(raw: readonly SqlToken[], outer: Scope[], depth: number) {
+    if (depth > 16) throw new Error("Query nesting exceeds the rename analysis limit.");
+    const list = cleanTokens(raw);
+    for (const token of list) {
+      if (
+        (token.kind === "Keyword" || token.kind === "Identifier") &&
+        forbidden.has(token.text.toUpperCase())
+      )
+        throw unsupported();
+      if (token.children && !token.text.endsWith(")")) throw unsupported();
+    }
+    const isQuery = ["SELECT", "WITH"].includes(keywordUpper(list[0]));
+    if (!isQuery) {
+      if (
+        list.some((token) =>
+          ["SELECT", "WITH", "UPDATE", "DELETE", "INSERT"].includes(keywordUpper(token)),
+        )
+      )
+        throw unsupported();
+      scan(list, outer, depth);
+      return;
+    }
+    if (++queryCount > 64) throw new Error("Query count exceeds the rename analysis limit.");
+    const block = queryBlockTokensAt(list, list.at(-1)?.to ?? pos);
+    if (keywordUpper(block[0]) !== "SELECT") throw unsupported();
+    const scope = parseDetailedBindings(block, new Map(), tableLookup([], engine));
+    for (const binding of scope) {
+      if (binding.columnAliases || (binding.derived && (!binding.bodyToken || !binding.aliasToken)))
+        throw unsupported();
+      if (
+        binding.bodyToken &&
+        !["SELECT", "WITH"].includes(keywordUpper(cleanTokens(binding.bodyToken.children ?? [])[0]))
+      )
+        throw unsupported();
+      const nameToken = binding.aliasToken ?? binding.relationTokens.at(-1);
+      if (!nameToken) throw unsupported();
+      if (exceedsIdentifierLimit(readIdentifier(nameToken.text).value)) throw unsupported();
+      binding.nameKey = key(nameToken);
+      if (binding.aliasToken) declarations.set(binding.aliasToken.from, binding);
+    }
+    if (new Set(scope.map((item) => item.nameKey)).size !== scope.length) throw unsupported();
+    // Earlier JOIN ON clauses cannot see a later relation. Do not infer their
+    // correlated names from a whole-query binding set when an outer name is hidden.
+    if (
+      scope.length > 1 &&
+      scope.some((binding) =>
+        outer.some((parent) => parent.some((item) => item.nameKey === binding.nameKey)),
+      )
+    )
+      throw unsupported();
+    allScopes.push(scope);
+    // WITH bodies and non-lateral FROM bodies cannot see this query's FROM aliases.
+    for (const [index, token] of list.entries()) {
+      if (token.from >= block[0].from) break;
+      if (token.children && ["AS", "MATERIALIZED"].includes(keywordUpper(list[index - 1]))) {
+        if (!["SELECT", "WITH"].includes(keywordUpper(cleanTokens(token.children)[0])))
+          throw unsupported();
+        visit(token.children, outer, depth + 1);
+      }
+    }
+    scan(block, [scope, ...outer], depth, scope);
+  }
+  function scan(list: SqlToken[], env: Scope[], depth: number, scope: Scope = []) {
+    const relationNames = new Set(
+      scope.flatMap((binding) => binding.relationTokens.map((token) => token.from)),
+    );
+    const bodies = new Set(
+      scope.flatMap((binding) => (binding.bodyToken ? [binding.bodyToken.from] : [])),
+    );
+    for (let index = 0; index < list.length; index++) {
+      const token = list[index];
+      if (token.children) {
+        visit(token.children, bodies.has(token.from) ? env.slice(1) : env, depth + 1);
+        continue;
+      }
+      if (
+        !isSymbolNameToken(token) ||
+        declarations.has(token.from) ||
+        relationNames.has(token.from) ||
+        list[index - 1]?.text === "."
+      )
+        continue;
+      const qualified = list[index + 1]?.text === ".";
+      references.push({
+        token,
+        env,
+        binding: resolve(env, key(token)),
+        qualified,
+        unsupported:
+          qualified &&
+          ((!isSymbolNameToken(list[index + 2]) && list[index + 2]?.text !== "*") ||
+            list[index + 3]?.text === "." ||
+            !!list[index + 3]?.children),
+      });
+    }
+  }
+  if (!["SELECT", "WITH"].includes(keywordUpper(cleanTokens(tokens)[0]))) throw unsupported();
+  visit(tokens, [], 0);
+  const hit = (token: SqlToken) => pos >= token.from && pos <= token.to;
+  const target =
+    [...declarations.values()].find((binding) => hit(binding.aliasToken!)) ??
+    references.find((ref) => ref.qualified && hit(ref.token))?.binding;
+  if (!target?.aliasToken)
+    throw new Error("Place the caret on a table alias or its qualified reference.");
+  const uses = references.filter((ref) => ref.binding === target);
+  if (uses.some((ref) => !ref.qualified || ref.unsupported)) throw unsupported();
+  const occurrences = [
+    makeOccurrence(state, target.aliasToken.from, target.aliasToken.to, true),
+    ...uses.map((ref) => makeOccurrence(state, ref.token.from, ref.token.to, false)),
+  ].sort((a, b) => a.from - b.from);
+  if (occurrences.length > 500) throw new Error("Alias exceeds the 500 occurrence rename limit.");
+  return {
+    name: identifierValue(readIdentifier(target.aliasToken.text), engine),
+    occurrences,
+    preview(current, name) {
+      if (current.doc !== state.doc)
+        throw new Error("The document changed. Start a new rename preview.");
+      if (!name || name.length > 128 || /[\u0000-\u001f\u007f]/u.test(name))
+        throw new Error("Use an alias of 1–128 characters without control characters.");
+      if (exceedsIdentifierLimit(name))
+        throw new Error("Alias exceeds this database's identifier length limit.");
+      const replacement = engine === "mysql" ? name.toLowerCase() : name;
+      if (replacement === target.nameKey) throw new Error("Choose a different alias.");
+      const owning = allScopes.find((scope) => scope.includes(target))!;
+      if (owning.some((binding) => binding !== target && binding.nameKey === replacement))
+        throw new Error("Alias conflicts with another relation in this query.");
+      for (const ref of references) {
+        const after = resolve(
+          ref.env,
+          ref.binding === target ? replacement : key(ref.token),
+          target,
+          replacement,
+        );
+        if (
+          (ref.qualified && after !== ref.binding) ||
+          (!ref.qualified && key(ref.token) === replacement && after === target)
+        )
+          throw new Error("Rename would capture or conflict with another reference.");
+      }
+      return occurrences.map((occurrence) => {
+        const original = readIdentifier(state.sliceDoc(occurrence.from, occurrence.to));
+        const quote = engine === "mysql" ? "`" : '"';
+        return {
+          from: occurrence.from,
+          to: occurrence.to,
+          insert: original.quoted
+            ? quote + name.split(quote).join(quote + quote) + quote
+            : quoteIdentifier(name, engine),
+        };
+      });
+    },
+  };
 }
 
 function dedupeOccurrences(items: SqlLocalOccurrence[]): SqlLocalOccurrence[] {
