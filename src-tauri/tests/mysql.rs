@@ -332,6 +332,15 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
             )
             .await
             .unwrap();
+        assert_eq!(
+            studio
+                .inspection_schema(&session.id, &initial.revision, &permanent_sample.table)
+                .await
+                .unwrap()
+                .columns
+                .len(),
+            permanent_sample.columns.len()
+        );
         assert!(
             permanent_sample
                 .inbound_foreign_keys
@@ -408,6 +417,20 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
             .completion_schema(&session.id, &active.revision, &grants)
             .await
             .unwrap();
+        assert!(
+            studio
+                .inspection_schema(&session.id, &active.revision, &grants)
+                .await
+                .is_err(),
+            "partial column grants must withhold missing-column claims"
+        );
+        assert!(
+            studio
+                .inspection_schema(&session.id, &initial.revision, &table)
+                .await
+                .is_err(),
+            "stale role/context revisions must be rejected"
+        );
         assert_eq!(
             visible
                 .columns

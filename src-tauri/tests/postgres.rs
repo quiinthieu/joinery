@@ -824,6 +824,15 @@ async fn live_completion_tracks_search_path_role_rollback_and_permissions() {
         .await
         .unwrap();
     assert!(public_orders.columns.iter().any(|c| c.name == "notes"));
+    assert_eq!(
+        studio
+            .inspection_schema(&session.id, &initial.revision, &public)
+            .await
+            .unwrap()
+            .columns
+            .len(),
+        public_orders.columns.len()
+    );
     assert!(
         public_orders
             .foreign_keys
@@ -952,6 +961,20 @@ async fn live_completion_tracks_search_path_role_rollback_and_permissions() {
         .completion_schema(&session.id, &restricted.revision, &column_table)
         .await
         .unwrap();
+    assert!(
+        studio
+            .inspection_schema(&session.id, &restricted.revision, &column_table)
+            .await
+            .is_err(),
+        "partial column grants must withhold missing-column claims"
+    );
+    assert!(
+        studio
+            .inspection_schema(&session.id, &initial.revision, &alt)
+            .await
+            .is_err(),
+        "stale role/context revisions must be rejected"
+    );
     assert_eq!(
         visible
             .columns

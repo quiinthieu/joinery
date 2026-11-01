@@ -657,6 +657,9 @@ impl Driver for Postgres {
     async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         schema_on(&self.client, table, true).await
     }
+    async fn inspection_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        schema_on_mode(&self.client, table, true, true).await
+    }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         let rows=self.metadata().await?.query(
             "SELECT n.nspname,c.relname,c.relkind::text,c.reltuples::float8,pg_total_relation_size(c.oid)::float8
@@ -1306,14 +1309,29 @@ pub(crate) fn pg_sql_error_mapped(
 }
 
 async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppResult<TableSchema> {
+    schema_on_mode(client, table, completion, false).await
+}
+
+async fn schema_on_mode(
+    client: &Client,
+    table: &TableRef,
+    completion: bool,
+    require_complete: bool,
+) -> AppResult<TableSchema> {
     let qualified = qualified(table);
     let rows=client.query(
             "SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),t.typname,a.attnotnull,a.attgenerated::pg_catalog.text,a.attidentity::pg_catalog.text,
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='p' AND a.attnum=ANY(k.conkey)),
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text,
-              a.atthasdef
+              a.atthasdef, pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT')
              FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
-             WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion]).await.map_err(pg_error)?;
+             WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR $3 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion, &require_complete]).await.map_err(pg_error)?;
+    if require_complete && rows.iter().any(|row| !row.get::<_, bool>(10)) {
+        return Err(AppError::new(
+            ErrorCode::PermissionDenied,
+            "Complete selectable column metadata is unavailable; no column claim was made",
+        ));
+    }
     if rows.is_empty() {
         return Err(AppError::new(
             ErrorCode::NotFound,
@@ -1321,6 +1339,12 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         ));
     }
     let physical = matches!(rows[0].get::<_, String>(8).as_str(), "r" | "p");
+    if require_complete && !physical {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Column inspection requires a direct base table",
+        ));
+    }
     let mut columns: Vec<ColumnInfo> = rows
         .iter()
         .enumerate()

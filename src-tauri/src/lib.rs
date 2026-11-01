@@ -110,6 +110,7 @@ pub fn run() {
             commands::cancel_run,
             commands::completion_catalog,
             commands::completion_schema,
+            commands::inspection_schema,
             commands::catalog,
             commands::database_objects,
             commands::object_details,

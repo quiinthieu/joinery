@@ -71,6 +71,12 @@ import {
 } from "./sql-navigation";
 import { SqlNavigationOverlay } from "./SqlNavigationOverlay";
 import { SqlAliasRenameDialog } from "./SqlAliasRenameDialog";
+import { SqlColumnInspectionDialog } from "./SqlColumnInspectionDialog";
+import {
+  prepareColumnInspection,
+  type MissingSqlColumn,
+  type SqlColumnInspection,
+} from "./sql-inspections";
 import { sqlDialect } from "./sql-identifiers";
 import { CompletionSession } from "./completion-session";
 
@@ -285,6 +291,15 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [navDetailsLoading, setNavDetailsLoading] = useState(false);
   const [navDetailsError, setNavDetailsError] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [inspectionBusy, setInspectionBusy] = useState(false);
+  const [inspectionError, setInspectionError] = useState<string | null>(null);
+  const [inspection, setInspection] = useState<{
+    result: SqlColumnInspection;
+    editor: EditorView;
+    state: EditorState;
+    context: string;
+    sequence: number;
+  } | null>(null);
   const [rename, setRename] = useState<{
     target: SqlRenameTarget;
     editor: EditorView;
@@ -305,6 +320,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const liveObjectsRef = useRef<DatabaseObjectSummary[]>([]);
   const schemaCacheRef = useRef<Map<string, TableSchema>>(new Map());
   const navRequestSeq = useRef(0);
+  const inspectionRequest = useRef<number | null>(null);
   const contextLoadRef = useRef<Promise<void> | null>(null);
   const clearNavigation = () => {
     navRequestSeq.current += 1;
@@ -314,6 +330,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     setNavDetailsError(null);
     setRename(null);
     setRenameError(null);
+    setInspection(null);
+    inspectionRequest.current = null;
+    setInspectionBusy(false);
+    setInspectionError(null);
   };
   const configure = () => {
     const config = latest.current;
@@ -576,6 +596,82 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     } catch (cause) {
       closeRename();
       setRenameError(messageOf(cause));
+    }
+  };
+
+  const runColumnInspection = async () => {
+    clearNavigation();
+    const editor = view.current;
+    const sessionId = latest.current.sessionId;
+    if (!editor || !sessionId) {
+      setInspectionError("Connect this console before inspecting columns.");
+      return;
+    }
+    const state = editor.state;
+    const request = navRequestSeq.current;
+    inspectionRequest.current = request;
+    const current = () =>
+      view.current === editor &&
+      editor.state.doc.eq(state.doc) &&
+      latest.current.sessionId === sessionId &&
+      request === navRequestSeq.current;
+    setInspectionBusy(true);
+    try {
+      await contextLoadRef.current;
+      if (!current()) return;
+      const snapshot = liveRef.current;
+      if (!snapshot) throw new Error("Current console metadata is unavailable. Refresh and retry.");
+      const context = renameContext();
+      const plan = prepareColumnInspection(state, state.selection.main.head, buildSymbolContext());
+      // Completion caches may be permission-filtered or out of date. This
+      // separate read requires complete metadata on the active session lane.
+      const schema = await client.call<TableSchema>("inspection_schema", {
+        sessionId,
+        revision: snapshot.revision,
+        table: plan.table,
+      });
+      if (!current() || renameContext() !== context) return;
+      setInspection({
+        result: plan.finish(editor.state, schema),
+        editor,
+        state,
+        context,
+        sequence: request,
+      });
+    } catch (error) {
+      if (current()) setInspectionError(`Column inspection unavailable: ${messageOf(error)}`);
+    } finally {
+      // A navigation request can supersede the result without starting a new
+      // inspection. Release only this request's busy state in that case.
+      if (inspectionRequest.current === request && view.current === editor) {
+        inspectionRequest.current = null;
+        setInspectionBusy(false);
+      }
+    }
+  };
+  const closeInspection = () => {
+    clearNavigation();
+    queueMicrotask(() => view.current?.focus());
+  };
+  const applyColumnCorrection = (issue: MissingSqlColumn, column: string) => {
+    if (!inspection) return;
+    try {
+      if (
+        view.current !== inspection.editor ||
+        renameContext() !== inspection.context ||
+        navRequestSeq.current !== inspection.sequence
+      )
+        throw new Error("Inspection context changed. Inspect the current statement again.");
+      const change = inspection.result.preview(inspection.editor.state, issue, column);
+      inspection.editor.dispatch({
+        changes: change,
+        annotations: isolateHistory.of("full"),
+        userEvent: "input.column-correction",
+      });
+      closeInspection();
+    } catch (error) {
+      closeInspection();
+      setInspectionError(messageOf(error));
     }
   };
   const navActionsRef = useRef({
@@ -1039,6 +1135,16 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 type="button"
                 className="button ghost small"
                 style={{ flexShrink: 0 }}
+                aria-label="Inspect SQL columns"
+                disabled={inspectionBusy}
+                onClick={() => void runColumnInspection()}
+              >
+                {inspectionBusy ? "Inspecting…" : "Inspect columns"}
+              </button>
+              <button
+                type="button"
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
                 title="Rename SQL alias or CTE · Shift-F6"
                 aria-label="Rename SQL alias or CTE"
                 onClick={() => navActionsRef.current.runSqlRename()}
@@ -1068,6 +1174,26 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             </div>
           </div>
         )}
+      {inspectionError && (
+        <div role="alert" style={{ padding: 8 }}>
+          {inspectionError}{" "}
+          <button
+            type="button"
+            className="button ghost small"
+            onClick={() => setInspectionError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {inspection && (
+        <SqlColumnInspectionDialog
+          result={inspection.result}
+          state={inspection.state}
+          onApply={applyColumnCorrection}
+          onClose={closeInspection}
+        />
+      )}
       {renameError && (
         <div role="alert" style={{ padding: 8 }}>
           {renameError}{" "}

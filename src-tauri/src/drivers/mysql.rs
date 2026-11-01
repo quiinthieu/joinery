@@ -767,7 +767,10 @@ impl Driver for Mysql {
         self.live_completion_catalog().await
     }
     async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
-        self.live_completion_schema(table).await
+        self.live_completion_schema(table, false).await
+    }
+    async fn inspection_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        self.live_completion_schema(table, true).await
     }
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         self.table_schema(table).await

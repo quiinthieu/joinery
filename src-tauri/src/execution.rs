@@ -1617,6 +1617,25 @@ impl Studio {
         revision: &str,
         table: &TableRef,
     ) -> AppResult<TableSchema> {
+        self.editor_schema(session_id, revision, table, false).await
+    }
+
+    pub async fn inspection_schema(
+        &self,
+        session_id: &str,
+        revision: &str,
+        table: &TableRef,
+    ) -> AppResult<TableSchema> {
+        self.editor_schema(session_id, revision, table, true).await
+    }
+
+    async fn editor_schema(
+        &self,
+        session_id: &str,
+        revision: &str,
+        table: &TableRef,
+        require_complete: bool,
+    ) -> AppResult<TableSchema> {
         let session = self.session(session_id)?;
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
@@ -1660,7 +1679,11 @@ impl Studio {
                 "The table is not visible in this completion context",
             ));
         }
-        let schema = session.driver.completion_schema(table).await?;
+        let schema = if require_complete {
+            session.driver.inspection_schema(table).await?
+        } else {
+            session.driver.completion_schema(table).await?
+        };
         if schema.columns.len() > 4096
             || serde_json::to_vec(&schema)
                 .map_err(|_| AppError::internal("Cannot encode completion columns"))?

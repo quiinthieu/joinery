@@ -64,6 +64,14 @@ export async function runNativeSmoke() {
         },
       ],
       [
+        "inspection_schema",
+        {
+          sessionId: "missing-native-fixture",
+          revision: "obsolete",
+          table: { schema: "public", name: "missing" },
+        },
+      ],
+      [
         "referencing_foreign_keys",
         {
           sessionId: "missing-native-fixture",

@@ -503,6 +503,18 @@ pub async fn completion_schema(
 }
 
 #[tauri::command]
+pub async fn inspection_schema(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    revision: String,
+    table: TableRef,
+) -> AppResult<TableSchema> {
+    studio
+        .inspection_schema(&session_id, &revision, &table)
+        .await
+}
+
+#[tauri::command]
 pub async fn pick_export_destination(
     studio: State<'_, Arc<Studio>>,
     suggested_name: String,

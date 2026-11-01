@@ -86,6 +86,12 @@ pub trait Driver: Send + Sync {
             "Live completion metadata is unavailable for this engine",
         ))
     }
+    async fn inspection_schema(&self, _table: &TableRef) -> AppResult<TableSchema> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Complete column inspection metadata is unavailable for this engine",
+        ))
+    }
     async fn session_state(&self, _session_id: &str) -> AppResult<SessionRuntimeState> {
         Err(AppError::new(
             ErrorCode::Unsupported,

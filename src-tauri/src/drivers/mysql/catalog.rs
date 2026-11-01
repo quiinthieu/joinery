@@ -19,7 +19,11 @@ impl Mysql {
             Ok(CompletionRelations { tables, unqualified_tables })
         }).await
     }
-    pub(super) async fn live_completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+    pub(super) async fn live_completion_schema(
+        &self,
+        table: &TableRef,
+        require_complete: bool,
+    ) -> AppResult<TableSchema> {
         identifier(&table.schema)?;
         identifier(&table.name)?;
         self.bounded(async {
@@ -39,6 +43,25 @@ impl Mysql {
                     1024 * 1024,
                 )
                 .await?;
+                if require_complete {
+                    // SHOW COLUMNS can hide columns with no privileges. Compare
+                    // against the full server DDL before claiming any absence.
+                    // Unsupported DDL or SHOW CREATE permissions fail closed.
+                    let create = fetch_text(&mut conn, &format!("SHOW CREATE TABLE {qualified_table}"), 1, 1024 * 1024).await?;
+                    let ddl = create.first().map(|row| cell(row, 1)).unwrap_or_default();
+                    let complete = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::MySqlDialect {}, ddl)
+                        .ok().filter(|statements| statements.len() == 1)
+                        .and_then(|mut statements| match statements.remove(0) {
+                            sqlparser::ast::Statement::CreateTable(table) => Some(table.columns),
+                            _ => None,
+                        });
+                    let visible: std::collections::HashSet<&str> = rows.iter()
+                        .filter(|row| cell(row, 7).split(',').any(|p| p.eq_ignore_ascii_case("select")))
+                        .map(|row| cell(row, 0)).collect();
+                    if !complete.is_some_and(|columns| !columns.is_empty() && columns.len() == visible.len() && columns.iter().all(|column| visible.contains(column.name.value.as_str()))) {
+                        return Err(AppError::new(ErrorCode::PermissionDenied, "Complete selectable column metadata is unavailable; no column claim was made"));
+                    }
+                }
                 let mut columns: Vec<ColumnInfo> = rows
                     .iter()
                     .filter(|r| {
