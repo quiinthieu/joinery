@@ -1974,3 +1974,50 @@ The fetched `origin/main` remains `a0ba1a6`. Release metadata was not refreshed
 in this slice; preview.15 remains last verified, and the installed application
 was not requalified. Application push, merge, release and installation remain
 separate authorized steps.
+
+## R5 follow-up: bounded alias rename (2 November 2026)
+
+Code `e0526268fab3f9162b3bd890b1484a3d90b127db`, tree `2698b041469a6dfa2adab8ea464260367bee9f97`, adds **Rename alias** / Shift-F6.
+The dialog lists every local declaration/qualified-reference edit, requires
+explicit Apply, preserves quoted identifiers with escaped delimiters and applies
+one isolated CodeMirror transaction. One undo restores the original SQL.
+Comments, string literals, other statements and nested shadowing are preserved;
+proven correlated references follow their declaration. CTE bodies and non-lateral
+derived tables cannot adopt their containing query's FROM aliases. Renaming
+neither changes a database object nor prepares/executes SQL. Run shortcuts are
+isolated while the dialog owns keyboard focus.
+
+This independent analysis never uses the capped navigation usages as edit proof.
+It rejects name collisions, captured/unbound qualifiers, ambiguous whole-row/bare
+names, stale document identity (even after restoring identical text), editor/session/
+context/catalog changes, invalid or overlong names and partial scans. Bounds:
+65,536 UTF-16 units per statement / 4,096 lexical tokens / 16 nested levels / 64 query bodies /
+500 edits. New names stop at 128 UTF-16 units, with PostgreSQL's 63-byte and
+MySQL/MariaDB's 64-character bounds also enforced. MySQL alias case checks are
+conservative. SELECT/WITH with physical, CTE and SELECT-derived aliases is the
+supported subset; DML/data-modifying CTEs, set operations, LATERAL/APPLY, table
+functions, relation column lists, parenthesized joins and other unsupported
+relation modifiers are withheld. Nested multi-relation queries that hide an outer
+name are also withheld: earlier JOIN ON clauses have different visibility from
+the complete query. The SQL lexer is not a complete semantic SQL validator.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Missing rename analysis failed the initial behavior tests. A later dedicated regression reproduced unsafe whole-query name resolution for an earlier JOIN ON clause followed by a shadowing alias; this shape is now explicitly withheld |
+| Passed | `pnpm validate`: 277 frontend tests / 35 files, 156 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused unit/UI | 24 new cases cover full edit lists, shadowing/correlation, CTE/derived boundaries, capture/collisions, quoted delimiters across PostgreSQL/MySQL/Snowflake dialects, identifier limits, unsupported shapes, stale documents, explicit Apply/cancel and dialog shortcut isolation |
+| Browser | All nine focused flows pass against disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4: three new rename workflows plus all six SQL navigation regressions. Preview/cancel/apply, original SQL preservation, one-step undo, escaped quoted aliases, capture/unsupported rejection and document/context refresh invalidation pass, with no prepare/execute requests or page errors. A Vite module import drives a background document-change regression; the editor is correctly inert/hidden during preview |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `7410d2059eb94aa4c78cb1712305c1fea6995ba070389e989834a4c5a9209040`; isolated ad-hoc bundle executable SHA-256 `1f7374dcfb4748f785ffb792b1fbfd32148992d900c8cad0ba1ec863fee907e0`. Synthetic IPC/worker/cleanup baseline only; rename interaction evidence is browser-based, not native UI qualification |
+| Prior evidence | The single PostgreSQL inspector fixture belongs to `34c001a`. The full 86-flow browser run belongs to `db5cd1b`; all 66 ignored fixtures and normal ad-hoc distribution bundle belong to `b80b6c7`. None is relabeled as rerun here. Snowflake rename checks are local dialect tests, not live account qualification |
+| Open | Broader refactoring and semantic inspections/templates; R5/R6 depth, R7/R8, observed Snowflake identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates |
+| Next | Model ordered JOIN visibility for alias rename, reproduce earlier-ON correlated/shadowing cases, and enable only proven scopes with the same preview/capture/staleness/undo guarantees. Then continue bounded CTE rename, semantic inspections/templates and remaining R5/R6/R7/R8 |
+
+Logs: `.cache/r5-alias-rename-{reproduction,join-reproduction,validate,browser,native-build,native-runs}.log`.
+Immutable native evidence: `.cache/r5-alias-rename-native-evidence.json`.
+Initial browser assertions were corrected to inspect the modal-hidden editor via
+its DOM locator. A development-page reload interrupted one intermediate run;
+final focused runs pass. No known test failure was bypassed. Owned fixtures were
+removed; user services remain running. Fetched `origin/main` is `a0ba1a6`.
+Release metadata was not refreshed in this slice; preview.15 remains last verified.
+Local, unmerged, unreleased and not installed; application push/merge/release/
+installation remain separate authorized steps.

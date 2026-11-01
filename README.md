@@ -194,6 +194,13 @@ inspector dependency, owner, index and trigger links preserve that origin.
 **Append DDL to source console** explicitly appends to the still-bound console,
 preserving its SQL and session without executing anything. Stale, closed or
 rebound sources are rejected; running consoles cannot receive DDL.
+
+**Rename alias** (Shift-F6) now previews declaration and qualified-reference
+edits in supported SELECT statements. Explicit Apply preserves comments, other
+statements and nested shadowing; one undo restores the original SQL. Collisions,
+capture, stale documents/contexts and unsupported shapes are rejected. This is
+local text refactoring; database-object renaming remains unavailable.
+
 Recorded R5 commit `bb77b0f` remains readable; its former worktree/branch are
 absent and its former uncommitted documentation was not recovered. Full
 DataGrip replacement still needs the remaining

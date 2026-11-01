@@ -139,7 +139,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline marks, gutters, SQLSTATE/details, jumps and statement navigation now use exact submitted source identity; Unicode/CRLF, parameters and Explain origins are reconciled; edits and delayed errors cannot mark changed SQL | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; six real diagnostics/navigation browser flows plus twelve focused unit cases; local `65530c0`, unmerged / hold |
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
 | E09 SQL formatting — DG-F | `sql-format.ts`, formatter worker, Preferences | PARTIAL / H | Selection/document formatting, global and per-dialect case/indent/spacing, inheritance/reset, stale-reply rejection, serialized saves and bind compatibility. Broader style controls remain open | P2 / Medium | Editor selections; PMS; local | Selection/newline/undo, literal/comment/bind preservation, ordered saves, inheritance/reset/recovery and three real engine flows; local `d39b89b`, unmerged / hold |
-| E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
+| E10 Rename and SQL refactoring — DG-R | `sql-navigation.ts`, `SqlAliasRenameDialog.tsx`, `SqlEditor.tsx` | PARTIAL / H | Bounded SELECT alias preview/Apply; broader refactoring and database renames remain open | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing/capture/undo locally verified; wider scopes and reviewed DDL / hold |
 | E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias/output jumps, proven direct-column outputs through CTEs/derived tables and per-candidate references. Expressions, wildcards, set-operation outputs and ambiguity are withheld. Primary/isolated consoles retain their originating context through read-only Structure/DDL and linked objects; explicit DDL append preserves SQL/session without execution | P1 / High | E02/N06; PMS; read | Nested outputs plus context/session isolation, denied/stale replies and six real navigation flows; local `34c001a`, unmerged / hold |
 | E12 Snippets/live templates — DG-T | `sql-snippets.ts`, Preferences, bounded SQLite metadata | PARTIAL / H | Built-ins and global/engine custom templates, override precedence, Tab/Shift+Tab and final cursor stop; no automatic execution. Context-aware variables/semantic placement remain open | P2 / Medium | Existing editor/persistence; PMS; local | Expansion, scope precedence, real CRUD/reload/explicit-run flows and validated backup/restore; local `db5cd1b`, unmerged / hold |
 | E13 Statement navigation — DG-X | `sql-context.ts`, `sql-navigation.ts`, editor/palette | PARTIAL / H | Caret/selection execution and dialect-tree previous/next statement navigation verified locally; incomplete parsing withholds navigation; representative large-document performance remains open | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, dialect ranges and real diagnostics/navigation flows; local `65530c0` and current regressions, unmerged / hold |
@@ -853,3 +853,21 @@ Prior full browser/fixture/bundle counts retain their exact revisions. E10 alias
 rename preview is next; wider semantics, platform/external/accessibility/
 performance and delivery gates remain open. Local, unmerged, unreleased and not
 installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-preserving-inspector-actions-2-november-2026).
+
+### Bounded alias rename — local `e052626`
+
+E10 is partial: Shift-F6 / Rename alias previews all supported SELECT declaration
+and qualified-reference edits, preserves quoting/shadowing and requires explicit
+Apply with one-step undo. Capture, collisions, stale document/session/context,
+identifier limits and unsupported shapes are rejected. CTE/derived scope barriers
+are explicit; nested multi-relation queries hiding an outer name stay withheld
+until ordered JOIN ON visibility is modeled. No database object is renamed and
+no SQL is prepared/executed. See [bounds and exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-alias-rename-2-november-2026).
+
+Validation passes 277 frontend / 156 standard Rust, nine focused PostgreSQL/MySQL/
+MariaDB browser flows and the clean-source native synthetic baseline (three
+processes / 30 cycles). Snowflake dialect checks are local only. Prior broad
+browser/fixture/normal-bundle evidence retains its revisions. Ordered JOIN
+visibility, bounded CTE rename, semantics/templates and remaining R5/R6/R7/R8 are
+next. Local, unmerged, unreleased and not installed; platform/external/native UI/
+accessibility/performance and delivery gates remain open.
