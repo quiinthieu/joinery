@@ -1654,6 +1654,30 @@ export function App() {
                   ...(profile?.engine !== "redis"
                     ? [
                         {
+                          label: "Go to SQL definition",
+                          shortcut: "F12",
+                          icon: ArrowUpRight,
+                          action: () => {
+                            void editor.current?.goToDefinition();
+                          },
+                        },
+                        {
+                          label: "Find SQL usages",
+                          shortcut: "⇧F12",
+                          icon: Search,
+                          action: () => {
+                            void editor.current?.findUsages();
+                          },
+                        },
+                        {
+                          label: "Quick SQL documentation",
+                          shortcut: "F1",
+                          icon: Code2,
+                          action: () => {
+                            void editor.current?.showQuickDocs();
+                          },
+                        },
+                        {
                           label: "Previous SQL statement",
                           shortcut: "⌥⌘ ↑",
                           icon: Code2,

@@ -89,6 +89,7 @@ export interface StudioTab {
   nextKey: (string | null)[] | null;
   loadingPage: boolean;
   view: "data" | "structure" | "ddl";
+  highlightedColumn?: string | null;
   revision: number;
   metrics: Record<number, { affectedRows: string; elapsedMs: number }>;
   dataSessionId: string | null;
@@ -188,11 +189,13 @@ interface StudioState {
     table: TableRef,
     query?: BrowseQuery,
     preferredView?: StudioTab["view"],
+    highlightedColumn?: string | null,
   ): Promise<void>;
   openObject(
     connectionId: string,
     object: DatabaseObjectRef,
     preferredView?: StudioTab["view"],
+    highlightedColumn?: string | null,
   ): Promise<void>;
   /** Applies a new sort/filter or requests review for non-Read raw SQL clauses. */
   setTableQuery(
@@ -242,6 +245,7 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     nextKey: null,
     loadingPage: false,
     view: "data",
+    highlightedColumn: null,
     revision: 0,
     metrics: {},
     dataSessionId: null,
@@ -1045,7 +1049,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
-  async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView) {
+  async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView, highlightedColumn) {
     const query = normalizeQuery(rawQuery);
     const profileName =
       get().bootstrap?.profiles.find((p) => p.id === connectionId)?.name ?? connectionId;
@@ -1060,9 +1064,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (existing) {
       set((state) => ({
         activeTabId: existing.id,
-        tabs: preferredView
-          ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
-          : state.tabs,
+        tabs:
+          preferredView || highlightedColumn !== undefined
+            ? state.tabs.map((t) =>
+                t.id === existing.id
+                  ? {
+                      ...t,
+                      ...(preferredView ? { view: preferredView } : {}),
+                      ...(highlightedColumn !== undefined ? { highlightedColumn } : {}),
+                    }
+                  : t,
+              )
+            : state.tabs,
       }));
       get().recordRecentLocation({
         key: `table:${connectionId}:${table.schema}.${table.name}`,
@@ -1076,6 +1089,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     next.table = table;
     next.query = query;
     if (preferredView) next.view = preferredView;
+    if (highlightedColumn !== undefined) next.highlightedColumn = highlightedColumn;
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     get().recordRecentLocation({
       key: `table:${connectionId}:${table.schema}.${table.name}`,
@@ -1085,13 +1099,14 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
     await get().refreshTable(next.id);
   },
-  async openObject(connectionId, object, preferredView) {
+  async openObject(connectionId, object, preferredView, highlightedColumn) {
     if (isTabularObjectKind(object.kind)) {
       await get().openTable(
         connectionId,
         { schema: object.schema, name: object.name },
         EMPTY_QUERY,
         preferredView,
+        highlightedColumn,
       );
       return;
     }

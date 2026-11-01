@@ -830,11 +830,25 @@ export function Workbench({
                 onChange={(sql) => state.updateTab(tab.id, { sql })}
                 onRun={onRun}
                 onOpenParameters={onOpenParameters}
+                onOpenObject={
+                  (tab.connectionId ?? profile?.id) &&
+                  session &&
+                  session.id === state.sessions[(tab.connectionId ?? profile?.id)!]?.id
+                    ? (object, highlightedColumn) =>
+                        void state.openObject(
+                          (tab.connectionId ?? profile?.id)!,
+                          object,
+                          "structure",
+                          highlightedColumn ?? null,
+                        )
+                    : undefined
+                }
                 error={tab.error}
                 errorOrigin={tab.errorOrigin}
                 engine={profile?.engine ?? "postgres"}
                 sessionId={session?.id ?? null}
                 tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}
+                objectExplorerSupported={objectExplorerSupported}
                 database={profile?.engine === "snowflake" ? profile.database : undefined}
                 defaultSchema={
                   profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined
@@ -1209,6 +1223,7 @@ export function Workbench({
             details={activeTableDetails}
             detailsError={activeTableDetailsError}
             connectionId={tab.connectionId}
+            highlightedColumn={tab.highlightedColumn}
           />
         ) : tab.kind === "table" && tab.view === "ddl" ? (
           <div className="object-inspector-scroll">

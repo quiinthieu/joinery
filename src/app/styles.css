@@ -3378,3 +3378,220 @@ kbd {
   color: var(--muted);
   margin: 8px 0;
 }
+
+.structure-table tr.structure-row-highlighted td {
+  background: var(--selection);
+}
+.structure-table tr.structure-row-highlighted td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+  font-weight: 600;
+}
+
+.sql-nav-overlay {
+  position: absolute;
+  top: 38px;
+  right: 14px;
+  z-index: 40;
+  width: min(460px, calc(100% - 28px));
+  max-height: calc(100% - 50px);
+  display: flex;
+  flex-direction: column;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px #0005;
+  overflow: hidden;
+  font-size: 11.5px;
+}
+.sql-nav-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 11px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+}
+.sql-nav-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.sql-nav-heading > strong {
+  color: var(--text);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sql-nav-badge {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--selection);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.sql-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.sql-nav-actions .button.active {
+  background: var(--selection);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sql-nav-body {
+  padding: 11px 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sql-nav-comment {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.sql-nav-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: baseline;
+}
+.sql-nav-dl dt {
+  color: var(--faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sql-nav-dl dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sql-nav-dl dd code {
+  font-size: 10.5px;
+  color: var(--accent);
+}
+.sql-nav-columns,
+.sql-nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sql-nav-section + .sql-nav-section {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.sql-nav-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.sql-nav-column-list,
+.sql-nav-usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sql-nav-column-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 11px;
+}
+.sql-nav-column-row > span:first-child {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sql-nav-column-row > code {
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sql-nav-col-flags {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.sql-nav-more,
+.sql-nav-empty {
+  color: var(--faint);
+  font-size: 11px;
+  padding: 4px 2px;
+}
+.sql-nav-usage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.sql-nav-usage-row:hover,
+.sql-nav-usage-row:focus-visible {
+  border-color: var(--accent);
+  background: var(--selection);
+}
+.sql-nav-loc {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.sql-nav-pill {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 9.5px;
+}
+.sql-nav-pill.decl {
+  background: var(--selection);
+  color: var(--accent);
+  font-weight: 500;
+}
+.sql-nav-snippet {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text);
+}
+.sql-nav-footer-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}

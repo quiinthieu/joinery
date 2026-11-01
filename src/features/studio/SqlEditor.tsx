@@ -32,9 +32,13 @@ import { sql } from "@codemirror/lang-sql";
 import type {
   AppError,
   CompletionCatalog,
+  DatabaseObjectRef,
+  DatabaseObjectSummary,
   EngineKind,
+  ObjectDetails,
   QueryParamSlot,
   TableInfo,
+  TableRef,
   TableSchema,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
@@ -45,7 +49,13 @@ import {
   adjacentStatement,
   resolveExecutionError,
   type SqlExecutionOrigin,
+  resolveSymbolAt,
+  schemaCacheKey,
+  tablesNeededForNavigationAt,
+  type ResolvedSqlSymbol,
+  type SqlSymbolContext,
 } from "./sql-navigation";
+import { SqlNavigationOverlay } from "./SqlNavigationOverlay";
 import { sqlDialect } from "./sql-identifiers";
 import { CompletionSession } from "./completion-session";
 
@@ -54,6 +64,9 @@ export interface EditorHandle {
   executionSlice(): { sql: string; fromUtf16: number };
   revealRange(fromUtf16: number, toUtf16: number): void;
   navigateStatement(direction: -1 | 1): boolean;
+  goToDefinition(): Promise<boolean>;
+  findUsages(): Promise<boolean>;
+  showQuickDocs(): Promise<boolean>;
   focus(): void;
   format(): void;
 }
@@ -62,11 +75,13 @@ interface Props {
   onChange(value: string): void;
   onRun(sql: string, fromUtf16?: number): void;
   onOpenParameters?(slots: QueryParamSlot[]): void;
+  onOpenObject?(object: DatabaseObjectRef, highlightedColumn?: string): void;
   error?: AppError | null;
   errorOrigin?: SqlExecutionOrigin;
   engine: EngineKind;
   sessionId: string | null;
   tables: TableInfo[];
+  objectExplorerSupported?: boolean;
   database?: string;
   defaultSchema?: string;
   theme: string;
@@ -243,6 +258,13 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [refresh, setRefresh] = useState(0);
   const [switchingContext, setSwitchingContext] = useState(false);
   const [paramSlots, setParamSlots] = useState<QueryParamSlot[]>([]);
+  const [navOverlay, setNavOverlay] = useState<{
+    mode: "docs" | "usages";
+    symbol: ResolvedSqlSymbol;
+  } | null>(null);
+  const [navDetails, setNavDetails] = useState<ObjectDetails | null>(null);
+  const [navDetailsLoading, setNavDetailsLoading] = useState(false);
+  const [navDetailsError, setNavDetailsError] = useState<string | null>(null);
   const runtimeState = useStudio((s) =>
     props.sessionId ? s.sessionStates[props.sessionId] : undefined,
   );
@@ -250,6 +272,17 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
   );
   const liveRef = useRef<CompletionCatalog | null>(null);
+  const liveObjectsRef = useRef<DatabaseObjectSummary[]>([]);
+  const schemaCacheRef = useRef<Map<string, TableSchema>>(new Map());
+  const navRequestSeq = useRef(0);
+  const contextLoadRef = useRef<Promise<void> | null>(null);
+  const clearNavigation = () => {
+    navRequestSeq.current += 1;
+    setNavOverlay(null);
+    setNavDetails(null);
+    setNavDetailsLoading(false);
+    setNavDetailsError(null);
+  };
   const configure = () => {
     const config = latest.current;
     const snapshot = liveRef.current;
@@ -274,6 +307,196 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     sequence = useRef(0);
   const formatting = useRef<{ id: number; source: string } | null>(null);
 
+  const loadTableSchemaCached = async (
+    sessionId: string,
+    table: TableRef,
+    contextRevision?: string,
+  ): Promise<TableSchema> => {
+    const key = schemaCacheKey(table);
+    const cache = schemaCacheRef.current;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const loaded = contextRevision
+      ? await client.call<TableSchema>("completion_schema", {
+          sessionId,
+          table,
+          revision: contextRevision,
+        })
+      : await client.call<TableSchema>("table_schema", { sessionId, table });
+    if (
+      schemaCacheRef.current === cache &&
+      latest.current.sessionId === sessionId &&
+      (!contextRevision || liveRef.current?.revision === contextRevision)
+    )
+      cache.set(key, loaded);
+    return loaded;
+  };
+
+  const buildSymbolContext = (): SqlSymbolContext => {
+    const config = latest.current;
+    const snapshot = liveRef.current;
+    return {
+      engine: config.engine,
+      tables: snapshot?.tables ?? [],
+      databaseObjects: liveObjectsRef.current,
+      schemas: schemaCacheRef.current,
+      database: snapshot?.identity.database ?? config.database,
+      defaultSchema: config.defaultSchema,
+      searchPath: snapshot?.identity.searchPath,
+      unqualifiedTables: snapshot?.unqualifiedTables,
+      caseSensitiveTableNames: snapshot?.identity.caseSensitiveTableNames ?? undefined,
+    };
+  };
+
+  const revealEditorRange = (fromUtf16: number, toUtf16: number) => {
+    const editor = view.current;
+    if (!editor) return;
+    const max = editor.state.doc.length;
+    const from = Math.max(0, Math.min(max, Math.trunc(fromUtf16)));
+    const to = Math.max(from, Math.min(max, Math.trunc(toUtf16)));
+    editor.dispatch({
+      selection: to > from ? { anchor: to, head: from } : { anchor: from },
+      effects: EditorView.scrollIntoView(from, { y: "center" }),
+    });
+    editor.focus();
+  };
+
+  const resolveAtPosition = async (pos?: number): Promise<ResolvedSqlSymbol | null> => {
+    const editor = view.current;
+    if (!editor || latest.current.engine === "redis") return null;
+    const document = editor.state.doc;
+    const sessionAtStart = latest.current.sessionId;
+    const request = navRequestSeq.current;
+    const targetPos = pos ?? editor.state.selection.main.head;
+    await contextLoadRef.current;
+    if (
+      view.current !== editor ||
+      editor.state.doc !== document ||
+      latest.current.sessionId !== sessionAtStart ||
+      navRequestSeq.current !== request
+    )
+      return null;
+    const initialCtx = buildSymbolContext();
+    const sessionId = latest.current.sessionId;
+    if (sessionId) {
+      const needed = tablesNeededForNavigationAt(editor.state, targetPos, initialCtx).filter(
+        (t) => !schemaCacheRef.current.has(schemaCacheKey(t)),
+      );
+      if (needed.length > 0) {
+        const rev = liveRef.current?.revision;
+        await Promise.all(
+          needed
+            .slice(0, 8)
+            .map((table) => loadTableSchemaCached(sessionId, table, rev).catch(() => null)),
+        );
+      }
+    }
+    const currentEditor = view.current;
+    if (
+      !currentEditor ||
+      currentEditor !== editor ||
+      currentEditor.state.doc !== document ||
+      latest.current.sessionId !== sessionAtStart ||
+      navRequestSeq.current !== request
+    )
+      return null;
+    return resolveSymbolAt(
+      currentEditor.state,
+      Math.min(targetPos, currentEditor.state.doc.length),
+      buildSymbolContext(),
+    );
+  };
+
+  const performGoToSymbol = (symbol: ResolvedSqlSymbol) => {
+    if (symbol.kind === "cte" || symbol.kind === "alias") {
+      clearNavigation();
+      revealEditorRange(symbol.declarationSpan.from, symbol.declarationSpan.to);
+      return;
+    }
+    if (!latest.current.onOpenObject) {
+      useStudio
+        .getState()
+        .notify(
+          "Object structure navigation is unavailable for this query session. Use quick SQL documentation.",
+        );
+      return;
+    }
+    clearNavigation();
+    if (symbol.kind === "column") {
+      latest.current.onOpenObject(symbol.object, symbol.name);
+    } else {
+      latest.current.onOpenObject(symbol.object);
+    }
+  };
+
+  const runGoToDefinition = async (pos?: number): Promise<boolean> => {
+    const reqId = ++navRequestSeq.current;
+    const symbol = await resolveAtPosition(pos);
+    if (reqId !== navRequestSeq.current) return false;
+    if (!symbol) {
+      useStudio
+        .getState()
+        .notify(
+          "No unambiguous SQL symbol found. Use a qualified name or refresh the connection metadata.",
+        );
+      return false;
+    }
+    performGoToSymbol(symbol);
+    return true;
+  };
+
+  const runOpenOverlay = async (mode: "docs" | "usages", pos?: number): Promise<boolean> => {
+    const reqId = ++navRequestSeq.current;
+    const symbol = await resolveAtPosition(pos);
+    if (reqId !== navRequestSeq.current) return false;
+    if (!symbol) {
+      useStudio
+        .getState()
+        .notify(
+          "No unambiguous SQL symbol found. Use a qualified name or refresh the connection metadata.",
+        );
+      return false;
+    }
+    setNavOverlay({ mode, symbol });
+    setNavDetails(null);
+    setNavDetailsError(null);
+    const catalogObject =
+      symbol.kind === "object"
+        ? symbol.object
+        : symbol.kind === "column"
+          ? symbol.object
+          : symbol.kind === "alias"
+            ? symbol.object
+            : null;
+    const sessionId = latest.current.sessionId;
+    if (catalogObject && sessionId && latest.current.objectExplorerSupported) {
+      setNavDetailsLoading(true);
+      void client
+        .call<ObjectDetails>("object_details", { sessionId, object: catalogObject })
+        .then((details) => {
+          if (navRequestSeq.current === reqId) setNavDetails(details);
+        })
+        .catch((error) => {
+          if (navRequestSeq.current === reqId) setNavDetailsError(messageOf(error));
+        })
+        .finally(() => {
+          if (navRequestSeq.current === reqId) setNavDetailsLoading(false);
+        });
+    } else {
+      setNavDetailsLoading(false);
+    }
+    return true;
+  };
+
+  const navActionsRef = useRef({
+    runGoToDefinition,
+    runOpenOverlay,
+  });
+  navActionsRef.current = {
+    runGoToDefinition,
+    runOpenOverlay,
+  };
+
   useImperativeHandle(
     ref,
     () => ({
@@ -294,16 +517,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         return { sql: slice.sql, fromUtf16: slice.fromUtf16 };
       },
       revealRange(fromUtf16: number, toUtf16: number) {
-        const editor = view.current;
-        if (!editor) return;
-        const max = editor.state.doc.length;
-        const from = Math.max(0, Math.min(max, Math.trunc(fromUtf16)));
-        const to = Math.max(from, Math.min(max, Math.trunc(toUtf16)));
-        editor.dispatch({
-          selection: to > from ? { anchor: to, head: from } : { anchor: from },
-          effects: EditorView.scrollIntoView(from, { y: "center" }),
-        });
-        editor.focus();
+        revealEditorRange(fromUtf16, toUtf16);
       },
       navigateStatement(direction: -1 | 1) {
         const editor = view.current;
@@ -311,6 +525,15 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         const moved = moveCaretToAdjacentStatement(editor, direction);
         if (moved) editor.focus();
         return moved;
+      },
+      goToDefinition() {
+        return navActionsRef.current.runGoToDefinition();
+      },
+      findUsages() {
+        return navActionsRef.current.runOpenOverlay("usages");
+      },
+      showQuickDocs() {
+        return navActionsRef.current.runOpenOverlay("docs");
       },
       focus() {
         view.current?.focus();
@@ -364,13 +587,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     const session = new CompletionSession(
       (message) => worker.postMessage(message),
       (sessionId, table, contextRevision) =>
-        contextRevision
-          ? client.call<TableSchema>("completion_schema", {
-              sessionId,
-              table,
-              revision: contextRevision,
-            })
-          : client.call<TableSchema>("table_schema", { sessionId, table }),
+        loadTableSchemaCached(sessionId, table, contextRevision),
       (error) => useStudio.getState().notify(messageOf(error)),
     );
     completion.current = session;
@@ -435,21 +652,68 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             run: (editor) =>
               latest.current.engine !== "redis" && moveCaretToAdjacentStatement(editor, 1),
           },
+          {
+            key: "F12",
+            run: () => {
+              if (latest.current.engine === "redis") return false;
+              void navActionsRef.current.runGoToDefinition();
+              return true;
+            },
+          },
+          {
+            key: "Shift-F12",
+            run: () => {
+              if (latest.current.engine === "redis") return false;
+              void navActionsRef.current.runOpenOverlay("usages");
+              return true;
+            },
+          },
+          {
+            key: "F1",
+            run: () => {
+              if (latest.current.engine === "redis") return false;
+              void navActionsRef.current.runOpenOverlay("docs");
+              return true;
+            },
+          },
           ...closeBracketsKeymap,
           ...defaultKeymap,
           ...historyKeymap,
           ...searchKeymap,
           indentWithTab,
         ]),
+        EditorView.domEventHandlers({
+          mousedown(event, editorView) {
+            if (
+              latest.current.engine === "redis" ||
+              event.button !== 0 ||
+              !(event.metaKey || event.ctrlKey) ||
+              event.shiftKey ||
+              event.altKey
+            ) {
+              return false;
+            }
+            const pos = editorView.posAtCoords({ x: event.clientX, y: event.clientY });
+            if (pos === null) return false;
+            event.preventDefault();
+            editorView.dispatch({ selection: { anchor: pos } });
+            void navActionsRef.current.runGoToDefinition(pos);
+            return true;
+          },
+        }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged || update.selectionSet) session.update(update.state);
-          if (update.docChanged) latest.current.onChange(update.state.doc.toString());
+          if (update.docChanged) {
+            clearNavigation();
+            latest.current.onChange(update.state.doc.toString());
+          }
         }),
       ],
     });
     view.current = new EditorView({ state, parent: host.current! });
     session.update(state);
     return () => {
+      navRequestSeq.current += 1;
       session.dispose();
       completion.current = null;
       view.current?.destroy();
@@ -503,7 +767,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   }, [props.tables, props.sessionId, props.engine, props.database, props.defaultSchema, live]);
   useEffect(() => {
     let cancelled = false;
+    clearNavigation();
     liveRef.current = null;
+    liveObjectsRef.current = [];
+    schemaCacheRef.current = new Map();
+    contextLoadRef.current = null;
     setLive(null);
     setContextError(null);
     if (props.engine === "redis") return;
@@ -511,12 +779,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     if (view.current) closeCompletion(view.current);
     if (props.sessionId) {
       void useStudio.getState().refreshSessionContexts(props.sessionId);
-      void client
+      contextLoadRef.current = client
         .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
-        .then((snapshot) => {
+        .then(async (snapshot) => {
           if (!cancelled) {
             liveRef.current = snapshot;
             setLive(snapshot);
+            if (props.objectExplorerSupported) {
+              try {
+                const objects = await client.call<DatabaseObjectSummary[]>("database_objects", {
+                  sessionId: props.sessionId,
+                });
+                if (!cancelled) liveObjectsRef.current = objects;
+              } catch {
+                /* Catalog privileges may be narrower than SQL access. */
+              }
+            }
           }
         })
         .catch((error) => {
@@ -526,7 +804,14 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     return () => {
       cancelled = true;
     };
-  }, [props.engine, props.sessionId, props.tables, props.contextEpoch, refresh]);
+  }, [
+    props.engine,
+    props.sessionId,
+    props.tables,
+    props.contextEpoch,
+    props.objectExplorerSupported,
+    refresh,
+  ]);
   useEffect(() => {
     if (props.engine === "redis" || !props.value.trim()) {
       setParamSlots([]);
@@ -564,88 +849,129 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     runtimeState !== undefined &&
     runtimeState.contextKind !== "none";
   return (
-    <div className="sql-editor" style={{ display: "flex", flexDirection: "column" }}>
-      {props.engine !== "redis" && (props.sessionId || paramSlots.length > 0) && (
-        <div className="editor-context-row">
-          {showContextSwitcher && (
-            <select
-              className="context-switcher"
-              aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
-              value={currentContext}
-              disabled={switchingContext}
-              onChange={(event) => {
-                const target = event.target.value;
-                if (!target || !props.sessionId || target === currentContext) return;
-                setSwitchingContext(true);
-                void useStudio
-                  .getState()
-                  .switchSessionContext(props.sessionId, target)
-                  .catch((error) => useStudio.getState().notify(messageOf(error)))
-                  .finally(() => setSwitchingContext(false));
-              }}
-            >
-              {!currentContext && <option value="">No active context</option>}
-              {contextOptions.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          )}
-          <div
-            aria-live="polite"
-            aria-atomic="true"
-            className="completion-context"
-            style={{
-              fontSize: 11,
-              padding: "4px 12px",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              minWidth: 0,
-              flex: 1,
-            }}
-          >
-            <span
+    <div
+      className="sql-editor"
+      style={{ display: "flex", flexDirection: "column", position: "relative" }}
+    >
+      {props.engine !== "redis" &&
+        (props.sessionId || paramSlots.length > 0 || props.value.trim()) && (
+          <div className="editor-context-row">
+            {showContextSwitcher && (
+              <select
+                className="context-switcher"
+                aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
+                value={currentContext}
+                disabled={switchingContext}
+                onChange={(event) => {
+                  const target = event.target.value;
+                  if (!target || !props.sessionId || target === currentContext) return;
+                  setSwitchingContext(true);
+                  void useStudio
+                    .getState()
+                    .switchSessionContext(props.sessionId, target)
+                    .catch((error) => useStudio.getState().notify(messageOf(error)))
+                    .finally(() => setSwitchingContext(false));
+                }}
+              >
+                {!currentContext && <option value="">No active context</option>}
+                {contextOptions.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div
+              aria-live="polite"
+              aria-atomic="true"
+              className="completion-context"
               style={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                fontSize: 11,
+                padding: "4px 12px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                minWidth: 0,
                 flex: 1,
               }}
-              title={contextError ?? live?.identity.searchPath.join(", ")}
             >
-              {!props.sessionId
-                ? "Connect to run parameterized SQL"
-                : contextError
-                  ? `Completion unavailable: ${contextError}`
-                  : live
-                    ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                    : "Loading completion context…"}
-            </span>
-            {paramSlots.length > 0 && props.onOpenParameters && (
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  flex: 1,
+                }}
+                title={contextError ?? live?.identity.searchPath.join(", ")}
+              >
+                {!props.sessionId
+                  ? "Connect to run parameterized SQL"
+                  : contextError
+                    ? `Completion unavailable: ${contextError}`
+                    : live
+                      ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                      : "Loading completion context…"}
+              </span>
+              {paramSlots.length > 0 && props.onOpenParameters && (
+                <button
+                  type="button"
+                  className="button ghost small"
+                  style={{ flexShrink: 0 }}
+                  aria-label={`Configure query parameters (${paramSlots.length})`}
+                  onClick={() => props.onOpenParameters?.(paramSlots)}
+                >
+                  Parameters ({paramSlots.length})
+                </button>
+              )}
               <button
                 type="button"
                 className="button ghost small"
                 style={{ flexShrink: 0 }}
-                aria-label={`Configure query parameters (${paramSlots.length})`}
-                onClick={() => props.onOpenParameters?.(paramSlots)}
+                title="Quick SQL documentation · F1"
+                aria-label="Quick SQL documentation"
+                onClick={() => void navActionsRef.current.runOpenOverlay("docs")}
               >
-                Parameters ({paramSlots.length})
+                Docs
               </button>
-            )}
-            {props.sessionId && (
-              <button
-                className="button ghost small"
-                style={{ flexShrink: 0 }}
-                aria-label="Refresh completion context"
-                onClick={() => setRefresh((n) => n + 1)}
-              >
-                Refresh
-              </button>
-            )}
+              {props.sessionId && (
+                <button
+                  className="button ghost small"
+                  style={{ flexShrink: 0 }}
+                  aria-label="Refresh completion context"
+                  onClick={() => setRefresh((n) => n + 1)}
+                >
+                  Refresh
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
+      {navOverlay && (
+        <SqlNavigationOverlay
+          mode={navOverlay.mode}
+          symbol={navOverlay.symbol}
+          objectDetails={navDetails}
+          objectDetailsLoading={navDetailsLoading}
+          objectDetailsError={navDetailsError}
+          objectExplorerSupported={Boolean(props.objectExplorerSupported)}
+          onJumpInEditor={(from, to) => revealEditorRange(from, to)}
+          onOpenDefinition={() => performGoToSymbol(navOverlay.symbol)}
+          onOpenObject={
+            props.onOpenObject
+              ? (object, col) => {
+                  clearNavigation();
+                  props.onOpenObject?.(object, col);
+                }
+              : undefined
+          }
+          onSwitchMode={(nextMode) =>
+            setNavOverlay((prev) => (prev ? { ...prev, mode: nextMode } : null))
+          }
+          onClose={() => {
+            clearNavigation();
+            view.current?.focus();
+          }}
+        />
       )}
       <div ref={host} style={{ flex: 1, minHeight: 0 }} />
     </div>

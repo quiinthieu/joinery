@@ -118,7 +118,7 @@ export function tableLookup(
     },
   };
 }
-type TableLookup = ReturnType<typeof tableLookup>;
+export type TableLookup = ReturnType<typeof tableLookup>;
 
 export function catalogCompletions(tables: TableInfo[], lookup: TableLookup): CompletionItem[] {
   const database = lookup.database;
@@ -146,13 +146,14 @@ export function catalogCompletions(tables: TableInfo[], lookup: TableLookup): Co
 }
 
 type Node = ReturnType<typeof syntaxTree>["topNode"];
-interface Token {
+export interface SqlToken {
   kind: string;
   from: number;
   to: number;
   text: string;
-  children?: Token[];
+  children?: SqlToken[];
 }
+type Token = SqlToken;
 const isName = (token?: Token) =>
   token?.kind === "Identifier" || token?.kind === "QuotedIdentifier";
 const word = (token?: Token) => (token?.kind === "Keyword" ? token.text.toUpperCase() : "");
@@ -340,6 +341,33 @@ function statementAt(state: EditorState, position: number, complete: boolean): N
   )
     return previous;
   return null;
+}
+
+export function statementTokensAt(
+  state: EditorState,
+  position: number,
+): { from: number; to: number; tokens: SqlToken[] } | null {
+  const stmt = statementAt(state, position, true);
+  if (!stmt) return null;
+  const parsed = tokens(state, stmt);
+  if (!parsed) return null;
+  return { from: stmt.from, to: stmt.to, tokens: parsed };
+}
+
+export function allStatementTokenBlocks(
+  state: EditorState,
+): Array<{ from: number; to: number; tokens: SqlToken[] }> {
+  const tree = ensureSyntaxTree(state, state.doc.length, 75);
+  if (!tree) return [];
+  const blocks: Array<{ from: number; to: number; tokens: SqlToken[] }> = [];
+  for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
+    if (node.name !== "Statement") continue;
+    const parsed = tokens(state, node);
+    if (parsed && parsed.length > 0) {
+      blocks.push({ from: node.from, to: node.to, tokens: parsed });
+    }
+  }
+  return blocks;
 }
 
 export interface CompletionTarget {

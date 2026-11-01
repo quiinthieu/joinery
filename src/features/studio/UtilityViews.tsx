@@ -368,11 +368,13 @@ export function StructureView({
   details = null,
   detailsError = null,
   connectionId = null,
+  highlightedColumn = null,
 }: {
   schema: TableSchema | null;
   details?: ObjectDetails | null;
   detailsError?: string | null;
   connectionId?: string | null;
+  highlightedColumn?: string | null;
 }) {
   if (!schema) return <div className="grid-empty">Loading table structure…</div>;
   return (
@@ -389,6 +391,10 @@ export function StructureView({
         </thead>
         <tbody>
           {schema.columns.map((column) => {
+            const highlighted =
+              highlightedColumn !== null &&
+              highlightedColumn !== undefined &&
+              column.name === highlightedColumn;
             const references = schema.foreignKeys.flatMap((key) => {
               const index = key.columns.indexOf(column.name);
               return index < 0
@@ -399,7 +405,18 @@ export function StructureView({
                   ];
             });
             return (
-              <tr key={column.id}>
+              <tr
+                key={column.id}
+                className={highlighted ? "structure-row-highlighted" : undefined}
+                data-highlighted={highlighted ? "true" : undefined}
+                ref={
+                  highlighted
+                    ? (node) => {
+                        node?.scrollIntoView?.({ block: "nearest" });
+                      }
+                    : undefined
+                }
+              >
                 <td className="mono">{column.name}</td>
                 <td>
                   <code>{column.databaseType}</code>
