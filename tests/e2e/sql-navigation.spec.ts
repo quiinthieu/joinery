@@ -311,7 +311,7 @@ test("two isolated Structure inspectors remain separate from the primary console
     );
     await page.getByRole("button", { name: "DDL", exact: true }).click();
     await expect(page.locator(".ddl-panel")).toContainText("CREATE TABLE");
-    await expect(page.getByRole("button", { name: "Open in query" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open in SQL editor" })).toHaveCount(0);
   }
   expect(ids[0]).not.toBe(ids[1]);
   expect(inspectorIds[0]).not.toBe(inspectorIds[1]);

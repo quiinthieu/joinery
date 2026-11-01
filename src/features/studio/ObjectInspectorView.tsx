@@ -117,14 +117,16 @@ export function DdlPanel({
             <Copy size={12} />
             Copy DDL
           </button>
-          <button
-            type="button"
-            className="button ghost small"
-            onClick={() => useStudio.getState().openQuery(connectionId, ddlStatus.ddl)}
-          >
-            <FileCode2 size={12} />
-            Open in SQL editor
-          </button>
+          {connectionId && (
+            <button
+              type="button"
+              className="button ghost small"
+              onClick={() => useStudio.getState().openQuery(connectionId, ddlStatus.ddl)}
+            >
+              <FileCode2 size={12} />
+              Open in SQL editor
+            </button>
+          )}
         </div>
       </div>
       <pre className="ddl-code" aria-label="Object DDL">

@@ -151,3 +151,29 @@ it.each(["closed", "context changed", "rebound"])(
     expect(client.call).not.toHaveBeenCalledWith("object_details", expect.anything());
   },
 );
+
+it("withholds DDL insertion when no originating console action is available", async () => {
+  const { tab } = setup();
+  vi.mocked(client.call).mockImplementation(async (method) =>
+    method === "completion_catalog"
+      ? catalog
+      : method === "completion_schema"
+        ? schema
+        : {
+            object: tab.object,
+            ownerTable: null,
+            comment: null,
+            ddl: { status: "available", ddl: "CREATE TABLE orders (id bigint)", truncated: false },
+            constraints: [],
+            indexes: [],
+            triggers: [],
+            routine: null,
+            sequence: null,
+            uses: [],
+            usedBy: [],
+          },
+  );
+  render(<SessionStructureView tab={{ ...tab, view: "ddl" }} />);
+  await screen.findByRole("button", { name: "Copy DDL" });
+  expect(screen.queryByRole("button", { name: "Open in SQL editor" })).toBeNull();
+});
