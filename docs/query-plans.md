@@ -5,8 +5,8 @@ MySQL/MariaDB (`fad0341`), then **Analyze** for PostgreSQL (`fa1ff17`). Both
 use the current statement or explicit selection without changing editor text.
 Explicit bounded plan snapshot comparison follows in `ba984f2`; execution timing
 and observed context in `cb1ca1a`; reviewed MariaDB actual plans in `c660bc4`
-and MySQL TREE analysis in `c54ecab`.
-Snowflake and Redis have no plan action. R6 remains partial and unreleased.
+and MySQL TREE analysis in `c54ecab`. Snowflake estimated logical plans follow
+in `48dfb21`. Redis has no plan action. R6 remains partial and unreleased.
 
 ## Preparation and authorization
 
@@ -15,7 +15,7 @@ Rust parses the entire selected input before wrapping it. Exactly one
 EXPLAIN, malformed/empty SQL, MySQL executable comments and oversized input
 are rejected. The generated statement is capped at 1 MiB. Original query bytes
 are retained after `EXPLAIN (FORMAT JSON)` (PostgreSQL),
-`EXPLAIN FORMAT=JSON` (MySQL/MariaDB),
+`EXPLAIN FORMAT=JSON` (MySQL/MariaDB), `EXPLAIN USING JSON` (Snowflake),
 `EXPLAIN (ANALYZE, FORMAT JSON)` (PostgreSQL actual measurements),
 `ANALYZE FORMAT=JSON` (capability-checked MariaDB actual measurements), or
 `EXPLAIN ANALYZE FORMAT=TREE` (capability-checked MySQL actual measurements).
@@ -78,6 +78,8 @@ forks, privileges and formats require independent qualification.
 ## Raw, tree and grid views
 
 A retained one-cell `QUERY PLAN` / `EXPLAIN` / `ANALYZE` result exposes **View plan**.
+Snowflake `content` exposes it only for a recognized single-query generated
+Explain execution; ordinary CONTENT query results do not become plans.
 The tree and raw view use that same cached JSON or TREE cell. Original text
 is preserved, including unknown fields, iterator descriptions and numeric tokens;
 tree metrics are a bounded display projection. Unknown or malformed formats leave raw/grid access
@@ -106,6 +108,40 @@ times are milliseconds **per loop**; actual rows are per loop and loops are
 separate. Child-inclusive times must not be summed. Unexecuted iterators receive
 no invented zero rows/times/loops, and no statement-wide duration is inferred.
 The adapter follows the [official MySQL EXPLAIN contract](https://dev.mysql.com/doc/refman/8.4/en/explain.html).
+
+## Snowflake estimated logical plans
+
+Explicit Explain compiles one validated query with `EXPLAIN USING JSON`; it
+does not execute the target or change warehouse/session settings. The parser
+uses the Snowflake dialect, including supported QUALIFY syntax. Because the SQL
+parser does not understand USING JSON, Rust recognizes only the exact generated
+wrapper, validates its entire inner query and applies the existing read-only
+classification. Prefix lookalikes, batches, mutations and unclassified SQL remain
+blocked in ReadOnly. The owned SQL API request carries its configured database, schema,
+role, warehouse and query tag, without separately submitting the target query.
+
+The bounded adapter preserves each step and every parent edge in its logical
+DAG. Operator IDs are local to a step. Each operator expands once per step;
+additional parents contain clearly labeled metric-free references. Duplicate
+IDs/edges, missing parents, cycles, malformed shapes and unsupported data keep
+raw/grid access. Payload is capped at 512 KiB, depth at 40 and a shared budget
+at 2,000 step/operator/edge items, preventing exponential shared-node expansion.
+Object names, aliases and expressions remain text. Unknown fields and numeric
+tokens remain exact in raw JSON. Numeric estimates outside JavaScript's exact
+integer range display a raw-view notice rather than a rounded value.
+
+Global/node assigned partitions and bytes are compile-time upper-bound pruning
+estimates; runtime pruning can reduce them. They are not actual rows, durations
+or optimizer cost units. Logical structure does not imply execution order.
+Warehouse size can affect the plan, and compilation can consume Cloud Services
+credits. These semantics follow the [official Snowflake EXPLAIN reference](https://docs.snowflake.com/en/sql-reference/sql/explain).
+
+Snowflake snapshot capture and comparison are explicitly unavailable. Its
+current session state is cached configuration and does not observe warehouse
+identity; it must not be presented as comparable execution context. The view
+shows exact executed SQL and this limitation; the store rejects captures even
+if called directly. No Snowflake Analyze action or live-account qualification
+is claimed. The following comparison contract applies to PostgreSQL/MySQL/MariaDB.
 
 ## Explicit snapshots and comparison
 
@@ -169,25 +205,25 @@ time, per-loop total, or timing delta is inferred from these measurements.
 
 ## Verification and remaining work
 
-Eight frontend adapter tests cover JSON/TREE engine shapes, inclusive versus
-per-loop metrics, engineering numeric text, unexecuted iterators, unsupported
-formats and complexity limits. Four Rust wrapper tests and Safe Mode regressions
-cover byte preservation, complete-query rejection, executable comments, nested
-risks and mandatory review, including parser fallback and DESC/DESCRIBE aliases.
-Eight snapshot tests and two lifecycle tests cover identity, bounds and cleanup.
+Current Snowflake continuation: `pnpm validate` passes 148 frontend tests in
+28 files and 136 standard Rust tests (115 core + 21 integration), with complete
+build/types/formatting/check/strict Clippy. Four synthetic Snowflake browser
+flows pass: two new plan workflows plus existing catalog/completion and
+discovery-failure flows. Rust loopback HTTP verifies exact wrapper submission,
+request context and lossless raw plan transport without SSO or a live account.
+Adapter tests cover multiple steps/parents, order-independent edges, zero and
+unsafe numeric estimates, invalid graphs, byte/depth/item/edge bounds, capture
+refusal and result identity reset. Existing PostgreSQL/MySQL/MariaDB unit and
+snapshot tests pass in the full frontend/core suites.
 
-Standard validation passes 142 frontend and 133 standard Rust tests. All 26
-PostgreSQL fixtures and 25 MySQL/MariaDB base fixtures pass; the separate
-case-folded fixture was excluded. Fourteen plan/timing browser workflows and
-four console/file regressions pass on disposable engines. MySQL and MariaDB
-flows cover review cancellation without execute, unchanged SQL, raw/tree/grid,
-direct-SQL review, ReadOnly denial, estimated/actual comparison without replay,
-mismatch/cleanup, error recovery and cancellation retirement. MySQL also proves
-JSON settings are preserved and server output contains unexecuted iterators.
-Exact macOS evidence and unrun checks are recorded in
-[implementation evidence](IMPLEMENTATION_STATUS.md#r6-reviewed-mysql-tree-actual-plans-1-november-2026).
+The preceding MySQL iteration's 26 PostgreSQL fixtures, 25 MySQL/MariaDB base
+fixtures and eighteen plan/timing/console browser workflows remain prior
+evidence; they were not rerun for this Snowflake-only transport slice. Current
+native provenance and unrun gates are in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-snowflake-estimated-logical-plans-1-november-2026).
 
-Next: Snowflake estimated plans and integrated R5/R6 qualification. See the
+Next: reconcile the recorded R5 commit with R6, investigate the earlier metadata
+startup flake before integrated qualification, and design observed Snowflake
+warehouse/session identity before enabling its snapshots. See the
 [roadmap](implementation-roadmap.md#r6-next-slices).
 This local candidate is unmerged, unpublished, not installed and not externally
 qualified. PostgreSQL's execution and measurement semantics are documented in

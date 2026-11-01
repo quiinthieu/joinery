@@ -324,17 +324,36 @@ are qualified on MySQL 8.4.13 / MariaDB 11.4.13 only. Clean-source macOS gates a
 recorded in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-reviewed-mysql-tree-actual-plans-1-november-2026).
 R6 stays partial, local and separate from the preserved R5 candidate.
 
+### R6 slice 7: Snowflake estimated logical plans (local `48dfb21`)
+
+Explicit Explain wraps one complete Snowflake SELECT/WITH query with
+`EXPLAIN USING JSON`; read-only classification still rejects unsafe/unknown
+input. A step-local DAG adapter expands shared operators once and retains
+all other parent edges as explicit references. Pruning estimates stay separate
+from actual timing/rows; unsafe numeric estimates defer to exact raw JSON.
+Malformed, cyclic, orphaned and excessive graphs retain raw/grid access.
+
+Standard validation passes 148 frontend / 136 Rust tests, and four synthetic
+Snowflake browser flows pass. Loopback Rust transport verifies the exact SQL
+wrapper and configured request context without a live account. Snowflake
+snapshots are unavailable until warehouse and session context are independently
+observed and qualified. No Analyze or warehouse setting change is introduced.
+Clean-source macOS evidence is in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-snowflake-estimated-logical-plans-1-november-2026).
+R6 remains partial, local, unmerged and unreleased.
+
 ### R6 next slices
 
-1. Add Snowflake estimated plans as a separate read-only adapter with a bounded
-   raw/normalized contract and mocked transport evidence. Explicit action only;
-   no executing analysis or session/warehouse setting changes. Live account
-   qualification requires explicit external scope.
-2. Reconcile R5 and R6 into an integrated candidate, including typed-parameter
-   preparation signatures, full relevant fixtures/browser regression and native
-   qualification. Investigate the observed concurrent metadata-startup flake
-   before candidate qualification. Preserve separate merge, release and
-   installed-version gates.
+1. Reconcile recorded R5 commit `bb77b0fc785d7a0076a3aa6d2457ac4da09d5ce9`
+   with R6, including typed-parameter preparation signatures. Current Git/Orca
+   inventories no longer contain its former worktree or editor-intelligence
+   branch; the commit object remains readable. Do not assume former dirty docs
+   were recovered or old test counts are current. Review and validate the
+   integrated source, investigate the earlier concurrent metadata-startup flake,
+   then run full relevant fixtures/browser/native qualification. Merge, release
+   and installed-version gates remain separate.
+2. Design observed Snowflake warehouse/session identity before snapshot support.
+   Keep capture explicitly unavailable meanwhile. Live read-only account
+   qualification requires explicit external scope; mock evidence is local only.
 3. Broaden supported MySQL/MariaDB versions and TREE shapes only with captured
    engine evidence. Unsupported capability/format combinations retain clear
    unavailable/raw states; do not silently change user settings.

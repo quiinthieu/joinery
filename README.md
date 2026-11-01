@@ -171,10 +171,12 @@ authenticated explicitly and never fall back to the default user.
 
 ## Current stage (1 November 2026)
 
-The latest published preview is `v0.1.0-preview.15`. R1–R4 are merged on
-`main` (through PR #30, `a0ba1a6`) but unreleased. The separate R5
-`feat/editor-intelligence` candidate is unmerged; its recorded verification was
-not independently rerun in this assessment. This branch adds R6
+The last verified published preview is `v0.1.0-preview.15`. R1–R4 are merged on
+`main` (through PR #30, `a0ba1a6`) but unreleased. R5 commit `bb77b0f` remains
+readable, but its former worktree and
+`feat/editor-intelligence` branch are now absent. Its recorded verification was
+not independently rerun; its former uncommitted documentation is not recovered.
+This branch adds R6
 [estimated/actual plans and bounded snapshot comparison](docs/query-plans.md), verified
 locally and unreleased.
 It does not contain R5. Full DataGrip replacement still needs the remaining
@@ -185,7 +187,7 @@ query analysis, design, productivity and release/qualification gates in the
 
 - PostgreSQL and MySQL/MariaDB profiles, verified TLS/custom CAs, system credential storage, hierarchical environment groups, and connection health.
 - SSH bastions with password, encrypted OpenSSH key, or agent authentication; explicit host fingerprint trust; shared tunnels and loopback-only forwarding. Database TLS verifies the original database hostname through the tunnel.
-- Estimated PostgreSQL/MySQL/MariaDB plans for the current statement or selection, with bounded tree/raw views and normal Rust Safe Mode authorization; PostgreSQL and capability-checked MySQL/MariaDB Analyze require explicit review even on Silent profiles. Explicit plan snapshots compare compatible executions without rerunning SQL, within ten-capture / 2 MiB shared payload bounds. Execution timing separates queue wait, backend active/total, first nonempty row batch and client elapsed; missing metrics remain unavailable. Plan context is observed on the execution lane. MySQL actual plans use TREE without changing JSON settings; Snowflake plans remain planned.
+- Estimated PostgreSQL/MySQL/MariaDB/Snowflake plans for the current statement or selection, with bounded tree/raw views and normal Rust Safe Mode authorization; PostgreSQL and capability-checked MySQL/MariaDB Analyze require explicit review even on Silent profiles. Explicit plan snapshots compare compatible executions without rerunning SQL, within ten-capture / 2 MiB shared payload bounds. Execution timing separates queue wait, backend active/total, first nonempty row batch and client elapsed; missing metrics remain unavailable. Plan context is observed on the execution lane. MySQL actual plans use TREE without changing JSON settings; Snowflake logical plans preserve step-local shared operators and pruning estimates; raw JSON stays exact. Snowflake snapshots remain unavailable until warehouse/session context can be observed and qualified.
 - CodeMirror SQL tabs, current-statement/selection execution, complete-batch execution, schema-aware completion, worker-based formatting, cancellation, process inspection, and metadata history.
 - Canvas grid, exact integer/decimal text, explicit NULLs, keyset table browsing, PK/FK structure, sparse edits, atomic multi-cell TSV paste, draft row inserts (`<default>` / `<required>`), row deletes with `FOR UPDATE` full-row conflict checks, generated SQL/bindings review, and atomic conflict-checked commits across pages in one transaction. Binary columns open in a 16-byte-per-row Hex/ASCII viewer, PostgreSQL arrays open in an indexed element viewer distinguishing SQL `NULL` from `"NULL"`, and JSON/JSONB values format losslessly without rounding 64-bit integers or reordering numeric keys.
 - PostgreSQL and MySQL/MariaDB table tabs sort on the server (click a header; Shift+click adds a key), filter with typed bound predicates, and accept optional raw `WHERE` and `ORDER BY` clauses classified through Rust Safe Mode (non-read or unparseable clauses are blocked in `ReadOnly` and require one-use review approval in writable modes). Paging keeps a primary-key tie-breaker and a fixed NULL order (ascending last, descending first); sort and filter lock while edits are pending. Column hide (non-PK), order and widths persist locally per connection/schema/table and purge when a connection is deleted. Select a foreign-key cell and press ⇧⌘B to open referenced rows, or press ⇧⌘G on a primary/target key to open referencing rows in a new filtered tab; composite keys pair columns by constraint order and NULL keys reference nothing. PostgreSQL text search is case-insensitive; MySQL follows the column collation.

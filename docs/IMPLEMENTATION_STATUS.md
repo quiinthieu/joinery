@@ -1408,3 +1408,51 @@ Logs: `.cache/mysql-tree-validate-node26.log`,
 `.cache/native-smoke/{build,runs}.json`. The disposable Compose project is
 `joinery-assess-mysql-tree`, using PostgreSQL port 55433. Next slices are
 [Snowflake estimates and integrated qualification](implementation-roadmap.md#r6-next-slices).
+
+## R6 Snowflake estimated logical plans (1 November 2026)
+
+Code `48dfb21` adds explicit `EXPLAIN USING JSON` for a complete validated
+Snowflake query. The exact-wrapper safety adapter resolves sqlparser's missing
+USING JSON grammar without accepting prefix lookalikes or allowing a batch
+escape. It preserves SQL bytes and existing read-only classification. The
+owned SQL API request carries configured warehouse/role/database/schema/query
+tag; the target query is never submitted separately. No session or warehouse
+settings change and no executing Analyze action is introduced.
+
+The bounded display preserves every logical parent edge and step-local ID.
+Shared operators expand once per step with metric-free references; duplicate
+IDs/edges, cycles, missing parents, malformed shapes and complexity excesses
+retain raw/grid fallback. Assigned partitions and bytes are upper-bound pruning
+estimates, never actual timing/rows. Unsafe integer estimates defer to exact raw
+JSON. Snowflake CONTENT results require recognized execution identity and normal
+queries clear it. Snapshot capture is disabled in both UI and store because
+warehouse/session observations are not yet sufficient for comparison.
+
+| State | Evidence |
+|---|---|
+| Passed | `pnpm validate` on Node 26.7.0 with `NODE_OPTIONS=--no-experimental-webstorage`: 148 frontend tests / 28 files, 136 standard Rust tests (115 core + 21 integration), contracts/types/build, Prettier, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Loopback synthetic HTTP verifies exact wrapper, configured request context and unchanged raw JSON including unsafe integer tokens; all Snowflake core/lifecycle/catalog/auth/compression regressions run in standard Rust tests. No SSO or live database account used |
+| Passed | Four headless synthetic Snowflake browser workflows: two plan workflows plus existing catalog/lazy completion/read-only preview and discovery-failure recovery. Covers step/shared-reference rendering, raw/grid transitions, exact large numeric text, disabled snapshots, unchanged editor, no Analyze, ordinary CONTENT identity reset and malformed graph raw fallback; zero page errors |
+| Passed | Four new DAG adapter tests and identity/result-detection tests cover order-independent/multistep/shared edges, zero/unsafe estimates, cycles/orphans/duplicate IDs/edges, invalid shapes, 512 KiB/depth 40/shared 2,000-item budget, capture refusal and exact engine mismatch |
+| Passed | Clean-source `48dfb21cbeb2e84049f519b2b35ccf1873590b50` macOS production app bundle, strict ad-hoc signature verification; executable 21,950,016 bytes, SHA-256 `9495bad07dda69f8a4cc6b4dc45b025137a489cd7109dc5b176b936937d4a7c7` |
+| Passed | Three hidden native synthetic runs / 30 cleanup cycles; 5780 / 3048 / 3135 ms, peak main-process RSS 102.08–107.33 MiB. Baseline IPC/cache/session cleanup only; does not exercise Snowflake native plan UI/transport or qualify cold visible startup, total idle memory or FPS |
+| Provenance | Native fixture revision `48dfb21cbeb2e84049f519b2b35ccf1873590b50`, tree `e8fec66513d429d28f2988feb77e08d9cd2b4d99`, `sourceDirty: false`, binary SHA-256 `4579c734331349ca254f6d38684f1e267d158e7bb1c19051390469811966a1ca`, ad-hoc bundle binary SHA-256 `383cf5bb2555d5dc6293f1a7d9b17b611b310da80754b432a70ac7ff4fef6c64` |
+| Not rerun | PostgreSQL/MySQL/MariaDB ignored fixture suites and prior eighteen plan/timing/console browser workflows, case-folded engine, Redis/SSH ignored suites and full browser suite. Previous iteration's counts remain dated evidence, not qualification of this source |
+| R5 inventory drift | Current Git and complete local Orca inventories contain main and assess only. Former R5 worktree and `feat/editor-intelligence` branch are absent; commit `bb77b0fc785d7a0076a3aa6d2457ac4da09d5ce9` remains readable. Former dirty docs were not recovered; recorded R5 verification is not a current rerun. No worktree/branch recreation or changes to other checkouts in this slice |
+| Local only | R6 remains unmerged, unpublished and not installed; fetched `origin/main` remains `a0ba1a6`. R1–R4 are merged but unreleased. Preview.15 remains last verified release; earlier GitHub refresh was blocked by command approval policy |
+| Open | Integrated R5/R6 review and qualification; prior metadata-startup flake investigation; observed Snowflake warehouse/session identity and snapshots; live account qualification; installed revision; Windows/Linux runtime; Developer ID signing/notarization; assistive technology; representative memory/cold-start/FPS |
+
+Reproduced before implementation: the frontend rejected Snowflake plan JSON;
+read-only preparation rejected the generated USING JSON wrapper. Both pass after
+the adapters. An initial browser run failed an ambiguous Run button test locator;
+the corrected locator passes all four workflows. Strict Clippy rejected a
+single-element test loop; its correction passes full validation. No safety
+policy, hook or engine rejection was bypassed. The earlier concurrent metadata
+startup failure did not recur in this completed run; its cause remains open.
+
+Logs: `.cache/snowflake-plans-validate-complete.log`,
+`snowflake-plans-browser-final.log`, `snowflake-plans-macos-bundle.log`,
+`snowflake-plans-bundle-evidence.json`, `snowflake-plans-native-build.log`,
+`snowflake-plans-native-runs.log`, and `.cache/native-smoke/{build,runs}.json`.
+See [query-plan semantics](query-plans.md#snowflake-estimated-logical-plans) and
+[the next slices](implementation-roadmap.md#r6-next-slices).
