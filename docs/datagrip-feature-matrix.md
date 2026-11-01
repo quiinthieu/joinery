@@ -138,7 +138,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E06 FK JOIN suggestions — DG-E, DG-FK | D, E; `completion_fks_on`, `joinCompletions` | PARTIAL / H | Direct-base-table outbound/inbound composite JOIN and initial ON insertion verified on PG/MySQL/MariaDB; multiple/self constraints and quoting covered. Snowflake relationships and advanced output inference remain open | P1 / High | E03/E04/N03; PM; read | Two live metadata fixtures and three browser flows execute nine inserted composite joins; local `e0dad5f`, unmerged / hold |
 | E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline marks, gutters, SQLSTATE/details, jumps and statement navigation now use exact submitted source identity; Unicode/CRLF, parameters and Explain origins are reconciled; edits and delayed errors cannot mark changed SQL | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; six real diagnostics/navigation browser flows plus twelve focused unit cases; local `65530c0`, unmerged / hold |
 | E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
-| E09 SQL formatting — DG-F | `sql-format.ts`, formatter worker, Preferences | PARTIAL / H | Selection/document formatting, global case/indent/spacing, stale-reply rejection, serialized saves and bind compatibility. Per-dialect style overrides remain open | P2 / Medium | Editor selections; PMS; local | Selection/newline/undo, literal/comment/bind preservation, save ordering/failure and three real engine flows; local `db5cd1b`, unmerged / hold |
+| E09 SQL formatting — DG-F | `sql-format.ts`, formatter worker, Preferences | PARTIAL / H | Selection/document formatting, global and per-dialect case/indent/spacing, inheritance/reset, stale-reply rejection, serialized saves and bind compatibility. Broader style controls remain open | P2 / Medium | Editor selections; PMS; local | Selection/newline/undo, literal/comment/bind preservation, ordered saves, inheritance/reset/recovery and three real engine flows; local `d39b89b`, unmerged / hold |
 | E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
 | E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias jumps, metadata-backed columns/objects, per-candidate scoped references; ambiguous and overloaded names withheld. Secondary consoles use docs without primary-session Structure jumps; projection inference remains open | P1 / High | E02/N06; PMS; read | Nested shadows/correlation, ambiguity, case/search path, stale replies and five real symbol browser flows; local `8ef9dfb`, unmerged / hold |
 | E12 Snippets/live templates — DG-T | `sql-snippets.ts`, Preferences, bounded SQLite metadata | PARTIAL / H | Built-ins and global/engine custom templates, override precedence, Tab/Shift+Tab and final cursor stop; no automatic execution. Context-aware variables/semantic placement remain open | P2 / Medium | Existing editor/persistence; PMS; local | Expansion, scope precedence, real CRUD/reload/explicit-run flows and validated backup/restore; local `db5cd1b`, unmerged / hold |
@@ -785,3 +785,16 @@ hidden baseline passes three fresh processes / 30 cleanup cycles. Per-dialect
 styles, context variables, broader semantic inference and native UI/distribution/
 external/platform/performance qualification remain open. R5/R6 are partial,
 local, unmerged, unreleased and not installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-formatting-and-snippets-2-november-2026).
+
+### Per-engine style follow-up — local `d39b89b`
+
+E09 remains partial with bounded case/indent/spacing options. Global defaults and
+independent PostgreSQL, MySQL/MariaDB and Snowflake styles now support inheritance
+and reset. Legacy settings migrate, Rust validates every override, and metadata
+recovery preserves styles. Validation passes 196 frontend / 156 standard Rust,
+three expanded real SQL browser flows and a clean-source native baseline of three
+processes / 30 cleanup cycles. The preceding `b80b6c7` candidate passed 66 ignored
+fixtures and a normal ad-hoc macOS bundle; `db5cd1b` passed all 86 browser flows.
+Those prior counts remain tied to their revisions. Context variables, broader
+semantic inference, native UI/external/platform/performance and delivery gates
+remain open. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-per-engine-formatting-styles-2-november-2026).

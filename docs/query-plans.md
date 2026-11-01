@@ -276,9 +276,14 @@ pass, including parameter/plan/navigation flows and simulated Snowflake; standar
 validation passes 194 frontend / 155 Rust. Clean-source macOS hidden baseline
 passes three processes / 30 cleanup cycles. See [formatting evidence](IMPLEMENTATION_STATUS.md#r5-integration-formatting-and-snippets-2-november-2026).
 
-Next: combined ignored local fixture and normal distribution qualification.
-Investigate the earlier metadata-startup
-flake before combined qualification, and design observed Snowflake warehouse/
+Combined candidate `b80b6c7` subsequently passed 66 ignored local SQL/Redis/SSH
+fixtures and a normal ad-hoc macOS bundle build. Style follow-up `d39b89b` adds
+per-engine preferences with 196 frontend / 156 Rust, three expanded real editor
+browser flows and a clean-source native baseline (three processes / 30 cycles).
+It does not change R6 authorization; the prior full 86-flow browser run and
+combined fixture/bundle counts retain their recorded revisions. Next continue
+semantic/projection inference and secondary-session Structure navigation; keep
+the earlier metadata-startup flake open and design observed Snowflake warehouse/
 session identity before enabling snapshots. See the
 [roadmap](implementation-roadmap.md#r6-next-slices).
 This local candidate is unmerged, unpublished, not installed and not externally

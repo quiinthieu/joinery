@@ -4,8 +4,11 @@ Updated 2026-11-02. R1–R4 are merged but unreleased. The local R6 branch now
 integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
 query parameters, inline error/statement navigation and SQL definitions/usages/
 quick documentation, selection formatting/settings and snippets. Format saves
-are serialized with rollback to the last successful settings. Combined fixture
-and distribution qualification are next. R5 and R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last verified release;
+are serialized with rollback to the last successful settings. Global and
+per-engine styles persist with validated recovery. The prior combined source
+passed 66 ignored local fixtures and a normal ad-hoc macOS bundle build. R5 and
+R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last
+verified release;
 its current installed revision was not requalified. The canonical owner-private
 Site records exact tested, merged, published and installed states. Full
 multi-engine v1.0 qualification remains pending.
@@ -1789,3 +1792,54 @@ Logs: `.cache/r5-format-validate-exact.log`,
 The earlier metadata-startup flake did not recur in this full browser run; its
 cause remains open. Disposable services are task-owned; user services and the
 installed application were preserved.
+
+## Combined local qualification (2 November 2026)
+
+Clean candidate `b80b6c72d961081ad962ab12ee0655625638498e`, tree `12bf0aceaa9257ba2105ab7cb9a776b3794d5c19`,
+passed all 66 explicitly selected ignored fixtures: 29 PostgreSQL, 29
+MySQL/MariaDB (including both identifier-folding modes), six Redis and two SSH.
+These use disposable PostgreSQL 18, MySQL 8.4, MariaDB 11.4 and Redis 8.2.
+This supersedes the earlier 58-fixture qualification for the combined candidate;
+it does not qualify external accounts or additional engine versions.
+
+`pnpm desktop:bundle:mac` built the normal macOS arm64 `Joinery.app` and passed
+strict local ad-hoc signature verification. Bundle executable SHA-256:
+`6cb4a716a616f4bc985a93de9b3dd33cc2644b7f22914dcf7cb60c4e7c695b9f`.
+The app was not launched, installed, published, Developer ID signed or notarized.
+The existing frontend chunk-size warning remains. Logs:
+`.cache/r5-r6-combined-{fixtures,bundle}.log`; immutable provenance:
+`.cache/r5-r6-combined-evidence.json`. These checks precede the style follow-up
+below and must not be attributed to its later source revision.
+
+## R5 follow-up: per-engine formatting styles (2 November 2026)
+
+Code `d39b89b024acbe69f329022082788a376adc42c3`, tree `e7fd7bfb8d979322dcbd1388d20a02f3135068a0`, adds independent PostgreSQL,
+MySQL/MariaDB and Snowflake formatting styles. Each inherits global defaults
+until its first customization, which snapshots the three global fields. Later
+global changes leave custom styles intact. **Use global defaults** removes that
+override and resumes inheritance; removing the last override returns to the
+legacy settings shape. The active console's dialect selects the formatter style;
+an unbound console retains its existing PostgreSQL fallback. Redis has no SQL
+formatter. Case, indentation and query spacing remain the supported style fields.
+
+Rust retains backward-compatible reading of legacy global settings, validates
+every override, rejects unsupported keys and includes styles in validated
+metadata backup/restore. Ordered optimistic saves, visible errors and rollback
+also cover customization/reset across scope switches. No query execution or R6
+authorization behavior changed.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | A dialect-style regression failed before implementation because PostgreSQL used global settings. It now verifies independent PostgreSQL, MySQL and Snowflake formatting |
+| Passed | `pnpm validate`: 196 frontend tests / 33 files, 156 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Browser | Three expanded PostgreSQL/MySQL/MariaDB editor flows pass: persisted global/custom styles, explicit console binding after reload, automatic dialect selection and reset to global defaults, alongside selection/undo, snippets and parameter review. An initial test incorrectly used an unbound console after reload; it was corrected to select the test connection. These are three relevant flows on this source; the full 86-flow run belongs to `db5cd1b` |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`. Three fresh WebView processes / 30 cleanup cycles pass, including all three dialect styles through SQLite save/bootstrap and a PostgreSQL formatter-worker check. Fixture SHA-256 `883ef1029e3d3c2bf9d17e406e6fecdf8c2d15ad5a2e935f1791057b127dd961`. Synthetic IPC/worker/cleanup baseline only, not native Preferences UI or representative performance |
+| Prior qualification | All 66 ignored fixtures and the normal ad-hoc distribution bundle passed on `b80b6c7` immediately before this follow-up; they were not rerun on this later source |
+| Open | Broader style options, context-aware template variables, semantic/projection inference, secondary-session Structure navigation, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Continue bounded semantic/projection inference and secondary-session metadata/navigation; preserve conservative ambiguity handling and exact R6 origins. Then implement the remaining R5/R6 and R7/R8 milestones with disposable fixtures. Application push, merge, release and installation remain separate authorized steps |
+
+Logs: `.cache/r5-dialect-validate.log`, `.cache/r5-dialect-browser-exact.log`,
+`.cache/r5-dialect-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-dialect-native-evidence.json`. Local, unmerged, unreleased and not
+installed. No hooks or policy gates were bypassed. The earlier metadata-startup
+flake did not recur in these three browser flows; its cause remains open.

@@ -218,16 +218,15 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `db5cd1b` integrates six R5 slices: FK JOIN completion,
-structured Unicode diagnostics, typed parameters, inline error/statement
-navigation, SQL definitions/usages/quick documentation, and selection
-formatting/settings/snippets with serialized saves. R5 and R6 remain partial,
-local, unmerged, unreleased and not installed. Validation passes 194 frontend /
-155 standard Rust and the full 86 local browser flows, including simulated
-Snowflake. Prior 58 ignored SQL fixture passes remain specific to `39359e7`.
-Clean-source macOS arm64 hidden build and three WebView runs / 30 cleanup cycles
-pass; synthetic baseline only. Combined ignored fixture/distribution qualification
-and remaining semantic editor/analysis gaps are next.
+Current candidate `d39b89b` integrates six R5 slices with per-engine formatting
+styles, alongside seven R6 slices. R5/R6 remain partial, local, unmerged,
+unreleased and not installed. Validation passes 196 frontend / 156 standard Rust
+and three expanded PostgreSQL/MySQL/MariaDB editor flows. A clean-source macOS
+hidden baseline passes three processes / 30 cleanup cycles. The full 86-flow
+browser run belongs to `db5cd1b`; all 66 ignored SQL/Redis/SSH fixtures and the
+normal ad-hoc macOS bundle passed on `b80b6c7`, immediately before this style
+follow-up. Remaining semantic editor/analysis gaps and release/platform/external
+qualification are next. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-per-engine-formatting-styles-2-november-2026).
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -327,6 +326,31 @@ Context-aware variables and complete semantic placement remain open. Full
 standard validation, all 86 local browser flows and clean-source macOS hidden
 baseline (three processes / 30 cleanup cycles) pass. See
 [evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-formatting-and-snippets-2-november-2026).
+
+### R5 style follow-up (local `d39b89b`)
+
+Preferences supports global defaults and independent PostgreSQL, MySQL/MariaDB
+and Snowflake styles. First customization snapshots the global case/indent/
+spacing; reset resumes inheritance. The console dialect automatically selects
+the style. Rust migrates legacy settings and validates all styles on save and
+metadata recovery. Three real database browser flows verify reload, automatic
+selection and reset; standard checks and the clean-source native persistence/
+worker baseline pass. Broader style controls and context-aware template variables
+remain open. See [evidence and limits](IMPLEMENTATION_STATUS.md#r5-follow-up-per-engine-formatting-styles-2-november-2026).
+
+### Next bounded editor slice: named projection outputs
+
+1. Resolve directly named SELECT outputs through CTEs and derived tables using
+   the existing scoped bindings and current-session metadata. Explicit CTE column
+   lists remain authoritative; require a unique proven output before navigation.
+2. Cover nested scopes, quoted/case-sensitive names, duplicate output names,
+   wildcard expansion and unavailable metadata. Withhold ambiguous, expression-
+   derived or unsupported outputs rather than inventing a binding.
+3. Invalidate results after document/context/session changes. Keep the existing
+   bounded work and cancellation behavior; do not alter execution or plan review.
+4. Reproduce the gap, add focused regressions and exercise supported resolution
+   in disposable SQL browser fixtures. Then assess secondary-session Structure
+   navigation as a separate slice before broader templates or R7 design tools.
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -451,15 +475,16 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Six R5 slices now coexist with seven R6 slices (`db5cd1b`), including
-   formatting/settings/snippets and serialized saves. Standard validation and
-   the full 86 local browser suite pass. Next qualify the combined source with
-   ignored local SQL/Redis/SSH fixtures and a normal distribution build; keep
-   the earlier metadata-startup flake open unless its cause is demonstrated.
-   Then address per-dialect styles, template variables, semantic/projection
-   inference and secondary-session Structure navigation. Preserve every R6
-   preparation/approval path and exact editor origins. Merge, application
-   release and installation remain separate authorized steps.
+1. Six R5 slices and seven R6 slices now include per-engine format styles
+   (`d39b89b`). Standard checks, three expanded real editor browser flows and
+   the clean-source native baseline pass. Prior combined-source qualification
+   passed all 66 ignored local SQL/Redis/SSH fixtures and a normal ad-hoc macOS
+   bundle on `b80b6c7`; the full 86-flow browser suite passed on `db5cd1b`.
+   Next: semantic/projection inference and secondary-session Structure navigation,
+   then richer template variables and remaining R5/R6/R7/R8 scope. Preserve
+   conservative ambiguity handling, every preparation/approval path and exact
+   editor origins. Keep the earlier startup flake open until its cause is known.
+   Application merge, release and installation remain separate authorized gates.
 2. Design observed Snowflake warehouse/session identity before snapshot support.
    Keep capture explicitly unavailable meanwhile. Live read-only account
    qualification requires explicit external scope; mock evidence is local only.

@@ -179,9 +179,10 @@ query parameters, inline error/statement navigation, SQL definitions/usages/
 quick documentation, and selection formatting/settings/snippets—with R6
 [estimated/actual plans and bounded snapshot comparison](docs/query-plans.md).
 These changes are verified locally, unmerged, unreleased and not installed.
-Formatting preferences persist globally; custom snippets can be scoped per SQL
-engine. Combined fixture/distribution qualification and remaining semantic editor
-gaps are next.
+Formatting preferences persist globally and per SQL dialect; custom snippets
+can be scoped per SQL engine. The prior combined candidate passed 66 ignored
+SQL/Redis/SSH fixtures and a normal ad-hoc macOS bundle build. Remaining semantic
+editor gaps and release/platform/external qualification are next.
 Symbol navigation remains partial: ambiguous names and routine overloads are
 not guessed, and secondary consoles use quick docs without primary-session
 Structure navigation.
