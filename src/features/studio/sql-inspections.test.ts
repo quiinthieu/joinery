@@ -36,7 +36,7 @@ function inspect(doc: string, engine: EngineKind = "postgres") {
   const state = stateOf(doc, engine);
   return {
     state,
-    result: prepareColumnInspection(state, 7, context(engine)).finish(state, schema),
+    result: prepareColumnInspection(state, 7, context(engine)).finish(state, [schema]),
   };
 }
 
@@ -87,8 +87,6 @@ describe("bounded qualified-column inspections", () => {
   test.each([
     "WITH c AS (SELECT id FROM orders) SELECT c.bad FROM c",
     "SELECT d.bad FROM (SELECT id FROM orders) d",
-    "SELECT a.bad FROM orders a JOIN orders b ON a.id = b.id",
-    "SELECT a.bad FROM orders a, orders b",
     "SELECT a.bad FROM orders a WHERE EXISTS (SELECT 1 FROM orders)",
     "SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a",
     "SELECT a.bad FROM orders(a)",
@@ -133,10 +131,10 @@ describe("bounded qualified-column inspections", () => {
       { ...schema, columns: [] },
       { ...schema, columns: [schema.columns[0], schema.columns[0]] },
     ]) {
-      expect(() => plan.finish(state, bad)).toThrow(/metadata is unavailable/);
+      expect(() => plan.finish(state, [bad])).toThrow(/metadata is unavailable/);
     }
     expect(() =>
-      plan.finish(state.update({ changes: { from: 0, insert: " " } }).state, schema),
+      plan.finish(state.update({ changes: { from: 0, insert: " " } }).state, [schema]),
     ).toThrow(/SQL changed/);
   });
   test("does not treat qualified function names as columns", () => {
@@ -146,7 +144,7 @@ describe("bounded qualified-column inspections", () => {
     expect(inspect("SELECT o.ctid, o.xmin, o.tableoid FROM orders o").result.issues).toEqual([]);
     const state = stateOf("SELECT o._rowid FROM orders o", "mysql");
     expect(() => prepareColumnInspection(state, 7, context("mysql"))).toThrow(
-      /single direct-table/,
+      /direct-table SELECT/,
     );
   });
   test("withholds identifiers the server can truncate and honors MySQL alias case policy", () => {
@@ -160,7 +158,7 @@ describe("bounded qualified-column inspections", () => {
       prepareColumnInspection(mysql, 7, {
         ...context("mysql"),
         caseSensitiveTableNames: false,
-      }).finish(mysql, schema).issues,
+      }).finish(mysql, [schema]).issues,
     ).toHaveLength(1);
   });
 });

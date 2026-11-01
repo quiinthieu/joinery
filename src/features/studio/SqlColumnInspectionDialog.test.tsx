@@ -6,12 +6,13 @@ import { SqlColumnInspectionDialog } from "./SqlColumnInspectionDialog";
 
 afterEach(cleanup);
 const state = EditorState.create({ doc: "SELECT o.typo FROM orders o" });
-const issue = { name: "typo", from: 9, to: 13, line: 1 };
+const table = { schema: "public", name: "orders" };
+const issue = { name: "typo", qualifier: "o", table, from: 9, to: 13, line: 1 };
 const result: SqlColumnInspection = {
-  table: { schema: "public", name: "orders" },
+  tables: [table],
   checked: 1,
   issues: [issue],
-  columns: ["id"],
+  columnsFor: () => ["id"],
   preview: (_state, target, column) => ({
     from: target.from,
     to: target.to,
@@ -62,4 +63,39 @@ test("labels a limited clean result without offering a correction", () => {
   );
   expect(screen.getByText(/does not validate the full SQL/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Apply column correction" })).toBeNull();
+});
+
+test("switching JOIN issues resets the choice and offers only the owning table's columns", () => {
+  const other = {
+    ...issue,
+    qualifier: "c",
+    table: { schema: "public", name: "customers" },
+    from: 17,
+    to: 21,
+  };
+  const onApply = vi.fn();
+  render(
+    <SqlColumnInspectionDialog
+      result={{
+        ...result,
+        tables: [table, other.table],
+        issues: [issue, other],
+        columnsFor: (target) => (target === issue ? ["order_only"] : ["customer_only"]),
+      }}
+      state={state}
+      onApply={onApply}
+      onClose={vi.fn()}
+    />,
+  );
+  const choice = screen.getByLabelText("Replace with catalog column") as HTMLSelectElement;
+  fireEvent.change(choice, { target: { value: "order_only" } });
+  fireEvent.change(screen.getByLabelText("Missing reference"), { target: { value: "1" } });
+  expect(choice.value).toBe("");
+  expect(Array.from(choice.options, (o) => o.value)).toEqual(["", "customer_only"]);
+  expect(
+    (screen.getByRole("button", { name: "Apply column correction" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  fireEvent.change(choice, { target: { value: "customer_only" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply column correction" }));
+  expect(onApply).toHaveBeenCalledWith(other, "customer_only");
 });

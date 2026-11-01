@@ -169,10 +169,132 @@ for (const [engine, port] of [
     await editor.fill(`WITH c AS (SELECT id FROM ${table}) SELECT c.typo FROM c`);
     const readsBeforeUnsupported = metadataReads;
     await inspect.click();
-    await expect(page.getByRole("alert")).toContainText("single direct-table SELECT");
+    await expect(page.getByRole("alert")).toContainText("direct-table SELECT");
     await expect(dialog).toHaveCount(0);
     expect(metadataReads).toBe(readsBeforeUnsupported);
     expect(executions).toBe(beforeDenied);
+    expect(errors).toEqual([]);
+  });
+
+  test(`${engine} inspects JOIN ownership, deduplicates self joins and stops stale metadata work`, async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    let reads = 0,
+      executions = 0;
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (request.url().endsWith("/rpc/inspection_schema")) reads++;
+      if (/\/rpc\/(prepare_execution|execute_plan)$/.test(request.url())) executions++;
+    });
+    await connect(page, engine, port);
+    const editor = page.getByRole("textbox", { name: "SQL editor" });
+    const inspect = page.getByRole("button", { name: "Inspect SQL columns", exact: true });
+    const dialog = page.getByRole("dialog", { name: "SQL column inspection" });
+    const namespace = engine === "PostgreSQL" ? "public" : "joinery";
+    const quote = engine === "PostgreSQL" ? '"' : "`";
+    const correct = `SELECT n.note_order, l.sku FROM ${namespace}.line_notes n JOIN ${namespace}.order_lines l ON n.note_order = l.order_id AND n.note_line = l.line_no ORDER BY n.id`;
+    const bad = correct.replace("n.note_order", "n.typo").replace("l.sku", "l.typo");
+    const run = async () => {
+      const response = page.waitForResponse((r) => r.url().endsWith("/rpc/execute_plan"));
+      const result = page.waitForResponse((r) => /\/result\/[^?]+\?start=0&/.test(r.url()));
+      await editor.press("ControlOrMeta+Enter");
+      expect((await response).ok()).toBe(true);
+      await expect(page.locator(".result-footer")).toContainText("1 row");
+      await expect(page.locator(".run-button")).toBeVisible();
+      await expect(page.locator(".completion-context")).not.toContainText("Loading");
+      const values = tableFromIPC(new Uint8Array(await (await result).body()));
+      return Array.from({ length: values.numCols }, (_, i) => String(values.getChildAt(i)!.get(0)));
+    };
+    await editor.fill(correct);
+    expect(await run()).toEqual(["7", "SKU-7-2"]);
+    const before = executions;
+    await editor.fill(bad);
+    await inspect.click();
+    await expect(dialog).toContainText("2 tables · 7 qualified column references checked");
+    await expect(dialog).toContainText("2 missing column references");
+    expect(reads).toBe(2);
+    const choice = dialog.getByLabel("Replace with catalog column");
+    await choice.selectOption("note_order");
+    await dialog.getByLabel("Missing reference").selectOption("1");
+    await expect(choice).toHaveValue("");
+    await expect(choice.locator('option[value="note_order"]')).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Apply column correction" })).toBeDisabled();
+    await choice.selectOption("sku");
+    await expect(dialog.getByLabel("Column correction preview")).toContainText(
+      `typo → ${quote}sku${quote}`,
+    );
+    await dialog.getByRole("button", { name: "Apply column correction" }).click();
+    const half = bad.replace("l.typo", `l.${quote}sku${quote}`);
+    await expect(editor).toHaveText(half);
+    await inspect.click();
+    await expect(dialog).toContainText("1 missing column reference");
+    await choice.selectOption("note_order");
+    await dialog.getByRole("button", { name: "Apply column correction" }).click();
+    await expect(editor).toHaveText(half.replace("n.typo", `n.${quote}note_order${quote}`));
+    expect(executions).toBe(before);
+    expect(reads).toBe(4);
+    expect(await run()).toEqual(["7", "SKU-7-2"]);
+    await editor.press("ControlOrMeta+z");
+    await expect(editor).toHaveText(half);
+
+    await editor.fill(
+      `SELECT a.typo, b.id FROM ${namespace}.line_notes a JOIN ${namespace}.line_notes b ON a.id = b.id`,
+    );
+    await inspect.click();
+    await expect(dialog).toContainText("1 table · 4 qualified column references checked");
+    expect(reads).toBe(5);
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+
+    await editor.fill(bad);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/rpc/inspection_schema", async (route) => {
+      await gate;
+      await route.continue();
+    });
+    const request = page.waitForRequest("**/rpc/inspection_schema");
+    await inspect.click();
+    await request;
+    await editor.fill(correct);
+    const response = page.waitForResponse("**/rpc/inspection_schema");
+    release();
+    await response;
+    await expect(inspect).toBeEnabled();
+    expect(reads).toBe(6);
+    await expect(dialog).toHaveCount(0);
+    await page.unroute("**/rpc/inspection_schema");
+
+    let requested = 0;
+    await page.route("**/rpc/inspection_schema", async (route) => {
+      if (++requested === 1) await route.continue();
+      else
+        await route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: JSON.stringify({
+            code: "PermissionDenied",
+            message: "Complete selectable column metadata is unavailable; no column claim was made",
+          }),
+        });
+    });
+    await editor.fill(bad);
+    const beforeDenied = executions;
+    await inspect.click();
+    await expect(page.getByRole("alert")).toContainText("Column inspection unavailable");
+    expect(requested).toBe(2);
+    await expect(dialog).toHaveCount(0);
+    expect(executions).toBe(beforeDenied);
+    await page.unroute("**/rpc/inspection_schema");
+    await editor.fill(
+      `SELECT n.id FROM ${namespace}.line_notes n JOIN ${namespace}.order_lines l ON future.id = l.order_id JOIN ${namespace}.line_notes future ON future.id = n.id`,
+    );
+    const beforeUnsupported = reads;
+    await inspect.click();
+    await expect(page.getByRole("alert")).toContainText("unresolved qualifier");
+    expect(reads).toBe(beforeUnsupported);
     expect(errors).toEqual([]);
   });
 }

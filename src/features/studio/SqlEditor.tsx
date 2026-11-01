@@ -73,6 +73,7 @@ import { SqlNavigationOverlay } from "./SqlNavigationOverlay";
 import { SqlAliasRenameDialog } from "./SqlAliasRenameDialog";
 import { SqlColumnInspectionDialog } from "./SqlColumnInspectionDialog";
 import {
+  columnInspectionLimits,
   prepareColumnInspection,
   type MissingSqlColumn,
   type SqlColumnInspection,
@@ -625,14 +626,32 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       const plan = prepareColumnInspection(state, state.selection.main.head, buildSymbolContext());
       // Completion caches may be permission-filtered or out of date. This
       // separate read requires complete metadata on the active session lane.
-      const schema = await client.call<TableSchema>("inspection_schema", {
-        sessionId,
-        revision: snapshot.revision,
-        table: plan.table,
-      });
+      const schemas: TableSchema[] = [];
+      let columns = 0,
+        bytes = 0;
+      for (const table of plan.tables) {
+        if (!current() || renameContext() !== context) return;
+        const schema = await client.call<TableSchema>("inspection_schema", {
+          sessionId,
+          revision: snapshot.revision,
+          table,
+        });
+        if (!current() || renameContext() !== context) return;
+        columns += schema.columns.length;
+        bytes += new TextEncoder().encode(JSON.stringify(schema)).length;
+        if (
+          schema.columns.length > columnInspectionLimits.columnsPerTable ||
+          columns > columnInspectionLimits.columns ||
+          bytes > columnInspectionLimits.bytes
+        )
+          throw new Error(
+            "Complete table metadata exceeds the inspection limit; no column claim was made.",
+          );
+        schemas.push(schema);
+      }
       if (!current() || renameContext() !== context) return;
       setInspection({
-        result: plan.finish(editor.state, schema),
+        result: plan.finish(editor.state, schemas),
         editor,
         state,
         context,

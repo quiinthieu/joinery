@@ -31,14 +31,14 @@ export function SqlColumnInspectionDialog({
     <div onKeyDown={(event) => event.stopPropagation()}>
       <Modal
         title="SQL column inspection"
-        subtitle="Checks qualified columns in this single-table SELECT. Choose a correction, preview it, then Apply. Your SQL is not run."
+        subtitle="Checks qualified columns in this direct-table SELECT. Choose a correction, preview it, then Apply. Your SQL is not run."
         onClose={onClose}
         wide
       >
         <div className="modal-body">
           <p>
-            {result.table.schema}.{result.table.name} · {result.checked} qualified column references
-            checked
+            {result.tables.length} {result.tables.length === 1 ? "table" : "tables"} ·{" "}
+            {result.checked} qualified column references checked
           </p>
           {issue ? (
             <>
@@ -59,12 +59,16 @@ export function SqlColumnInspectionDialog({
                 >
                   {result.issues.map((item, i) => (
                     <option key={item.from} value={i}>
-                      Line {item.line}: {item.name}
+                      Line {item.line}: {item.qualifier}.{item.name} ({item.table.schema}.
+                      {item.table.name})
                     </option>
                   ))}
                 </select>
               </label>
-              <p>Column “{issue.name}” was not found in the complete selectable table metadata.</p>
+              <p>
+                Column “{issue.name}” was not found in the complete selectable metadata for{" "}
+                {issue.table.schema}.{issue.table.name}.
+              </p>
               <label>
                 Replace with catalog column
                 <select
@@ -73,7 +77,7 @@ export function SqlColumnInspectionDialog({
                   onChange={(event) => setColumn(event.target.value)}
                 >
                   <option value="">Choose a column…</option>
-                  {result.columns.map((name) => (
+                  {result.columnsFor(issue).map((name) => (
                     <option key={name} value={name}>
                       {name}
                     </option>
