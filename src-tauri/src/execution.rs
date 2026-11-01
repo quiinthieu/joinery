@@ -3340,6 +3340,7 @@ mod browse_classification_tests {
             ],
             primary_key: vec!["id".into()],
             foreign_keys: vec![],
+            inbound_foreign_keys: vec![],
             editable: true,
         }
     }

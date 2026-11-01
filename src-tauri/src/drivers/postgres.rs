@@ -1083,11 +1083,13 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         .map(|c| c.name.clone())
         .collect::<Vec<_>>();
     if completion {
+        let (foreign_keys, inbound_foreign_keys) = completion_fks_on(client, &qualified).await?;
         return Ok(TableSchema {
             table: table.clone(),
             columns,
             primary_key,
-            foreign_keys: vec![],
+            foreign_keys,
+            inbound_foreign_keys,
             editable: false,
         });
     }
@@ -1126,8 +1128,112 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         columns,
         primary_key,
         foreign_keys,
+        inbound_foreign_keys: Vec::new(),
         editable,
     })
+}
+
+async fn completion_fks_on(
+    client: &Client,
+    qualified: &str,
+) -> AppResult<(Vec<ForeignKey>, Vec<InboundForeignKey>)> {
+    let outbound_rows = client
+        .query(
+            "SELECT k.conname::pg_catalog.text, a.attname, n.nspname, c.relname, b.attname,
+                    pg_catalog.cardinality(k.conkey)::pg_catalog.int4
+             FROM pg_catalog.pg_constraint k
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey), pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src, dst, ord)
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = x.src AND NOT a.attisdropped
+             JOIN pg_catalog.pg_class c ON c.oid = k.confrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute b ON b.attrelid = k.confrelid AND b.attnum = x.dst AND NOT b.attisdropped
+             WHERE k.contype = 'f'
+               AND k.conrelid = pg_catalog.to_regclass($1)
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+               AND pg_catalog.has_column_privilege(k.conrelid, a.attnum, 'SELECT')
+               AND pg_catalog.has_column_privilege(k.confrelid, b.attnum, 'SELECT')
+             ORDER BY k.conname, k.oid, x.ord
+             LIMIT 200",
+            &[&qualified],
+        )
+        .await
+        .map_err(pg_error)?;
+    let mut outbound_widths: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    let outbound = ForeignKey::group(outbound_rows.iter().map(|r| {
+        let name: String = r.get(0);
+        let target = TableRef {
+            schema: r.get(2),
+            name: r.get(3),
+        };
+        let expected: i32 = r.get(5);
+        outbound_widths.insert(
+            (target.schema.clone(), target.name.clone(), name.clone()),
+            expected.max(0) as usize,
+        );
+        (name, r.get(1), target, r.get(4))
+    }))
+    .into_iter()
+    .filter(|key| {
+        outbound_widths
+            .get(&(
+                key.target.schema.clone(),
+                key.target.name.clone(),
+                key.name.clone(),
+            ))
+            .is_none_or(|&w| key.columns.len() == w)
+    })
+    .collect();
+
+    let inbound_rows = client
+        .query(
+            "SELECT k.conname::pg_catalog.text, n.nspname, c.relname, a.attname, b.attname,
+                    pg_catalog.cardinality(k.conkey)::pg_catalog.int4
+             FROM pg_catalog.pg_constraint k
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey), pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src, dst, ord)
+             JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = x.src AND NOT a.attisdropped
+             JOIN pg_catalog.pg_attribute b ON b.attrelid = k.confrelid AND b.attnum = x.dst AND NOT b.attisdropped
+             WHERE k.contype = 'f'
+               AND k.confrelid = pg_catalog.to_regclass($1)
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+               AND pg_catalog.has_column_privilege(k.conrelid, a.attnum, 'SELECT')
+               AND pg_catalog.has_column_privilege(k.confrelid, b.attnum, 'SELECT')
+             ORDER BY n.nspname, c.relname, k.conname, k.oid, x.ord
+             LIMIT 200",
+            &[&qualified],
+        )
+        .await
+        .map_err(pg_error)?;
+    let mut inbound_widths: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    let inbound = InboundForeignKey::group(inbound_rows.iter().map(|r| {
+        let name: String = r.get(0);
+        let source = TableRef {
+            schema: r.get(1),
+            name: r.get(2),
+        };
+        let expected: i32 = r.get(5);
+        inbound_widths.insert(
+            (source.schema.clone(), source.name.clone(), name.clone()),
+            expected.max(0) as usize,
+        );
+        (name, source, r.get(3), r.get(4))
+    }))
+    .into_iter()
+    .filter(|key| {
+        inbound_widths
+            .get(&(
+                key.source.schema.clone(),
+                key.source.name.clone(),
+                key.name.clone(),
+            ))
+            .is_none_or(|&w| key.columns.len() == w)
+    })
+    .collect();
+
+    Ok((outbound, inbound))
 }
 
 async fn referencing_keys_on(

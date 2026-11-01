@@ -6,6 +6,7 @@ import {
   catalogCompletions,
   columnCompletions,
   completionTarget,
+  joinCompletions,
   referencedTables,
   selectedStatement,
   tableLookup,
@@ -358,4 +359,277 @@ test("partial metadata retains qualified columns but never invents ambiguous bar
     "postgres",
   );
   expect(both.map((i) => i.apply)).toEqual(['o."Notes"', 'c."Notes"']);
+});
+
+test("suggests outbound, inbound, composite, multi-fk, self-join, and dialect-quoted JOIN targets", () => {
+  const tables = [
+    info("orders"),
+    info("customers"),
+    info("order_lines"),
+    info("line_notes"),
+    info("employees"),
+    info("users"),
+    info("Events", "analytics"),
+  ];
+  const pgLookup = tableLookup(
+    tables,
+    "postgres",
+    undefined,
+    undefined,
+    ["public"],
+    tables.filter((t) => t.table.schema === "public").map((t) => t.table),
+  );
+  const schemasByName: Record<string, TableSchema> = {
+    "public.orders": {
+      table: { schema: "public", name: "orders" },
+      columns: [],
+      primaryKey: ["id"],
+      foreignKeys: [
+        {
+          name: "orders_customer_id_fkey",
+          columns: ["customer_id"],
+          target: { schema: "public", name: "customers" },
+          targetColumns: ["id"],
+        },
+        {
+          name: "orders_buyer_id_fkey",
+          columns: ["buyer_id"],
+          target: { schema: "public", name: "users" },
+          targetColumns: ["id"],
+        },
+        {
+          name: "orders_seller_id_fkey",
+          columns: ["seller_id"],
+          target: { schema: "public", name: "users" },
+          targetColumns: ["id"],
+        },
+        {
+          name: "orders_hidden_fkey",
+          columns: ["secret_id"],
+          target: { schema: "secret", name: "vault" },
+          targetColumns: ["id"],
+        },
+      ],
+      inboundForeignKeys: [
+        {
+          name: "order_lines_order_id_fkey",
+          source: { schema: "public", name: "order_lines" },
+          columns: ["order_id"],
+          targetColumns: ["id"],
+        },
+        {
+          name: "events_order_fk",
+          source: { schema: "analytics", name: "Events" },
+          columns: ["OrderId"],
+          targetColumns: ["id"],
+        },
+      ],
+      editable: false,
+    },
+    "public.line_notes": {
+      table: { schema: "public", name: "line_notes" },
+      columns: [],
+      primaryKey: ["id"],
+      foreignKeys: [
+        {
+          name: "line_notes_line_fk",
+          columns: ["note_order", "note_line"],
+          target: { schema: "public", name: "order_lines" },
+          targetColumns: ["order_id", "line_no"],
+        },
+      ],
+      inboundForeignKeys: [],
+      editable: false,
+    },
+    "public.employees": {
+      table: { schema: "public", name: "employees" },
+      columns: [],
+      primaryKey: ["id"],
+      foreignKeys: [
+        {
+          name: "employees_manager_id_fkey",
+          columns: ["manager_id"],
+          target: { schema: "public", name: "employees" },
+          targetColumns: ["id"],
+        },
+      ],
+      inboundForeignKeys: [
+        {
+          name: "employees_manager_id_fkey",
+          source: { schema: "public", name: "employees" },
+          columns: ["manager_id"],
+          targetColumns: ["id"],
+        },
+      ],
+      editable: false,
+    },
+  };
+
+  const evaluate = (sqlText: string, customLookup = pgLookup, customTables = tables) => {
+    const state = query(sqlText, customLookup.engine);
+    const pos = state.selection.main.head;
+    const target = completionTarget(state, pos)!;
+    const scope = referencedTables(state, customLookup, pos);
+    const schemas = scope.references.map(
+      (r) => schemasByName[`${r.table.schema}.${r.table.name}`] ?? null,
+    );
+    return joinCompletions(state, pos, target, scope, schemas, customTables, customLookup);
+  };
+
+  // Outbound & cross-schema inbound joins from aliased orders (hidden target excluded)
+  expect(evaluate("SELECT * FROM orders o JOIN c|").map((i) => i.apply)).toEqual([
+    'customers c ON o.customer_id = c."id"',
+  ]);
+  expect(evaluate("SELECT * FROM orders o LEFT OUTER JOIN o|").map((i) => i.apply)).toEqual([
+    'order_lines ol ON o."id" = ol.order_id',
+  ]);
+  expect(evaluate("SELECT * FROM orders o JOIN analytics.|").map((i) => i.apply)).toEqual([
+    'analytics."Events" e ON o."id" = e."OrderId"',
+  ]);
+
+  // Multiple FKs between orders and users emit both constraints
+  const multi = evaluate("SELECT * FROM orders o JOIN u|");
+  expect(multi.map((i) => [i.apply, i.detail])).toEqual([
+    ['users u ON o.buyer_id = u."id"', "orders_buyer_id_fkey · FK join"],
+    ['users u ON o.seller_id = u."id"', "orders_seller_id_fkey · FK join"],
+  ]);
+
+  // Composite FK preserves ordinal column pairing
+  expect(evaluate("SELECT * FROM line_notes n JOIN ord|").map((i) => i.apply)).toEqual([
+    "order_lines ol ON n.note_order = ol.order_id AND n.note_line = ol.line_no",
+  ]);
+
+  // Self-join picks non-colliding alias whether prior table is aliased or unaliased
+  expect(evaluate("SELECT * FROM employees e JOIN e|").map((i) => i.apply)).toEqual([
+    'employees e2 ON e.manager_id = e2."id"',
+    'employees e2 ON e."id" = e2.manager_id',
+  ]);
+  expect(evaluate("SELECT * FROM employees JOIN e|").map((i) => i.apply)).toEqual([
+    'employees e ON employees.manager_id = e."id"',
+    'employees e ON employees."id" = e.manager_id',
+  ]);
+
+  // Unaliased non-colliding join omits alias; CTE shadow forces schema qualification
+  expect(evaluate("SELECT * FROM orders JOIN c|").map((i) => i.apply)).toEqual([
+    'customers ON orders.customer_id = customers."id"',
+  ]);
+  expect(
+    evaluate("WITH customers AS (SELECT 1 AS x) SELECT * FROM orders o JOIN c|").map(
+      (i) => i.apply,
+    ),
+  ).toEqual(['"public".customers c ON o.customer_id = c."id"']);
+
+  // CROSS JOIN and NATURAL JOIN never suggest ON clauses
+  expect(evaluate("SELECT * FROM orders o CROSS JOIN c|")).toEqual([]);
+  expect(evaluate("SELECT * FROM orders o NATURAL LEFT JOIN c|")).toEqual([]);
+
+  // MySQL backtick quoting
+  const mysqlTables = [info("order items", "shop"), info("line notes", "shop")];
+  const mysqlLookup = tableLookup(mysqlTables, "mysql", "shop", "shop", undefined, [
+    mysqlTables[0].table,
+    mysqlTables[1].table,
+  ]);
+  schemasByName["shop.line notes"] = {
+    table: { schema: "shop", name: "line notes" },
+    columns: [],
+    primaryKey: [],
+    foreignKeys: [
+      {
+        name: "fk_line_items",
+        columns: ["item id"],
+        target: { schema: "shop", name: "order items" },
+        targetColumns: ["id"],
+      },
+    ],
+    inboundForeignKeys: [],
+    editable: false,
+  };
+  expect(
+    evaluate("SELECT * FROM `line notes` ln JOIN |", mysqlLookup, mysqlTables).map((i) => i.apply),
+  ).toEqual(["`order items` oi ON ln.`item id` = oi.id"]);
+});
+
+test("suggests ON equality predicates in both operand directions and deduplicates bilateral FKs", () => {
+  const tables = [info("orders"), info("customers"), info("line_notes"), info("order_lines")];
+  const pgLookup = tableLookup(tables, "postgres");
+  const ordersSchema: TableSchema = {
+    table: { schema: "public", name: "orders" },
+    columns: [],
+    primaryKey: ["id"],
+    foreignKeys: [
+      {
+        name: "orders_customer_id_fkey",
+        columns: ["customer_id"],
+        target: { schema: "public", name: "customers" },
+        targetColumns: ["id"],
+      },
+    ],
+    inboundForeignKeys: [],
+    editable: false,
+  };
+  const customersSchema: TableSchema = {
+    table: { schema: "public", name: "customers" },
+    columns: [],
+    primaryKey: ["id"],
+    foreignKeys: [],
+    inboundForeignKeys: [
+      {
+        name: "orders_customer_id_fkey",
+        source: { schema: "public", name: "orders" },
+        columns: ["customer_id"],
+        targetColumns: ["id"],
+      },
+    ],
+    editable: false,
+  };
+  const evalOn = (sqlText: string) => {
+    const state = query(sqlText, "postgres");
+    const pos = state.selection.main.head;
+    const target = completionTarget(state, pos)!;
+    const scope = referencedTables(state, pgLookup, pos);
+    const map: Record<string, TableSchema> = {
+      orders: ordersSchema,
+      customers: customersSchema,
+    };
+    const schemas = scope.references.map((r) => map[r.table.name] ?? null);
+    return joinCompletions(state, pos, target, scope, schemas, tables, pgLookup);
+  };
+
+  expect(evalOn("SELECT * FROM orders o JOIN customers c ON |").map((i) => i.apply)).toEqual([
+    'o.customer_id = c."id"',
+  ]);
+  expect(evalOn("SELECT * FROM orders o JOIN customers c ON o.c|").map((i) => i.apply)).toEqual([
+    'o.customer_id = c."id"',
+  ]);
+  expect(evalOn("SELECT * FROM orders o JOIN customers c ON c.i|").map((i) => i.apply)).toEqual([
+    'c."id" = o.customer_id',
+  ]);
+});
+
+test("recognizes unreserved PostgreSQL lexer keywords such as ln as table aliases in FK JOINs", () => {
+  const tables = [info("line_notes"), info("order_lines")];
+  const pgLookup = tableLookup(tables, "postgres");
+  const lineNotesSchema: TableSchema = {
+    table: { schema: "public", name: "line_notes" },
+    columns: [],
+    primaryKey: ["id"],
+    foreignKeys: [
+      {
+        name: "line_notes_line_fk",
+        columns: ["note_order", "note_line"],
+        target: { schema: "public", name: "order_lines" },
+        targetColumns: ["order_id", "line_no"],
+      },
+    ],
+    inboundForeignKeys: [],
+    editable: false,
+  };
+  const state = query("SELECT ln.note, ol.sku FROM public.line_notes ln JOIN o|", "postgres");
+  const pos = state.selection.main.head;
+  const target = completionTarget(state, pos)!;
+  const scope = referencedTables(state, pgLookup, pos);
+  const items = joinCompletions(state, pos, target, scope, [lineNotesSchema], tables, pgLookup);
+  expect(items.map((item) => item.apply)).toEqual([
+    "order_lines ol ON ln.note_order = ol.order_id AND ln.note_line = ol.line_no",
+  ]);
 });

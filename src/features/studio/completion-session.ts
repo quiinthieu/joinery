@@ -12,8 +12,10 @@ import {
   catalogCompletions,
   columnCompletions,
   completionTarget,
+  joinCompletions,
   referencedTables,
   tableLookup,
+  type CompletionTarget,
   type SqlScope,
 } from "./sql-context";
 import { identifierValue, quoteIdentifier } from "./sql-identifiers";
@@ -98,6 +100,7 @@ export class CompletionSchemas {
 
 interface Pending {
   stamp: CompletionStamp;
+  target: CompletionTarget;
   revision: number | null;
   finish(result: CompletionResult | null): void;
   resume(): void;
@@ -131,6 +134,7 @@ export class CompletionSession {
   private sequence = 0;
   private scopeKey = "";
   private scope: SqlScope = { references: [], names: [], allowBare: false };
+  private loadedSchemas: (TableSchema | null)[] = [];
   private loading = false;
   private timer?: ReturnType<typeof setTimeout>;
   private pending = new Map<number, Pending>();
@@ -183,6 +187,7 @@ export class CompletionSession {
           ];
     this.replace("catalog", items);
     this.scopeKey = "";
+    this.loadedSchemas = [];
     return true;
   }
 
@@ -206,6 +211,7 @@ export class CompletionSession {
     this.cancel();
     this.scopeKey = key;
     this.scope = scope;
+    this.loadedSchemas = [];
     const current = ++this.context;
     this.replace("columns", []);
     this.schemas.retain(scope.references.map((ref) => JSON.stringify(ref.table)));
@@ -226,6 +232,7 @@ export class CompletionSession {
         ),
       ).then((schemas) => {
         if (this.disposed || this.context !== current) return;
+        this.loadedSchemas = schemas;
         this.replace("columns", columnCompletions(scope, schemas, config.engine));
         this.loading = false;
         for (const pending of this.pending.values()) pending.resume();
@@ -258,6 +265,7 @@ export class CompletionSession {
       };
       const pending: Pending = {
         stamp,
+        target,
         revision: null,
         finish: (result) => finish(result && { ...result, from: target.from, to: target.to }),
         resume: () => {
@@ -308,15 +316,31 @@ export class CompletionSession {
       pending.finish(null);
       return;
     }
-    const engine = this.configuration!.engine;
+    const config = this.configuration!;
+    const engine = config.engine;
+    const fkOptions =
+      engine === "redis" || !this.state
+        ? []
+        : joinCompletions(
+            this.state,
+            pending.stamp.position,
+            pending.target,
+            this.scope,
+            this.loadedSchemas,
+            config.tables,
+            this.lookup,
+          );
     pending.finish({
       from: 0,
       filter: false,
-      options: message.items.map((item) => {
-        if (!item.path || item.apply) return item;
-        const label = item.path.map((part) => quoteIdentifier(part, engine)).join(".");
-        return { ...item, label, apply: label + (item.type === "namespace" ? "." : "") };
-      }),
+      options: [
+        ...fkOptions,
+        ...message.items.map((item) => {
+          if (!item.path || item.apply) return item;
+          const label = item.path.map((part) => quoteIdentifier(part, engine)).join(".");
+          return { ...item, label, apply: label + (item.type === "namespace" ? "." : "") };
+        }),
+      ],
     });
   }
 
@@ -325,6 +349,7 @@ export class CompletionSession {
     this.context++;
     this.cancel();
     this.schemas.retain([]);
+    this.loadedSchemas = [];
     this.state = undefined;
   }
 

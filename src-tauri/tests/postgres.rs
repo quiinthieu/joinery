@@ -819,14 +819,48 @@ async fn live_completion_tracks_search_path_role_rollback_and_permissions() {
         schema: "public".into(),
         name: "orders".into(),
     };
+    let public_orders = studio
+        .completion_schema(&session.id, &initial.revision, &public)
+        .await
+        .unwrap();
+    assert!(public_orders.columns.iter().any(|c| c.name == "notes"));
     assert!(
-        studio
-            .completion_schema(&session.id, &initial.revision, &public)
-            .await
-            .unwrap()
-            .columns
+        public_orders
+            .foreign_keys
             .iter()
-            .any(|c| c.name == "notes")
+            .any(|fk| fk.target.name == "customers"
+                && fk.columns == ["customer_id"]
+                && fk.target_columns == ["id"]),
+        "completion_schema must include outbound FK metadata"
+    );
+    assert!(
+        public_orders
+            .inbound_foreign_keys
+            .iter()
+            .any(|fk| fk.source.name == "order_lines"
+                && fk.columns == ["order_id"]
+                && fk.target_columns == ["id"]),
+        "completion_schema must include inbound FK metadata"
+    );
+    let line_notes_schema = studio
+        .completion_schema(
+            &session.id,
+            &initial.revision,
+            &TableRef {
+                schema: "public".into(),
+                name: "line_notes".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        line_notes_schema
+            .foreign_keys
+            .iter()
+            .any(|fk| fk.name == "line_notes_line_fk"
+                && fk.columns == ["note_order", "note_line"]
+                && fk.target_columns == ["order_id", "line_no"]),
+        "completion_schema must preserve composite FK ordinal pairing"
     );
     assert_eq!(
         status(
@@ -985,6 +1019,10 @@ async fn live_completion_tracks_search_path_role_rollback_and_permissions() {
         .unwrap();
     assert_eq!(schema.columns[0].name, "temp_note");
     assert!(!schema.editable && schema.columns.iter().all(|c| !c.editable));
+    assert!(
+        schema.foreign_keys.is_empty() && schema.inbound_foreign_keys.is_empty(),
+        "temporary shadow table must not inherit permanent table foreign keys"
+    );
     studio.shutdown();
 }
 

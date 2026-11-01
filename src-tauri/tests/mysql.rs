@@ -321,6 +321,46 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
         let initial = studio.completion_catalog(&session.id).await.unwrap();
         assert_eq!(initial.identity.database, "joinery");
         assert_eq!(initial.identity.case_sensitive_table_names, Some(true));
+        let permanent_sample = studio
+            .completion_schema(
+                &session.id,
+                &initial.revision,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "sample".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            permanent_sample
+                .inbound_foreign_keys
+                .iter()
+                .any(|fk| fk.source.name == "child_rows"
+                    && fk.columns == ["parent_id"]
+                    && fk.target_columns == ["id"]),
+            "MySQL completion_schema must include inbound FK metadata"
+        );
+        let line_notes_schema = studio
+            .completion_schema(
+                &session.id,
+                &initial.revision,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "line_notes".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            line_notes_schema
+                .foreign_keys
+                .iter()
+                .any(|fk| fk.name == "line_notes_line_fk"
+                    && fk.columns == ["note_order", "note_line"]
+                    && fk.target_columns == ["order_id", "line_no"]),
+            "MySQL completion_schema must preserve composite FK ordinal pairing"
+        );
         assert!(
             !initial
                 .tables
@@ -414,6 +454,10 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
                 .map(|c| c.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["temp_note"]
+        );
+        assert!(
+            shadow.foreign_keys.is_empty() && shadow.inbound_foreign_keys.is_empty(),
+            "MySQL temporary shadow table must not leak permanent table INFORMATION_SCHEMA FKs"
         );
         completed(&run(&studio, &session, "USE completion_alt; SET ROLE NONE").await);
         let revoked = studio.completion_catalog(&session.id).await.unwrap();

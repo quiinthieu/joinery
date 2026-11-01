@@ -30,49 +30,66 @@ impl Mysql {
             // SHOW resolves session-local temporary shadows; INFORMATION_SCHEMA
             // would describe the permanent table instead. Never execute SELECTs
             // against user objects to discover their columns.
-            let rows = fetch_text(
-                &mut conn,
-                &format!("SHOW FULL COLUMNS FROM {}", qualified(table)),
-                4096,
-                1024 * 1024,
-            )
+            let qualified_table = qualified(table);
+            let outcome = async {
+                let rows = fetch_text(
+                    &mut conn,
+                    &format!("SHOW FULL COLUMNS FROM {qualified_table}"),
+                    4096,
+                    1024 * 1024,
+                )
+                .await?;
+                let mut columns: Vec<ColumnInfo> = rows
+                    .iter()
+                    .filter(|r| {
+                        cell(r, 7)
+                            .split(',')
+                            .any(|p| p.eq_ignore_ascii_case("select"))
+                    })
+                    .enumerate()
+                    .map(|(i, r)| ColumnInfo {
+                        id: format!("c{i}"),
+                        name: cell(r, 0).into(),
+                        database_type: cell(r, 1).into(),
+                        kind: ColumnKind::Unknown,
+                        nullable: cell(r, 3) == "YES",
+                        primary_key: cell(r, 4) == "PRI",
+                        foreign_key: false,
+                        editable: false,
+                        insertable: false,
+                        has_default: false,
+                    })
+                    .collect();
+                if columns.is_empty() {
+                    return Err(AppError::new(
+                        ErrorCode::PermissionDenied,
+                        "No selectable columns are available in this completion context",
+                    ));
+                }
+                let (foreign_keys, inbound_foreign_keys) =
+                    completion_fks_on(&mut conn, table, &qualified_table, &columns).await;
+                for c in &mut columns {
+                    c.foreign_key = foreign_keys
+                        .iter()
+                        .any(|fk| fk.columns.iter().any(|col| col == &c.name));
+                }
+                let primary_key = columns
+                    .iter()
+                    .filter(|c| c.primary_key)
+                    .map(|c| c.name.clone())
+                    .collect();
+                Ok(TableSchema {
+                    table: table.clone(),
+                    columns,
+                    primary_key,
+                    foreign_keys,
+                    inbound_foreign_keys,
+                    editable: false,
+                })
+            }
             .await;
             Self::close_phantom_transaction(&mut conn, was_in_trans).await;
-            let rows = rows?;
-            let columns: Vec<ColumnInfo> = rows
-                .iter()
-                .filter(|r| {
-                    cell(r, 7)
-                        .split(',')
-                        .any(|p| p.eq_ignore_ascii_case("select"))
-                })
-                .enumerate()
-                .map(|(i, r)| ColumnInfo {
-                    id: format!("c{i}"),
-                    name: cell(r, 0).into(),
-                    database_type: cell(r, 1).into(),
-                    kind: ColumnKind::Unknown,
-                    nullable: cell(r, 3) == "YES",
-                    primary_key: false,
-                    foreign_key: false,
-                    editable: false,
-                    insertable: false,
-                    has_default: false,
-                })
-                .collect();
-            if columns.is_empty() {
-                return Err(AppError::new(
-                    ErrorCode::PermissionDenied,
-                    "No selectable columns are available in this completion context",
-                ));
-            }
-            Ok(TableSchema {
-                table: table.clone(),
-                columns,
-                primary_key: vec![],
-                foreign_keys: vec![],
-                editable: false,
-            })
+            outcome
         })
         .await
     }
@@ -398,8 +415,152 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
         columns,
         primary_key,
         foreign_keys,
+        inbound_foreign_keys: Vec::new(),
         editable,
     })
+}
+
+fn hex_utf8_literal(text: &str) -> String {
+    let mut hex = String::with_capacity(text.len() * 2);
+    for byte in text.as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    format!("CONVERT(UNHEX('{hex}') USING utf8mb4)")
+}
+
+async fn completion_fks_on(
+    conn: &mut Conn,
+    table: &TableRef,
+    qualified_table: &str,
+    columns: &[ColumnInfo],
+) -> (Vec<ForeignKey>, Vec<InboundForeignKey>) {
+    // Detect session-local TEMPORARY TABLE shadows; views without SHOW VIEW or
+    // temporary tables never expose permanent-table INFORMATION_SCHEMA FKs.
+    let Ok(create_rows) = fetch_text(
+        conn,
+        &format!("SHOW CREATE TABLE {qualified_table}"),
+        4,
+        1024 * 1024,
+    )
+    .await
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(first) = create_rows.first() else {
+        return (Vec::new(), Vec::new());
+    };
+    let ddl = cell(first, 1).trim_start().to_ascii_uppercase();
+    if ddl.starts_with("CREATE TEMPORARY TABLE ")
+        || ddl.starts_with("CREATE OR REPLACE TEMPORARY TABLE ")
+        || !ddl.starts_with("CREATE TABLE ")
+    {
+        return (Vec::new(), Vec::new());
+    }
+
+    let selectable: std::collections::HashSet<&str> =
+        columns.iter().map(|c| c.name.as_str()).collect();
+    let schema_lit = hex_utf8_literal(&table.schema);
+    let table_lit = hex_utf8_literal(&table.name);
+
+    let outbound_sql = format!(
+        "SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME,
+                EXISTS(
+                  SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS pc
+                  WHERE pc.TABLE_SCHEMA = k.REFERENCED_TABLE_SCHEMA
+                    AND pc.TABLE_NAME = k.REFERENCED_TABLE_NAME
+                    AND pc.COLUMN_NAME = k.REFERENCED_COLUMN_NAME
+                    AND FIND_IN_SET('select', LOWER(pc.PRIVILEGES)) > 0
+                )
+         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
+         WHERE k.TABLE_SCHEMA = {schema_lit}
+           AND k.TABLE_NAME = {table_lit}
+           AND k.REFERENCED_TABLE_NAME IS NOT NULL
+         ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION
+         LIMIT 500"
+    );
+    let outbound = if let Ok(rows) = fetch_text(conn, &outbound_sql, 500, 2 * 1024 * 1024).await {
+        let mut denied: std::collections::HashSet<(String, String, String)> =
+            std::collections::HashSet::new();
+        let mut grouped = ForeignKey::group(rows.iter().map(|r| {
+            let name = cell(r, 0).to_owned();
+            let col = cell(r, 1).to_owned();
+            let target = TableRef {
+                schema: cell(r, 2).to_owned(),
+                name: cell(r, 3).to_owned(),
+            };
+            let target_col = cell(r, 4).to_owned();
+            if !selectable.contains(col.as_str()) || cell(r, 5) != "1" {
+                denied.insert((target.schema.clone(), target.name.clone(), name.clone()));
+            }
+            (name, col, target, target_col)
+        }));
+        if rows.len() == 500 {
+            grouped.pop();
+        }
+        grouped
+            .into_iter()
+            .filter(|k| {
+                !denied.contains(&(
+                    k.target.schema.clone(),
+                    k.target.name.clone(),
+                    k.name.clone(),
+                ))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let inbound_sql = format!(
+        "SELECT k.CONSTRAINT_NAME, k.TABLE_SCHEMA, k.TABLE_NAME, k.COLUMN_NAME, k.REFERENCED_COLUMN_NAME,
+                EXISTS(
+                  SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS pc
+                  WHERE pc.TABLE_SCHEMA = k.TABLE_SCHEMA
+                    AND pc.TABLE_NAME = k.TABLE_NAME
+                    AND pc.COLUMN_NAME = k.COLUMN_NAME
+                    AND FIND_IN_SET('select', LOWER(pc.PRIVILEGES)) > 0
+                )
+         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
+         WHERE k.REFERENCED_TABLE_SCHEMA = {schema_lit}
+           AND k.REFERENCED_TABLE_NAME = {table_lit}
+         ORDER BY k.TABLE_SCHEMA, k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION
+         LIMIT 500"
+    );
+    let inbound = if let Ok(rows) = fetch_text(conn, &inbound_sql, 500, 2 * 1024 * 1024).await {
+        let mut denied: std::collections::HashSet<(String, String, String)> =
+            std::collections::HashSet::new();
+        let mut grouped = InboundForeignKey::group(rows.iter().map(|r| {
+            let name = cell(r, 0).to_owned();
+            let source = TableRef {
+                schema: cell(r, 1).to_owned(),
+                name: cell(r, 2).to_owned(),
+            };
+            let col = cell(r, 3).to_owned();
+            let target_col = cell(r, 4).to_owned();
+            if !selectable.contains(target_col.as_str()) || cell(r, 5) != "1" {
+                denied.insert((source.schema.clone(), source.name.clone(), name.clone()));
+            }
+            (name, source, col, target_col)
+        }));
+        if rows.len() == 500 {
+            grouped.pop();
+        }
+        grouped
+            .into_iter()
+            .filter(|k| {
+                !denied.contains(&(
+                    k.source.schema.clone(),
+                    k.source.name.clone(),
+                    k.name.clone(),
+                ))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    (outbound, inbound)
 }
 
 async fn apply_on(

@@ -401,6 +401,9 @@ pub struct TableSchema {
     pub columns: Vec<ColumnInfo>,
     pub primary_key: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<InboundForeignKey>>")]
+    pub inbound_foreign_keys: Vec<InboundForeignKey>,
     pub editable: bool,
 }
 
