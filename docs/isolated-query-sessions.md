@@ -2,8 +2,8 @@
 
 M06-Q (merged on `main` via PR #26 `877904b`) introduced bounded console/session
 ownership for PostgreSQL and MySQL/MariaDB. Milestone R4 (`feat/consoles-sessions-files`,
-local and unmerged) extends that foundation with a named multi-console session
-pool (`M06`), explicit per-session `Auto-commit` / `Manual commit` transaction
+merged in PR #30 `a0ba1a6`, unreleased) extends that foundation with a named
+multi-console session pool (`M06`), explicit per-session `Auto-commit` / `Manual commit` transaction
 controls and server-observed transaction state (`X04`), and an active per-session
 schema/database switcher (`M05`). The private hub remains canonical shipping
 status (`v0.1.0-preview.15` is the published release); external account/auth/platform

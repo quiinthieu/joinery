@@ -302,27 +302,48 @@ recorded in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-reviewed-maria
 MariaDB qualification is bounded to 11.4.13. R6 stays partial, local and separate
 from the preserved R5 candidate.
 
+### R6 slice 6: reviewed MySQL TREE actual plans (local `c54ecab`)
+
+MySQL Analyze now explicitly uses `EXPLAIN ANALYZE FORMAT=TREE` after a
+non-executing prepare-only capability probe. Session JSON/output settings remain
+unchanged. A separate bounded TREE adapter preserves engineering tokens and
+unexecuted iterators; costs, rows, loops and inclusive per-loop times retain
+their scopes. JSON estimates can compare with TREE actuals using the existing
+exact executed query and observed-context identity, without replay.
+
+Reproduced review bypass for `DESC ANALYZE ... FOR SCHEMA` is fixed before AST
+fallback, including DESC/DESCRIBE aliases. Reproduced partial-result success
+after MySQL KILL QUERY now honors cancellation and retires the session. This
+does not roll back side effects or change ordinary write acknowledgements.
+
+Validation passes 142 frontend and 133 standard Rust tests, all 26 PostgreSQL
+and 25 MySQL/MariaDB base fixtures, and eighteen relevant browser workflows.
+The separate case-folded fixture remains excluded. Capability/settings, one-use
+approval, temporary state, ReadOnly, errors, cancellation, comparison and cleanup
+are qualified on MySQL 8.4.13 / MariaDB 11.4.13 only. Clean-source macOS gates are
+recorded in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-reviewed-mysql-tree-actual-plans-1-november-2026).
+R6 stays partial, local and separate from the preserved R5 candidate.
+
 ### R6 next slices
 
-1. Qualify MySQL actual plans independently. The 8.4.13 fixture defaults to
-   `explain_json_format_version=1`, which rejects JSON analysis; a disposable
-   session set to version 2 returns a separate JSON-v2 shape. Qualify TREE or a
-   supported JSON-v2 path without silently changing a user's output/optimizer
-   settings. Bound parsing, retain raw values and require explicit review;
-   unsupported combinations fail clearly. A version string alone is insufficient.
-2. Add Snowflake estimated plans as a separate read-only adapter with a bounded
-   raw/normalized contract and mocked transport evidence. Live account
+1. Add Snowflake estimated plans as a separate read-only adapter with a bounded
+   raw/normalized contract and mocked transport evidence. Explicit action only;
+   no executing analysis or session/warehouse setting changes. Live account
    qualification requires explicit external scope.
-3. Reconcile R5 and R6 into an integrated candidate, including typed-parameter
+2. Reconcile R5 and R6 into an integrated candidate, including typed-parameter
    preparation signatures, full relevant fixtures/browser regression and native
-   qualification. Preserve separate merge, release and installed-version gates.
+   qualification. Investigate the observed concurrent metadata-startup flake
+   before candidate qualification. Preserve separate merge, release and
+   installed-version gates.
+3. Broaden supported MySQL/MariaDB versions and TREE shapes only with captured
+   engine evidence. Unsupported capability/format combinations retain clear
+   unavailable/raw states; do not silently change user settings.
 
 The MariaDB adapter follows its
 [official analysis contract](https://mariadb.com/docs/server/reference/sql-statements/administrative-sql-statements/analyze-and-explain-statements/analyze-format-json).
-The independent MySQL probe clarifies the format/version conditions discussed
-in the [8.4 EXPLAIN manual](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
-and [Oracle's JSON-v2 explanation](https://blogs.oracle.com/mysql/new-json-format-for-explain).
-The MySQL probe is planning evidence, not completed adapter qualification.
+The separate MySQL TREE adapter follows the
+[8.4 EXPLAIN manual](https://dev.mysql.com/doc/refman/8.4/en/explain.html).
+The earlier JSON-v2 probe remains research evidence; no JSON-v2 adapter is enabled.
 
 R7 schema/design and R8 remaining productivity follow these R6 slices. Release,
 platform, security, accessibility, recovery and performance qualification run

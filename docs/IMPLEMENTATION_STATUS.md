@@ -1351,3 +1351,60 @@ The initial fixture run used the browser port variable; rerunning with the Rust
 suite's `JOINERY_TEST_PORT=55433` resolves those connection failures. Final
 held-source MySQL/MariaDB base suite passes 24/24 in 5.67 s; browser 15/15 in
 54.3 s. Disposable project `joinery-assess-actual` uses PostgreSQL port 55433.
+
+## R6 reviewed MySQL TREE actual plans (1 November 2026)
+
+Code `c54ecab` independently enables MySQL `EXPLAIN ANALYZE FORMAT=TREE` after
+preparing and closing a fixed constant SELECT without executing it. No optimizer
+or output setting changes. The existing complete-query wrapper, explicit review
+even on Silent, production passphrase, ReadOnly denial, owned session, one-use
+approval and observed-context comparison remain authoritative.
+
+Two failures were reproduced before their fixes. `DESC ANALYZE FORMAT=TREE FOR
+SCHEMA joinery SELECT 1` fell outside AST grammar and could bypass review; the
+pre-parser now recognizes EXPLAIN's DESC/DESCRIBE aliases. MySQL KILL QUERY can
+return a successful partial TREE result; recognized analysis now checks the
+cancellation request even on successful result consumption, reports Cancelled
+and retires its session. This does not imply rollback of side effects. Normal
+write acknowledgement handling is preserved.
+
+The bounded adapter preserves exact raw TREE text and engineering tokens,
+four-space hierarchy, missing costs and never-executed iterators. Actual first
+row / inclusive total times and rows are per loop; loops stay separate. No child
+sum, statement duration or missing zero metric is invented. Unsupported shapes
+keep raw/grid access. JSON estimates and TREE actuals compare with exact query
+bytes and observed context, without rerunning SQL. See [the contract](query-plans.md).
+
+| State | Evidence |
+|---|---|
+| Passed | `pnpm validate` on Node 26.7.0: 142 frontend tests / 26 files, 133 standard Rust tests (112 core + 21 integration), contracts/types/build, Prettier, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | 26 PostgreSQL fixtures and 25 MySQL/MariaDB base fixtures on disposable PostgreSQL 18, MySQL 8.4.13 and MariaDB 11.4.13. The latter includes four plan tests for capability, review/session effects, error/cancellation and JSON-settings preservation / unexecuted iterators. Case-folded fixture excluded |
+| Passed | Eighteen browser workflows on Node 26: fourteen plan/timing + four console/file regressions. MySQL adds cancelled review without execute, unchanged SQL, raw/tree/grid, direct alias review, ReadOnly, JSON-estimate/TREE-actual comparison without replay, mismatch/cleanup, error recovery and cancellation retirement |
+| Passed | Eight display-adapter and eight snapshot tests cover nested/zero/engineering/missing/unexecuted metrics, unsupported hierarchy/continuations, depth/node/byte bounds, exact raw retention and JSON/TREE identity |
+| Passed | Clean-source `c54ecab3caa2f46022d7b70cf6d0873d6ada90b7` macOS production bundle with strict ad-hoc signature verification; executable 21,950,016 bytes (20.93 MiB), SHA-256 `5327e4215c6c49eafec5adb9800008b181f8379ddf5bb8690c60faf2b52f3a81` |
+| Passed | Three hidden native synthetic runs / 30 cleanup cycles; 5756 / 3033 / 3026 ms, peak main-process RSS 106.02–106.44 MiB. Baseline IPC/cache/session cleanup passes; this does not exercise MySQL native plan UI/transport or qualify visible cold startup, total idle memory or FPS |
+| Provenance | Native fixture revision `c54ecab3caa2f46022d7b70cf6d0873d6ada90b7`, tree `0c631c8e8499334977abf0b8bffb10d72e325742`, `sourceDirty: false`, binary SHA-256 `3765cd785dd36ea51e6268519f7470f414c419be4d91a966af99ce5455bee888`, ad-hoc bundle binary SHA-256 `09942ab4060a6244925fc88561878f7da68bd9ce487b33317c4579af542c89ae` |
+| Scope | MySQL capability/TREE action qualified on 8.4.13 only; MariaDB regression on 11.4.13. Session `explain_format=JSON` and `explain_json_format_version=1` remain unchanged. No JSON-v2 adapter enabled |
+| Local only | R6 remains unmerged, unpublished and not installed, separate from preserved R5. Fetched `origin/main` stays `a0ba1a6`; R1–R4 are merged but unreleased. Preview.15 is the last verified release; this slice's GitHub refresh was blocked by command approval policy |
+| Open | Case-folded fixture, Redis/SSH ignored suites, full browser suite and independent R5 integration; installed revision; live Snowflake; Windows/Linux runtime; Developer ID signing/notarization; assistive technology; representative total-memory/cold-start/FPS qualification |
+
+Environment and failures: Node 26.7 requires
+`NODE_OPTIONS=--no-experimental-webstorage` for the existing localStorage test
+environment. A shell-selected Node 22 run passed but was repeated on supported
+Node 26. One full run failed the unrelated concurrent metadata startup test;
+its targeted recheck and both subsequent full validation runs passed, without
+persistence changes. An accidental all-ignored run included the absent mode-1
+case fixture and failed that connection; the explicitly scoped base suite passes
+25/25. Initial cancellation fixtures used a projection MySQL can omit; the final
+constant WHERE/SLEEP filter ensures work and reproduced partial-plan success
+before the driver fix. No tests were skipped to hide either product regression.
+
+Logs: `.cache/mysql-tree-validate-node26.log`,
+`mysql-tree-fixtures-base-final.log`, `mysql-tree-postgres-fixtures.log`,
+`mysql-tree-browser-node26.log`, `mysql-tree-safety-before.log`,
+`mysql-tree-fixtures-final.log`, `mysql-tree-persistence-recheck.log`,
+`mysql-tree-macos-bundle.log`, `mysql-tree-bundle-evidence.json`,
+`mysql-tree-native-build.log`, `mysql-tree-native-runs.log`, and
+`.cache/native-smoke/{build,runs}.json`. The disposable Compose project is
+`joinery-assess-mysql-tree`, using PostgreSQL port 55433. Next slices are
+[Snowflake estimates and integrated qualification](implementation-roadmap.md#r6-next-slices).
