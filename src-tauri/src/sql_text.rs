@@ -109,6 +109,60 @@ impl RewriteMap {
         eof_token_span(original_sql)
     }
 
+    pub fn map_span(&self, original_sql: &str, rewritten_sql: &str, span: SqlSpan) -> SqlSpan {
+        let byte_at = |offset: usize| {
+            let mut units = 0;
+            for (byte, ch) in rewritten_sql.char_indices() {
+                if units >= offset {
+                    return byte;
+                }
+                units += ch.len_utf16();
+            }
+            rewritten_sql.len()
+        };
+        let start = byte_at(span.start_utf16);
+        let end = byte_at(span.end_utf16);
+        let mut original_start = original_sql.len();
+        let mut original_end = 0;
+        for piece in &self.pieces {
+            let (os, oe, rs, re, replaced) = match *piece {
+                RewritePiece::Verbatim {
+                    orig_start,
+                    rew_start,
+                    len,
+                } => (
+                    orig_start,
+                    orig_start + len,
+                    rew_start,
+                    rew_start + len,
+                    false,
+                ),
+                RewritePiece::Replaced {
+                    orig_start,
+                    orig_end,
+                    rew_start,
+                    rew_end,
+                } => (orig_start, orig_end, rew_start, rew_end, true),
+            };
+            if rs < end && re > start {
+                original_start = original_start.min(if replaced {
+                    os
+                } else {
+                    os + start.saturating_sub(rs)
+                });
+                original_end = original_end.max(if replaced {
+                    oe
+                } else {
+                    oe - re.saturating_sub(end)
+                });
+            }
+        }
+        if original_end < original_start {
+            return eof_token_span(original_sql);
+        }
+        span_for_byte_range(original_sql, original_start, original_end)
+    }
+
     /// Maps a 1-based Unicode scalar (`char`) index in `rewritten_sql` (such as
     /// PostgreSQL `ErrorPosition::Original`) to a `SqlSpan` in `original_sql`.
     pub fn span_from_rewritten_pg_char_pos(
@@ -127,6 +181,44 @@ impl RewriteMap {
             Some((rew_byte, _)) => self.span_at_rewritten_byte(original_sql, rew_byte),
             None => eof_token_span(original_sql),
         }
+    }
+
+    /// Maps a 1-based `(line, char_column)` coordinate in `rewritten_sql` back
+    /// to a `SqlSpan` in `original_sql`.
+    pub fn span_from_rewritten_line_char_col(
+        &self,
+        original_sql: &str,
+        rewritten_sql: &str,
+        line_1_based: u64,
+        col_1_based: u64,
+    ) -> SqlSpan {
+        if original_sql.is_empty() {
+            return SqlSpan {
+                start_utf16: 0,
+                end_utf16: 0,
+                line: 1,
+                column: 1,
+            };
+        }
+        let target_line = line_1_based.max(1) as usize;
+        let target_col = col_1_based.max(1) as usize;
+        let mut line_start = 0usize;
+        for (current_line, segment) in (1usize..).zip(rewritten_sql.split_inclusive('\n')) {
+            if current_line == target_line {
+                let line_body = segment.trim_end_matches(['\r', '\n']);
+                return match line_body.char_indices().nth(target_col - 1) {
+                    Some((rel_byte, _)) => {
+                        self.span_at_rewritten_byte(original_sql, line_start + rel_byte)
+                    }
+                    None => self.span_at_rewritten_byte(
+                        original_sql,
+                        (line_start + line_body.len()).saturating_sub(1),
+                    ),
+                };
+            }
+            line_start += segment.len();
+        }
+        eof_token_span(original_sql)
     }
 }
 
@@ -438,8 +530,8 @@ pub fn span_from_mysql_error(sql: &str, message: &str) -> Option<SqlSpan> {
 }
 
 /// Parses Snowflake `line <L> at position <P>` compilation coordinates (where
-/// `L` is 1-based and `P` is 0-based) into an intra-statement UTF-16 `SqlSpan`.
-pub fn span_from_snowflake_error(sql: &str, message: &str) -> Option<SqlSpan> {
+/// `L` is 1-based and `P` is 0-based) into `(line_1_based, col_1_based)`.
+pub fn parse_snowflake_line_col(message: &str) -> Option<(u64, u64)> {
     let lower = message.to_ascii_lowercase();
     let mut search_from = 0usize;
     while let Some(rel) = lower[search_from..].find("line ") {
@@ -458,13 +550,20 @@ pub fn span_from_snowflake_error(sql: &str, message: &str) -> Option<SqlSpan> {
                         after_pos_kw[..pos_digits].parse::<u64>(),
                     )
                 {
-                    return Some(span_from_line_char_col(sql, line, pos0.saturating_add(1)));
+                    return Some((line, pos0.saturating_add(1)));
                 }
             }
         }
         search_from = start;
     }
     None
+}
+
+/// Parses Snowflake `line <L> at position <P>` compilation coordinates (where
+/// `L` is 1-based and `P` is 0-based) into an intra-statement UTF-16 `SqlSpan`.
+pub fn span_from_snowflake_error(sql: &str, message: &str) -> Option<SqlSpan> {
+    let (line, col) = parse_snowflake_line_col(message)?;
+    Some(span_from_line_char_col(sql, line, col))
 }
 
 /// Shifts an intra-statement `child` span by its enclosing `statement_span` in
@@ -491,6 +590,30 @@ pub fn shift_child_span(statement_span: SqlSpan, child: SqlSpan) -> SqlSpan {
         line,
         column,
     }
+}
+
+/// Convert a generated Explain wrapper's coordinates back to the input query.
+/// Prefix-only errors have no query token, so identify the complete query.
+pub fn span_without_generated_prefix(sql: &str, prefix: &str, span: SqlSpan) -> SqlSpan {
+    let prefix_len = prefix.encode_utf16().count();
+    if span.start_utf16 < prefix_len {
+        return trimmed_span(sql);
+    }
+    let byte_at = |offset: usize| {
+        let mut units = 0;
+        for (byte, ch) in sql.char_indices() {
+            if units >= offset {
+                return byte;
+            }
+            units += ch.len_utf16();
+        }
+        sql.len()
+    };
+    span_for_byte_range(
+        sql,
+        byte_at(span.start_utf16 - prefix_len),
+        byte_at(span.end_utf16.saturating_sub(prefix_len)),
+    )
 }
 
 #[cfg(test)]

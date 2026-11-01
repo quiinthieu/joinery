@@ -12,6 +12,7 @@ export interface PlanSource {
   query: string;
   executedSql: string;
   comparisonUnavailable?: string;
+  bindingDigest?: string;
 }
 export interface PlanSnapshot {
   id: number;
@@ -43,6 +44,7 @@ export function planSourceForExecution(
     if (!executedSql.startsWith(prefix)) return;
     return {
       engine: "snowflake",
+      bindingDigest: plan.bindingDigest,
       serverVersion: session.serverVersion,
       connectionId: session.connectionId,
       sessionId: session.id,
@@ -62,6 +64,7 @@ export function planSourceForExecution(
   if (!prefix) return;
   return {
     engine: session.engine as PlanSource["engine"],
+    bindingDigest: plan.bindingDigest,
     serverVersion: session.serverVersion,
     connectionId: session.connectionId,
     sessionId: session.id,
@@ -90,6 +93,7 @@ export function planMismatch(
     return "Different connection or session";
   if (left.context !== right.context) return "Different observed session context";
   if (left.query !== right.query) return "Different query text";
+  if (left.bindingDigest !== right.bindingDigest) return "Different bound parameters";
   return null;
 }
 

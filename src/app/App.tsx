@@ -57,6 +57,8 @@ import type {
   InboundForeignKey,
   PreparedPlan,
   ProcessInfo,
+  QueryParamInput,
+  QueryParamSlot,
   ResourceUsage,
   TableChanges,
 } from "../ipc/generated";
@@ -86,6 +88,13 @@ import {
   withFilter,
 } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
+import {
+  ParameterDialog,
+  clearTabParamDrafts,
+  pruneTabParamDrafts,
+  getTabParamDrafts,
+  setTabParamDrafts,
+} from "../features/studio/ParameterDialog";
 import { SearchEverywhere } from "../features/studio/SearchEverywhere";
 import type { SearchScope } from "../features/studio/search-everywhere";
 import { LibraryModal, SaveQueryDialog, type LibraryTab } from "../features/studio/LibraryModal";
@@ -115,6 +124,16 @@ type Dialog =
   | { kind: "compare"; tabId?: string }
   | { kind: "library"; tab: LibraryTab }
   | { kind: "saveQuery"; tabId: string }
+  | {
+      kind: "parameters";
+      tabId: string;
+      sessionId: string | null;
+      sql: string;
+      slots: QueryParamSlot[];
+      profile?: ConnectionProfile;
+      allowSaveOnly?: boolean;
+      explain?: "estimate" | "analyze";
+    }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -550,6 +569,10 @@ export function App() {
     return () => clearInterval(timer);
   }, [session?.id]);
 
+  useEffect(() => {
+    pruneTabParamDrafts(state.tabs.map((tab) => tab.id));
+  }, [state.tabs]);
+
   async function executePrepared(
     tabId: string,
     plan: PreparedPlan,
@@ -616,6 +639,30 @@ export function App() {
         });
     }
   }
+  async function prepareAndExecuteSql(
+    tabId: string,
+    sessionId: string,
+    targetSql: string,
+    params: QueryParamInput[] | undefined,
+    targetProfile?: ConnectionProfile,
+    explain?: "estimate" | "analyze",
+  ) {
+    const plan = await client.call<PreparedPlan>(
+      explain ? "prepare_explain" : "prepare_execution",
+      {
+        sessionId,
+        sql: targetSql,
+        ...(params ? { params } : {}),
+        ...(explain ? { analyze: explain === "analyze" } : {}),
+      },
+    );
+    if (plan.requiresApproval) {
+      setDialog({ kind: "review", plan, tabId, profile: targetProfile });
+    } else {
+      setDialog((prev) => (prev?.kind === "parameters" ? null : prev));
+      await executePrepared(tabId, plan, null);
+    }
+  }
   async function runSql(sql?: string, explain?: "estimate" | "analyze") {
     const active = references.current.current;
     if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
@@ -624,19 +671,30 @@ export function App() {
       state.notify("Connect this query tab to a database first.");
       return;
     }
+    const targetSql = sql ?? editor.current?.selection() ?? active.sql;
+    const target = state.bootstrap?.profiles.find((p) => p.id === active.connectionId);
+    const engine = target?.engine ?? selected.engine;
     try {
-      const plan = await client.call<PreparedPlan>(
-        explain ? "prepare_explain" : "prepare_execution",
-        {
-          sessionId: selected.id,
-          sql: sql ?? editor.current?.selection() ?? active.sql,
-          ...(explain ? { analyze: explain === "analyze" } : {}),
-        },
-      );
-      const target = state.bootstrap?.profiles.find((p) => p.id === active.connectionId);
-      if (plan.requiresApproval)
-        setDialog({ kind: "review", plan, tabId: active.id, profile: target });
-      else await executePrepared(active.id, plan, null);
+      if (engine !== "redis") {
+        const slots = await client.call<QueryParamSlot[]>("extract_query_params", {
+          engine,
+          sql: targetSql,
+        });
+        if (slots.length > 0) {
+          setDialog({
+            kind: "parameters",
+            tabId: active.id,
+            sessionId: selected.id,
+            sql: targetSql,
+            slots,
+            profile: target,
+            allowSaveOnly: false,
+            explain,
+          });
+          return;
+        }
+      }
+      await prepareAndExecuteSql(active.id, selected.id, targetSql, undefined, target, explain);
     } catch (error) {
       state.updateTab(active.id, {
         status: "failed",
@@ -737,6 +795,7 @@ export function App() {
     else action();
   }
   function closeWorkspace(id: string) {
+    clearTabParamDrafts(id);
     useStudio.getState().closeTab(id);
     requestAnimationFrame(() =>
       document
@@ -1059,6 +1118,22 @@ export function App() {
                 onRun={(sql) => void runSql(sql)}
                 onExplain={(sql) => void runSql(sql, "estimate")}
                 onAnalyze={(sql) => void runSql(sql, "analyze")}
+                onOpenParameters={(slots) => {
+                  if (current.kind !== "query") return;
+                  const selectedSession = querySessionForTab(
+                    current,
+                    useStudio.getState().sessions,
+                  );
+                  setDialog({
+                    kind: "parameters",
+                    tabId: current.id,
+                    sessionId: selectedSession?.id ?? null,
+                    sql: current.sql,
+                    slots,
+                    profile,
+                    allowSaveOnly: true,
+                  });
+                }}
                 onReview={() => void reviewEdits()}
                 onConfirm={(title, description, action) =>
                   setDialog({ kind: "confirm", title, description, action })
@@ -1246,6 +1321,31 @@ export function App() {
         />
       )}
       {dialog?.kind === "settings" && <Preferences onClose={() => setDialog(null)} />}
+      {dialog?.kind === "parameters" && (
+        <ParameterDialog
+          slots={dialog.slots}
+          initialDrafts={getTabParamDrafts(dialog.tabId)}
+          profile={dialog.profile}
+          canRun={Boolean(dialog.sessionId)}
+          allowSaveOnly={Boolean(dialog.allowSaveOnly)}
+          onSaveDrafts={(drafts) => setTabParamDrafts(dialog.tabId, drafts)}
+          onRun={
+            dialog.sessionId
+              ? async (inputs) => {
+                  await prepareAndExecuteSql(
+                    dialog.tabId,
+                    dialog.sessionId!,
+                    dialog.sql,
+                    inputs,
+                    dialog.profile,
+                    dialog.explain,
+                  );
+                }
+              : undefined
+          }
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "review" && (
         <ReviewDialog
           plan={dialog.plan}

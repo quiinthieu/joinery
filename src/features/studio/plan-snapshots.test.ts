@@ -50,6 +50,15 @@ function prepared(sql: string): PreparedPlan {
 }
 
 describe("plan snapshot identity", () => {
+  it("rejects changed binding identities without retaining values in snapshots", () => {
+    const plan = prepared("EXPLAIN (FORMAT JSON)\nSELECT :value");
+    const make = (bindingDigest: string) =>
+      planSourceForExecution({ ...plan, bindingDigest } as PreparedPlan, session, runtime)!;
+    const original = make("digest-a");
+    expect(planMismatch(original, make("digest-a"))).toBeNull();
+    expect(planMismatch(original, make("digest-b"))).toBe("Different bound parameters");
+    expect(JSON.stringify(original)).not.toContain("boundParameters");
+  });
   it("recognizes Snowflake generated execution without inventing comparable warehouse context", () => {
     const snowflake = {
       ...session,

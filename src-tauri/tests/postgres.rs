@@ -3414,3 +3414,268 @@ async fn server_error_positions_map_multibyte_unicode_and_multistatement_offsets
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn typed_query_parameters_execute_reads_reviewed_writes_and_map_multibyte_errors() {
+    // 1. Read-only parameterized SELECT with JSONB `?` operator coexistence
+    let (_ro_root, ro_studio, ro_session) = setup(SafeMode::ReadOnly).await;
+    let ro_sql = "SELECT :txt, $1, :dec, :flag, :uid, :dt, :ts, (:js ? 'ok')::text, :nil";
+    let slots = joinery_core::params::extract_query_params(EngineKind::Postgres, ro_sql).unwrap();
+    assert_eq!(slots.len(), 9);
+    let ro_plan = ro_studio
+        .prepare_execution_with_params(
+            &ro_session.id,
+            ro_sql,
+            Some(vec![
+                QueryParamInput {
+                    key: "txt".into(),
+                    kind: QueryParamKind::Text,
+                    value: Some("O'Reilly \\ 🧪".into()),
+                },
+                QueryParamInput {
+                    key: "$1".into(),
+                    kind: QueryParamKind::Integer,
+                    value: Some("-9007199254740993".into()),
+                },
+                QueryParamInput {
+                    key: "dec".into(),
+                    kind: QueryParamKind::Decimal,
+                    value: Some("12345678901234567890.123456".into()),
+                },
+                QueryParamInput {
+                    key: "flag".into(),
+                    kind: QueryParamKind::Boolean,
+                    value: Some("true".into()),
+                },
+                QueryParamInput {
+                    key: "uid".into(),
+                    kind: QueryParamKind::Uuid,
+                    value: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                },
+                QueryParamInput {
+                    key: "dt".into(),
+                    kind: QueryParamKind::Date,
+                    value: Some("2024-02-29".into()),
+                },
+                QueryParamInput {
+                    key: "ts".into(),
+                    kind: QueryParamKind::Timestamp,
+                    value: Some("2026-10-31T10:20:30Z".into()),
+                },
+                QueryParamInput {
+                    key: "js".into(),
+                    kind: QueryParamKind::Json,
+                    value: Some(r#"{"ok":true,"count":3}"#.into()),
+                },
+                QueryParamInput {
+                    key: "nil".into(),
+                    kind: QueryParamKind::Uuid,
+                    value: None,
+                },
+            ]),
+        )
+        .unwrap();
+    assert!(!ro_plan.requires_approval);
+    let ro_events = finish(start(&ro_studio, &ro_plan, None).1).await;
+    assert_eq!(status(&ro_events), RunStatus::Completed);
+    let ro_res = result(&ro_events);
+    let row = ro_studio.results.row(&ro_res.id, 0).unwrap();
+    assert_eq!(row[0].as_deref(), Some("O'Reilly \\ 🧪"));
+    assert_eq!(row[1].as_deref(), Some("-9007199254740993"));
+    assert_eq!(row[2].as_deref(), Some("12345678901234567890.123456"));
+    assert_eq!(row[3].as_deref(), Some("t"));
+    assert_eq!(
+        row[4].as_deref(),
+        Some("550e8400-e29b-41d4-a716-446655440000")
+    );
+    assert_eq!(row[5].as_deref(), Some("2024-02-29"));
+    assert!(
+        row[6]
+            .as_deref()
+            .unwrap()
+            .starts_with("2026-10-31 10:20:30")
+    );
+    assert_eq!(row[7].as_deref(), Some("true"));
+    assert_eq!(row[8], None);
+    ro_studio.release_result(&ro_res.id);
+    ro_studio.shutdown();
+
+    // 2. Confirm-mode reviewed parameterized write + multibyte error mapping
+    let (_w_root, w_studio, w_session) = setup(SafeMode::Confirm).await;
+    assert_eq!(
+        status(
+            &run(
+                &w_studio,
+                &w_session,
+                "DROP TABLE IF EXISTS joinery_r5_param_pg; CREATE TABLE joinery_r5_param_pg (id BIGINT PRIMARY KEY, note TEXT NOT NULL, amount NUMERIC(30,6), payload JSONB)"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let insert_sql = "INSERT INTO joinery_r5_param_pg (id, note, amount, payload) VALUES (:id, :note, :amount, :payload)";
+    let insert_plan = w_studio
+        .prepare_execution_with_params(
+            &w_session.id,
+            insert_sql,
+            Some(vec![
+                QueryParamInput {
+                    key: "id".into(),
+                    kind: QueryParamKind::Integer,
+                    value: Some("101".into()),
+                },
+                QueryParamInput {
+                    key: "note".into(),
+                    kind: QueryParamKind::Text,
+                    value: Some("secret-note-'🧪'".into()),
+                },
+                QueryParamInput {
+                    key: "amount".into(),
+                    kind: QueryParamKind::Decimal,
+                    value: Some("999999999999.125000".into()),
+                },
+                QueryParamInput {
+                    key: "payload".into(),
+                    kind: QueryParamKind::Json,
+                    value: Some(r#"{"tag":"alpha"}"#.into()),
+                },
+            ]),
+        )
+        .unwrap();
+    assert!(insert_plan.requires_approval);
+    let approval = w_studio.authorize(&insert_plan.id, None, None).unwrap();
+    let insert_events = finish(start(&w_studio, &insert_plan, Some(&approval)).1).await;
+    assert_eq!(status(&insert_events), RunStatus::Completed);
+
+    let verify_events = run(
+        &w_studio,
+        &w_session,
+        "SELECT note, amount::text, payload->>'tag' FROM joinery_r5_param_pg WHERE id = 101",
+    )
+    .await;
+    let verify_res = result(&verify_events);
+    let verify_row = w_studio.results.row(&verify_res.id, 0).unwrap();
+    assert_eq!(verify_row[0].as_deref(), Some("secret-note-'🧪'"));
+    assert_eq!(verify_row[1].as_deref(), Some("999999999999.125000"));
+    assert_eq!(verify_row[2].as_deref(), Some("alpha"));
+    w_studio.release_result(&verify_res.id);
+
+    // Multibyte UTF-16 error offset mapping across rewritten placeholder
+    let err_sql =
+        "SELECT '🧪', :very_long_parameter_name, missing_bound_col FROM joinery_r5_param_pg";
+    let err_plan = w_studio
+        .prepare_execution_with_params(
+            &w_session.id,
+            err_sql,
+            Some(vec![QueryParamInput {
+                key: "very_long_parameter_name".into(),
+                kind: QueryParamKind::Integer,
+                value: Some("101".into()),
+            }]),
+        )
+        .unwrap();
+    let err_events = finish(start(&w_studio, &err_plan, None).1).await;
+    assert_eq!(status(&err_events), RunStatus::Failed);
+    let err = err_events
+        .iter()
+        .find_map(|event| match event {
+            QueryEvent::Error { error, .. } => Some(error),
+            _ => None,
+        })
+        .expect("expected parameterized error");
+    let loc = err.location.as_ref().expect("expected ErrorLocation");
+    let units: Vec<u16> = err_sql.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16(&units[loc.span.start_utf16..loc.span.end_utf16]).unwrap(),
+        "missing_bound_col"
+    );
+
+    let _ = run(
+        &w_studio,
+        &w_session,
+        "DROP TABLE IF EXISTS joinery_r5_param_pg",
+    )
+    .await;
+    w_studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn typed_parameters_preserve_analysis_review_and_generated_error_origins() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let sql = "SELECT :very_long_binding AS value";
+    let inputs = |value: &str| {
+        Some(vec![QueryParamInput {
+            key: "very_long_binding".into(),
+            kind: QueryParamKind::Integer,
+            value: Some(value.into()),
+        }])
+    };
+    let old = studio
+        .prepare_explain_with_params(&session.id, sql, true, inputs("1"))
+        .unwrap();
+    assert!(
+        old.requires_approval,
+        "Silent mode must still review bound Analyze"
+    );
+    let approval = studio.authorize(&old.id, None, None).unwrap();
+    let changed = studio
+        .prepare_explain_with_params(&session.id, sql, true, inputs("2"))
+        .unwrap();
+    assert_ne!(old.binding_digest, changed.binding_digest);
+    assert_eq!(
+        studio
+            .execute(&old.id, Some(&approval), Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    assert_eq!(
+        studio
+            .execute(&changed.id, Some(&approval), Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+    let plan = studio
+        .prepare_explain_with_params(&session.id, sql, true, inputs("2"))
+        .unwrap();
+    let token = studio.authorize(&plan.id, None, None).unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &plan, Some(&token)).1).await),
+        RunStatus::Completed
+    );
+    assert_eq!(
+        studio
+            .execute(&plan.id, Some(&token), Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    let broken = "/* 🧪 */\nSELECT :very_long_binding, missing_parameter_column";
+    let plan = studio
+        .prepare_explain_with_params(&session.id, broken, false, inputs("1"))
+        .unwrap();
+    let events = finish(start(&studio, &plan, None).1).await;
+    assert_eq!(status(&events), RunStatus::Failed);
+    let error = events
+        .iter()
+        .find_map(|event| {
+            if let QueryEvent::Error { error, .. } = event {
+                Some(error)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let span = error.location.as_ref().unwrap().span;
+    let units: Vec<_> = broken.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16(&units[span.start_utf16..span.end_utf16]).unwrap(),
+        "missing_parameter_column"
+    );
+    assert_eq!(span.line, 2);
+    studio.shutdown();
+}

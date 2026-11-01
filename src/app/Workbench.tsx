@@ -41,6 +41,7 @@ import type {
   ConnectionProfile,
   DatabaseObjectRef,
   ObjectDetails,
+  QueryParamSlot,
   SessionInfo,
   TableInfo,
   TransactionMode,
@@ -89,6 +90,7 @@ interface Props {
   onRun(sql?: string): void;
   onExplain(sql: string): void;
   onAnalyze(sql: string): void;
+  onOpenParameters(slots: QueryParamSlot[]): void;
   onReview(): void;
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
@@ -114,6 +116,7 @@ export function Workbench({
   onRun,
   onExplain,
   onAnalyze,
+  onOpenParameters,
   onReview,
   onConfirm,
   onSelect,
@@ -825,6 +828,7 @@ export function Workbench({
                 value={tab.sql}
                 onChange={(sql) => state.updateTab(tab.id, { sql })}
                 onRun={onRun}
+                onOpenParameters={onOpenParameters}
                 engine={profile?.engine ?? "postgres"}
                 sessionId={session?.id ?? null}
                 tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}

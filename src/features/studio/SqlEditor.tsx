@@ -25,7 +25,13 @@ import {
 } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { sql } from "@codemirror/lang-sql";
-import type { CompletionCatalog, EngineKind, TableInfo, TableSchema } from "../../ipc/generated";
+import type {
+  CompletionCatalog,
+  EngineKind,
+  QueryParamSlot,
+  TableInfo,
+  TableSchema,
+} from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import type { CompletionResponse } from "../../data/completion-protocol";
 import { useStudio } from "../../state/studio";
@@ -42,6 +48,7 @@ interface Props {
   value: string;
   onChange(value: string): void;
   onRun(sql: string): void;
+  onOpenParameters?(slots: QueryParamSlot[]): void;
   engine: EngineKind;
   sessionId: string | null;
   tables: TableInfo[];
@@ -115,6 +122,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [contextError, setContextError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [switchingContext, setSwitchingContext] = useState(false);
+  const [paramSlots, setParamSlots] = useState<QueryParamSlot[]>([]);
   const runtimeState = useStudio((s) =>
     props.sessionId ? s.sessionStates[props.sessionId] : undefined,
   );
@@ -328,6 +336,30 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       cancelled = true;
     };
   }, [props.engine, props.sessionId, props.tables, props.contextEpoch, refresh]);
+  useEffect(() => {
+    if (props.engine === "redis" || !props.value.trim()) {
+      setParamSlots([]);
+      return;
+    }
+    let active = true;
+    const timer = setTimeout(() => {
+      void client
+        .call<QueryParamSlot[]>("extract_query_params", {
+          engine: props.engine,
+          sql: props.value,
+        })
+        .then((slots) => {
+          if (active) setParamSlots(slots);
+        })
+        .catch(() => {
+          if (active) setParamSlots([]);
+        });
+    }, 80);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [props.engine, props.value]);
   const currentContext = runtimeState?.activeContext ?? "";
   const contextOptions =
     availableContexts && availableContexts.length > 0
@@ -342,7 +374,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     runtimeState.contextKind !== "none";
   return (
     <div className="sql-editor" style={{ display: "flex", flexDirection: "column" }}>
-      {props.engine !== "redis" && props.sessionId && (
+      {props.engine !== "redis" && (props.sessionId || paramSlots.length > 0) && (
         <div className="editor-context-row">
           {showContextSwitcher && (
             <select
@@ -392,20 +424,35 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
               }}
               title={contextError ?? live?.identity.searchPath.join(", ")}
             >
-              {contextError
-                ? `Completion unavailable: ${contextError}`
-                : live
-                  ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                  : "Loading completion context…"}
+              {!props.sessionId
+                ? "Connect to run parameterized SQL"
+                : contextError
+                  ? `Completion unavailable: ${contextError}`
+                  : live
+                    ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                    : "Loading completion context…"}
             </span>
-            <button
-              className="button ghost small"
-              style={{ flexShrink: 0 }}
-              aria-label="Refresh completion context"
-              onClick={() => setRefresh((n) => n + 1)}
-            >
-              Refresh
-            </button>
+            {paramSlots.length > 0 && props.onOpenParameters && (
+              <button
+                type="button"
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
+                aria-label={`Configure query parameters (${paramSlots.length})`}
+                onClick={() => props.onOpenParameters?.(paramSlots)}
+              >
+                Parameters ({paramSlots.length})
+              </button>
+            )}
+            {props.sessionId && (
+              <button
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
+                aria-label="Refresh completion context"
+                onClick={() => setRefresh((n) => n + 1)}
+              >
+                Refresh
+              </button>
+            )}
           </div>
         </div>
       )}

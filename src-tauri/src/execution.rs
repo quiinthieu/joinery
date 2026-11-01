@@ -53,8 +53,28 @@ struct Session {
     completion: Mutex<Option<CompletionCatalog>>,
 }
 
+struct ExplainSource {
+    sql: String,
+    prefix: String,
+}
+
+impl ExplainSource {
+    fn map_error(&self, error: &mut AppError) {
+        if let Some(location) = error.location.as_mut() {
+            location.span = crate::sql_text::span_without_generated_prefix(
+                &self.sql,
+                &self.prefix,
+                location.span,
+            );
+        }
+    }
+}
+
 enum Action {
-    Sql,
+    Sql {
+        bound: Vec<Option<crate::params::BoundStatement>>,
+        error_source: Option<ExplainSource>,
+    },
     Browse {
         table: TableRef,
         query: BrowseQuery,
@@ -718,9 +738,78 @@ impl Studio {
     }
 
     pub fn prepare_execution(&self, session_id: &str, sql: &str) -> AppResult<PreparedPlan> {
+        self.prepare_execution_with_params(session_id, sql, None)
+    }
+
+    pub fn prepare_execution_with_params(
+        &self,
+        session_id: &str,
+        sql: &str,
+        params: Option<Vec<QueryParamInput>>,
+    ) -> AppResult<PreparedPlan> {
+        self.prepare_execution_inner(session_id, sql, params, None)
+    }
+
+    fn prepare_execution_inner(
+        &self,
+        session_id: &str,
+        sql: &str,
+        params: Option<Vec<QueryParamInput>>,
+        error_source: Option<ExplainSource>,
+    ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
-        let plan = safety::prepare(session_id, &session.profile, sql)?;
-        self.store_plan(plan, Action::Sql, sql.len())
+        let source_bytes = error_source
+            .as_ref()
+            .map_or(0, |source| source.sql.len() + source.prefix.len());
+        let slots = crate::params::extract_query_params(session.profile.engine, sql)?;
+        if slots.is_empty() {
+            crate::params::validate_inputs(&slots, params.as_deref())?;
+            let plan = safety::prepare(session_id, &session.profile, sql)?;
+            return self.store_plan(
+                plan,
+                Action::Sql {
+                    bound: Vec::new(),
+                    error_source,
+                },
+                sql.len() + source_bytes,
+            );
+        }
+        let (bound_parameters, validated) =
+            crate::params::validate_inputs(&slots, params.as_deref())?;
+        let classification =
+            crate::params::rewrite_for_classification(session.profile.engine, sql)?;
+        let mut plan =
+            safety::prepare_parameterized(session_id, &session.profile, sql, &classification)?;
+        let mut question_offset = 0usize;
+        let mut bound = Vec::with_capacity(plan.statements.len());
+        let mut remaining_bytes =
+            crate::params::MAX_BOUND_PLAN_BYTES.saturating_sub(sql.len() + source_bytes);
+        for stmt in &plan.statements {
+            bound.push(crate::params::compile_statement_with_budget(
+                session.profile.engine,
+                &stmt.sql,
+                &validated,
+                &mut question_offset,
+                &mut remaining_bytes,
+            )?);
+        }
+        let param_bytes = bound_parameters
+            .iter()
+            .map(|p| p.key.len() + p.value.as_ref().map_or(4, String::len))
+            .sum::<usize>();
+        plan.binding_digest = Some(hex::encode(Sha256::digest(
+            serde_json::to_vec(&bound_parameters)
+                .map_err(|_| AppError::internal("Could not fingerprint bound parameters"))?,
+        )));
+        plan.bound_parameters = bound_parameters;
+        self.store_plan(
+            plan,
+            Action::Sql {
+                bound,
+                error_source,
+            },
+            (crate::params::MAX_BOUND_PLAN_BYTES - remaining_bytes).saturating_add(param_bytes),
+        )
     }
 
     pub fn prepare_explain(
@@ -729,14 +818,55 @@ impl Studio {
         sql: &str,
         analyze: bool,
     ) -> AppResult<PreparedPlan> {
+        self.prepare_explain_with_params(session_id, sql, analyze, None)
+    }
+
+    pub fn prepare_explain_with_params(
+        &self,
+        session_id: &str,
+        sql: &str,
+        analyze: bool,
+        params: Option<Vec<QueryParamInput>>,
+    ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        let classification =
+            crate::params::rewrite_for_classification(session.profile.engine, sql)?;
         let explained = crate::query_plan::explain_sql(
             session.profile.engine,
-            sql,
+            &classification.sql,
             analyze,
             session.info.capabilities.actual_plan,
-        )?;
-        self.prepare_execution(session_id, &explained)
+        )
+        .map_err(|mut error| {
+            if let Some(location) = error.location.as_mut() {
+                location.span = classification.map.span_from_rewritten_line_char_col(
+                    sql,
+                    &classification.sql,
+                    u64::from(location.span.line),
+                    u64::from(location.span.column),
+                );
+            }
+            error
+        })?;
+        let prefix_len = explained.len() - classification.sql.len();
+        let source = ExplainSource {
+            sql: sql.to_owned(),
+            prefix: explained[..prefix_len].to_owned(),
+        };
+        self.prepare_execution_inner(
+            session_id,
+            &format!("{}{}", source.prefix, sql),
+            params,
+            Some(source),
+        )
+        .map_err(|mut error| {
+            ExplainSource {
+                sql: sql.to_owned(),
+                prefix: explained[..prefix_len].to_owned(),
+            }
+            .map_error(&mut error);
+            error
+        })
     }
 
     fn store_plan(
@@ -780,7 +910,10 @@ impl Studio {
                 serde_json::to_vec(&(id, identity))
                     .map_err(|_| AppError::internal("Could not fingerprint process target"))?,
             ),
-            Action::Sql => {}
+            Action::Sql { bound, .. } => fingerprint.update(
+                serde_json::to_vec(bound)
+                    .map_err(|_| AppError::internal("Could not fingerprint bound parameters"))?,
+            ),
         }
         let digest = hex::encode(fingerprint.finalize());
         plans.insert(
@@ -919,7 +1052,7 @@ impl Studio {
         }
         // Observe on the same serialized editor lane as the plan itself. An
         // unavailable observation must never fall back to frontend cached state.
-        if matches!(stored.action, Action::Sql)
+        if matches!(stored.action, Action::Sql { .. })
             && stored.plan.statements.len() == 1
             && [
                 "EXPLAIN (FORMAT JSON)\n",
@@ -944,7 +1077,10 @@ impl Studio {
             }
         }
         match &stored.action {
-            Action::Sql => {
+            Action::Sql {
+                bound,
+                error_source,
+            } => {
                 for (index, statement) in stored.plan.statements.iter().enumerate() {
                     if token.is_cancelled() || session.closed.load(Ordering::Acquire) {
                         status = RunStatus::Cancelled;
@@ -970,10 +1106,17 @@ impl Studio {
                         first_row_ms: &mut first_row_ms,
                         events: &events,
                     };
-                    let outcome = session
-                        .driver
-                        .execute(&statement.sql, statement.kind, &mut sink)
-                        .await;
+                    let outcome = if let Some(b) = bound.get(index).and_then(Option::as_ref) {
+                        session
+                            .driver
+                            .execute_bound(&statement.sql, statement.kind, b, &mut sink)
+                            .await
+                    } else {
+                        session
+                            .driver
+                            .execute(&statement.sql, statement.kind, &mut sink)
+                            .await
+                    };
                     match outcome {
                         Ok(affected) => {
                             events(QueryEvent::StatementCompleted {
@@ -1003,6 +1146,9 @@ impl Studio {
                                         detail: None,
                                         hint: None,
                                     }));
+                                }
+                                if let Some(source) = error_source {
+                                    source.map_error(&mut unknown);
                                 }
                                 events(QueryEvent::Error {
                                     error: unknown,
@@ -1034,6 +1180,9 @@ impl Studio {
                                             hint: None,
                                         }));
                                     }
+                                }
+                                if let Some(source) = error_source {
+                                    source.map_error(&mut error);
                                 }
                                 events(QueryEvent::Error {
                                     error,
@@ -1077,7 +1226,7 @@ impl Studio {
             Action::Browse { .. } => {}
         }
         if serialized {
-            let observed_state = if matches!(stored.action, Action::Sql)
+            let observed_state = if matches!(stored.action, Action::Sql { .. })
                 && !token.is_cancelled()
                 && !cancellation_sent.load(Ordering::Acquire)
                 && !session.driver.is_closed()
@@ -1132,7 +1281,8 @@ impl Studio {
             first_row_ms,
             total_ms: elapsed_ms,
         });
-        let sql = if session.profile.store_query_text && matches!(stored.action, Action::Sql) {
+        let sql = if session.profile.store_query_text && matches!(stored.action, Action::Sql { .. })
+        {
             Some(
                 stored
                     .plan
@@ -3443,5 +3593,220 @@ mod browse_classification_tests {
                 assert!(needs_review, "{engine:?} {mode:?} must require review");
             }
         }
+    }
+
+    struct RecordingDriver {
+        calls: Mutex<Vec<(String, crate::params::BoundStatement)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Driver for RecordingDriver {
+        async fn execute(
+            &self,
+            _sql: &str,
+            _kind: StatementKind,
+            sink: &mut dyn QuerySink,
+        ) -> AppResult<u64> {
+            sink.complete(1)?;
+            Ok(1)
+        }
+        async fn execute_bound(
+            &self,
+            sql: &str,
+            _kind: StatementKind,
+            bound: &crate::params::BoundStatement,
+            sink: &mut dyn QuerySink,
+        ) -> AppResult<u64> {
+            self.calls.lock().push((sql.to_owned(), bound.clone()));
+            sink.complete(1)?;
+            Ok(1)
+        }
+        async fn cancel(&self) -> AppResult<()> {
+            Ok(())
+        }
+        async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
+            Ok(Vec::new())
+        }
+        async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+            Ok(TableSchema {
+                table: table.clone(),
+                columns: Vec::new(),
+                primary_key: Vec::new(),
+                foreign_keys: Vec::new(),
+                inbound_foreign_keys: Vec::new(),
+                editable: false,
+            })
+        }
+        async fn browse(
+            &self,
+            _schema: &TableSchema,
+            _after: Option<Vec<Option<String>>>,
+        ) -> AppResult<crate::drivers::BrowseRows> {
+            Ok(crate::drivers::BrowseRows {
+                rows: Vec::new(),
+                next_key: None,
+                has_more: false,
+                truncated: false,
+            })
+        }
+        async fn apply(&self, _schema: &TableSchema, _rows: &[RowMutation]) -> AppResult<()> {
+            Ok(())
+        }
+        async fn processes(&self) -> AppResult<Vec<ProcessInfo>> {
+            Ok(Vec::new())
+        }
+        async fn cancel_process(&self, _id: &str, _identity: &str) -> AppResult<()> {
+            Ok(())
+        }
+        async fn health(&self) -> AppResult<u32> {
+            Ok(1)
+        }
+        fn is_closed(&self) -> bool {
+            false
+        }
+        fn close(&self) {}
+    }
+
+    #[tokio::test]
+    async fn parameterized_plans_hash_bound_values_and_never_persist_parameter_secrets() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let mut prof = profile(EngineKind::Postgres, SafeMode::Confirm);
+        prof.store_query_text = true;
+        let saved = studio.save_profile(prof, None).unwrap();
+
+        let recorder = Arc::new(RecordingDriver {
+            calls: Mutex::new(Vec::new()),
+        });
+        let session_id = "param-test-session".to_string();
+        studio.sessions.lock().insert(
+            session_id.clone(),
+            Arc::new(Session {
+                info: SessionInfo {
+                    id: session_id.clone(),
+                    connection_id: saved.id.clone(),
+                    engine: EngineKind::Postgres,
+                    server_version: "17.0".into(),
+                    latency_ms: 1,
+                    encrypted: false,
+                    capabilities: EngineCapabilities {
+                        sql: true,
+                        actual_plan: None,
+                        transactions: true,
+                        cancellation: true,
+                        table_browsing: true,
+                        table_editing: true,
+                        table_filtering: true,
+                        processes: true,
+                        object_explorer: true,
+                    },
+                },
+                profile: saved,
+                driver: recorder.clone(),
+                lane: tokio::sync::Mutex::new(()),
+                cancellation_gate: tokio::sync::Mutex::new(()),
+                active_run: Mutex::new(None),
+                closed: AtomicBool::new(false),
+                tunnel: None,
+                completion: Mutex::new(None),
+            }),
+        );
+
+        let template_sql = "UPDATE orders SET note = :secret WHERE id = $1";
+        let digest_for = |secret: Option<&str>, secret_kind: QueryParamKind, id_val: &str| {
+            let plan = studio
+                .prepare_execution_with_params(
+                    &session_id,
+                    template_sql,
+                    Some(vec![
+                        QueryParamInput {
+                            key: "secret".into(),
+                            kind: secret_kind,
+                            value: secret.map(str::to_owned),
+                        },
+                        QueryParamInput {
+                            key: "$1".into(),
+                            kind: QueryParamKind::Integer,
+                            value: Some(id_val.into()),
+                        },
+                    ]),
+                )
+                .unwrap();
+            let digest = studio.plans.lock().get(&plan.id).unwrap().digest.clone();
+            (plan, digest)
+        };
+
+        let (_, d_alpha) = digest_for(Some("100"), QueryParamKind::Text, "7");
+        let (_, d_beta) = digest_for(Some("200"), QueryParamKind::Text, "7");
+        let (_, d_int) = digest_for(Some("100"), QueryParamKind::Integer, "7");
+        let (_, d_null) = digest_for(None, QueryParamKind::Text, "7");
+        assert_ne!(d_alpha, d_beta);
+        assert_ne!(d_alpha, d_int);
+        assert_ne!(d_alpha, d_null);
+
+        let secret_marker = "top-secret-param-value-999";
+        let (plan, _) = digest_for(Some(secret_marker), QueryParamKind::Text, "42");
+        assert!(plan.requires_approval);
+        assert_eq!(plan.bound_parameters.len(), 2);
+        assert_eq!(
+            plan.bound_parameters[0].value.as_deref(),
+            Some(secret_marker)
+        );
+
+        let approval = studio.authorize(&plan.id, None, None).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        studio
+            .execute(
+                &plan.id,
+                Some(&approval),
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .unwrap();
+        while let Some(ev) = rx.recv().await {
+            if let QueryEvent::Finished { status, .. } = ev {
+                assert_eq!(status, RunStatus::Completed);
+                break;
+            }
+        }
+
+        let calls = recorder.calls.lock();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, template_sql);
+        assert_eq!(
+            calls[0].1.rewritten_sql,
+            "UPDATE orders SET note = $1 WHERE id = $2"
+        );
+        assert_eq!(calls[0].1.binds[0].value.as_deref(), Some(secret_marker));
+        assert_eq!(calls[0].1.binds[1].value.as_deref(), Some("42"));
+        drop(calls);
+
+        let history = studio.history("").unwrap();
+        let audit = studio.audit_log().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].sql.as_deref(), Some(template_sql));
+        assert!(
+            !serde_json::to_string(&(studio.bootstrap().unwrap(), &history, &audit))
+                .unwrap()
+                .contains(secret_marker),
+            "bootstrap/history/audit must never persist bound parameter values"
+        );
+        let mut checked_files = 0usize;
+        for entry in std::fs::read_dir(root.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                checked_files += 1;
+                let db_bytes = std::fs::read(&path).unwrap();
+                assert!(
+                    !String::from_utf8_lossy(&db_bytes).contains(secret_marker),
+                    "SQLite file {} must never contain bound parameter values",
+                    path.display()
+                );
+            }
+        }
+        assert!(checked_files >= 1);
     }
 }

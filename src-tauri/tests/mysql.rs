@@ -3087,3 +3087,243 @@ async fn mysql_and_mariadb_map_syntax_lines_and_multistatement_errors_to_utf16_s
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_execute_typed_query_parameters_reads_and_reviewed_writes() {
+    for port in [53306, 53307] {
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let ro_sql = "SELECT :txt, ?, :dec, :flag, :uid, :dt, :ts, JSON_UNQUOTE(JSON_EXTRACT(:js, '$.tag')), :nil FROM sample LIMIT ?";
+        let ro_plan = ro_studio
+            .prepare_execution_with_params(
+                &ro_session.id,
+                ro_sql,
+                Some(vec![
+                    QueryParamInput {
+                        key: "txt".into(),
+                        kind: QueryParamKind::Text,
+                        value: Some("O'Reilly \\ 🧪".into()),
+                    },
+                    QueryParamInput {
+                        key: "?1".into(),
+                        kind: QueryParamKind::Integer,
+                        value: Some("-9007199254740993".into()),
+                    },
+                    QueryParamInput {
+                        key: "dec".into(),
+                        kind: QueryParamKind::Decimal,
+                        value: Some("12345678901234567890.123456".into()),
+                    },
+                    QueryParamInput {
+                        key: "flag".into(),
+                        kind: QueryParamKind::Boolean,
+                        value: Some("true".into()),
+                    },
+                    QueryParamInput {
+                        key: "uid".into(),
+                        kind: QueryParamKind::Uuid,
+                        value: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                    },
+                    QueryParamInput {
+                        key: "dt".into(),
+                        kind: QueryParamKind::Date,
+                        value: Some("2024-02-29".into()),
+                    },
+                    QueryParamInput {
+                        key: "ts".into(),
+                        kind: QueryParamKind::Timestamp,
+                        value: Some("2026-10-31T23:30:00+07:00".into()),
+                    },
+                    QueryParamInput {
+                        key: "js".into(),
+                        kind: QueryParamKind::Json,
+                        value: Some(r#"{"tag":"ok"}"#.into()),
+                    },
+                    QueryParamInput {
+                        key: "nil".into(),
+                        kind: QueryParamKind::Date,
+                        value: None,
+                    },
+                    QueryParamInput {
+                        key: "?2".into(),
+                        kind: QueryParamKind::Integer,
+                        value: Some("1".into()),
+                    },
+                ]),
+            )
+            .unwrap();
+        assert!(!ro_plan.requires_approval, "port {port}");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        ro_studio
+            .execute(&ro_plan.id, None, Arc::new(move |e| tx.send(e).is_ok()))
+            .unwrap();
+        let mut ro_events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            ro_events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&ro_events);
+        let ro_res = result(&ro_events);
+        let row = ro_studio.results.row(&ro_res.id, 0).unwrap();
+        assert_eq!(row[0].as_deref(), Some("O'Reilly \\ 🧪"), "port {port}");
+        assert_eq!(row[1].as_deref(), Some("-9007199254740993"), "port {port}");
+        assert_eq!(
+            row[2].as_deref(),
+            Some("12345678901234567890.123456"),
+            "port {port}"
+        );
+        assert_eq!(row[3].as_deref(), Some("1"), "port {port}");
+        assert_eq!(
+            row[4].as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000"),
+            "port {port}"
+        );
+        assert_eq!(row[5].as_deref(), Some("2024-02-29"), "port {port}");
+        assert_eq!(
+            row[6].as_deref(),
+            Some("2026-10-31 16:30:00"),
+            "port {port}"
+        );
+        assert_eq!(row[7].as_deref(), Some("ok"), "port {port}");
+        assert_eq!(row[8], None, "port {port}");
+        ro_studio.release_result(&ro_res.id);
+        ro_studio.shutdown();
+
+        let (_w_root, w_studio, w_session) = setup(port, SafeMode::Confirm).await;
+        completed(
+            &run(
+                &w_studio,
+                &w_session,
+                "DROP TABLE IF EXISTS joinery_r5_param_mysql; CREATE TABLE joinery_r5_param_mysql (id BIGINT PRIMARY KEY, note VARCHAR(200) NOT NULL, amount DECIMAL(30,6), payload JSON) ENGINE=InnoDB",
+            )
+            .await,
+        );
+        let ins_sql = "INSERT INTO joinery_r5_param_mysql (id, note, amount, payload) VALUES (:id, :note, :amount, :payload)";
+        let ins_plan = w_studio
+            .prepare_execution_with_params(
+                &w_session.id,
+                ins_sql,
+                Some(vec![
+                    QueryParamInput {
+                        key: "id".into(),
+                        kind: QueryParamKind::Integer,
+                        value: Some("77".into()),
+                    },
+                    QueryParamInput {
+                        key: "note".into(),
+                        kind: QueryParamKind::Text,
+                        value: Some("mysql-secret-'🧪'".into()),
+                    },
+                    QueryParamInput {
+                        key: "amount".into(),
+                        kind: QueryParamKind::Decimal,
+                        value: Some("42.500000".into()),
+                    },
+                    QueryParamInput {
+                        key: "payload".into(),
+                        kind: QueryParamKind::Json,
+                        value: Some(r#"{"engine":"mysql"}"#.into()),
+                    },
+                ]),
+            )
+            .unwrap();
+        assert!(ins_plan.requires_approval, "port {port}");
+        let approval = w_studio.authorize(&ins_plan.id, None, None).unwrap();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        w_studio
+            .execute(
+                &ins_plan.id,
+                Some(&approval),
+                Arc::new(move |e| tx2.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut ins_events = Vec::new();
+        while let Some(ev) = rx2.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            ins_events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&ins_events);
+
+        let check_events = run(
+            &w_studio,
+            &w_session,
+            "SELECT note, CAST(amount AS CHAR), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.engine')) FROM joinery_r5_param_mysql WHERE id = 77",
+        )
+        .await;
+        completed(&check_events);
+        let check_res = result(&check_events);
+        let check_row = w_studio.results.row(&check_res.id, 0).unwrap();
+        assert_eq!(
+            check_row[0].as_deref(),
+            Some("mysql-secret-'🧪'"),
+            "port {port}"
+        );
+        assert_eq!(check_row[1].as_deref(), Some("42.500000"), "port {port}");
+        assert_eq!(check_row[2].as_deref(), Some("mysql"), "port {port}");
+        w_studio.release_result(&check_res.id);
+        let _ = run(
+            &w_studio,
+            &w_session,
+            "DROP TABLE IF EXISTS joinery_r5_param_mysql",
+        )
+        .await;
+        w_studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn typed_parameters_preserve_mysql_and_mariadb_analysis_review() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let sql = "SELECT id FROM sample WHERE id = :id";
+        let inputs = |value: &str| {
+            Some(vec![QueryParamInput {
+                key: "id".into(),
+                kind: QueryParamKind::Integer,
+                value: Some(value.into()),
+            }])
+        };
+        let old = studio
+            .prepare_explain_with_params(&session.id, sql, true, inputs("1"))
+            .unwrap();
+        assert!(old.requires_approval);
+        let approval = studio.authorize(&old.id, None, None).unwrap();
+        let changed = studio
+            .prepare_explain_with_params(&session.id, sql, true, inputs("2"))
+            .unwrap();
+        assert_ne!(old.binding_digest, changed.binding_digest);
+        assert_eq!(
+            studio
+                .execute(&old.id, Some(&approval), Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalExpired
+        );
+        assert_eq!(
+            studio
+                .execute(&changed.id, Some(&approval), Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalRequired
+        );
+        let plan = studio
+            .prepare_explain_with_params(&session.id, sql, true, inputs("2"))
+            .unwrap();
+        completed(&execute(&studio, &plan).await);
+        assert_eq!(
+            studio
+                .execute(&plan.id, None, Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalExpired
+        );
+        studio.shutdown();
+    }
+}

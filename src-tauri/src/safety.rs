@@ -96,33 +96,69 @@ pub fn prepare(
     profile: &ConnectionProfile,
     sql: &str,
 ) -> AppResult<PreparedPlan> {
-    if sql.trim().is_empty() {
+    prepare_inner(session_id, profile, sql, None)
+}
+
+pub fn prepare_parameterized(
+    session_id: &str,
+    profile: &ConnectionProfile,
+    original_sql: &str,
+    rewritten: &crate::params::ClassificationRewrite,
+) -> AppResult<PreparedPlan> {
+    prepare_inner(session_id, profile, original_sql, Some(rewritten))
+}
+
+fn prepare_inner(
+    session_id: &str,
+    profile: &ConnectionProfile,
+    original_sql: &str,
+    rewritten: Option<&crate::params::ClassificationRewrite>,
+) -> AppResult<PreparedPlan> {
+    let parse_sql = rewritten.map_or(original_sql, |r| r.sql.as_str());
+    if original_sql.trim().is_empty() {
         return Err(AppError::invalid("Write a query before running it"));
     }
-    if sql.len() > 1024 * 1024 {
+    if original_sql.len() > 1024 * 1024 {
         return Err(AppError::invalid(
             "A query batch must be smaller than 1 MiB",
         ));
     }
     if profile.engine == EngineKind::Redis {
-        return crate::drivers::redis::commands::prepare(session_id, profile, sql);
+        return crate::drivers::redis::commands::prepare(session_id, profile, original_sql);
     }
     // sqlparser does not support Snowflake's USING JSON syntax. Recognize
     // only our exact wrapper, validate the entire inner query, then apply the
     // existing read classification. Never whitelist an EXPLAIN prefix alone.
     if profile.engine == EngineKind::Snowflake
-        && let Some(query) = sql.strip_prefix("EXPLAIN USING JSON\n")
+        && let Some(query) = original_sql.strip_prefix("EXPLAIN USING JSON\n")
     {
-        let query_span =
-            crate::sql_text::span_for_byte_range(sql, sql.len() - query.len(), sql.len());
+        let query_span = crate::sql_text::span_for_byte_range(
+            original_sql,
+            original_sql.len() - query.len(),
+            original_sql.len(),
+        );
         let shift_error = |mut error: AppError| {
             if let Some(location) = error.location.as_mut() {
                 location.span = crate::sql_text::shift_child_span(query_span, location.span);
             }
             error
         };
-        crate::query_plan::explain_sql(profile.engine, query, false, None).map_err(shift_error)?;
-        let inner = prepare(session_id, profile, query).map_err(shift_error)?;
+        let inner_rewrite = crate::params::rewrite_for_classification(profile.engine, query)?;
+        crate::query_plan::explain_sql(profile.engine, &inner_rewrite.sql, false, None).map_err(
+            |mut error| {
+                if let Some(location) = error.location.as_mut() {
+                    location.span = inner_rewrite.map.span_from_rewritten_line_char_col(
+                        query,
+                        &inner_rewrite.sql,
+                        u64::from(location.span.line),
+                        u64::from(location.span.column),
+                    );
+                }
+                shift_error(error)
+            },
+        )?;
+        let inner = prepare_parameterized(session_id, profile, query, &inner_rewrite)
+            .map_err(shift_error)?;
         if inner.statements.len() != 1 || inner.statements[0].kind != StatementKind::Read {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
@@ -133,25 +169,48 @@ pub fn prepare(
             session_id,
             profile,
             vec![StatementPlan {
-                sql: sql.to_owned(),
+                sql: original_sql.to_owned(),
                 kind: StatementKind::Read,
                 missing_where: false,
-                span: Some(crate::sql_text::span_for_byte_range(sql, 0, sql.len())),
+                span: Some(crate::sql_text::span_for_byte_range(
+                    original_sql,
+                    0,
+                    original_sql.len(),
+                )),
             }],
         );
     }
     let mut mysql_analysis = false;
     if profile.engine == EngineKind::Mysql {
-        if has_mysql_executable_comment(sql) {
+        if has_mysql_executable_comment(original_sql) {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
                 "MySQL executable comments are not supported. Submit their SQL explicitly for review.",
             ));
         }
-        let tokens = Tokenizer::new(&MySqlDialect {}, sql)
+        let tokens = Tokenizer::new(&MySqlDialect {}, parse_sql)
             .tokenize()
             .map_err(|e| {
-                tokenizer_error(sql, "The SQL contains an unterminated token", e.location)
+                let err = tokenizer_error(
+                    parse_sql,
+                    "The SQL contains an unterminated token",
+                    e.location,
+                );
+                if let Some(rew) = rewritten {
+                    let b = byte_offset(parse_sql, e.location);
+                    let span = rew.map.span_at_rewritten_byte(original_sql, b);
+                    AppError::invalid("The SQL contains an unterminated token").with_location(
+                        ErrorLocation {
+                            span,
+                            statement_index: Some(0),
+                            sql_state: None,
+                            detail: None,
+                            hint: None,
+                        },
+                    )
+                } else {
+                    err
+                }
             })?;
         mysql_analysis = mysql_analysis_tokens(&tokens);
         let words = tokens
@@ -197,21 +256,29 @@ pub fn prepare(
     };
     let mut executes_analysis = mysql_analysis;
     let mut parser_error_location: Option<ErrorLocation> = None;
-    let statements = match Parser::parse_sql(dialect.as_ref(), sql) {
+    let statements = match Parser::parse_sql(dialect.as_ref(), parse_sql) {
         Ok(ast) => {
-            let parts = split_sql_spanned(dialect.as_ref(), sql)?;
+            let ranges = split_sql_byte_ranges(dialect.as_ref(), parse_sql)?;
             if ast.is_empty() {
                 return Err(AppError::invalid("The query contains only comments"));
             }
-            if parts.len() != ast.len() {
+            if ranges.len() != ast.len() {
                 return Err(AppError::new(
                     ErrorCode::Unsupported,
                     "This procedural batch cannot be split safely. Execute supported statements separately.",
                 ));
             }
             ast.iter()
-                .zip(parts)
-                .map(|(statement, (sql, span))| {
+                .zip(ranges)
+                .map(|(statement, (rew_start, rew_end))| {
+                    let (orig_start, orig_end) = if let Some(rew) = rewritten {
+                        (
+                            rew.to_original_byte(original_sql.len(), rew_start),
+                            rew.to_original_end_byte(original_sql.len(), rew_end),
+                        )
+                    } else {
+                        (rew_start, rew_end)
+                    };
                     let mut classification = Classification {
                         engine: Some(profile.engine),
                         ..Default::default()
@@ -219,17 +286,35 @@ pub fn prepare(
                     let _ = statement.visit(&mut classification);
                     executes_analysis |= classification.executes_analysis;
                     StatementPlan {
-                        sql,
+                        sql: original_sql[orig_start..orig_end].to_string(),
                         kind: classification.kind.unwrap_or(StatementKind::Unknown),
                         missing_where: classification.missing_where,
-                        span: Some(span),
+                        span: Some(crate::sql_text::span_for_byte_range(
+                            original_sql,
+                            orig_start,
+                            orig_end,
+                        )),
                     }
                 })
                 .collect::<Vec<_>>()
         }
         Err(err) => {
             let err_text = err.to_string();
-            if let Some(span) = crate::sql_text::span_from_sqlparser_error(sql, &err_text) {
+            let mapped_span = if let Some(rew) = rewritten {
+                crate::sql_text::span_from_sqlparser_error(parse_sql, &err_text).map(|s| {
+                    let b = byte_offset(
+                        parse_sql,
+                        Location {
+                            line: u64::from(s.line),
+                            column: u64::from(s.column),
+                        },
+                    );
+                    rew.map.span_at_rewritten_byte(original_sql, b)
+                })
+            } else {
+                crate::sql_text::span_from_sqlparser_error(original_sql, &err_text)
+            };
+            if let Some(span) = mapped_span {
                 parser_error_location = Some(ErrorLocation {
                     span,
                     statement_index: Some(0),
@@ -239,12 +324,16 @@ pub fn prepare(
                 });
             }
             vec![StatementPlan {
-                sql: sql.to_string(),
+                sql: original_sql.to_string(),
                 kind: StatementKind::Unknown,
                 missing_where: false,
                 // Parser fallback submits the complete original buffer, including
                 // leading whitespace. Its span must share that same origin.
-                span: Some(crate::sql_text::span_for_byte_range(sql, 0, sql.len())),
+                span: Some(crate::sql_text::span_for_byte_range(
+                    original_sql,
+                    0,
+                    original_sql.len(),
+                )),
             }]
         }
     };
@@ -367,6 +456,8 @@ pub(crate) fn plan_for_statements(
         id: new_id(),
         session_id: session_id.into(),
         statements,
+        bound_parameters: Vec::new(),
+        binding_digest: None,
         requires_approval: unsafe_batch && mode != SafeMode::Silent,
         requires_passphrase: unsafe_batch && mode == SafeMode::PasswordGated,
         confirmation_text,
@@ -397,6 +488,18 @@ pub fn split_sql(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<String>> {
 }
 
 pub fn split_sql_spanned(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(String, SqlSpan)>> {
+    Ok(split_sql_byte_ranges(dialect, sql)?
+        .into_iter()
+        .map(|(s, e)| {
+            (
+                sql[s..e].to_string(),
+                crate::sql_text::span_for_byte_range(sql, s, e),
+            )
+        })
+        .collect())
+}
+
+fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usize, usize)>> {
     let tokens = Tokenizer::new(dialect, sql)
         .tokenize_with_location()
         .map_err(|e| {
@@ -413,8 +516,8 @@ pub fn split_sql_spanned(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(Str
         match token.token {
             Token::SemiColon => {
                 let end = byte_offset(sql, token.span.start);
-                if content && let Some(part) = trimmed_part(sql, start, end) {
-                    parts.push(part);
+                if content && let Some(range) = trimmed_range(sql, start, end) {
+                    parts.push(range);
                 }
                 start = end + 1;
                 content = false;
@@ -423,13 +526,13 @@ pub fn split_sql_spanned(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(Str
             _ => content = true,
         }
     }
-    if content && let Some(part) = trimmed_part(sql, start, sql.len()) {
-        parts.push(part);
+    if content && let Some(range) = trimmed_range(sql, start, sql.len()) {
+        parts.push(range);
     }
     Ok(parts)
 }
 
-fn trimmed_part(sql: &str, start: usize, end: usize) -> Option<(String, SqlSpan)> {
+fn trimmed_range(sql: &str, start: usize, end: usize) -> Option<(usize, usize)> {
     let slice = &sql[start..end];
     let leading = slice.len() - slice.trim_start().len();
     let trimmed = slice.trim();
@@ -438,10 +541,7 @@ fn trimmed_part(sql: &str, start: usize, end: usize) -> Option<(String, SqlSpan)
     }
     let trimmed_start = start + leading;
     let trimmed_end = trimmed_start + trimmed.len();
-    Some((
-        trimmed.to_string(),
-        crate::sql_text::span_for_byte_range(sql, trimmed_start, trimmed_end),
-    ))
+    Some((trimmed_start, trimmed_end))
 }
 
 fn tokenizer_error(sql: &str, message: &str, location: Location) -> AppError {
@@ -455,7 +555,7 @@ fn tokenizer_error(sql: &str, message: &str, location: Location) -> AppError {
     })
 }
 
-fn byte_offset(sql: &str, location: Location) -> usize {
+pub(crate) fn byte_offset(sql: &str, location: Location) -> usize {
     let line = location.line.saturating_sub(1) as usize;
     let start = sql
         .split_inclusive('\n')

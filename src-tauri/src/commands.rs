@@ -116,12 +116,21 @@ pub async fn set_passphrase(
 }
 
 #[tauri::command]
+pub async fn extract_query_params(
+    engine: EngineKind,
+    sql: String,
+) -> AppResult<Vec<QueryParamSlot>> {
+    crate::params::extract_query_params(engine, &sql)
+}
+
+#[tauri::command]
 pub async fn prepare_execution(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
     sql: String,
+    params: Option<Vec<QueryParamInput>>,
 ) -> AppResult<PreparedPlan> {
-    studio.prepare_execution(&session_id, &sql)
+    studio.prepare_execution_with_params(&session_id, &sql, params)
 }
 
 #[tauri::command]
@@ -130,8 +139,9 @@ pub async fn prepare_explain(
     session_id: String,
     sql: String,
     analyze: Option<bool>,
+    params: Option<Vec<QueryParamInput>>,
 ) -> AppResult<PreparedPlan> {
-    studio.prepare_explain(&session_id, &sql, analyze.unwrap_or(false))
+    studio.prepare_explain_with_params(&session_id, &sql, analyze.unwrap_or(false), params)
 }
 
 #[tauri::command]

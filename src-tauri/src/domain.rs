@@ -286,6 +286,35 @@ pub struct ErrorLocation {
     pub hint: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum QueryParamKind {
+    Text,
+    Integer,
+    Decimal,
+    Boolean,
+    Uuid,
+    Date,
+    Timestamp,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryParamSlot {
+    pub key: String,
+    pub positional: bool,
+    pub occurrences: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryParamInput {
+    pub key: String,
+    pub kind: QueryParamKind,
+    pub value: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementPlan {
@@ -303,6 +332,12 @@ pub struct PreparedPlan {
     pub id: String,
     pub session_id: String,
     pub statements: Vec<StatementPlan>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<QueryParamInput>>")]
+    pub bound_parameters: Vec<QueryParamInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub binding_digest: Option<String>,
     pub requires_approval: bool,
     pub requires_passphrase: bool,
     pub confirmation_text: Option<String>,

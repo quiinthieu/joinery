@@ -24,6 +24,7 @@
     "allow-connect",
     "allow-disconnect",
     "allow-set-passphrase",
+    "allow-extract-query-params",
     "allow-prepare-execution",
     "allow-prepare-explain",
     "allow-authorize-plan",

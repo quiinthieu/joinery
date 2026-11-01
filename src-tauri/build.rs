@@ -18,6 +18,7 @@ fn main() {
             "connect",
             "disconnect",
             "set_passphrase",
+            "extract_query_params",
             "prepare_execution",
             "prepare_explain",
             "authorize_plan",

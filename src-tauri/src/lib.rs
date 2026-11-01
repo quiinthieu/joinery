@@ -10,6 +10,7 @@ mod files;
 pub mod import;
 #[cfg(any(feature = "native-smoke", test))]
 mod native_smoke_config;
+pub mod params;
 pub mod persistence;
 mod query_plan;
 pub mod results;
@@ -101,6 +102,7 @@ pub fn run() {
             commands::connect,
             commands::disconnect,
             commands::set_passphrase,
+            commands::extract_query_params,
             commands::prepare_execution,
             commands::prepare_explain,
             commands::authorize_plan,

@@ -120,14 +120,20 @@ async fn rpc(
                 )?;
                 Value::Null
             }
-            "prepare_execution" => json!(studio.prepare_execution(
-                &arg::<String>(&args, "sessionId")?,
+            "extract_query_params" => json!(joinery_core::params::extract_query_params(
+                arg::<EngineKind>(&args, "engine")?,
                 &arg::<String>(&args, "sql")?
             )?),
-            "prepare_explain" => json!(studio.prepare_explain(
+            "prepare_explain" => json!(studio.prepare_explain_with_params(
                 &arg::<String>(&args, "sessionId")?,
                 &arg::<String>(&args, "sql")?,
-                arg::<Option<bool>>(&args, "analyze")?.unwrap_or(false)
+                arg::<Option<bool>>(&args, "analyze")?.unwrap_or(false),
+                arg::<Option<Vec<QueryParamInput>>>(&args, "params")?
+            )?),
+            "prepare_execution" => json!(studio.prepare_execution_with_params(
+                &arg::<String>(&args, "sessionId")?,
+                &arg::<String>(&args, "sql")?,
+                arg::<Option<Vec<QueryParamInput>>>(&args, "params")?
             )?),
             "authorize_plan" => json!(studio.authorize(
                 &arg::<String>(&args, "planId")?,
