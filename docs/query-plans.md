@@ -3,6 +3,7 @@
 R6 local `feat/estimated-query-plans` adds **Explain** for PostgreSQL and
 MySQL/MariaDB (`fad0341`), then **Analyze** for PostgreSQL (`fa1ff17`). Both
 use the current statement or explicit selection without changing editor text.
+Explicit bounded plan snapshot comparison follows in `ba984f2`.
 Snowflake and Redis have no plan action. R6 remains partial and unreleased.
 
 ## Preparation and authorization
@@ -60,19 +61,54 @@ nested table/access/index/cost shapes and MariaDB `r_*` measurements. Optimizer
 costs never receive millisecond labels; estimates and actuals stay separate.
 Raw-field support does not qualify an executing MySQL/MariaDB ANALYZE action.
 
+## Explicit snapshots and comparison
+
+**Keep snapshot** retains the current completed plan and its execution identity.
+It never executes SQL. Up to ten snapshots share a global 2 MiB UTF-8 serialized
+payload budget, including raw JSON, exact SQL and context; oldest captures are
+evicted at either limit. Each raw plan still obeys the 512 KiB/depth/node parser
+limits. Invalid, oversized or unsupported captures fail before eviction. These
+are payload limits, not total JavaScript memory measurements.
+
+Identity comes from the immutable prepared execution, not the current editor.
+Only recognized single-query generated wrappers with known session context can
+be captured. Engine/version, connection/session, observed database, role,
+search path, active context, transaction mode/state and context revision must
+match; underlying query bytes must match exactly. The known estimated/actual
+wrapper is removed only for this query identity comparison. Incompatible
+snapshots remain listed with a disabled reason. Arbitrary manually entered
+EXPLAIN results remain viewable but are not assumed comparable.
+
+Compatible plans display independent trees or exact raw JSON side by side.
+Estimates, per-loop measurements and optimizer costs keep their original labels;
+no node pairing by position, guessed delta or cost-to-millisecond conversion.
+The context is the frontend's last observation at the execution request, not
+an atomic server-context snapshot; queued or unobserved session changes can
+differ. The comparison does not prove equal database state or settings.
+Captures preserve unknown fields and exact raw numeric tokens, survive ordinary
+result replacement, and clear with their owning tab, session retirement or
+connection disconnect. Individual removal and clear-all are explicit actions.
+Snapshots and execution metadata are excluded from workspace persistence.
+
 ## Verification and remaining work
 
 Four frontend adapter tests cover engine shapes, metric labels, unknown
 formats and complexity limits. Four Rust wrapper tests and Safe Mode
 regressions cover byte preservation, complete-query rejection, nested risks
 and mandatory analysis review, including PostgreSQL's parenthesized options.
-Two PostgreSQL fixture tests prove no unapproved execution, one-use/stale
+Two PostgreSQL fixture tests from the prior unchanged-backend slice prove
+no unapproved execution, one-use/stale
 approval, owned temporary state, disconnect invalidation, errors and cancellation.
-Five disposable-engine plan browser flows and four console/file regressions
-pass. Exact standard validation and macOS bundle/hidden-native evidence are in
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md#r6-postgresql-actual-plans-1-november-2026).
+Six disposable-engine plan browser flows and four console/file regressions
+pass. Six snapshot unit tests and two studio lifecycle tests cover exact query
+identity, context/engine mismatch, count/byte eviction, invalid input, cleanup
+and persistence exclusion. Browser flows verify estimated/actual comparison,
+editor changes, no execution on capture/comparison, mismatch rejection and
+cancellation/disconnect/reconnect cleanup. Exact standard validation and
+macOS bundle/hidden-native evidence are in
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md#r6-bounded-plan-snapshots-and-comparison-1-november-2026).
 
-Next: bounded in-memory snapshots/comparison, distinct client/server timing,
+Next: distinct queue, first-row, client/server timing,
 and independent engine/version contracts for MySQL/MariaDB actual plans and
 Snowflake plans. See the [roadmap](implementation-roadmap.md#r6-next-slices).
 This local candidate is unmerged, unpublished, not installed and not externally

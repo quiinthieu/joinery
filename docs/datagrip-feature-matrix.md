@@ -156,7 +156,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | X04 Transactions/session controls — DG-S | `drivers/{postgres,mysql}.rs`, `execution.rs` (`set_transaction_mode`, `commit_transaction`, `rollback_transaction`), `Workbench.tsx`, W | VERIFIED_COMPLETE / H (bounded R4) | Per-session `Auto-commit` vs `Manual commit` mode on PostgreSQL & MySQL/MariaDB, wire-observed `TransactionState` (`idle` / `inTransaction` / `failed`), explicit `Commit` (`ReadOnly` blocked, audit-logged) and `Rollback` (`Failed` recovery, audit-logged), `ErrorCode::Conflict` refusal on `Manual` → `Auto-commit` while open, MySQL phantom-tx cleanup, and independent grid commits. Savepoint UI and S/R transactions excluded | P1 / High | M06; PM; gate | Rust PG auto-BEGIN unit test, PG (`25P02` failed state) & MySQL/MariaDB manual-tx/grid-isolation integration tests, `studio.test.ts`, and browser PG/MySQL shared manual-tx Commit/Rollback/grid-isolation workflows; merged in PR #30 (`a0ba1a6`) / hold until released |
 | X05 Execution metrics — DG-X, DG-Q | QueryEvent, W, `QueryPlanView.tsx` | PARTIAL / H | Client elapsed/affected rows and PostgreSQL plan server times exist; general queue/first-row/server timing remains open | P2 / Medium | Driver metrics; PMSR; read | Correct units and no client/server-time conflation / hold |
 | X06 Query history — DG-SQ | N, L, X | IMPLEMENTED_UNVERIFIED / H | Search/reopen and opt-in text exist; rerun privacy and replay paths | P1 / Low | Persistence/plans; PMSR; local | Metadata-only history and explicit rerun authorization / existing |
-| X07 Raw EXPLAIN — DG-Q | `query_plan.rs`, `Studio::prepare_explain`, `QueryPlanView.tsx` | PARTIAL / H | Local estimated-plan action for one PostgreSQL/MySQL/MariaDB query; same retained JSON powers raw/tree/grid. Reviewed PostgreSQL ANALYZE is implemented locally; MySQL/MariaDB actual plans and Snowflake adapter remain open | P2 / Medium | A01; PM first; gate | Wrapper/Safe Mode tests, two PostgreSQL approval/session fixtures and five plan browser flows; local `fa1ff17`, unreleased / hold |
+| X07 Raw EXPLAIN — DG-Q | `query_plan.rs`, `Studio::prepare_explain`, `QueryPlanView.tsx` | PARTIAL / H | Local estimated-plan action for one PostgreSQL/MySQL/MariaDB query; same retained JSON powers raw/tree/grid. Reviewed PostgreSQL ANALYZE is implemented locally; MySQL/MariaDB actual plans and Snowflake adapter remain open | P2 / Medium | A01; PM first; gate | Wrapper/Safe Mode tests, two PostgreSQL approval/session fixtures (prior slice) and six plan browser flows; local `ba984f2`, unreleased / hold |
 | X08 Error reporting/navigation — DG-X | AppError, QueryEvent.Error, W | PARTIAL / H | Error panel exists; statement source ranges/navigation absent | P1 / Medium | E07; PMSR; read | Unicode offsets and missing server positions / hold |
 
 ## Data exploration and editing
@@ -201,8 +201,8 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 ## Advanced tools
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
-| A01 EXPLAIN visualizer — DG-Q | `QueryPlanView.tsx`, `query-plan.ts` | PARTIAL / H | Bounded estimated PostgreSQL/MySQL/MariaDB raw/tree view; costs, estimates and actual per-loop fields use distinct labels. Reviewed PostgreSQL actual plans are implemented; other engine actual plans and Snowflake support remain open | P2 / High | Plan adapters/capabilities; PM first, S separately; gate | Four adapter tests, two PostgreSQL fixtures and five raw/tree/grid/review browser flows; local `fa1ff17`, unreleased / hold |
-| A02 Query analysis/profiling/plan comparison — DG-Q | X05 basic elapsed metrics; local PostgreSQL plan metrics | PARTIAL / H | Estimated/actual plan metrics exist with distinct labels; bounded comparable snapshots and broader profiling remain open | P2 / High | A01/X05; engine-specific; gate | Units, estimates vs actuals, unknown metrics and budgets / hold |
+| A01 EXPLAIN visualizer — DG-Q | `QueryPlanView.tsx`, `query-plan.ts` | PARTIAL / H | Bounded estimated PostgreSQL/MySQL/MariaDB raw/tree view; costs, estimates and actual per-loop fields use distinct labels. Reviewed PostgreSQL actual plans are implemented; other engine actual plans and Snowflake support remain open | P2 / High | Plan adapters/capabilities; PM first, S separately; gate | Four adapter tests, six snapshot tests, two studio lifecycle tests and six plan browser flows; local `ba984f2`, unreleased / hold |
+| A02 Query analysis/profiling/plan comparison — DG-Q | X05 basic elapsed metrics; local PostgreSQL plan metrics | PARTIAL / H | Estimated/actual plan metrics and bounded explicit compatible snapshots are implemented locally; independent trees/raw JSON, no automatic rerun or guessed node deltas. Richer client/server timing and broader profiling remain open | P2 / High | A01/X05; engine-specific; gate | Six snapshot tests, two lifecycle tests and live-engine comparison browser flows; shared ten-capture / 2 MiB payload bound; local `ba984f2`, unreleased / hold |
 | A03 Index/storage statistics — DG-N, DG-Q | TableInfo estimatedRows/totalBytes | PARTIAL / H | Some estimates exist; index utilization/storage tools missing | P2 / Medium | N04, permission-aware stats; PM first; read | No automatic COUNT, stale estimates and permission denial / hold |
 | A04 Session/process monitoring — DG-S | ProcessesView, Driver.processes | PARTIAL / H | PM process listing and guarded PG cancellation exist; broader monitoring not implemented | P2 / High | Stable process identity; PM; gate | Permission denial, reused IDs, own-session races / hold |
 | A05 Lock inspection | D process data only | MISSING / M | Add engine-specific bounded lock/wait inspection; dedicated DataGrip lock-tool equivalence not established by cited docs | P2 / High | Process/lock metadata; PM; read | Blocking chains, races, partial privileges / hold |
@@ -623,3 +623,17 @@ bundle/native checks. See [query-plans.md](query-plans.md) and
 [exact evidence](IMPLEMENTATION_STATUS.md#r6-postgresql-actual-plans-1-november-2026).
 R6 is still partial; A02 comparison, X05 richer timing and separate engine
 adapters remain open. This candidate is unmerged, unpublished and not installed.
+
+### R6 bounded snapshot comparison follow-up — local `ba984f2`
+
+A02 now includes explicit memory-only capture from completed retained plans,
+compatible estimated/actual side-by-side trees/raw JSON, exact executed query
+identity and observed engine/version/session/context guards. Captures share ten
+entries / 2 MiB UTF-8 serialized payload, including SQL/context, with FIFO
+eviction and owner/session/connection cleanup. No automatic execution,
+persistence, node pairing or timing derivation. Tests verify count/byte limits,
+malformed/unsupported/oversized input, mismatches, raw numeric text, cleanup,
+persistence exclusion and live PostgreSQL/MySQL/MariaDB comparisons. R6 remains
+partial: richer X05 timing, broader profiling and independent engine adapters
+remain open. See [scope](query-plans.md) and
+[exact evidence](IMPLEMENTATION_STATUS.md#r6-bounded-plan-snapshots-and-comparison-1-november-2026).

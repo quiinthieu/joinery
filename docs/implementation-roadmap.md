@@ -249,19 +249,42 @@ regressions pass. Clean-source macOS bundle and three hidden native runs /
 30 cleanup cycles pass. Full ignored integration/full browser suites were not
 rerun. R5 integration, merge, application publication and installation remain open.
 
+### R6 slice 3: bounded snapshots and comparison (local `ba984f2`)
+
+Explicit captures retain raw plans and immutable executed query/context identity;
+comparison never reruns SQL. A shared ten-capture / 2 MiB UTF-8 payload budget
+includes SQL and context, with FIFO eviction and tab/session/connection cleanup.
+Only matching engine/version, session, observed context and exact underlying
+query bytes compare. PostgreSQL estimated and actual plans may be viewed side
+by side; incompatible snapshots show a disabled reason. Independent trees and
+raw JSON preserve labels and exact text without guessed node pairing or deltas.
+Snapshots remain memory-only and are excluded from workspace persistence.
+
+Standard validation passes 134 frontend and 132 Rust tests. Six plan browser
+flows and four console/file regressions pass against disposable PostgreSQL 18,
+MySQL 8.4 and MariaDB 11.4. The snapshot unit/lifecycle suite covers eviction,
+invalid input, mismatch, exact numeric text, cleanup and persistence exclusion.
+See [verification evidence](IMPLEMENTATION_STATUS.md#r6-bounded-plan-snapshots-and-comparison-1-november-2026).
+This branch remains separate from R5, unmerged and unreleased.
+
 ### R6 next slices
 
-1. Add bounded in-memory plan snapshots/comparison from already retained
-   results. Capture only by explicit action; never rerun SQL to compare.
-   Bind snapshots to engine, connection/session context and exact query identity;
-   reject or clearly separate incompatible plans. Cap snapshot count and total
-   bytes, document eviction/close behavior, preserve unknown raw fields and exact
-   numeric text, and keep optimizer costs separate from milliseconds. Exercise
-   mismatch, eviction, malformed/oversized input and session/result cleanup.
-2. Add queue, first-row, client elapsed and server metrics with distinct units
-   and scope. Do not derive one metric from another or present per-loop values
-   as totals. Test failed/cancelled/empty runs and missing server measurements.
-3. Add MySQL and MariaDB actual plans as independent capability/version adapters
+1. Add queue, first-row, client elapsed and server metrics with distinct units
+   and scope. Use explicit per-run event timestamps/measurements; retain missing
+   values as unavailable. Do not derive one metric from another or present
+   per-loop values as totals. Test failed/cancelled/empty/multi-result runs,
+   queue cancellation, absent server measurements and session/result cleanup.
+   Current `Studio::run_plan` starts its elapsed clock before the session lane
+   and emits `Started` after acquiring it; `QueryEvent` exposes only statement
+   and finished elapsed values today. Add monotonic backend measurements at the
+   real queue/first-row boundaries and versioned generated contracts. Keep the
+   frontend request-to-terminal duration separately named, revision/run scoped,
+   and non-persistent. A statement without rows has no first-row value; server
+   execution/planning timings come only from supported server measurements.
+   Capture backend context at the actual execution boundary where supported;
+   today plan comparison binds the frontend observation at request time, so
+   queued/unobserved context changes remain an explicit limitation.
+2. Add MySQL and MariaDB actual plans as independent capability/version adapters
    after proving syntax, execution semantics and output contracts. Do not assume
    JSON actual-plan compatibility. Require explicit review and fixture evidence
    per adapter. Snowflake plans remain a separate read-only slice.

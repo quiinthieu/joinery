@@ -1231,3 +1231,42 @@ The application candidate is local, unmerged, unpublished and not installed.
 R6 remains partial; [next slices](implementation-roadmap.md#r6-next-slices)
 cover comparison, metrics and independent engine adapters. The separate R5
 worktree and its four unrelated documentation edits remain intact.
+
+## R6 bounded plan snapshots and comparison (1 November 2026)
+
+Code `ba984f2` adds explicit snapshots of completed retained plans and compatible
+side-by-side trees/raw JSON. Captures use immutable executed SQL plus known
+engine/version, connection/session and observed runtime context; editing the
+SQL after execution cannot change a capture's identity. Exact underlying query
+bytes must match. Estimated/actual wrappers may differ; incompatible choices
+show a disabled reason. No capture/comparison executes SQL or guesses node
+pairing. Context is the frontend observation at request time, not an atomic
+server snapshot; queued/unobserved changes and database state may differ.
+
+A global ten-capture / 2 MiB UTF-8 serialized payload budget includes raw JSON,
+SQL and context. FIFO eviction and explicit removal/clear keep retention bounded;
+invalid/oversized captures cannot evict good entries. Existing raw-plan parser
+limits still apply. These are payload caps, not measured total JavaScript RAM.
+Captures survive result replacement, clear on owner-tab/session/connection
+cleanup, and are excluded from workspace persistence.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 134 frontend tests (25 files), 132 standard Rust tests (111 core + 21 others), formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Six snapshot unit tests and two studio lifecycle regressions cover exact SQL and raw numeric tokens, engine/version/session/context mismatch, UTF-8 count/byte eviction, malformed/unsupported/oversized input, cleanup notifications and workspace persistence exclusion |
+| Passed | Ten relevant browser workflows on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4: six query-plan flows and four console/file regressions. Live flows exercise tree/raw comparison, explicit removal, editor changes after execution, PostgreSQL estimated-versus-actual plans, zero extra execution requests for capture/comparison, disabled mismatches, cancellation retirement and reconnect cleanup |
+| Passed | Clean-source `ba984f20a993b9732c336fcc8bbbbc1a46dea6c2` macOS production bundle with strict ad-hoc signature verification; executable 20.93 MiB, SHA-256 `f20d43a48250856f8f95647d2c054079d7670210ed4fd9a35c738659461837a5` |
+| Passed | Clean-source hidden native build and three runs / 30 cleanup cycles; native elapsed `4,630 / 3,773 / 3,813 ms`, main-process peak RSS `104.45–107.05 MiB`; fixture SHA-256 `7de17912a4d0b873b72f9e8a80876a60de8273b173d8bf5b12416dc615957b16`. Baseline IPC, result/cache and session cleanup checks pass |
+| Environment | Node 26.7.0 validation uses `NODE_OPTIONS=--no-experimental-webstorage`; no application workaround. Initial browser failures exposed the missing comparison region semantics and assertion issues; corrected final ten-flow run held source fixed and passed |
+| Not executed | Full ignored Rust integration/full browser suites; the two PostgreSQL actual-plan fixture tests passed in the prior unchanged-backend slice and were not rerun here. Independent complete R5 rerun; installed revision; production/live Snowflake accounts; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative total-memory/cold-start/FPS qualification remain open |
+
+Native evidence at `.cache/native-smoke/runs.json` is hidden, synthetic and
+main-process-only. It does not qualify total idle memory, visible cold startup
+or display FPS. Snapshot flows are covered by the frontend/browser tests above.
+
+Disposable Compose project `joinery-assess-compare` used PostgreSQL port 55433
+and was removed after the browser checks. Existing R5 worktree and its four
+unrelated documentation edits remain intact. The application is local,
+unmerged, unpublished and not installed. R6 remains partial; the
+[next slices](implementation-roadmap.md#r6-next-slices) cover distinct metrics
+and independent engine adapters.
