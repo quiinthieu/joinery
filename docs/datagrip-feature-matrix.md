@@ -137,7 +137,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
 | E06 FK JOIN suggestions — DG-E, DG-FK | D, E; `completion_fks_on`, `joinCompletions` | PARTIAL / H | Direct-base-table outbound/inbound composite JOIN and initial ON insertion verified on PG/MySQL/MariaDB; multiple/self constraints and quoting covered. Snowflake relationships and advanced output inference remain open | P1 / High | E03/E04/N03; PM; read | Two live metadata fixtures and three browser flows execute nine inserted composite joins; local `e0dad5f`, unmerged / hold |
 | E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline marks, gutters, SQLSTATE/details, jumps and statement navigation now use exact submitted source identity; Unicode/CRLF, parameters and Explain origins are reconciled; edits and delayed errors cannot mark changed SQL | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; six real diagnostics/navigation browser flows plus twelve focused unit cases; local `65530c0`, unmerged / hold |
-| E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
+| E08 Inspections/quick fixes — DG-I | X execution safety; local single-direct-table qualified-column inspection with fresh complete selectable metadata and explicit catalog correction | PARTIAL / H | Broader scope/inference and contextual fixes remain open; current local `cfb6139` withholds partial/denied/stale/ambiguous metadata | P2 / High | E07 and scope analysis; PMS; gate | Explicit preview/Apply/undo, no editor SQL preparation/execution locally verified; ordered JOIN scope next / hold |
 | E09 SQL formatting — DG-F | `sql-format.ts`, formatter worker, Preferences | PARTIAL / H | Selection/document formatting, global and per-dialect case/indent/spacing, inheritance/reset, stale-reply rejection, serialized saves and bind compatibility. Broader style controls remain open | P2 / Medium | Editor selections; PMS; local | Selection/newline/undo, literal/comment/bind preservation, ordered saves, inheritance/reset/recovery and three real engine flows; local `d39b89b`, unmerged / hold |
 | E10 Rename and SQL refactoring — DG-R | `sql-navigation.ts`, `SqlAliasRenameDialog.tsx`, `SqlEditor.tsx` | PARTIAL / H | Bounded SELECT alias and nonrecursive CTE preview/Apply; ordered JOIN/WITH scope, relation/qualifier capture and undo verified locally. MySQL-family nested WITH beneath outer CTE scopes, recursive/broader refactoring and database renames remain open | P2 / High | Scope/definition graph; PMS; gate | Alias/CTE capture/quoting/undo and exact before/after results locally verified; local `072e4ff`, wider scopes and reviewed DDL / hold |
 | E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias/output jumps, proven direct-column outputs through CTEs/derived tables and per-candidate references. Expressions, wildcards, set-operation outputs and ambiguity are withheld. Primary/isolated consoles retain their originating context through read-only Structure/DDL and linked objects; explicit DDL append preserves SQL/session without execution | P1 / High | E02/N06; PMS; read | Nested outputs plus context/session isolation, denied/stale replies and six real navigation flows; local `34c001a`, unmerged / hold |
@@ -913,3 +913,27 @@ correction preview, then templates and remaining R5/R6/R7/R8. Local, unmerged,
 unreleased and not installed; external/platform/native UI/accessibility/
 performance and delivery gates remain open. See
 [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
+
+### Bounded qualified-column inspection — local `cfb6139`
+
+E08 moves to partial. Inspect columns checks qualified references in one direct
+base-table SELECT, including aliases and nested non-query expressions, on
+PostgreSQL/MySQL/MariaDB. Its fresh active-session metadata read requires complete
+selectable columns; permission-filtered completion data is never treated as proof
+that a column is absent. Unqualified relations require server-observed visibility.
+Unknown/ambiguous tables, partial grants, stale metadata and unsupported shapes
+withhold the claim. PostgreSQL physical system columns are recognized; MySQL's
+implicit row identifier and overlong identifiers are withheld.
+
+A user-selected catalog column produces an exact quoted one-occurrence preview,
+explicit Apply and one-step undo, guarded by document/editor/session/context
+identity. No editor SQL is prepared/executed; SQL execution errors remain separate.
+Validation: 354 frontend / 156 standard Rust, eighteen focused browser flows,
+two live permission/context fixture tests (MySQL and MariaDB share one test), and
+three native synthetic processes / 30 cleanup cycles. Browser reads compare exact
+result values before/after an explicit correction. Joins, CTE/derived inference,
+unqualified columns, automatic fixes and Snowflake inspection remain open, along
+with native UI/accessibility, platform/performance and delivery qualification.
+Next: ordered direct-table JOIN inspections, then templates and remaining roadmap.
+Local, unmerged, unreleased and not installed. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-qualified-column-inspections-2-november-2026).

@@ -2121,3 +2121,70 @@ verified release, without a fresh release/installed-version qualification here.
 The earlier metadata-startup flake did not recur in fifteen focused flows; its
 cause remains open. Local, unmerged, unreleased and not installed. No application
 push, merge, release or installation occurred.
+
+## R5 follow-up: qualified-column inspections (2 November 2026)
+
+Code `cfb6139211c0a06080ab7cecca102e9a0006b1ee`, tree `6d0910aef9b2ec7b1554d7ba3424453385fd8740`, adds **Inspect columns** to SQL
+consoles. The first E08 slice checks qualified references in one direct-table
+SELECT on PostgreSQL/MySQL/MariaDB, including explicit/implicit aliases,
+WHERE/ORDER BY and non-query expressions. It uses the current console's catalog
+identity and a fresh `inspection_schema` read; cached or permission-filtered
+completion lists cannot prove absence. Unqualified relations require the
+server-observed visible-table set. Unresolved/ambiguous tables, views, incomplete
+syntax and unsupported shapes are withheld.
+
+The new backend read shares completion's active-session lane, revision, observed
+identity, visible-table and resource guards. PostgreSQL reads all physical column
+privilege flags together and rejects any nonselectable column before returning
+metadata. MySQL/MariaDB compare selectable SHOW FULL COLUMNS names with the full
+SHOW CREATE TABLE column AST; hidden/denied columns, unavailable DDL or unsupported
+parsing reject the read. No hidden column names or raw DDL enter the inspection
+response. Completion's permission-filtered behavior is preserved. These are
+metadata reads; no editor SQL is prepared or executed through inspection.
+
+The dialog reports checked qualified references and missing occurrences with
+line numbers. A replacement must be a real column from that exact metadata
+snapshot. It previews an escaped, always-quoted token replacement; Apply changes
+only the chosen occurrence in one isolated undo transaction. Changing SQL,
+editor/session/context/catalog revision or refreshing metadata invalidates it.
+Dialog shortcuts cannot run SQL. SQL execution errors retain their separate
+path. This neither validates the full query nor decides authorization.
+
+Limits: 65,536 UTF-16 statement units / 4,096 lexer tokens, 16 expression levels,
+one direct table and at most 2,048 returned columns; backend metadata remains
+bounded at 4,096 columns / 1 MiB. Overlong PostgreSQL/MySQL identifiers are
+withheld to avoid server-truncation assumptions. PostgreSQL physical system
+columns are recognized without offering them as catalog replacements. MySQL's
+implicit `_rowid`, joins/comma relations, CTEs, derived/nested queries, views,
+set operations, table-valued functions, three-part column inference and unsupported
+modifiers remain withheld. Snowflake/Redis inspections are unavailable. This is
+bounded lexical inspection, not full SQL semantics or automatic repair.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Existing live completion fixtures return only `visible_note` under column grants. Treating that list as complete would mislabel a hidden column; inspection now rejects it. A new delayed-read/F1 browser regression reproduced a permanently disabled Inspect button; request-owned busy cleanup fixes it. The first native baseline on `f712649` failed all three guard checks because the new command lacked Tauri build-manifest and main-window ACL enrollment; the final source adds both and passes. Initial modal assertions used a role query against the correctly inert background editor; that test locator was corrected |
+| Standard | `pnpm validate`: 354 frontend tests / 37 files and 156 standard Rust tests; contracts, types, frontend build, formatting, Cargo fmt/check and strict all-target/all-feature Clippy pass. After the navigation-race fix, frontend checks and focused browser tests pass again; the native smoke build covers final types/build and registration |
+| Unit/UI | 27 added analyzer/dialog cases cover repeated references, comments/literals/other statements, exact quoted catalog choices, single-occurrence edits, PostgreSQL folded/quoted names and system columns, MySQL column/alias case policy, truncation limits, untrusted/stale edits, unknown visibility, duplicate/empty/wrong schemas, unsupported scopes, explicit Apply/cancel/focus and keyboard isolation |
+| Live fixtures | PostgreSQL completion role/search-path/rollback/permission test and MySQL-family database/role/column-grant test pass; the latter runs MySQL 8.4 and MariaDB 11.4. Full-grant inspection succeeds, partial columns and obsolete revisions reject, and existing completion output remains filtered. A first PostgreSQL attempt used the wrong port environment variable before readiness; corrected `JOINERY_TEST_PORT=55433` passes |
+| Browser | All eighteen focused flows pass on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4. Three new flows compare decoded Arrow values from explicit original/corrected reads, retaining exact large integer text. Fresh reads, preview/cancel/catalog choice/Apply/one undo, shortcut isolation, document/refresh invalidation, denied response, delayed stale response, navigation cancellation/retry, clean limited result and unsupported CTE rejection pass. No editor prepare/execute request during inspection; zero page errors. Prior fifteen rename/navigation flows also pass |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass, including disconnected-session rejection of the new IPC command. Fixture SHA-256 `9d03e7690ccadbf271013f28e01e85874215944e380c86950493e9eb37e61d96`; isolated ad-hoc bundle executable SHA-256 `b997b0363e01b2258b53e4e05d559b4b6d2d4ebbacab052ce20f7382774a9f1e`. Synthetic IPC/worker/cleanup only; inspection interaction is browser evidence, not native UI qualification |
+| Prior evidence | Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc distribution bundle: `b80b6c7`. These are not relabeled as rerun here |
+| Open / next | E08 and R5/R6 stay partial. Extend inspections to ordered direct-table JOIN scopes with complete per-table metadata and conservative ambiguity, then context-aware templates and remaining R5/R6/R7/R8. Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates remain open |
+
+Logs: `.cache/r5-column-inspections-validate-qualified.log`,
+`.cache/r5-column-inspections-check-final.log`,
+`.cache/r5-column-inspections-postgres-qualified.log`,
+`.cache/r5-column-inspections-mysql.log`,
+`.cache/r5-column-inspections-navigation-before.log`,
+`.cache/r5-column-inspections-browser-navigation-fixed.log`,
+`.cache/r5-column-inspections-browser-copy.log` (three final-copy flows),
+`.cache/r5-column-inspections-native-acl-{build,runs}.log`,
+`.cache/r5-column-inspections-native-build-final.log`,
+`.cache/r5-column-inspections-native-runs-final.log`.
+Immutable native record: `.cache/r5-column-inspections-native-evidence.json`.
+Initial native failure: `.cache/r5-column-inspections-native-before-evidence.json`.
+Owned fixtures and processes were removed; user services were preserved. No
+external account was queried. Fetched `origin/main` remains `a0ba1a6`;
+preview.15 is the last verified release without fresh release/install qualification.
+Local, unmerged, unreleased and not installed. No application push, merge,
+release or installation occurred.

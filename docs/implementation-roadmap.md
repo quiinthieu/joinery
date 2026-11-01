@@ -218,21 +218,23 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `072e4ff` integrates six R5 slices plus formatting, named
-outputs, console-bound inspectors and bounded alias/CTE rename, alongside seven
-R6 slices. R5/R6 remain partial, local, unmerged, unreleased and not installed.
-Validation passes 327 frontend / 156 standard Rust and fifteen focused browser
-flows on PostgreSQL/MySQL/MariaDB. Nonrecursive CTE rename follows ordered WITH
-entries, relation uses and implicit qualifiers, preserving explicit aliases and
-physical tables. PostgreSQL nested WITH shadowing is covered. Nested WITH under
-an outer CTE scope is withheld in the shared MySQL/MariaDB dialect after fixture
-probes exposed different outer-CTE visibility. Preview/Apply/undo, capture and
-stale-context guards remain in force; rename sends no execution request.
-The clean-source native synthetic baseline passes three processes / 30 cleanup
-cycles for this code/tree; native rename interaction remains unqualified.
-Prior broad qualification retains its revisions. Next: bounded semantic
-inspections with explicit corrections, then richer templates and remaining
-R5/R6/R7/R8. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
+Current candidate `cfb6139` integrates six R5 slices plus formatting, named
+outputs, console-bound inspectors, bounded alias/CTE rename and qualified-column
+inspection/correction, alongside seven R6 slices. R5/R6 remain partial, local,
+unmerged, unreleased and not installed. Validation passes 354 frontend / 156
+standard Rust, eighteen focused PostgreSQL/MySQL/MariaDB browser flows and two
+live permission/context fixture tests (the MySQL test covers both engines).
+Inspection checks one direct-table SELECT against freshly requested, complete
+selectable metadata from the current console. It offers an exact quoted
+correction to one occurrence only after a catalog choice and explicit Apply,
+with isolated undo and document/context guards; it never prepares/runs editor SQL.
+Partial grants and unsupported/ambiguous shapes withhold missing-column claims.
+The clean-source macOS native synthetic baseline passes three processes / 30
+cleanup cycles, including the new disconnected-session IPC guard. Inspection
+interaction remains browser evidence; native UI and performance are unqualified.
+Prior broad qualification retains its revisions. Next: ordered direct-table JOIN
+inspection, then richer templates and remaining R5/R6/R7/R8. See
+[current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-qualified-column-inspections-2-november-2026).
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -414,20 +416,30 @@ baseline pass. Browser checks compare decoded result values before/after explici
 rename; preview/Apply never prepares or executes SQL. See
 [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
 
-### Next bounded editor slice: semantic inspections and explicit corrections
+### R5 bounded qualified-column inspections (local `cfb6139`)
 
-1. Start with an on-demand inspection of qualified columns on uniquely resolved
-   direct base tables in a bounded SELECT. Report a missing column only after a
-   successful schema read from the current console/session/context. Denied,
-   stale, partial, derived/CTE and ambiguous metadata must withhold the claim.
-2. Let the user choose a real catalog column and preview the exact quoted edit.
-   Require explicit Apply, current document/context identity and one-step undo;
-   retain SQL errors separately and never prepare/execute through inspection.
-3. Reproduce missing/ambiguous/stale cases, exercise permission degradation and
-   before/after explicit fixture reads on PostgreSQL/MySQL/MariaDB. Keep broad
-   inference and automatic fixes out of this first acceptance. Then continue
-   context-aware templates and remaining R5/R6/R7/R8. Published, installed,
-   external, accessibility and native UI gates stay distinct.
+Inspect columns checks qualified references in one direct-table SELECT on
+PostgreSQL/MySQL/MariaDB. Fresh inspection metadata is stricter than completion:
+partial column grants, missing visibility, unsupported DDL and stale contexts
+withhold claims. The user selects a real column, previews its exact quoted edit,
+then explicitly applies one occurrence with one-step undo. Editor SQL is never
+prepared/executed. Joins, CTEs, derived relations and broader inference remain open.
+See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-qualified-column-inspections-2-november-2026).
+
+### Next bounded editor slice: ordered direct-table JOIN inspections
+
+1. Extend qualified-column inspection to flat SELECTs over uniquely resolved
+   direct base tables, using an explicitly bounded relation model. Preserve ON
+   operands, comma precedence and pending JOIN association; withhold nested,
+   derived/CTE, ambiguous and unsupported shapes rather than guessing scope.
+2. Request complete selectable metadata for each needed table on the active
+   session/revision. Partial/denied/stale reads must not become missing-column
+   claims. Bound table count and metadata work; preserve cancellation and retry.
+3. Keep correction choice, exact quoting, explicit Apply, document/context checks
+   and one undo. Reproduce scope errors and permission degradation, compare
+   explicit before/after reads on PostgreSQL/MySQL/MariaDB and assert zero editor
+   preparation/execution through inspection. Then continue context-aware templates
+   and remaining R5/R6/R7/R8. Delivery and external/native/platform gates stay distinct.
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -554,14 +566,14 @@ R6 remains partial, local, unmerged and unreleased.
 
 1. Six R5 slices and seven R6 slices now include per-engine styles and named
    CTE/derived-table outputs, console Structure, inspector continuation and
-   bounded alias/CTE rename with ordered JOIN/WITH visibility (`072e4ff`).
-   Standard checks and fifteen focused browser flows pass. The clean-source
+   bounded alias/CTE rename and single-table column inspection/correction (`cfb6139`).
+   Standard checks and eighteen focused browser flows pass. The clean-source
    native synthetic baseline passes three processes / 30 cycles on this revision.
    Prior combined-source qualification passed all 66 ignored local SQL/Redis/SSH
    fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
    suite passed on `db5cd1b`.
-   Next: bounded direct-table qualified-column inspections with explicit
-   correction preview, then richer template variables and remaining R5/R6/R7/R8
+   Next: ordered direct-table JOIN inspections with explicit correction
+   preview, then richer template variables and remaining R5/R6/R7/R8
    scope. Preserve conservative ambiguity handling, every preparation/approval path and exact
    editor origins. Keep the earlier startup flake open until its cause is known.
    Application merge, release and installation remain separate authorized gates.
