@@ -579,4 +579,23 @@ mod tests {
             assert!(p.requires_approval && p.requires_passphrase);
         }
     }
+
+    #[test]
+    fn estimated_plans_keep_existing_nested_statement_and_function_guards() {
+        let readonly = profile(SafeMode::ReadOnly, Environment::Local);
+        let simple = crate::query_plan::estimated_sql(EngineKind::Postgres, "SELECT 1").unwrap();
+        let plan = prepare("s", &readonly, &simple).unwrap();
+        assert!(!plan.requires_approval);
+        for sql in [
+            "SELECT pg_terminate_backend(1)",
+            "WITH gone AS (DELETE FROM a RETURNING *) SELECT * FROM gone",
+            "SELECT * FROM a FOR UPDATE",
+        ] {
+            let explained = crate::query_plan::estimated_sql(EngineKind::Postgres, sql).unwrap();
+            assert!(prepare("s", &readonly, &explained).is_err(), "{sql}");
+            let production = profile(SafeMode::Silent, Environment::Production);
+            let plan = prepare("s", &production, &explained).unwrap();
+            assert!(plan.requires_approval && plan.requires_passphrase, "{sql}");
+        }
+    }
 }

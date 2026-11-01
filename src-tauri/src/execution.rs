@@ -723,6 +723,12 @@ impl Studio {
         self.store_plan(plan, Action::Sql, sql.len())
     }
 
+    pub fn prepare_explain(&self, session_id: &str, sql: &str) -> AppResult<PreparedPlan> {
+        let session = self.session(session_id)?;
+        let explained = crate::query_plan::estimated_sql(session.profile.engine, sql)?;
+        self.prepare_execution(session_id, &explained)
+    }
+
     fn store_plan(
         &self,
         plan: PreparedPlan,

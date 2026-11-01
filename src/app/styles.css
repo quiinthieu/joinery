@@ -3223,3 +3223,63 @@ kbd {
   margin: 0;
   line-height: 1.6;
 }
+
+.query-plan-view {
+  height: 100%;
+  overflow: auto;
+  padding: 16px 22px;
+  font-size: 12px;
+}
+.plan-view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.plan-note {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.plan-tree,
+.plan-tree ul {
+  list-style: none;
+  padding-left: 20px;
+}
+.plan-tree {
+  padding-left: 0;
+}
+.plan-tree li {
+  margin: 10px 0;
+  border-left: 1px solid var(--border);
+  padding-left: 12px;
+}
+.plan-tree summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.plan-tree summary code {
+  margin-left: 12px;
+  color: var(--muted);
+}
+.query-plan-view dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 10px 0;
+}
+.query-plan-view dl > div {
+  display: flex;
+  gap: 8px;
+}
+.query-plan-view dt {
+  color: var(--muted);
+}
+.query-plan-view dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.plan-raw {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}

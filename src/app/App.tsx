@@ -598,7 +598,7 @@ export function App() {
         });
     }
   }
-  async function runSql(sql?: string) {
+  async function runSql(sql?: string, explain = false) {
     const active = references.current.current;
     if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
     const selected = querySessionForTab(active, useStudio.getState().sessions);
@@ -607,10 +607,13 @@ export function App() {
       return;
     }
     try {
-      const plan = await client.call<PreparedPlan>("prepare_execution", {
-        sessionId: selected.id,
-        sql: sql ?? editor.current?.selection() ?? active.sql,
-      });
+      const plan = await client.call<PreparedPlan>(
+        explain ? "prepare_explain" : "prepare_execution",
+        {
+          sessionId: selected.id,
+          sql: sql ?? editor.current?.selection() ?? active.sql,
+        },
+      );
       const target = state.bootstrap?.profiles.find((p) => p.id === active.connectionId);
       if (plan.requiresApproval)
         setDialog({ kind: "review", plan, tabId: active.id, profile: target });
@@ -1035,6 +1038,7 @@ export function App() {
                 editorRef={editor}
                 gridRef={grid}
                 onRun={(sql) => void runSql(sql)}
+                onExplain={(sql) => void runSql(sql, true)}
                 onReview={() => void reviewEdits()}
                 onConfirm={(title, description, action) =>
                   setDialog({ kind: "confirm", title, description, action })

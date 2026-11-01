@@ -124,6 +124,10 @@ async fn rpc(
                 &arg::<String>(&args, "sessionId")?,
                 &arg::<String>(&args, "sql")?
             )?),
+            "prepare_explain" => json!(studio.prepare_explain(
+                &arg::<String>(&args, "sessionId")?,
+                &arg::<String>(&args, "sql")?
+            )?),
             "authorize_plan" => json!(studio.authorize(
                 &arg::<String>(&args, "planId")?,
                 arg::<Option<String>>(&args, "passphrase")?.as_deref(),

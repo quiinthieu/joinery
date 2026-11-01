@@ -25,6 +25,7 @@
     "allow-disconnect",
     "allow-set-passphrase",
     "allow-prepare-execution",
+    "allow-prepare-explain",
     "allow-authorize-plan",
     "allow-execute-plan",
     "allow-cancel-run",

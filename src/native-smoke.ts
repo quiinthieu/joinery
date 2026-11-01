@@ -39,6 +39,7 @@ export async function runNativeSmoke() {
     await useStudio.getState().initialize();
     assert(useStudio.getState().bootstrap, "Native bootstrap failed");
     for (const [command, args] of [
+      ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1" }],
       [
         "completion_catalog",
         {

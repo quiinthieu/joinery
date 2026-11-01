@@ -19,6 +19,7 @@ fn main() {
             "disconnect",
             "set_passphrase",
             "prepare_execution",
+            "prepare_explain",
             "authorize_plan",
             "execute_plan",
             "cancel_run",

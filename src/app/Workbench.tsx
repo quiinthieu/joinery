@@ -72,6 +72,7 @@ import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connectio
 import { RedisTools } from "../features/redis/RedisTools";
 import { resultCache } from "../data/result-cache";
 import { tabNavigation } from "../components/ui/tabs";
+import { QueryPlanView, isQueryPlanResult } from "../features/studio/QueryPlanView";
 
 const SqlEditor = lazy(() =>
   import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
@@ -85,6 +86,7 @@ interface Props {
   editorRef: RefObject<EditorHandle>;
   gridRef: RefObject<DatabaseGridHandle>;
   onRun(sql?: string): void;
+  onExplain(sql: string): void;
   onReview(): void;
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
@@ -108,6 +110,7 @@ export function Workbench({
   editorRef,
   gridRef,
   onRun,
+  onExplain,
   onReview,
   onConfirm,
   onSelect,
@@ -126,6 +129,7 @@ export function Workbench({
   const state = useStudio(),
     [editorSize, setEditorSize] = useState(290),
     [runningTime, setRunningTime] = useState(0),
+    [planResultId, setPlanResultId] = useState<string | null>(null),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
     [tableDetailsState, setTableDetailsState] = useState<{
@@ -701,6 +705,17 @@ export function Workbench({
                   Run<kbd>⌘ ↵</kbd>
                 </button>
               )}
+              {profile && ["postgres", "mysql"].includes(profile.engine) && (
+                <button
+                  className="button ghost small"
+                  disabled={running || !session}
+                  title="Estimate the selected query or current statement without ANALYZE"
+                  onClick={() => onExplain(editorRef.current?.selection() ?? tab.sql)}
+                >
+                  <Gauge size={13} />
+                  Explain
+                </button>
+              )}
               <button
                 className="icon-button run-all"
                 title="Run all statements · ⇧⌘↵"
@@ -880,6 +895,15 @@ export function Workbench({
           <div className="table-view-actions">
             {result && result.columns.length > 0 && (
               <>
+                {isQueryPlanResult(result) && (
+                  <button
+                    className="button ghost small"
+                    aria-pressed={planResultId === result.id}
+                    onClick={() => setPlanResultId(planResultId === result.id ? null : result.id)}
+                  >
+                    {planResultId === result.id ? "Data grid" : "View plan"}
+                  </button>
+                )}
                 <CopyAsMenu gridRef={gridRef} disabled={running} />
                 <button
                   type="button"
@@ -1125,6 +1149,11 @@ export function Workbench({
               error={activeTableDetailsError}
             />
           </div>
+        ) : tab.kind === "query" &&
+          result &&
+          isQueryPlanResult(result) &&
+          planResultId === result.id ? (
+          <QueryPlanView key={result.id} result={result} />
         ) : tab.kind === "query" && !result ? (
           <div className="results-empty">
             <Table2 size={27} />
