@@ -1182,8 +1182,9 @@ typed-parameter `prepare_execution` signature before qualification.
 
 The first R6 slice is implemented in `fad0341` on `feat/estimated-query-plans`
 from `a0ba1a6`. [query-plans.md](query-plans.md) records its bounded scope.
-It is local, unmerged, unpublished and not installed. Executing ANALYZE,
-comparison, richer timing and Snowflake plans remain open.
+It is local, unmerged, unpublished and not installed. This first slice left
+executing ANALYZE, comparison, richer timing and Snowflake plans open; the
+PostgreSQL actual-plan follow-up below supersedes its ANALYZE status.
 
 | Outcome | Evidence |
 |---|---|
@@ -1200,3 +1201,33 @@ cold visible startup, total idle memory or display FPS. Disposable Compose
 project `joinery-assess-r6` uses isolated PostgreSQL port 55433 and was removed
 after the browser checks. No production connections or automatic SQL replay
 were introduced.
+
+## R6 PostgreSQL actual plans (1 November 2026)
+
+Code `fa1ff17` follows the estimated-plan slice on `feat/estimated-query-plans`.
+It adds PostgreSQL **Analyze**, with explicit one-use Rust review even on Silent
+profiles, exact generated SQL and an execution warning. It also fixes a
+reproduced safety regression: sqlparser stores parenthesized ANALYZE options
+separately from the plain EXPLAIN analyze flag. Recognized executing forms now
+require review; explicitly disabled analysis stays non-executing. ReadOnly
+denial and production passphrases remain enforced.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 126 frontend tests (24 files), 132 standard Rust tests (111 core + 21 others), formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Two ignored PostgreSQL fixture tests (`actual_plan_*`) executed against disposable PostgreSQL 18: no unapproved execution, exact reviewed SQL, temporary session state, single-use/stale approval, disconnect invalidation, error recovery and cancellation retirement |
+| Passed | Nine browser workflows on PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4: five `query-plans.spec.ts` flows plus four `consoles-files.spec.ts` regressions; review cancellation sends no execute request, accepted analysis leaves editor text intact and exposes actual metrics, direct parenthesized SQL requires review, ReadOnly rejects analysis, and errors/cancellation retain session policy |
+| Passed | Clean-source `fa1ff1733abff10d16fc0b440b0c861e7529e66a` macOS production bundle with strict ad-hoc signature verification; executable 20.92 MiB, SHA-256 `2a707a9c04b1e415c45bab4da286f18d80b85625d463dee6749e96a7489ec3b8` |
+| Passed | Clean-source hidden native build and three runs / 30 cleanup cycles; actual and estimated `prepare_explain` IPC reach Rust session guards. Native elapsed `6,026 / 3,189 / 3,177 ms`; main-process peak RSS `106.09–106.69 MiB`; fixture SHA-256 `7d11daed35b68c3e342df65c1721a74637f402f57eaca060c2de571f2a1df8a6` |
+| Environment | Node 26.7.0 validation uses `NODE_OPTIONS=--no-experimental-webstorage`; no application workaround. A browser run was invalidated by a Vite full reload while source files were changing; the final nine-flow run held files fixed and passed |
+| Not executed | Full ignored Rust integration/full browser suites; independent complete R5 rerun; installed revision; production/live Snowflake accounts; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative total-memory/cold-start/FPS qualification |
+
+Native evidence at `.cache/native-smoke/runs.json` is hidden, synthetic and
+main-process-only. It does not qualify total idle memory, visible cold startup
+or display FPS. Fixtures use disposable Compose project `joinery-assess-analyze`
+with PostgreSQL on port 55433; it was removed after browser verification.
+No production access or automatic SQL replay.
+The application candidate is local, unmerged, unpublished and not installed.
+R6 remains partial; [next slices](implementation-roadmap.md#r6-next-slices)
+cover comparison, metrics and independent engine adapters. The separate R5
+worktree and its four unrelated documentation edits remain intact.

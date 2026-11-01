@@ -233,23 +233,38 @@ relevant browser workflows (three live-engine plan flows and four session/file
 regressions), macOS bundling and three hidden native runs / 30 cleanup cycles.
 This branch does not contain R5. It is unmerged and unreleased; R6 is partial.
 
-### R6 slice 2: explicitly reviewed actual plans
+### R6 slice 2: reviewed PostgreSQL actual plans (local `fa1ff17`)
 
-1. Start with PostgreSQL single-query `EXPLAIN (ANALYZE, FORMAT JSON)`. The UI
-   must state that analysis executes the query. Require one-use review even for
-   a Silent local profile; production passphrases and read-only restrictions
-   remain enforced in Rust. Keep the exact reviewed SQL in the immutable plan.
-2. Use the existing owned-session execution/cancellation path. Exercise denied
-   approval, stale/disconnected sessions, error recovery and cancellation on
-   disposable fixtures. Never automatically replay or run analysis on editor
-   changes. Display estimates versus actuals, loops and server milliseconds.
-3. Add MySQL and MariaDB as separate capability/version adapters after proving
-   their syntax and output contracts. JSON actual-plan support must not be
-   assumed interchangeable. Snowflake plans remain a separate read-only slice.
-4. Follow with bounded in-memory plan snapshots/comparison, explicit compatible
-   engine/query identity, unknown-field raw access and documented retention
-   limits. Add queue, first-row, client elapsed and server metrics with distinct
-   units and scope; do not derive one metric from another.
+PostgreSQL single-query `EXPLAIN (ANALYZE, FORMAT JSON)` is implemented with
+mandatory Rust review even on Silent profiles. Review shows exact SQL and an
+execution warning; ReadOnly denial and production passphrases remain enforced.
+Recognized direct SQL and parenthesized ANALYZE options hit the same gate.
+Owned-session execution, cancellation and one-use approval are unchanged.
+
+Standard validation passes 126 frontend and 132 Rust tests. Two PostgreSQL
+fixtures prove denied analysis never executes, temporary state remains attached,
+approvals expire and are single use, disconnect invalidates plans, and errors
+and cancellation recover safely. Five plan browser flows and four console/file
+regressions pass. Clean-source macOS bundle and three hidden native runs /
+30 cleanup cycles pass. Full ignored integration/full browser suites were not
+rerun. R5 integration, merge, application publication and installation remain open.
+
+### R6 next slices
+
+1. Add bounded in-memory plan snapshots/comparison from already retained
+   results. Capture only by explicit action; never rerun SQL to compare.
+   Bind snapshots to engine, connection/session context and exact query identity;
+   reject or clearly separate incompatible plans. Cap snapshot count and total
+   bytes, document eviction/close behavior, preserve unknown raw fields and exact
+   numeric text, and keep optimizer costs separate from milliseconds. Exercise
+   mismatch, eviction, malformed/oversized input and session/result cleanup.
+2. Add queue, first-row, client elapsed and server metrics with distinct units
+   and scope. Do not derive one metric from another or present per-loop values
+   as totals. Test failed/cancelled/empty runs and missing server measurements.
+3. Add MySQL and MariaDB actual plans as independent capability/version adapters
+   after proving syntax, execution semantics and output contracts. Do not assume
+   JSON actual-plan compatibility. Require explicit review and fixture evidence
+   per adapter. Snowflake plans remain a separate read-only slice.
 
 R7 schema/design and R8 remaining productivity follow these R6 slices. Release,
 platform, security, accessibility, recovery and performance qualification run
