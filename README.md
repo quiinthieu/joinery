@@ -199,7 +199,11 @@ rebound sources are rejected; running consoles cannot receive DDL.
 edits in supported SELECT statements. Explicit Apply preserves comments, other
 statements and nested shadowing; one undo restores the original SQL. Collisions,
 capture, stale documents/contexts and unsupported shapes are rejected. This is
-local text refactoring; database-object renaming remains unavailable.
+local text refactoring; database-object renaming remains unavailable. JOIN
+conditions now follow their actual operands: earlier ON clauses retain correlated
+outer references, comma groups stay separate, and nested JOIN association is
+preserved. Later local aliases keep their own references. See
+[ordered JOIN evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).
 
 Recorded R5 commit `bb77b0f` remains readable; its former worktree/branch are
 absent and its former uncommitted documentation was not recovered. Full

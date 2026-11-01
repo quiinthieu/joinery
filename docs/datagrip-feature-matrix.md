@@ -871,3 +871,22 @@ browser/fixture/normal-bundle evidence retains its revisions. Ordered JOIN
 visibility, bounded CTE rename, semantics/templates and remaining R5/R6/R7/R8 are
 next. Local, unmerged, unreleased and not installed; platform/external/native UI/
 accessibility/performance and delivery gates remain open.
+
+### Ordered JOIN alias rename — local `1edc2d7`
+
+E10 remains partial. Rename now follows earlier-ON correlation, comma precedence,
+nested JOIN association and later local shadowing, with the same explicit
+preview/Apply, capture simulation, context guards and one-step undo. Completed
+CROSS/NATURAL/USING joins and MySQL CROSS conditions retain their scopes;
+parenthesized joins, LATERAL, relation-column lists and USING-column aliases
+remain unsupported. This is SQL text refactoring; no database object is renamed.
+
+Validation passes 290 frontend / 156 standard Rust and twelve focused
+PostgreSQL/MySQL/MariaDB browser flows. Three new flows each compare three
+correlated query shapes before/after explicit rename; rename itself does not
+prepare/execute SQL. Native baseline evidence belongs to `e052626`, inspector
+fixture evidence to `34c001a`, the full 86-flow browser run to `db5cd1b`, and all
+66 ignored fixtures / normal ad-hoc bundle to `b80b6c7`; none was rerun here.
+Snowflake has local dialect tests only. Bounded CTE rename is next; R5/R6/R7/R8
+and qualification/delivery gates remain open. Local, unmerged, unreleased and
+not installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).

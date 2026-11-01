@@ -2021,3 +2021,44 @@ removed; user services remain running. Fetched `origin/main` is `a0ba1a6`.
 Release metadata was not refreshed in this slice; preview.15 remains last verified.
 Local, unmerged, unreleased and not installed; application push/merge/release/
 installation remain separate authorized steps.
+
+## R5 follow-up: ordered JOIN alias visibility (2 November 2026)
+
+Code `1edc2d748d7fcac4bf59875249cbfecee82a1ce4`, tree `6b753a39e325f072a004cbe7b5648df945276be1`, removes the blanket rejection
+of nested multi-relation queries that shadow an outer alias. Each ON clause now
+owns the actual JOIN operands, including its correlated expression/subquery
+children. Later aliases cannot hide earlier outer references; earlier comma
+groups stay outside another JOIN's condition. A pending-JOIN stack preserves
+`a JOIN b JOIN c ON ... ON ...` association. Completed CROSS/NATURAL/USING joins
+retain their operands, and MySQL CROSS JOIN ON/USING conditions remain supported.
+SELECT/WHERE/ORDER clauses retain the complete query scope. Proposed-name capture
+checks use these same environments; later local aliases keep their own uses.
+
+The existing explicit preview/Apply, dialect quoting, complete edit list,
+identifier/statement/token/nesting/edit limits, stale document/session/context
+rejection and isolated one-step undo remain in force. Parenthesized joined tables,
+LATERAL, DML/set operations, table functions, relation-column lists and unsupported
+modifiers remain withheld; PostgreSQL USING-column aliases are explicitly rejected.
+This remains a bounded lexical analysis, not a full SQL semantic validator.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Ten new failures on the previous source cover earlier-ON shadowing, comma-group visibility, nested JOIN association and unsupported USING-column aliases |
+| Passed | `pnpm validate`: 290 frontend tests / 35 files, 156 standard Rust tests, contracts, types, frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused unit | Thirteen additional cases (91 navigation tests total) cover outer/later-local rename, capture/unbound qualifiers, comma groups, nested JOINs, completed CROSS/NATURAL/USING operands, MySQL CROSS conditions and local Snowflake dialect quoting/case |
+| Browser | Twelve focused PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4 flows pass: all nine previous rename/navigation flows plus three new ordered-JOIN workflows. Each new workflow checks three query shapes, explicit before/after test reads returning one row, exact preserved edits, capture rejection, zero execution requests during rename, and undo. No page errors |
+| Timing regression | The first PostgreSQL browser run opened preview after result arrival but before final query/session events; that legitimate context transition invalidated it. The test now waits for completed-query UI and refreshed context. The final twelve-flow run passes; staleness guards remain enabled |
+| Prior evidence | Native macOS hidden baseline belongs to `e052626`: three fresh processes / 30 cleanup cycles, synthetic IPC/worker/cleanup only. Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc bundle: `b80b6c7`. None was rerun or relabeled as current qualification |
+| Open | Bounded CTE rename, semantic inspections/templates and remaining R5/R6/R7/R8; observed Snowflake identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates |
+| Next | Prove declaration/relation scope for bounded non-recursive CTE rename, including ordered WITH entries, nested shadowing, implicit qualifiers and proposed-name capture, with the same complete preview/context/undo guarantees |
+
+Logs: `.cache/r5-ordered-join-{before,unit,validate,browser,fixtures}.log`.
+Direct disposable-engine checks independently confirmed the earlier-ON,
+comma-group, nested JOIN and completed CROSS association used by the tests.
+Reference semantics: [PostgreSQL SELECT](https://www.postgresql.org/docs/18/sql-select.html)
+and [MySQL 8.4 JOIN](https://dev.mysql.com/doc/refman/8.4/en/join.html).
+Snowflake remains local dialect evidence only. No external account was queried.
+Fetched `origin/main` is still `a0ba1a6`; preview.15 remains the last verified
+published application release, without a fresh release metadata check here.
+Local, unmerged, unreleased and not installed. No application push, merge,
+release or installation occurred.
