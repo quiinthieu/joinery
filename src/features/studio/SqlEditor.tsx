@@ -81,7 +81,11 @@ interface Props {
   onChange(value: string): void;
   onRun(sql: string, fromUtf16?: number): void;
   onOpenParameters?(slots: QueryParamSlot[]): void;
-  onOpenObject?(object: DatabaseObjectRef, highlightedColumn?: string): void;
+  onOpenObject?(
+    object: DatabaseObjectRef,
+    highlightedColumn?: string,
+    catalogRevision?: string,
+  ): void;
   error?: AppError | null;
   errorOrigin?: SqlExecutionOrigin;
   engine: EngineKind;
@@ -433,9 +437,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     }
     clearNavigation();
     if (symbol.kind === "column") {
-      latest.current.onOpenObject(symbol.object, symbol.name);
+      latest.current.onOpenObject(symbol.object, symbol.name, liveRef.current?.revision);
     } else {
-      latest.current.onOpenObject(symbol.object);
+      latest.current.onOpenObject(symbol.object, undefined, liveRef.current?.revision);
     }
   };
 
@@ -986,7 +990,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             props.onOpenObject
               ? (object, col) => {
                   clearNavigation();
-                  props.onOpenObject?.(object, col);
+                  props.onOpenObject?.(object, col, liveRef.current?.revision);
                 }
               : undefined
           }

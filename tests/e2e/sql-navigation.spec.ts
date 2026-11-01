@@ -74,7 +74,9 @@ for (const [engine, port] of [
       await expect(usages.locator(".sql-nav-loc")).toHaveCount(3);
       await page.keyboard.press("Escape");
       await editor.press("F12");
-      expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("order_key");
+      await expect
+        .poll(() => page.evaluate(() => window.getSelection()?.toString()))
+        .toBe("order_key");
       await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(1);
     }
     await placeCaret(editor, `SELECT s.|id FROM ${table} s WHERE s.id > 0; -- 🧪 日本語`);
@@ -91,7 +93,7 @@ for (const [engine, port] of [
       .getByRole("button", { name: /Ln 1, Col/ })
       .last()
       .click();
-    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("id");
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("id");
     await page.keyboard.press("Escape");
     await editor.press("F12");
     await expect(page.locator('tr[data-highlighted="true"]')).toContainText("id");
@@ -100,10 +102,10 @@ for (const [engine, port] of [
 
     await placeCaret(editor, `WITH recent AS (SELECT id FROM ${table}) SELECT * FROM |recent;`);
     await editor.press("F12");
-    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("recent");
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("recent");
     await placeCaret(editor, `SELECT |s.id FROM ${table} AS s;`);
     await editor.press("F12");
-    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("s");
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("s");
 
     await placeCaret(editor, `SELECT * FROM |${table};`);
     await page.getByRole("button", { name: "Quick SQL documentation", exact: true }).click();
@@ -130,11 +132,21 @@ test("PostgreSQL ignores stale schema/details replies and reports denied metadat
   const saw = new Promise<void>((resolve) => {
     received = resolve;
   });
+  const pendingSchemas: Promise<void>[] = [];
+  let delayingSchemas = true;
   await page.route("**/rpc/completion_schema", async (route) => {
-    const response = await route.fetch();
-    received();
-    await held;
-    await route.fulfill({ response });
+    if (!delayingSchemas) {
+      await route.continue();
+      return;
+    }
+    const finished = (async () => {
+      const response = await route.fetch();
+      received();
+      await held;
+      await route.fulfill({ response });
+    })();
+    pendingSchemas.push(finished);
+    await finished;
   });
   await placeCaret(
     editor,
@@ -143,7 +155,9 @@ test("PostgreSQL ignores stale schema/details replies and reports denied metadat
   await editor.press("F12");
   await saw;
   await editor.fill("SELECT 42;");
+  delayingSchemas = false;
   release();
+  await Promise.all(pendingSchemas);
   await page.unrouteAll({ behavior: "wait" });
   await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(1);
   await expect(page.getByRole("region", { name: "Quick SQL documentation" })).toHaveCount(0);
@@ -234,7 +248,7 @@ test("PostgreSQL ignores stale schema/details replies and reports denied metadat
   expect(errors).toEqual([]);
 });
 
-test("isolated console docs stay on its session and do not open primary-session structure", async ({
+test("isolated console Structure stays on its session without browsing primary data", async ({
   page,
 }) => {
   await connect(page);
@@ -255,11 +269,61 @@ test("isolated console docs stay on its session and do not open primary-session 
   await expect(docs).toContainText("bigint");
   await page.keyboard.press("Escape");
   await editor.press("F12");
-  await expect(
-    page.getByRole("status").filter({
-      hasText: "Object structure navigation is unavailable for this query session",
-    }),
-  ).toBeVisible();
-  await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(1);
+  await expect(page.locator('tr[data-highlighted="true"]')).toContainText("id");
+  await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(2);
   expect(reads).toEqual([]);
+});
+
+test("two isolated Structure inspectors remain separate from the primary console", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  const executions: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("request", (r) => {
+    if (/\/rpc\/(browse_table|prepare_execution|execute_plan)$/.test(r.url()))
+      executions.push(r.url());
+  });
+  await connect(page);
+  const primaryTab = page.locator('.workspace-tabs [role="tab"][aria-selected="true"]');
+  const primaryId = (await primaryTab.getAttribute("id"))!;
+  const ids: string[] = [];
+  const inspectorIds: string[] = [];
+  for (let i = 0; i < 2; i++) {
+    await page.getByRole("button", { name: "New query tab" }).click();
+    await page.getByRole("button", { name: "New isolated session", exact: true }).click();
+    await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator(".completion-context")).toContainText("joinery");
+    const sessionId = await page.getByLabel("Console session", { exact: true }).inputValue();
+    ids.push(sessionId);
+    const editor = page.getByRole("textbox", { name: "SQL editor" });
+    await placeCaret(editor, "SELECT o.|id FROM public.orders o;");
+    const details = page.waitForRequest((r) => r.url().endsWith("/rpc/object_details"));
+    await editor.press("F12");
+    expect((await details).postDataJSON()).toMatchObject({ sessionId });
+    await expect(page.locator('tr[data-highlighted="true"]')).toContainText("id");
+    inspectorIds.push(
+      (await page
+        .locator('.workspace-tabs [role="tab"][aria-selected="true"]')
+        .getAttribute("id"))!,
+    );
+    await page.getByRole("button", { name: "DDL", exact: true }).click();
+    await expect(page.locator(".ddl-panel")).toContainText("CREATE TABLE");
+    await expect(page.getByRole("button", { name: "Open in query" })).toHaveCount(0);
+  }
+  expect(ids[0]).not.toBe(ids[1]);
+  expect(inspectorIds[0]).not.toBe(inspectorIds[1]);
+  await page.locator(`#${primaryId}`).click();
+  const editor = page.getByRole("textbox", { name: "SQL editor" });
+  await expect(page.locator(".query-session")).toContainText("Shared session");
+  await placeCaret(editor, "SELECT o.|id FROM public.orders o;");
+  const details = page.waitForRequest((r) => r.url().endsWith("/rpc/object_details"));
+  await editor.press("F12");
+  expect(ids).not.toContain((await details).postDataJSON().sessionId);
+  await expect(page.locator('tr[data-highlighted="true"]')).toContainText("id");
+  await expect(page.locator('.workspace-tabs [role="tab"]')).toHaveCount(6);
+  expect(executions).toEqual([]);
+  expect(errors).toEqual([]);
 });

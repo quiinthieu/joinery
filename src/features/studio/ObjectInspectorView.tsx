@@ -219,20 +219,24 @@ export function DependencySection({
 export function ObjectInspectorView({
   tab,
   session,
+  providedDetails,
 }: {
+  providedDetails?: ObjectDetails;
   tab: StudioTab;
   profile?: ConnectionProfile;
   session?: SessionInfo;
 }) {
-  const [details, setDetails] = useState<ObjectDetails | null>(null),
+  const [loadedDetails, setDetails] = useState<ObjectDetails | null>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState<string | null>(null);
 
+  const details = providedDetails ?? loadedDetails;
   const target = tab.object;
   const sessionId = session?.id ?? null;
   const supported = Boolean(session?.capabilities.objectExplorer);
 
   useEffect(() => {
+    if (providedDetails) return;
     if (!target || !sessionId || !supported) {
       setDetails(null);
       setError(null);
@@ -260,6 +264,7 @@ export function ObjectInspectorView({
       active = false;
     };
   }, [
+    providedDetails,
     sessionId,
     supported,
     tab.id,

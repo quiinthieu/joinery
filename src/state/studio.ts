@@ -64,7 +64,14 @@ export interface TablePageState {
   result: ResultInfo;
   after: (string | null)[] | null;
 }
+export interface MetadataOrigin {
+  tabId: string;
+  sessionId: string;
+  contextRevision: number;
+  catalogRevision?: string;
+}
 export interface StudioTab {
+  metadataOrigin?: MetadataOrigin;
   errorOrigin?: SqlExecutionOrigin;
   id: string;
   kind: TabKind;
@@ -211,6 +218,12 @@ interface StudioState {
     preferredView?: StudioTab["view"],
     highlightedColumn?: string | null,
   ): Promise<void>;
+  openSessionObject(
+    tabId: string,
+    object: DatabaseObjectRef,
+    highlightedColumn?: string,
+    catalogRevision?: string,
+  ): void;
   /** Applies a new sort/filter or requests review for non-Read raw SQL clauses. */
   setTableQuery(
     id: string,
@@ -289,6 +302,7 @@ export function bookmarkTargetForTab(
   tab: StudioTab,
   catalog: Readonly<Record<string, readonly TableInfo[] | undefined>>,
 ): { target: BookmarkTarget; defaultLabel: string } | null {
+  if (tab.metadataOrigin) return null;
   if (tab.kind === "table" && tab.connectionId && tab.table) {
     const match = catalog[tab.connectionId]?.find(
       (entry) => entry.table.schema === tab.table!.schema && entry.table.name === tab.table!.name,
@@ -330,9 +344,25 @@ export function bookmarkTargetForTab(
   return null;
 }
 export function querySessionForTab(tab: StudioTab, sessions: Record<string, SessionInfo>) {
+  if (tab.metadataOrigin) return undefined;
   if (tab.kind === "query" && tab.querySession)
     return tab.querySessionClosed ? undefined : tab.querySession;
   return tab.connectionId ? sessions[tab.connectionId] : undefined;
+}
+/** Metadata never adopts another session after its source console is closed or rebound. */
+export function metadataSessionForTab(
+  tab: StudioTab,
+  state: Pick<StudioState, "tabs" | "sessions" | "sessionContextRevision">,
+): SessionInfo | undefined {
+  const origin = tab.metadataOrigin;
+  if (!origin) return undefined;
+  const console = state.tabs.find((entry) => entry.id === origin.tabId && entry.kind === "query");
+  const session = console && querySessionForTab(console, state.sessions);
+  return session?.id === origin.sessionId &&
+    session.connectionId === tab.connectionId &&
+    (state.sessionContextRevision[session.id] ?? 0) === origin.contextRevision
+    ? session
+    : undefined;
 }
 export function isLastOwnerOfSecondarySession(tabs: readonly StudioTab[], tab: StudioTab): boolean {
   if (!tab.querySession || tab.querySessionClosed) return false;
@@ -1181,6 +1211,54 @@ export const useStudio = create<StudioState>((set, get) => ({
       target: { kind: "table", connectionId, table },
     });
     await get().refreshTable(next.id);
+  },
+  openSessionObject(tabId, object, highlightedColumn, catalogRevision) {
+    const state = get();
+    const source = state.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    const session = source && querySessionForTab(source, state.sessions);
+    if (!source?.connectionId || !session || session.connectionId !== source.connectionId) return;
+    const origin: MetadataOrigin = {
+      tabId,
+      sessionId: session.id,
+      contextRevision: state.sessionContextRevision[session.id] ?? 0,
+      catalogRevision,
+    };
+    const existing = state.tabs.find(
+      (entry) =>
+        entry.kind === "object" &&
+        entry.connectionId === source.connectionId &&
+        entry.object &&
+        sameDatabaseObject(entry.object, object) &&
+        entry.metadataOrigin?.tabId === tabId &&
+        entry.metadataOrigin.sessionId === session.id &&
+        entry.metadataOrigin.contextRevision === origin.contextRevision &&
+        entry.metadataOrigin.catalogRevision === catalogRevision,
+    );
+    if (existing) {
+      set({
+        activeTabId: existing.id,
+        tabs: state.tabs.map((entry) =>
+          entry.id === existing.id
+            ? {
+                ...entry,
+                view: "structure",
+                highlightedColumn: highlightedColumn ?? null,
+                revision: entry.revision + 1,
+              }
+            : entry,
+        ),
+      });
+      return;
+    }
+    const label =
+      state.sessionPool[source.connectionId]?.find((entry) => entry.info.id === session.id)
+        ?.label ?? "Shared session";
+    const next = tab("object", `${objectTabTitle(object)} · ${label}`, source.connectionId);
+    next.object = object;
+    next.view = "structure";
+    next.highlightedColumn = highlightedColumn ?? null;
+    next.metadataOrigin = origin;
+    set({ tabs: [...state.tabs, next], activeTabId: next.id });
   },
   async openObject(connectionId, object, preferredView, highlightedColumn) {
     if (isTabularObjectKind(object.kind)) {

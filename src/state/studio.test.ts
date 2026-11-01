@@ -2,7 +2,13 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
 import type { PreparedPlan, SessionInfo, TablePage, TableSchema } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
-import { useStudio, querySessionForTab, isTabFileDirty, MAX_RECENT_LOCATIONS } from "./studio";
+import {
+  useStudio,
+  metadataSessionForTab,
+  querySessionForTab,
+  isTabFileDirty,
+  MAX_RECENT_LOCATIONS,
+} from "./studio";
 import { workspaceSnapshot } from "./workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
@@ -960,4 +966,51 @@ test("execution timings retain measured zero, reject foreign/stale runs and stay
   state.bindQuerySession(id, session);
   expect(useStudio.getState().tabs[0].runMetrics).toBeUndefined();
   expect(useStudio.getState().tabs[0].clientElapsedMs).toBeUndefined();
+});
+
+test("console Structure tabs keep their session and never browse table data", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  const object = { schema: "public", name: "orders", kind: "table" as const, identity: null };
+  state.openSessionObject(id, object, "id");
+  let inspector = useStudio.getState().tabs.at(-1)!;
+  expect(inspector.kind).toBe("object");
+  expect(inspector.metadataOrigin).toEqual({
+    tabId: id,
+    sessionId: "isolated",
+    contextRevision: 0,
+  });
+  expect(inspector.highlightedColumn).toBe("id");
+  expect(client.call).not.toHaveBeenCalled();
+  state.openSessionObject(id, object, "customer_id");
+  expect(useStudio.getState().tabs).toHaveLength(2);
+  inspector = useStudio.getState().tabs.at(-1)!;
+  expect(inspector.highlightedColumn).toBe("customer_id");
+  useStudio.setState({ sessionContextRevision: { isolated: 1 } });
+  state.openSessionObject(id, object);
+  expect(useStudio.getState().tabs).toHaveLength(3);
+});
+
+test("metadata loses its session after context changes, rebinding, or source closure", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  state.openSessionObject(
+    id,
+    { schema: "public", name: "orders", kind: "table", identity: null },
+    "id",
+    "observed",
+  );
+  const inspector = useStudio.getState().tabs.at(-1)!;
+  expect(metadataSessionForTab(inspector, useStudio.getState())?.id).toBe("isolated");
+  expect(querySessionForTab(inspector, state.sessions)).toBeUndefined();
+  useStudio.setState({ sessionContextRevision: { isolated: 1 } });
+  expect(metadataSessionForTab(inspector, useStudio.getState())).toBeUndefined();
+  useStudio.setState({ sessionContextRevision: {} });
+  state.attachQuerySession(id, null);
+  expect(metadataSessionForTab(inspector, useStudio.getState())).toBeUndefined();
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  state.closeTab(id);
+  expect(metadataSessionForTab(inspector, useStudio.getState())).toBeUndefined();
 });

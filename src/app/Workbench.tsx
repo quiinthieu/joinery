@@ -70,6 +70,7 @@ import {
   ObjectInspectorView,
   ObjectKindGlyph,
 } from "../features/studio/ObjectInspectorView";
+import { SessionStructureView } from "../features/studio/SessionStructureView";
 import { StructureView } from "../features/studio/UtilityViews";
 import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
@@ -831,16 +832,9 @@ export function Workbench({
                 onRun={onRun}
                 onOpenParameters={onOpenParameters}
                 onOpenObject={
-                  (tab.connectionId ?? profile?.id) &&
-                  session &&
-                  session.id === state.sessions[(tab.connectionId ?? profile?.id)!]?.id
-                    ? (object, highlightedColumn) =>
-                        void state.openObject(
-                          (tab.connectionId ?? profile?.id)!,
-                          object,
-                          "structure",
-                          highlightedColumn ?? null,
-                        )
+                  session && tab.connectionId
+                    ? (object, highlightedColumn, catalogRevision) =>
+                        state.openSessionObject(tab.id, object, highlightedColumn, catalogRevision)
                     : undefined
                 }
                 error={tab.error}
@@ -1216,7 +1210,11 @@ export function Workbench({
         aria-labelledby={tab.kind === "query" && result ? `result-tab-${result.id}` : undefined}
       >
         {tab.kind === "object" ? (
-          <ObjectInspectorView key={tab.id} tab={tab} profile={profile} session={session} />
+          tab.metadataOrigin ? (
+            <SessionStructureView key={tab.id} tab={tab} />
+          ) : (
+            <ObjectInspectorView key={tab.id} tab={tab} profile={profile} session={session} />
+          )
         ) : tab.kind === "table" && tab.view === "structure" ? (
           <StructureView
             schema={tab.schema}

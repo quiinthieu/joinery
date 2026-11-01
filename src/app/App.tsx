@@ -71,6 +71,7 @@ import {
   useStudio,
   beginEventBatch,
   querySessionForTab,
+  metadataSessionForTab,
   isLastOwnerOfSecondarySession,
   sessionHasOpenTransaction,
   isTabFileDirty,
@@ -168,8 +169,9 @@ export function App() {
   const profile = state.bootstrap?.profiles.find(
     (p) => p.id === (current?.connectionId ?? state.selectedConnectionId),
   );
-  const session =
-    current?.kind === "query"
+  const session = current?.metadataOrigin
+    ? metadataSessionForTab(current, state)
+    : current?.kind === "query"
       ? querySessionForTab(current, state.sessions)
       : profile
         ? state.sessions[profile.id]
