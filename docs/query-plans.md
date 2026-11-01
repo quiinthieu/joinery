@@ -297,3 +297,13 @@ the clean-source native synthetic baseline passes three processes / 30 cycles.
 The new output interactions are browser-tested. Prior full plan/browser/fixture/
 normal-bundle qualification retains its recorded revisions; no new external or
 release qualification is implied. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-named-query-outputs-2-november-2026).
+
+Console-bound Structure follow-up `fe518fb` preserves R6 authorization, immutable
+bindings and exact selected-source origins. Its read-only inspectors use the
+originating console/session/context and never execute SQL or browse table data.
+Validation passes 237 frontend / 156 Rust and six navigation browser flows; the
+clean-source hidden native baseline passes three processes / 30 cycles. New
+inspector interactions remain browser-tested. Prior broad plan/browser/fixture/
+normal-bundle evidence retains its exact revisions. Context-preserving metadata
+links and bounded editor refactoring are next; Snowflake capture remains gated
+on observed identity and explicit external qualification. See [current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).

@@ -187,8 +187,11 @@ The prior combined candidate passed 66 ignored SQL/Redis/SSH fixtures and a
 normal ad-hoc macOS bundle build. Remaining semantic
 editor gaps and release/platform/external qualification are next.
 Symbol navigation remains partial: ambiguous names and routine overloads are
-not guessed, and secondary consoles use quick docs without primary-session
-Structure navigation.
+not guessed. Object/column jumps now open read-only Structure/DDL inspectors
+bound to the originating console session and observed context, including isolated
+consoles. Context changes, source closure and reconnect require navigating again;
+inspector dependency links and opening DDL in a console remain withheld until
+they can preserve that origin.
 Recorded R5 commit `bb77b0f` remains readable; its former worktree/branch are
 absent and its former uncommitted documentation was not recovered. Full
 DataGrip replacement still needs the remaining

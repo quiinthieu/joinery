@@ -140,3 +140,22 @@ Branch `feat/consoles-sessions-files` (local, unmerged) extends `M06-Q` across
 - **Remaining boundaries**: Savepoint UI, persistent live-session or open-transaction
   recovery across app restarts, and Snowflake/Redis interactive transactions
   remain intentionally unsupported.
+
+## R5 console metadata continuation — local `fe518fb`
+
+Object/column navigation from primary and isolated SQL consoles opens read-only
+Structure/DDL inspectors carrying the source tab, session, connection and observed
+catalog revision. These tabs do not own a session. Closing/rebinding the source,
+disconnecting/reconnecting or changing context makes them unavailable; navigation
+must be repeated from the current console. They never adopt the primary session.
+Catalog identity is checked before and after metadata reads; schema requests use
+the observed revision. Tabs/results are isolated by origin and target, stale
+replies are rejected and denied extended details preserve successful columns.
+No table data is browsed and no editor SQL is executed. Context-preserving
+inspector links and explicit DDL-to-console insertion are the next follow-up.
+
+Validation passes 237 frontend / 156 standard Rust and six real navigation
+browser flows, including distinct inspectors on two isolated sessions plus the
+primary. The clean-source hidden native baseline passes three processes / 30
+cleanup cycles; the new interactions are browser-tested, not native UI-qualified.
+Local, unmerged, unreleased and not installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).

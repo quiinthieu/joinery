@@ -7,8 +7,10 @@ quick documentation, selection formatting/settings and snippets. Format saves
 are serialized with rollback to the last successful settings. Global and
 per-engine styles persist with validated recovery. Named CTE/derived-table
 outputs now resolve to local declarations and proven source metadata. Wildcards,
-expressions and unsupported shapes remain withheld. The prior combined source
-passed 66 ignored local fixtures and a normal ad-hoc macOS bundle build. R5 and
+expressions and unsupported shapes remain withheld. Console object/column jumps
+now retain the originating session and observed catalog revision in read-only
+Structure/DDL tabs; late metadata cannot adopt the primary session. The prior
+combined source passed 66 ignored local fixtures and a normal ad-hoc macOS bundle build. R5 and
 R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last
 verified release;
 its current installed revision was not requalified. The canonical owner-private
@@ -1882,3 +1884,49 @@ Logs: `.cache/r5-projection-validate.log`, `.cache/r5-projection-browser.log`,
 `.cache/r5-projection-native-evidence.json`. Local, unmerged, unreleased and not
 installed. No hooks or authorization gates were bypassed. The earlier metadata-
 startup flake did not recur in these five browser flows; its cause remains open.
+
+## R5 follow-up: console-bound Structure (2 November 2026)
+
+Code `fe518fb5554f9975a29a878fae1eccfc08a1ba52`, tree `24dcdd37bfaef069c643ee2fc7d6e1df36da4121`, enables object/column Structure
+navigation from primary and isolated SQL consoles. Inspectors retain source tab,
+connection, session, frontend context epoch and the observed catalog revision.
+Tab identity includes that origin; reopening a matching target refreshes metadata
+and column highlighting. Source closure, session rebinding/disconnect, reconnect
+and context changes never substitute the primary session. Inspectors are not
+session owners, workspace drafts, bookmarks or connection-level recent locations.
+
+Metadata is read from the originating session. The catalog revision is checked
+before and after schema/details requests; column lookup uses the revision-checked
+completion schema path. Result identity includes tab, session, context, target
+and refresh revision. Cleanup and current-source guards reject obsolete replies.
+Extended-detail denial retains successful columns. Capabilities still gate
+extended object inspection. Local CTE/alias/output jumps and R6 execution origins
+are unchanged. Navigation makes no execution/preparation or table-browse request.
+
+These inspectors offer read-only Structure and DDL copying. Existing dependency,
+owner/index/trigger click-through and **Open in SQL editor** actions are withheld
+in this new path because their older actions select the primary session. The
+normal explorer retains its existing behavior. Context-preserving metadata links
+and explicit DDL-to-console insertion are the next bounded follow-up.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | A store regression initially failed because no session-aware object-opening action existed; a second regression reproduced the unbound DDL editor action and now confirms it is withheld; the former isolated-console browser test explicitly expected the withheld F12 jump. It now opens a highlighted inspector without primary table browsing |
+| Passed | `pnpm validate`: 237 frontend tests / 34 files, 156 standard Rust tests (135 core plus 21 other checks), contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused regressions | Two store cases and seven inspector cases verify identity/deduplication, no data browsing, denied details, observed context changes before/during reads, late replies after closure/rebinding/context change and no primary fallback |
+| Browser | All six SQL navigation flows pass on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4. The new PostgreSQL flow opens distinct Structure/DDL inspectors from two isolated sessions plus the primary console, asserts each details request's session ID and sees no browse/prepare/execute requests. Existing named-output/local-jump, stale metadata and permission flows pass; zero page errors in the instrumented engine and three-session flows. Async selection assertions now wait for navigation completion. Earlier in-progress runs were interrupted by source/contract regeneration; the final unchanged-source run passes |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `fbf89916efb0e158bc010f0f9203bcbd4b6a9a37b945c3ffd98c4a96fd74a7b8`; isolated ad-hoc bundle executable SHA-256 `99092751829fa9b95f4c4a5eccf6d3081e65a51f34c2ce31d878becf39aea1ca`. Existing synthetic IPC/worker/cleanup baseline only; Structure interaction evidence is browser-based, not native UI qualification |
+| Prior qualification | Full 86-flow browser suite belongs to `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc distribution bundle belong to `b80b6c7`; those broader checks were not rerun on this later source. Named-output and style evidence retain `c32f0c2` and `d39b89b` |
+| Open | Context-preserving inspector links/DDL-to-console insertion, broader semantic analysis/projection shapes, context-aware templates/style controls, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Preserve the inspector origin through dependency/owner/index/trigger navigation and explicit DDL insertion into a still-bound source console. Then continue bounded SQL refactoring/semantics and remaining R5/R6/R7/R8. Application push, merge, release and installation remain separate authorized steps |
+
+Logs: `.cache/r5-console-structure-validate.log`,
+`.cache/r5-console-structure-browser.log`,
+`.cache/r5-console-structure-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-console-structure-native-evidence.json`. Local, unmerged, unreleased
+and not installed. Owned database fixtures were stopped and removed; user
+services were preserved. No hooks or execution gates were bypassed. The earlier
+metadata-startup flake did not recur in these six flows; its cause remains open.
+A fresh `origin/main` fetch remains `a0ba1a6`. The live GitHub release refresh was
+blocked by automatic approval policy, so preview.15 remains **last verified**;
+the installed application was not requalified.
