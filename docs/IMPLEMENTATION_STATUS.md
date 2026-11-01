@@ -2188,3 +2188,55 @@ external account was queried. Fetched `origin/main` remains `a0ba1a6`;
 preview.15 is the last verified release without fresh release/install qualification.
 Local, unmerged, unreleased and not installed. No application push, merge,
 release or installation occurred.
+
+## R5 follow-up: ordered JOIN column inspections (2 November 2026)
+
+Code `46912f5582ed2eb8363332e67f6738f3551254ab`, tree `6460fdf56ea57a43211f60f6bedd2383e617b422`, extends **Inspect columns** from
+one base table to flat direct-table SELECTs with ordered JOINs/comma groups on
+PostgreSQL/MySQL/MariaDB. The bounded relation parser keeps explicit JOIN operands,
+pending JOIN association and comma precedence. An ON reference cannot see later
+relations or earlier comma groups outside its operands. Projection and remaining
+clauses see the completed relation scope. Supported forms include ordinary/INNER,
+LEFT/RIGHT, PostgreSQL FULL, CROSS, NATURAL and USING; MySQL-family optional inner
+conditions and CROSS conditions retain their dialect distinction. USING names
+and unqualified columns are not diagnosed. This is not full SQL validation.
+
+Fresh complete selectable metadata is requested sequentially on the existing
+active-session/revision IPC lane for every distinct table; self-joins share one
+read while preserving aliases. No new IPC/backend behavior is introduced. Stale
+document/session/context/refresh/navigation stops further reads and discards the
+result. Missing, duplicate, wrong, empty, oversized or denied table metadata
+withholds the whole result. Limits: 32 relation operands, 2,048 columns per table,
+8,192 columns / 4 MiB aggregate metadata, plus existing 65,536 UTF-16 statement
+units / 4,096 lexer tokens / 16 expression levels. No completion candidate cap
+is substituted for the relation scope. The backend's existing per-read metadata
+limits and permission checks remain.
+
+Issues identify qualifier, table and occurrence. The replacement list comes only
+from that issue's table; changing the issue clears the prior choice. Exact quoted
+preview, explicit Apply, one-occurrence edit, one undo and current-context checks
+remain. Inspection never prepares or runs editor SQL. Views, CTE/derived/nested
+queries, parenthesized relation groups, unsupported modifiers, ambiguous scope,
+unqualified-column inference and Snowflake/Redis inspections remain withheld.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | The initial JOIN corpus on the single-table implementation produced eight failures / nine passes. The first extension passed 41 cases but rejected USING(id), because the dialect lexer classifies its bare name as Keyword; bounded name handling fixes it. An intermediate type check exposed a token predicate narrowing known tokens to never; the predicate now returns a boolean. No application runtime failure remained |
+| Standard | `pnpm validate` passes: 379 frontend tests / 38 files, 156 standard Rust tests, contracts/types, formatting, frontend production build, Cargo fmt/check and strict all-target/all-feature Clippy. The 69 ignored Rust tests are not relabeled as fixture passes |
+| Unit/UI | 26 JOIN analyzer cases plus one dialog case cover owning-table columns, exact PG/MySQL quotes, ON visibility, comma/CROSS precedence, pending joins, self-join deduplication, dialect JOIN forms, malformed/unsupported scope, nested expressions, 32 accepted versus 33 rejected operands, per-table/aggregate count and byte limits, unique/complete schemas, MySQL case-folded duplicate columns and issue-switch choice reset. Two prior single-table rejection cases now have positive JOIN coverage |
+| Browser | Six inspection flows plus fifteen existing alias/CTE rename/navigation flows pass on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4. New JOIN flows compare decoded Arrow values `[7, SKU-7-2]` before/after two explicit corrections, test table-specific choices/reset, preview/Apply/undo, one self-join metadata read, stale-first-read suppression of the second request, denied second-table response and unknown future ON qualifier rejection before IPC. Inspection generates no editor prepare/execute requests; zero page errors. Existing single-table invalidation/cancel/retry and navigation/isolated-inspector flows also pass |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass, including the existing disconnected inspection IPC guard. Fixture SHA-256 `16a501f381351d32733b9a4c6cfbc8e4eae76a1834f6092507a6b6c45e670339`; isolated ad-hoc bundle executable SHA-256 `1e4b254ed4f12d4c878180b21b818ebccce115b84e1a039a948d88aec9566ec8`. Synthetic IPC/worker/cleanup only; JOIN interaction is browser evidence, not native UI/accessibility or performance qualification |
+| Prior evidence | Complete-selectable metadata permission/context fixtures remain on `cfb6139`; no backend code changed here. Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc distribution bundle: `b80b6c7`. These were not rerun or relabeled |
+| Open / next | E08 and R5/R6 remain partial. Next is bounded context-aware live-template variables, then remaining R5/R6/R7/R8. Broader CTE/derived/unqualified inspection, Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and delivery gates remain open |
+
+Logs: `.cache/r5-join-inspections-before.log`,
+`.cache/r5-join-inspections-unit.log`, `.cache/r5-join-inspections-validate.log`,
+`.cache/r5-join-inspections-browser.log` (six flows),
+`.cache/r5-join-inspections-navigation.log` (fifteen flows),
+`.cache/r5-join-inspections-native-{build,runs}.log`.
+Immutable native record: `.cache/r5-join-inspections-native-evidence.json`.
+Owned fixtures/processes were removed; user services were preserved. No external
+account was queried. Fetched `origin/main` remains `a0ba1a6`; preview.15 is the
+last verified release without fresh release/install qualification. Local,
+unmerged, unreleased and not installed. No application push, merge, release or
+installation occurred.

@@ -137,7 +137,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
 | E06 FK JOIN suggestions — DG-E, DG-FK | D, E; `completion_fks_on`, `joinCompletions` | PARTIAL / H | Direct-base-table outbound/inbound composite JOIN and initial ON insertion verified on PG/MySQL/MariaDB; multiple/self constraints and quoting covered. Snowflake relationships and advanced output inference remain open | P1 / High | E03/E04/N03; PM; read | Two live metadata fixtures and three browser flows execute nine inserted composite joins; local `e0dad5f`, unmerged / hold |
 | E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline marks, gutters, SQLSTATE/details, jumps and statement navigation now use exact submitted source identity; Unicode/CRLF, parameters and Explain origins are reconciled; edits and delayed errors cannot mark changed SQL | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; six real diagnostics/navigation browser flows plus twelve focused unit cases; local `65530c0`, unmerged / hold |
-| E08 Inspections/quick fixes — DG-I | X execution safety; local single-direct-table qualified-column inspection with fresh complete selectable metadata and explicit catalog correction | PARTIAL / H | Broader scope/inference and contextual fixes remain open; current local `cfb6139` withholds partial/denied/stale/ambiguous metadata | P2 / High | E07 and scope analysis; PMS; gate | Explicit preview/Apply/undo, no editor SQL preparation/execution locally verified; ordered JOIN scope next / hold |
+| E08 Inspections/quick fixes — DG-I | X execution safety; local qualified-column inspection across ordered direct-table JOINs with fresh complete per-table metadata and explicit catalog correction | PARTIAL / H | CTE/derived scope, unqualified inference and broader contextual fixes remain open; local `46912f5` withholds partial/denied/stale/ambiguous metadata | P2 / High | E07 and scope analysis; PMS; gate | ON operands/comma precedence/pending joins, owning-table preview/Apply/undo and no inspection execution locally verified / hold |
 | E09 SQL formatting — DG-F | `sql-format.ts`, formatter worker, Preferences | PARTIAL / H | Selection/document formatting, global and per-dialect case/indent/spacing, inheritance/reset, stale-reply rejection, serialized saves and bind compatibility. Broader style controls remain open | P2 / Medium | Editor selections; PMS; local | Selection/newline/undo, literal/comment/bind preservation, ordered saves, inheritance/reset/recovery and three real engine flows; local `d39b89b`, unmerged / hold |
 | E10 Rename and SQL refactoring — DG-R | `sql-navigation.ts`, `SqlAliasRenameDialog.tsx`, `SqlEditor.tsx` | PARTIAL / H | Bounded SELECT alias and nonrecursive CTE preview/Apply; ordered JOIN/WITH scope, relation/qualifier capture and undo verified locally. MySQL-family nested WITH beneath outer CTE scopes, recursive/broader refactoring and database renames remain open | P2 / High | Scope/definition graph; PMS; gate | Alias/CTE capture/quoting/undo and exact before/after results locally verified; local `072e4ff`, wider scopes and reviewed DDL / hold |
 | E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias/output jumps, proven direct-column outputs through CTEs/derived tables and per-candidate references. Expressions, wildcards, set-operation outputs and ambiguity are withheld. Primary/isolated consoles retain their originating context through read-only Structure/DDL and linked objects; explicit DDL append preserves SQL/session without execution | P1 / High | E02/N06; PMS; read | Nested outputs plus context/session isolation, denied/stale replies and six real navigation flows; local `34c001a`, unmerged / hold |
@@ -937,3 +937,29 @@ with native UI/accessibility, platform/performance and delivery qualification.
 Next: ordered direct-table JOIN inspections, then templates and remaining roadmap.
 Local, unmerged, unreleased and not installed. See
 [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-qualified-column-inspections-2-november-2026).
+
+### Ordered JOIN qualified-column inspections — local `46912f5`
+
+E08 remains partial. Flat direct-table SELECTs now include bounded JOINs and comma
+groups on PostgreSQL/MySQL/MariaDB. Qualified references in projections, ON and
+remaining clauses resolve to their owning base table. ON operands preserve
+comma precedence, pending JOIN association and ordered visibility; unknown or
+duplicate aliases, nested/derived/CTE relations and unsupported shapes withhold
+claims. Self-joins deduplicate fresh metadata without merging alias identity.
+Every distinct table must return complete selectable metadata on the current
+session/revision. Sequential reads stop after stale context or a failed read;
+there is no partial clean/missing result. Inspection allows 32 relation operands,
+2,048 columns per table and 8,192 columns / 4 MiB aggregate metadata.
+
+Each issue offers only its table's catalog columns, clears the choice when the
+issue changes, previews exact quoting and explicitly applies one occurrence in
+one undo step. No editor SQL is prepared or executed by inspection. Validation:
+379 frontend / 156 standard Rust, 21 focused browser flows and three clean-source
+native synthetic processes / 30 cleanup cycles. New JOIN browser reads compare
+decoded Arrow values before/after corrections on all three engines; native UI
+and performance remain unqualified. Earlier live permission fixtures retain
+`cfb6139` evidence and were not rerun for this frontend-only extension. CTE/derived
+and unqualified-column inspections, automatic repair, Snowflake inspection and
+delivery/external gates remain open. Next: context-aware templates, then remaining
+R5/R6/R7/R8. Local, unmerged, unreleased and not installed. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-column-inspections-2-november-2026).
