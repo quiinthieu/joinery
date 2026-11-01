@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { tableFromIPC } from "apache-arrow";
 
 async function connect(
   page: Page,
@@ -41,6 +42,124 @@ for (const [engine, port] of [
   ["MySQL", 53306],
   ["MariaDB", 53307],
 ] as const) {
+  test(`${engine} CTE rename preserves ordered scopes, explicit aliases and query results`, async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    let executions = 0;
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (/\/rpc\/(prepare_execution|execute_plan)$/.test(request.url())) executions++;
+    });
+    await connect(page, engine, port);
+    const editor = page.getByRole("textbox", { name: "SQL editor" });
+    const table = engine === "PostgreSQL" ? "public.orders" : "joinery.sample";
+    const q = engine === "PostgreSQL" ? '"' : "`";
+    const body = `SELECT id FROM ${table} ORDER BY id LIMIT 2`;
+    const nested = (name: string) =>
+      engine === "PostgreSQL"
+        ? `WITH ${name} AS (${body}) SELECT ${name}.id FROM ${name} WHERE EXISTS (WITH prior_rows AS (SELECT ${name}.id FROM ${name}), src AS (SELECT id FROM prior_rows) SELECT src.id FROM src) ORDER BY ${name}.id`
+        : `WITH ${name} AS (${body}), prior_rows AS (SELECT ${name}.id FROM ${name}) SELECT ${name}.id FROM ${name} WHERE EXISTS (SELECT prior_rows.id FROM prior_rows) ORDER BY ${name}.id`;
+    for (const [original, renamed, name, count] of [
+      [
+        `WITH src(id) AS (${body}), next_rows AS (SELECT src.id FROM src) SELECT src.id, x.id FROM src JOIN next_rows x ON x.id = src.id ORDER BY src.id`,
+        `WITH renamed(id) AS (${body}), next_rows AS (SELECT renamed.id FROM renamed) SELECT renamed.id, x.id FROM renamed JOIN next_rows x ON x.id = renamed.id ORDER BY renamed.id`,
+        "renamed",
+        7,
+      ],
+      [nested("src"), nested("renamed"), "renamed", 6],
+      [
+        `WITH ${q}Old${q} AS (${body}) SELECT ${q}Old${q}.id FROM ${q}Old${q} ORDER BY ${q}Old${q}.id`,
+        `WITH ${q}New${q}${q}Name${q} AS (${body}) SELECT ${q}New${q}${q}Name${q}.id FROM ${q}New${q}${q}Name${q} ORDER BY ${q}New${q}${q}Name${q}.id`,
+        `New${q}Name`,
+        4,
+      ],
+    ] as const) {
+      await placeCaret(editor, original.replace("WITH ", "WITH |"));
+      const run = async () => {
+        const response = page.waitForResponse((r) => r.url().endsWith("/rpc/execute_plan"));
+        const result = page.waitForResponse((r) => /\/result\/[^?]+\?start=0&/.test(r.url()));
+        await editor.press("ControlOrMeta+Enter");
+        expect((await response).ok()).toBe(true);
+        await expect(page.locator(".result-footer")).toContainText("2 rows");
+        await expect(page.locator(".run-button")).toBeVisible();
+        await expect(page.locator(".completion-context")).not.toContainText("Loading");
+        await expect(page.locator(".query-error")).toHaveCount(0);
+        const values = tableFromIPC(new Uint8Array(await (await result).body()));
+        return Array.from({ length: values.numRows }, (_, row) =>
+          values.schema.fields.map((_, column) => String(values.getChildAt(column)!.get(row))),
+        );
+      };
+      const originalRows = await run();
+      expect(originalRows.map((row) => row[0])).toEqual(
+        engine === "PostgreSQL" ? ["1", "2"] : ["9007199254740992", "9007199254740993"],
+      );
+      const before = executions;
+      await editor.press("Shift+F6");
+      const dialog = page.getByRole("dialog", { name: "Rename SQL CTE" });
+      await expect(dialog).toContainText(`${count} local occurrences`);
+      if (count === 7) {
+        await dialog.getByLabel("New CTE name").fill("next_rows");
+        await expect(dialog.getByRole("alert")).toContainText("conflict");
+        await expect(dialog.getByRole("button", { name: "Apply rename" })).toBeDisabled();
+        await dialog.getByLabel("New CTE name").fill("x");
+        await expect(dialog.getByRole("alert")).toContainText("conflict");
+      }
+      await dialog.getByLabel("New CTE name").fill(name);
+      await dialog.getByLabel("New CTE name").press("ControlOrMeta+Enter");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel("CTE rename preview")).toBeVisible();
+      await expect(page.locator('.cm-content[aria-label="SQL editor"]')).toHaveText(original);
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await expect(editor).toHaveText(original);
+      await page.getByRole("button", { name: "Rename SQL alias or CTE", exact: true }).click();
+      await dialog.getByLabel("New CTE name").fill(name);
+      await dialog.getByRole("button", { name: "Apply rename" }).click();
+      await expect(editor).toHaveText(renamed);
+      expect(executions).toBe(before);
+      expect(await run()).toEqual(originalRows);
+      await editor.press("ControlOrMeta+z");
+      await expect(editor).toHaveText(original);
+    }
+    if (engine !== "PostgreSQL") {
+      for (const localName of ["src", "local_rows"]) {
+        const unsupported = `WITH src AS (${body}) SELECT src.id FROM src WHERE EXISTS (WITH prior_rows AS (SELECT src.id FROM src), ${localName} AS (SELECT id FROM prior_rows) SELECT ${localName}.id FROM ${localName}) ORDER BY src.id`;
+        await placeCaret(editor, unsupported.replace("WITH ", "WITH |"));
+        const before = executions;
+        await editor.press("Shift+F6");
+        await expect(page.getByRole("dialog", { name: "Rename SQL CTE" })).toHaveCount(0);
+        await expect(page.getByRole("alert")).toContainText("cannot safely analyze");
+        await expect(editor).toHaveText(unsupported);
+        expect(executions).toBe(before);
+      }
+    }
+    await placeCaret(editor, `WITH |src AS (${body}) SELECT src.id FROM src`);
+    await editor.press("Shift+F6");
+    const dialog = page.getByRole("dialog", { name: "Rename SQL CTE" });
+    await expect(dialog).toBeVisible();
+    await page.evaluate(async () => {
+      const { EditorView } = await import("/node_modules/@codemirror/view/dist/index.js");
+      EditorView.findFromDOM(document.querySelector(".cm-editor")!)!.dispatch({
+        changes: { from: 0, insert: "-- changed\n" },
+      });
+    });
+    await expect(dialog).toHaveCount(0);
+    await placeCaret(editor, `WITH |src AS (${body}) SELECT src.id FROM src`);
+    await editor.press("Shift+F6");
+    await expect(dialog).toBeVisible();
+    await page.evaluate(() =>
+      (
+        document.querySelector('[aria-label="Refresh completion context"]') as HTMLButtonElement
+      ).click(),
+    );
+    await expect(dialog).toHaveCount(0);
+    await placeCaret(editor, "WITH RECURSIVE |src AS (SELECT 1 AS id) SELECT src.id FROM src");
+    await editor.press("Shift+F6");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("alert")).toContainText("cannot safely analyze");
+    expect(errors).toEqual([]);
+  });
+
   test(`${engine} ordered JOIN renames preserve correlated query results`, async ({ page }) => {
     const errors: string[] = [];
     let executions = 0;
@@ -132,7 +251,7 @@ for (const [engine, port] of [
     await expect(dialog).toHaveCount(0);
     await expect(editor).toBeFocused();
     await expect(editor).toHaveText(original);
-    await page.getByRole("button", { name: "Rename SQL alias", exact: true }).click();
+    await page.getByRole("button", { name: "Rename SQL alias or CTE", exact: true }).click();
     await dialog.getByLabel("New alias").fill("order_rows");
     await dialog.getByRole("button", { name: "Apply rename" }).click();
     await expect(dialog).toHaveCount(0);

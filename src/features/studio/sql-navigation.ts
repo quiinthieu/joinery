@@ -917,7 +917,8 @@ function makeOccurrence(
   return { from, to, line, column, lineText, isDeclaration };
 }
 
-export interface AliasRenameTarget {
+export interface SqlRenameTarget {
+  kind: "alias" | "cte";
   name: string;
   occurrences: SqlLocalOccurrence[];
   preview(state: EditorState, name: string): { from: number; to: number; insert: string }[];
@@ -928,8 +929,25 @@ export function analyzeAliasRename(
   state: EditorState,
   pos: number,
   engine: EngineKind,
-): AliasRenameTarget {
-  const unsupported = () => new Error("Alias rename cannot safely analyze this SQL shape.");
+): SqlRenameTarget {
+  return analyzeLocalRename(state, pos, engine, false);
+}
+
+export function analyzeSqlRename(
+  state: EditorState,
+  pos: number,
+  engine: EngineKind,
+): SqlRenameTarget {
+  return analyzeLocalRename(state, pos, engine, true);
+}
+
+function analyzeLocalRename(
+  state: EditorState,
+  pos: number,
+  engine: EngineKind,
+  allowCte: boolean,
+): SqlRenameTarget {
+  const unsupported = () => new Error("SQL rename cannot safely analyze this SQL shape.");
   const tokens = statementTokensAt(state, pos)?.tokens;
   if (!tokens) throw new Error("Statement is incomplete or exceeds the rename analysis limit.");
   const tree = ensureSyntaxTree(state, state.doc.length, 75);
@@ -962,6 +980,11 @@ export function analyzeAliasRename(
   const references: Reference[] = [];
   const declarations = new Map<number, DetailedBinding>();
   const allScopes: Scope[] = [];
+  type Cte = { token: SqlToken; nameKey: string };
+  type CteScope = Cte[];
+  const cteScopes: CteScope[] = [];
+  const relationUses: { token: SqlToken; env: CteScope[]; cte?: Cte }[] = [];
+  const cteRelations = new Map<DetailedBinding, Cte>();
   const key = (token: SqlToken) => {
     const value = identifierValue(readIdentifier(token.text), engine);
     return engine === "mysql" ? value.toLowerCase() : value;
@@ -969,10 +992,24 @@ export function analyzeAliasRename(
   const exceedsIdentifierLimit = (name: string) =>
     (engine === "postgres" && new TextEncoder().encode(name).length > 63) ||
     (engine === "mysql" && [...name].length > 64);
-  const resolve = (env: Scope[], name: string, target?: DetailedBinding, replacement?: string) => {
+  const resolve = (
+    env: Scope[],
+    name: string,
+    renamed = new Set<DetailedBinding>(),
+    replacement?: string,
+  ) => {
     for (const scope of env) {
-      const binding = scope.find((item) => (item === target ? replacement : item.nameKey) === name);
+      const binding = scope.find(
+        (item) => (renamed.has(item) ? replacement : item.nameKey) === name,
+      );
       if (binding) return binding;
+    }
+    return undefined;
+  };
+  const resolveCte = (env: CteScope[], name: string, target?: Cte, replacement?: string) => {
+    for (const scope of env) {
+      const cte = scope.find((item) => (item === target ? replacement : item.nameKey) === name);
+      if (cte) return cte;
     }
     return undefined;
   };
@@ -996,7 +1033,7 @@ export function analyzeAliasRename(
     "ONLY",
   ]);
   let queryCount = 0;
-  function visit(raw: readonly SqlToken[], outer: Scope[], depth: number) {
+  function visit(raw: readonly SqlToken[], outer: Scope[], depth: number, cteEnv: CteScope[] = []) {
     if (depth > 16) throw new Error("Query nesting exceeds the rename analysis limit.");
     const list = cleanTokens(raw);
     for (const token of list) {
@@ -1015,10 +1052,58 @@ export function analyzeAliasRename(
         )
       )
         throw unsupported();
-      scan(list, outer, depth);
+      scan(list, outer, depth, [], cteEnv);
       return;
     }
     if (++queryCount > 64) throw new Error("Query count exceeds the rename analysis limit.");
+    // WITH definitions become visible in order, after their own body. Keep a
+    // snapshot for each body: later siblings must never capture earlier names.
+    if (keywordUpper(list[0]) === "WITH") {
+      if (keywordUpper(list[1]) === "RECURSIVE") throw unsupported();
+      // MariaDB cannot resolve outer CTEs inside nested WITH definitions as
+      // MySQL does. Withhold that boundary in their shared editor dialect.
+      if (engine === "mysql" && cteEnv.some((scope) => scope.length)) throw unsupported();
+      const local: CteScope = [];
+      cteScopes.push(local);
+      let index = 1;
+      while (true) {
+        const token = list[index++];
+        if (!isRelationDeclName(token) || exceedsIdentifierLimit(readIdentifier(token.text).value))
+          throw unsupported();
+        const cte: Cte = { token, nameKey: key(token) };
+        if (local.some((item) => item.nameKey === cte.nameKey)) throw unsupported();
+        if (list[index]?.children) {
+          const columns = cleanTokens(list[index++].children!);
+          if (
+            !columns.length ||
+            columns.some((item, i) => (i % 2 ? item.text !== "," : !isSymbolNameToken(item))) ||
+            columns.length % 2 === 0
+          )
+            throw unsupported();
+        }
+        if (keywordUpper(list[index++]) !== "AS") throw unsupported();
+        if (keywordUpper(list[index]) === "NOT") {
+          if (engine !== "postgres" || keywordUpper(list[++index]) !== "MATERIALIZED")
+            throw unsupported();
+        }
+        if (keywordUpper(list[index]) === "MATERIALIZED") {
+          if (engine !== "postgres") throw unsupported();
+          index++;
+        }
+        const body = list[index++];
+        if (
+          !body?.children ||
+          !["SELECT", "WITH"].includes(keywordUpper(cleanTokens(body.children)[0]))
+        )
+          throw unsupported();
+        visit(body.children, outer, depth + 1, [[...local], ...cteEnv]);
+        local.push(cte);
+        if (list[index]?.text !== ",") break;
+        index++;
+      }
+      if (keywordUpper(list[index]) !== "SELECT") throw unsupported();
+      cteEnv = [[...local], ...cteEnv];
+    }
     const block = queryBlockTokensAt(list, list.at(-1)?.to ?? pos);
     if (keywordUpper(block[0]) !== "SELECT") throw unsupported();
     const scope = parseDetailedBindings(block, new Map(), tableLookup([], engine));
@@ -1035,19 +1120,16 @@ export function analyzeAliasRename(
       if (exceedsIdentifierLimit(readIdentifier(nameToken.text).value)) throw unsupported();
       binding.nameKey = key(nameToken);
       if (binding.aliasToken) declarations.set(binding.aliasToken.from, binding);
+      if (!binding.derived && binding.relationTokens.length === 1) {
+        const token = binding.relationTokens[0];
+        const cte = resolveCte(cteEnv, key(token));
+        relationUses.push({ token, env: cteEnv, cte });
+        if (cte) cteRelations.set(binding, cte);
+      }
     }
     if (new Set(scope.map((item) => item.nameKey)).size !== scope.length) throw unsupported();
     allScopes.push(scope);
-    // WITH bodies and non-lateral FROM bodies cannot see this query's FROM aliases.
-    for (const [index, token] of list.entries()) {
-      if (token.from >= block[0].from) break;
-      if (token.children && ["AS", "MATERIALIZED"].includes(keywordUpper(list[index - 1]))) {
-        if (!["SELECT", "WITH"].includes(keywordUpper(cleanTokens(token.children)[0])))
-          throw unsupported();
-        visit(token.children, outer, depth + 1);
-      }
-    }
-    scan(block, [scope, ...outer], depth, scope);
+    scan(block, [scope, ...outer], depth, scope, cteEnv);
   }
   function joinEnvironments(list: SqlToken[], scope: Scope, outer: Scope[]) {
     const environments = new Map<number, Scope[]>();
@@ -1139,7 +1221,13 @@ export function analyzeAliasRename(
     if (inFrom) finish();
     return environments;
   }
-  function scan(list: SqlToken[], env: Scope[], depth: number, scope: Scope = []) {
+  function scan(
+    list: SqlToken[],
+    env: Scope[],
+    depth: number,
+    scope: Scope = [],
+    cteEnv: CteScope[] = [],
+  ) {
     const relationNames = new Set(
       scope.flatMap((binding) => binding.relationTokens.map((token) => token.from)),
     );
@@ -1151,7 +1239,12 @@ export function analyzeAliasRename(
       const token = list[index];
       const tokenEnv: Scope[] = environments.get(token.from) ?? env;
       if (token.children) {
-        visit(token.children, bodies.has(token.from) ? tokenEnv.slice(1) : tokenEnv, depth + 1);
+        visit(
+          token.children,
+          bodies.has(token.from) ? tokenEnv.slice(1) : tokenEnv,
+          depth + 1,
+          cteEnv,
+        );
         continue;
       }
       if (
@@ -1178,43 +1271,84 @@ export function analyzeAliasRename(
   if (!["SELECT", "WITH"].includes(keywordUpper(cleanTokens(tokens)[0]))) throw unsupported();
   visit(tokens, [], 0);
   const hit = (token: SqlToken) => pos >= token.from && pos <= token.to;
-  const target =
+  const alias =
     [...declarations.values()].find((binding) => hit(binding.aliasToken!)) ??
     references.find((ref) => ref.qualified && hit(ref.token))?.binding;
-  if (!target?.aliasToken)
-    throw new Error("Place the caret on a table alias or its qualified reference.");
-  const uses = references.filter((ref) => ref.binding === target);
+  const cte =
+    allowCte && !alias?.aliasToken
+      ? (cteScopes.flat().find((item) => hit(item.token)) ??
+        relationUses.find((use) => hit(use.token))?.cte ??
+        (alias && cteRelations.get(alias)))
+      : undefined;
+  if (!alias?.aliasToken && !cte)
+    throw new Error("Place the caret on a table alias, CTE name or its qualified reference.");
+  const renamed = new Set(
+    cte
+      ? [...cteRelations]
+          .filter(([binding, definition]) => definition === cte && !binding.aliasToken)
+          .map(([binding]) => binding)
+      : [alias!],
+  );
+  const targetToken = cte?.token ?? alias!.aliasToken!;
+  const targetKey = cte?.nameKey ?? alias!.nameKey;
+  const kind = cte ? "cte" : "alias";
+  const uses = references.filter((ref) => ref.binding && renamed.has(ref.binding));
   if (uses.some((ref) => !ref.qualified || ref.unsupported)) throw unsupported();
   const occurrences = [
-    makeOccurrence(state, target.aliasToken.from, target.aliasToken.to, true),
+    makeOccurrence(state, targetToken.from, targetToken.to, true),
+    ...relationUses
+      .filter((use) => cte && use.cte === cte)
+      .map((use) => makeOccurrence(state, use.token.from, use.token.to, false)),
     ...uses.map((ref) => makeOccurrence(state, ref.token.from, ref.token.to, false)),
   ].sort((a, b) => a.from - b.from);
-  if (occurrences.length > 500) throw new Error("Alias exceeds the 500 occurrence rename limit.");
+  if (occurrences.length > 500) throw new Error("Symbol exceeds the 500 occurrence rename limit.");
   return {
-    name: identifierValue(readIdentifier(target.aliasToken.text), engine),
+    kind,
+    name: identifierValue(readIdentifier(targetToken.text), engine),
     occurrences,
     preview(current, name) {
       if (current.doc !== state.doc)
         throw new Error("The document changed. Start a new rename preview.");
       if (!name || name.length > 128 || /[\u0000-\u001f\u007f]/u.test(name))
-        throw new Error("Use an alias of 1–128 characters without control characters.");
+        throw new Error("Use a name of 1–128 characters without control characters.");
       if (exceedsIdentifierLimit(name))
-        throw new Error("Alias exceeds this database's identifier length limit.");
+        throw new Error("Name exceeds this database's identifier length limit.");
       const replacement = engine === "mysql" ? name.toLowerCase() : name;
-      if (replacement === target.nameKey) throw new Error("Choose a different alias.");
-      const owning = allScopes.find((scope) => scope.includes(target))!;
-      if (owning.some((binding) => binding !== target && binding.nameKey === replacement))
-        throw new Error("Alias conflicts with another relation in this query.");
+      if (replacement === targetKey) throw new Error("Choose a different name.");
+      if (cte) {
+        const owning = cteScopes.find((scope) => scope.includes(cte))!;
+        if (owning.some((item) => item !== cte && item.nameKey === replacement))
+          throw new Error("CTE name conflicts with another declaration in this WITH clause.");
+        for (const use of relationUses) {
+          if (
+            resolveCte(
+              use.env,
+              use.cte === cte ? replacement : key(use.token),
+              cte,
+              replacement,
+            ) !== use.cte
+          )
+            throw new Error("Rename would capture or conflict with another relation reference.");
+        }
+      }
+      for (const scope of allScopes) {
+        if (!scope.some((binding) => renamed.has(binding))) continue;
+        const names = scope.map((binding) =>
+          renamed.has(binding) ? replacement : binding.nameKey,
+        );
+        if (new Set(names).size !== names.length)
+          throw new Error("Name conflicts with another relation in this query.");
+      }
       for (const ref of references) {
         const after = resolve(
           ref.env,
-          ref.binding === target ? replacement : key(ref.token),
-          target,
+          ref.binding && renamed.has(ref.binding) ? replacement : key(ref.token),
+          renamed,
           replacement,
         );
         if (
           (ref.qualified && after !== ref.binding) ||
-          (!ref.qualified && key(ref.token) === replacement && after === target)
+          (!ref.qualified && key(ref.token) === replacement && after && renamed.has(after))
         )
           throw new Error("Rename would capture or conflict with another reference.");
       }

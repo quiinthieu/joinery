@@ -59,8 +59,8 @@ import { useStudio } from "../../state/studio";
 import { selectedStatement, selectedStatementSlice } from "./sql-context";
 import {
   adjacentStatement,
-  analyzeAliasRename,
-  type AliasRenameTarget,
+  analyzeSqlRename,
+  type SqlRenameTarget,
   resolveExecutionError,
   type SqlExecutionOrigin,
   resolveSymbolAt,
@@ -286,7 +286,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [navDetailsError, setNavDetailsError] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
   const [rename, setRename] = useState<{
-    target: AliasRenameTarget;
+    target: SqlRenameTarget;
     editor: EditorView;
     state: EditorState;
     context: string;
@@ -528,12 +528,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       latest.current.contextEpoch,
       liveRef.current?.revision,
     ]);
-  const runAliasRename = () => {
+  const runSqlRename = () => {
     clearNavigation();
     const editor = view.current;
     if (!editor || latest.current.engine === "redis") return false;
     try {
-      const target = analyzeAliasRename(
+      const target = analyzeSqlRename(
         editor.state,
         editor.state.selection.main.head,
         latest.current.engine,
@@ -581,12 +581,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const navActionsRef = useRef({
     runGoToDefinition,
     runOpenOverlay,
-    runAliasRename,
+    runSqlRename,
   });
   navActionsRef.current = {
     runGoToDefinition,
     runOpenOverlay,
-    runAliasRename,
+    runSqlRename,
   };
 
   useImperativeHandle(
@@ -750,7 +750,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           },
           {
             key: "Shift-F6",
-            run: () => navActionsRef.current.runAliasRename(),
+            run: () => navActionsRef.current.runSqlRename(),
           },
           {
             key: "F12",
@@ -1039,11 +1039,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 type="button"
                 className="button ghost small"
                 style={{ flexShrink: 0 }}
-                title="Rename SQL alias · Shift-F6"
-                aria-label="Rename SQL alias"
-                onClick={() => navActionsRef.current.runAliasRename()}
+                title="Rename SQL alias or CTE · Shift-F6"
+                aria-label="Rename SQL alias or CTE"
+                onClick={() => navActionsRef.current.runSqlRename()}
               >
-                Rename alias
+                Rename alias / CTE
               </button>
               <button
                 type="button"

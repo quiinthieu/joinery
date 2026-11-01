@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { EditorState } from "@codemirror/state";
 import { InlineError, Modal } from "../../components/ui/Modal";
 import { messageOf } from "../../ipc/client";
-import type { AliasRenameTarget } from "./sql-navigation";
+import type { SqlRenameTarget } from "./sql-navigation";
 
 export function SqlAliasRenameDialog({
   target,
@@ -10,14 +10,14 @@ export function SqlAliasRenameDialog({
   onApply,
   onClose,
 }: {
-  target: AliasRenameTarget;
+  target: SqlRenameTarget;
   state: EditorState;
   onApply(name: string): void;
   onClose(): void;
 }) {
   const [name, setName] = useState(target.name);
   let error: string | null = null;
-  let changes: ReturnType<AliasRenameTarget["preview"]> = [];
+  let changes: ReturnType<SqlRenameTarget["preview"]> = [];
   try {
     changes = target.preview(state, name);
   } catch (cause) {
@@ -26,16 +26,16 @@ export function SqlAliasRenameDialog({
   return (
     <div onKeyDown={(event) => event.stopPropagation()}>
       <Modal
-        title="Rename SQL alias"
+        title={target.kind === "cte" ? "Rename SQL CTE" : "Rename SQL alias"}
         subtitle="Preview local SQL edits, then Apply. No SQL is executed."
         onClose={onClose}
         wide
       >
         <div className="modal-body">
           <label>
-            New alias
+            {target.kind === "cte" ? "New CTE name" : "New alias"}
             <input
-              aria-label="New alias"
+              aria-label={target.kind === "cte" ? "New CTE name" : "New alias"}
               autoFocus
               value={name}
               spellCheck={false}
@@ -45,7 +45,10 @@ export function SqlAliasRenameDialog({
           </label>
           <InlineError message={error} />
           <p>{target.occurrences.length} local occurrences</p>
-          <div style={{ maxHeight: 320, overflow: "auto" }} aria-label="Alias rename preview">
+          <div
+            style={{ maxHeight: 320, overflow: "auto" }}
+            aria-label={target.kind === "cte" ? "CTE rename preview" : "Alias rename preview"}
+          >
             {target.occurrences.map((occurrence, index) => (
               <div key={occurrence.from} style={{ marginBottom: 12 }}>
                 <div>

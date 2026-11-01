@@ -21,8 +21,183 @@ import {
   schemaCacheKey,
   tablesNeededForNavigationAt,
   analyzeAliasRename,
+  analyzeSqlRename,
   type SqlSymbolContext,
 } from "./sql-navigation";
+
+describe("scope-correct CTE rename", () => {
+  const analyze = analyzeSqlRename;
+  test.each(["postgres", "mysql", "snowflake"] as const)(
+    "%s edits the declaration, relation names and implicit qualifiers but preserves explicit aliases",
+    (engine) => {
+      const state = stateWithCaret(
+        "WITH |c(id) AS (SELECT id FROM public.orders) SELECT c.id, x.id FROM c JOIN c x ON c.id = x.id; -- c\nSELECT 'c.id'",
+        engine,
+      );
+      const target = analyze(state, state.selection.main.head, engine);
+      const name = engine === "snowflake" ? "ROWS_CTE" : "rows_cte";
+      expect(state.update({ changes: target.preview(state, name) }).state.doc.toString()).toBe(
+        `WITH ${name}(id) AS (SELECT id FROM public.orders) SELECT ${name}.id, x.id FROM ${name} JOIN ${name} x ON ${name}.id = x.id; -- c\nSELECT 'c.id'`,
+      );
+      expect(target.occurrences).toHaveLength(5);
+    },
+  );
+
+  test.each([
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c",
+    "WITH c AS (SELECT 1 AS id) SELECT |c.id FROM c",
+    "WITH c AS (SELECT 1 AS id) SELECT x.id FROM |c x",
+  ])("starts at a declaration, implicit qualifier or explicitly aliased relation: %s", (marked) => {
+    const state = stateWithCaret(marked);
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(
+      state.update({ changes: target.preview(state, "renamed") }).state.doc.toString(),
+    ).toContain("WITH renamed AS");
+  });
+
+  test("follows ordered WITH visibility and preserves later nested shadowing and physical tables", () => {
+    const state = stateWithCaret(
+      "WITH |c AS (SELECT id FROM c), d AS (SELECT c.id FROM c) SELECT c.id FROM c WHERE EXISTS (WITH prior_rows AS (SELECT c.id FROM c), c AS (SELECT id FROM prior_rows) SELECT c.id FROM c) AND EXISTS (SELECT c.id FROM public.c)",
+    );
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+      "WITH renamed AS (SELECT id FROM c), d AS (SELECT renamed.id FROM renamed) SELECT renamed.id FROM renamed WHERE EXISTS (WITH prior_rows AS (SELECT renamed.id FROM renamed), c AS (SELECT id FROM prior_rows) SELECT c.id FROM c) AND EXISTS (SELECT c.id FROM public.c)",
+    );
+  });
+
+  test("renames an inner declaration while preserving the outer CTE in its body", () => {
+    const state = stateWithCaret(
+      "WITH c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH |c AS (SELECT c.id FROM c) SELECT c.id FROM c)",
+    );
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(
+      state.update({ changes: target.preview(state, "local_rows") }).state.doc.toString(),
+    ).toBe(
+      "WITH c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH local_rows AS (SELECT c.id FROM c) SELECT local_rows.id FROM local_rows)",
+    );
+  });
+
+  test.each([
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH prior_rows AS (SELECT c.id FROM c), c AS (SELECT id FROM prior_rows) SELECT c.id FROM c)",
+    "WITH c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH |c AS (SELECT c.id FROM c) SELECT c.id FROM c)",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH c AS (SELECT 2 AS id) SELECT c.id FROM c)",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH n AS (SELECT c.id FROM c) SELECT n.id FROM n)",
+    "WITH c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH |n AS (SELECT c.id FROM c) SELECT n.id FROM n)",
+  ])("withholds MySQL-family nested WITH under an outer CTE scope: %s", (marked) => {
+    const state = stateWithCaret(marked, "mysql");
+    expect(() => analyze(state, state.selection.main.head, "mysql")).toThrow(/cannot safely/);
+  });
+
+  test("retains ordered JOIN visibility for implicit CTE qualifiers", () => {
+    const state = stateWithCaret(
+      "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (SELECT c.id FROM orders x JOIN orders y ON y.id = c.id JOIN orders c ON c.id = x.id)",
+    );
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+      "WITH renamed AS (SELECT 1 AS id) SELECT renamed.id FROM renamed WHERE EXISTS (SELECT c.id FROM orders x JOIN orders y ON y.id = renamed.id JOIN orders c ON c.id = x.id)",
+    );
+    expect(() => target.preview(state, "y")).toThrow(/capture|conflict/i);
+  });
+
+  test("keeps explicit relation aliases as independently renameable symbols", () => {
+    const state = stateWithCaret("WITH c AS (SELECT 1 AS id) SELECT c.id FROM c |c");
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(target.kind).toBe("alias");
+    expect(
+      state.update({ changes: target.preview(state, "local_alias") }).state.doc.toString(),
+    ).toBe("WITH c AS (SELECT 1 AS id) SELECT local_alias.id FROM c local_alias");
+  });
+
+  test("follows CTE uses in derived bodies and permits a declaration without uses", () => {
+    const state = stateWithCaret(
+      "WITH |c AS (SELECT 1 AS id) SELECT x.id FROM (SELECT c.id FROM c) x",
+    );
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(state.update({ changes: target.preview(state, "renamed") }).state.doc.toString()).toBe(
+      "WITH renamed AS (SELECT 1 AS id) SELECT x.id FROM (SELECT renamed.id FROM renamed) x",
+    );
+    const unused = stateWithCaret("WITH |c AS (SELECT 1) SELECT 2");
+    expect(analyze(unused, unused.selection.main.head, "postgres").occurrences).toHaveLength(1);
+  });
+
+  test("supports PostgreSQL materialization and preserves explicit CTE output lists", () => {
+    for (const modifier of ["MATERIALIZED", "NOT MATERIALIZED"]) {
+      const state = stateWithCaret(
+        `WITH |c(value) AS ${modifier} (SELECT 1) SELECT c.value FROM c`,
+      );
+      const target = analyze(state, state.selection.main.head, "postgres");
+      expect(
+        state.update({ changes: target.preview(state, "new_rows") }).state.doc.toString(),
+      ).toBe(`WITH new_rows(value) AS ${modifier} (SELECT 1) SELECT new_rows.value FROM new_rows`);
+    }
+  });
+
+  test("keeps schema-qualified physical relations and their aliases unchanged", () => {
+    const state = stateWithCaret(
+      "WITH |c AS (SELECT 1 AS id) SELECT a.id, b.id FROM c a JOIN public.n b ON a.id = b.id",
+    );
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(state.update({ changes: target.preview(state, "n") }).state.doc.toString()).toBe(
+      "WITH n AS (SELECT 1 AS id) SELECT a.id, b.id FROM n a JOIN public.n b ON a.id = b.id",
+    );
+  });
+
+  test.each([
+    "WITH |c AS (SELECT 1), n AS (SELECT 2) SELECT * FROM c",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c JOIN orders n ON c.id = n.id",
+    "WITH |c AS (SELECT 1 AS id) SELECT x.id FROM c x JOIN n y ON true",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c WHERE EXISTS (WITH n AS (SELECT 2 AS id) SELECT c.id FROM c)",
+    "WITH n AS (SELECT 1 AS id) SELECT n.id FROM n WHERE EXISTS (WITH |c AS (SELECT 2 AS id) SELECT n.id FROM n JOIN c ON true)",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id, n.unknown FROM c",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id, n FROM c",
+  ])("rejects declaration, relation, qualifier and unresolved-name capture: %s", (marked) => {
+    const state = stateWithCaret(marked);
+    const target = analyze(state, state.selection.main.head, "postgres");
+    expect(() => target.preview(state, "n")).toThrow(/capture|conflict/i);
+  });
+
+  test.each(["postgres", "mysql", "snowflake"] as const)(
+    "%s preserves delimiters and identifier limits",
+    (engine) => {
+      const q = engine === "mysql" ? "`" : '"';
+      const state = stateWithCaret(
+        `WITH |${q}Old${q} AS (SELECT 1 AS id) SELECT ${q}Old${q}.id FROM ${q}Old${q}`,
+        engine,
+      );
+      const target = analyze(state, state.selection.main.head, engine);
+      const name = `New${q}Name`;
+      expect(target.preview(state, name).map((x) => x.insert)).toEqual(
+        Array(3).fill(`${q}New${q}${q}Name${q}`),
+      );
+      expect(() => target.preview(state, "Old")).toThrow(/different/);
+      expect(() => target.preview(state, "bad\nname")).toThrow();
+      if (engine !== "snowflake")
+        expect(() => target.preview(state, "あ".repeat(65))).toThrow(/length/);
+      const changed = state.update({ changes: { from: 0, insert: " " } }).state;
+      expect(() => target.preview(changed, "new_name")).toThrow(/changed/);
+    },
+  );
+
+  test.each([
+    "WITH RECURSIVE |c AS (SELECT 1 AS id) SELECT c.id FROM c",
+    "WITH |c AS (DELETE FROM orders RETURNING id) SELECT * FROM c",
+    "WITH |c AS (SELECT 1) SELECT * FROM c UNION SELECT * FROM c",
+    "WITH |c AS (SELECT 1 AS id) SELECT c FROM c",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c JOIN LATERAL (SELECT 1) x ON true",
+    "WITH |c AS (SELECT 1 AS id) SELECT c.id FROM c x(id)",
+    "WITH |c AS (SELECT 1), c AS (SELECT 2) SELECT * FROM c",
+  ])("withholds recursive, unsupported or incomplete semantics: %s", (marked) => {
+    const state = stateWithCaret(marked);
+    expect(() => analyze(state, state.selection.main.head, "postgres")).toThrow();
+  });
+
+  test("never returns a capped CTE edit list", () => {
+    const state = stateWithCaret(
+      `WITH |c AS (SELECT 1 AS id) SELECT c.id${", c.id".repeat(501)} FROM c`,
+    );
+    expect(() => analyze(state, state.selection.main.head, "postgres")).toThrow(/limit|large/i);
+  });
+});
 
 describe("scope-correct alias rename", () => {
   test("previews only the declaration and qualified references, preserving comments and other statements", () => {

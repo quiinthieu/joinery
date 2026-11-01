@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { sql } from "@codemirror/lang-sql";
 import { sqlDialect } from "./sql-identifiers";
-import { analyzeAliasRename } from "./sql-navigation";
+import { analyzeAliasRename, analyzeSqlRename } from "./sql-navigation";
 import { SqlAliasRenameDialog } from "./SqlAliasRenameDialog";
 
 afterEach(cleanup);
@@ -63,4 +63,27 @@ test("Escape closes without applying and focus stays in the dialog", () => {
   fireEvent.keyDown(document, { key: "Escape" });
   expect(onClose).toHaveBeenCalledOnce();
   expect(onApply).not.toHaveBeenCalled();
+});
+
+test("CTE preview labels the declaration and requires explicit Apply", () => {
+  const state = EditorState.create({
+    doc: "WITH c AS (SELECT 1 AS id) SELECT c.id FROM c",
+    extensions: [sql({ dialect: sqlDialect("postgres") })],
+  });
+  const onApply = vi.fn();
+  render(
+    <SqlAliasRenameDialog
+      target={analyzeSqlRename(state, 5, "postgres")}
+      state={state}
+      onApply={onApply}
+      onClose={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("dialog", { name: "Rename SQL CTE" })).toBeTruthy();
+  expect(screen.getByText("3 local occurrences")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("New CTE name"), { target: { value: "new_rows" } });
+  expect(screen.getByLabelText("CTE rename preview").textContent).toContain("c → new_rows");
+  expect(onApply).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply rename" }));
+  expect(onApply).toHaveBeenCalledWith("new_rows");
 });
