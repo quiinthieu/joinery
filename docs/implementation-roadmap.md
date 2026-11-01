@@ -210,7 +210,7 @@ tests, `37` Playwright workflows and clean-commit macOS native gates). Merged on
   50-item in-memory Recent locations ring buffer (`⇧⌘E`).
 - Merged on `main` via PR #30 (`a0ba1a6`) on 31 October; unreleased.
 
-## Assessment and next slices (1 November 2026)
+## Assessment and next slices (2 November 2026)
 
 R1–R4 are merged but absent from the last verified preview. Recorded R5 commit
 `bb77b0f` remains readable; its former worktree/branch are now absent and former
@@ -218,14 +218,16 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `8ef9dfb` integrates five R5 slices: FK JOIN completion,
-structured Unicode diagnostics, typed parameters, inline error/statement navigation
-and SQL definitions/usages/quick documentation. R5 and R6 remain partial, local,
-unmerged, unreleased and not installed. Current validation passes 183 frontend /
-154 standard Rust and 46 relevant database browser flows. Prior 58 ignored SQL
-fixture passes remain specific to `39359e7`. Clean-source macOS arm64 hidden
-build and three WebView runs / 30 cleanup cycles pass; synthetic baseline only.
-Selection formatting/settings, snippets and format-save serialization are next.
+Current candidate `db5cd1b` integrates six R5 slices: FK JOIN completion,
+structured Unicode diagnostics, typed parameters, inline error/statement
+navigation, SQL definitions/usages/quick documentation, and selection
+formatting/settings/snippets with serialized saves. R5 and R6 remain partial,
+local, unmerged, unreleased and not installed. Validation passes 194 frontend /
+155 standard Rust and the full 86 local browser flows, including simulated
+Snowflake. Prior 58 ignored SQL fixture passes remain specific to `39359e7`.
+Clean-source macOS arm64 hidden build and three WebView runs / 30 cleanup cycles
+pass; synthetic baseline only. Combined ignored fixture/distribution qualification
+and remaining semantic editor/analysis gaps are next.
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -308,6 +310,23 @@ Reference results have a visible 500-entry / 10,000-name-token bound. Standard
 validation and 46 browser flows pass, including five new symbol flows; clean-source
 macOS baseline passes three fresh processes / 30 cleanup cycles. See
 [exact evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-sql-definitions-usages-and-documentation-1-november-2026).
+
+### R5 integration slice 6: formatting/settings/snippets (local `db5cd1b`)
+
+Recorded `3ca2ad2` now coexists with R6, with serialized format saves addressing
+`41957ea` and relevant `bb77b0f` native guards. Selection formatting preserves
+unselected text/newlines, undo and bind syntax; obsolete worker replies are
+rejected after any document edit or session change. Global style preferences
+persist with visible errors and rollback to the last successful save. Per-dialect
+style overrides remain open.
+
+Built-in and custom SQL templates use completion and keyboard tab stops without
+automatic execution. Custom engine scope overrides global/built-in triggers.
+SQLite bounds/validates templates and includes them in metadata recovery.
+Context-aware variables and complete semantic placement remain open. Full
+standard validation, all 86 local browser flows and clean-source macOS hidden
+baseline (three processes / 30 cleanup cycles) pass. See
+[evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-formatting-and-snippets-2-november-2026).
 
 ### R6 slice 1: estimated query plans (local `feat/estimated-query-plans`)
 
@@ -432,15 +451,15 @@ R6 remains partial, local, unmerged and unreleased.
 
 ### R6 next slices
 
-1. Continue R5 after five verified slices, including definitions/usages/quick
-   documentation (`8ef9dfb`). Next integrate selection formatting/settings/snippets
-   (`3ca2ad2`), then format-save serialization (`41957ea`) and relevant recorded
-   `bb77b0f` regressions. Preserve every R6 preparation/approval path and exact
-   editor source identity. The SQL alias part of `41957ea` is already integrated.
-   Do not reuse old counts or assume former dirty documentation was recovered.
-   Investigate the earlier metadata-startup flake, then qualify the combined
-   source with relevant full fixture/browser/native checks. Merge, application
-   release and installed-version gates remain separate.
+1. Six R5 slices now coexist with seven R6 slices (`db5cd1b`), including
+   formatting/settings/snippets and serialized saves. Standard validation and
+   the full 86 local browser suite pass. Next qualify the combined source with
+   ignored local SQL/Redis/SSH fixtures and a normal distribution build; keep
+   the earlier metadata-startup flake open unless its cause is demonstrated.
+   Then address per-dialect styles, template variables, semantic/projection
+   inference and secondary-session Structure navigation. Preserve every R6
+   preparation/approval path and exact editor origins. Merge, application
+   release and installation remain separate authorized steps.
 2. Design observed Snowflake warehouse/session identity before snapshot support.
    Keep capture explicitly unavailable meanwhile. Live read-only account
    qualification requires explicit external scope; mock evidence is local only.

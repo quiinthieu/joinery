@@ -1,10 +1,11 @@
 # Implementation and release status
 
-Updated 2026-11-01. R1–R4 are merged but unreleased. The local R6 branch now
+Updated 2026-11-02. R1–R4 are merged but unreleased. The local R6 branch now
 integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
 query parameters, inline error/statement navigation and SQL definitions/usages/
-quick documentation. Selection formatting/settings and snippets
-are next. R5 and R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last verified release;
+quick documentation, selection formatting/settings and snippets. Format saves
+are serialized with rollback to the last successful settings. Combined fixture
+and distribution qualification are next. R5 and R6 remain partial, unmerged, unpublished and not installed. Preview.15 is the last verified release;
 its current installed revision was not requalified. The canonical owner-private
 Site records exact tested, merged, published and installed states. Full
 multi-engine v1.0 qualification remains pending.
@@ -1728,3 +1729,63 @@ product safety gates were bypassed. Logs are
 `joinery-assess-r5-symbols` was removed after checks; user services and the installed
 application were preserved. The earlier metadata-startup flake did not recur;
 its cause remains open.
+
+## R5 integration: formatting and snippets (2 November 2026)
+
+Code `db5cd1b5cbdca127e407d012d129f1d0260b8a9a`,
+tree `60a1b994235713177b4558b40279dbe81f01167c`, integrates recorded
+`3ca2ad2`, robust save serialization for the ordering issue in `41957ea`, and
+relevant native command checks from `bb77b0f`. The alias correction from
+`41957ea` was integrated earlier. No former dirty documentation was recovered.
+
+Format SQL uses the active selection, or the full document when the selection
+is empty. The worker returns one undoable replacement and retains a selected
+trailing newline. Any document edit/replacement or engine/session change rejects
+the old reply. Preferences persist global keyword case (upper/lower/preserve),
+indent width (2/4 spaces) and query spacing (1/2 blank lines). Saves reach Rust
+in order; optimistic updates compose and a failed latest save restores the last
+successful settings. Preferences displays errors and prevents close/recovery
+while writes are pending. Formatting preferences are global, not per dialect.
+
+The formatter recognizes Joinery's named binds in all three SQL dialects,
+PostgreSQL/Snowflake dollar positions and MySQL/Snowflake question positions.
+Covered regressions preserve bind-name case, quoted Unicode text and comments,
+PostgreSQL casts/JSON operators and Snowflake colon paths. Browser flows format
+and execute a named bind on all three local SQL engines; literal/comment colons
+do not become parameters. This is compatibility coverage, not complete dialect
+grammar or live Snowflake qualification.
+
+Built-in and custom templates expand through completion without executing SQL.
+Custom engine scope overrides global scope, which overrides built-ins for the
+same case-insensitive trigger. CodeMirror provides tab stops; `${0}`
+sets the final cursor position. Qualified/quoted identifier completions exclude
+templates. PostgreSQL/MySQL have read/write/transaction built-ins; Snowflake has
+read-oriented built-ins only; Redis has none. Custom text is still subject to
+normal Rust execution policy when explicitly run. Automatic context-aware
+template variables and complete semantic snippet placement remain open.
+
+SQLite stores at most 128 custom snippets, with ASCII identifier triggers up to
+32 characters, titles up to 120 characters, bodies up to 16 KiB and a 512 KiB
+encoded collection bound on writes. Duplicated scoped triggers and invalid
+records are rejected. Snippets/settings are included in validated metadata
+backup/restore. Explicitly saved snippets may contain SQL text even when query
+history/draft opt-ins are off; the UI explains this local storage behavior.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | A selected formatter reply survived an edit elsewhere; rapid settings saves reached IPC concurrently. New tests failed before the document-identity and write-queue fixes. MySQL rejected named binds and Snowflake rejected question binds before formatter configuration was corrected |
+| Passed | `pnpm validate`: 194 frontend tests / 33 files, 155 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Browser | All 86 local browser flows pass on fixed source, using disposable PostgreSQL 18, MySQL 8.4, MariaDB 11.4 and Redis 8.2 plus simulated Snowflake. Three new flows cover selection boundaries/undo, custom template expansion and Tab/Shift+Tab, explicit execution, formatted bind review, reload persistence, edit and deletion. Existing completion, files, sessions, navigation, plans, recovery, grid and data movement flows also pass |
+| Native | Clean-source macOS arm64 hidden build records this code/tree (`sourceDirty: false`); three fresh WebView processes / 30 cleanup cycles pass, including settings/snippet persistence and command guards. Fixture SHA-256 `691c9acf4644b2295f644c5c47525762d44caec7534a8599083b3d77a21d6e55`. Synthetic IPC/worker baseline only; native Preferences/selection UI, total memory, cold visible startup and display FPS remain unqualified |
+| Local only | `feat/estimated-query-plans`, unmerged, unreleased and not installed; fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Prior evidence | The 58 ignored SQL fixture passes belong to `39359e7`; ignored SQL/Redis/SSH suites were not rerun for this slice. Existing distribution-bundle evidence remains specific to its recorded revision |
+| Open | Per-dialect formatting overrides, richer template variables, complete semantic binding/projection inference, secondary-session Structure navigation, live external qualification, normal distribution bundle, Windows/Linux runtime, signing/notarization, accessibility and representative performance |
+| Next | Qualify the combined source with full ignored local fixtures and a normal distribution build; investigate the earlier metadata-startup flake if it recurs. Preserve R6 authorization/exact origins, then continue the remaining R5/R6 gaps and R7/R8. Merge, release and installation remain separate gates |
+
+Logs: `.cache/r5-format-validate-exact.log`,
+`.cache/r5-format-browser-exact.log` and
+`.cache/r5-format-native-{build,runs}.log`. Immutable native evidence is
+`.cache/r5-format-native-evidence.json`. No hooks or policy gates were bypassed.
+The earlier metadata-startup flake did not recur in this full browser run; its
+cause remains open. Disposable services are task-owned; user services and the
+installed application were preserved.

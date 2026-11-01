@@ -269,9 +269,15 @@ flows, including all fourteen plan/timing and six parameter flows. Clean-source
 macOS baseline passes three processes / 30 cleanup cycles. See
 [symbol evidence and limits](IMPLEMENTATION_STATUS.md#r5-integration-sql-definitions-usages-and-documentation-1-november-2026).
 
-Next: integrate selection formatting/settings, snippets and format-save
-serialization while preserving every R6
-preparation and authorization contract. Investigate the earlier metadata-startup
+Formatting/snippet integration `db5cd1b` preserves every R6 preparation,
+authorization and exact-source contract. Selection formatting and serialized
+global preferences coexist with scoped templates. All 86 local browser flows
+pass, including parameter/plan/navigation flows and simulated Snowflake; standard
+validation passes 194 frontend / 155 Rust. Clean-source macOS hidden baseline
+passes three processes / 30 cleanup cycles. See [formatting evidence](IMPLEMENTATION_STATUS.md#r5-integration-formatting-and-snippets-2-november-2026).
+
+Next: combined ignored local fixture and normal distribution qualification.
+Investigate the earlier metadata-startup
 flake before combined qualification, and design observed Snowflake warehouse/
 session identity before enabling snapshots. See the
 [roadmap](implementation-roadmap.md#r6-next-slices).
