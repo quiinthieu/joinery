@@ -169,14 +169,25 @@ const CLAUSE_END = new Set([
 
 /**
  * Built-in completion placement for one statement. Insert template stays unfiltered.
- * shortcut: only top-level FROM, JOIN and later clause keywords are read;
- * upgrade for nested queries, EXPLAIN wrappers and declared per-template contexts.
+ * shortcut: a parenthesized query is classified only after FROM, JOIN or AS.
+ * upgrade for other subquery positions, EXPLAIN wrappers and declared contexts.
  */
+function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToken[] {
+  const list = tokens.filter((token) => !token.kind.endsWith("Comment"));
+  const container = list.find((token) => token.children && token.from < from && token.to >= from);
+  if (container?.children) {
+    const introducer = list.filter((token) => token.to <= container.from).at(-1);
+    const keyword = introducer?.kind === "Keyword" ? introducer.text.toUpperCase() : "";
+    if (keyword === "FROM" || keyword === "JOIN" || keyword === "AS") {
+      return priorTemplateTokens(container.children, from);
+    }
+  }
+  return list.filter((token) => token.to <= from);
+}
+
 export function sqlTemplateSite(state: EditorState, from: number): SqlTemplateSite {
   const statement = statementTokensAt(state, from);
-  const prior = statement?.tokens.filter(
-    (token) => !token.kind.endsWith("Comment") && token.to <= from,
-  );
+  const prior = statement ? priorTemplateTokens(statement.tokens, from) : undefined;
   if (!prior?.length) return { atStatementStart: true, inFromClause: false, afterFrom: false };
   const word = (token?: SqlToken) => (token?.kind === "Keyword" ? token.text.toUpperCase() : "");
   const head = word(prior[0]);
