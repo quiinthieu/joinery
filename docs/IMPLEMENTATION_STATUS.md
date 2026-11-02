@@ -2543,4 +2543,4 @@ A select list may place one `*` or `alias.*` beside simple columns. The offered 
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
 | Open / next | Remaining R5/R6/R7/R8. A star in a set operation, a schema-qualified star, and template expressions remain open |
 
-Fetched `origin/main` is `1fa0ce5`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Fetched `origin/main` is `3887e39`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
