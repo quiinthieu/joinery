@@ -120,7 +120,8 @@ describe("bounded qualified-column inspections", () => {
     "WITH c AS (SELECT public.orders.* FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT other.orders.* FROM public.orders) SELECT c.id FROM c",
     "WITH c AS (SELECT public.orders.*, id FROM public.orders) SELECT c.id FROM c",
-    "WITH c AS (SELECT public.orders.* FROM public.orders UNION ALL SELECT public.orders.* FROM public.orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT public.orders.*, id FROM public.orders UNION ALL SELECT public.orders.* FROM public.orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT public.orders.* FROM public.orders UNION ALL SELECT other.orders.* FROM public.orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id, customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
     "WITH c(id) AS (SELECT id, customer_id FROM orders) SELECT c.id FROM c",
@@ -612,6 +613,19 @@ describe("bounded qualified-column inspections", () => {
       "mysql",
     ).result;
     expect(mysql.columnsFor(mysql.issues[0])).toEqual(columns);
+    const qualified = inspect(
+      "WITH c AS (SELECT public.orders.* FROM public.orders UNION ALL SELECT public.orders.* FROM public.orders) SELECT c.typo FROM c",
+    ).result;
+    expect(qualified.columnsFor(qualified.issues[0])).toEqual(columns);
+    const quoted = inspect(
+      'SELECT d.typo FROM (SELECT "public"."orders".* FROM "public"."orders" EXCEPT SELECT "public"."orders".* FROM "public"."orders") d',
+    ).result;
+    expect(quoted.columnsFor(quoted.issues[0])).toEqual(columns);
+    const mysqlQualified = inspect(
+      "SELECT d.typo FROM (SELECT public.orders.* FROM public.orders INTERSECT SELECT public.orders.* FROM public.orders) d",
+      "mysql",
+    ).result;
+    expect(mysqlQualified.columnsFor(mysqlQualified.issues[0])).toEqual(columns);
     const customers = { schema: "public", name: "customers" };
     expect(() =>
       prepareColumnInspection(

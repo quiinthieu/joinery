@@ -52,14 +52,14 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * sit beside simple columns, adding those names. A schema-qualified star
  * expands only when FROM writes that same name and the list is only that
  * star. A partial column list withholds. Every arm of a set operation may
- * be a lone `*` or `alias.*` of that same relation. The offered names are
- * that relation's columns.
- * shortcut: a schema-qualified star beside other items or inside a set
- * operation, a star beside columns or of another relation inside a set
- * operation, a recursive star, a top-level set operation, more arms than the
- * relation limit, and an arm that is not a flat SELECT withhold. A repeated
- * output name, or a name owned by more than one relation, withholds the
- * inspection. upgrade for those shapes.
+ * be a lone `*`, `alias.*`, or unaliased `schema.table.*` of that same
+ * relation. The offered names are that relation's columns.
+ * shortcut: a schema-qualified star beside other items, a star beside
+ * columns or of another relation inside a set operation, a recursive star,
+ * a top-level set operation, more arms than the relation limit, and an arm
+ * that is not a flat SELECT withhold. A repeated output name, or a name
+ * owned by more than one relation, withholds the inspection. upgrade for
+ * those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -862,22 +862,14 @@ export function prepareColumnInspection(
       throw unsupported();
     return { outputs };
   }
-  function selectHasSchemaStar(list: readonly SqlToken[]) {
-    if (word(list[0]) !== "SELECT") return false;
-    let at = 1;
-    if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
-    const from = list.findIndex((token) => word(token) === "FROM");
-    if (from < at) return false;
-    return selectItems(list.slice(at, from)).some(isSchemaStar);
-  }
   function armOutput(
     body: readonly SqlToken[],
     scope: Scope,
   ): { kind: "bare"; starTable: TableRef } | { kind: "named"; outputs: QueryOutput[] } {
     const star = singleStar(body, scope);
-    // shortcut: a schema-qualified star, or a star beside columns, has unknown width in a set operation. Upgrade when metadata can compare it.
+    // shortcut: a star beside columns has unknown width in a set operation, upgrade when metadata can compare it.
     if (star && "starTable" in star) {
-      if (star.outputs?.length || selectHasSchemaStar(body)) throw unsupported();
+      if (star.outputs?.length) throw unsupported();
       return { kind: "bare", starTable: star.starTable };
     }
     return {
