@@ -281,10 +281,14 @@ export function Preferences({ onClose }: { onClose(): void }) {
           <p className="form-note">
             Built-in triggers (<code>sel</code>, <code>cnt</code>, <code>join</code>,{" "}
             <code>ljoin</code>, <code>cte</code>, <code>lim</code>, <code>ins</code>,{" "}
-            <code>upd</code>, <code>del</code>, <code>txn</code>) expand from SQL completion with{" "}
-            <code>{"${1:placeholder}"}</code> tab stops. Use <code>{"${0}"}</code> for a final
-            cursor position after editable fields. Custom snippets can add new triggers or override
-            built-in ones globally or per dialect.
+            <code>upd</code>, <code>del</code>, <code>txn</code>, <code>ctxsel</code>,{" "}
+            <code>wrap</code>) expand from SQL completion with <code>{"${1:placeholder}"}</code> tab
+            stops. Use <code>{"${0}"}</code> for a final cursor position after editable fields.
+            Custom snippets can add new triggers or override built-in ones globally or per dialect.{" "}
+            Use <code>{"{{database}}"}</code> and <code>{"{{schema}}"}</code> for quoted identifiers
+            from the connected console. Use <code>{"{{selection}}"}</code> with Insert template to
+            wrap selected SQL verbatim. Double braces are reserved for these variables; unknown or
+            missing values block insertion.
           </p>
           {state.sqlSnippets.length > 0 && (
             <div className="managed-snippets" role="list" aria-label="Custom SQL snippets">

@@ -1,6 +1,7 @@
 import { snippetCompletion, type Completion } from "@codemirror/autocomplete";
 import type { EngineKind, SqlSnippet } from "../../ipc/generated";
 import type { CompletionTarget } from "./sql-context";
+import type { SqlTemplateApplier } from "./sql-template-context";
 
 export interface EffectiveSqlSnippet {
   trigger: string;
@@ -11,6 +12,18 @@ export interface EffectiveSqlSnippet {
 }
 
 const READ_TEMPLATES: readonly Omit<EffectiveSqlSnippet, "isCustom">[] = [
+  {
+    trigger: "ctxsel",
+    title: "Select rows from current schema",
+    body: "SELECT ${1:*}\nFROM {{schema}}.${2:table_name};${0}",
+    engine: null,
+  },
+  {
+    trigger: "wrap",
+    title: "Wrap selected SQL as a subquery",
+    body: "SELECT ${1:*}\nFROM (\n{{selection}}\n) ${2:selected_rows};${0}",
+    engine: null,
+  },
   {
     trigger: "sel",
     title: "Select rows from table",
@@ -135,6 +148,7 @@ export function snippetCompletions(
   engine: EngineKind,
   target: CompletionTarget,
   userSnippets: readonly SqlSnippet[] = [],
+  applyTemplate?: SqlTemplateApplier,
 ): Completion[] {
   if (engine === "redis" || target.parts.length !== 1 || target.parts[0].quoted) {
     return [];
@@ -149,11 +163,15 @@ export function snippetCompletions(
     if (aExact !== bExact) return aExact - bExact;
     return a.trigger.toLowerCase().localeCompare(b.trigger.toLowerCase());
   });
-  return candidates.map((item) =>
-    snippetCompletion(item.body, {
+  return candidates.map((item) => {
+    const completion = snippetCompletion(item.body, {
       label: item.trigger,
       detail: item.isCustom ? `${item.title} · snippet` : `${item.title} · template`,
       type: "keyword",
-    }),
-  );
+    });
+    if (applyTemplate)
+      completion.apply = (editor, selected, from, to) =>
+        applyTemplate(item.body, editor, selected, from, to);
+    return completion;
+  });
 }

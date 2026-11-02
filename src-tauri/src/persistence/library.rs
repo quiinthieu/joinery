@@ -1154,7 +1154,8 @@ mod tests {
                 id: Some(snip_all.id.clone()),
                 trigger: "active_users".into(),
                 title: "Active Users v2".into(),
-                body: "SELECT id FROM ${1:users} WHERE active = TRUE;".into(),
+                body: "SELECT ${1:id} FROM {{database}}.{{schema}}.${2:users};\n{{selection}}${0}"
+                    .into(),
                 engine: None,
             })
             .unwrap();
@@ -1169,6 +1170,16 @@ mod tests {
             .unwrap();
         assert_eq!(store.sql_snippets().unwrap().len(), 2);
         assert_eq!(store.sql_format_settings().unwrap(), updated_fmt);
+        assert_eq!(
+            store
+                .sql_snippets()
+                .unwrap()
+                .into_iter()
+                .find(|snippet| snippet.id == snip_updated.id)
+                .unwrap()
+                .body,
+            snip_updated.body
+        );
 
         // Corrupt 'sql-format-settings' and 'sql-snippets' must fail backup/recovery validation.
         store

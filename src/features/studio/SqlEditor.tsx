@@ -32,6 +32,7 @@ import {
   closeBrackets,
   closeBracketsKeymap,
   closeCompletion,
+  type Completion,
 } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { sql } from "@codemirror/lang-sql";
@@ -43,6 +44,7 @@ import type {
   EngineKind,
   ObjectDetails,
   QueryParamSlot,
+  SessionContextOptions,
   TableInfo,
   TableRef,
   TableSchema,
@@ -80,6 +82,9 @@ import {
 } from "./sql-inspections";
 import { sqlDialect } from "./sql-identifiers";
 import { CompletionSession } from "./completion-session";
+import { effectiveSqlSnippets } from "./sql-snippets";
+import { applySqlTemplate } from "./sql-template-context";
+import { SqlTemplateDialog } from "./SqlTemplateDialog";
 
 export interface EditorHandle {
   selection(): string;
@@ -283,6 +288,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [contextError, setContextError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [switchingContext, setSwitchingContext] = useState(false);
+  const [template, setTemplate] = useState<{
+    editor: EditorView;
+    state: EditorState;
+    context: string;
+    snippets: typeof sqlSnippets;
+  } | null>(null);
   const [paramSlots, setParamSlots] = useState<QueryParamSlot[]>([]);
   const [navOverlay, setNavOverlay] = useState<{
     mode: "docs" | "usages";
@@ -323,13 +334,16 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const navRequestSeq = useRef(0);
   const inspectionRequest = useRef<number | null>(null);
   const contextLoadRef = useRef<Promise<void> | null>(null);
+  const templateRequest = useRef(0);
   const clearNavigation = () => {
     navRequestSeq.current += 1;
+    templateRequest.current += 1;
     setNavOverlay(null);
     setNavDetails(null);
     setNavDetailsLoading(false);
     setNavDetailsError(null);
     setRename(null);
+    setTemplate(null);
     setRenameError(null);
     setInspection(null);
     inspectionRequest.current = null;
@@ -549,6 +563,44 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       latest.current.contextEpoch,
       liveRef.current?.revision,
     ]);
+  const insertTemplate = async (
+    body: string,
+    editor: EditorView,
+    option: Completion | undefined,
+    from: number,
+    to: number,
+  ) => {
+    const request = ++templateRequest.current;
+    const context = renameContext();
+    const snippets = snippetsRef.current;
+    const engine = latest.current.engine;
+    await applySqlTemplate(body, engine, editor, option, from, to, {
+      isCurrent: () =>
+        templateRequest.current === request &&
+        view.current === editor &&
+        renameContext() === context &&
+        snippetsRef.current === snippets,
+      resolveContext: async () => {
+        await contextLoadRef.current;
+        if (renameContext() !== context || view.current !== editor)
+          throw new Error("The console context changed. Insert the template again.");
+        const sessionId = latest.current.sessionId;
+        if (!sessionId)
+          throw new Error(
+            "Connect this console before using database or schema template variables.",
+          );
+        const { state: runtime } = await client.call<SessionContextOptions>("session_contexts", {
+          sessionId,
+        });
+        if (runtime.sessionId !== sessionId || runtime.transactionState === "failed")
+          throw new Error(
+            "Current console context is unavailable. Recover the transaction and try again.",
+          );
+        return { database: runtime.database, schema: runtime.activeContext };
+      },
+    });
+    editor.focus();
+  };
   const runSqlRename = () => {
     clearNavigation();
     const editor = view.current;
@@ -800,6 +852,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       (sessionId, table, contextRevision) =>
         loadTableSchemaCached(sessionId, table, contextRevision),
       (error) => useStudio.getState().notify(messageOf(error)),
+      (body, editor, option, from, to) => {
+        void insertTemplate(body, editor, option, from, to).catch((error) =>
+          useStudio.getState().notify(messageOf(error)),
+        );
+      },
     );
     completion.current = session;
     session.configure(configure());
@@ -930,6 +987,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     session.update(state);
     return () => {
       navRequestSeq.current += 1;
+      templateRequest.current += 1;
       session.dispose();
       completion.current = null;
       view.current?.destroy();
@@ -1153,6 +1211,24 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
               <button
                 type="button"
                 className="button ghost small"
+                aria-label="Insert SQL template"
+                onClick={() => {
+                  const editor = view.current;
+                  if (!editor) return;
+                  clearNavigation();
+                  setTemplate({
+                    editor,
+                    state: editor.state,
+                    context: renameContext(),
+                    snippets: snippetsRef.current,
+                  });
+                }}
+              >
+                Insert template
+              </button>
+              <button
+                type="button"
+                className="button ghost small"
                 style={{ flexShrink: 0 }}
                 aria-label="Inspect SQL columns"
                 disabled={inspectionBusy}
@@ -1204,6 +1280,29 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             Dismiss
           </button>
         </div>
+      )}
+      {template && (
+        <SqlTemplateDialog
+          templates={effectiveSqlSnippets(props.engine, template.snippets)}
+          onClose={() => {
+            templateRequest.current += 1;
+            setTemplate(null);
+            view.current?.focus();
+          }}
+          onInsert={async (body) => {
+            if (
+              view.current !== template.editor ||
+              template.editor.state.doc !== template.state.doc ||
+              !template.editor.state.selection.eq(template.state.selection) ||
+              renameContext() !== template.context ||
+              snippetsRef.current !== template.snippets
+            )
+              throw new Error("The editor or console context changed. Open Insert template again.");
+            const { from, to } = template.state.selection.main;
+            await insertTemplate(body, template.editor, undefined, from, to);
+            setTemplate(null);
+          }}
+        />
       )}
       {inspection && (
         <SqlColumnInspectionDialog

@@ -180,7 +180,10 @@ quick documentation, and selection formatting/settings/snippets—with R6
 [estimated/actual plans and bounded snapshot comparison](docs/query-plans.md).
 These changes are verified locally, unmerged, unreleased and not installed.
 Formatting preferences persist globally and per SQL dialect; custom snippets
-can be scoped per SQL engine. Named CTE/derived-table outputs now have local
+can be scoped per SQL engine. [Live templates](docs/sql-live-templates.md) now
+support observed database/schema identifiers and literal selected SQL, with an
+Insert template chooser, tab stops and single-step undo. Named CTE/derived-table
+outputs now have local
 definition jumps, usages and source documentation when a unique direct column
 source is proven. Wildcards, expressions and unsupported shapes remain withheld.
 The prior combined candidate passed 66 ignored SQL/Redis/SSH fixtures and a

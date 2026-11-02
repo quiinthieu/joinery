@@ -20,6 +20,7 @@ import {
 } from "./sql-context";
 import { identifierValue, quoteIdentifier } from "./sql-identifiers";
 import { snippetCompletions } from "./sql-snippets";
+import type { SqlTemplateApplier } from "./sql-template-context";
 
 interface Configuration {
   engine: EngineKind;
@@ -150,6 +151,7 @@ export class CompletionSession {
       contextRevision?: string,
     ) => Promise<TableSchema>,
     private notify: (error: unknown) => void,
+    private expandTemplate?: SqlTemplateApplier,
   ) {}
 
   configure(config: Configuration) {
@@ -342,10 +344,39 @@ export class CompletionSession {
       pending.target.parts.length === 1 && !pending.target.parts[0].quoted
         ? pending.target.parts[0].value.toLowerCase()
         : null;
+    const templateState = this.state;
     const snippetOptions =
       engine === "redis" || barePrefix === null || (barePrefix.length === 0 && fkOptions.length > 0)
         ? []
-        : snippetCompletions(engine, pending.target, config.snippets ?? []);
+        : snippetCompletions(
+            engine,
+            pending.target,
+            config.snippets ?? [],
+            this.expandTemplate
+              ? (body, editor, option, from, to) => {
+                  if (
+                    this.disposed ||
+                    this.configuration !== config ||
+                    !templateState ||
+                    editor.state.doc !== templateState.doc ||
+                    !editor.state.selection.eq(templateState.selection)
+                  ) {
+                    this.notify(
+                      new Error(
+                        "The editor or console context changed. Insert the template again.",
+                      ),
+                    );
+                    return;
+                  }
+                  void Promise.resolve()
+                    .then(() => this.expandTemplate!(body, editor, option, from, to))
+                    .catch((error: unknown) => {
+                      if (!this.disposed)
+                        this.notify(error instanceof Error ? error : new Error(String(error)));
+                    });
+                }
+              : undefined,
+          );
     const exactSnippets =
       barePrefix && barePrefix.length > 0
         ? snippetOptions.filter((option) => option.label.toLowerCase() === barePrefix)

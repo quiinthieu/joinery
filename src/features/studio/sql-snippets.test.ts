@@ -285,3 +285,86 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
   editorView.destroy();
   session.dispose();
 });
+
+test.each(["document", "selection", "console", "snippets", "dispose"] as const)(
+  "a delivered template completion rejects changed %s",
+  async (change) => {
+    const worker = new CompletionWorkerIndex();
+    const expand = vi.fn(),
+      notify = vi.fn();
+    const session = new CompletionSession(
+      (message) => {
+        const response = worker.handle(message);
+        queueMicrotask(() => session.receive(response));
+      },
+      vi.fn(),
+      notify,
+      expand,
+    );
+    const config = { engine: "postgres" as const, sessionId: "primary", tables: [], snippets: [] };
+    session.configure(config);
+    const editor = new EditorView({
+      state: EditorState.create({
+        doc: "ctxsel",
+        selection: { anchor: 6 },
+        extensions: [sql({ dialect: sqlDialect("postgres") })],
+      }),
+    });
+    try {
+      const result = (await session.request(new CompletionContext(editor.state, 6, true)))!;
+      const option = result.options.find((item) => item.label === "ctxsel")!;
+      if (change === "document") editor.dispatch({ changes: { from: 0, insert: "-- edited\n" } });
+      if (change === "selection") editor.dispatch({ selection: { anchor: 0, head: 6 } });
+      if (change === "console") session.configure({ ...config, sessionId: "isolated" });
+      if (change === "snippets") session.configure({ ...config, snippets: [] });
+      if (change === "dispose") session.dispose();
+      if (typeof option.apply !== "function") throw new Error("Expected a template completion");
+      option.apply(editor, option, result.from, result.to ?? 6);
+      expect(expand).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining("changed") }),
+      );
+    } finally {
+      editor.destroy();
+      session.dispose();
+    }
+  },
+);
+
+test("a template completion reports an expansion failure", async () => {
+  const worker = new CompletionWorkerIndex();
+  const notify = vi.fn();
+  const session = new CompletionSession(
+    (message) => {
+      const response = worker.handle(message);
+      queueMicrotask(() => session.receive(response));
+    },
+    vi.fn(),
+    notify,
+    vi.fn(async () => {
+      throw new Error("No observed current schema");
+    }),
+  );
+  session.configure({ engine: "postgres", sessionId: "primary", tables: [], snippets: [] });
+  const editor = new EditorView({
+    state: EditorState.create({
+      doc: "ctxsel",
+      selection: { anchor: 6 },
+      extensions: [sql({ dialect: sqlDialect("postgres") })],
+    }),
+  });
+  try {
+    const result = (await session.request(new CompletionContext(editor.state, 6, true)))!;
+    const option = result.options.find((item) => item.label === "ctxsel")!;
+    if (typeof option.apply !== "function") throw new Error("Expected a template completion");
+    option.apply(editor, option, result.from, result.to ?? 6);
+    await vi.waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "No observed current schema" }),
+      ),
+    );
+  } finally {
+    editor.destroy();
+    session.dispose();
+  }
+});
