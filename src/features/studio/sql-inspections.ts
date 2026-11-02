@@ -53,12 +53,13 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * expands only when FROM writes that same name and the list is only that
  * star. A partial column list withholds. Every arm of a set operation may
  * be a lone `*`, `alias.*`, or unaliased `schema.table.*` of that same
- * relation, including a later arm of a recursive CTE. The offered names are
- * that relation's columns.
- * shortcut: a schema-qualified star beside other items, a star beside
- * columns or of another relation inside a set operation, a top-level set
- * operation, more arms than the relation limit, and an arm that is not a
- * flat SELECT withhold. A repeated output name, or a name owned by more
+ * relation, including a later arm of a recursive CTE. Each arm may add the
+ * same number of simple columns. The offered names are that relation's
+ * columns, plus the anchor arm's extra names.
+ * shortcut: a schema-qualified star beside other items, a star of another
+ * relation or a different extra count inside a set operation, a top-level
+ * set operation, more arms than the relation limit, and an arm that is not
+ * a flat SELECT withhold. A repeated output name, or a name owned by more
  * than one relation, withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
@@ -343,15 +344,22 @@ export function prepareColumnInspection(
       const anchorNested = analyze(arms[0], depth + 1, ctes);
       const anchorArm = armOutput(arms[0], anchorNested.bindings);
       if (anchorArm.kind === "bare") {
-        absorb(anchorNested, []);
+        absorb(anchorNested, anchorArm.extras);
         for (const arm of arms.slice(1)) {
           const nested = analyze(arm, depth + 1, ctes);
           const later = armOutput(arm, nested.bindings);
-          absorb(nested, []);
-          if (later.kind !== "bare" || tableKey(later.starTable) !== tableKey(anchorArm.starTable))
+          if (
+            later.kind !== "bare" ||
+            tableKey(later.starTable) !== tableKey(anchorArm.starTable) ||
+            later.extras.length !== anchorArm.extras.length
+          )
             throw unsupported();
+          absorb(nested, later.extras);
         }
-        return { starTable: anchorArm.starTable };
+        return {
+          starTable: anchorArm.starTable,
+          ...(anchorArm.extras.length ? { outputs: anchorArm.extras } : {}),
+        };
       }
       absorb(anchorNested, anchorArm.outputs);
       for (const arm of arms.slice(1)) {
@@ -865,13 +873,13 @@ export function prepareColumnInspection(
   function armOutput(
     body: readonly SqlToken[],
     scope: Scope,
-  ): { kind: "bare"; starTable: TableRef } | { kind: "named"; outputs: QueryOutput[] } {
+  ):
+    | { kind: "bare"; starTable: TableRef; extras: QueryOutput[] }
+    | { kind: "named"; outputs: QueryOutput[] } {
     const star = singleStar(body, scope);
-    // shortcut: a star beside columns has unknown width in a set operation, upgrade when metadata can compare it.
-    if (star && "starTable" in star) {
-      if (star.outputs?.length) throw unsupported();
-      return { kind: "bare", starTable: star.starTable };
-    }
+    // shortcut: a star of another relation has unknown width, upgrade when metadata can compare it.
+    if (star && "starTable" in star)
+      return { kind: "bare", starTable: star.starTable, extras: star.outputs ?? [] };
     return {
       kind: "named",
       outputs: star && "outputs" in star ? star.outputs : project(body, scope),
@@ -923,7 +931,7 @@ export function prepareColumnInspection(
       if (anchorArm.kind === "bare") {
         // shortcut: an explicit column list cannot rename a star until its width is known.
         if (def.columns) throw unsupported();
-        recordCte(anchorAnalyzed, []);
+        recordCte(anchorAnalyzed, anchorArm.extras);
         const scope = [...ctes];
         if (recursiveWith)
           scope.push({
@@ -932,15 +940,21 @@ export function prepareColumnInspection(
             table: anchorArm.starTable,
             outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
             starTable: anchorArm.starTable,
+            ...(anchorArm.extras.length ? { outputs: anchorArm.extras } : {}),
           });
         for (const arm of arms.slice(1)) {
           const nested = analyze(arm, 0, scope);
           const later = armOutput(arm, nested.bindings);
-          recordCte(nested, []);
-          if (later.kind !== "bare" || tableKey(later.starTable) !== tableKey(anchorArm.starTable))
+          if (
+            later.kind !== "bare" ||
+            tableKey(later.starTable) !== tableKey(anchorArm.starTable) ||
+            later.extras.length !== anchorArm.extras.length
+          )
             throw unsupported();
+          recordCte(nested, later.extras);
         }
         starTable = anchorArm.starTable;
+        if (anchorArm.extras.length) outputs = anchorArm.extras;
       } else {
         recordCte(anchorAnalyzed, anchorArm.outputs);
         const anchor = rename(anchorArm.outputs, def.columns);
