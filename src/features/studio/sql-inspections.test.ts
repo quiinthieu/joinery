@@ -104,7 +104,9 @@ describe("bounded qualified-column inspections", () => {
     "WITH c AS (SELECT id FROM orders EXCEPT SELECT id, customer_id FROM orders) SELECT c.id FROM c",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT d.id FROM d) d",
-    "SELECT d.id FROM ((SELECT id FROM orders) UNION ALL (SELECT id FROM orders)) d",
+    "SELECT d.id FROM (((SELECT id FROM orders)) UNION ALL (SELECT id FROM orders)) d",
+    "(SELECT a.bad FROM orders a) UNION (SELECT a.id FROM orders a)",
+    "SELECT d.id FROM ((SELECT id + 1 FROM orders) UNION ALL (SELECT id FROM orders)) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id + 1 FROM orders) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL) d",
     "WITH c AS (SELECT *, id AS extra FROM orders UNION ALL SELECT * FROM orders) SELECT c.id FROM c",
@@ -915,6 +917,52 @@ describe("bounded qualified-column inspections", () => {
         /direct-table SELECT/,
       );
     }
+  });
+  test("inspects one pair of parentheses around a set arm", () => {
+    const names = ["order_id"];
+    const derived = inspect(
+      "SELECT d.bad FROM ((SELECT id AS order_id FROM orders) UNION ALL (SELECT customer_id FROM orders)) d",
+    ).result;
+    expect(derived.tables).toEqual([table]);
+    expect(derived.issues.map((issue) => [issue.name, issue.outputOf])).toEqual([["bad", "d"]]);
+    expect(derived.columnsFor(derived.issues[0])).toEqual(names);
+    const known = inspect(
+      "SELECT d.order_id FROM ((SELECT id AS order_id FROM orders) INTERSECT (SELECT customer_id AS order_id FROM orders)) d",
+    ).result;
+    expect(known.issues).toEqual([]);
+    const oneSide = inspect(
+      "SELECT d.bad FROM (SELECT id AS order_id FROM orders EXCEPT ALL (SELECT customer_id FROM orders)) d",
+    ).result;
+    expect(oneSide.columnsFor(oneSide.issues[0])).toEqual(names);
+    const ordered = inspect(
+      "SELECT d.id FROM ((SELECT id FROM orders ORDER BY id) UNION ALL (SELECT customer_id FROM orders)) d",
+    ).result;
+    expect(ordered.issues).toEqual([]);
+    const star = inspect(
+      "SELECT d.typo FROM ((SELECT * FROM orders) UNION ALL (SELECT * FROM orders)) d",
+    ).result;
+    expect(star.columnsFor(star.issues[0])).toEqual(schema.columns.map((column) => column.name));
+    const cte = inspect(
+      "WITH c AS ((SELECT id AS order_id FROM orders) UNION ALL (SELECT customer_id FROM orders)) SELECT c.bad FROM c",
+    ).result;
+    expect(cte.issues.map((issue) => [issue.name, issue.outputOf])).toEqual([["bad", "c"]]);
+    expect(cte.columnsFor(cte.issues[0])).toEqual(names);
+    const recursive = inspect(
+      "WITH RECURSIVE c AS ((SELECT id FROM orders) UNION ALL (SELECT c.id FROM c WHERE c.typo = 1)) SELECT c.id FROM c",
+    ).result;
+    expect(recursive.issues.map((issue) => issue.name)).toEqual(["typo"]);
+    expect(recursive.columnsFor(recursive.issues[0])).toEqual(["id"]);
+    const mysql = inspect(
+      "SELECT d.bad FROM ((SELECT id AS order_id FROM orders) UNION (SELECT customer_id FROM orders)) d",
+      "mysql",
+    ).result;
+    expect(mysql.columnsFor(mysql.issues[0])).toEqual(names);
+    const mixed = stateOf(
+      "SELECT d.id FROM ((SELECT id FROM orders) UNION ALL (SELECT * FROM orders)) d",
+    );
+    expect(() => prepareColumnInspection(mixed, 7, context()).finish(mixed, [schema])).toThrow(
+      /direct-table SELECT/,
+    );
   });
   test("keeps base-table corrections for references inside the query body", () => {
     const { result } = inspect(
