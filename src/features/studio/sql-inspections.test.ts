@@ -204,7 +204,14 @@ describe("bounded qualified-column inspections", () => {
     expect(inspect("SELECT o.id FROM orders o WHERE CAST(id AS text) = '1'").result.issues).toEqual(
       [],
     );
-    expect(() => inspect("SELECT (typo) FROM orders")).toThrow(/qualified columns/);
+    expect(inspect("SELECT (typo) FROM orders").result.issues.map((i) => i.name)).toEqual(["typo"]);
+    expect(inspect("SELECT ((typo)) FROM orders").result.issues.map((i) => i.name)).toEqual([
+      "typo",
+    ]);
+    expect(inspect("SELECT (id) FROM orders").result.issues).toEqual([]);
+    expect(() => inspect("SELECT (SELECT id FROM orders) FROM orders")).toThrow(
+      /direct-table SELECT/,
+    );
     const rowid = stateOf("SELECT o.id FROM orders o WHERE _rowid = 1", "mysql");
     expect(() => prepareColumnInspection(rowid, 7, context("mysql"))).toThrow(
       /direct-table SELECT/,

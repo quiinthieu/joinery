@@ -45,10 +45,9 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 /**
  * Flat direct-table SELECTs, plus one non-recursive CTE or derived table whose
  * body is that shape. Stars, column lists, recursive and multiple CTEs withhold.
- * shortcut: unqualified names include function arguments. A grouped
- * expression that is not a call stays unread in the select list.
- * A name owned by more than one relation withholds the inspection.
- * upgrade for parenthesized select-list expressions and multiple CTEs.
+ * shortcut: unqualified names include function arguments and grouped
+ * expressions. A name owned by more than one relation withholds the
+ * inspection. upgrade for multiple and recursive CTEs.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -495,14 +494,8 @@ export function prepareColumnInspection(
         if (forbidden.has(word(token))) throw unsupported();
         if (token.children) {
           if (!token.text.endsWith(")")) throw unsupported();
-          const caller = list[i - 1];
-          const call =
-            !!caller &&
-            nameLike(caller) &&
-            caller.kind !== "QuotedIdentifier" &&
-            !skipBare.has(word(caller));
-          // A call's arguments are columns even when the surrounding list is not.
-          scan(token.children, depth + 1, scope, bare || call);
+          // A group or call exposes its names. A nested SELECT still withholds.
+          scan(token.children, depth + 1, scope, true);
           continue;
         }
         if (
