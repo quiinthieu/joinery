@@ -177,8 +177,8 @@ const STATEMENT_HEAD = new Set(["SELECT", "WITH", "INSERT", "UPDATE", "DELETE"])
 
 /**
  * Built-in completion placement for one statement. Insert template stays unfiltered.
- * shortcut: template expressions and macros stay literal text, upgrade when a
- * snippet needs a computed value. A leading EXPLAIN wrapper is skipped.
+ * shortcut: lower(selection) and upper(selection) change case. Other expressions
+ * and macros stay unsupported. A leading EXPLAIN wrapper is skipped.
  */
 function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToken[] {
   const list = tokens.filter((token) => !token.kind.endsWith("Comment"));

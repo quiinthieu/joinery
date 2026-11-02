@@ -42,19 +42,22 @@ export async function applySqlTemplate(
   };
   current();
   const variables = [...body.matchAll(/\{\{([^{}]*)\}\}/g)];
+  const selectionNames = new Set(["selection", "lower(selection)", "upper(selection)"]);
   for (const [, name] of variables) {
-    if (!["database", "schema", "selection"].includes(name))
+    if (!selectionNames.has(name) && name !== "database" && name !== "schema")
       throw new Error(
-        `Unsupported template variable: {{${name}}}. Use database, schema or selection.`,
+        `Unsupported template variable: {{${name}}}. Use database, schema, selection, lower(selection) or upper(selection).`,
       );
   }
   if (/\{\{|\}\}/.test(body.replace(/\{\{([^{}]*)\}\}/g, "")))
-    throw new Error("Incomplete template variable. Use {{database}}, {{schema}} or {{selection}}.");
+    throw new Error(
+      "Incomplete template variable. Use {{database}}, {{schema}}, {{selection}}, {{lower(selection)}} or {{upper(selection)}}.",
+    );
   const selection = state.selection.main;
   const selected = state.sliceDoc(selection.from, selection.to);
-  if (variables.some(([, name]) => name === "selection") && selection.empty)
+  if (variables.some(([, name]) => selectionNames.has(name)) && selection.empty)
     throw new Error("Select SQL in the editor before inserting this template.");
-  const context = variables.some(([, name]) => name !== "selection")
+  const context = variables.some(([, name]) => !selectionNames.has(name))
     ? await options.resolveContext()
     : {};
   current();
@@ -65,12 +68,16 @@ export async function applySqlTemplate(
   while (
     body.includes(marker) ||
     selected.includes(marker) ||
+    selected.toLowerCase().includes(marker) ||
+    selected.toUpperCase().includes(marker) ||
     Object.values(context).some((value) => value?.includes(marker))
   )
     marker = `JOINERY_TEMPLATE_VALUE_${++nonce}_`;
   const template = body.replace(/\{\{([^{}]*)\}\}/g, (_, name: string) => {
     let value = selected;
-    if (name !== "selection") {
+    if (name === "lower(selection)") value = selected.toLowerCase();
+    else if (name === "upper(selection)") value = selected.toUpperCase();
+    else if (!selectionNames.has(name)) {
       const identifier = context[name as "database" | "schema"];
       if (!identifier || identifier.includes("\0"))
         throw new Error(
