@@ -111,7 +111,9 @@ describe("bounded qualified-column inspections", () => {
     "WITH c(id) AS (SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT *, id FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT * FROM orders a, orders b) SELECT c.id FROM c",
-    "WITH c AS (SELECT public.orders.* FROM public.orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT public.orders.* FROM public.orders o) SELECT c.id FROM c",
+    "WITH c AS (SELECT public.orders.* FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT other.orders.* FROM public.orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id, customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
     "WITH c(id) AS (SELECT id, customer_id FROM orders) SELECT c.id FROM c",
@@ -512,6 +514,27 @@ describe("bounded qualified-column inspections", () => {
     ).result;
     expect(distinct.columnsFor(distinct.issues[0])).toEqual(columns);
     const mysql = inspect("SELECT d.typo FROM (SELECT * FROM orders) d", "mysql").result;
+    expect(mysql.columnsFor(mysql.issues[0])).toEqual(columns);
+  });
+  test("inspects an unaliased schema-qualified star", () => {
+    const columns = schema.columns.map((column) => column.name);
+    const star = inspect(
+      "WITH c AS (SELECT public.orders.* FROM public.orders) SELECT c.typo FROM c",
+    ).result;
+    expect(star.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "typo"]]);
+    expect(star.columnsFor(star.issues[0])).toEqual(columns);
+    expect(
+      inspect("WITH c AS (SELECT public.orders.* FROM public.orders) SELECT c.id FROM c").result
+        .issues,
+    ).toEqual([]);
+    const quoted = inspect(
+      'SELECT d.typo FROM (SELECT "public"."orders".* FROM "public"."orders") d',
+    ).result;
+    expect(quoted.columnsFor(quoted.issues[0])).toEqual(columns);
+    const mysql = inspect(
+      "SELECT d.typo FROM (SELECT public.orders.* FROM public.orders) d",
+      "mysql",
+    ).result;
     expect(mysql.columnsFor(mysql.issues[0])).toEqual(columns);
   });
   test("keeps base-table corrections for references inside the query body", () => {

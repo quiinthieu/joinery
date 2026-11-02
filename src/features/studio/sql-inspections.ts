@@ -48,12 +48,13 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * UNION, INTERSECT, or EXCEPT, including ALL or DISTINCT. Its names come from
  * the anchor arm. Only a recursive arm can read that CTE. A full explicit
  * column list renames those outputs. A select list that is only `*` or
- * `alias.*` for one relation expands to that relation's columns. A partial
+ * `alias.*` for one relation expands to that relation's columns. An unaliased
+ * `schema.table.*` expands when the FROM clause writes that same name. A partial
  * column list withholds.
- * shortcut: a star beside other select items, a schema-qualified star, a star
- * in a set operation, a top-level set operation, more arms than the relation
- * limit, and an arm that is not a flat SELECT withhold. A name owned by more
- * than one relation withholds the inspection. upgrade for those shapes.
+ * shortcut: a star beside other select items, a star in a set operation, a
+ * top-level set operation, more arms than the relation limit, and an arm that
+ * is not a flat SELECT withhold. A name owned by more than one relation
+ * withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -130,6 +131,8 @@ export function prepareColumnInspection(
     outputs?: QueryOutput[];
     /** Every catalog column of this table. Names are filled when metadata arrives. */
     starTable?: TableRef;
+    /** Schema key when FROM wrote schema.table with no alias. */
+    writtenSchema?: string;
   }
   interface Analysis {
     references: MissingSqlColumn[];
@@ -373,7 +376,12 @@ export function prepareColumnInspection(
           "A unique direct base table could not be resolved; no column claim was made.",
         );
       const shown = alias ?? relation.at(-1)!;
-      const binding = { key: key(shown.text), label: shown.text, table };
+      const binding = {
+        key: key(shown.text),
+        label: shown.text,
+        table,
+        ...(relation.length === 2 && !alias ? { writtenSchema: key(relation[0].text) } : {}),
+      };
       remember(binding);
       return binding;
     }
@@ -577,6 +585,12 @@ export function prepareColumnInspection(
           i += 2;
           continue;
         }
+        // schema.table.* is a select-list star. The same shape elsewhere withholds.
+        if (nameToken(column) && list[i + 3]?.text === "." && list[i + 4]?.text === "*") {
+          if (bare) throw unsupported();
+          i += 4;
+          continue;
+        }
         if (!nameToken(column) || list[i + 3]?.text === ".") throw unsupported();
         checkName(token);
         checkName(column);
@@ -710,7 +724,7 @@ export function prepareColumnInspection(
   const cteOwners = new Map<MissingSqlColumn, Binding[]>();
   const cteProofs: QueryOutput[] = [];
   const cteTables: TableRef[] = [];
-  /** A select list that is only `*` or `alias.*`. Mixed lists stay with project(). */
+  /** A select list that is only `*`, `alias.*`, or unaliased `schema.table.*`. */
   function singleStar(
     list: readonly SqlToken[],
     scope: Scope,
@@ -732,6 +746,27 @@ export function prepareColumnInspection(
       nameLike(select[0])
     ) {
       const found = scope.filter((binding) => binding.key === key(select[0].text));
+      if (found.length !== 1) return null;
+      owner = found[0];
+    } else if (
+      select.length === 5 &&
+      select[1].text === "." &&
+      select[3].text === "." &&
+      select[4].text === "*" &&
+      nameLike(select[0]) &&
+      nameLike(select[2])
+    ) {
+      const resolved = lookup.resolve([
+        readIdentifier(select[0].text),
+        readIdentifier(select[2].text),
+      ]);
+      const found = scope.filter(
+        (binding) =>
+          !!resolved &&
+          binding.writtenSchema === key(select[0].text) &&
+          binding.key === key(select[2].text) &&
+          tableKey(binding.table) === tableKey(resolved),
+      );
       if (found.length !== 1) return null;
       owner = found[0];
     } else return null;

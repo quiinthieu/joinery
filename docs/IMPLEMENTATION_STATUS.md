@@ -2528,6 +2528,19 @@ A select list that is only `*` or `alias.*` for one relation expands to that rel
 | Unit | `sql-inspections.test.ts` covers a CTE star, a known column, `ctid`, a derived star, `alias.*`, a join, a copied projection, a chained star, `DISTINCT`, and MySQL. An explicit column list, a mixed select list, two relations, a schema-qualified star, and a star in a set operation still withhold |
 | Validate | `pnpm validate` passed: 440 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A star beside other select items, a star in a set operation, and template expressions remain open |
+| Open / next | See the schema-qualified star section below |
 
 Fetched `origin/main` is `1fa0ce5`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: schema-qualified star inspection (3 November 2026)
+
+An unaliased `schema.table.*` expands to that relation's columns when the FROM clause writes the same schema-qualified name. An alias, a different schema, and a bare table name still withhold. A star beside other select items and a star in a set operation still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a CTE star, a known column, quoted names, and MySQL. An alias, a bare table, and a different schema still withhold |
+| Validate | `pnpm validate` passed: 443 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A star beside other select items, a star in a set operation, and template expressions remain open |
+
+Fetched `origin/main` is `3887e39`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
