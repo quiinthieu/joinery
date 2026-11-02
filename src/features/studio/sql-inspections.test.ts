@@ -195,7 +195,16 @@ describe("bounded qualified-column inspections", () => {
       inspect("SELECT o.id FROM orders o ORDER BY typo").result.issues.map((i) => i.name),
     ).toEqual(["typo"]);
     expect(inspect("SELECT o.id FROM orders o WHERE id = 1 ORDER BY id").result.issues).toEqual([]);
-    expect(inspect("SELECT o.id FROM orders o WHERE LOWER(typo) = 1").result.issues).toEqual([]);
+    expect(
+      inspect("SELECT o.id FROM orders o WHERE LOWER(typo) = 1").result.issues.map((i) => i.name),
+    ).toEqual(["typo"]);
+    expect(inspect("SELECT LOWER(typo) FROM orders").result.issues.map((i) => i.name)).toEqual([
+      "typo",
+    ]);
+    expect(inspect("SELECT o.id FROM orders o WHERE CAST(id AS text) = '1'").result.issues).toEqual(
+      [],
+    );
+    expect(() => inspect("SELECT (typo) FROM orders")).toThrow(/qualified columns/);
     const rowid = stateOf("SELECT o.id FROM orders o WHERE _rowid = 1", "mysql");
     expect(() => prepareColumnInspection(rowid, 7, context("mysql"))).toThrow(
       /direct-table SELECT/,

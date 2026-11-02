@@ -230,6 +230,17 @@ describe("ordered direct-table JOIN column inspections", () => {
     expect(() =>
       prepareColumnInspection(whereMissing, 7, context()).finish(whereMissing, schemas.slice(0, 2)),
     ).toThrow(/unqualified column/);
+    expect(
+      inspect(
+        "SELECT o.id FROM orders o JOIN customers c ON o.id = c.id WHERE LOWER(customer_only) = 1",
+      ).result.issues,
+    ).toEqual([]);
+    const called = stateOf(
+      "SELECT o.id FROM orders o JOIN customers c ON o.id = c.id WHERE LOWER(typo) = 1",
+    );
+    expect(() =>
+      prepareColumnInspection(called, 7, context()).finish(called, schemas.slice(0, 2)),
+    ).toThrow(/unqualified column/);
   });
   test("inspects a derived JOIN operand by its projected names", () => {
     const { result } = inspect(
