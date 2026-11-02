@@ -257,6 +257,21 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
   expect(labelsAt("SELECT * FROM orders WHERE ", placed)).toContain("probe");
   expect(labelsAt("SELECT * FROM orders WHERE ", placed)).not.toContain("sel");
   expect(labelsAt("sel", placed)).toContain("sel");
+  expect(labelsAt("SELECT * FROM (sel")).toContain("sel");
+  expect(labelsAt("SELECT * FROM (sel")).not.toContain("join");
+  expect(labelsAt("SELECT * FROM (sel")).not.toContain("lim");
+  const nestedFrom = labelsAt("SELECT * FROM (SELECT id FROM ");
+  expect(nestedFrom).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
+  expect(nestedFrom).not.toContain("sel");
+  const nestedWhere = labelsAt("SELECT * FROM (SELECT id FROM orders WHERE ");
+  expect(nestedWhere).toContain("lim");
+  expect(nestedWhere).not.toContain("join");
+  expect(nestedWhere).not.toContain("sel");
+  expect(labelsAt("WITH c AS (sel")).toContain("sel");
+  expect(labelsAt("WITH c AS (SELECT id FROM orders WHERE ")).toContain("lim");
+  expect(labelsAt("WITH c AS (SELECT id FROM orders WHERE ")).not.toContain("sel");
+  expect(labelsAt("SELECT LOWER(sel")).not.toContain("sel");
+  expect(labelsAt("SELECT * FROM (SELECT id FROM orders) sel")).not.toContain("sel");
 
   const worker = new CompletionWorkerIndex();
   const tables: TableInfo[] = [

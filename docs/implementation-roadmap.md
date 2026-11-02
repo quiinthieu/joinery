@@ -587,6 +587,7 @@ R6 remains partial, local, unmerged and unreleased.
    fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
    suite passed on `db5cd1b`.
    Next: recursive CTEs, then the remaining R5/R6/R7/R8 scope.
+   Completion places statement, JOIN and LIMIT templates inside a parenthesized query after FROM, JOIN or AS.
    A derived table can read an earlier CTE in the same WITH list.
    Several non-recursive CTEs use the same projected-name rule. A CTE can see earlier CTEs in that WITH list.
    Parenthesized select-list expressions use the same one-owner column rule.

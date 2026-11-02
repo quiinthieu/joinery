@@ -2359,6 +2359,19 @@ A derived table can read an earlier CTE in the same statement. `SELECT d.bad FRO
 | Unit | `sql-inspections.test.ts` covers an outer derived table, a derived table inside a later CTE, and a derived table that names a later CTE |
 | Validate | `pnpm validate` passed: 415 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+| Open / next | See the nested template placement section below |
 
 Fetched `origin/main` is `0867618`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: nested template placement (2 November 2026)
+
+Completion classifies a parenthesized query after `FROM`, `JOIN` or `AS` with the same rules as a top-level statement. `SELECT * FROM (sel` offers a statement template. `SELECT * FROM (SELECT id FROM ` offers `join`, `ljoin` and `lim`. `WITH c AS (SELECT id FROM orders WHERE ` offers `lim`. A function call such as `LOWER(sel` does not start a statement. A prefix after the closing parenthesis stays in the outer clause. **Insert template** still lists every template. Expansion does not prepare or execute SQL. Subqueries in other positions, `EXPLAIN` wrappers and declared per-template contexts are not classified.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-snippets.test.ts` covers a subquery start, an inner FROM list, an inner WHERE clause, a CTE body, a function call, and a prefix after the closing parenthesis |
+| Validate | `pnpm validate` passed: 415 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Recursive CTEs, other subquery positions, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `9bf0d24`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
