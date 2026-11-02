@@ -2528,6 +2528,19 @@ A select list that is only `*` or `alias.*` for one relation expands to that rel
 | Unit | `sql-inspections.test.ts` covers a CTE star, a known column, `ctid`, a derived star, `alias.*`, a join, a copied projection, a chained star, `DISTINCT`, and MySQL. An explicit column list, a mixed select list, two relations, a schema-qualified star, and a star in a set operation still withhold |
 | Validate | `pnpm validate` passed: 440 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A star beside other select items, a star in a set operation, and template expressions remain open |
+| Open / next | See the template case section below |
 
 Fetched `origin/main` is `1fa0ce5`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: template case expressions (3 November 2026)
+
+`{{lower(selection)}}` and `{{upper(selection)}}` change the selected editor text's case and insert it literally. They do not read console context, quote the text, or parse it as SQL. An empty selection blocks insertion. Other expressions and macros stay unsupported. Expansion does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-template-context.test.ts` covers lower and upper case, marker-like text, a quoted database beside a lowercased selection, and an empty selection. Other expressions still throw |
+| Validate | `pnpm validate` passed: 445 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A star beside other select items, a star in a set operation, a schema-qualified star, and other template expressions remain open |
+
+Fetched `origin/main` is `3887e39`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
