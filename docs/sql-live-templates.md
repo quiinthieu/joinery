@@ -48,7 +48,9 @@ snippet saved before this field existed, stays available in every completion
 site. A custom snippet that reuses a built-in trigger keeps that trigger's
 place. **Insert template** still lists every template. A parenthesized query
 after `FROM`, `JOIN`, `AS`, `IN`, `EXISTS`, `SELECT`, a comparison, or a comma
-uses that same placement. A function name does not open one. A statement after
+uses that same placement. A function name does not open one. A parenthesized
+query in an argument does: `LOWER(sel` stays outside, and `LOWER(a, (SELECT id
+FROM ` offers the JOIN and LIMIT templates. A statement after
 `EXPLAIN`, including `ANALYZE`, `VERBOSE`, a closed option list, or
 `FORMAT=JSON`, uses that same placement. A parenthesized statement there does
 too: `EXPLAIN ANALYZE (SELECT id FROM ` offers the JOIN and LIMIT templates,

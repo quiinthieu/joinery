@@ -177,25 +177,54 @@ const STATEMENT_HEAD = new Set(["SELECT", "WITH", "INSERT", "UPDATE", "DELETE"])
 
 /**
  * Built-in completion placement for one statement. Insert template stays unfiltered.
- * shortcut: a subquery inside a function argument stays unclassified, upgrade
- * when that site needs templates. A leading EXPLAIN wrapper is skipped.
+ * shortcut: template expressions and macros stay literal text, upgrade when a
+ * snippet needs a computed value. A leading EXPLAIN wrapper is skipped.
  */
 function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToken[] {
   const list = tokens.filter((token) => !token.kind.endsWith("Comment"));
   const container = list.find((token) => token.children && token.from < from && token.to >= from);
   if (container?.children) {
     const before = list.filter((token) => token.to <= container.from);
-    const introducer = before.at(-1);
-    const keyword = introducer?.kind === "Keyword" ? introducer.text.toUpperCase() : "";
-    if (
-      (introducer && NESTED_QUERY_MARK.has(introducer.text)) ||
-      NESTED_QUERY_KEYWORD.has(keyword) ||
-      explainStatementParen(before, container.children, from)
-    ) {
+    if (opensQueryParen(before, container.children, from)) {
       return priorTemplateTokens(container.children, from);
     }
+    const nested = argumentQueryTokens(container.children, from);
+    if (nested) return nested;
   }
   return list.filter((token) => token.to <= from);
+}
+
+function opensQueryParen(
+  before: readonly SqlToken[],
+  children: readonly SqlToken[],
+  from: number,
+): boolean {
+  const introducer = before.at(-1);
+  const keyword = introducer?.kind === "Keyword" ? introducer.text.toUpperCase() : "";
+  return (
+    (!!introducer && NESTED_QUERY_MARK.has(introducer.text)) ||
+    NESTED_QUERY_KEYWORD.has(keyword) ||
+    explainStatementParen(before, children, from)
+  );
+}
+
+/** A query inside a call, such as LOWER(a, (SELECT ...)). The call itself is not a query. */
+function argumentQueryTokens(tokens: readonly SqlToken[], from: number): SqlToken[] | undefined {
+  const list = tokens.filter((token) => !token.kind.endsWith("Comment"));
+  const container = list.find((token) => token.children && token.from < from && token.to >= from);
+  if (!container?.children) return undefined;
+  const before = list.filter((token) => token.to <= container.from);
+  const inner = container.children.filter(
+    (token) => !token.kind.endsWith("Comment") && token.to <= from,
+  );
+  const head = inner[0];
+  const bareArgument =
+    before.length === 0 &&
+    (!head || (head.kind === "Keyword" && STATEMENT_HEAD.has(head.text.toUpperCase())));
+  if (opensQueryParen(before, container.children, from) || bareArgument) {
+    return priorTemplateTokens(container.children, from);
+  }
+  return argumentQueryTokens(container.children, from);
 }
 
 /** A `(SELECT ...)` after EXPLAIN is the statement. An option list such as `(ANALYZE)` is not. */
