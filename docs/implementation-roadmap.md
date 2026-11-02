@@ -592,6 +592,7 @@ R6 remains partial, local, unmerged and unreleased.
    INTERSECT and EXCEPT use that same anchor projection inside a CTE or derived table.
    A select list that is only * or alias.* for one relation expands to that relation's columns.
    A star beside simple columns keeps those names as well. A repeated output name still withholds.
+   A lone star on every arm of a set operation expands when each star is the same relation.
    `{{lower(selection)}}` and `{{upper(selection)}}` change the selected text's case.
    A recursive CTE of more than two flat SELECT arms is inspected from the anchor projection.
    A full explicit CTE column list renames that CTE's projected outputs. A partial list still withholds.

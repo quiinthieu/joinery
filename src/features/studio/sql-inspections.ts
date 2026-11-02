@@ -50,8 +50,11 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * column list renames those outputs. A select list may be `*` or `alias.*`
  * for one relation, alone or beside simple columns. That expands to the
  * relation's columns plus those extra names. A partial column list withholds.
- * shortcut: a schema-qualified star, a star in a set operation, a top-level
- * set operation, more arms than the relation limit, and an arm that is not a
+ * Every arm of a set operation may be a lone `*` or `alias.*` of that same
+ * relation. The offered names are that relation's columns.
+ * shortcut: a schema-qualified star, a star beside columns or of another
+ * relation inside a set operation, a recursive star, a top-level set
+ * operation, more arms than the relation limit, and an arm that is not a
  * flat SELECT withhold. A repeated output name, or a name owned by more than
  * one relation, withholds the inspection. upgrade for those shapes.
  */
@@ -333,15 +336,27 @@ export function prepareColumnInspection(
       )
         throw unsupported();
       const anchorNested = analyze(arms[0], depth + 1, ctes);
-      const anchor = project(arms[0], anchorNested.bindings);
-      absorb(anchorNested, anchor);
+      const anchorArm = armOutput(arms[0], anchorNested.bindings);
+      if (anchorArm.kind === "bare") {
+        absorb(anchorNested, []);
+        for (const arm of arms.slice(1)) {
+          const nested = analyze(arm, depth + 1, ctes);
+          const later = armOutput(arm, nested.bindings);
+          absorb(nested, []);
+          if (later.kind !== "bare" || tableKey(later.starTable) !== tableKey(anchorArm.starTable))
+            throw unsupported();
+        }
+        return { starTable: anchorArm.starTable };
+      }
+      absorb(anchorNested, anchorArm.outputs);
       for (const arm of arms.slice(1)) {
         const nested = analyze(arm, depth + 1, ctes);
-        const projected = project(arm, nested.bindings);
-        if (projected.length !== anchor.length) throw unsupported();
-        absorb(nested, projected);
+        const later = armOutput(arm, nested.bindings);
+        if (later.kind !== "named" || later.outputs.length !== anchorArm.outputs.length)
+          throw unsupported();
+        absorb(nested, later.outputs);
       }
-      return { outputs: anchor };
+      return { outputs: anchorArm.outputs };
     }
     function atom(): Binding {
       if (tokens[next]?.children) {
@@ -809,17 +824,26 @@ export function prepareColumnInspection(
       throw unsupported();
     return { outputs };
   }
+  function armOutput(
+    body: readonly SqlToken[],
+    scope: Scope,
+  ): { kind: "bare"; starTable: TableRef } | { kind: "named"; outputs: QueryOutput[] } {
+    const star = singleStar(body, scope);
+    // shortcut: a star beside columns has unknown width in a set operation, upgrade when metadata can compare it.
+    if (star && "starTable" in star) {
+      if (star.outputs?.length) throw unsupported();
+      return { kind: "bare", starTable: star.starTable };
+    }
+    return {
+      kind: "named",
+      outputs: star && "outputs" in star ? star.outputs : project(body, scope),
+    };
+  }
   const recordCte = (analyzed: Analysis, extra: QueryOutput[]) => {
     cteReferences.push(...analyzed.references);
     for (const [ref, owners] of analyzed.unqualifiedOwners) cteOwners.set(ref, owners);
     cteProofs.push(...analyzed.proofs, ...extra);
     cteTables.push(...analyzed.tables);
-  };
-  const take = (body: readonly SqlToken[], scope: readonly Binding[]) => {
-    const analyzed = analyze(body, 0, scope);
-    const outputs = project(body, analyzed.bindings);
-    recordCte(analyzed, outputs);
-    return outputs;
   };
   const rename = (outputs: QueryOutput[], columns?: readonly string[]) => {
     if (!columns) return outputs;
@@ -856,19 +880,40 @@ export function prepareColumnInspection(
         arms.some((arm) => arm.length === 0)
       )
         throw unsupported();
-      const anchor = rename(take(arms[0], ctes), def.columns);
-      const scope = [...ctes];
-      if (recursiveWith)
-        scope.push({
-          key: key(def.name.text),
-          label: def.name.text,
-          table: anchor[0].table,
-          outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
-          outputs: anchor,
-        });
-      for (const arm of arms.slice(1))
-        if (take(arm, scope).length !== anchor.length) throw unsupported();
-      outputs = anchor;
+      const anchorAnalyzed = analyze(arms[0], 0, ctes);
+      const anchorArm = armOutput(arms[0], anchorAnalyzed.bindings);
+      if (anchorArm.kind === "bare") {
+        // shortcut: a recursive star and an explicit column list withhold until the width is known.
+        if (def.columns || recursiveWith) throw unsupported();
+        recordCte(anchorAnalyzed, []);
+        for (const arm of arms.slice(1)) {
+          const nested = analyze(arm, 0, ctes);
+          const later = armOutput(arm, nested.bindings);
+          recordCte(nested, []);
+          if (later.kind !== "bare" || tableKey(later.starTable) !== tableKey(anchorArm.starTable))
+            throw unsupported();
+        }
+        starTable = anchorArm.starTable;
+      } else {
+        recordCte(anchorAnalyzed, anchorArm.outputs);
+        const anchor = rename(anchorArm.outputs, def.columns);
+        const scope = [...ctes];
+        if (recursiveWith)
+          scope.push({
+            key: key(def.name.text),
+            label: def.name.text,
+            table: anchor[0].table,
+            outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
+            outputs: anchor,
+          });
+        for (const arm of arms.slice(1)) {
+          const nested = analyze(arm, 0, scope);
+          const later = armOutput(arm, nested.bindings);
+          if (later.kind !== "named" || later.outputs.length !== anchor.length) throw unsupported();
+          recordCte(nested, later.outputs);
+        }
+        outputs = anchor;
+      }
     }
     ctes.push({
       key: key(def.name.text),
