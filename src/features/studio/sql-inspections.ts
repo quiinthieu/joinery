@@ -43,11 +43,13 @@ export const columnInspectionLimits = {
 const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name]);
 
 /**
- * Flat direct-table SELECTs, plus non-recursive CTEs or a derived table whose
- * body is that shape. Stars, column lists and recursive CTEs withhold.
- * shortcut: a CTE and a derived table can see earlier CTEs in the same
- * WITH list. A name owned by more than one relation withholds the
- * inspection. upgrade for recursive CTEs.
+ * Flat direct-table SELECTs, plus CTEs or a derived table whose body is that
+ * shape. A recursive CTE may be two flat SELECT arms joined by UNION or
+ * UNION ALL; its names come from the anchor arm. Stars and column lists
+ * withhold.
+ * shortcut: more than two set-operation arms, INTERSECT/EXCEPT, and a
+ * recursive arm that is not a flat SELECT withhold. A name owned by more
+ * than one relation withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -593,7 +595,8 @@ export function prepareColumnInspection(
   function peel(list: readonly SqlToken[]) {
     if (word(list[0]) !== "WITH") return null;
     let index = 1;
-    if (word(list[index]) === "RECURSIVE") throw unsupported();
+    const recursive = word(list[index]) === "RECURSIVE";
+    if (recursive) index++;
     const defs: { name: SqlToken; body: SqlToken[] }[] = [];
     for (;;) {
       const name = list[index++];
@@ -609,22 +612,63 @@ export function prepareColumnInspection(
       if (list[index]?.text !== ",") break;
       index++;
     }
-    return { defs, rest: list.slice(index) };
+    return { defs, rest: list.slice(index), recursive };
+  }
+  // Top-level UNION only. A nested query stays inside one parenthesis token.
+  function unionArms(body: readonly SqlToken[]): SqlToken[][] | null {
+    const arms: SqlToken[][] = [];
+    let start = 0;
+    let found = false;
+    for (let i = 0; i < body.length; i++) {
+      if (word(body[i]) !== "UNION") continue;
+      found = true;
+      const qualifier = word(body[i + 1]);
+      const after = qualifier === "ALL" || qualifier === "DISTINCT" ? i + 2 : i + 1;
+      arms.push(body.slice(start, i));
+      start = after;
+      i = after - 1;
+    }
+    if (!found) return null;
+    arms.push(body.slice(start));
+    return arms;
   }
   const leading = peel(tokens);
+  const recursiveWith = leading?.recursive ?? false;
   const ctes: Binding[] = [];
   const cteReferences: MissingSqlColumn[] = [];
   const cteOwners = new Map<MissingSqlColumn, Binding[]>();
   const cteProofs: QueryOutput[] = [];
   const cteTables: TableRef[] = [];
+  const take = (body: readonly SqlToken[], scope: readonly Binding[]) => {
+    const analyzed = analyze(body, 0, scope);
+    const outputs = project(body, analyzed.bindings);
+    cteReferences.push(...analyzed.references);
+    for (const [ref, owners] of analyzed.unqualifiedOwners) cteOwners.set(ref, owners);
+    cteProofs.push(...analyzed.proofs, ...outputs);
+    cteTables.push(...analyzed.tables);
+    return outputs;
+  };
   for (const def of leading?.defs ?? []) {
     if (ctes.some((item) => item.key === key(def.name.text))) throw unsupported();
-    const body = analyze(def.body, 0, ctes);
-    const outputs = project(def.body, body.bindings);
-    cteReferences.push(...body.references);
-    for (const [ref, owners] of body.unqualifiedOwners) cteOwners.set(ref, owners);
-    cteProofs.push(...body.proofs, ...outputs);
-    cteTables.push(...body.tables);
+    const arms = unionArms(def.body);
+    let outputs: QueryOutput[];
+    if (!arms) outputs = take(def.body, ctes);
+    else {
+      // shortcut: one UNION or UNION ALL. Longer set operations withhold.
+      if (!recursiveWith || arms.length !== 2 || arms.some((arm) => arm.length === 0))
+        throw unsupported();
+      const anchor = take(arms[0], ctes);
+      const self: Binding = {
+        key: key(def.name.text),
+        label: def.name.text,
+        table: anchor[0].table,
+        outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
+        outputs: anchor,
+      };
+      const recursive = take(arms[1], [...ctes, self]);
+      if (recursive.length !== anchor.length) throw unsupported();
+      outputs = anchor;
+    }
     ctes.push({
       key: key(def.name.text),
       label: def.name.text,
