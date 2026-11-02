@@ -85,8 +85,6 @@ describe("bounded qualified-column inspections", () => {
     expect(inspect("SELECT orders.id FROM orders").result.issues).toEqual([]);
   });
   test.each([
-    "WITH c AS (SELECT id FROM orders) SELECT c.bad FROM c",
-    "SELECT d.bad FROM (SELECT id FROM orders) d",
     "SELECT a.bad FROM orders a WHERE EXISTS (SELECT 1 FROM orders)",
     "SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a",
     "SELECT a.bad FROM orders(a)",
@@ -98,6 +96,12 @@ describe("bounded qualified-column inspections", () => {
     "SELECT a.bad FROM orders a WHERE (",
     "SELECT a.payload.field FROM orders a",
     "SELECT a.bad FROM orders a WHERE other.bad > 0",
+    "WITH RECURSIVE c AS (SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH c(id) AS (SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders), d AS (SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT * FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders a JOIN orders b ON a.id = b.id) SELECT c.id FROM c",
+    "SELECT id FROM (SELECT id FROM orders) d",
   ])("withholds unsupported or unresolved shapes: %s", (doc) => {
     const state = stateOf(doc);
     expect(() => prepareColumnInspection(state, 7, context())).toThrow();
@@ -146,6 +150,79 @@ describe("bounded qualified-column inspections", () => {
     expect(() => prepareColumnInspection(state, 7, context("mysql"))).toThrow(
       /direct-table SELECT/,
     );
+  });
+  test("inspects one CTE or derived query by its projected names", () => {
+    const cte = inspect("WITH c AS (SELECT id FROM orders) SELECT c.bad FROM c").result;
+    expect(cte.tables).toEqual([table]);
+    expect(cte.issues.map((issue) => issue.name)).toEqual(["bad"]);
+    expect(cte.issues[0].outputOf).toBe("c");
+    expect(cte.columnsFor(cte.issues[0])).toEqual(["id"]);
+    const aliased = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders) SELECT x.customer_id FROM c x",
+    ).result;
+    expect(aliased.issues[0].outputOf).toBe("x");
+    expect(aliased.columnsFor(aliased.issues[0])).toEqual(["order_id"]);
+    const derived = inspect("SELECT d.bad FROM (SELECT id FROM orders) d").result;
+    expect(derived.columnsFor(derived.issues[0])).toEqual(["id"]);
+    const nested = inspect(
+      "SELECT a.bad FROM (SELECT b.id FROM (SELECT id FROM orders) b) a",
+    ).result;
+    expect(nested.columnsFor(nested.issues[0])).toEqual(["id"]);
+    const joined = inspect(
+      "WITH c AS (SELECT a.id FROM orders a JOIN orders b ON a.id = b.id) SELECT c.bad, c.id FROM c",
+    ).result;
+    expect(joined.checked).toBe(5);
+    expect(joined.issues).toHaveLength(1);
+    expect(joined.columnsFor(joined.issues[0])).toEqual(["id"]);
+  });
+  test("keeps base-table corrections for references inside the query body", () => {
+    const { result } = inspect(
+      "WITH c AS NOT MATERIALIZED (SELECT o.id FROM orders o WHERE o.typo > 0) SELECT c.bad FROM c",
+    );
+    expect(result.issues.map((issue) => [issue.name, issue.outputOf])).toEqual([
+      ["typo", undefined],
+      ["bad", "c"],
+    ]);
+    expect(result.columnsFor(result.issues[0])).toEqual(
+      schema.columns.map((column) => column.name),
+    );
+    expect(result.columnsFor(result.issues[1])).toEqual(["id"]);
+    const state = stateOf('WITH c AS (SELECT "Mixed" AS "Keep" FROM orders) SELECT c.keep FROM c');
+    const quoted = prepareColumnInspection(state, 7, context()).finish(state, [schema]);
+    expect(quoted.issues.map((issue) => issue.name)).toEqual(["keep"]);
+    expect(quoted.columnsFor(quoted.issues[0])).toEqual(["Keep"]);
+  });
+  test("does not offer unprojected catalog or system columns through a CTE", () => {
+    const hidden = inspect(
+      "WITH c AS (SELECT id FROM orders) SELECT c.ctid, c.customer_id FROM c",
+    ).result;
+    expect(hidden.issues.map((issue) => issue.name)).toEqual(["ctid", "customer_id"]);
+    expect(hidden.columnsFor(hidden.issues[0])).toEqual(["id"]);
+    expect(
+      inspect("WITH c AS (SELECT o.ctid FROM orders o) SELECT c.ctid FROM c").result.issues,
+    ).toEqual([]);
+    const state = stateOf("WITH c AS (SELECT missing FROM orders) SELECT c.missing FROM c");
+    expect(() => prepareColumnInspection(state, 7, context()).finish(state, [schema])).toThrow(
+      /projected column/,
+    );
+    const shadow = {
+      ...context(),
+      tables: [
+        ...context().tables,
+        {
+          table: { schema: "public", name: "c" },
+          kind: "table",
+          estimatedRows: null,
+          totalBytes: null,
+        },
+      ],
+    };
+    const plan = prepareColumnInspection(
+      stateOf("WITH c AS (SELECT id FROM orders) SELECT c.bad FROM c"),
+      7,
+      shadow,
+    );
+    expect(plan.tables).toEqual([table]);
   });
   test("withholds identifiers the server can truncate and honors MySQL alias case policy", () => {
     const state = stateOf(`SELECT o.${"x".repeat(64)} FROM orders o`);

@@ -12,6 +12,10 @@ export interface MissingSqlColumn {
   from: number;
   to: number;
   line: number;
+  /** Set when the qualifier is a CTE or derived output, not the base table. */
+  outputOf?: string;
+  /** Correction names for outputOf. Absent on direct-table references. */
+  projectedColumns?: readonly string[];
 }
 
 export interface SqlColumnInspection {
@@ -38,7 +42,12 @@ export const columnInspectionLimits = {
 };
 const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name]);
 
-/** Flat direct-table SELECTs, with ordered JOIN operands and no query nesting. */
+/**
+ * Flat direct-table SELECTs, plus one non-recursive CTE or derived table whose
+ * body is that shape. Stars, column lists, recursive and multiple CTEs withhold.
+ * shortcut: nested output projection is proved only through simple column names;
+ * upgrade for multiple CTEs, recursive queries, and unqualified inference.
+ */
 export function prepareColumnInspection(
   state: EditorState,
   pos: number,
@@ -64,7 +73,12 @@ export function prepareColumnInspection(
       throw unsupported();
   };
   const word = (token?: SqlToken) => (token?.kind === "Keyword" ? token.text.toUpperCase() : "");
-  if (word(tokens[0]) !== "SELECT") throw unsupported();
+  const nameLike = (token?: SqlToken) =>
+    !!token &&
+    (nameToken(token) ||
+      (["Keyword", "Type", "Builtin"].includes(token.kind) &&
+        /^[A-Za-z_][A-Za-z0-9_$]*$/.test(token.text)));
+  const columnKey = (name: string) => (context.engine === "mysql" ? name.toLowerCase() : name);
   const tree = ensureSyntaxTree(state, state.doc.length, 75);
   if (!tree) throw unsupported();
   let invalid = false;
@@ -80,8 +94,6 @@ export function prepareColumnInspection(
     },
   });
   if (invalid) throw unsupported();
-  const from = tokens.findIndex((token) => word(token) === "FROM");
-  if (from < 0) throw unsupported();
   const lookup = tableLookup(
     [...context.tables],
     context.engine,
@@ -97,13 +109,24 @@ export function prepareColumnInspection(
       ? value.toLowerCase()
       : value;
   };
+  interface QueryOutput {
+    name: string;
+    table: TableRef;
+    source: string;
+  }
   interface Binding {
     key: string;
     table: TableRef;
+    outputOf?: string;
+    outputs?: QueryOutput[];
+  }
+  interface Analysis {
+    references: MissingSqlColumn[];
+    proofs: QueryOutput[];
+    tables: TableRef[];
+    bindings: Binding[];
   }
   type Scope = Binding[];
-  const bindings: Scope = [];
-  const conditions: { tokens: SqlToken[]; scope: Scope }[] = [];
   const clauses = new Set(["WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FOR", "FETCH"]);
   const joinModifiers = new Set(["INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "NATURAL"]);
   const joins = new Set([
@@ -125,208 +148,368 @@ export function prepareColumnInspection(
     "NATURAL FULL",
     "NATURAL FULL OUTER",
   ]);
-  const joinAt = (index: number) => {
-    const modifiers: string[] = [];
-    while (joinModifiers.has(word(tokens[index]))) modifiers.push(word(tokens[index++]));
-    return word(tokens[index]) === "JOIN" ? { modifiers, next: index + 1 } : null;
-  };
-  let next = from + 1;
-  function atom(): Binding {
-    const relation: SqlToken[] = [];
-    if (!nameToken(tokens[next])) throw unsupported();
-    relation.push(tokens[next++]);
-    while (tokens[next]?.text === "." && nameToken(tokens[next + 1])) {
-      relation.push(tokens[next + 1]);
-      next += 2;
-    }
-    if (relation.length > 2) throw unsupported();
-    const explicitAlias = word(tokens[next]) === "AS";
-    if (explicitAlias) next++;
-    const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
-    if (explicitAlias && !alias) throw unsupported();
-    for (const token of [...relation, ...(alias ? [alias] : [])]) checkName(token);
-    // Never substitute a guessed search path for observed visibility.
-    if (relation.length === 1 && context.unqualifiedTables === undefined)
-      throw new Error("Visible-table metadata is unavailable; no column claim was made.");
-    const table = lookup.resolve(relation.map((token) => readIdentifier(token.text)));
-    const info = table && context.tables.find((item) => tableKey(item.table) === tableKey(table));
-    if (
-      !table ||
-      !info ||
-      !["table", "partitionedTable", "r", "p", "BASE TABLE"].includes(info.kind)
-    )
-      throw new Error(
-        "A unique direct base table could not be resolved; no column claim was made.",
-      );
-    const binding = { key: key((alias ?? relation.at(-1))!.text), table };
-    if (
-      bindings.length >= columnInspectionLimits.relations ||
-      bindings.some((b) => b.key === binding.key)
-    )
-      throw unsupported();
-    bindings.push(binding);
-    return binding;
-  }
-  let operand: Scope = [atom()];
-  const pending: { left: Scope; optional: boolean }[] = [];
-  const finishJoins = () => {
-    while (pending.length) {
-      const join = pending.pop()!;
-      if (!join.optional) throw unsupported();
-      operand = [...join.left, ...operand];
-    }
-  };
-  while (next < tokens.length && !clauses.has(word(tokens[next])) && tokens[next].text !== ";") {
-    if (tokens[next].text === ",") {
-      finishJoins();
-      next++;
-      operand = [atom()];
-      continue;
-    }
-    const join = joinAt(next);
-    if (join) {
-      const { modifiers } = join;
-      if (
-        !joins.has(modifiers.join(" ")) ||
-        (context.engine === "mysql" && modifiers.includes("FULL"))
-      )
-        throw unsupported();
-      const natural = modifiers.includes("NATURAL"),
-        cross = modifiers.includes("CROSS");
-      pending.push({
-        left: operand,
-        optional:
-          context.engine === "mysql" &&
-          !modifiers.some((m) => ["LEFT", "RIGHT", "FULL"].includes(m)),
-      });
-      next = join.next;
-      operand = [atom()];
-      // CROSS/NATURAL joins close immediately. MySQL permits CROSS ... ON/USING.
-      if (
-        natural ||
-        (cross && !(context.engine === "mysql" && ["ON", "USING"].includes(word(tokens[next]))))
-      )
-        operand = [...pending.pop()!.left, ...operand];
-      continue;
-    }
-    const condition = word(tokens[next++]);
-    if (condition !== "ON" && condition !== "USING") throw unsupported();
-    const owner = pending.pop();
-    if (!owner) throw unsupported();
-    operand = [...owner.left, ...operand];
-    if (condition === "USING") {
-      const list = tokens[next++];
-      const names = list?.children && clean(list.children);
-      // The lexer classifies unqualified names such as id as dialect keywords.
-      const usingName = (t: SqlToken) =>
-        nameToken(t) ||
-        (["Keyword", "Type", "Builtin"].includes(t.kind) &&
-          /^[A-Za-z_][A-Za-z0-9_$]*$/.test(t.text) &&
-          ![
-            "SELECT",
-            "FROM",
-            "WITH",
-            "WHERE",
-            "JOIN",
-            "ON",
-            "USING",
-            "AS",
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-          ].includes(t.text.toUpperCase()));
-      if (
-        !list?.text.endsWith(")") ||
-        !names?.length ||
-        names.length % 2 === 0 ||
-        names.some((t, i) => (i % 2 ? t.text !== "," : !usingName(t)))
-      )
-        throw unsupported();
-      for (const token of names.filter((_, i) => i % 2 === 0)) checkName(token);
-    } else {
-      const start = next;
-      while (
-        next < tokens.length &&
-        !clauses.has(word(tokens[next])) &&
-        tokens[next].text !== ";" &&
-        tokens[next].text !== "," &&
-        !["ON", "USING"].includes(word(tokens[next])) &&
-        !joinAt(next)
-      )
-        next++;
-      if (next === start) throw unsupported();
-      conditions.push({ tokens: tokens.slice(start, next), scope: operand });
-    }
-  }
-  finishJoins();
-  const tables = [
-    ...new Map(bindings.map((binding) => [tableKey(binding.table), binding.table])).values(),
-  ];
-  const references: MissingSqlColumn[] = [];
-  const forbidden = new Set([
-    "SELECT",
-    "WITH",
-    "JOIN",
-    "UNION",
-    "INTERSECT",
-    "EXCEPT",
-    "INTO",
-    "LATERAL",
-    "APPLY",
-    "WINDOW",
-    "QUALIFY",
-    "TABLESAMPLE",
-  ]);
+  let relations = 0;
   let visited = 0;
-  function scan(raw: readonly SqlToken[], depth: number, scope: Scope) {
-    if (depth > 16) throw unsupported();
-    const list = clean(raw);
-    for (let i = 0; i < list.length; i++) {
-      if (++visited > 4096) throw unsupported();
-      const token = list[i];
-      if (forbidden.has(word(token))) throw unsupported();
-      if (token.children) {
-        if (!token.text.endsWith(")")) throw unsupported();
-        scan(token.children, depth + 1, scope);
+  function project(list: readonly SqlToken[], scope: Scope): QueryOutput[] {
+    if (word(list[0]) !== "SELECT") throw unsupported();
+    let at = 1;
+    if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
+    const from = list.findIndex((token) => word(token) === "FROM");
+    if (from < at) throw unsupported();
+    const select = list.slice(at, from);
+    if (!select.length || select.length > 2048) throw unsupported();
+    const outputs: QueryOutput[] = [];
+    let start = 0;
+    for (let i = 0; i <= select.length; i++) {
+      if (i < select.length && select[i].text !== ",") continue;
+      const item = select.slice(start, i);
+      start = i + 1;
+      if (!item.length) throw unsupported();
+      let alias: SqlToken | undefined;
+      if (item.length >= 3 && word(item.at(-2)) === "AS" && nameLike(item.at(-1))) {
+        alias = item.at(-1);
+        item.splice(-2, 2);
+      } else if (item.length >= 2 && nameLike(item.at(-1)) && item.at(-2)?.text !== ".")
+        alias = item.pop();
+      if (alias) checkName(alias);
+      if (!item.length || item.length > 3 || item.length % 2 === 0) throw unsupported();
+      for (let j = 0; j < item.length; j++)
+        if (j % 2 === 0 ? !nameLike(item[j]) : item[j].text !== ".") throw unsupported();
+      const columnTok = item.at(-1)!;
+      checkName(columnTok);
+      const written = identifierValue(readIdentifier(columnTok.text), context.engine);
+      let sourceTable: TableRef;
+      let source = written;
+      if (item.length === 1) {
+        const bases = scope.filter((binding) => !binding.outputs);
+        if (bases.length !== 1) throw unsupported();
+        sourceTable = bases[0].table;
+      } else {
+        checkName(item[0]);
+        const owners = scope.filter((binding) => binding.key === key(item[0].text));
+        if (owners.length !== 1) throw unsupported();
+        const owner = owners[0];
+        if (owner.outputs) {
+          const found = owner.outputs.filter(
+            (output) => columnKey(output.name) === columnKey(written),
+          );
+          if (found.length !== 1) throw unsupported();
+          sourceTable = found[0].table;
+          source = found[0].source;
+        } else sourceTable = owner.table;
+      }
+      outputs.push({
+        name: identifierValue(readIdentifier((alias ?? columnTok).text), context.engine),
+        table: sourceTable,
+        source,
+      });
+      if (outputs.length > 256) throw unsupported();
+    }
+    if (new Set(outputs.map((output) => columnKey(output.name))).size !== outputs.length)
+      throw unsupported();
+    return outputs;
+  }
+  function analyze(tokens: readonly SqlToken[], depth: number, cte?: Binding): Analysis {
+    if (depth > 8 || word(tokens[0]) !== "SELECT") throw unsupported();
+    const from = tokens.findIndex((token) => word(token) === "FROM");
+    if (from < 0) throw unsupported();
+    const bindings: Scope = [];
+    const references: MissingSqlColumn[] = [];
+    const proofs: QueryOutput[] = [];
+    const nestedTables: TableRef[] = [];
+    const conditions: { tokens: SqlToken[]; scope: Scope }[] = [];
+    const joinAt = (index: number) => {
+      const modifiers: string[] = [];
+      while (joinModifiers.has(word(tokens[index]))) modifiers.push(word(tokens[index++]));
+      return word(tokens[index]) === "JOIN" ? { modifiers, next: index + 1 } : null;
+    };
+    const remember = (binding: Binding) => {
+      if (
+        relations >= columnInspectionLimits.relations ||
+        bindings.some((item) => item.key === binding.key)
+      )
+        throw unsupported();
+      relations++;
+      bindings.push(binding);
+    };
+    let next = from + 1;
+    function atom(): Binding {
+      if (tokens[next]?.children) {
+        const bodyToken = tokens[next];
+        const body = clean(bodyToken.children ?? []);
+        if (!bodyToken.text.endsWith(")") || word(body[0]) !== "SELECT") throw unsupported();
+        next++;
+        const explicitAlias = word(tokens[next]) === "AS";
+        if (explicitAlias) next++;
+        const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
+        if (!alias) throw unsupported();
+        checkName(alias);
+        const nested = analyze(body, depth + 1);
+        const outputs = project(body, nested.bindings);
+        nestedTables.push(...nested.tables);
+        references.push(...nested.references);
+        proofs.push(...nested.proofs, ...outputs);
+        const binding: Binding = {
+          key: key(alias.text),
+          table: outputs[0].table,
+          outputOf: identifierValue(readIdentifier(alias.text), context.engine),
+          outputs,
+        };
+        remember(binding);
+        return binding;
+      }
+      const relation: SqlToken[] = [];
+      if (!nameToken(tokens[next])) throw unsupported();
+      relation.push(tokens[next++]);
+      while (tokens[next]?.text === "." && nameToken(tokens[next + 1])) {
+        relation.push(tokens[next + 1]);
+        next += 2;
+      }
+      if (relation.length > 2) throw unsupported();
+      const explicitAlias = word(tokens[next]) === "AS";
+      if (explicitAlias) next++;
+      const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
+      if (explicitAlias && !alias) throw unsupported();
+      for (const token of [...relation, ...(alias ? [alias] : [])]) checkName(token);
+      if (cte && relation.length === 1 && key(relation[0].text) === cte.key) {
+        const binding: Binding = {
+          key: key((alias ?? relation[0]).text),
+          table: cte.table,
+          outputOf: alias
+            ? identifierValue(readIdentifier(alias.text), context.engine)
+            : cte.outputOf,
+          outputs: cte.outputs,
+        };
+        remember(binding);
+        return binding;
+      }
+      // Never substitute a guessed search path for observed visibility.
+      if (relation.length === 1 && context.unqualifiedTables === undefined)
+        throw new Error("Visible-table metadata is unavailable; no column claim was made.");
+      const table = lookup.resolve(relation.map((token) => readIdentifier(token.text)));
+      const info = table && context.tables.find((item) => tableKey(item.table) === tableKey(table));
+      if (
+        !table ||
+        !info ||
+        !["table", "partitionedTable", "r", "p", "BASE TABLE"].includes(info.kind)
+      )
+        throw new Error(
+          "A unique direct base table could not be resolved; no column claim was made.",
+        );
+      const binding = { key: key((alias ?? relation.at(-1))!.text), table };
+      remember(binding);
+      return binding;
+    }
+    let operand: Scope = [atom()];
+    const pending: { left: Scope; optional: boolean }[] = [];
+    const finishJoins = () => {
+      while (pending.length) {
+        const join = pending.pop()!;
+        if (!join.optional) throw unsupported();
+        operand = [...join.left, ...operand];
+      }
+    };
+    while (next < tokens.length && !clauses.has(word(tokens[next])) && tokens[next].text !== ";") {
+      if (tokens[next].text === ",") {
+        finishJoins();
+        next++;
+        operand = [atom()];
         continue;
       }
-      if (!nameToken(token) || list[i + 1]?.text !== ".") continue;
-      const column = list[i + 2];
-      if (column?.text === "*") {
-        i += 2;
-        continue;
-      }
-      if (!nameToken(column) || list[i + 3]?.text === ".") throw unsupported();
-      checkName(token);
-      checkName(column);
-      // Qualified function names are not column references; their arguments
-      // are still visited on the next iteration.
-      if (!list[i + 3]?.children) {
+      const join = joinAt(next);
+      if (join) {
+        const { modifiers } = join;
         if (
-          context.engine === "mysql" &&
-          readIdentifier(column.text).value.toLowerCase() === "_rowid"
+          !joins.has(modifiers.join(" ")) ||
+          (context.engine === "mysql" && modifiers.includes("FULL"))
         )
           throw unsupported();
-        const binding = scope.find((item) => item.key === key(token.text));
-        if (!binding)
-          throw new Error(
-            "An unresolved qualifier prevents this inspection; no column claim was made.",
-          );
-        references.push({
-          name: identifierValue(readIdentifier(column.text), context.engine),
-          qualifier: token.text,
-          table: binding.table,
-          from: column.from,
-          to: column.to,
-          line: state.doc.lineAt(column.from).number,
+        const natural = modifiers.includes("NATURAL"),
+          cross = modifiers.includes("CROSS");
+        pending.push({
+          left: operand,
+          optional:
+            context.engine === "mysql" &&
+            !modifiers.some((m) => ["LEFT", "RIGHT", "FULL"].includes(m)),
         });
+        next = join.next;
+        operand = [atom()];
+        // CROSS/NATURAL joins close immediately. MySQL permits CROSS ... ON/USING.
+        if (
+          natural ||
+          (cross && !(context.engine === "mysql" && ["ON", "USING"].includes(word(tokens[next]))))
+        )
+          operand = [...pending.pop()!.left, ...operand];
+        continue;
       }
-      i += 2;
+      const condition = word(tokens[next++]);
+      if (condition !== "ON" && condition !== "USING") throw unsupported();
+      const owner = pending.pop();
+      if (!owner) throw unsupported();
+      operand = [...owner.left, ...operand];
+      if (condition === "USING") {
+        const list = tokens[next++];
+        const names = list?.children && clean(list.children);
+        // The lexer classifies unqualified names such as id as dialect keywords.
+        const usingName = (t: SqlToken) =>
+          nameToken(t) ||
+          (["Keyword", "Type", "Builtin"].includes(t.kind) &&
+            /^[A-Za-z_][A-Za-z0-9_$]*$/.test(t.text) &&
+            ![
+              "SELECT",
+              "FROM",
+              "WITH",
+              "WHERE",
+              "JOIN",
+              "ON",
+              "USING",
+              "AS",
+              "INSERT",
+              "UPDATE",
+              "DELETE",
+            ].includes(t.text.toUpperCase()));
+        if (
+          !list?.text.endsWith(")") ||
+          !names?.length ||
+          names.length % 2 === 0 ||
+          names.some((t, i) => (i % 2 ? t.text !== "," : !usingName(t)))
+        )
+          throw unsupported();
+        for (const token of names.filter((_, i) => i % 2 === 0)) checkName(token);
+      } else {
+        const start = next;
+        while (
+          next < tokens.length &&
+          !clauses.has(word(tokens[next])) &&
+          tokens[next].text !== ";" &&
+          tokens[next].text !== "," &&
+          !["ON", "USING"].includes(word(tokens[next])) &&
+          !joinAt(next)
+        )
+          next++;
+        if (next === start) throw unsupported();
+        conditions.push({ tokens: tokens.slice(start, next), scope: operand });
+      }
     }
+    finishJoins();
+    const forbidden = new Set([
+      "SELECT",
+      "WITH",
+      "JOIN",
+      "UNION",
+      "INTERSECT",
+      "EXCEPT",
+      "INTO",
+      "LATERAL",
+      "APPLY",
+      "WINDOW",
+      "QUALIFY",
+      "TABLESAMPLE",
+    ]);
+    function scan(raw: readonly SqlToken[], depth: number, scope: Scope) {
+      if (depth > 16) throw unsupported();
+      const list = clean(raw);
+      for (let i = 0; i < list.length; i++) {
+        if (++visited > 4096) throw unsupported();
+        const token = list[i];
+        if (forbidden.has(word(token))) throw unsupported();
+        if (token.children) {
+          if (!token.text.endsWith(")")) throw unsupported();
+          scan(token.children, depth + 1, scope);
+          continue;
+        }
+        if (!nameToken(token) || list[i + 1]?.text !== ".") continue;
+        const column = list[i + 2];
+        if (column?.text === "*") {
+          i += 2;
+          continue;
+        }
+        if (!nameToken(column) || list[i + 3]?.text === ".") throw unsupported();
+        checkName(token);
+        checkName(column);
+        // Qualified function names are not column references; their arguments
+        // are still visited on the next iteration.
+        if (!list[i + 3]?.children) {
+          if (
+            context.engine === "mysql" &&
+            readIdentifier(column.text).value.toLowerCase() === "_rowid"
+          )
+            throw unsupported();
+          const binding = scope.find((item) => item.key === key(token.text));
+          if (!binding)
+            throw new Error(
+              "An unresolved qualifier prevents this inspection; no column claim was made.",
+            );
+          references.push({
+            name: identifierValue(readIdentifier(column.text), context.engine),
+            qualifier: token.text,
+            table: binding.table,
+            from: column.from,
+            to: column.to,
+            line: state.doc.lineAt(column.from).number,
+            ...(binding.outputOf
+              ? {
+                  outputOf: binding.outputOf,
+                  projectedColumns: binding.outputs!.map((output) => output.name),
+                }
+              : {}),
+          });
+        }
+        i += 2;
+      }
+    }
+    scan(tokens.slice(1, from), 0, bindings);
+    for (const condition of conditions) scan(condition.tokens, 0, condition.scope);
+    scan(tokens.slice(next), 0, bindings);
+    return {
+      references,
+      proofs,
+      bindings,
+      tables: [
+        ...new Map(
+          [
+            ...bindings.filter((binding) => !binding.outputs).map((binding) => binding.table),
+            ...nestedTables,
+          ].map((table) => [tableKey(table), table]),
+        ).values(),
+      ],
+    };
   }
-  scan(tokens.slice(1, from), 0, bindings);
-  for (const condition of conditions) scan(condition.tokens, 0, condition.scope);
-  scan(tokens.slice(next), 0, bindings);
+  function peel(list: readonly SqlToken[]) {
+    if (word(list[0]) !== "WITH") return null;
+    let index = 1;
+    if (word(list[index]) === "RECURSIVE") throw unsupported();
+    const name = list[index++];
+    if (!nameToken(name)) throw unsupported();
+    checkName(name);
+    if (list[index]?.children) throw unsupported();
+    if (word(list[index++]) !== "AS") throw unsupported();
+    while (word(list[index]) === "NOT" || word(list[index]) === "MATERIALIZED") index++;
+    const bodyToken = list[index++];
+    const body = bodyToken?.children && clean(bodyToken.children);
+    if (!body || !bodyToken.text.endsWith(")") || word(body[0]) !== "SELECT") throw unsupported();
+    if (list[index]?.text === ",") throw unsupported();
+    return { name, body, rest: list.slice(index) };
+  }
+  const leading = peel(tokens);
+  const body = leading ? analyze(leading.body, 0) : undefined;
+  const leadingOutputs = body ? project(leading!.body, body.bindings) : [];
+  const cte = leading
+    ? {
+        key: key(leading.name.text),
+        table: leadingOutputs[0].table,
+        outputOf: identifierValue(readIdentifier(leading.name.text), context.engine),
+        outputs: leadingOutputs,
+      }
+    : undefined;
+  const outer = analyze(leading ? leading.rest : tokens, 0, cte);
+  const references = [...(body?.references ?? []), ...outer.references];
+  const proofs = [...(body?.proofs ?? []), ...leadingOutputs, ...outer.proofs];
+  const tables = [
+    ...new Map(
+      [...(body?.tables ?? []), ...outer.tables].map((table) => [tableKey(table), table]),
+    ).values(),
+  ];
   if (!references.length)
     throw new Error("No supported qualified columns to inspect in this SELECT.");
   const assertCurrent = (current: EditorState) => {
@@ -338,7 +521,6 @@ export function prepareColumnInspection(
     finish(current: EditorState, schemas: TableSchema[]): SqlColumnInspection {
       assertCurrent(current);
       const schemaMap = new Map(schemas.map((schema) => [tableKey(schema.table), schema]));
-      const columnKey = (name: string) => (context.engine === "mysql" ? name.toLowerCase() : name);
       if (
         schemas.length !== tables.length ||
         schemaMap.size !== tables.length ||
@@ -368,12 +550,24 @@ export function prepareColumnInspection(
       if (context.engine === "postgres")
         for (const names of existing.values())
           for (const name of ["tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"]) names.add(name);
-      const issues = references.filter(
-        (ref) => !existing.get(tableKey(ref.table))!.has(columnKey(ref.name)),
+      for (const proof of proofs)
+        if (!existing.get(tableKey(proof.table))?.has(columnKey(proof.source)))
+          throw new Error(
+            "A projected column is not in the complete table metadata; no column claim was made.",
+          );
+      const issues = references.filter((ref) =>
+        ref.projectedColumns
+          ? !ref.projectedColumns.some((name) => columnKey(name) === columnKey(ref.name))
+          : !existing.get(tableKey(ref.table))!.has(columnKey(ref.name)),
       );
       const columnsFor = (issue: MissingSqlColumn) => {
         if (!issues.includes(issue))
           throw new Error("Choose a column from this inspection's table metadata.");
+        if (issue.outputOf) {
+          if (!issue.projectedColumns?.length)
+            throw new Error("Choose a column from this inspection's table metadata.");
+          return issue.projectedColumns;
+        }
         return columns.get(tableKey(issue.table))!;
       };
       return {

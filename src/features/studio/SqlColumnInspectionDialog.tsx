@@ -31,7 +31,7 @@ export function SqlColumnInspectionDialog({
     <div onKeyDown={(event) => event.stopPropagation()}>
       <Modal
         title="SQL column inspection"
-        subtitle="Checks qualified columns in this direct-table SELECT. Choose a correction, preview it, then Apply. Your SQL is not run."
+        subtitle="Checks qualified columns in this SELECT. Choose a correction, preview it, then Apply. Your SQL is not run."
         onClose={onClose}
         wide
       >
@@ -59,20 +59,34 @@ export function SqlColumnInspectionDialog({
                 >
                   {result.issues.map((item, i) => (
                     <option key={item.from} value={i}>
-                      Line {item.line}: {item.qualifier}.{item.name} ({item.table.schema}.
-                      {item.table.name})
+                      Line {item.line}: {item.qualifier}.{item.name} (
+                      {item.outputOf
+                        ? `projected by ${item.outputOf}`
+                        : `${item.table.schema}.${item.table.name}`}
+                      )
                     </option>
                   ))}
                 </select>
               </label>
               <p>
-                Column “{issue.name}” was not found in the complete selectable metadata for{" "}
-                {issue.table.schema}.{issue.table.name}.
+                {issue.outputOf ? (
+                  <>
+                    Column “{issue.name}” is not projected by {issue.outputOf}. Corrections are that
+                    query’s output names, not every column of the source table.
+                  </>
+                ) : (
+                  <>
+                    Column “{issue.name}” was not found in the complete selectable metadata for{" "}
+                    {issue.table.schema}.{issue.table.name}.
+                  </>
+                )}
               </p>
               <label>
-                Replace with catalog column
+                {issue.outputOf ? "Replace with projected column" : "Replace with catalog column"}
                 <select
-                  aria-label="Replace with catalog column"
+                  aria-label={
+                    issue.outputOf ? "Replace with projected column" : "Replace with catalog column"
+                  }
                   value={column}
                   onChange={(event) => setColumn(event.target.value)}
                 >

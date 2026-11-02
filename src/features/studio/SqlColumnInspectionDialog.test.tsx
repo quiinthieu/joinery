@@ -52,6 +52,25 @@ test("requires an explicit catalog choice and Apply, and isolates keyboard short
   expect(onClose).toHaveBeenCalledOnce();
 });
 
+test("describes a CTE miss as a projection gap and offers projected names", () => {
+  render(
+    <SqlColumnInspectionDialog
+      result={{
+        ...result,
+        issues: [{ ...issue, outputOf: "c", projectedColumns: ["id"] }],
+        columnsFor: () => ["id"],
+      }}
+      state={state}
+      onApply={vi.fn()}
+      onClose={vi.fn()}
+    />,
+  );
+  expect(screen.getByText(/not projected by c/)).toBeTruthy();
+  expect(screen.getByLabelText("Replace with projected column")).toBeTruthy();
+  expect(screen.getByRole("option", { name: /projected by c/ })).toBeTruthy();
+  expect(screen.queryByText(/complete selectable metadata/)).toBeNull();
+});
+
 test("labels a limited clean result without offering a correction", () => {
   render(
     <SqlColumnInspectionDialog

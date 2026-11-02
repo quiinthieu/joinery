@@ -206,6 +206,16 @@ describe("ordered direct-table JOIN column inspections", () => {
       ),
     ).toThrow(/metadata is unavailable/);
   });
+  test("inspects a derived JOIN operand by its projected names", () => {
+    const { result } = inspect(
+      "SELECT a.id, c.customer_only FROM orders a JOIN (SELECT id FROM customers) c ON a.id = c.id",
+    );
+    expect(result.tables.map((item) => item.name)).toEqual(["orders", "customers"]);
+    expect(result.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([
+      ["c", "customer_only"],
+    ]);
+    expect(result.columnsFor(result.issues[0])).toEqual(["id"]);
+  });
   test("visits references inside JOIN expressions without treating functions as JOINs", () => {
     const { result } = inspect(
       "SELECT o.id FROM orders o JOIN customers c ON LEFT(o.typo, 2) = c.customer_only AND COALESCE(c.id, 0) = o.id",
@@ -219,7 +229,6 @@ describe("ordered direct-table JOIN column inspections", () => {
     "SELECT a.id FROM orders a LEFT JOIN customers c",
     "SELECT a.id FROM orders a JOIN customers c ON",
     "SELECT a.id FROM orders a JOIN customers c USING (id) AS x",
-    "SELECT a.id FROM orders a JOIN (SELECT id FROM customers) c ON a.id = c.id",
     "SELECT a.id FROM orders a JOIN customers c ON EXISTS (SELECT 1 FROM regions)",
     "SELECT a.id FROM orders a JOIN customers c ON a.id = c.id,",
     "SELECT a.id FROM orders a JOIN customers c ON a.id = c.id TABLESAMPLE SYSTEM (10)",
