@@ -2372,6 +2372,19 @@ Completion classifies a parenthesized query after `FROM`, `JOIN` or `AS` with th
 | Unit | `sql-snippets.test.ts` covers a subquery start, an inner FROM list, an inner WHERE clause, a CTE body, a function call, and a prefix after the closing parenthesis |
 | Validate | `pnpm validate` passed: 415 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Recursive CTEs, other subquery positions, then remaining R5/R6/R7/R8 |
+| Open / next | See the wider nested-template section below |
 
 Fetched `origin/main` is `9bf0d24`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: wider nested template placement (2 November 2026)
+
+Completion also classifies a parenthesized query after `IN`, `EXISTS`, `SELECT`, a comparison, or a comma. `WHERE id IN (sel` and `SELECT (sel` offer a statement template. `WHERE EXISTS (SELECT id FROM orders WHERE ` offers `lim`. `WHERE id = (SELECT id FROM ` offers `join`, `ljoin` and `lim`. `FROM orders, (sel` offers a statement template. A function call such as `LOWER(sel` still does not start a statement. **Insert template** still lists every template. Expansion does not prepare or execute SQL. `EXPLAIN` wrappers and declared per-template contexts are not classified.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-snippets.test.ts` covers `IN`, `EXISTS`, a comparison, a comma-separated derived table, a scalar subquery, and a function call |
+| Validate | `pnpm validate` passed: 415 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Recursive CTEs, EXPLAIN wrappers, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `32129e2`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
