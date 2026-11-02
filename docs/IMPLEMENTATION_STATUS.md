@@ -2320,6 +2320,19 @@ A bare name inside a function call is checked with the same one-owner rule. `LOW
 | Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover `LOWER(typo)` in `WHERE` and the select list, `CAST(id AS text)`, a parenthesized select item, a joined argument owned by one table, and a joined argument that matches none |
 | Validate | `pnpm validate` passed: 411 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Multiple and recursive CTEs, nested template placement, parenthesized select-list expressions, then remaining R5/R6/R7/R8 |
+| Open / next | See the grouped select-list section below |
 
 Fetched `origin/main` is `ef97014`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: grouped select-list column names (2 November 2026)
+
+A name inside parentheses in the select list is checked with the same one-owner rule as a bare name. `SELECT (typo)` and `SELECT ((typo))` are included. A nested `SELECT` inside those parentheses still withholds the inspection. Several owners, or none, withhold the claim. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover a grouped missing name, a nested group, a present grouped name, a scalar subquery, a joined name owned by one table, and a joined name that matches none or several relations |
+| Validate | `pnpm validate` passed: 411 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Multiple and recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `987220f`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

@@ -241,6 +241,17 @@ describe("ordered direct-table JOIN column inspections", () => {
     expect(() =>
       prepareColumnInspection(called, 7, context()).finish(called, schemas.slice(0, 2)),
     ).toThrow(/unqualified column/);
+    expect(
+      inspect("SELECT (customer_only) FROM orders o JOIN customers c ON o.id = c.id").result.issues,
+    ).toEqual([]);
+    const grouped = stateOf("SELECT (typo) FROM orders o JOIN customers c ON o.id = c.id");
+    expect(() =>
+      prepareColumnInspection(grouped, 7, context()).finish(grouped, schemas.slice(0, 2)),
+    ).toThrow(/unqualified column/);
+    const groupedId = stateOf("SELECT (id) FROM orders o JOIN customers c ON o.customer_id = c.id");
+    expect(() =>
+      prepareColumnInspection(groupedId, 7, context()).finish(groupedId, schemas.slice(0, 2)),
+    ).toThrow(/unqualified column/);
   });
   test("inspects a derived JOIN operand by its projected names", () => {
     const { result } = inspect(
