@@ -597,6 +597,7 @@ R6 remains partial, local, unmerged and unreleased.
    An unaliased schema.table.* may be that star on every arm.
    A later arm of a recursive CTE may be that same lone star, including a star of the CTE.
    Every arm of a set operation may add the same number of simple columns beside that star.
+   A star of another relation is accepted when metadata gives every arm the same width.
    `{{lower(selection)}}` and `{{upper(selection)}}` change the selected text's case.
    A recursive CTE of more than two flat SELECT arms is inspected from the anchor projection.
    A full explicit CTE column list renames that CTE's projected outputs. A partial list still withholds.
