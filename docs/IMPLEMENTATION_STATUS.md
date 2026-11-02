@@ -2333,6 +2333,19 @@ A name inside parentheses in the select list is checked with the same one-owner 
 | Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover a grouped missing name, a nested group, a present grouped name, a scalar subquery, a joined name owned by one table, and a joined name that matches none or several relations |
 | Validate | `pnpm validate` passed: 411 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Multiple and recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+| Open / next | See the multiple-CTE section below |
 
 Fetched `origin/main` is `987220f`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: several non-recursive CTEs (2 November 2026)
+
+A `WITH` list can contain more than one non-recursive CTE. Each CTE is inspected from its projected names, and a later CTE can read an earlier one. The outer query can join them. A repeated CTE name withholds the inspection. A CTE cannot see a later CTE. Recursive CTEs, column lists and stars still withhold. A derived table still does not see the outer `WITH` list. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers two joined CTEs, a CTE that reads the previous CTE, a present name, a repeated CTE name, and a forward reference |
+| Validate | `pnpm validate` passed: 413 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `97d00f9`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

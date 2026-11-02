@@ -586,7 +586,8 @@ R6 remains partial, local, unmerged and unreleased.
    Prior combined-source qualification passed all 66 ignored local SQL/Redis/SSH
    fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
    suite passed on `db5cd1b`.
-   Next: multiple and recursive CTEs, then the remaining R5/R6/R7/R8 scope.
+   Next: recursive CTEs, then the remaining R5/R6/R7/R8 scope.
+   Several non-recursive CTEs use the same projected-name rule. A CTE can see earlier CTEs in that WITH list.
    Parenthesized select-list expressions use the same one-owner column rule.
    Function arguments use the same one-owner column rule.
    Bare names in WHERE, GROUP BY, HAVING, ORDER BY and ON use the same
