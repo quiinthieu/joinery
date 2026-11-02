@@ -47,8 +47,9 @@ triggers stay available in every completion site. A custom snippet that reuses
 a built-in trigger keeps that trigger's place. **Insert template** still lists
 every template. A parenthesized query after `FROM`, `JOIN`, `AS`, `IN`,
 `EXISTS`, `SELECT`, a comparison, or a comma uses that same placement. A
-function name does not open one. `EXPLAIN` wrappers, declared per-template
-contexts, arbitrary expressions/macros and broader DataGrip template parity
-remain open.
+function name does not open one. A statement after `EXPLAIN`, including
+`ANALYZE`, `VERBOSE`, a closed option list, or `FORMAT=JSON`, uses that same
+placement. Declared per-template contexts, arbitrary expressions/macros and
+broader DataGrip template parity remain open.
 Snowflake quoting has local unit coverage; external Snowflake qualification
 remains separate.
