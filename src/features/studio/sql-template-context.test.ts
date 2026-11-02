@@ -75,10 +75,62 @@ test.each(["postgres", "mysql", "snowflake"] as const)(
   },
 );
 
+test("lower and upper change selected text without reading context", async () => {
+  const selected = "JOINERY_TEMPLATE_VALUE_0_0_END Select Id";
+  const editor = new EditorView({
+    state: EditorState.create({ doc: selected, selection: { anchor: 0, head: selected.length } }),
+  });
+  const resolveContext = vi.fn(async () => ({}));
+  try {
+    await applySqlTemplate(
+      "{{lower(selection)}}\n{{upper(selection)}}${0}",
+      "postgres",
+      editor,
+      undefined,
+      0,
+      selected.length,
+      { resolveContext, isCurrent: () => true },
+    );
+    expect(editor.state.doc.toString()).toBe(
+      "joinery_template_value_0_0_end select id\nJOINERY_TEMPLATE_VALUE_0_0_END SELECT ID",
+    );
+    expect(resolveContext).not.toHaveBeenCalled();
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("a lowercased selection stays literal beside a quoted database", async () => {
+  const selected = "Select Id";
+  const editor = new EditorView({
+    state: EditorState.create({ doc: selected, selection: { anchor: 0, head: selected.length } }),
+  });
+  try {
+    await applySqlTemplate(
+      "{{database}}.{{lower(selection)}}${0}",
+      "mysql",
+      editor,
+      undefined,
+      0,
+      selected.length,
+      {
+        resolveContext: async () => ({ database: "Odd`Db" }),
+        isCurrent: () => true,
+      },
+    );
+    expect(editor.state.doc.toString()).toBe("`Odd``Db`.select id");
+  } finally {
+    editor.destroy();
+  }
+});
+
 test.each([
   ["{{unknown}}", "Unsupported template variable"],
+  ["{{title(selection)}}", "Unsupported template variable"],
   ["{{database}", "Incomplete template variable"],
   ["{{selection}}", "Select SQL"],
+  ["{{lower(selection)}}", "Select SQL"],
+  ["{{upper(selection)}}", "Select SQL"],
   ["{{database}}", "No observed current database"],
   ["{{schema}}", "No observed current schema"],
 ])(

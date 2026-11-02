@@ -13,6 +13,8 @@ position. Tab and Shift+Tab move between fields. Each expansion is one undo step
 | `{{database}}` | Current database observed on this console, as one quoted SQL identifier |
 | `{{schema}}` | Current schema observed on this console; current database for MySQL/MariaDB, as one quoted SQL identifier |
 | `{{selection}}` | Selected editor text, inserted literally |
+| `{{lower(selection)}}` | Selected editor text in lower case, still literal and unquoted |
+| `{{upper(selection)}}` | Selected editor text in upper case, still literal and unquoted |
 
 Database/schema expansion waits for the console context and reads its current
 runtime state. PostgreSQL and Snowflake identifiers use double quotes;
@@ -31,8 +33,11 @@ FROM {{schema}}.${2:orders};${0}
 The built-in `ctxsel` follows this pattern. To surround SQL, select a complete
 query without its final semicolon and choose the built-in `wrap` template. Its
 `{{selection}}` preserves the selected text, indentation and literal `${...}` or
-`{{...}}` sequences; these are never expanded again. Template text outside the
-selection follows the editor's normal snippet indentation.
+`{{...}}` sequences; these are never expanded again. `{{lower(selection)}}` and
+`{{upper(selection)}}` change that text's case and stay literal: the result is
+not quoted and is not parsed as SQL. An empty selection blocks them, and they
+do not read the console context. Template text outside the selection follows
+the editor's normal snippet indentation.
 
 Expansion only edits the document. Review the resulting SQL and explicitly run
 it when ready. Closing the chooser, editing the document, changing the selection
@@ -56,7 +61,8 @@ FROM ` offers the JOIN and LIMIT templates. A statement after
 too: `EXPLAIN ANALYZE (SELECT id FROM ` offers the JOIN and LIMIT templates,
 while `EXPLAIN (ANALYZE)` stays an option list. New metadata includes the site, so an
 older build that rejects unknown snippet fields cannot load a backup from this
-build. Arbitrary expressions/macros and broader DataGrip template parity remain
-open.
+build. `{{lower(selection)}}` and `{{upper(selection)}}` change the selected
+text's case. Other expressions and macros, and broader DataGrip template parity,
+remain open.
 Snowflake quoting has local unit coverage; external Snowflake qualification
 remains separate.

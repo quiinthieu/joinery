@@ -56,8 +56,8 @@ export function SqlTemplateDialog({
             {selected?.body}
           </pre>
           <p className="form-note">
-            Database and schema variables use the connected console. Selection variables keep your
-            selected SQL text.
+            Database and schema variables use the connected console. Selection variables insert the
+            selected SQL. lower(selection) and upper(selection) change its case.
           </p>
           <InlineError message={error} />
         </div>

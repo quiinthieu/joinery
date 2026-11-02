@@ -297,10 +297,11 @@ export function Preferences({ onClose }: { onClose(): void }) {
             Custom snippets can add new triggers or override built-in ones globally or per dialect.{" "}
             Use <code>{"{{database}}"}</code> and <code>{"{{schema}}"}</code> for quoted identifiers
             from the connected console. Use <code>{"{{selection}}"}</code> with Insert template to
-            wrap selected SQL verbatim. Double braces are reserved for these variables; unknown or
-            missing values block insertion. A completion site limits a new trigger. Reusing a
-            built-in trigger keeps that trigger's site. A snippet saved before sites existed stays
-            available everywhere.
+            wrap selected SQL verbatim. <code>{"{{lower(selection)}}"}</code> and{" "}
+            <code>{"{{upper(selection)}}"}</code> change that text's case. Double braces are
+            reserved for these variables; unknown or missing values block insertion. A completion
+            site limits a new trigger. Reusing a built-in trigger keeps that trigger's site. A
+            snippet saved before sites existed stays available everywhere.
           </p>
           {state.sqlSnippets.length > 0 && (
             <div className="managed-snippets" role="list" aria-label="Custom SQL snippets">
