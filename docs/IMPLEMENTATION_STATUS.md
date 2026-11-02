@@ -2619,9 +2619,22 @@ A star of another relation inside a CTE or derived-table set operation is accept
 | Unit | `sql-inspections.test.ts` covers a matching catalog width, a shorter relation, an extra that fills width, a named projection beside a star, a derived table, and a recursive third arm. A different extra count on the same relation, and a projection whose count differs from the star width, still withhold |
 | Validate | `pnpm validate` passed: 465 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star beside other items, an explicit column list on a star, a partial column list, a top-level set operation, and other template expressions remain open |
+| Open / next | See the star column list section below |
 
 Fetched `origin/main` is `59a80a8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: star column list (3 November 2026)
+
+A full explicit CTE column list renames a star when the list matches that star's width. The width is the anchor relation's catalog columns plus the anchor arm's extra names. The offered names are the list. A shorter or longer list still withholds. A later star of that CTE keeps the renamed names. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a lone star, a star beside an extra column, a set operation, a recursive arm, a chained star, a quoted name, and MySQL. A shorter list and a longer list still withhold |
+| Validate | `pnpm validate` passed: 461 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star beside other items, a partial column list, a top-level set operation, and other template expressions remain open |
+
+Fetched base is `c28ddcc` on `feat/set-star-width`. `origin/main` is `59a80a8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
 ## R5 follow-up: template case expressions (3 November 2026)
 

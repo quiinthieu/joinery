@@ -108,17 +108,12 @@ describe("bounded qualified-column inspections", () => {
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id + 1 FROM orders) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL) d",
     "WITH c AS (SELECT *, id AS extra FROM orders UNION ALL SELECT * FROM orders) SELECT c.id FROM c",
-    "WITH c(id) AS (SELECT * FROM orders UNION ALL SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.id FROM c",
-    "WITH RECURSIVE c(id) AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT *, id FROM c) SELECT c.id FROM c",
     "SELECT d.id FROM (SELECT * FROM orders UNION ALL SELECT * FROM d) d",
-    "WITH c(x) AS (SELECT *, id AS order_id FROM orders UNION ALL SELECT *, customer_id AS order_id FROM orders) SELECT c.x FROM c",
     "WITH c AS (SELECT *, id AS order_id, customer_id AS buyer FROM orders UNION ALL SELECT *, id AS order_id FROM orders) SELECT c.typo FROM c",
     "WITH c AS (SELECT *, id AS order_id FROM orders UNION ALL SELECT *, c.id AS order_id FROM c) SELECT c.typo FROM c",
-    "WITH c(id) AS (SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT *, * FROM orders) SELECT c.id FROM c",
-    "WITH c(id) AS (SELECT *, id AS order_id FROM orders) SELECT c.typo FROM c",
     "WITH c AS (SELECT * FROM orders a, orders b) SELECT c.id FROM c",
     "WITH c AS (SELECT public.orders.* FROM public.orders o) SELECT c.id FROM c",
     "WITH c AS (SELECT public.orders.* FROM orders) SELECT c.id FROM c",
@@ -841,6 +836,79 @@ describe("bounded qualified-column inspections", () => {
       "WITH c AS (SELECT * FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
       "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT id FROM c) SELECT c.id FROM c",
       "WITH c AS (SELECT *, id AS order_id FROM orders UNION ALL SELECT id AS order_id FROM orders) SELECT c.order_id FROM c",
+    ]) {
+      const state = stateOf(doc);
+      expect(() => prepareColumnInspection(state, 7, context()).finish(state, [schema])).toThrow(
+        /direct-table SELECT/,
+      );
+    }
+  });
+  test("renames a star from a full explicit column list", () => {
+    const listed = ["order_id", "buyer", "mixed", "aq", "ab", "keyword"];
+    const renamed = inspect(
+      "WITH c(order_id, buyer, mixed, aq, ab, keyword) AS (SELECT * FROM orders) SELECT c.bad FROM c",
+    ).result;
+    expect(renamed.tables).toEqual([table]);
+    expect(renamed.issues.map((issue) => issue.name)).toEqual(["bad"]);
+    expect(renamed.columnsFor(renamed.issues[0])).toEqual(listed);
+    expect(
+      inspect(
+        "WITH c(order_id, buyer, mixed, aq, ab, keyword) AS (SELECT * FROM orders) SELECT c.order_id FROM c",
+      ).result.issues,
+    ).toEqual([]);
+    const hidden = inspect(
+      "WITH c(order_id, buyer, mixed, aq, ab, keyword) AS (SELECT * FROM orders) SELECT c.id FROM c",
+    ).result;
+    expect(hidden.issues.map((issue) => issue.name)).toEqual(["id"]);
+    expect(hidden.columnsFor(hidden.issues[0])).toEqual(listed);
+    const quoted = inspect(
+      'WITH c("Order", buyer, mixed, aq, ab, keyword) AS (SELECT * FROM orders) SELECT c.order FROM c',
+    ).result;
+    expect(quoted.issues.map((issue) => issue.name)).toEqual(["order"]);
+    expect(quoted.columnsFor(quoted.issues[0])).toEqual([
+      "Order",
+      "buyer",
+      "mixed",
+      "aq",
+      "ab",
+      "keyword",
+    ]);
+    const withExtra = ["order_id", "buyer", "mixed", "aq", "ab", "keyword", "extra"];
+    const extra = inspect(
+      "WITH c(order_id, buyer, mixed, aq, ab, keyword, extra) AS (SELECT *, id AS order_id FROM orders) SELECT c.extra FROM c",
+    ).result;
+    expect(extra.issues).toEqual([]);
+    const hiddenExtra = inspect(
+      "WITH c(order_id, buyer, mixed, aq, ab, keyword, extra) AS (SELECT *, id AS order_id FROM orders) SELECT c.id FROM c",
+    ).result;
+    expect(hiddenExtra.issues.map((issue) => issue.name)).toEqual(["id"]);
+    expect(hiddenExtra.columnsFor(hiddenExtra.issues[0])).toEqual(withExtra);
+    const set = inspect(
+      "WITH c(order_id, buyer, mixed, aq, ab, keyword) AS (SELECT * FROM orders UNION ALL SELECT * FROM orders) SELECT c.id FROM c",
+    ).result;
+    expect(set.columnsFor(set.issues[0])).toEqual(listed);
+    const recursive = inspect(
+      "WITH RECURSIVE c(order_id, buyer, mixed, aq, ab, keyword) AS (SELECT * FROM orders UNION ALL SELECT * FROM c WHERE c.id = 1) SELECT c.order_id FROM c",
+    ).result;
+    expect(recursive.issues.map((issue) => issue.name)).toEqual(["id"]);
+    expect(recursive.columnsFor(recursive.issues[0])).toEqual(listed);
+    const chained = inspect(
+      "WITH c(order_id, buyer, mixed, aq, ab, keyword) AS (SELECT * FROM orders) SELECT d.bad FROM (SELECT * FROM c) d",
+    ).result;
+    expect(chained.columnsFor(chained.issues[0])).toEqual(listed);
+    expect(
+      inspect(
+        "WITH c(ID, BUYER, MIXED, AQ, AB, KEYWORD) AS (SELECT * FROM orders) SELECT c.id FROM c",
+        "mysql",
+      ).result.issues,
+    ).toEqual([]);
+    for (const doc of [
+      "WITH c(id) AS (SELECT * FROM orders) SELECT c.id FROM c",
+      "WITH c(id) AS (SELECT * FROM orders UNION ALL SELECT * FROM orders) SELECT c.id FROM c",
+      "WITH RECURSIVE c(id) AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.id FROM c",
+      "WITH c(id) AS (SELECT *, id AS order_id FROM orders) SELECT c.typo FROM c",
+      "WITH c(x) AS (SELECT *, id AS order_id FROM orders UNION ALL SELECT *, customer_id AS order_id FROM orders) SELECT c.x FROM c",
+      "WITH c(order_id, buyer, mixed, aq, ab, keyword, extra) AS (SELECT * FROM orders) SELECT c.bad FROM c",
     ]) {
       const state = stateOf(doc);
       expect(() => prepareColumnInspection(state, 7, context()).finish(state, [schema])).toThrow(

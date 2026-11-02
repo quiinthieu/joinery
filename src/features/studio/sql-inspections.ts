@@ -47,7 +47,8 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * shape. A CTE or derived table may join two or more flat SELECT arms with
  * UNION, INTERSECT, or EXCEPT, including ALL or DISTINCT. Its names come from
  * the anchor arm. Only a recursive arm can read that CTE. A full explicit
- * column list renames those outputs. A select list may be `*`, `alias.*`, or
+ * column list renames those outputs, including a star when the list matches
+ * that star's width. A select list may be `*`, `alias.*`, or
  * an unaliased `schema.table.*` for one relation. `*` or `alias.*` may also
  * sit beside simple columns, adding those names. A schema-qualified star
  * expands only when FROM writes that same name and the list is only that
@@ -138,6 +139,8 @@ export function prepareColumnInspection(
     outputs?: QueryOutput[];
     /** Every catalog column of this table. Names are filled when metadata arrives. */
     starTable?: TableRef;
+    /** Explicit CTE names. A star uses them when the list matches its width. */
+    columnList?: readonly string[];
     /** Schema key when FROM wrote schema.table with no alias. */
     writtenSchema?: string;
   }
@@ -174,6 +177,7 @@ export function prepareColumnInspection(
   let visited = 0;
   const starRefs = new Set<MissingSqlColumn>();
   const starExtras = new Map<MissingSqlColumn, readonly string[]>();
+  const starRenames = new Map<MissingSqlColumn, readonly string[]>();
   type SetArm =
     { kind: "bare"; starTable: TableRef; extras: number } | { kind: "named"; count: number };
   const setWidths: SetArm[][] = [];
@@ -185,6 +189,7 @@ export function prepareColumnInspection(
         ref,
         binding.outputs.map((output) => output.name),
       );
+    if (binding.columnList) starRenames.set(ref, binding.columnList);
   };
   const projectedFields = (binding: Binding) => {
     if (!binding.outputOf) return {};
@@ -322,6 +327,7 @@ export function prepareColumnInspection(
     function derivedOutputs(body: readonly SqlToken[]): {
       outputs?: QueryOutput[];
       starTable?: TableRef;
+      columnList?: readonly string[];
     } {
       const arms = unionArms(body);
       if (!arms) {
@@ -332,6 +338,7 @@ export function prepareColumnInspection(
           return {
             starTable: star.starTable,
             ...(star.outputs?.length ? { outputs: star.outputs } : {}),
+            ...(star.columnList ? { columnList: star.columnList } : {}),
           };
         }
         const outputs = star && "outputs" in star ? star.outputs : project(body, nested.bindings);
@@ -361,6 +368,7 @@ export function prepareColumnInspection(
         return {
           starTable: anchorArm.starTable,
           ...(anchorArm.extras.length ? { outputs: anchorArm.extras } : {}),
+          ...(anchorArm.columnList ? { columnList: anchorArm.columnList } : {}),
         };
       }
       absorb(anchorNested, anchorArm.outputs);
@@ -396,6 +404,7 @@ export function prepareColumnInspection(
               outputOf,
               starTable: produced.starTable,
               ...(produced.outputs?.length ? { outputs: produced.outputs } : {}),
+              ...(produced.columnList ? { columnList: produced.columnList } : {}),
             }
           : {
               key: key(alias.text),
@@ -435,6 +444,7 @@ export function prepareColumnInspection(
             ? {
                 starTable: prior.starTable,
                 ...(prior.outputs?.length ? { outputs: prior.outputs } : {}),
+                ...(prior.columnList ? { columnList: prior.columnList } : {}),
               }
             : { outputs: prior.outputs }),
         };
@@ -824,7 +834,12 @@ export function prepareColumnInspection(
   function singleStar(
     list: readonly SqlToken[],
     scope: Scope,
-  ): { starTable: TableRef; outputs?: QueryOutput[] } | { outputs: QueryOutput[] } | null {
+  ):
+    | { starTable: TableRef; outputs?: QueryOutput[]; columnList?: readonly string[] }
+    | {
+        outputs: QueryOutput[];
+      }
+    | null {
     if (word(list[0]) !== "SELECT") return null;
     let at = 1;
     if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
@@ -866,7 +881,11 @@ export function prepareColumnInspection(
       if (new Set(outputs.map((output) => columnKey(output.name))).size !== outputs.length)
         throw unsupported();
       const starTable = owner.starTable ?? owner.table;
-      return outputs.length ? { starTable, outputs } : { starTable };
+      return {
+        starTable,
+        ...(outputs.length ? { outputs } : {}),
+        ...(owner.columnList ? { columnList: owner.columnList } : {}),
+      };
     }
     const outputs = [...carried, ...extras];
     if (outputs.length > 256) throw unsupported();
@@ -878,11 +897,16 @@ export function prepareColumnInspection(
     body: readonly SqlToken[],
     scope: Scope,
   ):
-    | { kind: "bare"; starTable: TableRef; extras: QueryOutput[] }
+    | { kind: "bare"; starTable: TableRef; extras: QueryOutput[]; columnList?: readonly string[] }
     | { kind: "named"; outputs: QueryOutput[] } {
     const star = singleStar(body, scope);
     if (star && "starTable" in star)
-      return { kind: "bare", starTable: star.starTable, extras: star.outputs ?? [] };
+      return {
+        kind: "bare",
+        starTable: star.starTable,
+        extras: star.outputs ?? [],
+        ...(star.columnList ? { columnList: star.columnList } : {}),
+      };
     return {
       kind: "named",
       outputs: star && "outputs" in star ? star.outputs : project(body, scope),
@@ -924,15 +948,15 @@ export function prepareColumnInspection(
     const arms = unionArms(def.body);
     let outputs: QueryOutput[] | undefined;
     let starTable: TableRef | undefined;
+    let columnList: readonly string[] | undefined;
     if (!arms) {
       const analyzed = analyze(def.body, 0, ctes);
       const star = singleStar(def.body, analyzed.bindings);
       if (star && "starTable" in star) {
-        // shortcut: an explicit column list cannot rename a star until its width is known.
-        if (def.columns) throw unsupported();
         recordCte(analyzed, star.outputs ?? []);
         starTable = star.starTable;
         outputs = star.outputs;
+        columnList = def.columns ?? star.columnList;
       } else {
         const projected = rename(
           star && "outputs" in star ? star.outputs : project(def.body, analyzed.bindings),
@@ -952,9 +976,8 @@ export function prepareColumnInspection(
       const anchorAnalyzed = analyze(arms[0], 0, ctes);
       const anchorArm = armOutput(arms[0], anchorAnalyzed.bindings);
       if (anchorArm.kind === "bare") {
-        // shortcut: an explicit column list cannot rename a star until its width is known.
-        if (def.columns) throw unsupported();
         recordCte(anchorAnalyzed, anchorArm.extras);
+        columnList = def.columns ?? anchorArm.columnList;
         const scope = [...ctes];
         if (recursiveWith)
           scope.push({
@@ -964,6 +987,7 @@ export function prepareColumnInspection(
             outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
             starTable: anchorArm.starTable,
             ...(anchorArm.extras.length ? { outputs: anchorArm.extras } : {}),
+            ...(columnList ? { columnList } : {}),
           });
         const shapes = [shapeOf(anchorArm)];
         for (const arm of arms.slice(1)) {
@@ -1005,7 +1029,13 @@ export function prepareColumnInspection(
       label: def.name.text,
       table: starTable ?? outputs![0].table,
       outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
-      ...(starTable ? { starTable, ...(outputs?.length ? { outputs } : {}) } : { outputs }),
+      ...(starTable
+        ? {
+            starTable,
+            ...(outputs?.length ? { outputs } : {}),
+            ...(columnList ? { columnList } : {}),
+          }
+        : { outputs }),
     });
   }
   const outer = analyze(leading ? leading.rest : tokens, 0, ctes);
@@ -1071,7 +1101,9 @@ export function prepareColumnInspection(
           throw new Error("Complete table metadata is unavailable; no column claim was made.");
         const combined = [...names, ...(starExtras.get(ref) ?? [])];
         if (new Set(combined.map(columnKey)).size !== combined.length) throw unsupported();
-        ref.projectedColumns = combined;
+        const listed = starRenames.get(ref);
+        if (listed && listed.length !== combined.length) throw unsupported();
+        ref.projectedColumns = listed ?? combined;
       }
       for (const proof of proofs)
         if (!existing.get(tableKey(proof.table))?.has(columnKey(proof.source)))
@@ -1086,7 +1118,9 @@ export function prepareColumnInspection(
               (output) => columnKey(output.name) === columnKey(ref.name),
             );
             if (owner.starTable)
-              return !!named || !!existing.get(tableKey(owner.table))?.has(columnKey(ref.name));
+              return owner.columnList
+                ? owner.columnList.some((name) => columnKey(name) === columnKey(ref.name))
+                : !!named || !!existing.get(tableKey(owner.table))?.has(columnKey(ref.name));
             return owner.outputs
               ? !!named
               : !!existing.get(tableKey(owner.table))?.has(columnKey(ref.name));
