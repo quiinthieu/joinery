@@ -45,9 +45,10 @@ built-in statement templates at the start of a statement, `join` and `ljoin`
 in a top-level FROM or JOIN list, and `lim` after a top-level FROM. Custom
 triggers stay available in every completion site. A custom snippet that reuses
 a built-in trigger keeps that trigger's place. **Insert template** still lists
-every template. A parenthesized query after `FROM`, `JOIN` or `AS` uses
-that same placement. Other subquery positions, `EXPLAIN` wrappers, declared
-per-template contexts, arbitrary expressions/macros and broader DataGrip
-template parity remain open.
+every template. A parenthesized query after `FROM`, `JOIN`, `AS`, `IN`,
+`EXISTS`, `SELECT`, a comparison, or a comma uses that same placement. A
+function name does not open one. `EXPLAIN` wrappers, declared per-template
+contexts, arbitrary expressions/macros and broader DataGrip template parity
+remain open.
 Snowflake quoting has local unit coverage; external Snowflake qualification
 remains separate.

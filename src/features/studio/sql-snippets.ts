@@ -167,10 +167,14 @@ const CLAUSE_END = new Set([
   "FETCH",
 ]);
 
+const NESTED_QUERY_KEYWORD = new Set(["FROM", "JOIN", "AS", "IN", "EXISTS", "SELECT"]);
+const NESTED_QUERY_MARK = new Set(["=", "<", ">", "<=", ">=", "<>", "!=", ","]);
+
 /**
  * Built-in completion placement for one statement. Insert template stays unfiltered.
- * shortcut: a parenthesized query is classified only after FROM, JOIN or AS.
- * upgrade for other subquery positions, EXPLAIN wrappers and declared contexts.
+ * shortcut: a parenthesized query is classified after FROM, JOIN, AS, IN,
+ * EXISTS, SELECT, a comparison, or a comma. A function name does not open one.
+ * upgrade for EXPLAIN wrappers and declared per-template contexts.
  */
 function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToken[] {
   const list = tokens.filter((token) => !token.kind.endsWith("Comment"));
@@ -178,7 +182,10 @@ function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToke
   if (container?.children) {
     const introducer = list.filter((token) => token.to <= container.from).at(-1);
     const keyword = introducer?.kind === "Keyword" ? introducer.text.toUpperCase() : "";
-    if (keyword === "FROM" || keyword === "JOIN" || keyword === "AS") {
+    if (
+      (introducer && NESTED_QUERY_MARK.has(introducer.text)) ||
+      NESTED_QUERY_KEYWORD.has(keyword)
+    ) {
       return priorTemplateTokens(container.children, from);
     }
   }

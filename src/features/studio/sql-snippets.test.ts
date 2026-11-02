@@ -272,6 +272,18 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
   expect(labelsAt("WITH c AS (SELECT id FROM orders WHERE ")).not.toContain("sel");
   expect(labelsAt("SELECT LOWER(sel")).not.toContain("sel");
   expect(labelsAt("SELECT * FROM (SELECT id FROM orders) sel")).not.toContain("sel");
+  expect(labelsAt("SELECT * FROM orders WHERE id IN (sel")).toContain("sel");
+  expect(labelsAt("SELECT * FROM orders WHERE id IN (sel")).not.toContain("lim");
+  const existsWhere = labelsAt("SELECT * FROM orders WHERE EXISTS (SELECT id FROM orders WHERE ");
+  expect(existsWhere).toContain("lim");
+  expect(existsWhere).not.toContain("sel");
+  expect(existsWhere).not.toContain("join");
+  const compared = labelsAt("SELECT * FROM orders WHERE id = (SELECT id FROM ");
+  expect(compared).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
+  expect(compared).not.toContain("sel");
+  expect(labelsAt("SELECT * FROM orders, (sel")).toContain("sel");
+  expect(labelsAt("SELECT (sel")).toContain("sel");
+  expect(labelsAt("SELECT (sel")).not.toContain("join");
 
   const worker = new CompletionWorkerIndex();
   const tables: TableInfo[] = [
