@@ -1,6 +1,7 @@
 import { snippetCompletion, type Completion } from "@codemirror/autocomplete";
+import type { EditorState } from "@codemirror/state";
 import type { EngineKind, SqlSnippet } from "../../ipc/generated";
-import type { CompletionTarget } from "./sql-context";
+import { statementTokensAt, type CompletionTarget, type SqlToken } from "./sql-context";
 import type { SqlTemplateApplier } from "./sql-template-context";
 
 export interface EffectiveSqlSnippet {
@@ -140,23 +141,98 @@ export function effectiveSqlSnippets(
   );
 }
 
+export interface SqlTemplateSite {
+  /** Nothing but comments precedes the caret in this statement. */
+  atStatementStart: boolean;
+  /** The caret is still in the top-level FROM or JOIN list of a query. */
+  inFromClause: boolean;
+  /** A top-level FROM has already been seen, including later clauses. */
+  afterFrom: boolean;
+}
+
+const STATEMENT_TEMPLATES = new Set(["ctxsel", "sel", "cnt", "cte", "ins", "upd", "del", "txn"]);
+const CLAUSE_END = new Set([
+  "WHERE",
+  "GROUP",
+  "ORDER",
+  "HAVING",
+  "LIMIT",
+  "OFFSET",
+  "SET",
+  "VALUES",
+  "RETURNING",
+  "WINDOW",
+  "QUALIFY",
+  "FOR",
+  "FETCH",
+]);
+
+/**
+ * Built-in completion placement for one statement. Insert template stays unfiltered.
+ * shortcut: only top-level FROM, JOIN and later clause keywords are read;
+ * upgrade for nested queries, EXPLAIN wrappers and declared per-template contexts.
+ */
+export function sqlTemplateSite(state: EditorState, from: number): SqlTemplateSite {
+  const statement = statementTokensAt(state, from);
+  const prior = statement?.tokens.filter(
+    (token) => !token.kind.endsWith("Comment") && token.to <= from,
+  );
+  if (!prior?.length) return { atStatementStart: true, inFromClause: false, afterFrom: false };
+  const word = (token?: SqlToken) => (token?.kind === "Keyword" ? token.text.toUpperCase() : "");
+  const head = word(prior[0]);
+  let inFrom = false;
+  let sawFrom = false;
+  for (const token of prior) {
+    const keyword = word(token);
+    if (keyword === "FROM" || keyword === "JOIN") {
+      sawFrom = true;
+      inFrom = true;
+      continue;
+    }
+    if (inFrom && token.text === ",") continue;
+    if (CLAUSE_END.has(keyword)) inFrom = false;
+  }
+  const query = head === "SELECT" || head === "WITH";
+  return {
+    atStatementStart: false,
+    inFromClause: query && inFrom,
+    afterFrom: query && sawFrom,
+  };
+}
+
+function templatePlace(trigger: string) {
+  const key = trigger.toLowerCase();
+  if (STATEMENT_TEMPLATES.has(key)) return "statement";
+  if (key === "join" || key === "ljoin") return "from";
+  if (key === "lim") return "query";
+  return "any";
+}
+
 /**
  * Builds CodeMirror `snippetCompletion` options for bare unquoted prefixes
  * (`target.parts.length === 1`), never firing after `alias.` qualifiers.
+ * A site limits built-in triggers; custom triggers stay available.
  */
 export function snippetCompletions(
   engine: EngineKind,
   target: CompletionTarget,
   userSnippets: readonly SqlSnippet[] = [],
   applyTemplate?: SqlTemplateApplier,
+  site?: SqlTemplateSite,
 ): Completion[] {
   if (engine === "redis" || target.parts.length !== 1 || target.parts[0].quoted) {
     return [];
   }
   const prefix = target.parts[0].value.toLowerCase();
-  const candidates = effectiveSqlSnippets(engine, userSnippets).filter(
-    (item) => prefix.length === 0 || item.trigger.toLowerCase().startsWith(prefix),
-  );
+  const candidates = effectiveSqlSnippets(engine, userSnippets).filter((item) => {
+    if (prefix.length > 0 && !item.trigger.toLowerCase().startsWith(prefix)) return false;
+    if (!site) return true;
+    const place = templatePlace(item.trigger);
+    if (place === "statement") return site.atStatementStart;
+    if (place === "from") return site.inFromClause;
+    if (place === "query") return site.afterFrom;
+    return true;
+  });
   candidates.sort((a, b) => {
     const aExact = prefix.length > 0 && a.trigger.toLowerCase() === prefix ? 0 : 1;
     const bExact = prefix.length > 0 && b.trigger.toLowerCase() === prefix ? 0 : 1;

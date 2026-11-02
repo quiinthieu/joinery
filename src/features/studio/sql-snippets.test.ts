@@ -20,7 +20,12 @@ import { CompletionWorkerIndex } from "../../data/completion-protocol";
 import { CompletionSession } from "./completion-session";
 import { completionTarget } from "./sql-context";
 import { sqlDialect } from "./sql-identifiers";
-import { builtInSqlSnippets, effectiveSqlSnippets, snippetCompletions } from "./sql-snippets";
+import {
+  builtInSqlSnippets,
+  effectiveSqlSnippets,
+  snippetCompletions,
+  sqlTemplateSite,
+} from "./sql-snippets";
 
 test("formats SQL text honoring keyword case, indent width, and lines between queries", () => {
   expect(sqlFormatterLanguage("postgres")).toBe("postgresql");
@@ -204,6 +209,54 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
   const qualifiedTarget = completionTarget(qualifiedState, qualifiedState.selection.main.head)!;
   expect(qualifiedTarget.parts).toHaveLength(2);
   expect(snippetCompletions("postgres", qualifiedTarget, [])).toEqual([]);
+
+  const labelsAt = (doc: string, snippets: SqlSnippet[] = []) => {
+    const state = EditorState.create({
+      doc,
+      selection: { anchor: doc.length },
+      extensions: [sql({ dialect: sqlDialect("postgres") })],
+    });
+    const target = completionTarget(state, doc.length)!;
+    return snippetCompletions(
+      "postgres",
+      target,
+      snippets,
+      undefined,
+      sqlTemplateSite(state, target.from),
+    ).map((item) => item.label);
+  };
+  expect(labelsAt("sel")).toContain("sel");
+  expect(labelsAt("sel")).not.toContain("join");
+  expect(labelsAt("sel")).not.toContain("lim");
+  expect(labelsAt("SELECT * FROM orders ")).toEqual(
+    expect.arrayContaining(["join", "ljoin", "lim"]),
+  );
+  expect(labelsAt("SELECT * FROM orders ")).not.toContain("sel");
+  const where = labelsAt("SELECT * FROM orders WHERE ");
+  expect(where).toContain("lim");
+  expect(where).not.toContain("join");
+  expect(where).not.toContain("sel");
+  const placed: SqlSnippet[] = [
+    {
+      id: "probe",
+      trigger: "probe",
+      title: "Custom",
+      body: "SELECT 1;",
+      engine: null,
+      updatedAtMs: 1,
+    },
+    {
+      id: "sel",
+      trigger: "sel",
+      title: "Custom select",
+      body: "SELECT ${1:id};",
+      engine: "postgres",
+      updatedAtMs: 2,
+    },
+  ];
+  expect(labelsAt("SELECT * FROM orders WHERE ", placed)).toContain("probe");
+  expect(labelsAt("SELECT * FROM orders WHERE ", placed)).not.toContain("sel");
+  expect(labelsAt("sel", placed)).toContain("sel");
 
   const worker = new CompletionWorkerIndex();
   const tables: TableInfo[] = [
