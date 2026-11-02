@@ -167,6 +167,17 @@ for (const [engine, port] of [
     await expect(dialog).toHaveCount(0);
     await page.unroute("**/rpc/inspection_schema");
     await editor.fill(`WITH c AS (SELECT id FROM ${table}) SELECT c.typo FROM c`);
+    const readsBeforeCte = metadataReads;
+    await inspect.click();
+    await expect(dialog).toContainText("not projected by c");
+    const projected = dialog.getByLabel("Replace with projected column");
+    await expect(projected.locator("option")).toHaveText(["Choose a column…", "id"]);
+    expect(metadataReads).toBe(readsBeforeCte + 1);
+    expect(executions).toBe(beforeDenied);
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await editor.fill(
+      `WITH c AS (SELECT id FROM ${table}), d AS (SELECT id FROM ${table}) SELECT c.typo FROM c`,
+    );
     const readsBeforeUnsupported = metadataReads;
     await inspect.click();
     await expect(page.getByRole("alert")).toContainText("direct-table SELECT");
