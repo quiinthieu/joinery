@@ -218,23 +218,19 @@ dirty documentation is not recovered. Historical counts (146 frontend, 139 Rust,
 56 fixture and 49 browser passes plus macOS gates) are not current qualification.
 Integration is proceeding by reviewed feature group on the R6 branch.
 
-Current candidate `46912f5` integrates six R5 slices plus formatting, named
-outputs, console-bound inspectors, bounded alias/CTE rename and qualified-column
-inspection/correction across ordered direct-table JOINs, alongside seven R6
-slices. R5/R6 remain partial, local, unmerged, unreleased and not installed.
-Validation passes 379 frontend / 156 standard Rust and 21 focused
-PostgreSQL/MySQL/MariaDB browser flows. Inspection resolves each qualified
-reference against its actual JOIN operand scope, reads fresh complete selectable
-metadata for every distinct table and offers columns only from the selected
-reference's table. Explicit preview/Apply/one undo and document/context guards
-remain; inspection never prepares/runs editor SQL. Metadata work is sequential,
-deduplicated and bounded; unsupported, partial, denied or stale scopes withhold
-claims. The clean-source macOS native synthetic baseline passes three processes /
-30 cleanup cycles. Browser interaction is verified; native UI and representative
-performance remain unqualified. Prior broad/permission-fixture qualification
-retains its revisions. Next: context-aware live-template variables, followed by
-remaining R5/R6/R7/R8 and delivery gates. See
-[current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-column-inspections-2-november-2026).
+Current candidate `51ad451` integrates six R5 slices plus formatting, named
+outputs, console-bound inspectors, bounded alias/CTE rename, qualified-column
+inspection/correction across ordered direct-table JOINs, and context-aware live
+templates, alongside seven R6 slices. R5/R6 remain partial, local, unmerged,
+unreleased and not installed. Templates expand observed database/schema
+identifiers and literal selected SQL from the active console, with tab stops
+and one undo, and never prepare or execute SQL. The focused template checks are
+31 frontend tests, one Rust snippet-backup test, and six PostgreSQL/MySQL/MariaDB
+browser flows. The prior JOIN candidate passed 379 frontend / 156 standard Rust
+tests and its focused browser flows; those full checks were not rerun here.
+Next: broader CTE/derived/unqualified inspection and semantic template placement,
+then remaining R5/R6/R7/R8 and delivery gates. See
+[current evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-aware-live-templates-2-november-2026).
 
 ### R5 integration slice 1: live FK JOIN completion (local `e0dad5f`)
 
@@ -439,7 +435,7 @@ alongside existing statement/token/expression limits. Nested/derived/CTE inferen
 unqualified-column diagnostics and broader semantic fixes remain open. See
 [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-column-inspections-2-november-2026).
 
-### Next bounded editor slice: context-aware live-template variables
+### R5 context-aware live templates (local `51ad451`)
 
 1. Extend existing built-in/custom templates with a small documented variable
    vocabulary for current database/schema and selected text. Resolve values from
@@ -453,7 +449,9 @@ unqualified-column diagnostics and broader semantic fixes remain open. See
 3. Reproduce missing/stale context and quoted-name cases, exercise primary and
    isolated console expansion on PostgreSQL/MySQL/MariaDB, compare an explicit
    harmless read after expansion, and prove zero expansion execution requests.
-   Keep broader CTE/derived inspection and semantic placement partial. Then
+   Implemented locally on `51ad451`. See
+   [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-aware-live-templates-2-november-2026).
+   Broader CTE/derived inspection and semantic placement stay partial. Then
    continue remaining R5/R6 integration and R7/R8; merge/release/install and
    external/native/platform qualification remain separate gates.
 
@@ -588,8 +586,9 @@ R6 remains partial, local, unmerged and unreleased.
    Prior combined-source qualification passed all 66 ignored local SQL/Redis/SSH
    fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
    suite passed on `db5cd1b`.
-   Next: context-aware live-template variables, then broader editor semantics and
-   remaining R5/R6/R7/R8 scope. Preserve conservative ambiguity handling, every
+   Next: broader CTE/derived/unqualified inspection and semantic template
+   placement, then remaining R5/R6/R7/R8 scope. Context-aware templates are local
+   on `51ad451`. Preserve conservative ambiguity handling, every
    preparation/approval path and exact editor origins. Keep the earlier startup
    flake open until its cause is known.
    Application merge, release and installation remain separate authorized gates.

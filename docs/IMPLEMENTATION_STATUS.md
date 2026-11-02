@@ -3,8 +3,10 @@
 Updated 2026-11-02. R1–R4 are merged but unreleased. The local R6 branch now
 integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
 query parameters, inline error/statement navigation and SQL definitions/usages/
-quick documentation, selection formatting/settings and snippets. Format saves
-are serialized with rollback to the last successful settings. Global and
+quick documentation, selection formatting/settings and snippets. Live templates
+expand observed database/schema identifiers and literal selected SQL without
+executing it. Format saves are serialized with rollback to the last successful
+settings. Global and
 per-engine styles persist with validated recovery. Named CTE/derived-table
 outputs now resolve to local declarations and proven source metadata. Wildcards,
 expressions and unsupported shapes remain withheld. Console object/column jumps
@@ -2227,7 +2229,7 @@ unqualified-column inference and Snowflake/Redis inspections remain withheld.
 | Browser | Six inspection flows plus fifteen existing alias/CTE rename/navigation flows pass on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4. New JOIN flows compare decoded Arrow values `[7, SKU-7-2]` before/after two explicit corrections, test table-specific choices/reset, preview/Apply/undo, one self-join metadata read, stale-first-read suppression of the second request, denied second-table response and unknown future ON qualifier rejection before IPC. Inspection generates no editor prepare/execute requests; zero page errors. Existing single-table invalidation/cancel/retry and navigation/isolated-inspector flows also pass |
 | Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass, including the existing disconnected inspection IPC guard. Fixture SHA-256 `16a501f381351d32733b9a4c6cfbc8e4eae76a1834f6092507a6b6c45e670339`; isolated ad-hoc bundle executable SHA-256 `1e4b254ed4f12d4c878180b21b818ebccce115b84e1a039a948d88aec9566ec8`. Synthetic IPC/worker/cleanup only; JOIN interaction is browser evidence, not native UI/accessibility or performance qualification |
 | Prior evidence | Complete-selectable metadata permission/context fixtures remain on `cfb6139`; no backend code changed here. Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc distribution bundle: `b80b6c7`. These were not rerun or relabeled |
-| Open / next | E08 and R5/R6 remain partial. Next is bounded context-aware live-template variables, then remaining R5/R6/R7/R8. Broader CTE/derived/unqualified inspection, Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and delivery gates remain open |
+| Open / next | E08 and R5/R6 remain partial. Context-aware live templates are the following section. Broader CTE/derived/unqualified inspection, semantic template placement, remaining R5/R6/R7/R8, Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and delivery gates remain open |
 
 Logs: `.cache/r5-join-inspections-before.log`,
 `.cache/r5-join-inspections-unit.log`, `.cache/r5-join-inspections-validate.log`,
@@ -2240,3 +2242,18 @@ account was queried. Fetched `origin/main` remains `a0ba1a6`; preview.15 is the
 last verified release without fresh release/install qualification. Local,
 unmerged, unreleased and not installed. No application push, merge, release or
 installation occurred.
+
+## R5 follow-up: context-aware live templates (2 November 2026)
+
+Code `51ad451e6cd0e044fdaa1f75d83d3049c1fa8f63`, tree `8d5334573bd545353868f97f5d225df98e301218`, adds `{{database}}`, `{{schema}}` and `{{selection}}` to built-in and custom SQL templates. Database and schema values are quoted identifiers from the active console's observed runtime state. MySQL/MariaDB schema means the current database and uses backticks; PostgreSQL and Snowflake use doubled double quotes. Selected text is inserted literally, including placeholder-like text, and is not expanded again. Unknown, incomplete or missing values block insertion and leave the document unchanged. Tab stops and one undo step remain. Expansion edits the editor only. It does not prepare or execute SQL.
+
+Completion and the Insert template chooser share that expansion. A completion failure is reported instead of becoming an unhandled rejection. A document, selection, session, snippet list or console-context change while context is loading rejects the pending insertion. Custom bodies still have the 16 KiB storage limit and round-trip through metadata backup. Expanded text is limited to 1 MiB UTF-8. The contract is [sql-live-templates.md](sql-live-templates.md).
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-template-context.test.ts` and `sql-snippets.test.ts`: 31 passed. Cases cover quoted odd identifiers for PostgreSQL, MySQL and Snowflake, literal repeated selection, tab stops, one undo, missing/unknown/incomplete variables, context-read failure, stale document/selection/context, and a completion failure notification. The Rust snippet backup test `sql_format_settings_and_snippets_validate_bounds_triggers_and_backup_recovery` passes with a body that contains these variables |
+| Browser | Six flows pass on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4 (50.9s). Each engine expands a custom template from completion on the primary console, wraps selected SQL from Insert template, repeats the expansion on an isolated console after `completion_alt`, and compares a harmless explicit read with the baseline value. Failure flows reject an unknown variable, an empty selection, missing schema, a context refresh during insertion, and cancel during the context read. Editor text stays unchanged and those flows issue no prepare/execute requests. The stale disposable PostgreSQL volume used by the first attempt had no `completion_alt` schema; it was recreated from `tests/fixtures/postgres.sql` before the passing run. An intermediate MySQL failure was the test holding `session_contexts` while the console was still settling |
+| Not executed | `pnpm validate`, the ignored fixture suites, the full browser suite, and a clean-source native/bundle build were not rerun for this slice. Snowflake quoting is unit-only. The owner-private Site was not updated; Sites tools are not available in this session |
+| Open / next | Broader CTE/derived/unqualified inspection, semantic template placement, expressions/macros and remaining R5/R6/R7/R8. Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates remain open |
+
+Log: `.cache/r5-live-templates-browser-3.log`. Fetched `origin/main` remains `a0ba1a6`. Local, unmerged, unreleased and not installed. No application push, merge, release or installation occurred.
