@@ -98,7 +98,8 @@ describe("bounded qualified-column inspections", () => {
     "SELECT a.bad FROM orders a WHERE other.bad > 0",
     "WITH RECURSIVE c AS (SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c(id) AS (SELECT id FROM orders) SELECT c.id FROM c",
-    "WITH c AS (SELECT id FROM orders), d AS (SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders), c AS (SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH d AS (SELECT c.id FROM c), c AS (SELECT id FROM orders) SELECT d.id FROM d",
     "WITH c AS (SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT id FROM orders a JOIN orders b ON a.id = b.id) SELECT c.id FROM c",
   ])("withholds unsupported or unresolved shapes: %s", (doc) => {
@@ -240,6 +241,26 @@ describe("bounded qualified-column inspections", () => {
     expect(joined.checked).toBe(5);
     expect(joined.issues).toHaveLength(1);
     expect(joined.columnsFor(joined.issues[0])).toEqual(["id"]);
+  });
+  test("inspects several non-recursive CTEs by their projected names", () => {
+    const both = inspect(
+      "WITH c AS (SELECT id FROM orders), d AS (SELECT id AS customer_id FROM orders) SELECT c.bad, d.bad FROM c JOIN d ON c.id = d.customer_id",
+    ).result;
+    expect(both.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([
+      ["c", "bad"],
+      ["d", "bad"],
+    ]);
+    expect(both.columnsFor(both.issues[0])).toEqual(["id"]);
+    expect(both.columnsFor(both.issues[1])).toEqual(["customer_id"]);
+    const chained = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders), d AS (SELECT c.order_id FROM c) SELECT d.bad FROM d",
+    ).result;
+    expect(chained.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "bad"]]);
+    expect(chained.columnsFor(chained.issues[0])).toEqual(["order_id"]);
+    expect(
+      inspect("WITH c AS (SELECT id FROM orders), d AS (SELECT id FROM orders) SELECT c.id FROM c")
+        .result.issues,
+    ).toEqual([]);
   });
   test("keeps base-table corrections for references inside the query body", () => {
     const { result } = inspect(

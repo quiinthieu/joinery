@@ -43,11 +43,12 @@ export const columnInspectionLimits = {
 const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name]);
 
 /**
- * Flat direct-table SELECTs, plus one non-recursive CTE or derived table whose
- * body is that shape. Stars, column lists, recursive and multiple CTEs withhold.
- * shortcut: unqualified names include function arguments and grouped
- * expressions. A name owned by more than one relation withholds the
- * inspection. upgrade for multiple and recursive CTEs.
+ * Flat direct-table SELECTs, plus non-recursive CTEs or a derived table whose
+ * body is that shape. Stars, column lists and recursive CTEs withhold.
+ * shortcut: a CTE can see earlier CTEs in the same WITH list. A derived
+ * table does not see that list. A name owned by more than one relation
+ * withholds the inspection. upgrade for recursive CTEs and for CTE names
+ * inside derived tables.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -213,7 +214,11 @@ export function prepareColumnInspection(
       throw unsupported();
     return outputs;
   }
-  function analyze(tokens: readonly SqlToken[], depth: number, cte?: Binding): Analysis {
+  function analyze(
+    tokens: readonly SqlToken[],
+    depth: number,
+    ctes: readonly Binding[] = [],
+  ): Analysis {
     if (depth > 8 || word(tokens[0]) !== "SELECT") throw unsupported();
     const from = tokens.findIndex((token) => word(token) === "FROM");
     if (from < 0) throw unsupported();
@@ -278,16 +283,18 @@ export function prepareColumnInspection(
       const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
       if (explicitAlias && !alias) throw unsupported();
       for (const token of [...relation, ...(alias ? [alias] : [])]) checkName(token);
-      if (cte && relation.length === 1 && key(relation[0].text) === cte.key) {
+      const prior =
+        relation.length === 1 ? ctes.find((item) => item.key === key(relation[0].text)) : undefined;
+      if (prior) {
         const shown = alias ?? relation[0];
         const binding: Binding = {
           key: key(shown.text),
           label: shown.text,
-          table: cte.table,
+          table: prior.table,
           outputOf: alias
             ? identifierValue(readIdentifier(alias.text), context.engine)
-            : cte.outputOf,
-          outputs: cte.outputs,
+            : prior.outputOf,
+          outputs: prior.outputs,
         };
         remember(binding);
         return binding;
@@ -588,41 +595,51 @@ export function prepareColumnInspection(
     if (word(list[0]) !== "WITH") return null;
     let index = 1;
     if (word(list[index]) === "RECURSIVE") throw unsupported();
-    const name = list[index++];
-    if (!nameToken(name)) throw unsupported();
-    checkName(name);
-    if (list[index]?.children) throw unsupported();
-    if (word(list[index++]) !== "AS") throw unsupported();
-    while (word(list[index]) === "NOT" || word(list[index]) === "MATERIALIZED") index++;
-    const bodyToken = list[index++];
-    const body = bodyToken?.children && clean(bodyToken.children);
-    if (!body || !bodyToken.text.endsWith(")") || word(body[0]) !== "SELECT") throw unsupported();
-    if (list[index]?.text === ",") throw unsupported();
-    return { name, body, rest: list.slice(index) };
+    const defs: { name: SqlToken; body: SqlToken[] }[] = [];
+    for (;;) {
+      const name = list[index++];
+      if (!nameToken(name)) throw unsupported();
+      checkName(name);
+      if (list[index]?.children) throw unsupported();
+      if (word(list[index++]) !== "AS") throw unsupported();
+      while (word(list[index]) === "NOT" || word(list[index]) === "MATERIALIZED") index++;
+      const bodyToken = list[index++];
+      const body = bodyToken?.children && clean(bodyToken.children);
+      if (!body || !bodyToken.text.endsWith(")") || word(body[0]) !== "SELECT") throw unsupported();
+      defs.push({ name, body });
+      if (list[index]?.text !== ",") break;
+      index++;
+    }
+    return { defs, rest: list.slice(index) };
   }
   const leading = peel(tokens);
-  const body = leading ? analyze(leading.body, 0) : undefined;
-  const leadingOutputs = body ? project(leading!.body, body.bindings) : [];
-  const cte = leading
-    ? {
-        key: key(leading.name.text),
-        label: leading.name.text,
-        table: leadingOutputs[0].table,
-        outputOf: identifierValue(readIdentifier(leading.name.text), context.engine),
-        outputs: leadingOutputs,
-      }
-    : undefined;
-  const outer = analyze(leading ? leading.rest : tokens, 0, cte);
-  const references = [...(body?.references ?? []), ...outer.references];
-  const unqualifiedOwners = new Map([
-    ...(body?.unqualifiedOwners ?? []),
-    ...outer.unqualifiedOwners,
-  ]);
-  const proofs = [...(body?.proofs ?? []), ...leadingOutputs, ...outer.proofs];
+  const ctes: Binding[] = [];
+  const cteReferences: MissingSqlColumn[] = [];
+  const cteOwners = new Map<MissingSqlColumn, Binding[]>();
+  const cteProofs: QueryOutput[] = [];
+  const cteTables: TableRef[] = [];
+  for (const def of leading?.defs ?? []) {
+    if (ctes.some((item) => item.key === key(def.name.text))) throw unsupported();
+    const body = analyze(def.body, 0, ctes);
+    const outputs = project(def.body, body.bindings);
+    cteReferences.push(...body.references);
+    for (const [ref, owners] of body.unqualifiedOwners) cteOwners.set(ref, owners);
+    cteProofs.push(...body.proofs, ...outputs);
+    cteTables.push(...body.tables);
+    ctes.push({
+      key: key(def.name.text),
+      label: def.name.text,
+      table: outputs[0].table,
+      outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
+      outputs,
+    });
+  }
+  const outer = analyze(leading ? leading.rest : tokens, 0, ctes);
+  const references = [...cteReferences, ...outer.references];
+  const unqualifiedOwners = new Map([...cteOwners, ...outer.unqualifiedOwners]);
+  const proofs = [...cteProofs, ...outer.proofs];
   const tables = [
-    ...new Map(
-      [...(body?.tables ?? []), ...outer.tables].map((table) => [tableKey(table), table]),
-    ).values(),
+    ...new Map([...cteTables, ...outer.tables].map((table) => [tableKey(table), table])).values(),
   ];
   if (!references.length)
     throw new Error("No supported qualified columns to inspect in this SELECT.");
