@@ -587,6 +587,7 @@ R6 remains partial, local, unmerged and unreleased.
    fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
    suite passed on `db5cd1b`.
    Next: the remaining R5/R6/R7/R8 scope.
+   A non-recursive CTE UNION is inspected from the anchor projection. A recursive arm can read its CTE.
    A recursive CTE of more than two flat SELECT arms is inspected from the anchor projection.
    A full explicit CTE column list renames that CTE's projected outputs. A partial list still withholds.
    A parenthesized query in a function argument uses the same template placement.

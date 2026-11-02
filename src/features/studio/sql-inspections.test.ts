@@ -96,7 +96,10 @@ describe("bounded qualified-column inspections", () => {
     "SELECT a.bad FROM orders a WHERE (",
     "SELECT a.payload.field FROM orders a",
     "SELECT a.bad FROM orders a WHERE other.bad > 0",
-    "WITH c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders UNION ALL SELECT c.id FROM c) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
+    "SELECT d.bad FROM (SELECT id FROM orders UNION ALL SELECT id FROM orders) d",
+    "WITH c AS (SELECT id FROM orders EXCEPT SELECT id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id, customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id FROM orders INTERSECT SELECT id FROM orders) SELECT c.id FROM c",
@@ -325,6 +328,26 @@ describe("bounded qualified-column inspections", () => {
     expect(renamed.columnsFor(renamed.issues[0])).toEqual(["n"]);
     const over = `WITH RECURSIVE c AS (SELECT id FROM orders${" UNION ALL SELECT id FROM orders".repeat(columnInspectionLimits.relations)}) SELECT c.id FROM c`;
     expect(() => inspect(over)).toThrow(/direct-table SELECT/);
+  });
+  test("inspects a non-recursive CTE union from the anchor projection", () => {
+    const both = inspect(
+      "WITH c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders) SELECT c.bad FROM c",
+    ).result;
+    expect(both.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "bad"]]);
+    expect(both.columnsFor(both.issues[0])).toEqual(["id"]);
+    const named = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders UNION SELECT customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.bad FROM c",
+    ).result;
+    expect(named.columnsFor(named.issues[0])).toEqual(["order_id"]);
+    const renamed = inspect(
+      "WITH c(order_id) AS (SELECT id FROM orders UNION ALL SELECT customer_id FROM orders) SELECT c.id FROM c",
+    ).result;
+    expect(renamed.issues.map((issue) => issue.name)).toEqual(["id"]);
+    expect(renamed.columnsFor(renamed.issues[0])).toEqual(["order_id"]);
+    const earlier = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders), d AS (SELECT id FROM orders UNION ALL SELECT c.order_id FROM c) SELECT d.bad FROM d",
+    ).result;
+    expect(earlier.columnsFor(earlier.issues[0])).toEqual(["id"]);
   });
   test("inspects a recursive CTE from the anchor projection", () => {
     const keyword = inspect(
