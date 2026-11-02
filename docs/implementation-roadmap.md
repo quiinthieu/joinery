@@ -588,6 +588,7 @@ R6 remains partial, local, unmerged and unreleased.
    suite passed on `db5cd1b`.
    Next: the remaining R5/R6/R7/R8 scope.
    A non-recursive CTE UNION is inspected from the anchor projection. A recursive arm can read its CTE.
+   A derived table UNION is inspected from the anchor projection.
    A recursive CTE of more than two flat SELECT arms is inspected from the anchor projection.
    A full explicit CTE column list renames that CTE's projected outputs. A partial list still withholds.
    A parenthesized query in a function argument uses the same template placement.

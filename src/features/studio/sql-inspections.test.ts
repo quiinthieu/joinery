@@ -98,8 +98,15 @@ describe("bounded qualified-column inspections", () => {
     "SELECT a.bad FROM orders a WHERE other.bad > 0",
     "WITH c AS (SELECT id FROM orders UNION ALL SELECT c.id FROM c) SELECT c.id FROM c",
     "WITH c AS (SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
-    "SELECT d.bad FROM (SELECT id FROM orders UNION ALL SELECT id FROM orders) d",
     "WITH c AS (SELECT id FROM orders EXCEPT SELECT id FROM orders) SELECT c.id FROM c",
+    "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) d",
+    "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT d.id FROM d) d",
+    "SELECT d.id FROM (SELECT id FROM orders INTERSECT SELECT id FROM orders) d",
+    "SELECT d.id FROM (SELECT id FROM orders EXCEPT SELECT id FROM orders) d",
+    "SELECT d.id FROM ((SELECT id FROM orders) UNION ALL (SELECT id FROM orders)) d",
+    "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id + 1 FROM orders) d",
+    "SELECT d.id FROM (SELECT id FROM orders UNION ALL) d",
+    "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT * FROM orders) d",
     "WITH RECURSIVE c AS (SELECT id, customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id FROM orders INTERSECT SELECT id FROM orders) SELECT c.id FROM c",
@@ -389,6 +396,51 @@ describe("bounded qualified-column inspections", () => {
     ).result;
     expect(nested.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "bad"]]);
     expect(nested.columnsFor(nested.issues[0])).toEqual(["order_id"]);
+  });
+  test("inspects a derived-table union from the anchor projection", () => {
+    const both = inspect(
+      "SELECT d.bad FROM (SELECT id FROM orders UNION ALL SELECT id FROM orders) d",
+    ).result;
+    expect(both.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "bad"]]);
+    expect(both.columnsFor(both.issues[0])).toEqual(["id"]);
+    const named = inspect(
+      "SELECT d.bad FROM (SELECT id AS order_id FROM orders UNION SELECT customer_id FROM orders UNION ALL SELECT id FROM orders) d",
+    ).result;
+    expect(named.columnsFor(named.issues[0])).toEqual(["order_id"]);
+    const hidden = inspect(
+      "SELECT d.customer_id FROM (SELECT id FROM orders UNION ALL SELECT customer_id FROM orders) d",
+    ).result;
+    expect(hidden.issues.map((issue) => issue.name)).toEqual(["customer_id"]);
+    expect(hidden.columnsFor(hidden.issues[0])).toEqual(["id"]);
+    const earlier = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders) SELECT d.bad FROM (SELECT id FROM orders UNION ALL SELECT c.order_id FROM c) d",
+    ).result;
+    expect(earlier.columnsFor(earlier.issues[0])).toEqual(["id"]);
+    const wrapped = inspect(
+      "WITH c AS (SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT customer_id FROM orders) d) SELECT c.bad FROM c",
+    ).result;
+    expect(wrapped.columnsFor(wrapped.issues[0])).toEqual(["id"]);
+    const joined = inspect(
+      "SELECT d.bad FROM orders a JOIN (SELECT id FROM orders UNION ALL SELECT customer_id FROM orders) d ON a.id = d.id",
+    ).result;
+    expect(joined.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "bad"]]);
+    expect(joined.columnsFor(joined.issues[0])).toEqual(["id"]);
+    const later = inspect(
+      "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id FROM orders WHERE typo = 1) d",
+    ).result;
+    expect(later.issues.map((issue) => issue.name)).toEqual(["typo"]);
+    expect(() =>
+      inspect("SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT missing FROM orders) d"),
+    ).toThrow(/projected column/);
+    const distinct = inspect(
+      "SELECT d.bad FROM (SELECT id FROM orders UNION DISTINCT SELECT customer_id FROM orders) d",
+    ).result;
+    expect(distinct.columnsFor(distinct.issues[0])).toEqual(["id"]);
+    const mysql = inspect(
+      "SELECT d.bad FROM (SELECT id FROM orders UNION ALL SELECT id FROM orders) d",
+      "mysql",
+    ).result;
+    expect(mysql.columnsFor(mysql.issues[0])).toEqual(["id"]);
   });
   test("keeps base-table corrections for references inside the query body", () => {
     const { result } = inspect(
