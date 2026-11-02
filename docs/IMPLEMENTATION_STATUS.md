@@ -2307,6 +2307,19 @@ A bare name in `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` or `ON` is checked with
 | Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, a present name, `LOWER(typo)`, MySQL `_rowid`, a joined name owned by one table, and a joined name that matches none |
 | Validate | `pnpm validate` passed: 411 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated. GitHub checks on PR #32 are not claimed green |
-| Open / next | Function arguments, multiple and recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+| Open / next | See the function-argument section below |
 
 Fetched `origin/main` is `102d9bb`. This follow-up is local until it is pushed onto PR #32. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: function-argument column names (2 November 2026)
+
+A bare name inside a function call is checked with the same one-owner rule. `LOWER(typo)` in the select list or in `WHERE` is included. `CAST(id AS text)` does not treat the type name as a column. A parenthesized select-list expression that is not a call, such as `(typo)`, stays unread. Several owners, or none, withhold the inspection. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover `LOWER(typo)` in `WHERE` and the select list, `CAST(id AS text)`, a parenthesized select item, a joined argument owned by one table, and a joined argument that matches none |
+| Validate | `pnpm validate` passed: 411 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Multiple and recursive CTEs, nested template placement, parenthesized select-list expressions, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `ef97014`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

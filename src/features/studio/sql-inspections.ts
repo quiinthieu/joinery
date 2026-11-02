@@ -45,10 +45,10 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 /**
  * Flat direct-table SELECTs, plus one non-recursive CTE or derived table whose
  * body is that shape. Stars, column lists, recursive and multiple CTEs withhold.
- * shortcut: unqualified names are select-list items and bare names in
- * WHERE, GROUP BY, HAVING, ORDER BY and ON. Function arguments stay unread.
+ * shortcut: unqualified names include function arguments. A grouped
+ * expression that is not a call stays unread in the select list.
  * A name owned by more than one relation withholds the inspection.
- * upgrade for nested function arguments and multiple CTEs.
+ * upgrade for parenthesized select-list expressions and multiple CTEs.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -447,7 +447,6 @@ export function prepareColumnInspection(
       "CASE",
       "END",
       "EXISTS",
-      "CAST",
       "INNER",
       "LEFT",
       "RIGHT",
@@ -502,7 +501,8 @@ export function prepareColumnInspection(
             nameLike(caller) &&
             caller.kind !== "QuotedIdentifier" &&
             !skipBare.has(word(caller));
-          scan(token.children, depth + 1, scope, bare && !call);
+          // A call's arguments are columns even when the surrounding list is not.
+          scan(token.children, depth + 1, scope, bare || call);
           continue;
         }
         if (
