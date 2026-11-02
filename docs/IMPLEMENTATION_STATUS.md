@@ -2530,18 +2530,31 @@ A select list that is only `*` or `alias.*` for one relation expands to that rel
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
 | Open / next | See the schema-qualified star section below |
 
-Fetched `origin/main` is `1fa0ce5`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Fetched `origin/main` is `2ee7163`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
 ## R5 follow-up: schema-qualified star inspection (3 November 2026)
 
-An unaliased `schema.table.*` expands to that relation's columns when the FROM clause writes the same schema-qualified name. An alias, a different schema, and a bare table name still withhold. A star beside other select items and a star in a set operation still withhold. Inspection does not prepare or execute SQL.
+An unaliased `schema.table.*` expands to that relation's columns when the FROM clause writes the same schema-qualified name. An alias, a different schema, and a bare table name still withhold. A schema-qualified star beside other select items, and a star in a set operation, still withhold. Inspection does not prepare or execute SQL.
 
 | State | Evidence for this source |
 |---|---|
-| Unit | `sql-inspections.test.ts` covers a CTE star, a known column, quoted names, and MySQL. An alias, a bare table, and a different schema still withhold |
+| Unit | `sql-inspections.test.ts` covers a CTE star, a known column, quoted names, and MySQL. An alias, a bare table, a different schema, and a schema-qualified star beside another column still withhold |
 | Validate | `pnpm validate` passed: 443 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A star beside other select items, a star in a set operation, and other template expressions remain open |
+| Open / next | See the star-beside-columns section below |
+
+Fetched `origin/main` is `1fa0ce5`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: star beside simple columns (3 November 2026)
+
+A select list may place one `*` or `alias.*` beside simple columns. The offered names are that relation's columns plus the extra names. A repeated name withholds the inspection, including `SELECT *, id` when `id` is already in the relation. An explicit column list on a star, a schema-qualified star, and a star in a set operation still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers an added alias, a known star column, a duplicate name, a derived list, a join, a projected CTE, a chained star, and MySQL. Two stars and an explicit column list still withhold |
+| Validate | `pnpm validate` passed: 442 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A star in a set operation, a schema-qualified star, and other template expressions remain open |
 
 Fetched `origin/main` is `47aa021`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
