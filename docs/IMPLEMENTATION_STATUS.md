@@ -2437,6 +2437,19 @@ Completion classifies a parenthesized statement after an `EXPLAIN` wrapper. `EXP
 | Unit | `sql-snippets.test.ts` covers `EXPLAIN ANALYZE (sel`, an inner FROM list, an inner WHERE clause, and `EXPLAIN (SELECT` |
 | Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A subquery inside a function argument stays unclassified |
+| Open / next | See the function-argument template section below |
 
 Fetched `origin/main` is `74999a4`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: function-argument template placement (3 November 2026)
+
+Completion classifies a parenthesized query used as a function argument. `SELECT LOWER(a, (sel` offers a statement template. `SELECT LOWER(a, (SELECT id FROM ` offers `join`, `ljoin` and `lim`. `SELECT LOWER((SELECT id FROM ` does the same. `SELECT LOWER(sel` does not start a statement, and a prefix after the closing parenthesis stays outside the argument. **Insert template** still lists every template. Expansion does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-snippets.test.ts` covers a call that is not a query, a comma argument, an inner FROM list, an inner WHERE clause, a bare parenthesized argument, and a prefix after the closing parenthesis |
+| Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. Stars, CTE column lists, longer set operations, and template expressions remain open |
+
+Fetched `origin/main` is `96e1fbe`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
