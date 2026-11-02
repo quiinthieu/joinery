@@ -44,14 +44,13 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 
 /**
  * Flat direct-table SELECTs, plus CTEs or a derived table whose body is that
- * shape. A CTE may be two or more flat SELECT arms joined by UNION or
- * UNION ALL; its names come from the anchor arm. Only a recursive arm can
- * read that CTE. A derived table may use the same arms; its names come from
- * that anchor. A full explicit column list renames those outputs. Stars and
- * a partial column list withhold.
- * shortcut: INTERSECT/EXCEPT, more arms than the relation limit, and an arm
- * that is not a flat SELECT withhold. A name owned by more than one relation
- * withholds the inspection. upgrade for those shapes.
+ * shape. A CTE or derived table may join two or more flat SELECT arms with
+ * UNION, INTERSECT, or EXCEPT, including ALL or DISTINCT. Its names come from
+ * the anchor arm. Only a recursive arm can read that CTE. A full explicit
+ * column list renames those outputs. Stars and a partial column list withhold.
+ * shortcut: a top-level set operation, more arms than the relation limit, and
+ * an arm that is not a flat SELECT withhold. A name owned by more than one
+ * relation withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -260,7 +259,7 @@ export function prepareColumnInspection(
         absorb(nested, outputs);
         return outputs;
       }
-      // shortcut: INTERSECT/EXCEPT are not split. A parenthesized arm withholds.
+      // shortcut: a parenthesized arm withholds.
       if (
         arms.length < 2 ||
         arms.length > columnInspectionLimits.relations ||
@@ -661,13 +660,14 @@ export function prepareColumnInspection(
     }
     return { defs, rest: list.slice(index), recursive };
   }
-  // Top-level UNION only. A nested query stays inside one parenthesis token.
+  // Set operators in this body only. A nested query stays inside one parenthesis token.
   function unionArms(body: readonly SqlToken[]): SqlToken[][] | null {
     const arms: SqlToken[][] = [];
     let start = 0;
     let found = false;
     for (let i = 0; i < body.length; i++) {
-      if (word(body[i]) !== "UNION") continue;
+      const op = word(body[i]);
+      if (op !== "UNION" && op !== "INTERSECT" && op !== "EXCEPT") continue;
       found = true;
       const qualifier = word(body[i + 1]);
       const after = qualifier === "ALL" || qualifier === "DISTINCT" ? i + 2 : i + 1;
@@ -706,7 +706,7 @@ export function prepareColumnInspection(
     let outputs: QueryOutput[];
     if (!arms) outputs = rename(take(def.body, ctes), def.columns);
     else {
-      // shortcut: INTERSECT/EXCEPT and a non-flat arm withhold. A non-recursive arm cannot read its own CTE.
+      // shortcut: a non-flat arm withholds. A non-recursive arm cannot read its own CTE.
       if (
         arms.length < 2 ||
         arms.length > columnInspectionLimits.relations ||
