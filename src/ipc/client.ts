@@ -157,6 +157,7 @@ class PreviewClient implements StudioClient {
         title: string;
         body: string;
         engine: string | null;
+        place?: "any" | "statement" | "from" | "query";
       };
       return {
         id: input?.id ?? crypto.randomUUID(),
@@ -164,6 +165,7 @@ class PreviewClient implements StudioClient {
         title: input?.title ?? "",
         body: input?.body ?? "",
         engine: input?.engine ?? null,
+        place: input?.place ?? "any",
         updatedAtMs: Date.now(),
       } as T;
     }

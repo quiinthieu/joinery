@@ -678,6 +678,7 @@ impl Persistence {
                 title,
                 body: input.body,
                 engine: input.engine,
+                place: input.place,
                 updated_at_ms,
             };
             items[pos] = entry.clone();
@@ -695,6 +696,7 @@ impl Persistence {
                 title,
                 body: input.body,
                 engine: input.engine,
+                place: input.place,
                 updated_at_ms,
             };
             items.push(entry.clone());
@@ -1077,10 +1079,12 @@ mod tests {
                 title: "  Active Users  ".into(),
                 body: "SELECT * FROM ${1:users} WHERE active = TRUE;".into(),
                 engine: None,
+                place: SqlSnippetPlace::Any,
             })
             .unwrap();
         assert_eq!(snip_all.trigger, "active_users");
         assert_eq!(snip_all.title, "Active Users");
+        assert_eq!(snip_all.place, SqlSnippetPlace::Any);
 
         // Same trigger scoped to a specific SQL engine is allowed, while duplicate (trigger, engine) conflicts.
         let snip_pg = store
@@ -1090,6 +1094,7 @@ mod tests {
                 title: "PG Active Users".into(),
                 body: "SELECT * FROM public.${1:users} WHERE active;".into(),
                 engine: Some(EngineKind::Postgres),
+                place: SqlSnippetPlace::Any,
             })
             .unwrap();
         assert_eq!(snip_pg.engine, Some(EngineKind::Postgres));
@@ -1101,6 +1106,7 @@ mod tests {
                     title: "Duplicate".into(),
                     body: "SELECT 1;".into(),
                     engine: None,
+                    place: SqlSnippetPlace::Any,
                 })
                 .unwrap_err()
                 .code,
@@ -1116,6 +1122,7 @@ mod tests {
                     title: "Bad".into(),
                     body: "SELECT 1;".into(),
                     engine: None,
+                    place: SqlSnippetPlace::Any,
                 })
                 .unwrap_err()
                 .code,
@@ -1129,6 +1136,7 @@ mod tests {
                     title: "Redis".into(),
                     body: "GET foo".into(),
                     engine: Some(EngineKind::Redis),
+                    place: SqlSnippetPlace::Any,
                 })
                 .unwrap_err()
                 .code,
@@ -1142,6 +1150,7 @@ mod tests {
                     title: "Huge".into(),
                     body: "x".repeat(MAX_SQL_SNIPPET_BODY_BYTES + 1),
                     engine: None,
+                    place: SqlSnippetPlace::Any,
                 })
                 .unwrap_err()
                 .code,
@@ -1157,9 +1166,11 @@ mod tests {
                 body: "SELECT ${1:id} FROM {{database}}.{{schema}}.${2:users};\n{{selection}}${0}"
                     .into(),
                 engine: None,
+                place: SqlSnippetPlace::Statement,
             })
             .unwrap();
         assert_eq!(snip_updated.id, snip_all.id);
+        assert_eq!(snip_updated.place, SqlSnippetPlace::Statement);
         assert_eq!(store.sql_snippets().unwrap().len(), 2);
 
         let backup = store.create_metadata_backup().unwrap();
@@ -1180,6 +1191,27 @@ mod tests {
                 .body,
             snip_updated.body
         );
+        assert_eq!(
+            store
+                .sql_snippets()
+                .unwrap()
+                .into_iter()
+                .find(|snippet| snippet.id == snip_updated.id)
+                .unwrap()
+                .place,
+            SqlSnippetPlace::Statement
+        );
+
+        // A record written before `place` existed stays available everywhere.
+        store
+            .set_setting(
+                "sql-snippets",
+                r#"[{"id":"11111111-1111-4111-8111-111111111111","trigger":"legacy","title":"Legacy","body":"SELECT 1;","engine":null,"updatedAtMs":1}]"#,
+            )
+            .unwrap();
+        let legacy = store.sql_snippets().unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].place, SqlSnippetPlace::Any);
 
         // Corrupt 'sql-format-settings' and 'sql-snippets' must fail backup/recovery validation.
         store

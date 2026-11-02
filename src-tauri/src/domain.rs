@@ -961,6 +961,16 @@ impl Default for SqlFormatSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SqlSnippetPlace {
+    #[default]
+    Any,
+    Statement,
+    From,
+    Query,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SqlSnippet {
@@ -970,6 +980,9 @@ pub struct SqlSnippet {
     pub body: String,
     #[serde(default)]
     pub engine: Option<EngineKind>,
+    /// Completion site. Missing values from older metadata stay available everywhere.
+    #[serde(default)]
+    pub place: SqlSnippetPlace,
     #[ts(type = "number")]
     pub updated_at_ms: u64,
 }
@@ -984,6 +997,9 @@ pub struct SqlSnippetInput {
     pub body: String,
     #[serde(default)]
     pub engine: Option<EngineKind>,
+    /// Completion site. Missing values from older metadata stay available everywhere.
+    #[serde(default)]
+    pub place: SqlSnippetPlace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

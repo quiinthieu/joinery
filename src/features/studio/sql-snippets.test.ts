@@ -159,6 +159,7 @@ test("built-in and custom snippets respect dialect safety and override precedenc
       title: "Global select override",
       body: "SELECT ${1:id} FROM ${2:items};",
       engine: null,
+      place: "any",
       updatedAtMs: 1,
     },
     {
@@ -167,6 +168,7 @@ test("built-in and custom snippets respect dialect safety and override precedenc
       title: "Postgres select override",
       body: "SELECT ${1:id} FROM public.${2:items};",
       engine: "postgres",
+      place: "any",
       updatedAtMs: 2,
     },
     {
@@ -175,6 +177,7 @@ test("built-in and custom snippets respect dialect safety and override precedenc
       title: "Recent orders",
       body: "SELECT * FROM orders ORDER BY created_at DESC LIMIT ${1:25};",
       engine: "postgres",
+      place: "any",
       updatedAtMs: 3,
     },
   ];
@@ -243,6 +246,7 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
       title: "Custom",
       body: "SELECT 1;",
       engine: null,
+      place: "any",
       updatedAtMs: 1,
     },
     {
@@ -251,6 +255,7 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
       title: "Custom select",
       body: "SELECT ${1:id};",
       engine: "postgres",
+      place: "any",
       updatedAtMs: 2,
     },
   ];
@@ -301,6 +306,42 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
   const explainedFormat = labelsAt("EXPLAIN FORMAT=JSON SELECT * FROM ");
   expect(explainedFormat).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
   expect(explainedFormat).not.toContain("sel");
+  const declared: SqlSnippet[] = [
+    {
+      id: "stmt",
+      trigger: "only_start",
+      title: "Statement only",
+      body: "SELECT 1;",
+      engine: null,
+      place: "statement",
+      updatedAtMs: 1,
+    },
+    {
+      id: "from",
+      trigger: "only_from",
+      title: "From only",
+      body: "JOIN t",
+      engine: null,
+      place: "from",
+      updatedAtMs: 2,
+    },
+    {
+      id: "selq",
+      trigger: "sel",
+      title: "Select as query",
+      body: "SELECT 1;",
+      engine: "postgres",
+      place: "query",
+      updatedAtMs: 3,
+    },
+  ];
+  expect(labelsAt("only_start", declared)).toContain("only_start");
+  expect(labelsAt("SELECT * FROM orders WHERE ", declared)).not.toContain("only_start");
+  expect(labelsAt("SELECT * FROM only_from", declared)).toContain("only_from");
+  expect(labelsAt("only_from", declared)).not.toContain("only_from");
+  expect(labelsAt("sel", declared)).toContain("sel");
+  expect(labelsAt("SELECT * FROM orders ", declared)).not.toContain("sel");
+  expect(labelsAt("SELECT * FROM orders WHERE ", declared)).not.toContain("sel");
 
   const worker = new CompletionWorkerIndex();
   const tables: TableInfo[] = [
@@ -325,6 +366,7 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
     title: "Orders by status",
     body: "SELECT ${1:*} FROM orders WHERE status = '${2:paid}';${0}",
     engine: "postgres",
+    place: "any",
     updatedAtMs: 10,
   };
   session.configure({
