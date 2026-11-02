@@ -2580,9 +2580,22 @@ A CTE or derived table may use a lone unaliased `schema.table.*` on every arm of
 | Unit | `sql-inspections.test.ts` covers a schema-qualified `UNION ALL`, a quoted `EXCEPT`, and a MySQL `INTERSECT`. A schema-qualified star beside a column and another schema still withhold |
 | Validate | `pnpm validate` passed: 458 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A recursive star, a star beside columns inside a set operation, and other template expressions remain open |
+| Open / next | See the recursive star section below |
 
 Fetched `origin/main` is `47aa021`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: recursive star (3 November 2026)
+
+A recursive CTE may use a lone `*`, `alias.*`, or unaliased `schema.table.*` on every arm of a set operation when each star is the same relation. A later arm may be a star of that CTE. The offered names are that relation's columns. An explicit column list, a later projection, another relation, and a star beside columns still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a recursive `UNION ALL`, `alias.*`, a star of the CTE, a schema-qualified anchor, three arms, a quoted `EXCEPT`, and MySQL. An explicit column list, a later projection, a non-recursive self-reference, and another relation still withhold |
+| Validate | `pnpm validate` passed: 463 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A star beside columns inside a set operation and other template expressions remain open |
+
+Fetched `origin/main` is `c0bc8c2`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
 ## R5 follow-up: template case expressions (3 November 2026)
 
