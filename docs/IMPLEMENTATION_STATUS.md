@@ -2502,6 +2502,19 @@ A derived table may join two or more flat `SELECT` arms with `UNION` or `UNION A
 | Unit | `sql-inspections.test.ts` covers two arms, an anchor alias, a name that exists only on a later arm, an earlier CTE, a CTE wrapped around the derived union, a JOIN, a later-arm typo, `UNION DISTINCT`, and MySQL. A width mismatch, a self-reference, `INTERSECT`, `EXCEPT`, a parenthesized arm, an expression, an empty arm, and a star still withhold |
 | Validate | `pnpm validate` passed: 435 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. Stars, INTERSECT, EXCEPT, and template expressions remain open |
+| Open / next | See the INTERSECT and EXCEPT section below |
 
 Fetched `origin/main` is `17f28e8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: INTERSECT and EXCEPT inspection (3 November 2026)
+
+A CTE or derived table may join flat `SELECT` arms with `INTERSECT` or `EXCEPT`, including `ALL`. The projected names come from the anchor arm, including a full explicit column list. A recursive arm can read that CTE. A non-recursive arm cannot. A top-level set operation, a width mismatch, a parenthesized arm, and more arms than the relation limit still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers `EXCEPT`, an anchor alias, a column list, a recursive `INTERSECT ALL`, a derived table, a mixed `UNION`/`EXCEPT`, and MySQL. A top-level `INTERSECT`, a top-level `EXCEPT`, a non-recursive self-reference, and a width mismatch still withhold |
+| Validate | `pnpm validate` passed: 436 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. Stars and template expressions remain open |
+
+Fetched `origin/main` is `578a1bc`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

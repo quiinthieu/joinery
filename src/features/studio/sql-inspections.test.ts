@@ -87,6 +87,8 @@ describe("bounded qualified-column inspections", () => {
   test.each([
     "SELECT a.bad FROM orders a WHERE EXISTS (SELECT 1 FROM orders)",
     "SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a",
+    "SELECT a.bad FROM orders a INTERSECT SELECT a.id FROM orders a",
+    "SELECT a.bad FROM orders a EXCEPT SELECT a.id FROM orders a",
     "SELECT a.bad FROM orders(a)",
     "SELECT a.bad FROM orders a(id)",
     "UPDATE orders a SET id = a.bad",
@@ -98,18 +100,16 @@ describe("bounded qualified-column inspections", () => {
     "SELECT a.bad FROM orders a WHERE other.bad > 0",
     "WITH c AS (SELECT id FROM orders UNION ALL SELECT c.id FROM c) SELECT c.id FROM c",
     "WITH c AS (SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
-    "WITH c AS (SELECT id FROM orders EXCEPT SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders EXCEPT SELECT c.id FROM c) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders EXCEPT SELECT id, customer_id FROM orders) SELECT c.id FROM c",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT d.id FROM d) d",
-    "SELECT d.id FROM (SELECT id FROM orders INTERSECT SELECT id FROM orders) d",
-    "SELECT d.id FROM (SELECT id FROM orders EXCEPT SELECT id FROM orders) d",
     "SELECT d.id FROM ((SELECT id FROM orders) UNION ALL (SELECT id FROM orders)) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT id + 1 FROM orders) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT * FROM orders) d",
     "WITH RECURSIVE c AS (SELECT id, customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders UNION ALL SELECT id, customer_id FROM orders) SELECT c.id FROM c",
-    "WITH RECURSIVE c AS (SELECT id FROM orders INTERSECT SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c(id) AS (SELECT id, customer_id FROM orders) SELECT c.id FROM c",
     "WITH c(id, customer_id) AS (SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c(id, id) AS (SELECT id, customer_id FROM orders) SELECT c.id FROM c",
@@ -438,6 +438,40 @@ describe("bounded qualified-column inspections", () => {
     expect(distinct.columnsFor(distinct.issues[0])).toEqual(["id"]);
     const mysql = inspect(
       "SELECT d.bad FROM (SELECT id FROM orders UNION ALL SELECT id FROM orders) d",
+      "mysql",
+    ).result;
+    expect(mysql.columnsFor(mysql.issues[0])).toEqual(["id"]);
+  });
+  test("inspects INTERSECT and EXCEPT from the anchor projection", () => {
+    const except = inspect(
+      "WITH c AS (SELECT id FROM orders EXCEPT SELECT id FROM orders) SELECT c.bad FROM c",
+    ).result;
+    expect(except.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "bad"]]);
+    expect(except.columnsFor(except.issues[0])).toEqual(["id"]);
+    const named = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders INTERSECT SELECT customer_id FROM orders) SELECT c.bad FROM c",
+    ).result;
+    expect(named.columnsFor(named.issues[0])).toEqual(["order_id"]);
+    const renamed = inspect(
+      "WITH c(order_id) AS (SELECT id FROM orders EXCEPT ALL SELECT customer_id FROM orders) SELECT c.id FROM c",
+    ).result;
+    expect(renamed.issues.map((issue) => issue.name)).toEqual(["id"]);
+    expect(renamed.columnsFor(renamed.issues[0])).toEqual(["order_id"]);
+    const recursive = inspect(
+      "WITH RECURSIVE c AS (SELECT id FROM orders INTERSECT ALL SELECT c.id FROM c) SELECT c.bad FROM c",
+    ).result;
+    expect(recursive.columnsFor(recursive.issues[0])).toEqual(["id"]);
+    const derived = inspect(
+      "SELECT d.customer_id FROM (SELECT id FROM orders INTERSECT SELECT customer_id FROM orders) d",
+    ).result;
+    expect(derived.issues.map((issue) => issue.name)).toEqual(["customer_id"]);
+    expect(derived.columnsFor(derived.issues[0])).toEqual(["id"]);
+    const mixed = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders UNION ALL SELECT id FROM orders EXCEPT SELECT customer_id FROM orders) SELECT c.bad FROM c",
+    ).result;
+    expect(mixed.columnsFor(mixed.issues[0])).toEqual(["order_id"]);
+    const mysql = inspect(
+      "SELECT d.bad FROM (SELECT id FROM orders EXCEPT SELECT id FROM orders) d",
       "mysql",
     ).result;
     expect(mysql.columnsFor(mysql.issues[0])).toEqual(["id"]);
