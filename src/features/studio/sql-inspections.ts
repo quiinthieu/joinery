@@ -44,12 +44,13 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 
 /**
  * Flat direct-table SELECTs, plus CTEs or a derived table whose body is that
- * shape. A recursive CTE may be two flat SELECT arms joined by UNION or
- * UNION ALL; its names come from the anchor arm. A full explicit column
- * list renames those outputs. Stars and a partial column list withhold.
- * shortcut: more than two set-operation arms, INTERSECT/EXCEPT, and a
- * recursive arm that is not a flat SELECT withhold. A name owned by more
- * than one relation withholds the inspection. upgrade for those shapes.
+ * shape. A recursive CTE may be two or more flat SELECT arms joined by
+ * UNION or UNION ALL; its names come from the anchor arm. A full explicit
+ * column list renames those outputs. Stars and a partial column list withhold.
+ * shortcut: a non-recursive set operation, INTERSECT/EXCEPT, more arms than
+ * the relation limit, and a recursive arm that is not a flat SELECT withhold.
+ * A name owned by more than one relation withholds the inspection. upgrade
+ * for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -677,8 +678,13 @@ export function prepareColumnInspection(
     let outputs: QueryOutput[];
     if (!arms) outputs = rename(take(def.body, ctes), def.columns);
     else {
-      // shortcut: one UNION or UNION ALL. Longer set operations withhold.
-      if (!recursiveWith || arms.length !== 2 || arms.some((arm) => arm.length === 0))
+      // shortcut: non-recursive UNION, INTERSECT/EXCEPT, and a non-flat arm withhold.
+      if (
+        !recursiveWith ||
+        arms.length < 2 ||
+        arms.length > columnInspectionLimits.relations ||
+        arms.some((arm) => arm.length === 0)
+      )
         throw unsupported();
       const anchor = rename(take(arms[0], ctes), def.columns);
       const self: Binding = {
@@ -688,8 +694,8 @@ export function prepareColumnInspection(
         outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
         outputs: anchor,
       };
-      const recursive = take(arms[1], [...ctes, self]);
-      if (recursive.length !== anchor.length) throw unsupported();
+      for (const arm of arms.slice(1))
+        if (take(arm, [...ctes, self]).length !== anchor.length) throw unsupported();
       outputs = anchor;
     }
     ctes.push({

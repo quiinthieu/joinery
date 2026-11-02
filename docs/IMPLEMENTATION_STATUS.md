@@ -2463,6 +2463,19 @@ A full name list between a CTE name and `AS` renames that CTE's projected output
 | Unit | `sql-inspections.test.ts` covers a rename, a hidden source name, a matching list, a later CTE, a comment in the list, a recursive arm, a quoted name, and MySQL case. A short list, a long list, and a repeated name still withhold |
 | Validate | `pnpm validate` passed: 421 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. Stars, longer set operations, and template expressions remain open |
+| Open / next | See the longer recursive CTE section below |
 
 Fetched `origin/main` is `0a6a173`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: longer recursive CTE inspection (3 November 2026)
+
+A `WITH RECURSIVE` CTE may join more than two flat `SELECT` arms with `UNION` or `UNION ALL`. The projected names still come from the anchor arm, including a full explicit column list. Each later arm can read that CTE. A non-recursive set operation, `INTERSECT`, `EXCEPT`, a width mismatch, an empty arm, and more arms than the relation limit still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers three arms, a typo in a later arm, a renamed column list, and the arm limit. A third-arm width mismatch, a non-recursive `UNION`, and `INTERSECT` still withhold |
+| Validate | `pnpm validate` passed: 423 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. Stars, non-recursive set operations, and template expressions remain open |
+
+Fetched `origin/main` is `a38bf12`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
