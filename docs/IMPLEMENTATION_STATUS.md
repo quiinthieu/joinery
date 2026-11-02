@@ -2476,19 +2476,32 @@ A `WITH RECURSIVE` CTE may join more than two flat `SELECT` arms with `UNION` or
 | Unit | `sql-inspections.test.ts` covers three arms, a typo in a later arm, a renamed column list, and the arm limit. A third-arm width mismatch, a non-recursive `UNION`, and `INTERSECT` still withhold |
 | Validate | `pnpm validate` passed: 423 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | See the derived-table union section below |
+| Open / next | See the non-recursive CTE union section below |
 
 Fetched `origin/main` is `a38bf12`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
+## R5 follow-up: non-recursive CTE union inspection (3 November 2026)
+
+A CTE may join two or more flat `SELECT` arms with `UNION` or `UNION ALL` without `RECURSIVE`. The projected names come from the anchor arm, including a full explicit column list. A later arm can read an earlier CTE. It cannot read its own CTE. `INTERSECT`, `EXCEPT`, a `UNION` inside a derived table, a width mismatch, and more arms than the relation limit still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers two arms, three arms, a column list, and a later arm that reads an earlier CTE. A self-reference, a width mismatch, a derived-table `UNION`, and `EXCEPT` still withhold |
+| Validate | `pnpm validate` passed: 427 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | See the derived-table union section below |
+
+Fetched `origin/main` is `afc85ec`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
 ## R5 follow-up: derived-table union inspection (3 November 2026)
 
-A derived table may join two or more flat `SELECT` arms with `UNION` or `UNION ALL`. The projected names come from the anchor arm. A later arm can read an earlier CTE. It cannot read the derived alias. `INTERSECT`, `EXCEPT`, a parenthesized arm, a width mismatch, an expression, a star, an empty arm, and more arms than the relation limit still withhold. A non-recursive CTE set operation still withholds. Inspection does not prepare or execute SQL.
+A derived table may join two or more flat `SELECT` arms with `UNION` or `UNION ALL`. The projected names come from the anchor arm. A later arm can read an earlier CTE. It cannot read the derived alias. `INTERSECT`, `EXCEPT`, a parenthesized arm, a width mismatch, an expression, a star, an empty arm, and more arms than the relation limit still withhold. Inspection does not prepare or execute SQL.
 
 | State | Evidence for this source |
 |---|---|
 | Unit | `sql-inspections.test.ts` covers two arms, an anchor alias, a name that exists only on a later arm, an earlier CTE, a CTE wrapped around the derived union, a JOIN, a later-arm typo, `UNION DISTINCT`, and MySQL. A width mismatch, a self-reference, `INTERSECT`, `EXCEPT`, a parenthesized arm, an expression, an empty arm, and a star still withhold |
-| Validate | `pnpm validate` passed: 432 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Validate | `pnpm validate` passed: 435 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. Stars, non-recursive set operations, and template expressions remain open |
+| Open / next | Remaining R5/R6/R7/R8. Stars, INTERSECT, EXCEPT, and template expressions remain open |
 
-Fetched `origin/main` is `afc85ec`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Fetched `origin/main` is `17f28e8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

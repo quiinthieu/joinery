@@ -44,14 +44,14 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 
 /**
  * Flat direct-table SELECTs, plus CTEs or a derived table whose body is that
- * shape. A recursive CTE may be two or more flat SELECT arms joined by
- * UNION or UNION ALL; its names come from the anchor arm. A derived table
- * may use the same arms; its names come from that anchor. A full explicit
- * column list renames those outputs. Stars and a partial column list withhold.
- * shortcut: a non-recursive set operation, INTERSECT/EXCEPT, more arms than
- * the relation limit, and an arm that is not a flat SELECT withhold.
- * A name owned by more than one relation withholds the inspection. upgrade
- * for those shapes.
+ * shape. A CTE may be two or more flat SELECT arms joined by UNION or
+ * UNION ALL; its names come from the anchor arm. Only a recursive arm can
+ * read that CTE. A derived table may use the same arms; its names come from
+ * that anchor. A full explicit column list renames those outputs. Stars and
+ * a partial column list withhold.
+ * shortcut: INTERSECT/EXCEPT, more arms than the relation limit, and an arm
+ * that is not a flat SELECT withhold. A name owned by more than one relation
+ * withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -706,24 +706,25 @@ export function prepareColumnInspection(
     let outputs: QueryOutput[];
     if (!arms) outputs = rename(take(def.body, ctes), def.columns);
     else {
-      // shortcut: non-recursive UNION, INTERSECT/EXCEPT, and a non-flat arm withhold.
+      // shortcut: INTERSECT/EXCEPT and a non-flat arm withhold. A non-recursive arm cannot read its own CTE.
       if (
-        !recursiveWith ||
         arms.length < 2 ||
         arms.length > columnInspectionLimits.relations ||
         arms.some((arm) => arm.length === 0)
       )
         throw unsupported();
       const anchor = rename(take(arms[0], ctes), def.columns);
-      const self: Binding = {
-        key: key(def.name.text),
-        label: def.name.text,
-        table: anchor[0].table,
-        outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
-        outputs: anchor,
-      };
+      const scope = [...ctes];
+      if (recursiveWith)
+        scope.push({
+          key: key(def.name.text),
+          label: def.name.text,
+          table: anchor[0].table,
+          outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
+          outputs: anchor,
+        });
       for (const arm of arms.slice(1))
-        if (take(arm, [...ctes, self]).length !== anchor.length) throw unsupported();
+        if (take(arm, scope).length !== anchor.length) throw unsupported();
       outputs = anchor;
     }
     ctes.push({
