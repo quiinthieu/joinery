@@ -2567,7 +2567,20 @@ A CTE or derived table may use a lone `*` or `alias.*` on every arm of `UNION`, 
 | Unit | `sql-inspections.test.ts` covers `UNION ALL`, `EXCEPT` with `alias.*`, `INTERSECT ALL`, three arms, a chained star, a projected CTE, and MySQL. A later projection, a star beside a column, a schema-qualified star, an explicit column list, a recursive star, and another relation still withhold |
 | Validate | `pnpm validate` passed: 457 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star inside a set operation, a recursive star, a star beside columns inside a set operation, and other template expressions remain open |
+| Open / next | See the schema-qualified set-operation star section below |
+
+Fetched `origin/main` is `e4acdd5`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: schema-qualified star in a set operation (3 November 2026)
+
+A CTE or derived table may use a lone unaliased `schema.table.*` on every arm of `UNION`, `INTERSECT`, or `EXCEPT` when each star is that same relation. The offered names are that relation's columns. A schema-qualified star beside other columns, another schema, a recursive star, and an explicit column list still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a schema-qualified `UNION ALL`, a quoted `EXCEPT`, and a MySQL `INTERSECT`. A schema-qualified star beside a column and another schema still withhold |
+| Validate | `pnpm validate` passed: 458 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A recursive star, a star beside columns inside a set operation, and other template expressions remain open |
 
 Fetched `origin/main` is `47aa021`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
