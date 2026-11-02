@@ -2398,6 +2398,19 @@ A `WITH RECURSIVE` CTE whose body is two flat `SELECT` arms joined by `UNION` or
 | Unit | `sql-inspections.test.ts` covers a keyword-only CTE, a self-join recursive arm, a typo inside the recursive arm, a later recursive CTE, and MySQL. Non-recursive `UNION`, a column-count mismatch and three arms still withhold |
 | Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | EXPLAIN wrappers, then remaining R5/R6/R7/R8 |
+| Open / next | See the EXPLAIN template section below |
 
 Fetched `origin/main` is `eb46c82`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: EXPLAIN template placement (2 November 2026)
+
+Completion classifies the statement inside an `EXPLAIN` wrapper. `EXPLAIN sel` and `EXPLAIN ANALYZE sel` offer a statement template. `EXPLAIN SELECT * FROM ` offers `join`, `ljoin` and `lim`. `EXPLAIN SELECT * FROM orders WHERE ` offers `lim`. A closed option list such as `EXPLAIN (ANALYZE, FORMAT JSON)` and MySQL-style `EXPLAIN FORMAT=JSON` are skipped before that classification. **Insert template** still lists every template. Expansion does not prepare or execute SQL. Declared per-template contexts are not classified.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-snippets.test.ts` covers a bare `EXPLAIN`, `ANALYZE`, a FROM list, a WHERE clause, a closed option list, and `FORMAT=JSON` |
+| Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Declared per-template contexts, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `5e0a44d`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

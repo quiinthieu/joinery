@@ -284,6 +284,23 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
   expect(labelsAt("SELECT * FROM orders, (sel")).toContain("sel");
   expect(labelsAt("SELECT (sel")).toContain("sel");
   expect(labelsAt("SELECT (sel")).not.toContain("join");
+  expect(labelsAt("EXPLAIN sel")).toContain("sel");
+  expect(labelsAt("EXPLAIN sel")).not.toContain("join");
+  expect(labelsAt("EXPLAIN ANALYZE sel")).toContain("sel");
+  const explainedFrom = labelsAt("EXPLAIN SELECT * FROM ");
+  expect(explainedFrom).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
+  expect(explainedFrom).not.toContain("sel");
+  const explainedWhere = labelsAt("EXPLAIN SELECT * FROM orders WHERE ");
+  expect(explainedWhere).toContain("lim");
+  expect(explainedWhere).not.toContain("join");
+  expect(explainedWhere).not.toContain("sel");
+  expect(labelsAt("EXPLAIN (ANALYZE) sel")).toContain("sel");
+  const explainedOptions = labelsAt("EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM ");
+  expect(explainedOptions).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
+  expect(explainedOptions).not.toContain("sel");
+  const explainedFormat = labelsAt("EXPLAIN FORMAT=JSON SELECT * FROM ");
+  expect(explainedFormat).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
+  expect(explainedFormat).not.toContain("sel");
 
   const worker = new CompletionWorkerIndex();
   const tables: TableInfo[] = [

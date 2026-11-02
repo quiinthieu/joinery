@@ -174,7 +174,8 @@ const NESTED_QUERY_MARK = new Set(["=", "<", ">", "<=", ">=", "<>", "!=", ","]);
  * Built-in completion placement for one statement. Insert template stays unfiltered.
  * shortcut: a parenthesized query is classified after FROM, JOIN, AS, IN,
  * EXISTS, SELECT, a comparison, or a comma. A function name does not open one.
- * upgrade for EXPLAIN wrappers and declared per-template contexts.
+ * A leading EXPLAIN wrapper is skipped. upgrade for declared per-template
+ * contexts.
  */
 function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToken[] {
   const list = tokens.filter((token) => !token.kind.endsWith("Comment"));
@@ -192,9 +193,35 @@ function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToke
   return list.filter((token) => token.to <= from);
 }
 
+const EXPLAIN_OPTION = new Set(["ANALYZE", "VERBOSE", "EXTENDED", "PARTITIONS"]);
+
+/** Drop EXPLAIN and one leading option list so the inner statement is classified. */
+function withoutExplainWrapper(prior: readonly SqlToken[]): readonly SqlToken[] {
+  const upper = (token?: SqlToken) => token?.text.toUpperCase() ?? "";
+  if (upper(prior[0]) !== "EXPLAIN") return prior;
+  let i = 1;
+  const options = prior[i];
+  if (options?.children && options.text.endsWith(")")) i++;
+  while (EXPLAIN_OPTION.has(upper(prior[i]))) i++;
+  if (upper(prior[i]) === "FORMAT") {
+    i++;
+    if (prior[i]?.text === "=") i++;
+    const format = prior[i];
+    if (
+      format &&
+      !format.children &&
+      !["SELECT", "WITH", "INSERT", "UPDATE", "DELETE"].includes(upper(format))
+    )
+      i++;
+  }
+  return prior.slice(i);
+}
+
 export function sqlTemplateSite(state: EditorState, from: number): SqlTemplateSite {
   const statement = statementTokensAt(state, from);
-  const prior = statement ? priorTemplateTokens(statement.tokens, from) : undefined;
+  const prior = statement
+    ? withoutExplainWrapper(priorTemplateTokens(statement.tokens, from))
+    : undefined;
   if (!prior?.length) return { atStatementStart: true, inFromClause: false, afterFrom: false };
   const word = (token?: SqlToken) => (token?.kind === "Keyword" ? token.text.toUpperCase() : "");
   const head = word(prior[0]);
