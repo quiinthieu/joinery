@@ -100,6 +100,7 @@ describe("bounded qualified-column inspections", () => {
     "WITH c(id) AS (SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT id FROM orders), c AS (SELECT id FROM orders) SELECT c.id FROM c",
     "WITH d AS (SELECT c.id FROM c), c AS (SELECT id FROM orders) SELECT d.id FROM d",
+    "WITH d AS (SELECT x.id FROM (SELECT c.id FROM c) x), c AS (SELECT id FROM orders) SELECT d.id FROM d",
     "WITH c AS (SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT id FROM orders a JOIN orders b ON a.id = b.id) SELECT c.id FROM c",
   ])("withholds unsupported or unresolved shapes: %s", (doc) => {
@@ -261,6 +262,18 @@ describe("bounded qualified-column inspections", () => {
       inspect("WITH c AS (SELECT id FROM orders), d AS (SELECT id FROM orders) SELECT c.id FROM c")
         .result.issues,
     ).toEqual([]);
+  });
+  test("lets a derived table read an earlier CTE", () => {
+    const derived = inspect(
+      "WITH c AS (SELECT id FROM orders) SELECT d.bad FROM (SELECT c.id FROM c) d",
+    ).result;
+    expect(derived.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "bad"]]);
+    expect(derived.columnsFor(derived.issues[0])).toEqual(["id"]);
+    const nested = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders), d AS (SELECT x.order_id FROM (SELECT c.order_id FROM c) x) SELECT d.bad FROM d",
+    ).result;
+    expect(nested.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "bad"]]);
+    expect(nested.columnsFor(nested.issues[0])).toEqual(["order_id"]);
   });
   test("keeps base-table corrections for references inside the query body", () => {
     const { result } = inspect(

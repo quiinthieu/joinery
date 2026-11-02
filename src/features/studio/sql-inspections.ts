@@ -45,10 +45,9 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 /**
  * Flat direct-table SELECTs, plus non-recursive CTEs or a derived table whose
  * body is that shape. Stars, column lists and recursive CTEs withhold.
- * shortcut: a CTE can see earlier CTEs in the same WITH list. A derived
- * table does not see that list. A name owned by more than one relation
- * withholds the inspection. upgrade for recursive CTEs and for CTE names
- * inside derived tables.
+ * shortcut: a CTE and a derived table can see earlier CTEs in the same
+ * WITH list. A name owned by more than one relation withholds the
+ * inspection. upgrade for recursive CTEs.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -254,7 +253,7 @@ export function prepareColumnInspection(
         const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
         if (!alias) throw unsupported();
         checkName(alias);
-        const nested = analyze(body, depth + 1);
+        const nested = analyze(body, depth + 1, ctes);
         const outputs = project(body, nested.bindings);
         nestedTables.push(...nested.tables);
         references.push(...nested.references);

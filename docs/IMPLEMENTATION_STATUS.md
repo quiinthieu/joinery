@@ -2346,6 +2346,19 @@ A `WITH` list can contain more than one non-recursive CTE. Each CTE is inspected
 | Unit | `sql-inspections.test.ts` covers two joined CTEs, a CTE that reads the previous CTE, a present name, a repeated CTE name, and a forward reference |
 | Validate | `pnpm validate` passed: 413 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+| Open / next | See the derived-table CTE section below |
 
 Fetched `origin/main` is `97d00f9`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: CTE names inside derived tables (2 November 2026)
+
+A derived table can read an earlier CTE in the same statement. `SELECT d.bad FROM (SELECT c.id FROM c) d` is inspected from `c`'s projected names. A derived table inside a later CTE can read an earlier CTE. A derived table still cannot read a CTE that is defined later. Recursive CTEs, column lists and stars still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers an outer derived table, a derived table inside a later CTE, and a derived table that names a later CTE |
+| Validate | `pnpm validate` passed: 415 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `0867618`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
