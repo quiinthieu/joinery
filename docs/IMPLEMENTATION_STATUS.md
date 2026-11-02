@@ -2606,9 +2606,22 @@ Every arm of a CTE or derived-table set operation may add the same number of sim
 | Unit | `sql-inspections.test.ts` covers `UNION ALL`, `EXCEPT` with `alias.*`, two extra columns, a recursive star of the CTE, three arms, and MySQL. A different extra count, a later projection, a non-recursive self-reference, an explicit column list, and another relation still withhold |
 | Validate | `pnpm validate` passed: 468 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A star of another relation inside a set operation and other template expressions remain open |
+| Open / next | See the set-operation star width section below |
 
 Fetched base is `b234c56` on `feat/recursive-star`. `origin/main` is `c0bc8c2`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: set-operation star width (3 November 2026)
+
+A star of another relation inside a CTE or derived-table set operation is accepted when metadata gives every arm the same width. A mixed named projection and a star uses that same check. The offered names stay the anchor's: the anchor relation's columns plus the anchor arm's extra names, or the named projection. A later arm's extra fills width only and is not offered. A different extra count on the same relation still withholds before metadata. A schema-qualified star beside columns, an explicit column list, a partial list, a top-level set operation, and other template expressions still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a matching catalog width, a shorter relation, an extra that fills width, a named projection beside a star, a derived table, and a recursive third arm. A different extra count on the same relation, and a projection whose count differs from the star width, still withhold |
+| Validate | `pnpm validate` passed: 465 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star beside other items, an explicit column list on a star, a partial column list, a top-level set operation, and other template expressions remain open |
+
+Fetched `origin/main` is `59a80a8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
 ## R5 follow-up: template case expressions (3 November 2026)
 

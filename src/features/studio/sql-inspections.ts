@@ -54,13 +54,14 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * star. A partial column list withholds. Every arm of a set operation may
  * be a lone `*`, `alias.*`, or unaliased `schema.table.*` of that same
  * relation, including a later arm of a recursive CTE. Each arm may add the
- * same number of simple columns. The offered names are that relation's
- * columns, plus the anchor arm's extra names.
- * shortcut: a schema-qualified star beside other items, a star of another
- * relation or a different extra count inside a set operation, a top-level
- * set operation, more arms than the relation limit, and an arm that is not
- * a flat SELECT withhold. A repeated output name, or a name owned by more
- * than one relation, withholds the inspection. upgrade for those shapes.
+ * same number of simple columns. A star of another relation is accepted
+ * when metadata gives every arm the same width. The offered names are the
+ * anchor relation's columns, plus the anchor arm's extra names.
+ * shortcut: a schema-qualified star beside other items, a different extra
+ * count on the same relation, a top-level set operation, more arms than the
+ * relation limit, and an arm that is not a flat SELECT withhold. A repeated
+ * output name, or a name owned by more than one relation, withholds the
+ * inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -173,6 +174,9 @@ export function prepareColumnInspection(
   let visited = 0;
   const starRefs = new Set<MissingSqlColumn>();
   const starExtras = new Map<MissingSqlColumn, readonly string[]>();
+  type SetArm =
+    { kind: "bare"; starTable: TableRef; extras: number } | { kind: "named"; count: number };
+  const setWidths: SetArm[][] = [];
   const rememberStar = (ref: MissingSqlColumn, binding: Binding) => {
     if (!binding.starTable) return;
     starRefs.add(ref);
@@ -345,30 +349,30 @@ export function prepareColumnInspection(
       const anchorArm = armOutput(arms[0], anchorNested.bindings);
       if (anchorArm.kind === "bare") {
         absorb(anchorNested, anchorArm.extras);
+        const shapes = [shapeOf(anchorArm)];
         for (const arm of arms.slice(1)) {
           const nested = analyze(arm, depth + 1, ctes);
           const later = armOutput(arm, nested.bindings);
-          if (
-            later.kind !== "bare" ||
-            tableKey(later.starTable) !== tableKey(anchorArm.starTable) ||
-            later.extras.length !== anchorArm.extras.length
-          )
-            throw unsupported();
-          absorb(nested, later.extras);
+          acceptLater(shapes[0], shapeOf(later));
+          absorb(nested, later.kind === "bare" ? later.extras : later.outputs);
+          shapes.push(shapeOf(later));
         }
+        setWidths.push(shapes);
         return {
           starTable: anchorArm.starTable,
           ...(anchorArm.extras.length ? { outputs: anchorArm.extras } : {}),
         };
       }
       absorb(anchorNested, anchorArm.outputs);
+      const shapes = [shapeOf(anchorArm)];
       for (const arm of arms.slice(1)) {
         const nested = analyze(arm, depth + 1, ctes);
         const later = armOutput(arm, nested.bindings);
-        if (later.kind !== "named" || later.outputs.length !== anchorArm.outputs.length)
-          throw unsupported();
-        absorb(nested, later.outputs);
+        acceptLater(shapes[0], shapeOf(later));
+        absorb(nested, later.kind === "bare" ? later.extras : later.outputs);
+        shapes.push(shapeOf(later));
       }
+      setWidths.push(shapes);
       return { outputs: anchorArm.outputs };
     }
     function atom(): Binding {
@@ -877,13 +881,32 @@ export function prepareColumnInspection(
     | { kind: "bare"; starTable: TableRef; extras: QueryOutput[] }
     | { kind: "named"; outputs: QueryOutput[] } {
     const star = singleStar(body, scope);
-    // shortcut: a star of another relation has unknown width, upgrade when metadata can compare it.
     if (star && "starTable" in star)
       return { kind: "bare", starTable: star.starTable, extras: star.outputs ?? [] };
     return {
       kind: "named",
       outputs: star && "outputs" in star ? star.outputs : project(body, scope),
     };
+  }
+  function shapeOf(
+    arm:
+      | { kind: "bare"; starTable: TableRef; extras: QueryOutput[] }
+      | { kind: "named"; outputs: QueryOutput[] },
+  ): SetArm {
+    return arm.kind === "bare"
+      ? { kind: "bare", starTable: arm.starTable, extras: arm.extras.length }
+      : { kind: "named", count: arm.outputs.length };
+  }
+  function acceptLater(anchor: SetArm, later: SetArm) {
+    if (anchor.kind === "named" && later.kind === "named" && anchor.count !== later.count)
+      throw unsupported();
+    if (
+      anchor.kind === "bare" &&
+      later.kind === "bare" &&
+      tableKey(anchor.starTable) === tableKey(later.starTable) &&
+      anchor.extras !== later.extras
+    )
+      throw unsupported();
   }
   const recordCte = (analyzed: Analysis, extra: QueryOutput[]) => {
     cteReferences.push(...analyzed.references);
@@ -942,17 +965,15 @@ export function prepareColumnInspection(
             starTable: anchorArm.starTable,
             ...(anchorArm.extras.length ? { outputs: anchorArm.extras } : {}),
           });
+        const shapes = [shapeOf(anchorArm)];
         for (const arm of arms.slice(1)) {
           const nested = analyze(arm, 0, scope);
           const later = armOutput(arm, nested.bindings);
-          if (
-            later.kind !== "bare" ||
-            tableKey(later.starTable) !== tableKey(anchorArm.starTable) ||
-            later.extras.length !== anchorArm.extras.length
-          )
-            throw unsupported();
-          recordCte(nested, later.extras);
+          acceptLater(shapes[0], shapeOf(later));
+          recordCte(nested, later.kind === "bare" ? later.extras : later.outputs);
+          shapes.push(shapeOf(later));
         }
+        setWidths.push(shapes);
         starTable = anchorArm.starTable;
         if (anchorArm.extras.length) outputs = anchorArm.extras;
       } else {
@@ -967,12 +988,15 @@ export function prepareColumnInspection(
             outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
             outputs: anchor,
           });
+        const shapes = [shapeOf(anchorArm)];
         for (const arm of arms.slice(1)) {
           const nested = analyze(arm, 0, scope);
           const later = armOutput(arm, nested.bindings);
-          if (later.kind !== "named" || later.outputs.length !== anchor.length) throw unsupported();
-          recordCte(nested, later.outputs);
+          acceptLater(shapes[0], shapeOf(later));
+          recordCte(nested, later.kind === "bare" ? later.extras : later.outputs);
+          shapes.push(shapeOf(later));
         }
+        setWidths.push(shapes);
         outputs = anchor;
       }
     }
@@ -1023,6 +1047,16 @@ export function prepareColumnInspection(
           schema.columns.map((column) => column.name),
         ]),
       );
+      for (const group of setWidths) {
+        const widths = group.map((arm) => {
+          if (arm.kind === "named") return arm.count;
+          const names = columns.get(tableKey(arm.starTable));
+          if (!names?.length)
+            throw new Error("Complete table metadata is unavailable; no column claim was made.");
+          return names.length + arm.extras;
+        });
+        if (new Set(widths).size !== 1) throw unsupported();
+      }
       const existing = new Map(
         [...columns].map(([table, names]) => [table, new Set(names.map(columnKey))]),
       );
