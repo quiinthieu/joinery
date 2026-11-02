@@ -47,16 +47,19 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * shape. A CTE or derived table may join two or more flat SELECT arms with
  * UNION, INTERSECT, or EXCEPT, including ALL or DISTINCT. Its names come from
  * the anchor arm. Only a recursive arm can read that CTE. A full explicit
- * column list renames those outputs. A select list may be `*` or `alias.*`
- * for one relation, alone or beside simple columns. That expands to the
- * relation's columns plus those extra names. A partial column list withholds.
- * Every arm of a set operation may be a lone `*` or `alias.*` of that same
- * relation. The offered names are that relation's columns.
- * shortcut: a schema-qualified star, a star beside columns or of another
- * relation inside a set operation, a recursive star, a top-level set
- * operation, more arms than the relation limit, and an arm that is not a
- * flat SELECT withhold. A repeated output name, or a name owned by more than
- * one relation, withholds the inspection. upgrade for those shapes.
+ * column list renames those outputs. A select list may be `*`, `alias.*`, or
+ * an unaliased `schema.table.*` for one relation. `*` or `alias.*` may also
+ * sit beside simple columns, adding those names. A schema-qualified star
+ * expands only when FROM writes that same name and the list is only that
+ * star. A partial column list withholds. Every arm of a set operation may
+ * be a lone `*` or `alias.*` of that same relation. The offered names are
+ * that relation's columns.
+ * shortcut: a schema-qualified star beside other items or inside a set
+ * operation, a star beside columns or of another relation inside a set
+ * operation, a recursive star, a top-level set operation, more arms than the
+ * relation limit, and an arm that is not a flat SELECT withhold. A repeated
+ * output name, or a name owned by more than one relation, withholds the
+ * inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -133,6 +136,8 @@ export function prepareColumnInspection(
     outputs?: QueryOutput[];
     /** Every catalog column of this table. Names are filled when metadata arrives. */
     starTable?: TableRef;
+    /** Schema key when FROM wrote schema.table with no alias. */
+    writtenSchema?: string;
   }
   interface Analysis {
     references: MissingSqlColumn[];
@@ -438,7 +443,12 @@ export function prepareColumnInspection(
           "A unique direct base table could not be resolved; no column claim was made.",
         );
       const shown = alias ?? relation.at(-1)!;
-      const binding = { key: key(shown.text), label: shown.text, table };
+      const binding = {
+        key: key(shown.text),
+        label: shown.text,
+        table,
+        ...(relation.length === 2 && !alias ? { writtenSchema: key(relation[0].text) } : {}),
+      };
       remember(binding);
       return binding;
     }
@@ -642,6 +652,12 @@ export function prepareColumnInspection(
           i += 2;
           continue;
         }
+        // schema.table.* is a select-list star. The same shape elsewhere withholds.
+        if (nameToken(column) && list[i + 3]?.text === "." && list[i + 4]?.text === "*") {
+          if (bare) throw unsupported();
+          i += 4;
+          continue;
+        }
         if (!nameToken(column) || list[i + 3]?.text === ".") throw unsupported();
         checkName(token);
         checkName(column);
@@ -775,13 +791,24 @@ export function prepareColumnInspection(
   const cteOwners = new Map<MissingSqlColumn, Binding[]>();
   const cteProofs: QueryOutput[] = [];
   const cteTables: TableRef[] = [];
+  function isSchemaStar(item: readonly SqlToken[]) {
+    return (
+      item.length === 5 &&
+      item[1].text === "." &&
+      item[3].text === "." &&
+      item[4].text === "*" &&
+      nameLike(item[0]) &&
+      nameLike(item[2])
+    );
+  }
   function isStarItem(item: readonly SqlToken[]) {
     return (
       (item.length === 1 && item[0].text === "*") ||
-      (item.length === 3 && item[1].text === "." && item[2].text === "*" && nameLike(item[0]))
+      (item.length === 3 && item[1].text === "." && item[2].text === "*" && nameLike(item[0])) ||
+      isSchemaStar(item)
     );
   }
-  /** One `*` or `alias.*`, optionally beside simple columns. Other shapes stay with project(). */
+  /** One `*`, `alias.*`, or unaliased `schema.table.*`. Only the first two may sit beside simple columns. */
   function singleStar(
     list: readonly SqlToken[],
     scope: Scope,
@@ -796,19 +823,30 @@ export function prepareColumnInspection(
     if (stars.length === 0) return null;
     if (stars.length > 1) throw unsupported();
     const star = stars[0];
-    const owner =
-      star.length === 1
-        ? scope.length === 1
-          ? scope[0]
-          : undefined
-        : scope.filter((binding) => binding.key === key(star[0].text)).length === 1
-          ? scope.find((binding) => binding.key === key(star[0].text))
-          : undefined;
+    const schemaStar = isSchemaStar(star);
+    let owner: Binding | undefined;
+    if (schemaStar) {
+      const resolved = lookup.resolve([readIdentifier(star[0].text), readIdentifier(star[2].text)]);
+      const found = scope.filter(
+        (binding) =>
+          !!resolved &&
+          binding.writtenSchema === key(star[0].text) &&
+          binding.key === key(star[2].text) &&
+          tableKey(binding.table) === tableKey(resolved),
+      );
+      if (found.length === 1) owner = found[0];
+    } else if (star.length === 1) owner = scope.length === 1 ? scope[0] : undefined;
+    else {
+      const found = scope.filter((binding) => binding.key === key(star[0].text));
+      if (found.length === 1) owner = found[0];
+    }
     if (!owner) return null;
     const extras = projectItems(
       items.filter((item) => item !== star),
       scope,
     );
+    // shortcut: schema.table.* beside other items withholds, upgrade when that shape is specified.
+    if (schemaStar && extras.length) throw unsupported();
     const carried = owner.outputs?.map((output) => ({ ...output })) ?? [];
     if (owner.starTable || !owner.outputs) {
       const outputs = [...(owner.starTable ? carried : []), ...extras];
@@ -824,14 +862,22 @@ export function prepareColumnInspection(
       throw unsupported();
     return { outputs };
   }
+  function selectHasSchemaStar(list: readonly SqlToken[]) {
+    if (word(list[0]) !== "SELECT") return false;
+    let at = 1;
+    if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
+    const from = list.findIndex((token) => word(token) === "FROM");
+    if (from < at) return false;
+    return selectItems(list.slice(at, from)).some(isSchemaStar);
+  }
   function armOutput(
     body: readonly SqlToken[],
     scope: Scope,
   ): { kind: "bare"; starTable: TableRef } | { kind: "named"; outputs: QueryOutput[] } {
     const star = singleStar(body, scope);
-    // shortcut: a star beside columns has unknown width in a set operation, upgrade when metadata can compare it.
+    // shortcut: a schema-qualified star, or a star beside columns, has unknown width in a set operation. Upgrade when metadata can compare it.
     if (star && "starTable" in star) {
-      if (star.outputs?.length) throw unsupported();
+      if (star.outputs?.length || selectHasSchemaStar(body)) throw unsupported();
       return { kind: "bare", starTable: star.starTable };
     }
     return {
