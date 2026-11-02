@@ -2385,6 +2385,19 @@ Completion also classifies a parenthesized query after `IN`, `EXISTS`, `SELECT`,
 | Unit | `sql-snippets.test.ts` covers `IN`, `EXISTS`, a comparison, a comma-separated derived table, a scalar subquery, and a function call |
 | Validate | `pnpm validate` passed: 415 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Recursive CTEs, EXPLAIN wrappers, then remaining R5/R6/R7/R8 |
+| Open / next | See the recursive CTE section below |
 
 Fetched `origin/main` is `32129e2`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: two-arm recursive CTE inspection (2 November 2026)
+
+A `WITH RECURSIVE` CTE whose body is two flat `SELECT` arms joined by `UNION` or `UNION ALL` is inspected from the anchor arm's projected names. The recursive arm can read that CTE. A `RECURSIVE` CTE with no set operation uses the same projected-name rule as a non-recursive CTE. A non-recursive `UNION`, a third arm, a column-count mismatch, a column list and a star still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a keyword-only CTE, a self-join recursive arm, a typo inside the recursive arm, a later recursive CTE, and MySQL. Non-recursive `UNION`, a column-count mismatch and three arms still withhold |
+| Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | EXPLAIN wrappers, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `eb46c82`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

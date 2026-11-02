@@ -96,7 +96,9 @@ describe("bounded qualified-column inspections", () => {
     "SELECT a.bad FROM orders a WHERE (",
     "SELECT a.payload.field FROM orders a",
     "SELECT a.bad FROM orders a WHERE other.bad > 0",
-    "WITH RECURSIVE c AS (SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH RECURSIVE c AS (SELECT id, customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
+    "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c(id) AS (SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT id FROM orders), c AS (SELECT id FROM orders) SELECT c.id FROM c",
     "WITH d AS (SELECT c.id FROM c), c AS (SELECT id FROM orders) SELECT d.id FROM d",
@@ -262,6 +264,35 @@ describe("bounded qualified-column inspections", () => {
       inspect("WITH c AS (SELECT id FROM orders), d AS (SELECT id FROM orders) SELECT c.id FROM c")
         .result.issues,
     ).toEqual([]);
+  });
+  test("inspects a recursive CTE from the anchor projection", () => {
+    const keyword = inspect(
+      "WITH RECURSIVE c AS (SELECT id FROM orders) SELECT c.bad FROM c",
+    ).result;
+    expect(keyword.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "bad"]]);
+    expect(keyword.columnsFor(keyword.issues[0])).toEqual(["id"]);
+    const recursive = inspect(
+      "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT c.id FROM c JOIN orders o ON c.id = o.customer_id) SELECT c.bad FROM c",
+    ).result;
+    expect(recursive.tables).toEqual([table]);
+    expect(recursive.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "bad"]]);
+    expect(recursive.columnsFor(recursive.issues[0])).toEqual(["id"]);
+    const inside = inspect(
+      "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT c.id FROM c WHERE c.typo = 1) SELECT c.id FROM c",
+    ).result;
+    expect(inside.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "typo"]]);
+    expect(inside.columnsFor(inside.issues[0])).toEqual(["id"]);
+    const mixed = inspect(
+      "WITH RECURSIVE c AS (SELECT id AS order_id FROM orders), d AS (SELECT c.order_id FROM c UNION ALL SELECT d.order_id FROM d) SELECT d.bad FROM d",
+    ).result;
+    expect(mixed.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "bad"]]);
+    expect(mixed.columnsFor(mixed.issues[0])).toEqual(["order_id"]);
+    const mysql = inspect(
+      "WITH RECURSIVE c AS (SELECT id FROM orders UNION ALL SELECT c.id FROM c) SELECT c.bad FROM c",
+      "mysql",
+    ).result;
+    expect(mysql.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "bad"]]);
+    expect(mysql.columnsFor(mysql.issues[0])).toEqual(["id"]);
   });
   test("lets a derived table read an earlier CTE", () => {
     const derived = inspect(
