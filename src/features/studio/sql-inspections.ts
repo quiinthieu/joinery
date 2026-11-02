@@ -47,10 +47,13 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * shape. A CTE or derived table may join two or more flat SELECT arms with
  * UNION, INTERSECT, or EXCEPT, including ALL or DISTINCT. Its names come from
  * the anchor arm. Only a recursive arm can read that CTE. A full explicit
- * column list renames those outputs. Stars and a partial column list withhold.
- * shortcut: a top-level set operation, more arms than the relation limit, and
- * an arm that is not a flat SELECT withhold. A name owned by more than one
- * relation withholds the inspection. upgrade for those shapes.
+ * column list renames those outputs. A select list that is only `*` or
+ * `alias.*` for one relation expands to that relation's columns. A partial
+ * column list withholds.
+ * shortcut: a star beside other select items, a schema-qualified star, a star
+ * in a set operation, a top-level set operation, more arms than the relation
+ * limit, and an arm that is not a flat SELECT withhold. A name owned by more
+ * than one relation withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -125,6 +128,8 @@ export function prepareColumnInspection(
     table: TableRef;
     outputOf?: string;
     outputs?: QueryOutput[];
+    /** Every catalog column of this table. Names are filled when metadata arrives. */
+    starTable?: TableRef;
   }
   interface Analysis {
     references: MissingSqlColumn[];
@@ -157,6 +162,15 @@ export function prepareColumnInspection(
   ]);
   let relations = 0;
   let visited = 0;
+  const starRefs = new Set<MissingSqlColumn>();
+  const projectedFields = (binding: Binding) => {
+    if (!binding.outputOf) return {};
+    if (binding.starTable) return { outputOf: binding.outputOf };
+    return {
+      outputOf: binding.outputOf,
+      projectedColumns: binding.outputs!.map((output) => output.name),
+    };
+  };
   function project(list: readonly SqlToken[], scope: Scope): QueryOutput[] {
     if (word(list[0]) !== "SELECT") throw unsupported();
     let at = 1;
@@ -251,13 +265,21 @@ export function prepareColumnInspection(
       for (const [ref, owners] of nested.unqualifiedOwners) unqualifiedOwners.set(ref, owners);
       proofs.push(...nested.proofs, ...outputs);
     }
-    function derivedOutputs(body: readonly SqlToken[]): QueryOutput[] {
+    function derivedOutputs(body: readonly SqlToken[]): {
+      outputs?: QueryOutput[];
+      starTable?: TableRef;
+    } {
       const arms = unionArms(body);
       if (!arms) {
         const nested = analyze(body, depth + 1, ctes);
-        const outputs = project(body, nested.bindings);
+        const star = singleStar(body, nested.bindings);
+        if (star && "starTable" in star) {
+          absorb(nested, []);
+          return { starTable: star.starTable };
+        }
+        const outputs = star && "outputs" in star ? star.outputs : project(body, nested.bindings);
         absorb(nested, outputs);
-        return outputs;
+        return { outputs };
       }
       // shortcut: a parenthesized arm withholds.
       if (
@@ -275,7 +297,7 @@ export function prepareColumnInspection(
         if (projected.length !== anchor.length) throw unsupported();
         absorb(nested, projected);
       }
-      return anchor;
+      return { outputs: anchor };
     }
     function atom(): Binding {
       if (tokens[next]?.children) {
@@ -288,14 +310,23 @@ export function prepareColumnInspection(
         const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
         if (!alias) throw unsupported();
         checkName(alias);
-        const outputs = derivedOutputs(body);
-        const binding: Binding = {
-          key: key(alias.text),
-          label: alias.text,
-          table: outputs[0].table,
-          outputOf: identifierValue(readIdentifier(alias.text), context.engine),
-          outputs,
-        };
+        const produced = derivedOutputs(body);
+        const outputOf = identifierValue(readIdentifier(alias.text), context.engine);
+        const binding: Binding = produced.starTable
+          ? {
+              key: key(alias.text),
+              label: alias.text,
+              table: produced.starTable,
+              outputOf,
+              starTable: produced.starTable,
+            }
+          : {
+              key: key(alias.text),
+              label: alias.text,
+              table: produced.outputs![0].table,
+              outputOf,
+              outputs: produced.outputs,
+            };
         remember(binding);
         return binding;
       }
@@ -323,7 +354,7 @@ export function prepareColumnInspection(
           outputOf: alias
             ? identifierValue(readIdentifier(alias.text), context.engine)
             : prior.outputOf,
-          outputs: prior.outputs,
+          ...(prior.starTable ? { starTable: prior.starTable } : { outputs: prior.outputs }),
         };
         remember(binding);
         return binding;
@@ -511,14 +542,10 @@ export function prepareColumnInspection(
         from: token.from,
         to: token.to,
         line: state.doc.lineAt(token.from).number,
-        ...(owners.length === 1 && owners[0].outputs
-          ? {
-              outputOf: owners[0].outputOf,
-              projectedColumns: owners[0].outputs.map((output) => output.name),
-            }
-          : {}),
+        ...(owners.length === 1 ? projectedFields(owners[0]) : {}),
       };
       references.push(ref);
+      if (owners.length === 1 && owners[0].starTable) starRefs.add(ref);
       if (owners.length !== 1) unqualifiedOwners.set(ref, [...owners]);
     }
     function scan(raw: readonly SqlToken[], depth: number, scope: Scope, bare: boolean) {
@@ -566,20 +593,17 @@ export function prepareColumnInspection(
             throw new Error(
               "An unresolved qualifier prevents this inspection; no column claim was made.",
             );
-          references.push({
+          const ref: MissingSqlColumn = {
             name: identifierValue(readIdentifier(column.text), context.engine),
             qualifier: token.text,
             table: binding.table,
             from: column.from,
             to: column.to,
             line: state.doc.lineAt(column.from).number,
-            ...(binding.outputOf
-              ? {
-                  outputOf: binding.outputOf,
-                  projectedColumns: binding.outputs!.map((output) => output.name),
-                }
-              : {}),
-          });
+            ...projectedFields(binding),
+          };
+          references.push(ref);
+          if (binding.starTable) starRefs.add(ref);
         }
         i += 2;
       }
@@ -686,13 +710,46 @@ export function prepareColumnInspection(
   const cteOwners = new Map<MissingSqlColumn, Binding[]>();
   const cteProofs: QueryOutput[] = [];
   const cteTables: TableRef[] = [];
+  /** A select list that is only `*` or `alias.*`. Mixed lists stay with project(). */
+  function singleStar(
+    list: readonly SqlToken[],
+    scope: Scope,
+  ): { starTable: TableRef } | { outputs: QueryOutput[] } | null {
+    if (word(list[0]) !== "SELECT") return null;
+    let at = 1;
+    if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
+    const from = list.findIndex((token) => word(token) === "FROM");
+    if (from < at) return null;
+    const select = list.slice(at, from);
+    let owner: Binding | undefined;
+    if (select.length === 1 && select[0].text === "*") {
+      if (scope.length !== 1) return null;
+      owner = scope[0];
+    } else if (
+      select.length === 3 &&
+      select[1].text === "." &&
+      select[2].text === "*" &&
+      nameLike(select[0])
+    ) {
+      const found = scope.filter((binding) => binding.key === key(select[0].text));
+      if (found.length !== 1) return null;
+      owner = found[0];
+    } else return null;
+    if (owner.outputs && owner.outputs.length > 256) throw unsupported();
+    if (owner.starTable) return { starTable: owner.starTable };
+    if (owner.outputs) return { outputs: owner.outputs.map((output) => ({ ...output })) };
+    return { starTable: owner.table };
+  }
+  const recordCte = (analyzed: Analysis, extra: QueryOutput[]) => {
+    cteReferences.push(...analyzed.references);
+    for (const [ref, owners] of analyzed.unqualifiedOwners) cteOwners.set(ref, owners);
+    cteProofs.push(...analyzed.proofs, ...extra);
+    cteTables.push(...analyzed.tables);
+  };
   const take = (body: readonly SqlToken[], scope: readonly Binding[]) => {
     const analyzed = analyze(body, 0, scope);
     const outputs = project(body, analyzed.bindings);
-    cteReferences.push(...analyzed.references);
-    for (const [ref, owners] of analyzed.unqualifiedOwners) cteOwners.set(ref, owners);
-    cteProofs.push(...analyzed.proofs, ...outputs);
-    cteTables.push(...analyzed.tables);
+    recordCte(analyzed, outputs);
     return outputs;
   };
   const rename = (outputs: QueryOutput[], columns?: readonly string[]) => {
@@ -703,9 +760,25 @@ export function prepareColumnInspection(
   for (const def of leading?.defs ?? []) {
     if (ctes.some((item) => item.key === key(def.name.text))) throw unsupported();
     const arms = unionArms(def.body);
-    let outputs: QueryOutput[];
-    if (!arms) outputs = rename(take(def.body, ctes), def.columns);
-    else {
+    let outputs: QueryOutput[] | undefined;
+    let starTable: TableRef | undefined;
+    if (!arms) {
+      const analyzed = analyze(def.body, 0, ctes);
+      const star = singleStar(def.body, analyzed.bindings);
+      if (star && "starTable" in star) {
+        // shortcut: an explicit column list cannot rename a star until its width is known.
+        if (def.columns) throw unsupported();
+        recordCte(analyzed, []);
+        starTable = star.starTable;
+      } else {
+        const projected = rename(
+          star && "outputs" in star ? star.outputs : project(def.body, analyzed.bindings),
+          def.columns,
+        );
+        recordCte(analyzed, projected);
+        outputs = projected;
+      }
+    } else {
       // shortcut: a non-flat arm withholds. A non-recursive arm cannot read its own CTE.
       if (
         arms.length < 2 ||
@@ -730,9 +803,9 @@ export function prepareColumnInspection(
     ctes.push({
       key: key(def.name.text),
       label: def.name.text,
-      table: outputs[0].table,
+      table: starTable ?? outputs![0].table,
       outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
-      outputs,
+      ...(starTable ? { starTable } : { outputs }),
     });
   }
   const outer = analyze(leading ? leading.rest : tokens, 0, ctes);
@@ -782,6 +855,12 @@ export function prepareColumnInspection(
       if (context.engine === "postgres")
         for (const names of existing.values())
           for (const name of ["tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"]) names.add(name);
+      for (const ref of starRefs) {
+        const names = columns.get(tableKey(ref.table));
+        if (!names?.length)
+          throw new Error("Complete table metadata is unavailable; no column claim was made.");
+        ref.projectedColumns = names;
+      }
       for (const proof of proofs)
         if (!existing.get(tableKey(proof.table))?.has(columnKey(proof.source)))
           throw new Error(

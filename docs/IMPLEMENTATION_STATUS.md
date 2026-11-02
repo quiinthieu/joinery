@@ -2515,6 +2515,19 @@ A CTE or derived table may join flat `SELECT` arms with `INTERSECT` or `EXCEPT`,
 | Unit | `sql-inspections.test.ts` covers `EXCEPT`, an anchor alias, a column list, a recursive `INTERSECT ALL`, a derived table, a mixed `UNION`/`EXCEPT`, and MySQL. A top-level `INTERSECT`, a top-level `EXCEPT`, a non-recursive self-reference, and a width mismatch still withhold |
 | Validate | `pnpm validate` passed: 436 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. Stars and template expressions remain open |
+| Open / next | See the single-relation star section below |
 
 Fetched `origin/main` is `578a1bc`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: single-relation star inspection (3 November 2026)
+
+A select list that is only `*` or `alias.*` for one relation expands to that relation's columns. The relation may be a base table, a CTE, or a derived table. A star of a star keeps the underlying table. A star of a projected CTE copies that projection. PostgreSQL system columns stay valid on the base table and are not offered through the star. An explicit column list on a star, a star beside other select items, a schema-qualified star, and a star in a set operation still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a CTE star, a known column, `ctid`, a derived star, `alias.*`, a join, a copied projection, a chained star, `DISTINCT`, and MySQL. An explicit column list, a mixed select list, two relations, a schema-qualified star, and a star in a set operation still withhold |
+| Validate | `pnpm validate` passed: 440 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A star beside other select items, a star in a set operation, and template expressions remain open |
+
+Fetched `origin/main` is `1fa0ce5`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
