@@ -45,10 +45,11 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 /**
  * Flat direct-table SELECTs, plus CTEs or a derived table whose body is that
  * shape. A recursive CTE may be two or more flat SELECT arms joined by
- * UNION or UNION ALL; its names come from the anchor arm. A full explicit
+ * UNION or UNION ALL; its names come from the anchor arm. A derived table
+ * may use the same arms; its names come from that anchor. A full explicit
  * column list renames those outputs. Stars and a partial column list withhold.
  * shortcut: a non-recursive set operation, INTERSECT/EXCEPT, more arms than
- * the relation limit, and a recursive arm that is not a flat SELECT withhold.
+ * the relation limit, and an arm that is not a flat SELECT withhold.
  * A name owned by more than one relation withholds the inspection. upgrade
  * for those shapes.
  */
@@ -245,6 +246,38 @@ export function prepareColumnInspection(
       bindings.push(binding);
     };
     let next = from + 1;
+    function absorb(nested: Analysis, outputs: QueryOutput[]) {
+      nestedTables.push(...nested.tables);
+      references.push(...nested.references);
+      for (const [ref, owners] of nested.unqualifiedOwners) unqualifiedOwners.set(ref, owners);
+      proofs.push(...nested.proofs, ...outputs);
+    }
+    function derivedOutputs(body: readonly SqlToken[]): QueryOutput[] {
+      const arms = unionArms(body);
+      if (!arms) {
+        const nested = analyze(body, depth + 1, ctes);
+        const outputs = project(body, nested.bindings);
+        absorb(nested, outputs);
+        return outputs;
+      }
+      // shortcut: INTERSECT/EXCEPT are not split. A parenthesized arm withholds.
+      if (
+        arms.length < 2 ||
+        arms.length > columnInspectionLimits.relations ||
+        arms.some((arm) => arm.length === 0)
+      )
+        throw unsupported();
+      const anchorNested = analyze(arms[0], depth + 1, ctes);
+      const anchor = project(arms[0], anchorNested.bindings);
+      absorb(anchorNested, anchor);
+      for (const arm of arms.slice(1)) {
+        const nested = analyze(arm, depth + 1, ctes);
+        const projected = project(arm, nested.bindings);
+        if (projected.length !== anchor.length) throw unsupported();
+        absorb(nested, projected);
+      }
+      return anchor;
+    }
     function atom(): Binding {
       if (tokens[next]?.children) {
         const bodyToken = tokens[next];
@@ -256,12 +289,7 @@ export function prepareColumnInspection(
         const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
         if (!alias) throw unsupported();
         checkName(alias);
-        const nested = analyze(body, depth + 1, ctes);
-        const outputs = project(body, nested.bindings);
-        nestedTables.push(...nested.tables);
-        references.push(...nested.references);
-        for (const [ref, owners] of nested.unqualifiedOwners) unqualifiedOwners.set(ref, owners);
-        proofs.push(...nested.proofs, ...outputs);
+        const outputs = derivedOutputs(body);
         const binding: Binding = {
           key: key(alias.text),
           label: alias.text,
