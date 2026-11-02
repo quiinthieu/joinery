@@ -181,6 +181,26 @@ describe("bounded qualified-column inspections", () => {
       /direct-table SELECT/,
     );
   });
+  test("inspects an unqualified name in WHERE, GROUP BY, HAVING and ORDER BY", () => {
+    const where = inspect("SELECT o.id FROM orders o WHERE typo = 1").result;
+    expect(where.issues.map((issue) => [issue.qualifier, issue.name])).toEqual([["o", "typo"]]);
+    expect(where.columnsFor(where.issues[0])).toContain("id");
+    expect(
+      inspect("SELECT o.id FROM orders o GROUP BY typo").result.issues.map((i) => i.name),
+    ).toEqual(["typo"]);
+    expect(
+      inspect("SELECT o.id FROM orders o HAVING typo > 1").result.issues.map((i) => i.name),
+    ).toEqual(["typo"]);
+    expect(
+      inspect("SELECT o.id FROM orders o ORDER BY typo").result.issues.map((i) => i.name),
+    ).toEqual(["typo"]);
+    expect(inspect("SELECT o.id FROM orders o WHERE id = 1 ORDER BY id").result.issues).toEqual([]);
+    expect(inspect("SELECT o.id FROM orders o WHERE LOWER(typo) = 1").result.issues).toEqual([]);
+    const rowid = stateOf("SELECT o.id FROM orders o WHERE _rowid = 1", "mysql");
+    expect(() => prepareColumnInspection(rowid, 7, context("mysql"))).toThrow(
+      /direct-table SELECT/,
+    );
+  });
   test("inspects one CTE or derived query by its projected names", () => {
     const cte = inspect("WITH c AS (SELECT id FROM orders) SELECT c.bad FROM c").result;
     expect(cte.tables).toEqual([table]);

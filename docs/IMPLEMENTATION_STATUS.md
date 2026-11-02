@@ -2294,6 +2294,19 @@ SQL completion offers `sel`, `ctxsel`, `cnt`, `cte`, `ins`, `upd`, `del` and `tx
 | Unit | `sql-snippets.test.ts` covers a statement start, a FROM list, a WHERE clause, a custom trigger that remains available, and a custom `sel` override that stays at the statement start |
 | Validate | `pnpm validate` passed: 410 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Unqualified names outside the select list, multiple and recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+| Open / next | See the clause-name section below |
 
-Fetched `origin/main` is `102d9bb`. This branch is local until it is pushed. Unmerged, unreleased and not installed. Preview.15 remains the last verified release. Post-merge Validate on `102d9bb` was still running when this branch was cut.
+Fetched `origin/main` is `102d9bb`. Pushed on PR #32. Unmerged, unreleased and not installed. Preview.15 remains the last verified release. Post-merge Validate on `102d9bb` was still running when this branch was cut.
+
+## R5 follow-up: unqualified clause names (2 November 2026)
+
+A bare name in `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` or `ON` is checked with the same one-owner rule as a select-list name. Several owners, or none, withhold the inspection. Names inside function calls stay unread. Clause keywords and a short list of unquoted type names are not treated as columns. Inspection still does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, a present name, `LOWER(typo)`, MySQL `_rowid`, a joined name owned by one table, and a joined name that matches none |
+| Validate | `pnpm validate` passed: 411 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated. GitHub checks on PR #32 are not claimed green |
+| Open / next | Function arguments, multiple and recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `102d9bb`. This follow-up is local until it is pushed onto PR #32. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

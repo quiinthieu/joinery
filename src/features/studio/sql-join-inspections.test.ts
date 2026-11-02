@@ -220,6 +220,16 @@ describe("ordered direct-table JOIN column inspections", () => {
     expect(() =>
       prepareColumnInspection(ambiguous, 7, context()).finish(ambiguous, schemas.slice(0, 2)),
     ).toThrow(/unqualified column/);
+    const where = inspect(
+      "SELECT o.id FROM orders o JOIN customers c ON o.id = c.id WHERE customer_only = 1",
+    ).result;
+    expect(where.issues).toEqual([]);
+    const whereMissing = stateOf(
+      "SELECT o.id FROM orders o JOIN customers c ON o.id = c.id WHERE typo = 1",
+    );
+    expect(() =>
+      prepareColumnInspection(whereMissing, 7, context()).finish(whereMissing, schemas.slice(0, 2)),
+    ).toThrow(/unqualified column/);
   });
   test("inspects a derived JOIN operand by its projected names", () => {
     const { result } = inspect(
