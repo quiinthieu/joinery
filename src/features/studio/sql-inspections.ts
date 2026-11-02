@@ -45,8 +45,8 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 /**
  * Flat direct-table SELECTs, plus CTEs or a derived table whose body is that
  * shape. A recursive CTE may be two flat SELECT arms joined by UNION or
- * UNION ALL; its names come from the anchor arm. Stars and column lists
- * withhold.
+ * UNION ALL; its names come from the anchor arm. A full explicit column
+ * list renames those outputs. Stars and a partial column list withhold.
  * shortcut: more than two set-operation arms, INTERSECT/EXCEPT, and a
  * recursive arm that is not a flat SELECT withhold. A name owned by more
  * than one relation withholds the inspection. upgrade for those shapes.
@@ -592,23 +592,41 @@ export function prepareColumnInspection(
       ],
     };
   }
+  /** Names between the CTE name and AS. A star, gap, or repeated name withholds. */
+  function columnNames(token: SqlToken): string[] {
+    if (!token.text.endsWith(")")) throw unsupported();
+    const children = clean(token.children ?? []);
+    const names: string[] = [];
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      if (i % 2 === 0) {
+        // CodeMirror tags some names, such as id, as keywords.
+        if (!nameLike(child)) throw unsupported();
+        checkName(child);
+        names.push(identifierValue(readIdentifier(child.text), context.engine));
+      } else if (child.text !== ",") throw unsupported();
+    }
+    if (!names.length || children.length % 2 === 0) throw unsupported();
+    if (new Set(names.map(columnKey)).size !== names.length) throw unsupported();
+    return names;
+  }
   function peel(list: readonly SqlToken[]) {
     if (word(list[0]) !== "WITH") return null;
     let index = 1;
     const recursive = word(list[index]) === "RECURSIVE";
     if (recursive) index++;
-    const defs: { name: SqlToken; body: SqlToken[] }[] = [];
+    const defs: { name: SqlToken; body: SqlToken[]; columns?: string[] }[] = [];
     for (;;) {
       const name = list[index++];
       if (!nameToken(name)) throw unsupported();
       checkName(name);
-      if (list[index]?.children) throw unsupported();
+      const columns = list[index]?.children ? columnNames(list[index++]) : undefined;
       if (word(list[index++]) !== "AS") throw unsupported();
       while (word(list[index]) === "NOT" || word(list[index]) === "MATERIALIZED") index++;
       const bodyToken = list[index++];
       const body = bodyToken?.children && clean(bodyToken.children);
       if (!body || !bodyToken.text.endsWith(")") || word(body[0]) !== "SELECT") throw unsupported();
-      defs.push({ name, body });
+      defs.push({ name, body, columns });
       if (list[index]?.text !== ",") break;
       index++;
     }
@@ -648,16 +666,21 @@ export function prepareColumnInspection(
     cteTables.push(...analyzed.tables);
     return outputs;
   };
+  const rename = (outputs: QueryOutput[], columns?: readonly string[]) => {
+    if (!columns) return outputs;
+    if (columns.length !== outputs.length) throw unsupported();
+    return outputs.map((output, index) => ({ ...output, name: columns[index] }));
+  };
   for (const def of leading?.defs ?? []) {
     if (ctes.some((item) => item.key === key(def.name.text))) throw unsupported();
     const arms = unionArms(def.body);
     let outputs: QueryOutput[];
-    if (!arms) outputs = take(def.body, ctes);
+    if (!arms) outputs = rename(take(def.body, ctes), def.columns);
     else {
       // shortcut: one UNION or UNION ALL. Longer set operations withhold.
       if (!recursiveWith || arms.length !== 2 || arms.some((arm) => arm.length === 0))
         throw unsupported();
-      const anchor = take(arms[0], ctes);
+      const anchor = rename(take(arms[0], ctes), def.columns);
       const self: Binding = {
         key: key(def.name.text),
         label: def.name.text,
