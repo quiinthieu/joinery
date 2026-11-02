@@ -12,7 +12,13 @@ import {
   Trash2,
 } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
-import type { EngineKind, SqlFormatStyle, SqlKeywordCase, SqlSnippet } from "../../ipc/generated";
+import type {
+  EngineKind,
+  SqlFormatStyle,
+  SqlKeywordCase,
+  SqlSnippet,
+  SqlSnippetPlace,
+} from "../../ipc/generated";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
 import { useStudio } from "../../state/studio";
 import { sqlFormatStyle, updateSqlFormatStyle, type SqlFormatScope } from "../../data/sql-format";
@@ -45,6 +51,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
     [snippetTrigger, setSnippetTrigger] = useState(""),
     [snippetTitle, setSnippetTitle] = useState(""),
     [snippetEngine, setSnippetEngine] = useState<"" | "postgres" | "mysql" | "snowflake">(""),
+    [snippetPlace, setSnippetPlace] = useState<SqlSnippetPlace>("any"),
     [snippetBody, setSnippetBody] = useState(""),
     [snippetBusy, setSnippetBusy] = useState(false),
     [snippetError, setSnippetError] = useState<string | null>(null);
@@ -85,6 +92,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
     setSnippetTrigger("");
     setSnippetTitle("");
     setSnippetEngine("");
+    setSnippetPlace("any");
     setSnippetBody("");
     setSnippetError(null);
   }
@@ -97,6 +105,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
         ? snippet.engine
         : "",
     );
+    setSnippetPlace(snippet.place ?? "any");
     setSnippetBody(snippet.body);
     setSnippetError(null);
   }
@@ -111,6 +120,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
         title: snippetTitle.trim(),
         body: snippetBody,
         engine: snippetEngine ? snippetEngine : null,
+        place: snippetPlace,
       });
       state.notify(
         editingSnippetId ? `Updated snippet ${saved.trigger}` : `Saved snippet ${saved.trigger}`,
@@ -288,7 +298,9 @@ export function Preferences({ onClose }: { onClose(): void }) {
             Use <code>{"{{database}}"}</code> and <code>{"{{schema}}"}</code> for quoted identifiers
             from the connected console. Use <code>{"{{selection}}"}</code> with Insert template to
             wrap selected SQL verbatim. Double braces are reserved for these variables; unknown or
-            missing values block insertion.
+            missing values block insertion. A completion site limits a new trigger. Reusing a
+            built-in trigger keeps that trigger's site. A snippet saved before sites existed stays
+            available everywhere.
           </p>
           {state.sqlSnippets.length > 0 && (
             <div className="managed-snippets" role="list" aria-label="Custom SQL snippets">
@@ -351,6 +363,19 @@ export function Preferences({ onClose }: { onClose(): void }) {
                 </select>
               </label>
             </div>
+            <label>
+              Completion site
+              <select
+                aria-label="Snippet completion site"
+                value={snippetPlace}
+                onChange={(e) => setSnippetPlace(e.target.value as SqlSnippetPlace)}
+              >
+                <option value="any">Anywhere</option>
+                <option value="statement">Statement start</option>
+                <option value="from">FROM or JOIN list</option>
+                <option value="query">After FROM</option>
+              </select>
+            </label>
             <label>
               Snippet title
               <input

@@ -299,6 +299,7 @@ export async function runNativeSmoke() {
               title: "Smoke invalid trigger",
               body: "SELECT 1;",
               engine: null,
+              place: "any",
             },
           }),
       ],
@@ -344,6 +345,7 @@ export async function runNativeSmoke() {
       title: "Native 🧪 template",
       body: "SELECT ${1:1} AS ${2:answer};${0}",
       engine: "postgres",
+      place: "any",
     });
     const reloaded = await client.call<Bootstrap>("bootstrap");
     assert(

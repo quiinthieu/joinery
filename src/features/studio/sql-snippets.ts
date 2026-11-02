@@ -1,6 +1,6 @@
 import { snippetCompletion, type Completion } from "@codemirror/autocomplete";
 import type { EditorState } from "@codemirror/state";
-import type { EngineKind, SqlSnippet } from "../../ipc/generated";
+import type { EngineKind, SqlSnippet, SqlSnippetPlace } from "../../ipc/generated";
 import { statementTokensAt, type CompletionTarget, type SqlToken } from "./sql-context";
 import type { SqlTemplateApplier } from "./sql-template-context";
 
@@ -9,6 +9,8 @@ export interface EffectiveSqlSnippet {
   title: string;
   body: string;
   engine: EngineKind | null;
+  /** Omitted on a built-in. A custom snippet uses this only when its trigger is not built in. */
+  place?: SqlSnippetPlace;
   isCustom: boolean;
 }
 
@@ -123,6 +125,7 @@ export function effectiveSqlSnippets(
       title: custom.title,
       body: custom.body,
       engine: null,
+      place: custom.place,
       isCustom: true,
     });
   }
@@ -133,6 +136,7 @@ export function effectiveSqlSnippets(
       title: custom.title,
       body: custom.body,
       engine: custom.engine,
+      place: custom.place,
       isCustom: true,
     });
   }
@@ -172,10 +176,9 @@ const NESTED_QUERY_MARK = new Set(["=", "<", ">", "<=", ">=", "<>", "!=", ","]);
 
 /**
  * Built-in completion placement for one statement. Insert template stays unfiltered.
- * shortcut: a parenthesized query is classified after FROM, JOIN, AS, IN,
- * EXISTS, SELECT, a comparison, or a comma. A function name does not open one.
- * A leading EXPLAIN wrapper is skipped. upgrade for declared per-template
- * contexts.
+ * shortcut: a function-argument subquery and a parenthesized statement after
+ * EXPLAIN stay unclassified, upgrade when those sites need templates.
+ * A leading EXPLAIN wrapper is skipped.
  */
 function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToken[] {
   const list = tokens.filter((token) => !token.kind.endsWith("Comment"));
@@ -256,7 +259,8 @@ function templatePlace(trigger: string) {
 /**
  * Builds CodeMirror `snippetCompletion` options for bare unquoted prefixes
  * (`target.parts.length === 1`), never firing after `alias.` qualifiers.
- * A site limits built-in triggers; custom triggers stay available.
+ * A site limits built-in triggers. A custom trigger uses its declared site
+ * and stays available when that site is missing. A built-in trigger keeps its site.
  */
 export function snippetCompletions(
   engine: EngineKind,
@@ -272,7 +276,8 @@ export function snippetCompletions(
   const candidates = effectiveSqlSnippets(engine, userSnippets).filter((item) => {
     if (prefix.length > 0 && !item.trigger.toLowerCase().startsWith(prefix)) return false;
     if (!site) return true;
-    const place = templatePlace(item.trigger);
+    const builtinPlace = templatePlace(item.trigger);
+    const place = builtinPlace === "any" ? (item.place ?? "any") : builtinPlace;
     if (place === "statement") return site.atStatementStart;
     if (place === "from") return site.inFromClause;
     if (place === "query") return site.afterFrom;

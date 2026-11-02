@@ -2411,6 +2411,19 @@ Completion classifies the statement inside an `EXPLAIN` wrapper. `EXPLAIN sel` a
 | Unit | `sql-snippets.test.ts` covers a bare `EXPLAIN`, `ANALYZE`, a FROM list, a WHERE clause, a closed option list, and `FORMAT=JSON` |
 | Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Declared per-template contexts, then remaining R5/R6/R7/R8 |
+| Open / next | See the declared completion-site section below |
 
 Fetched `origin/main` is `5e0a44d`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: declared snippet completion sites (2 November 2026)
+
+A custom snippet can declare one completion site: anywhere, statement start, a FROM or JOIN list, or after FROM. A missing site stays available everywhere, including a snippet saved before this field existed. A custom snippet that reuses a built-in trigger keeps that trigger's site. **Insert template** still lists every template. Expansion does not prepare or execute SQL. New metadata includes the site. An older Joinery build that rejects unknown snippet fields cannot load a backup written by this build. A function-argument subquery and a parenthesized statement after `EXPLAIN` stay unclassified.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-snippets.test.ts` covers a statement-only trigger, a FROM-only trigger, and a `sel` override whose declared site does not replace the built-in site. Rust snippet recovery loads a record without `place` as available everywhere and round-trips a statement site |
+| Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `22e71b8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

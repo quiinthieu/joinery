@@ -51,6 +51,7 @@ test("Preferences updates SQL formatting settings and manages custom SQL snippet
         title: input.title,
         body: input.body,
         engine: input.engine,
+        place: input.place,
         updatedAtMs: 100,
       };
       return saved;
@@ -97,6 +98,9 @@ test("Preferences updates SQL formatting settings and manages custom SQL snippet
   fireEvent.change(screen.getByLabelText("Snippet template"), {
     target: { value: "SELECT * FROM orders LIMIT ${1:25};" },
   });
+  fireEvent.change(screen.getByLabelText("Snippet completion site"), {
+    target: { value: "statement" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "Add snippet" }));
 
   await waitFor(() => {
@@ -104,8 +108,21 @@ test("Preferences updates SQL formatting settings and manages custom SQL snippet
   });
   expect(screen.getByText("recent_orders")).toBeTruthy();
   expect(screen.getByText("Recent orders")).toBeTruthy();
+  expect(client.call).toHaveBeenCalledWith("save_sql_snippet", {
+    input: {
+      id: null,
+      trigger: "recent_orders",
+      title: "Recent orders",
+      body: "SELECT * FROM orders LIMIT ${1:25};",
+      engine: "postgres",
+      place: "statement",
+    },
+  });
 
   fireEvent.click(screen.getByRole("button", { name: "Edit snippet recent_orders" }));
+  expect((screen.getByLabelText("Snippet completion site") as HTMLSelectElement).value).toBe(
+    "statement",
+  );
   fireEvent.change(screen.getByLabelText("Snippet title"), {
     target: { value: "Latest orders" },
   });

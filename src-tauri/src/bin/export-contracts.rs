@@ -83,6 +83,7 @@ fn main() {
         SqlFormatStyle::decl(),
         SqlFormatDialects::decl(),
         SqlFormatSettings::decl(),
+        SqlSnippetPlace::decl(),
         SqlSnippet::decl(),
         SqlSnippetInput::decl(),
         Bootstrap::decl(),
