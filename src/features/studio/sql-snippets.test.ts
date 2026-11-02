@@ -306,6 +306,19 @@ test("live templates never fire after alias qualifiers and expand CodeMirror tab
   const explainedFormat = labelsAt("EXPLAIN FORMAT=JSON SELECT * FROM ");
   expect(explainedFormat).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
   expect(explainedFormat).not.toContain("sel");
+  expect(labelsAt("EXPLAIN ANALYZE (sel")).toContain("sel");
+  expect(labelsAt("EXPLAIN ANALYZE (sel")).not.toContain("join");
+  const explainedParenFrom = labelsAt("EXPLAIN ANALYZE (SELECT id FROM ");
+  expect(explainedParenFrom).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
+  expect(explainedParenFrom).not.toContain("sel");
+  const explainedParenWhere = labelsAt("EXPLAIN ANALYZE (SELECT id FROM orders WHERE ");
+  expect(explainedParenWhere).toContain("lim");
+  expect(explainedParenWhere).not.toContain("join");
+  expect(explainedParenWhere).not.toContain("sel");
+  const explainedQuery = labelsAt("EXPLAIN (SELECT id FROM ");
+  expect(explainedQuery).toEqual(expect.arrayContaining(["join", "ljoin", "lim"]));
+  expect(explainedQuery).not.toContain("sel");
+  expect(labelsAt("EXPLAIN (sel")).toContain("sel");
   const declared: SqlSnippet[] = [
     {
       id: "stmt",

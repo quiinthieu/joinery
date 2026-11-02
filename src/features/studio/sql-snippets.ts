@@ -173,27 +173,41 @@ const CLAUSE_END = new Set([
 
 const NESTED_QUERY_KEYWORD = new Set(["FROM", "JOIN", "AS", "IN", "EXISTS", "SELECT"]);
 const NESTED_QUERY_MARK = new Set(["=", "<", ">", "<=", ">=", "<>", "!=", ","]);
+const STATEMENT_HEAD = new Set(["SELECT", "WITH", "INSERT", "UPDATE", "DELETE"]);
 
 /**
  * Built-in completion placement for one statement. Insert template stays unfiltered.
- * shortcut: a function-argument subquery and a parenthesized statement after
- * EXPLAIN stay unclassified, upgrade when those sites need templates.
- * A leading EXPLAIN wrapper is skipped.
+ * shortcut: a subquery inside a function argument stays unclassified, upgrade
+ * when that site needs templates. A leading EXPLAIN wrapper is skipped.
  */
 function priorTemplateTokens(tokens: readonly SqlToken[], from: number): SqlToken[] {
   const list = tokens.filter((token) => !token.kind.endsWith("Comment"));
   const container = list.find((token) => token.children && token.from < from && token.to >= from);
   if (container?.children) {
-    const introducer = list.filter((token) => token.to <= container.from).at(-1);
+    const before = list.filter((token) => token.to <= container.from);
+    const introducer = before.at(-1);
     const keyword = introducer?.kind === "Keyword" ? introducer.text.toUpperCase() : "";
     if (
       (introducer && NESTED_QUERY_MARK.has(introducer.text)) ||
-      NESTED_QUERY_KEYWORD.has(keyword)
+      NESTED_QUERY_KEYWORD.has(keyword) ||
+      explainStatementParen(before, container.children, from)
     ) {
       return priorTemplateTokens(container.children, from);
     }
   }
   return list.filter((token) => token.to <= from);
+}
+
+/** A `(SELECT ...)` after EXPLAIN is the statement. An option list such as `(ANALYZE)` is not. */
+function explainStatementParen(
+  before: readonly SqlToken[],
+  children: readonly SqlToken[],
+  from: number,
+): boolean {
+  if (before.length === 0 || withoutExplainWrapper(before).length !== 0) return false;
+  const inner = children.filter((token) => !token.kind.endsWith("Comment") && token.to <= from);
+  const head = inner[0];
+  return !head || (head.kind === "Keyword" && STATEMENT_HEAD.has(head.text.toUpperCase()));
 }
 
 const EXPLAIN_OPTION = new Set(["ANALYZE", "VERBOSE", "EXTENDED", "PARTITIONS"]);
