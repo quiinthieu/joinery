@@ -2424,6 +2424,19 @@ A custom snippet can declare one completion site: anywhere, statement start, a F
 | Unit | `sql-snippets.test.ts` covers a statement-only trigger, a FROM-only trigger, and a `sel` override whose declared site does not replace the built-in site. Rust snippet recovery loads a record without `place` as available everywhere and round-trips a statement site |
 | Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8 |
+| Open / next | See the parenthesized EXPLAIN statement section below |
 
 Fetched `origin/main` is `22e71b8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: parenthesized statement after EXPLAIN (2 November 2026)
+
+Completion classifies a parenthesized statement after an `EXPLAIN` wrapper. `EXPLAIN ANALYZE (sel` offers a statement template. `EXPLAIN ANALYZE (SELECT id FROM ` offers `join`, `ljoin` and `lim`. `EXPLAIN (SELECT id FROM ` does the same. A closed option list such as `EXPLAIN (ANALYZE)` is not a statement. A function call such as `LOWER(sel` still does not start a statement. **Insert template** still lists every template. Expansion does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-snippets.test.ts` covers `EXPLAIN ANALYZE (sel`, an inner FROM list, an inner WHERE clause, and `EXPLAIN (SELECT` |
+| Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A subquery inside a function argument stays unclassified |
+
+Fetched `origin/main` is `74999a4`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

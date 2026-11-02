@@ -50,7 +50,9 @@ place. **Insert template** still lists every template. A parenthesized query
 after `FROM`, `JOIN`, `AS`, `IN`, `EXISTS`, `SELECT`, a comparison, or a comma
 uses that same placement. A function name does not open one. A statement after
 `EXPLAIN`, including `ANALYZE`, `VERBOSE`, a closed option list, or
-`FORMAT=JSON`, uses that same placement. New metadata includes the site, so an
+`FORMAT=JSON`, uses that same placement. A parenthesized statement there does
+too: `EXPLAIN ANALYZE (SELECT id FROM ` offers the JOIN and LIMIT templates,
+while `EXPLAIN (ANALYZE)` stays an option list. New metadata includes the site, so an
 older build that rejects unknown snippet fields cannot load a backup from this
 build. Arbitrary expressions/macros and broader DataGrip template parity remain
 open.
