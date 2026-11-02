@@ -49,6 +49,21 @@ pub trait Driver: Send + Sync {
         kind: StatementKind,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64>;
+    async fn execute_bound(
+        &self,
+        sql: &str,
+        kind: StatementKind,
+        bound: &crate::params::BoundStatement,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        if bound.binds.is_empty() {
+            return self.execute(sql, kind, sink).await;
+        }
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Typed query parameters are unavailable for this engine",
+        ))
+    }
     async fn cancel(&self) -> AppResult<()>;
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         Err(AppError::new(
@@ -69,6 +84,12 @@ pub trait Driver: Send + Sync {
         Err(AppError::new(
             ErrorCode::Unsupported,
             "Live completion metadata is unavailable for this engine",
+        ))
+    }
+    async fn inspection_schema(&self, _table: &TableRef) -> AppResult<TableSchema> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Complete column inspection metadata is unavailable for this engine",
         ))
     }
     async fn session_state(&self, _session_id: &str) -> AppResult<SessionRuntimeState> {

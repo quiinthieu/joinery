@@ -1,3 +1,4 @@
+import { ExecutionTiming } from "../features/studio/ExecutionTiming";
 import {
   lazy,
   Suspense,
@@ -40,6 +41,7 @@ import type {
   ConnectionProfile,
   DatabaseObjectRef,
   ObjectDetails,
+  QueryParamSlot,
   SessionInfo,
   TableInfo,
   TransactionMode,
@@ -61,17 +63,20 @@ import { CopyAsMenu } from "../features/grid/CopyAsMenu";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
+import { resolveExecutionError } from "../features/studio/sql-navigation";
 import type { EditorHandle } from "../features/studio/SqlEditor";
 import {
   DdlPanel,
   ObjectInspectorView,
   ObjectKindGlyph,
 } from "../features/studio/ObjectInspectorView";
+import { SessionStructureView } from "../features/studio/SessionStructureView";
 import { StructureView } from "../features/studio/UtilityViews";
 import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
 import { resultCache } from "../data/result-cache";
 import { tabNavigation } from "../components/ui/tabs";
+import { QueryPlanView, isQueryPlanResult } from "../features/studio/QueryPlanView";
 
 const SqlEditor = lazy(() =>
   import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
@@ -84,7 +89,10 @@ interface Props {
   session?: SessionInfo;
   editorRef: RefObject<EditorHandle>;
   gridRef: RefObject<DatabaseGridHandle>;
-  onRun(sql?: string): void;
+  onRun(sql?: string, fromUtf16?: number): void;
+  onExplain(): void;
+  onAnalyze(): void;
+  onOpenParameters(slots: QueryParamSlot[]): void;
   onReview(): void;
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
@@ -108,6 +116,9 @@ export function Workbench({
   editorRef,
   gridRef,
   onRun,
+  onExplain,
+  onAnalyze,
+  onOpenParameters,
   onReview,
   onConfirm,
   onSelect,
@@ -126,6 +137,7 @@ export function Workbench({
   const state = useStudio(),
     [editorSize, setEditorSize] = useState(290),
     [runningTime, setRunningTime] = useState(0),
+    [planResultId, setPlanResultId] = useState<string | null>(null),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
     [tableDetailsState, setTableDetailsState] = useState<{
@@ -701,12 +713,36 @@ export function Workbench({
                   Run<kbd>⌘ ↵</kbd>
                 </button>
               )}
+              {profile && ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
+                <button
+                  className="button ghost small"
+                  disabled={running || !session}
+                  title="Estimate the selected query or current statement without ANALYZE"
+                  onClick={onExplain}
+                >
+                  <Gauge size={13} />
+                  Explain
+                </button>
+              )}
+              {(profile?.engine === "postgres" ||
+                session?.capabilities.actualPlan === "mariaDbJson" ||
+                session?.capabilities.actualPlan === "mysqlTree") && (
+                <button
+                  className="button ghost small"
+                  disabled={running || !session}
+                  title="Executes the selected query or current statement after review to collect actual measurements"
+                  onClick={onAnalyze}
+                >
+                  <Gauge size={13} />
+                  Analyze
+                </button>
+              )}
               <button
                 className="icon-button run-all"
                 title="Run all statements · ⇧⌘↵"
                 aria-label="Run all statements"
                 disabled={running || !session}
-                onClick={() => onRun(tab.sql)}
+                onClick={() => onRun(tab.sql, 0)}
               >
                 <ChevronDown size={13} />
               </button>
@@ -780,7 +816,7 @@ export function Workbench({
           readOnly={profile.safeMode === "readOnly"}
           onCommand={(command) => {
             state.updateTab(tab.id, { sql: command });
-            onRun(command);
+            onRun(command, 0);
           }}
         />
       )}
@@ -794,9 +830,19 @@ export function Workbench({
                 value={tab.sql}
                 onChange={(sql) => state.updateTab(tab.id, { sql })}
                 onRun={onRun}
+                onOpenParameters={onOpenParameters}
+                onOpenObject={
+                  session && tab.connectionId
+                    ? (object, highlightedColumn, catalogRevision) =>
+                        state.openSessionObject(tab.id, object, highlightedColumn, catalogRevision)
+                    : undefined
+                }
+                error={tab.error}
+                errorOrigin={tab.errorOrigin}
                 engine={profile?.engine ?? "postgres"}
                 sessionId={session?.id ?? null}
                 tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}
+                objectExplorerSupported={objectExplorerSupported}
                 database={profile?.engine === "snowflake" ? profile.database : undefined}
                 defaultSchema={
                   profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined
@@ -880,6 +926,15 @@ export function Workbench({
           <div className="table-view-actions">
             {result && result.columns.length > 0 && (
               <>
+                {isQueryPlanResult(result, tab.planSource) && (
+                  <button
+                    className="button ghost small"
+                    aria-pressed={planResultId === result.id}
+                    onClick={() => setPlanResultId(planResultId === result.id ? null : result.id)}
+                  >
+                    {planResultId === result.id ? "Data grid" : "View plan"}
+                  </button>
+                )}
                 <CopyAsMenu gridRef={gridRef} disabled={running} />
                 <button
                   type="button"
@@ -910,7 +965,11 @@ export function Workbench({
               ) : (
                 <>
                   <Clock3 size={12} />
-                  {tab.elapsedMs ? `${tab.elapsedMs} ms` : "Ready when you are"}
+                  {tab.runMetrics
+                    ? `Backend total ${tab.runMetrics.totalMs} ms`
+                    : tab.clientElapsedMs !== undefined
+                      ? `Client ${Math.round(tab.clientElapsedMs)} ms`
+                      : "Ready when you are"}
                 </>
               )}
             </span>
@@ -1074,6 +1133,9 @@ export function Workbench({
           Generated on demand · no database connection · constant row storage
         </div>
       )}
+      {tab.kind === "query" && tab.clientStartedAt !== undefined && (
+        <ExecutionTiming metrics={tab.runMetrics} clientElapsedMs={tab.clientElapsedMs} />
+      )}
       {filtering && tab.view === "data" && (
         <TableFilterBar
           query={tab.query}
@@ -1085,22 +1147,62 @@ export function Workbench({
           onChange={applyQuery}
         />
       )}
-      {tab.error && (
-        <div
-          className={`query-error ${tab.error.code === "outcomeUnknown" ? "uncertain" : ""}`}
-          role="alert"
-        >
-          <span className="error-symbol">!</span>
-          <span>{tab.error.message}</span>
-          <button
-            className="icon-button"
-            aria-label="Dismiss query error"
-            onClick={() => state.updateTab(tab.id, { error: null })}
-          >
-            <X size={12} />
-          </button>
-        </div>
-      )}
+      {tab.error &&
+        (() => {
+          const resolvedError =
+            tab.kind === "query" && tab.error.location && profile?.engine !== "redis"
+              ? resolveExecutionError(tab.sql, tab.error, tab.errorOrigin)
+              : null;
+          const loc = tab.error.location;
+          return (
+            <div
+              className={`query-error ${tab.error.code === "outcomeUnknown" ? "uncertain" : ""}`}
+              role="alert"
+            >
+              <span className="error-symbol">!</span>
+              <div className="query-error-body">
+                <div className="query-error-main">
+                  <span>{tab.error.message}</span>
+                  {resolvedError && (
+                    <span className="query-error-badge">
+                      Line {resolvedError.line}, Col {resolvedError.column}
+                    </span>
+                  )}
+                  {loc?.statementIndex !== undefined && (
+                    <span className="query-error-badge">Statement {loc.statementIndex + 1}</span>
+                  )}
+                  {loc?.sqlState && (
+                    <span className="query-error-badge">SQLSTATE {loc.sqlState}</span>
+                  )}
+                </div>
+                {loc?.detail && !tab.error.message.includes(loc.detail) && (
+                  <div className="query-error-detail">Detail: {loc.detail}</div>
+                )}
+                {loc?.hint && !tab.error.message.includes(loc.hint) && (
+                  <div className="query-error-detail">Hint: {loc.hint}</div>
+                )}
+              </div>
+              {resolvedError && (
+                <button
+                  type="button"
+                  className="button ghost small query-error-jump"
+                  onClick={() =>
+                    editorRef.current?.revealRange(resolvedError.from, resolvedError.to)
+                  }
+                >
+                  Jump to error
+                </button>
+              )}
+              <button
+                className="icon-button"
+                aria-label="Dismiss query error"
+                onClick={() => state.updateTab(tab.id, { error: null })}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })()}
       <div
         className="result-panel"
         role={tab.kind === "query" && result ? "tabpanel" : undefined}
@@ -1108,13 +1210,18 @@ export function Workbench({
         aria-labelledby={tab.kind === "query" && result ? `result-tab-${result.id}` : undefined}
       >
         {tab.kind === "object" ? (
-          <ObjectInspectorView key={tab.id} tab={tab} profile={profile} session={session} />
+          tab.metadataOrigin ? (
+            <SessionStructureView key={tab.id} tab={tab} />
+          ) : (
+            <ObjectInspectorView key={tab.id} tab={tab} profile={profile} session={session} />
+          )
         ) : tab.kind === "table" && tab.view === "structure" ? (
           <StructureView
             schema={tab.schema}
             details={activeTableDetails}
             detailsError={activeTableDetailsError}
             connectionId={tab.connectionId}
+            highlightedColumn={tab.highlightedColumn}
           />
         ) : tab.kind === "table" && tab.view === "ddl" ? (
           <div className="object-inspector-scroll">
@@ -1125,6 +1232,17 @@ export function Workbench({
               error={activeTableDetailsError}
             />
           </div>
+        ) : tab.kind === "query" &&
+          result &&
+          isQueryPlanResult(result, tab.planSource) &&
+          planResultId === result.id ? (
+          <QueryPlanView
+            key={result.id}
+            result={result}
+            ownerTabId={tab.id}
+            source={tab.planSource}
+            canCapture={tab.status === "completed" && session?.id === tab.planSource?.sessionId}
+          />
         ) : tab.kind === "query" && !result ? (
           <div className="results-empty">
             <Table2 size={27} />

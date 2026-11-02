@@ -178,6 +178,7 @@ impl Snowflake {
                 table_filtering: false,
                 processes: false,
                 object_explorer: false,
+                actual_plan: None,
             },
         };
         Ok((driver, info))
@@ -335,10 +336,31 @@ impl Snowflake {
                 })
                 .filter(|message| !message.is_empty())
                 .unwrap_or_else(|| "Check account access, role, warehouse, and SQL.".into());
-            return Err(AppError::new(
+            let sql_state = value
+                .get("sqlState")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && s.len() <= 16)
+                .map(str::to_owned);
+            let mut err = AppError::new(
                 ErrorCode::Database,
                 format!("Snowflake rejected the request: {detail}"),
-            ));
+            );
+            if let Some(state) = sql_state {
+                err.location = Some(Box::new(ErrorLocation {
+                    span: SqlSpan {
+                        start_utf16: 0,
+                        end_utf16: 0,
+                        line: 1,
+                        column: 1,
+                    },
+                    statement_index: None,
+                    sql_state: Some(state),
+                    detail: None,
+                    hint: None,
+                }));
+            }
+            return Err(err);
         }
         Ok((status, value))
     }
@@ -349,7 +371,8 @@ impl Snowflake {
 
     async fn submit(&self, sql: &str, track_query: bool) -> AppResult<Value> {
         let schema = self.current_schema();
-        self.submit_with_schema(sql, &schema, track_query).await
+        self.submit_with_schema_and_bindings(sql, &schema, None, track_query)
+            .await
     }
 
     async fn submit_with_schema(
@@ -358,9 +381,25 @@ impl Snowflake {
         schema: &str,
         track_query: bool,
     ) -> AppResult<Value> {
-        let body = json!({"statement": sql, "timeout": 60, "database": self.database,
+        self.submit_with_schema_and_bindings(sql, schema, None, track_query)
+            .await
+    }
+
+    async fn submit_with_schema_and_bindings(
+        &self,
+        sql: &str,
+        schema: &str,
+        bindings: Option<Value>,
+        track_query: bool,
+    ) -> AppResult<Value> {
+        let mut body = json!({"statement": sql, "timeout": 60, "database": self.database,
             "schema": schema, "warehouse": self.warehouse, "role": self.role,
             "parameters": {"QUERY_TAG": self.query_tag}});
+        if let Some(bindings) = bindings
+            && let Some(obj) = body.as_object_mut()
+        {
+            obj.insert("bindings".into(), bindings);
+        }
         let (mut status, mut value) = self
             .request_scoped(
                 Method::POST,
@@ -427,6 +466,67 @@ fn same(value: &Option<String>, expected: &str) -> bool {
     value
         .as_deref()
         .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+}
+
+#[cfg(test)]
+pub(crate) fn attach_snowflake_sql_location(err: AppError, sql: &str) -> AppError {
+    attach_snowflake_sql_location_mapped(err, sql, sql, None)
+}
+
+pub(crate) fn attach_snowflake_sql_location_mapped(
+    mut err: AppError,
+    original_sql: &str,
+    rewritten_sql: &str,
+    rewrite_map: Option<&crate::sql_text::RewriteMap>,
+) -> AppError {
+    if matches!(
+        err.code,
+        ErrorCode::Cancelled | ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
+    ) {
+        err.location = None;
+        return err;
+    }
+    let sql_state = err.location.take().and_then(|loc| loc.sql_state);
+    let span = crate::sql_text::parse_snowflake_line_col(&err.message)
+        .map(|(line, col)| {
+            if let Some(map) = rewrite_map {
+                map.span_from_rewritten_line_char_col(original_sql, rewritten_sql, line, col)
+            } else {
+                crate::sql_text::span_from_line_char_col(original_sql, line, col)
+            }
+        })
+        .unwrap_or_else(|| crate::sql_text::trimmed_span(original_sql));
+    err.with_location(ErrorLocation {
+        span,
+        statement_index: None,
+        sql_state,
+        detail: None,
+        hint: None,
+    })
+}
+
+fn snowflake_bindings_json(binds: &[crate::params::TypedBind]) -> Value {
+    let mut map = serde_json::Map::with_capacity(binds.len());
+    for (index, bind) in binds.iter().enumerate() {
+        let sf_type = match bind.kind {
+            QueryParamKind::Integer => "FIXED",
+            QueryParamKind::Boolean => "BOOLEAN",
+            QueryParamKind::Text
+            | QueryParamKind::Decimal
+            | QueryParamKind::Uuid
+            | QueryParamKind::Date
+            | QueryParamKind::Timestamp
+            | QueryParamKind::Json => "TEXT",
+        };
+        map.insert(
+            (index + 1).to_string(),
+            json!({
+                "type": sf_type,
+                "value": bind.value,
+            }),
+        );
+    }
+    Value::Object(map)
 }
 
 fn decode_rows(value: &Value) -> AppResult<Vec<TextRow>> {
@@ -509,11 +609,12 @@ fn columns(value: &Value) -> AppResult<Vec<ColumnInfo>> {
         .collect()
 }
 
-#[async_trait]
-impl Driver for Snowflake {
-    async fn execute(
+impl Snowflake {
+    async fn execute_statement(
         &self,
-        sql: &str,
+        original_sql: &str,
+        wire_sql: &str,
+        bound: Option<&crate::params::BoundStatement>,
         kind: StatementKind,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
@@ -526,8 +627,20 @@ impl Driver for Snowflake {
         if self.cancel_requested.is_cancelled() {
             return Err(Self::cancelled());
         }
+        let schema = self.current_schema();
+        let bindings = bound.map(|b| snowflake_bindings_json(&b.binds));
         let outcome = async {
-            let first = self.submit(sql, true).await?;
+            let first = self
+                .submit_with_schema_and_bindings(wire_sql, &schema, bindings, true)
+                .await
+                .map_err(|err| {
+                    attach_snowflake_sql_location_mapped(
+                        err,
+                        original_sql,
+                        wire_sql,
+                        bound.map(|b| &b.rewrite_map),
+                    )
+                })?;
             let columns = columns(&first)?;
             sink.describe(columns)?;
             let mut count = 0u64;
@@ -575,6 +688,32 @@ impl Driver for Snowflake {
         } else {
             outcome
         }
+    }
+}
+
+#[async_trait]
+impl Driver for Snowflake {
+    async fn execute(
+        &self,
+        sql: &str,
+        kind: StatementKind,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        self.execute_statement(sql, sql, None, kind, sink).await
+    }
+
+    async fn execute_bound(
+        &self,
+        sql: &str,
+        kind: StatementKind,
+        bound: &crate::params::BoundStatement,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        if bound.binds.is_empty() {
+            return self.execute(sql, kind, sink).await;
+        }
+        self.execute_statement(sql, &bound.rewritten_sql, Some(bound), kind, sink)
+            .await
     }
 
     async fn cancel(&self) -> AppResult<()> {
@@ -848,5 +987,209 @@ mod tests {
         );
         assert_eq!(rows[0][1], None);
         assert_eq!(rows[0][2].as_deref(), Some("0.000000000000001"));
+    }
+
+    #[test]
+    fn attaches_snowflake_compilation_line_and_position_to_error_location() {
+        let sql = "SELECT '🧪'\nFROM ORDERS\nWHERE MISSING_COL = 1";
+        let raw = AppError::new(
+            ErrorCode::Database,
+            "Snowflake rejected the request: SQL compilation error: error line 3 at position 6 invalid identifier 'MISSING_COL'",
+        )
+        .with_location(ErrorLocation {
+            span: SqlSpan {
+                start_utf16: 0,
+                end_utf16: 0,
+                line: 1,
+                column: 1,
+            },
+            statement_index: None,
+            sql_state: Some("42S22".into()),
+            detail: None,
+            hint: None,
+        });
+        let mapped = attach_snowflake_sql_location(raw, sql);
+        let loc = mapped.location.expect("snowflake location");
+        assert_eq!(loc.sql_state.as_deref(), Some("42S22"));
+        assert_eq!((loc.span.line, loc.span.column), (3, 7));
+        let units: Vec<u16> = sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[loc.span.start_utf16..loc.span.end_utf16]).unwrap(),
+            "MISSING_COL"
+        );
+    }
+
+    #[tokio::test]
+    async fn executes_bound_parameters_and_maps_rewritten_compilation_errors() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = "123e4567-e89b-12d3-a456-426614174001";
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= end + 4 + length {
+                        let payload: Value =
+                            serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
+                        assert_eq!(
+                            payload.get("statement").and_then(Value::as_str),
+                            Some("SELECT ?, CAST(? AS DATE), PARSE_JSON(?)")
+                        );
+                        assert_eq!(
+                            payload.get("bindings"),
+                            Some(&json!({
+                                "1": { "type": "FIXED", "value": "42" },
+                                "2": { "type": "TEXT", "value": "2024-02-29" },
+                                "3": { "type": "TEXT", "value": null }
+                            }))
+                        );
+                        break;
+                    }
+                }
+            }
+            let body = json!({
+                "statementHandle": handle,
+                "resultSetMetaData": {
+                    "rowType": [
+                        {"name": "ID", "type": "FIXED", "scale": 0, "nullable": false},
+                        {"name": "DT", "type": "DATE", "nullable": false},
+                        {"name": "JS", "type": "VARIANT", "nullable": true}
+                    ],
+                    "partitionInfo": [{}]
+                },
+                "data": [["42", "2024-02-29", null]]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let driver = Snowflake {
+            client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+            database: "DB".into(),
+            schema: Mutex::new("PUBLIC".into()),
+            role: "READ_ONLY".into(),
+            warehouse: "WH".into(),
+            query_tag: "Joinery/test".into(),
+            auth: AsyncMutex::new(AuthState {
+                tokens: Tokens {
+                    access: Zeroizing::new("test-token".into()),
+                    refresh: None,
+                    expires_in: 600,
+                },
+                expires_at: Instant::now() + Duration::from_secs(600),
+            }),
+            metadata_lane: AsyncMutex::new(()),
+            active_handle: Mutex::new(None),
+            cancel_requested: CancellationToken::new(),
+            closed: CancellationToken::new(),
+        };
+
+        let orig = "SELECT :order_id, :order_date, :payload";
+        let slots = crate::params::extract_query_params(EngineKind::Snowflake, orig).unwrap();
+        let (_, validated) = crate::params::validate_inputs(
+            &slots,
+            Some(&[
+                QueryParamInput {
+                    key: "order_id".into(),
+                    kind: QueryParamKind::Integer,
+                    value: Some("42".into()),
+                },
+                QueryParamInput {
+                    key: "order_date".into(),
+                    kind: QueryParamKind::Date,
+                    value: Some("2024-02-29".into()),
+                },
+                QueryParamInput {
+                    key: "payload".into(),
+                    kind: QueryParamKind::Json,
+                    value: None,
+                },
+            ]),
+        )
+        .unwrap();
+        let mut q = 0;
+        let bound =
+            crate::params::compile_statement(EngineKind::Snowflake, orig, &validated, &mut q)
+                .unwrap()
+                .unwrap();
+
+        let mut sink = Sink::default();
+        let count = driver
+            .execute_bound(orig, StatementKind::Read, &bound, &mut sink)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(sink.rows[0][0].as_deref(), Some("42"));
+        assert_eq!(sink.rows[0][1].as_deref(), Some("2024-02-29"));
+        assert_eq!(sink.rows[0][2], None);
+        server.await.unwrap();
+
+        // Verify rewritten compilation error maps back to original UTF-16 token
+        let err_orig = "SELECT '🧪', :order_date, BAD_COL FROM ORDERS";
+        let err_slots =
+            crate::params::extract_query_params(EngineKind::Snowflake, err_orig).unwrap();
+        let (_, err_validated) = crate::params::validate_inputs(
+            &err_slots,
+            Some(&[QueryParamInput {
+                key: "order_date".into(),
+                kind: QueryParamKind::Date,
+                value: Some("2024-02-29".into()),
+            }]),
+        )
+        .unwrap();
+        let mut q2 = 0;
+        let err_bound = crate::params::compile_statement(
+            EngineKind::Snowflake,
+            err_orig,
+            &err_validated,
+            &mut q2,
+        )
+        .unwrap()
+        .unwrap();
+        let bad_pos0 = err_bound.rewritten_sql[..err_bound.rewritten_sql.find("BAD_COL").unwrap()]
+            .chars()
+            .count();
+        let raw_err = AppError::new(
+            ErrorCode::Database,
+            format!(
+                "Snowflake rejected the request: SQL compilation error: error line 1 at position {bad_pos0} invalid identifier 'BAD_COL'"
+            ),
+        );
+        let mapped = attach_snowflake_sql_location_mapped(
+            raw_err,
+            err_orig,
+            &err_bound.rewritten_sql,
+            Some(&err_bound.rewrite_map),
+        );
+        let loc = mapped.location.expect("mapped snowflake location");
+        let units: Vec<u16> = err_orig.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[loc.span.start_utf16..loc.span.end_utf16]).unwrap(),
+            "BAD_COL"
+        );
     }
 }

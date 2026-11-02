@@ -70,6 +70,22 @@ export function ReviewDialog({
           <pre className="sql-preview">
             {preview ? preview.sql.join(";\n\n") : plan.statements.map((s) => s.sql).join(";\n\n")}
           </pre>
+          {(plan.boundParameters?.length ?? 0) > 0 && (
+            <details className="bindings" open aria-label="Bound query parameters">
+              <summary>Bound parameters ({plan.boundParameters!.length})</summary>
+              {plan.boundParameters!.map((param) => (
+                <div key={param.key}>
+                  <span>
+                    {param.key.startsWith("$") || param.key.startsWith("?")
+                      ? param.key
+                      : `:${param.key}`}{" "}
+                    <small>({param.kind})</small>
+                  </span>
+                  <code>{param.value === null ? "NULL" : JSON.stringify(param.value)}</code>
+                </div>
+              ))}
+            </details>
+          )}
           {preview && (
             <details className="bindings">
               <summary>Bound values</summary>

@@ -16,6 +16,7 @@ import {
 import type {
   ConnectionProfile,
   DatabaseObjectKind,
+  DatabaseObjectRef,
   DependencyEdge,
   ObjectDdlStatus,
   ObjectDetails,
@@ -63,11 +64,15 @@ export function DdlPanel({
   ddlStatus,
   loading,
   error,
+  onOpenInEditor,
+  openLabel = "Open in SQL editor",
 }: {
   connectionId: string | null;
   ddlStatus: ObjectDdlStatus | null;
   loading?: boolean;
   error?: string | null;
+  onOpenInEditor?: (ddl: string) => void;
+  openLabel?: string;
 }) {
   if (loading && !ddlStatus) {
     return <div className="grid-empty">Loading DDL definition…</div>;
@@ -117,14 +122,20 @@ export function DdlPanel({
             <Copy size={12} />
             Copy DDL
           </button>
-          <button
-            type="button"
-            className="button ghost small"
-            onClick={() => useStudio.getState().openQuery(connectionId, ddlStatus.ddl)}
-          >
-            <FileCode2 size={12} />
-            Open in SQL editor
-          </button>
+          {(onOpenInEditor || connectionId) && (
+            <button
+              type="button"
+              className="button ghost small"
+              onClick={() =>
+                onOpenInEditor
+                  ? onOpenInEditor(ddlStatus.ddl)
+                  : useStudio.getState().openQuery(connectionId, ddlStatus.ddl)
+              }
+            >
+              <FileCode2 size={12} />
+              {openLabel}
+            </button>
+          )}
         </div>
       </div>
       <pre className="ddl-code" aria-label="Object DDL">
@@ -138,12 +149,15 @@ export function DependencySection({
   connectionId,
   uses,
   usedBy,
+  onOpenObject,
 }: {
   connectionId: string | null;
   uses: readonly DependencyEdge[];
   usedBy: readonly DependencyEdge[];
+  onOpenObject?: (object: DatabaseObjectRef) => void;
 }) {
   const openDep = (edge: DependencyEdge) => {
+    if (onOpenObject) return onOpenObject(edge.object);
     if (!connectionId) return;
     void useStudio
       .getState()
@@ -171,6 +185,7 @@ export function DependencySection({
                     type="button"
                     key={`uses:${edge.object.schema}:${edge.object.kind}:${edge.object.name}:${edge.object.identity ?? ""}:${edge.relation}`}
                     className="dependency-chip"
+                    disabled={!onOpenObject && !connectionId}
                     onClick={() => openDep(edge)}
                     title={`Open ${KIND_LABELS[edge.object.kind].toLowerCase()} ${label} (${edge.relation})`}
                   >
@@ -199,6 +214,7 @@ export function DependencySection({
                     type="button"
                     key={`usedBy:${edge.object.schema}:${edge.object.kind}:${edge.object.name}:${edge.object.identity ?? ""}:${edge.relation}`}
                     className="dependency-chip"
+                    disabled={!onOpenObject && !connectionId}
                     onClick={() => openDep(edge)}
                     title={`Open ${KIND_LABELS[edge.object.kind].toLowerCase()} ${label} (${edge.relation})`}
                   >
@@ -219,20 +235,30 @@ export function DependencySection({
 export function ObjectInspectorView({
   tab,
   session,
+  providedDetails,
+  onOpenObject,
+  onOpenInEditor,
+  openLabel,
 }: {
+  providedDetails?: ObjectDetails;
   tab: StudioTab;
   profile?: ConnectionProfile;
   session?: SessionInfo;
+  onOpenObject?: (object: DatabaseObjectRef) => void;
+  onOpenInEditor?: (ddl: string) => void;
+  openLabel?: string;
 }) {
-  const [details, setDetails] = useState<ObjectDetails | null>(null),
+  const [loadedDetails, setDetails] = useState<ObjectDetails | null>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState<string | null>(null);
 
+  const details = providedDetails ?? loadedDetails;
   const target = tab.object;
   const sessionId = session?.id ?? null;
   const supported = Boolean(session?.capabilities.objectExplorer);
 
   useEffect(() => {
+    if (providedDetails) return;
     if (!target || !sessionId || !supported) {
       setDetails(null);
       setError(null);
@@ -260,6 +286,7 @@ export function ObjectInspectorView({
       active = false;
     };
   }, [
+    providedDetails,
     sessionId,
     supported,
     tab.id,
@@ -299,6 +326,8 @@ export function ObjectInspectorView({
           ddlStatus={details?.ddl ?? null}
           loading={loading}
           error={error}
+          onOpenInEditor={onOpenInEditor}
+          openLabel={openLabel}
         />
       </div>
     );
@@ -328,14 +357,16 @@ export function ObjectInspectorView({
         <div className="object-summary-head">
           <span className="key-badge">{KIND_LABELS[details.object.kind].toUpperCase()}</span>
           <h2 className="mono">{`${details.object.schema}.${objectTabTitle(details.object)}`}</h2>
-          {details.ownerTable && tab.connectionId && (
+          {details.ownerTable && (onOpenObject || tab.connectionId) && (
             <button
               type="button"
               className="button ghost small"
               onClick={() =>
-                void useStudio
-                  .getState()
-                  .openTable(tab.connectionId!, details.ownerTable!, undefined, "structure")
+                onOpenObject
+                  ? onOpenObject({ ...details.ownerTable!, kind: "table", identity: null })
+                  : void useStudio
+                      .getState()
+                      .openTable(tab.connectionId!, details.ownerTable!, undefined, "structure")
               }
             >
               <Table2 size={12} />
@@ -463,6 +494,7 @@ export function ObjectInspectorView({
         connectionId={tab.connectionId}
         uses={details.uses}
         usedBy={details.usedBy}
+        onOpenObject={onOpenObject}
       />
 
       <section className="object-section" aria-label="Definition">
@@ -472,6 +504,8 @@ export function ObjectInspectorView({
           ddlStatus={details.ddl}
           loading={loading}
           error={error}
+          onOpenInEditor={onOpenInEditor}
+          openLabel={openLabel}
         />
       </section>
     </div>

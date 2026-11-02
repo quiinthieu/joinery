@@ -134,6 +134,46 @@ fn result() -> Value {
         "data":[["1"]]})
 }
 
+#[tokio::test]
+async fn estimated_plan_submits_only_the_wrapper_and_preserves_raw_json() {
+    let (driver, mut server) = fixture(false, false).await;
+    let sql = crate::query_plan::explain_sql(
+        EngineKind::Snowflake,
+        "/* é */ SELECT ';' AS note",
+        false,
+        None,
+    )
+    .unwrap();
+    let expected = sql.clone();
+    let task = tokio::spawn(async move {
+        let mut sink = super::tests::Sink::default();
+        driver.execute(&sql, StatementKind::Read, &mut sink).await?;
+        Ok(sink)
+    });
+    let request = server.next().await;
+    let body: Value = serde_json::from_str(&request.body).unwrap();
+    assert_eq!(body["statement"], expected);
+    assert_eq!(body["warehouse"], "WH");
+    assert_eq!(body["role"], "READ_ONLY");
+    assert_eq!(body["database"], "DB");
+    assert_eq!(body["schema"], "PUBLIC");
+    assert_eq!(body["parameters"]["QUERY_TAG"], "Joinery/lifecycle-test");
+    let raw = "{\"GlobalStats\":{\"bytesAssigned\":9007199254740993123},\"Operations\":[[{\"id\":0,\"operation\":\"Result\"}]]}";
+    request.respond(
+        200,
+        json!({"statementHandle":uuid::Uuid::new_v4().to_string(),
+        "resultSetMetaData":{"rowType":[{"name":"content","type":"TEXT"}],"partitionInfo":[{}]},
+        "data":[[raw]]}),
+    );
+    let sink = finished(task).await.unwrap();
+    assert_eq!(sink.rows, vec![vec![Some(raw.into())]]);
+    assert!(sink.completed);
+    assert!(
+        server.requests.try_recv().is_err(),
+        "never execute the underlying query separately"
+    );
+}
+
 async fn finished<T>(task: JoinHandle<AppResult<T>>) -> AppResult<T> {
     tokio::time::timeout(Duration::from_millis(800), task)
         .await

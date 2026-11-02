@@ -184,6 +184,12 @@ test("a newly saved production profile can authorize changed settings after a fa
       rowLimit: 100000,
       savedQueries: [],
       bookmarks: [],
+      sqlFormatSettings: {
+        keywordCase: "upper",
+        indentWidth: 2,
+        linesBetweenQueries: 1,
+      },
+      sqlSnippets: [],
       workspace: null,
     },
   });

@@ -82,6 +82,238 @@ async fn setup(port: u16, mode: SafeMode) -> (tempfile::TempDir, Arc<Studio>, Se
 }
 
 #[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn actual_plan_capability_matches_each_engine_and_read_only_is_enforced() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        assert_eq!(
+            session.capabilities.actual_plan,
+            if port == 53307 {
+                Some(ActualPlanFormat::MariaDbJson)
+            } else {
+                Some(ActualPlanFormat::MysqlTree)
+            }
+        );
+        assert_eq!(
+            studio
+                .prepare_explain(&session.id, "SELECT 1", true)
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
+        );
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_actual_plan_requires_one_use_review_and_preserves_session_effects() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        completed(&run(&studio, &session, "CREATE TEMPORARY TABLE analyze_review_probe (id INT); INSERT INTO analyze_review_probe VALUES (1); SELECT LAST_INSERT_ID(0)").await);
+        let sql = "SELECT LAST_INSERT_ID(LAST_INSERT_ID()+1) FROM analyze_review_probe";
+        let plan = studio.prepare_explain(&session.id, sql, true).unwrap();
+        assert!(plan.requires_approval && !plan.requires_passphrase);
+        assert_eq!(
+            plan.statements[0].sql,
+            format!(
+                "{}\n{sql}",
+                if port == 53307 {
+                    "ANALYZE FORMAT=JSON"
+                } else {
+                    "EXPLAIN ANALYZE FORMAT=TREE"
+                }
+            )
+        );
+        assert_eq!(
+            studio
+                .execute(&plan.id, None, Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalRequired
+        );
+        let untouched = result(&run(&studio, &session, "SELECT LAST_INSERT_ID()").await);
+        assert_eq!(
+            studio.results.row(&untouched.id, 0).unwrap()[0].as_deref(),
+            Some("0")
+        );
+
+        let old = studio.prepare_explain(&session.id, sql, true).unwrap();
+        let old_token = studio.authorize(&old.id, None, None).unwrap();
+        let plan = studio.prepare_explain(&session.id, sql, true).unwrap();
+        assert_eq!(
+            studio
+                .execute(&old.id, Some(&old_token), Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalExpired
+        );
+        let events = execute(&studio, &plan).await;
+        completed(&events);
+        assert!(events.iter().any(|e| matches!(e, QueryEvent::PlanContext { state: Some(state), .. } if state.session_id == session.id && state.database == "joinery")));
+        let output = result(&events);
+        let raw = studio.results.row(&output.id, 0).unwrap()[0]
+            .clone()
+            .unwrap();
+        if port == 53307 {
+            let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(parsed["query_block"]["r_loops"].as_u64(), Some(1));
+            assert!(parsed["query_block"]["r_total_time_ms"].is_number());
+        } else {
+            assert!(raw.starts_with("->"));
+            assert!(raw.contains("actual time=") && raw.contains("loops=1"));
+        }
+        assert_eq!(
+            studio
+                .execute(&plan.id, None, Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalExpired
+        );
+        let called = result(&run(&studio, &session, "SELECT LAST_INSERT_ID()").await);
+        assert_eq!(
+            studio.results.row(&called.id, 0).unwrap()[0].as_deref(),
+            Some("1")
+        );
+        let direct = studio
+            .prepare_execution(
+                &session.id,
+                if port == 53307 {
+                    "ANALYZE FORMAT=JSON SELECT 1"
+                } else {
+                    "DESC ANALYZE FORMAT=TREE FOR SCHEMA joinery SELECT 1"
+                },
+            )
+            .unwrap();
+        assert!(direct.requires_approval);
+        let stale = studio
+            .prepare_explain(&session.id, "SELECT 1", true)
+            .unwrap();
+        studio.disconnect(&session.id);
+        assert_eq!(
+            studio.authorize(&stale.id, None, None).unwrap_err().code,
+            ErrorCode::ApprovalExpired
+        );
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_actual_plan_recovers_from_error_and_cancel_retires_the_session() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let failed = studio
+            .prepare_explain(&session.id, "SELECT * FROM missing_analysis_table", true)
+            .unwrap();
+        assert!(execute(&studio, &failed).await.iter().any(|e| matches!(
+            e,
+            QueryEvent::Finished {
+                status: RunStatus::Failed,
+                ..
+            }
+        )));
+        let valid = studio
+            .prepare_explain(&session.id, "SELECT 1", true)
+            .unwrap();
+        completed(&execute(&studio, &valid).await);
+        let slow = studio
+            .prepare_explain(&session.id, "SELECT 1 WHERE SLEEP(10)=0", true)
+            .unwrap();
+        let token = studio.authorize(&slow.id, None, None).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let run_id = studio
+            .execute(
+                &slow.id,
+                Some(&token),
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !matches!(
+                rx.recv().await.unwrap(),
+                QueryEvent::StatementStarted { .. }
+            ) {}
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        studio.cancel(&run_id).await.unwrap();
+        let mut closed = false;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    QueryEvent::SessionClosed { .. } => closed = true,
+                    QueryEvent::Finished { status, .. } => {
+                        assert_eq!(status, RunStatus::Cancelled);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(closed);
+        assert_eq!(
+            studio
+                .prepare_explain(&session.id, "SELECT 1", true)
+                .unwrap_err()
+                .code,
+            ErrorCode::ConnectionClosed
+        );
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable MySQL service"]
+async fn mysql_tree_analysis_preserves_json_settings_and_never_executed_iterators() {
+    let (_root, studio, session) = setup(53306, SafeMode::Silent).await;
+    let defaults = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT @@explain_format, @@explain_json_format_version",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&defaults.id, 0).unwrap(),
+        vec![Some("TRADITIONAL".into()), Some("1".into())]
+    );
+    completed(&run(&studio, &session, "SET SESSION explain_format=JSON; CREATE TEMPORARY TABLE tree_probe (id INT PRIMARY KEY); INSERT INTO tree_probe VALUES (1),(2); CREATE TEMPORARY TABLE tree_rhs (id INT PRIMARY KEY); INSERT INTO tree_rhs VALUES (1),(2)").await);
+    let plan = studio
+        .prepare_explain(
+            &session.id,
+            "SELECT a.id,b.id FROM tree_probe a STRAIGHT_JOIN tree_rhs b ON b.id=a.id WHERE a.id<0",
+            true,
+        )
+        .unwrap();
+    let events = execute(&studio, &plan).await;
+    completed(&events);
+    let output = result(&events);
+    let raw = studio.results.row(&output.id, 0).unwrap()[0]
+        .clone()
+        .unwrap();
+    assert!(raw.contains("(never executed)"), "{raw}");
+    assert!(raw.contains("loops=1"));
+    let settings = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT @@explain_format, @@explain_json_format_version",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&settings.id, 0).unwrap(),
+        vec![Some("JSON".into()), Some("1".into())]
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB live-context fixtures"]
 async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
     for port in [53306, 53307] {
@@ -89,6 +321,55 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
         let initial = studio.completion_catalog(&session.id).await.unwrap();
         assert_eq!(initial.identity.database, "joinery");
         assert_eq!(initial.identity.case_sensitive_table_names, Some(true));
+        let permanent_sample = studio
+            .completion_schema(
+                &session.id,
+                &initial.revision,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "sample".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            studio
+                .inspection_schema(&session.id, &initial.revision, &permanent_sample.table)
+                .await
+                .unwrap()
+                .columns
+                .len(),
+            permanent_sample.columns.len()
+        );
+        assert!(
+            permanent_sample
+                .inbound_foreign_keys
+                .iter()
+                .any(|fk| fk.source.name == "child_rows"
+                    && fk.columns == ["parent_id"]
+                    && fk.target_columns == ["id"]),
+            "MySQL completion_schema must include inbound FK metadata"
+        );
+        let line_notes_schema = studio
+            .completion_schema(
+                &session.id,
+                &initial.revision,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "line_notes".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            line_notes_schema
+                .foreign_keys
+                .iter()
+                .any(|fk| fk.name == "line_notes_line_fk"
+                    && fk.columns == ["note_order", "note_line"]
+                    && fk.target_columns == ["order_id", "line_no"]),
+            "MySQL completion_schema must preserve composite FK ordinal pairing"
+        );
         assert!(
             !initial
                 .tables
@@ -136,6 +417,20 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
             .completion_schema(&session.id, &active.revision, &grants)
             .await
             .unwrap();
+        assert!(
+            studio
+                .inspection_schema(&session.id, &active.revision, &grants)
+                .await
+                .is_err(),
+            "partial column grants must withhold missing-column claims"
+        );
+        assert!(
+            studio
+                .inspection_schema(&session.id, &initial.revision, &table)
+                .await
+                .is_err(),
+            "stale role/context revisions must be rejected"
+        );
         assert_eq!(
             visible
                 .columns
@@ -182,6 +477,10 @@ async fn mysql_live_completion_tracks_database_roles_and_column_grants() {
                 .map(|c| c.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["temp_note"]
+        );
+        assert!(
+            shadow.foreign_keys.is_empty() && shadow.inbound_foreign_keys.is_empty(),
+            "MySQL temporary shadow table must not leak permanent table INFORMATION_SCHEMA FKs"
         );
         completed(&run(&studio, &session, "USE completion_alt; SET ROLE NONE").await);
         let revoked = studio.completion_catalog(&session.id).await.unwrap();
@@ -2715,6 +3014,338 @@ async fn mysql_manual_transactions_grid_isolation_and_database_switch() {
                 "SET ROLE NONE; USE joinery; DROP TABLE IF EXISTS joinery.r4_tx_items",
             )
             .await,
+        );
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_map_syntax_lines_and_multistatement_errors_to_utf16_spans() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        // sqlparser accepts a trailing wildcard; both servers require a bare
+        // wildcard first. This reaches a real server syntax error after splitting.
+        let syntax_sql = "SELECT '🧪';\nSELECT '🚀',\n  * FROM sample";
+        let events = run(&studio, &session, syntax_sql).await;
+        let (err, stmt_idx) = events
+            .iter()
+            .find_map(|event| match event {
+                QueryEvent::Error {
+                    error,
+                    statement_index,
+                } => Some((error, *statement_index)),
+                _ => None,
+            })
+            .expect("expected syntax QueryEvent::Error");
+        assert_eq!(stmt_idx, 1, "port {port}");
+        let loc = err
+            .location
+            .as_ref()
+            .expect("expected syntax ErrorLocation");
+        assert_eq!(loc.statement_index, Some(1), "port {port}");
+        assert_eq!(loc.sql_state.as_deref(), Some("42000"), "port {port}");
+        assert_eq!(loc.span.line, 3, "port {port}");
+        let units: Vec<u16> = syntax_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[loc.span.start_utf16..loc.span.end_utf16]).unwrap(),
+            "*",
+            "port {port}"
+        );
+
+        let runtime_sql = "SELECT '🧪';\n  SELECT missing_mysql_col FROM sample";
+        let runtime_events = run(&studio, &session, runtime_sql).await;
+        let runtime_err = runtime_events
+            .iter()
+            .find_map(|event| match event {
+                QueryEvent::Error { error, .. } => Some(error),
+                _ => None,
+            })
+            .expect("expected runtime QueryEvent::Error");
+        let runtime_loc = runtime_err
+            .location
+            .as_ref()
+            .expect("expected runtime ErrorLocation");
+        assert_eq!(runtime_loc.statement_index, Some(1), "port {port}");
+        assert_eq!(
+            runtime_loc.sql_state.as_deref(),
+            Some("42S22"),
+            "port {port}"
+        );
+        let runtime_units: Vec<u16> = runtime_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(
+                &runtime_units[runtime_loc.span.start_utf16..runtime_loc.span.end_utf16]
+            )
+            .unwrap(),
+            "SELECT missing_mysql_col FROM sample",
+            "port {port}"
+        );
+        // An unparsed batch is submitted intact. Leading whitespace must not
+        // shift server positions a second time. A server-sanitized snippet
+        // falls back to the reported line instead of inventing token precision.
+        let fallback_sql = "  \n  SELEC '🧪'";
+        let events = run(&studio, &session, fallback_sql).await;
+        let error = events
+            .iter()
+            .find_map(|event| match event {
+                QueryEvent::Error { error, .. } => Some(error),
+                _ => None,
+            })
+            .unwrap();
+        let location = error.location.as_ref().unwrap();
+        assert_eq!(location.statement_index, Some(0), "port {port}");
+        assert_eq!(location.sql_state.as_deref(), Some("42000"), "port {port}");
+        assert_eq!(
+            (location.span.line, location.span.column),
+            (2, 3),
+            "port {port}: {error:?}"
+        );
+        let units: Vec<u16> = fallback_sql.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[location.span.start_utf16..location.span.end_utf16]).unwrap(),
+            "SELEC '🧪'",
+            "port {port}"
+        );
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_execute_typed_query_parameters_reads_and_reviewed_writes() {
+    for port in [53306, 53307] {
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let ro_sql = "SELECT :txt, ?, :dec, :flag, :uid, :dt, :ts, JSON_UNQUOTE(JSON_EXTRACT(:js, '$.tag')), :nil FROM sample LIMIT ?";
+        let ro_plan = ro_studio
+            .prepare_execution_with_params(
+                &ro_session.id,
+                ro_sql,
+                Some(vec![
+                    QueryParamInput {
+                        key: "txt".into(),
+                        kind: QueryParamKind::Text,
+                        value: Some("O'Reilly \\ 🧪".into()),
+                    },
+                    QueryParamInput {
+                        key: "?1".into(),
+                        kind: QueryParamKind::Integer,
+                        value: Some("-9007199254740993".into()),
+                    },
+                    QueryParamInput {
+                        key: "dec".into(),
+                        kind: QueryParamKind::Decimal,
+                        value: Some("12345678901234567890.123456".into()),
+                    },
+                    QueryParamInput {
+                        key: "flag".into(),
+                        kind: QueryParamKind::Boolean,
+                        value: Some("true".into()),
+                    },
+                    QueryParamInput {
+                        key: "uid".into(),
+                        kind: QueryParamKind::Uuid,
+                        value: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                    },
+                    QueryParamInput {
+                        key: "dt".into(),
+                        kind: QueryParamKind::Date,
+                        value: Some("2024-02-29".into()),
+                    },
+                    QueryParamInput {
+                        key: "ts".into(),
+                        kind: QueryParamKind::Timestamp,
+                        value: Some("2026-10-31T23:30:00+07:00".into()),
+                    },
+                    QueryParamInput {
+                        key: "js".into(),
+                        kind: QueryParamKind::Json,
+                        value: Some(r#"{"tag":"ok"}"#.into()),
+                    },
+                    QueryParamInput {
+                        key: "nil".into(),
+                        kind: QueryParamKind::Date,
+                        value: None,
+                    },
+                    QueryParamInput {
+                        key: "?2".into(),
+                        kind: QueryParamKind::Integer,
+                        value: Some("1".into()),
+                    },
+                ]),
+            )
+            .unwrap();
+        assert!(!ro_plan.requires_approval, "port {port}");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        ro_studio
+            .execute(&ro_plan.id, None, Arc::new(move |e| tx.send(e).is_ok()))
+            .unwrap();
+        let mut ro_events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            ro_events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&ro_events);
+        let ro_res = result(&ro_events);
+        let row = ro_studio.results.row(&ro_res.id, 0).unwrap();
+        assert_eq!(row[0].as_deref(), Some("O'Reilly \\ 🧪"), "port {port}");
+        assert_eq!(row[1].as_deref(), Some("-9007199254740993"), "port {port}");
+        assert_eq!(
+            row[2].as_deref(),
+            Some("12345678901234567890.123456"),
+            "port {port}"
+        );
+        assert_eq!(row[3].as_deref(), Some("1"), "port {port}");
+        assert_eq!(
+            row[4].as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000"),
+            "port {port}"
+        );
+        assert_eq!(row[5].as_deref(), Some("2024-02-29"), "port {port}");
+        assert_eq!(
+            row[6].as_deref(),
+            Some("2026-10-31 16:30:00"),
+            "port {port}"
+        );
+        assert_eq!(row[7].as_deref(), Some("ok"), "port {port}");
+        assert_eq!(row[8], None, "port {port}");
+        ro_studio.release_result(&ro_res.id);
+        ro_studio.shutdown();
+
+        let (_w_root, w_studio, w_session) = setup(port, SafeMode::Confirm).await;
+        completed(
+            &run(
+                &w_studio,
+                &w_session,
+                "DROP TABLE IF EXISTS joinery_r5_param_mysql; CREATE TABLE joinery_r5_param_mysql (id BIGINT PRIMARY KEY, note VARCHAR(200) NOT NULL, amount DECIMAL(30,6), payload JSON) ENGINE=InnoDB",
+            )
+            .await,
+        );
+        let ins_sql = "INSERT INTO joinery_r5_param_mysql (id, note, amount, payload) VALUES (:id, :note, :amount, :payload)";
+        let ins_plan = w_studio
+            .prepare_execution_with_params(
+                &w_session.id,
+                ins_sql,
+                Some(vec![
+                    QueryParamInput {
+                        key: "id".into(),
+                        kind: QueryParamKind::Integer,
+                        value: Some("77".into()),
+                    },
+                    QueryParamInput {
+                        key: "note".into(),
+                        kind: QueryParamKind::Text,
+                        value: Some("mysql-secret-'🧪'".into()),
+                    },
+                    QueryParamInput {
+                        key: "amount".into(),
+                        kind: QueryParamKind::Decimal,
+                        value: Some("42.500000".into()),
+                    },
+                    QueryParamInput {
+                        key: "payload".into(),
+                        kind: QueryParamKind::Json,
+                        value: Some(r#"{"engine":"mysql"}"#.into()),
+                    },
+                ]),
+            )
+            .unwrap();
+        assert!(ins_plan.requires_approval, "port {port}");
+        let approval = w_studio.authorize(&ins_plan.id, None, None).unwrap();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        w_studio
+            .execute(
+                &ins_plan.id,
+                Some(&approval),
+                Arc::new(move |e| tx2.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut ins_events = Vec::new();
+        while let Some(ev) = rx2.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            ins_events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&ins_events);
+
+        let check_events = run(
+            &w_studio,
+            &w_session,
+            "SELECT note, CAST(amount AS CHAR), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.engine')) FROM joinery_r5_param_mysql WHERE id = 77",
+        )
+        .await;
+        completed(&check_events);
+        let check_res = result(&check_events);
+        let check_row = w_studio.results.row(&check_res.id, 0).unwrap();
+        assert_eq!(
+            check_row[0].as_deref(),
+            Some("mysql-secret-'🧪'"),
+            "port {port}"
+        );
+        assert_eq!(check_row[1].as_deref(), Some("42.500000"), "port {port}");
+        assert_eq!(check_row[2].as_deref(), Some("mysql"), "port {port}");
+        w_studio.release_result(&check_res.id);
+        let _ = run(
+            &w_studio,
+            &w_session,
+            "DROP TABLE IF EXISTS joinery_r5_param_mysql",
+        )
+        .await;
+        w_studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn typed_parameters_preserve_mysql_and_mariadb_analysis_review() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let sql = "SELECT id FROM sample WHERE id = :id";
+        let inputs = |value: &str| {
+            Some(vec![QueryParamInput {
+                key: "id".into(),
+                kind: QueryParamKind::Integer,
+                value: Some(value.into()),
+            }])
+        };
+        let old = studio
+            .prepare_explain_with_params(&session.id, sql, true, inputs("1"))
+            .unwrap();
+        assert!(old.requires_approval);
+        let approval = studio.authorize(&old.id, None, None).unwrap();
+        let changed = studio
+            .prepare_explain_with_params(&session.id, sql, true, inputs("2"))
+            .unwrap();
+        assert_ne!(old.binding_digest, changed.binding_digest);
+        assert_eq!(
+            studio
+                .execute(&old.id, Some(&approval), Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalExpired
+        );
+        assert_eq!(
+            studio
+                .execute(&changed.id, Some(&approval), Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalRequired
+        );
+        let plan = studio
+            .prepare_explain_with_params(&session.id, sql, true, inputs("2"))
+            .unwrap();
+        completed(&execute(&studio, &plan).await);
+        assert_eq!(
+            studio
+                .execute(&plan.id, None, Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalExpired
         );
         studio.shutdown();
     }

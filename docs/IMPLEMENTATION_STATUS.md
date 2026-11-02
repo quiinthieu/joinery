@@ -1,11 +1,24 @@
 # Implementation and release status
 
-Updated 2026-10-29. The source includes PostgreSQL, MySQL/MariaDB,
-standalone Redis and the read-only Snowflake SQL/catalog pilot. Preview.6 added
-metadata startup/version protection. The current hardening slice adds Snowflake
-OAuth/cancellation/disconnect fixes, dialog keyboard fixes and process-crash
-recovery coverage. The canonical Site records exact verification, merge and
-published download states. Full multi-engine v1.0 qualification remains pending.
+Updated 2026-11-02. R1–R4 are merged but unreleased. The local R6 branch now
+integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
+query parameters, inline error/statement navigation and SQL definitions/usages/
+quick documentation, selection formatting/settings and snippets. Live templates
+expand observed database/schema identifiers and literal selected SQL without
+executing it. Format saves are serialized with rollback to the last successful
+settings. Global and
+per-engine styles persist with validated recovery. Named CTE/derived-table
+outputs now resolve to local declarations and proven source metadata. Wildcards,
+expressions and unsupported shapes remain withheld. Console object/column jumps
+now retain the originating session and observed catalog revision in read-only
+Structure/DDL tabs; linked objects retain that origin and explicit DDL append
+preserves the source SQL/session without execution. Late metadata cannot adopt
+the primary session. The prior combined source passed 66 ignored local fixtures
+and a normal ad-hoc macOS bundle build. R5 and R6 remain partial, unmerged,
+unpublished and not installed. Preview.15 is the last verified release;
+its current installed revision was not requalified. The canonical owner-private
+Site records exact tested, merged, published and installed states. Full
+multi-engine v1.0 qualification remains pending.
 
 ## Recovery and accessibility continuation
 
@@ -1057,14 +1070,14 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   qualification, Windows/Linux packaged runtime, Developer ID
   signing/notarization and representative performance gates remain open.
 
-## Consoles, named session pool, transaction controls, capability-gated SQL files and query library (local implementation)
+## Consoles, named session pool, transaction controls, capability-gated SQL files and query library (merged, unreleased)
 
 Branch `feat/consoles-sessions-files` (`78a5283..79878e9`, from `origin/main`
 `2625933`) implements Milestone R4 (Consoles, sessions & files: `M05`, `M06`,
-`X04`, `E14`, `P02`, `P03`) locally. It is verified on disposable fixtures,
-standard/browser test suites and macOS native builds, unmerged, and unreleased
-(`v0.1.0-preview.15` remains the published and installed release; PRs #25–#29
-are merged on `main` and unreleased):
+`X04`, `E14`, `P02`, `P03`). It merged via PR #30 (`a0ba1a6`) on
+31 October. The following local verification is historical; R1–R4 are now
+merged and unreleased. `v0.1.0-preview.15` remains the latest published release;
+installation was not requalified in the 1 November assessment:
 
 - **Per-session transaction controls and active schema/database switching
   (`78a5283`)**:
@@ -1164,3 +1177,1110 @@ Verification on macOS Apple Silicon (Node 24, Rust 1.99.1):
   IPC or Safe Mode weakening were introduced. Live Snowflake/production account
   qualification, Windows/Linux packaged runtime, Developer ID
   signing/notarization and representative performance gates remain open.
+
+## Current assessment and R6 estimated plans (1 November 2026)
+
+Fetched `origin/main` is `a0ba1a6` (R4, PR #30). R1–R4 are merged but absent
+from preview.15, confirmed against the GitHub release list. The installed app's
+exact preview revision was not requalified. Joinery is an advanced preview, not
+yet a demonstrated full DataGrip replacement.
+
+The separate `feat/editor-intelligence` candidate at `bb77b0f` contains eight
+R5 commits. Its four uncommitted documentation files and existing processes
+were preserved. Its local record reports 146 frontend, 139 standard Rust,
+56 disposable fixture and 49 browser passes plus clean-commit macOS gates.
+These recorded R5 outcomes were not independently rerun here. The current
+R6 branch does not contain that candidate; integration must reconcile the
+typed-parameter `prepare_execution` signature before qualification.
+
+The first R6 slice is implemented in `fad0341` on `feat/estimated-query-plans`
+from `a0ba1a6`. [query-plans.md](query-plans.md) records its bounded scope.
+It is local, unmerged, unpublished and not installed. This first slice left
+executing ANALYZE, comparison, richer timing and Snowflake plans open; the
+PostgreSQL actual-plan follow-up below supersedes its ANALYZE status.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 126 frontend tests (24 files), 130 standard Rust tests (109 core + 21 others), formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Seven browser workflows on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4: three `query-plans.spec.ts` flows plus four `consoles-files.spec.ts` regressions. Estimated action, isolated session, unchanged SQL, raw/tree/grid round-trip and explicit batch rejection pass |
+| Passed | `pnpm test:git` 6/6; runtime-memory script tests 4/4; identity and diff checks |
+| Passed | Clean-source `fad0341` macOS production bundle (21.07 MiB) and strict ad-hoc signature verification; executable SHA-256 `5e6e9f94ea4e02cc395978ca4e007251b31fc906dc17e8c6713d91140807e65f` |
+| Passed | Clean-source `pnpm desktop:smoke:build` and three hidden native runs / 30 cleanup cycles: `3,827 / 3,083 / 3,139 ms`, main-process peak RSS `106.17–106.86 MiB`; actual WebView IPC reaches the `prepare_explain` session guard; fixture SHA-256 `2a562b46d1bc9f52bd30c1857d88f8cf4cdd45924e851275002572e09088dbcd` |
+| Environment resolved | Node 26.7.0's experimental global web storage broke five existing jsdom suites. Validation passes with `NODE_OPTIONS=--no-experimental-webstorage` and `/opt/homebrew/bin` first on PATH; no application workaround was added |
+| Not executed | Full ignored Rust integration suite and full browser suite for this R6 slice; complete independent R5 rerun; installed app revision; production/live Snowflake accounts; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative performance gates |
+
+Native evidence is synthetic, hidden and main-process-only; it does not qualify
+cold visible startup, total idle memory or display FPS. Disposable Compose
+project `joinery-assess-r6` uses isolated PostgreSQL port 55433 and was removed
+after the browser checks. No production connections or automatic SQL replay
+were introduced.
+
+## R6 PostgreSQL actual plans (1 November 2026)
+
+Code `fa1ff17` follows the estimated-plan slice on `feat/estimated-query-plans`.
+It adds PostgreSQL **Analyze**, with explicit one-use Rust review even on Silent
+profiles, exact generated SQL and an execution warning. It also fixes a
+reproduced safety regression: sqlparser stores parenthesized ANALYZE options
+separately from the plain EXPLAIN analyze flag. Recognized executing forms now
+require review; explicitly disabled analysis stays non-executing. ReadOnly
+denial and production passphrases remain enforced.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 126 frontend tests (24 files), 132 standard Rust tests (111 core + 21 others), formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Two ignored PostgreSQL fixture tests (`actual_plan_*`) executed against disposable PostgreSQL 18: no unapproved execution, exact reviewed SQL, temporary session state, single-use/stale approval, disconnect invalidation, error recovery and cancellation retirement |
+| Passed | Nine browser workflows on PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4: five `query-plans.spec.ts` flows plus four `consoles-files.spec.ts` regressions; review cancellation sends no execute request, accepted analysis leaves editor text intact and exposes actual metrics, direct parenthesized SQL requires review, ReadOnly rejects analysis, and errors/cancellation retain session policy |
+| Passed | Clean-source `fa1ff1733abff10d16fc0b440b0c861e7529e66a` macOS production bundle with strict ad-hoc signature verification; executable 20.92 MiB, SHA-256 `2a707a9c04b1e415c45bab4da286f18d80b85625d463dee6749e96a7489ec3b8` |
+| Passed | Clean-source hidden native build and three runs / 30 cleanup cycles; actual and estimated `prepare_explain` IPC reach Rust session guards. Native elapsed `6,026 / 3,189 / 3,177 ms`; main-process peak RSS `106.09–106.69 MiB`; fixture SHA-256 `7d11daed35b68c3e342df65c1721a74637f402f57eaca060c2de571f2a1df8a6` |
+| Environment | Node 26.7.0 validation uses `NODE_OPTIONS=--no-experimental-webstorage`; no application workaround. A browser run was invalidated by a Vite full reload while source files were changing; the final nine-flow run held files fixed and passed |
+| Not executed | Full ignored Rust integration/full browser suites; independent complete R5 rerun; installed revision; production/live Snowflake accounts; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative total-memory/cold-start/FPS qualification |
+
+Native evidence at `.cache/native-smoke/runs.json` is hidden, synthetic and
+main-process-only. It does not qualify total idle memory, visible cold startup
+or display FPS. Fixtures use disposable Compose project `joinery-assess-analyze`
+with PostgreSQL on port 55433; it was removed after browser verification.
+No production access or automatic SQL replay.
+The application candidate is local, unmerged, unpublished and not installed.
+R6 remains partial; [next slices](implementation-roadmap.md#r6-next-slices)
+cover comparison, metrics and independent engine adapters. The separate R5
+worktree and its four unrelated documentation edits remain intact.
+
+## R6 bounded plan snapshots and comparison (1 November 2026)
+
+Code `ba984f2` adds explicit snapshots of completed retained plans and compatible
+side-by-side trees/raw JSON. Captures use immutable executed SQL plus known
+engine/version, connection/session and observed runtime context; editing the
+SQL after execution cannot change a capture's identity. Exact underlying query
+bytes must match. Estimated/actual wrappers may differ; incompatible choices
+show a disabled reason. No capture/comparison executes SQL or guesses node
+pairing. Context is the frontend observation at request time, not an atomic
+server snapshot; queued/unobserved changes and database state may differ.
+
+A global ten-capture / 2 MiB UTF-8 serialized payload budget includes raw JSON,
+SQL and context. FIFO eviction and explicit removal/clear keep retention bounded;
+invalid/oversized captures cannot evict good entries. Existing raw-plan parser
+limits still apply. These are payload caps, not measured total JavaScript RAM.
+Captures survive result replacement, clear on owner-tab/session/connection
+cleanup, and are excluded from workspace persistence.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 134 frontend tests (25 files), 132 standard Rust tests (111 core + 21 others), formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Six snapshot unit tests and two studio lifecycle regressions cover exact SQL and raw numeric tokens, engine/version/session/context mismatch, UTF-8 count/byte eviction, malformed/unsupported/oversized input, cleanup notifications and workspace persistence exclusion |
+| Passed | Ten relevant browser workflows on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4: six query-plan flows and four console/file regressions. Live flows exercise tree/raw comparison, explicit removal, editor changes after execution, PostgreSQL estimated-versus-actual plans, zero extra execution requests for capture/comparison, disabled mismatches, cancellation retirement and reconnect cleanup |
+| Passed | Clean-source `ba984f20a993b9732c336fcc8bbbbc1a46dea6c2` macOS production bundle with strict ad-hoc signature verification; executable 20.93 MiB, SHA-256 `f20d43a48250856f8f95647d2c054079d7670210ed4fd9a35c738659461837a5` |
+| Passed | Clean-source hidden native build and three runs / 30 cleanup cycles; native elapsed `4,630 / 3,773 / 3,813 ms`, main-process peak RSS `104.45–107.05 MiB`; fixture SHA-256 `7de17912a4d0b873b72f9e8a80876a60de8273b173d8bf5b12416dc615957b16`. Baseline IPC, result/cache and session cleanup checks pass |
+| Environment | Node 26.7.0 validation uses `NODE_OPTIONS=--no-experimental-webstorage`; no application workaround. Initial browser failures exposed the missing comparison region semantics and assertion issues; corrected final ten-flow run held source fixed and passed |
+| Not executed | Full ignored Rust integration/full browser suites; the two PostgreSQL actual-plan fixture tests passed in the prior unchanged-backend slice and were not rerun here. Independent complete R5 rerun; installed revision; production/live Snowflake accounts; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative total-memory/cold-start/FPS qualification remain open |
+
+Native evidence at `.cache/native-smoke/runs.json` is hidden, synthetic and
+main-process-only. It does not qualify total idle memory, visible cold startup
+or display FPS. Snapshot flows are covered by the frontend/browser tests above.
+
+Disposable Compose project `joinery-assess-compare` used PostgreSQL port 55433
+and was removed after the browser checks. Existing R5 worktree and its four
+unrelated documentation edits remain intact. The application is local,
+unmerged, unpublished and not installed. R6 remains partial; the
+[next slices](implementation-roadmap.md#r6-next-slices) cover distinct metrics
+and independent engine adapters.
+
+## R6 execution timing and observed plan context (1 November 2026)
+
+Code `cb1ca1a` separates query queue wait, backend active/total, first
+nonempty driver row batch and client request-to-finish duration. Zero remains
+valid; unavailable rows/backend/server metrics remain unavailable. Batch timing
+is not first-wire-row or render latency. PostgreSQL server plan times remain
+separate. No server/network/render metrics are derived. See the exact
+[measurement scopes](query-plans.md#execution-timing).
+
+Plan capture identity now uses Rust-observed context immediately before the
+recognized plan runs, after acquiring its serialized editor lane. Queued session
+changes therefore precede observation. Failure withholds capture instead of
+using frontend cache; ordinary plan viewing remains available. The extra
+metadata probe is included in active time. Data state and unobserved settings
+remain outside the comparison guarantee.
+
+| Outcome | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 136 frontend tests (26 files), 132 standard Rust tests, formatting, contracts, types, production build, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Full disposable PostgreSQL 18 fixture suite: 26 tests, including new queued context/timing and empty/error/multi-result tests; active and queued cancellation now assert unavailable first batch when no rows arrive. Existing approval/session, safety, grid, data movement, context and cleanup tests pass |
+| Passed | Twelve relevant browser workflows on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4: eight plan/timing flows and four console/file regressions. Metrics are visible on all three engines; unavailable context withholds capture while preserving tree view; empty/error/multi-result timing is exercised end to end |
+| Passed | New frontend state/presentation tests distinguish measured zero from unavailable, reject stale/foreign-run measurements, clear timings on rebinding and exclude them from workspace restoration |
+| Passed | Clean-source `cb1ca1a65e1edb5ab06810024f943f267e49d688` macOS production bundle with strict ad-hoc signature verification; executable 20.93 MiB, SHA-256 `ec91600fbb003a9a440448264b802731295a490ffb08906617afb04ada0107a7` |
+| Passed | Three hidden native synthetic integration runs / 30 cleanup cycles; 5805 / 3135 / 3146 ms, peak main-process RSS 106.17–107.25 MiB. Existing IPC/cache/session cleanup checks pass; this fixture does not exercise the timing disclosure/plan comparison UI or qualify cold visible startup, total idle memory or FPS |
+| Provenance | Native fixture revision `cb1ca1a65e1edb5ab06810024f943f267e49d688`, tree `3c0a1f709d288656953a13610014e11040fcd826`, `sourceDirty: false`, binary SHA-256 `b710563e97c23f5b0f23caaf21228de8afee3513116a9ccf02416d73fc18d6ef`, ad-hoc bundle binary SHA-256 `e75c049f9f58f179a330731fe213ef607ab78289411d1c1718325e04fc82700b` |
+| Environment | Node 26.7.0 uses `NODE_OPTIONS=--no-experimental-webstorage`; no application workaround. Final sources held fixed for validation/fixture/browser checks |
+| Open | Full MySQL/MariaDB/Redis/SSH ignored suites and full browser suite for this slice; independent R5 rerun/integration; installed revision; live Snowflake; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology and representative total-memory/cold-start/FPS qualification |
+
+Disposable Compose project `joinery-assess-timing` uses PostgreSQL port 55433
+and is removed after checks. The unrelated R5 worktree remains intact. This
+application candidate is local, unmerged, unpublished and not installed.
+R6 remains partial; independent engine adapters and integrated qualification
+continue in the [roadmap](implementation-roadmap.md#r6-next-slices).
+
+## R6 reviewed MariaDB actual plans (1 November 2026)
+
+Code `c660bc4` adds MariaDB `ANALYZE FORMAT=JSON` through the existing owned
+session, immutable review and one-use approval path. A server-family check plus
+protocol preparation of a fixed constant SELECT enables the capability; the
+statement is closed without execution. No optimizer or output settings change.
+The action validates one complete SELECT/WITH query before wrapping it.
+
+A reproduced regression showed directly entered MariaDB analysis could pass
+Silent mode without review when sqlparser fell back to Unknown. Token detection
+now enforces mandatory review for statement-leading ANALYZE and conservative
+EXPLAIN/ANALYZE forms before fallback, including later batch statements. Quoted
+text/comments remain unaffected. ReadOnly blocks executing analysis; production
+retains its passphrase. Tests prove unapproved execution leaves a session-local
+counter unchanged, approved analysis runs once on its temporary-table session,
+stale/disconnected approvals expire, errors recover and cancellation retires
+the session. MariaDB results use the ANALYZE column for existing plan views and
+observed-context snapshot comparison.
+
+MariaDB actual rows are averages per loop; actual filtering is a percentage;
+node total time includes children and must not be summed. Optimization time is
+separate; constant plans can report it without execution/row metrics. No missing
+measurement is invented. See [the plan contract](query-plans.md).
+
+| State | Evidence |
+|---|---|
+| Passed | `pnpm validate`: 138 frontend tests / 26 files, 133 standard Rust tests (112 core plus 21 integration), contracts/types/build, Prettier, Cargo formatting/check and strict all-target/all-feature Clippy |
+| Passed | All 26 PostgreSQL fixture tests and 24 MySQL/MariaDB base fixture tests on PostgreSQL 18, MySQL 8.4.13 and MariaDB 11.4.13; includes three new capability/approval/session tests, TLS-through-SSH, live context, transactions, grid, explorer and data movement. Separate case-folded fixture excluded |
+| Passed | Fifteen browser workflows: eleven plan/timing flows plus four console/file regressions. MariaDB covers review cancellation without execute, unchanged SQL, raw/tree/grid, direct-SQL review, ReadOnly denial, estimated/actual snapshots without replay, mismatch/cleanup, error recovery and cancellation retirement |
+| Passed | Five display-adapter and seven snapshot identity/store tests include inclusive timing, optimization-only actuals with zero and generated MariaDB query identity |
+| Passed | Clean-source `c660bc4c23b8c6b8a59a9a084d7910705b5177c3` macOS production bundle with strict ad-hoc signature verification; executable 21,950,016 bytes (20.93 MiB), SHA-256 `7b63b0eb9c798bd014d33f774f205d8c32ac650b87d1f5fea11f49022c486a7a` |
+| Passed | Three hidden native synthetic runs / 30 cleanup cycles; 5754 / 3094 / 3081 ms, peak main-process RSS 106.64–107.36 MiB. Baseline IPC/cache/session cleanup passes. This fixture does not exercise MariaDB plan UI/transport or qualify cold visible startup, total idle memory or FPS |
+| Provenance | Native fixture revision `c660bc4c23b8c6b8a59a9a084d7910705b5177c3`, tree `ece4030c7129decc40970b2c7e8d161078c581a2`, `sourceDirty: false`, binary SHA-256 `2556fda558a7c1455f247a93fc8b8acb89df9fbfd08a88c1c46228dbf7be263c`, ad-hoc bundle binary SHA-256 `2639673f4b703fc203e79da09abc7abbbe1a8fbee121814b9e4a983563850e6f` |
+| Scope | MariaDB capability/action qualified on 11.4.13 only. MySQL 8.4.13 defaults to `explain_json_format_version=1` and rejects JSON analysis (1235); a separate disposable session using version 2 returns a different JSON-v2 contract. This probe does not enable a MySQL action or change application connection settings |
+| Unmerged / unpublished | R6 is local on `feat/estimated-query-plans`, separate from the preserved R5 candidate. R1–R4 are merged but absent from preview.15. No application push, merge, release or installation in this slice |
+| Open | Case-folded fixture, Redis/SSH ignored suites and full browser suite for this slice; independent R5 review/integration; installed revision; live Snowflake; Windows/Linux packaged runtime; Developer ID signing/notarization; assistive technology; representative total-memory/cold-start/FPS qualification |
+
+Logs: `.cache/mariadb-validate.log`, `mariadb-all-base-fixtures-final.log`,
+`mariadb-postgres-fixtures.log`, `mariadb-browser-final.log`,
+`mariadb-engine-contracts.json`, `mariadb-macos-bundle.log`,
+`mariadb-bundle-evidence.json`, `mariadb-native-build.log`,
+`mariadb-native-runs.log`, and `.cache/native-smoke/{build,runs}.json`.
+The initial fixture run used the browser port variable; rerunning with the Rust
+suite's `JOINERY_TEST_PORT=55433` resolves those connection failures. Final
+held-source MySQL/MariaDB base suite passes 24/24 in 5.67 s; browser 15/15 in
+54.3 s. Disposable project `joinery-assess-actual` uses PostgreSQL port 55433.
+
+## R6 reviewed MySQL TREE actual plans (1 November 2026)
+
+Code `c54ecab` independently enables MySQL `EXPLAIN ANALYZE FORMAT=TREE` after
+preparing and closing a fixed constant SELECT without executing it. No optimizer
+or output setting changes. The existing complete-query wrapper, explicit review
+even on Silent, production passphrase, ReadOnly denial, owned session, one-use
+approval and observed-context comparison remain authoritative.
+
+Two failures were reproduced before their fixes. `DESC ANALYZE FORMAT=TREE FOR
+SCHEMA joinery SELECT 1` fell outside AST grammar and could bypass review; the
+pre-parser now recognizes EXPLAIN's DESC/DESCRIBE aliases. MySQL KILL QUERY can
+return a successful partial TREE result; recognized analysis now checks the
+cancellation request even on successful result consumption, reports Cancelled
+and retires its session. This does not imply rollback of side effects. Normal
+write acknowledgement handling is preserved.
+
+The bounded adapter preserves exact raw TREE text and engineering tokens,
+four-space hierarchy, missing costs and never-executed iterators. Actual first
+row / inclusive total times and rows are per loop; loops stay separate. No child
+sum, statement duration or missing zero metric is invented. Unsupported shapes
+keep raw/grid access. JSON estimates and TREE actuals compare with exact query
+bytes and observed context, without rerunning SQL. See [the contract](query-plans.md).
+
+| State | Evidence |
+|---|---|
+| Passed | `pnpm validate` on Node 26.7.0: 142 frontend tests / 26 files, 133 standard Rust tests (112 core + 21 integration), contracts/types/build, Prettier, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | 26 PostgreSQL fixtures and 25 MySQL/MariaDB base fixtures on disposable PostgreSQL 18, MySQL 8.4.13 and MariaDB 11.4.13. The latter includes four plan tests for capability, review/session effects, error/cancellation and JSON-settings preservation / unexecuted iterators. Case-folded fixture excluded |
+| Passed | Eighteen browser workflows on Node 26: fourteen plan/timing + four console/file regressions. MySQL adds cancelled review without execute, unchanged SQL, raw/tree/grid, direct alias review, ReadOnly, JSON-estimate/TREE-actual comparison without replay, mismatch/cleanup, error recovery and cancellation retirement |
+| Passed | Eight display-adapter and eight snapshot tests cover nested/zero/engineering/missing/unexecuted metrics, unsupported hierarchy/continuations, depth/node/byte bounds, exact raw retention and JSON/TREE identity |
+| Passed | Clean-source `c54ecab3caa2f46022d7b70cf6d0873d6ada90b7` macOS production bundle with strict ad-hoc signature verification; executable 21,950,016 bytes (20.93 MiB), SHA-256 `5327e4215c6c49eafec5adb9800008b181f8379ddf5bb8690c60faf2b52f3a81` |
+| Passed | Three hidden native synthetic runs / 30 cleanup cycles; 5756 / 3033 / 3026 ms, peak main-process RSS 106.02–106.44 MiB. Baseline IPC/cache/session cleanup passes; this does not exercise MySQL native plan UI/transport or qualify visible cold startup, total idle memory or FPS |
+| Provenance | Native fixture revision `c54ecab3caa2f46022d7b70cf6d0873d6ada90b7`, tree `0c631c8e8499334977abf0b8bffb10d72e325742`, `sourceDirty: false`, binary SHA-256 `3765cd785dd36ea51e6268519f7470f414c419be4d91a966af99ce5455bee888`, ad-hoc bundle binary SHA-256 `09942ab4060a6244925fc88561878f7da68bd9ce487b33317c4579af542c89ae` |
+| Scope | MySQL capability/TREE action qualified on 8.4.13 only; MariaDB regression on 11.4.13. Session `explain_format=JSON` and `explain_json_format_version=1` remain unchanged. No JSON-v2 adapter enabled |
+| Local only | R6 remains unmerged, unpublished and not installed, separate from preserved R5. Fetched `origin/main` stays `a0ba1a6`; R1–R4 are merged but unreleased. Preview.15 is the last verified release; this slice's GitHub refresh was blocked by command approval policy |
+| Open | Case-folded fixture, Redis/SSH ignored suites, full browser suite and independent R5 integration; installed revision; live Snowflake; Windows/Linux runtime; Developer ID signing/notarization; assistive technology; representative total-memory/cold-start/FPS qualification |
+
+Environment and failures: Node 26.7 requires
+`NODE_OPTIONS=--no-experimental-webstorage` for the existing localStorage test
+environment. A shell-selected Node 22 run passed but was repeated on supported
+Node 26. One full run failed the unrelated concurrent metadata startup test;
+its targeted recheck and both subsequent full validation runs passed, without
+persistence changes. An accidental all-ignored run included the absent mode-1
+case fixture and failed that connection; the explicitly scoped base suite passes
+25/25. Initial cancellation fixtures used a projection MySQL can omit; the final
+constant WHERE/SLEEP filter ensures work and reproduced partial-plan success
+before the driver fix. No tests were skipped to hide either product regression.
+
+Logs: `.cache/mysql-tree-validate-node26.log`,
+`mysql-tree-fixtures-base-final.log`, `mysql-tree-postgres-fixtures.log`,
+`mysql-tree-browser-node26.log`, `mysql-tree-safety-before.log`,
+`mysql-tree-fixtures-final.log`, `mysql-tree-persistence-recheck.log`,
+`mysql-tree-macos-bundle.log`, `mysql-tree-bundle-evidence.json`,
+`mysql-tree-native-build.log`, `mysql-tree-native-runs.log`, and
+`.cache/native-smoke/{build,runs}.json`. The disposable Compose project is
+`joinery-assess-mysql-tree`, using PostgreSQL port 55433. Next slices are
+[Snowflake estimates and integrated qualification](implementation-roadmap.md#r6-next-slices).
+
+## R6 Snowflake estimated logical plans (1 November 2026)
+
+Code `48dfb21` adds explicit `EXPLAIN USING JSON` for a complete validated
+Snowflake query. The exact-wrapper safety adapter resolves sqlparser's missing
+USING JSON grammar without accepting prefix lookalikes or allowing a batch
+escape. It preserves SQL bytes and existing read-only classification. The
+owned SQL API request carries configured warehouse/role/database/schema/query
+tag; the target query is never submitted separately. No session or warehouse
+settings change and no executing Analyze action is introduced.
+
+The bounded display preserves every logical parent edge and step-local ID.
+Shared operators expand once per step with metric-free references; duplicate
+IDs/edges, cycles, missing parents, malformed shapes and complexity excesses
+retain raw/grid fallback. Assigned partitions and bytes are upper-bound pruning
+estimates, never actual timing/rows. Unsafe integer estimates defer to exact raw
+JSON. Snowflake CONTENT results require recognized execution identity and normal
+queries clear it. Snapshot capture is disabled in both UI and store because
+warehouse/session observations are not yet sufficient for comparison.
+
+| State | Evidence |
+|---|---|
+| Passed | `pnpm validate` on Node 26.7.0 with `NODE_OPTIONS=--no-experimental-webstorage`: 148 frontend tests / 28 files, 136 standard Rust tests (115 core + 21 integration), contracts/types/build, Prettier, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Loopback synthetic HTTP verifies exact wrapper, configured request context and unchanged raw JSON including unsafe integer tokens; all Snowflake core/lifecycle/catalog/auth/compression regressions run in standard Rust tests. No SSO or live database account used |
+| Passed | Four headless synthetic Snowflake browser workflows: two plan workflows plus existing catalog/lazy completion/read-only preview and discovery-failure recovery. Covers step/shared-reference rendering, raw/grid transitions, exact large numeric text, disabled snapshots, unchanged editor, no Analyze, ordinary CONTENT identity reset and malformed graph raw fallback; zero page errors |
+| Passed | Four new DAG adapter tests and identity/result-detection tests cover order-independent/multistep/shared edges, zero/unsafe estimates, cycles/orphans/duplicate IDs/edges, invalid shapes, 512 KiB/depth 40/shared 2,000-item budget, capture refusal and exact engine mismatch |
+| Passed | Clean-source `48dfb21cbeb2e84049f519b2b35ccf1873590b50` macOS production app bundle, strict ad-hoc signature verification; executable 21,950,016 bytes, SHA-256 `9495bad07dda69f8a4cc6b4dc45b025137a489cd7109dc5b176b936937d4a7c7` |
+| Passed | Three hidden native synthetic runs / 30 cleanup cycles; 5780 / 3048 / 3135 ms, peak main-process RSS 102.08–107.33 MiB. Baseline IPC/cache/session cleanup only; does not exercise Snowflake native plan UI/transport or qualify cold visible startup, total idle memory or FPS |
+| Provenance | Native fixture revision `48dfb21cbeb2e84049f519b2b35ccf1873590b50`, tree `e8fec66513d429d28f2988feb77e08d9cd2b4d99`, `sourceDirty: false`, binary SHA-256 `4579c734331349ca254f6d38684f1e267d158e7bb1c19051390469811966a1ca`, ad-hoc bundle binary SHA-256 `383cf5bb2555d5dc6293f1a7d9b17b611b310da80754b432a70ac7ff4fef6c64` |
+| Not rerun | PostgreSQL/MySQL/MariaDB ignored fixture suites and prior eighteen plan/timing/console browser workflows, case-folded engine, Redis/SSH ignored suites and full browser suite. Previous iteration's counts remain dated evidence, not qualification of this source |
+| R5 inventory drift | Current Git and complete local Orca inventories contain main and assess only. Former R5 worktree and `feat/editor-intelligence` branch are absent; commit `bb77b0fc785d7a0076a3aa6d2457ac4da09d5ce9` remains readable. Former dirty docs were not recovered; recorded R5 verification is not a current rerun. No worktree/branch recreation or changes to other checkouts in this slice |
+| Local only | R6 remains unmerged, unpublished and not installed; fetched `origin/main` remains `a0ba1a6`. R1–R4 are merged but unreleased. Preview.15 remains last verified release; earlier GitHub refresh was blocked by command approval policy |
+| Open | Integrated R5/R6 review and qualification; prior metadata-startup flake investigation; observed Snowflake warehouse/session identity and snapshots; live account qualification; installed revision; Windows/Linux runtime; Developer ID signing/notarization; assistive technology; representative memory/cold-start/FPS |
+
+Reproduced before implementation: the frontend rejected Snowflake plan JSON;
+read-only preparation rejected the generated USING JSON wrapper. Both pass after
+the adapters. An initial browser run failed an ambiguous Run button test locator;
+the corrected locator passes all four workflows. Strict Clippy rejected a
+single-element test loop; its correction passes full validation. No safety
+policy, hook or engine rejection was bypassed. The earlier concurrent metadata
+startup failure did not recur in this completed run; its cause remains open.
+
+Logs: `.cache/snowflake-plans-validate-complete.log`,
+`snowflake-plans-browser-final.log`, `snowflake-plans-macos-bundle.log`,
+`snowflake-plans-bundle-evidence.json`, `snowflake-plans-native-build.log`,
+`snowflake-plans-native-runs.log`, and `.cache/native-smoke/{build,runs}.json`.
+See [query-plan semantics](query-plans.md#snowflake-estimated-logical-plans) and
+[the next slices](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: live FK JOIN completion (1 November 2026)
+
+Code `e0dad5f12461fdfdecae073be62fe74d3f57f004` restores the first R5 feature
+group onto the R6 branch, using recorded `40c59a7` and the SQL alias correction
+from `41957ea`. It does not incorporate the remaining editor-intelligence
+commits. Former worktree/branch absence and unrecovered dirty docs remain as
+recorded above; the source commit `bb77b0f` is readable.
+
+PostgreSQL/MySQL/MariaDB completion now obtains permission-filtered outbound
+and inbound constraints on the actual editor session. Ordered composite pairs
+stay grouped; incomplete or denied relationships are withheld. Temporary
+shadows do not inherit permanent-table relationships. MySQL metadata cleanup
+retains the existing transaction-state behavior. Snowflake supplies no FK
+relationships in this slice.
+
+JOIN target and initial ON completion insert explicit equality predicates from
+known relationships. Multiple constraints remain distinct; self joins choose
+noncolliding aliases; quoting and CTE shadows are respected. CROSS/NATURAL JOIN
+does not receive an ON clause. Existing query-block/token/depth/schema-read and
+response-revision bounds remain. This is direct-base-table assistance, not
+derived/CTE output inference. Accepting a suggestion never runs SQL.
+
+| State | Evidence |
+|---|---|
+| Reproduced | Three added frontend tests failed before implementation. The first browser run exposed PostgreSQL's `ln` alias being tokenized as a built-in and discarded; the recorded alias correction and a dedicated unit regression fix it |
+| Passed | `pnpm validate` on supported Node 26.7 with `NODE_OPTIONS=--no-experimental-webstorage`: 152 frontend tests / 28 files, 136 standard Rust tests (115 core + 21 integration), contracts/types/build, Prettier, Cargo fmt/check and strict all-target/all-feature Clippy |
+| Passed | Two ignored live-completion fixture tests: PostgreSQL 18.6 and one test looping MySQL 8.4 / MariaDB 11.4. Covers outbound/inbound/composite metadata, temporary shadows and existing role/grant/search-path/database/rollback behavior |
+| Passed | Fourteen headless browser workflows: three new FK flows (nine accepted-and-executed outbound/inbound/ON composite joins), seven existing completion flows and four synthetic Snowflake flows. Zero page errors in new flows. PostgreSQL safely generates `ln2` for a new alias; a reverse-join test that assumed `ln` was corrected before the passing run |
+| Local only | Code is on `feat/estimated-query-plans`, unmerged, unpublished and not installed. Fetched `origin/main` remains `a0ba1a6`. R5 is partly integrated; R6 stays partial |
+| Not rerun | Full ignored fixture/full browser suites, prior eighteen plan/timing/console browser workflows and native/package gates on this source. The preceding `48dfb21` native evidence is historical, not qualification of this revision |
+| Open | Remaining R5 diagnostics, typed parameters and R6 authorization compatibility, editor navigation/formatting/snippets; earlier metadata-startup flake investigation; integrated native/fixture/browser qualification; Snowflake observed context and live accounts; release/install/platform/signing/accessibility/performance gates |
+
+Logs: `.cache/r5-joins-before.log`, `r5-joins-validate.log`,
+`r5-joins-fixtures.log` and `r5-joins-browser.log`. Disposable Compose project
+`joinery-assess-r5-integration` uses isolated PostgreSQL port 55433; no production
+account is used. The earlier metadata-startup failure did not recur in this
+validation; its cause remains open. See the
+[remaining integration sequence](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: structured Unicode diagnostics (1 November 2026)
+
+Code `ce7a7fa480e2bb8b3692801b935fd17d4b539366`, tree
+`9bc2dd4ebb97d758bb0641fd42fbcf1f744aa107`, integrates recorded `581c527`
+with the existing seven R6 slices and the preceding FK JOIN slice. Optional
+`AppError.location` carries a half-open UTF-16 range, one-based Unicode scalar
+line/column, statement index, SQLSTATE and available PostgreSQL detail/hint.
+Generated contracts preserve compatibility with errors and plans lacking spans.
+
+PostgreSQL server character positions map across accented text, CJK, emoji and
+later batch statements. MySQL/MariaDB syntax messages supply best-effort token
+or line ranges; unavailable positions use the failing statement. Their leading
+whitespace normalization is mapped back explicitly. A server-sanitized snippet
+falls back to its reported line instead of claiming token precision. Snowflake
+compilation positions and SQLSTATE have synthetic adapter coverage only.
+Cancellation retains its existing terminal behavior without SQL error markers.
+
+ReadOnly parser/policy failures carry locations without changing classification
+or authorization. Parser fallback still submits one complete unclassified batch;
+its span starts at the submitted buffer origin, including leading whitespace.
+Generated row-change plans carry no invented editor range. Explain validation
+reports parser positions in the unwrapped input; directly entered Snowflake
+wrappers shift inner parser/policy locations once. Runtime locations refer to
+the prepared SQL buffer; editor selection and generated-wrapper origin handling
+must be reconciled when integrating markers and typed parameter execution.
+Inline editor markers and error navigation are not implemented in this slice.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Two preimplementation serialized-location tests fail with absent `location`; both pass after integration. Additional regressions cover fallback origins and direct Snowflake wrapper offsets |
+| Passed | `pnpm validate`: 152 frontend tests in 28 files; 146 standard Rust tests (125 core plus 21 integration/unit checks); contracts, TypeScript, production build, formatting, desktop compilation and strict all-target/all-feature Clippy |
+| Passed | All 27 PostgreSQL and 27 MySQL/MariaDB ignored fixture tests, including both case-folded instances, review/one-use authorization, cancellation, context, FK completion and the new Unicode diagnostics. PostgreSQL 18.6, MySQL 8.4 and MariaDB 11.4; no production account |
+| Passed | Twenty-two headless browser flows: three new real diagnostic/correction flows, three FK flows, fourteen plan/timing flows and two synthetic Snowflake plan flows. Serialized UTF-16 ranges and SQLSTATE survive transport; each failed query is corrected and completes on the same session. Zero page errors in new flows |
+| Passed | Hidden native build records the exact code/tree above with `sourceDirty: false`; three macOS arm64 WebView runs / 30 cleanup cycles pass. Synthetic integration baseline only; no representative performance claim |
+| Local only | `feat/estimated-query-plans`, unmerged, unpublished and not installed. Fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Not rerun | Full browser suite, separate Redis/PostgreSQL-SSH ignored suites, normal distribution bundle verification and external/platform gates. Earlier `48dfb21` distribution evidence remains historical |
+| Open | Typed parameters with all R6 preparation/approval paths, editor markers/navigation/formatting/snippets, metadata-startup flake cause, observed Snowflake snapshot context, live accounts, release/install/signing/platform/accessibility/performance qualification |
+
+Integration corrections: the recorded PostgreSQL diagnostic test referenced a
+MySQL-only fixture table; it now uses `orders`. The recorded MySQL "syntax"
+query was actually a missing-column query; a parser-accepted trailing wildcard
+now reaches a real server syntax error on both engines. The added leading-space
+fixture reproduced a position error and passes after origin normalization.
+Initial strict Clippy found two explicit loop counters in the imported mapper;
+both now use indexed iteration. The first full MySQL run omitted
+`JOINERY_TEST_PORT=55433` for its cross-engine PostgreSQL test (26 passed, one
+connection failure); all 27 pass with the correct fixture port. No product gate
+or hook was bypassed. The earlier metadata-startup failure did not recur during
+this validation; its cause remains open.
+
+Logs: `.cache/r5-diagnostics-before.log`, `r5-diagnostics-validate.log`,
+`r5-diagnostics-postgres.log`, `r5-diagnostics-mysql.log`,
+`r5-diagnostics-all-postgres.log`, `r5-diagnostics-all-mysql-final.log`,
+`r5-diagnostics-browser.log`, `r5-diagnostics-native-build.log`,
+`r5-diagnostics-native-runs.log` and `.cache/native-smoke/{build,runs}.json`.
+Owned Compose project `joinery-assess-r5-diagnostics` (PostgreSQL port 55433),
+its five containers and disposable volume were removed after checks. Other
+running services were preserved. Continue with the
+[remaining integration sequence](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: typed query parameters (1 November 2026)
+
+Code `39359e7cfd0dbc33bb9a12e08bd8ca69c04d3c89`, tree
+`81e80804552df82933f72b164b32ac6c25575145`, integrates recorded `9cfefa2`
+with the existing R5 diagnostics/JOIN and seven R6 slices. Named `:name`,
+PostgreSQL `$n`, and MySQL/Snowflake `?` placeholders are scanned outside
+strings, quoted identifiers and comments. Snowflake also accepts `$n`. PostgreSQL
+casts, assignment and JSONB question operators remain SQL; MySQL executable
+comments remain rejected. Positional question marks are numbered across batches.
+
+A transient per-tab dialog accepts text, signed 64-bit integers, decimals,
+booleans, UUIDs, dates, timestamps, JSON and explicit typed NULL. Rust validates
+all values, rejects duplicates/missing/unexpected inputs and canonicalizes
+bindings before storing an immutable execution plan. Limits are 64 distinct
+parameters, 1,024 occurrences, 256 KiB total input value bytes and an 8 MiB
+prepared-plan payload budget; repeated binds are checked before cloning. Invalid
+Unicode calendar values cannot panic; excessive Snowflake decimal precision and
+MySQL fractional timestamp precision are rejected rather than truncated.
+
+The reviewed SQL template, types and canonical values participate in one-use
+approval identity. Changed values expire the prior plan; execution accepts no
+replacement bindings. ReadOnly, production passphrase and mandatory Analyze
+review remain authoritative, including Silent profiles. Parameter drafts clear
+when tabs close; values are absent from persisted workspace/history/audit/local
+metadata in the regression checks. Returned results, plans and server messages
+can naturally contain the submitted values.
+
+PostgreSQL uses typed SQL PREPARE and EXECUTE with hex-encoded UTF-8 constant
+expressions, preserving exact text output; this is not a claim of binary-protocol
+binding. Generated plans prepare the underlying query and use EXPLAIN EXECUTE
+with the same options and bindings. Prepared names are deallocated after success
+or after failed-transaction recovery. MySQL/MariaDB use protocol parameters and
+explicit casts; Snowflake uses SQL API bindings with typed expressions. Snowflake
+transport and rewritten diagnostics have synthetic coverage only, with no live
+account qualification. Redis has no SQL-parameter workflow.
+
+Explain and Analyze use the common parameter dialog and Rust plan store. Plan
+snapshots retain a canonical binding digest and reject comparisons for different
+bindings without retaining a separate copy of the values. Rewritten backend
+positions map to original placeholders; generated Explain prefix coordinates
+map to its submitted input query. PostgreSQL errors referring to EXECUTE internals
+fall back to the complete query rather than inventing token precision. Inline
+markers and mapping from an editor selection to the full editor remain pending.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | A new snapshot regression accepted different bindings before the identity fix; it now rejects them. Additional regressions cover Unicode calendar input, repeated-bind budgets, prototype-shaped parameter names and closed-tab draft cleanup |
+| Passed | `pnpm validate`: 156 frontend tests / 29 files, 154 standard Rust tests (133 core plus 21 integration/unit checks), contracts, TypeScript, production frontend build, formatting, desktop compilation and strict all-target/all-feature Clippy |
+| Passed | All 29 PostgreSQL and 29 MySQL/MariaDB ignored SQL fixture tests, including both case-folded instances. New tests cover all parameter kinds/NULL, exact large values, reviewed writes, Unicode positions, parameterized estimates/analysis, stale approvals and generated-wrapper origins. PostgreSQL 18.6, MySQL 8.4 and MariaDB 11.4; no production account |
+| Passed | Twenty-three relevant headless browser flows: six new parameter flows, fourteen existing plan/timing flows and three error/correction flows. New flows execute reviewed injection-shaped text and large integers, verify template-only history, retain editor SQL, require Analyze review and reject snapshots with different bindings. Zero page errors in new flows |
+| Passed | Hidden macOS arm64 WebView build records the exact clean code/tree above (`sourceDirty: false`); three fresh runs / 30 cleanup cycles pass. Synthetic integration baseline only, with no representative performance or native parameter-dialog qualification claim |
+| Local only | `feat/estimated-query-plans`, unmerged, unpublished and not installed. Fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Not rerun | Full browser suite, dedicated FK/completion/Snowflake browser suites, separate Redis/PostgreSQL-SSH ignored suites, normal distribution bundle verification and external/platform gates. Earlier `48dfb21` normal distribution evidence remains historical |
+| Open | Inline markers/navigation and selected-buffer origins, definition/usages/documentation, selection formatting/snippets/settings, metadata-startup flake cause, observed Snowflake snapshot context, live accounts, release/install/signing/platform/accessibility/performance qualification |
+
+Integration corrections: PostgreSQL SQL PREPARE cannot prepare EXPLAIN directly;
+the adapter now prepares its underlying query. The imported PostgreSQL boolean
+expectation now matches its existing text protocol (`t`). Initial strict Clippy
+reported an explicit counter and a helper below the test module; both are fixed.
+The first browser run passed 20 flows but failed three assertions because
+Playwright treated a disabled option as enabled; those checks now assert the
+actual disabled attribute and all three pass. No product gate or hook was bypassed.
+The earlier metadata-startup failure did not recur; its cause remains open.
+
+Logs: `.cache/r5-params-{validate,pg-full,mysql-full,browser,browser-rerun}.log`,
+`r5-params-snapshots-before.log`, `r5-params-native-build.log`,
+`r5-params-native-runs.log`, `r5-params-native-evidence.json` and
+`.cache/native-smoke/{build,runs}.json`.
+Owned Compose project `joinery-assess-r5-params` (PostgreSQL port 55433), its
+five containers and disposable volume were removed after checks. Other running
+services were preserved. Continue with the
+[remaining integration sequence](implementation-roadmap.md#r6-next-slices).
+
+## R5 integration: inline diagnostics and navigation (1 November 2026)
+
+Code `65530c035c25586415ce0b6ba40de6bf14817187`, tree
+`3848d35d774b6e62953c7c027b165067a3ed49b1`, integrates recorded `655d8b7`
+with the current R6/parameter branch. Error underlines, gutter badges, Unicode
+line/column, submitted-batch statement index, SQLSTATE, detail/hint and **Jump to
+error** preserve structured parser/policy/server diagnostics. Previous/next SQL
+statement navigation uses the active CodeMirror dialect tree (`⌥⌘↑/↓` or
+`Ctrl+Alt+↑/↓`) and command palette. It does not guess statement boundaries while
+a large document is still parsing. Redis keeps its command console behavior.
+
+Execution captures the exact submitted slice, full source and UTF-16 offset.
+That origin travels through parameter entry, preparation and one-use review.
+Backend coordinates already map substitutions and generated Explain wrappers to
+input SQL; the frontend adds the editor offset once. CRLF/bare CR file positions
+convert to CodeMirror newline units. Invalid/out-of-slice spans, absent origins
+and changed documents have no marker or jump. Editing clears the captured origin;
+an old error arriving after an edit may display its message but cannot mark the
+new text. Origins are transient and do not enter workspace snapshots.
+
+| State | Evidence for this source |
+|---|---|
+| Regression baseline | Recorded navigation tests could not import the absent module before integration. Twelve focused cases now cover dialect statement ranges, selection offsets, Unicode/CRLF/bare CR, source identity, malformed spans and EOF |
+| Passed | `pnpm validate`: 168 frontend tests / 30 files, 154 standard Rust tests (133 core plus 21 integration/unit checks), contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Passed | All 26 relevant real PostgreSQL/MySQL/MariaDB headless browser flows: six diagnostics/navigation flows, six parameter flows and fourteen plan/timing flows. Diagnostics cover batches, current statements, explicit selections, parameterized Run/Explain/Analyze, exact jump selection, edit invalidation and a delayed PostgreSQL error arriving after a replacement edit; zero page errors in the new flows |
+| Native | Hidden macOS arm64 build records the exact clean code/tree above (`sourceDirty: false`); three fresh processes / 30 cleanup cycles pass (3.77 / 3.06 / 3.05 seconds). Fixture SHA-256 `0c8cc85395f5c8cc5ad58faa850489e20d1a29013f2d53ada8caa682d8047e0f`. Synthetic baseline only; no native error-UI, total-memory, cold-start or display-FPS qualification |
+| Local only | `feat/estimated-query-plans`, unmerged, unreleased and not installed. Fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Prior evidence | All 58 ignored SQL fixture passes belong to `39359e7`; no ignored SQL/Redis/SSH fixture suite was rerun for this frontend-only slice. Current browser checks use fresh PostgreSQL 18, MySQL 8.4 and MariaDB 11.4 fixtures |
+| Not rerun | Full browser suite, dedicated FK/completion/Snowflake suites, normal distribution bundle verification, live accounts and platform/accessibility/performance gates. Native baseline does not qualify the error UI or representative performance |
+| Next | Definition/usages/context documentation (`b5a744d`), selection formatting/settings/snippets (`3ca2ad2`), format-save serialization (`41957ea`) and relevant recorded `bb77b0f` regressions. Investigate the earlier metadata-startup flake and qualify the combined source before authorized delivery |
+
+The first and final 26-flow browser runs passed. The final run includes the
+line-ending correction and delayed-error case. No hooks or product safety gates
+were bypassed. The earlier metadata-startup failure did not recur; its cause
+remains open. Logs are `.cache/r5-inline-{validate-final,browser-final,native-build,native-runs}.log`
+and immutable `.cache/r5-inline-native-evidence.json`. Owned Compose project
+`joinery-assess-r5-inline`, its three containers and disposable volume were removed.
+Other services and the installed application were preserved.
+
+## R5 integration: SQL definitions, usages and documentation (1 November 2026)
+
+Code `8ef9dfb94c3c9a9962bb6e1761bb1979e0822334`, tree
+`9114c4d221ae05af10efbd5aa8ed71c245a50212`, integrates recorded
+`b5a744d` with the current R6/parameter/error-origin paths. **F12** or
+Cmd/Ctrl-click navigates CTE/table-alias declarations and primary-session object
+structure, highlighting the resolved column. **Shift+F12** lists editor references;
+**F1**, the Docs button and command palette show quick metadata documentation.
+No action prepares or executes the editor SQL. Opening an existing Structure tab
+retains its normal bounded metadata/table-read behavior.
+
+Resolution uses the configured dialect syntax tree and current console catalog,
+search path, database and identifier case policy. Usage candidates are resolved
+in their own scopes, so nested alias/CTE shadows and correlated references do
+not share references merely because their spelling matches. Columns require
+known metadata and unambiguous ownership; ambiguous bare self-join columns, unknown/derived bindings,
+explicit projection aliases and overloaded routines are not guessed. Unique
+routines retain catalog identity. Strings/comments are excluded. This is a
+bounded resolver, not complete SQL semantic analysis or inferred projection
+lineage. CTEs without an explicit column list do not claim inferred columns.
+
+Quick docs include available column types/nullability/PK/FK, object comments,
+routine/sequence metadata and object-level database dependents. Missing or denied
+metadata stays unavailable; dependency results are not column lineage. Schema
+loads are limited to eight relevant tables per action. Editor references stop
+at 500 entries or 10,000 name tokens and display a limit notice. Parsing retains
+its 75 ms availability bound; large-query/catalog responsiveness is unqualified.
+
+Edits, refreshes, context/session changes, close and unmount invalidate pending
+navigation. Refresh replaces the schema cache; old promises cannot populate its
+replacement. Catalog and detail reads use the console's session. Structure tabs
+currently use the profile's primary session, so secondary-console object/column
+Structure navigation is explicitly unavailable rather than inspecting another
+session. Quick docs and local declaration jumps remain available there.
+
+| State | Evidence for this source |
+|---|---|
+| Regression baseline | Missing symbol APIs failed the recorded tests before integration. Added cases reproduced incorrect nested scopes, unknown/ambiguous columns, routine overload/search-path resolution and projection-alias ownership before correction |
+| Passed | `pnpm validate`: 183 frontend tests / 31 files, 154 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy. The navigation module has 25 cases (13 symbol cases plus 12 prior diagnostic/statement cases); two overlay/Structure cases also pass |
+| Passed | Final 46 real database browser flows on PostgreSQL 18, MySQL 8.4 and MariaDB 11.4: five symbol flows, seven completion, three FK JOIN, six diagnostics, six parameters, fourteen plan/timing, three sessions and two explorer/search. New flows verify docs, focus/Escape, usage selection, declaration/column jumps, zero editor execution, edit/refresh/close invalidation, denied metadata and the secondary-session boundary |
+| Native | Clean-source macOS arm64 hidden build records the code/tree above (`sourceDirty: false`); three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `8c794a99f55f1da76ff370df3bb5dbf8ce711c43bd87b71478bb9053ea587f46`. Synthetic baseline only; this does not qualify native symbol UI, total memory, cold start or display FPS |
+| Local only | `feat/estimated-query-plans`, unmerged, unreleased and not installed; fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Prior evidence | The 58 ignored SQL fixture passes belong to `39359e7`; no ignored SQL/Redis/SSH suite was rerun for this frontend slice. Completion/FK/session/explorer browser regressions were rerun on the final source |
+| Open | Complete semantic binding, projected/derived columns, routine argument-type overload selection, secondary-session Structure navigation, full browser suite, dedicated Snowflake suite/live accounts, normal distribution bundle, Windows/Linux runtime, signing/notarization, accessibility and representative performance |
+| Next | Selection formatting/settings/snippets (`3ca2ad2`), format-save serialization (`41957ea`), and relevant recorded `bb77b0f` regressions. Preserve R6 authorization and exact editor origins; investigate the earlier metadata-startup flake and qualify the combined source before authorized delivery |
+
+Earlier browser attempts exposed test synchronization/count assumptions: background
+completion can issue concurrent schema reads. The final stale-response regression
+holds all old replies and injects a stale type marker; refreshed docs retain the
+current type. The final 46-flow run holds source fixed and passes. No hooks or
+product safety gates were bypassed. Logs are
+`.cache/r5-symbol-validate-session-final.log`,
+`.cache/r5-symbol-browser-final-46.log`, and
+`.cache/r5-symbol-native-{build,runs}.log`; immutable native evidence is
+`.cache/r5-symbol-native-evidence.json`. Owned disposable Compose project
+`joinery-assess-r5-symbols` was removed after checks; user services and the installed
+application were preserved. The earlier metadata-startup flake did not recur;
+its cause remains open.
+
+## R5 integration: formatting and snippets (2 November 2026)
+
+Code `db5cd1b5cbdca127e407d012d129f1d0260b8a9a`,
+tree `60a1b994235713177b4558b40279dbe81f01167c`, integrates recorded
+`3ca2ad2`, robust save serialization for the ordering issue in `41957ea`, and
+relevant native command checks from `bb77b0f`. The alias correction from
+`41957ea` was integrated earlier. No former dirty documentation was recovered.
+
+Format SQL uses the active selection, or the full document when the selection
+is empty. The worker returns one undoable replacement and retains a selected
+trailing newline. Any document edit/replacement or engine/session change rejects
+the old reply. Preferences persist global keyword case (upper/lower/preserve),
+indent width (2/4 spaces) and query spacing (1/2 blank lines). Saves reach Rust
+in order; optimistic updates compose and a failed latest save restores the last
+successful settings. Preferences displays errors and prevents close/recovery
+while writes are pending. Formatting preferences are global, not per dialect.
+
+The formatter recognizes Joinery's named binds in all three SQL dialects,
+PostgreSQL/Snowflake dollar positions and MySQL/Snowflake question positions.
+Covered regressions preserve bind-name case, quoted Unicode text and comments,
+PostgreSQL casts/JSON operators and Snowflake colon paths. Browser flows format
+and execute a named bind on all three local SQL engines; literal/comment colons
+do not become parameters. This is compatibility coverage, not complete dialect
+grammar or live Snowflake qualification.
+
+Built-in and custom templates expand through completion without executing SQL.
+Custom engine scope overrides global scope, which overrides built-ins for the
+same case-insensitive trigger. CodeMirror provides tab stops; `${0}`
+sets the final cursor position. Qualified/quoted identifier completions exclude
+templates. PostgreSQL/MySQL have read/write/transaction built-ins; Snowflake has
+read-oriented built-ins only; Redis has none. Custom text is still subject to
+normal Rust execution policy when explicitly run. Automatic context-aware
+template variables and complete semantic snippet placement remain open.
+
+SQLite stores at most 128 custom snippets, with ASCII identifier triggers up to
+32 characters, titles up to 120 characters, bodies up to 16 KiB and a 512 KiB
+encoded collection bound on writes. Duplicated scoped triggers and invalid
+records are rejected. Snippets/settings are included in validated metadata
+backup/restore. Explicitly saved snippets may contain SQL text even when query
+history/draft opt-ins are off; the UI explains this local storage behavior.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | A selected formatter reply survived an edit elsewhere; rapid settings saves reached IPC concurrently. New tests failed before the document-identity and write-queue fixes. MySQL rejected named binds and Snowflake rejected question binds before formatter configuration was corrected |
+| Passed | `pnpm validate`: 194 frontend tests / 33 files, 155 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Browser | All 86 local browser flows pass on fixed source, using disposable PostgreSQL 18, MySQL 8.4, MariaDB 11.4 and Redis 8.2 plus simulated Snowflake. Three new flows cover selection boundaries/undo, custom template expansion and Tab/Shift+Tab, explicit execution, formatted bind review, reload persistence, edit and deletion. Existing completion, files, sessions, navigation, plans, recovery, grid and data movement flows also pass |
+| Native | Clean-source macOS arm64 hidden build records this code/tree (`sourceDirty: false`); three fresh WebView processes / 30 cleanup cycles pass, including settings/snippet persistence and command guards. Fixture SHA-256 `691c9acf4644b2295f644c5c47525762d44caec7534a8599083b3d77a21d6e55`. Synthetic IPC/worker baseline only; native Preferences/selection UI, total memory, cold visible startup and display FPS remain unqualified |
+| Local only | `feat/estimated-query-plans`, unmerged, unreleased and not installed; fetched `origin/main` remains `a0ba1a6`. No application push, merge, release or installation |
+| Prior evidence | The 58 ignored SQL fixture passes belong to `39359e7`; ignored SQL/Redis/SSH suites were not rerun for this slice. Existing distribution-bundle evidence remains specific to its recorded revision |
+| Open | Per-dialect formatting overrides, richer template variables, complete semantic binding/projection inference, secondary-session Structure navigation, live external qualification, normal distribution bundle, Windows/Linux runtime, signing/notarization, accessibility and representative performance |
+| Next | Qualify the combined source with full ignored local fixtures and a normal distribution build; investigate the earlier metadata-startup flake if it recurs. Preserve R6 authorization/exact origins, then continue the remaining R5/R6 gaps and R7/R8. Merge, release and installation remain separate gates |
+
+Logs: `.cache/r5-format-validate-exact.log`,
+`.cache/r5-format-browser-exact.log` and
+`.cache/r5-format-native-{build,runs}.log`. Immutable native evidence is
+`.cache/r5-format-native-evidence.json`. No hooks or policy gates were bypassed.
+The earlier metadata-startup flake did not recur in this full browser run; its
+cause remains open. Disposable services are task-owned; user services and the
+installed application were preserved.
+
+## Combined local qualification (2 November 2026)
+
+Clean candidate `b80b6c72d961081ad962ab12ee0655625638498e`, tree `12bf0aceaa9257ba2105ab7cb9a776b3794d5c19`,
+passed all 66 explicitly selected ignored fixtures: 29 PostgreSQL, 29
+MySQL/MariaDB (including both identifier-folding modes), six Redis and two SSH.
+These use disposable PostgreSQL 18, MySQL 8.4, MariaDB 11.4 and Redis 8.2.
+This supersedes the earlier 58-fixture qualification for the combined candidate;
+it does not qualify external accounts or additional engine versions.
+
+`pnpm desktop:bundle:mac` built the normal macOS arm64 `Joinery.app` and passed
+strict local ad-hoc signature verification. Bundle executable SHA-256:
+`6cb4a716a616f4bc985a93de9b3dd33cc2644b7f22914dcf7cb60c4e7c695b9f`.
+The app was not launched, installed, published, Developer ID signed or notarized.
+The existing frontend chunk-size warning remains. Logs:
+`.cache/r5-r6-combined-{fixtures,bundle}.log`; immutable provenance:
+`.cache/r5-r6-combined-evidence.json`. These checks precede the style follow-up
+below and must not be attributed to its later source revision.
+
+## R5 follow-up: per-engine formatting styles (2 November 2026)
+
+Code `d39b89b024acbe69f329022082788a376adc42c3`, tree `e7fd7bfb8d979322dcbd1388d20a02f3135068a0`, adds independent PostgreSQL,
+MySQL/MariaDB and Snowflake formatting styles. Each inherits global defaults
+until its first customization, which snapshots the three global fields. Later
+global changes leave custom styles intact. **Use global defaults** removes that
+override and resumes inheritance; removing the last override returns to the
+legacy settings shape. The active console's dialect selects the formatter style;
+an unbound console retains its existing PostgreSQL fallback. Redis has no SQL
+formatter. Case, indentation and query spacing remain the supported style fields.
+
+Rust retains backward-compatible reading of legacy global settings, validates
+every override, rejects unsupported keys and includes styles in validated
+metadata backup/restore. Ordered optimistic saves, visible errors and rollback
+also cover customization/reset across scope switches. No query execution or R6
+authorization behavior changed.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | A dialect-style regression failed before implementation because PostgreSQL used global settings. It now verifies independent PostgreSQL, MySQL and Snowflake formatting |
+| Passed | `pnpm validate`: 196 frontend tests / 33 files, 156 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Browser | Three expanded PostgreSQL/MySQL/MariaDB editor flows pass: persisted global/custom styles, explicit console binding after reload, automatic dialect selection and reset to global defaults, alongside selection/undo, snippets and parameter review. An initial test incorrectly used an unbound console after reload; it was corrected to select the test connection. These are three relevant flows on this source; the full 86-flow run belongs to `db5cd1b` |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`. Three fresh WebView processes / 30 cleanup cycles pass, including all three dialect styles through SQLite save/bootstrap and a PostgreSQL formatter-worker check. Fixture SHA-256 `883ef1029e3d3c2bf9d17e406e6fecdf8c2d15ad5a2e935f1791057b127dd961`. Synthetic IPC/worker/cleanup baseline only, not native Preferences UI or representative performance |
+| Prior qualification | All 66 ignored fixtures and the normal ad-hoc distribution bundle passed on `b80b6c7` immediately before this follow-up; they were not rerun on this later source |
+| Open | Broader style options, context-aware template variables, semantic/projection inference, secondary-session Structure navigation, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Continue bounded semantic/projection inference and secondary-session metadata/navigation; preserve conservative ambiguity handling and exact R6 origins. Then implement the remaining R5/R6 and R7/R8 milestones with disposable fixtures. Application push, merge, release and installation remain separate authorized steps |
+
+Logs: `.cache/r5-dialect-validate.log`, `.cache/r5-dialect-browser-exact.log`,
+`.cache/r5-dialect-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-dialect-native-evidence.json`. Local, unmerged, unreleased and not
+installed. No hooks or policy gates were bypassed. The earlier metadata-startup
+flake did not recur in these three browser flows; its cause remains open.
+
+## R5 follow-up: named query outputs (2 November 2026)
+
+Code `c32f0c2da1740b1b05347efcb986ca7170d46ba2`, tree `ef633488c3cbb5cd5a129bff6b0e6df0c89ab828`, resolves directly named
+SELECT columns through CTEs and derived tables. F12 selects the local output
+declaration; Shift+F12 lists references belonging to that declaration; F1 shows
+the proven source column and source type. Explicit full CTE column lists rename
+outputs authoritatively. Nested CTEs, aliases, quoted names and engine-specific
+column casing retain scoped identities. Source primary keys/nullability are not
+asserted as constraints on a derived result.
+
+Metadata dependencies now follow query bodies before the existing eight-schema
+fetch limit. Per-action inference is memoized and bounded to 16 levels, 128 query
+bodies, 256 outputs per body and 2,048 SELECT-list tokens. Existing 500-usage /
+10,000-name-token bounds and edit/context/session stale-result guards remain.
+Unknown and duplicate names are withheld; local bindings shadow catalog names.
+Expression outputs, wildcards, set-operation outputs, table-valued functions,
+partial CTE column lists and relation alias-column lists remain unsupported.
+An unsupported output shape conservatively withholds that relation's inferred
+outputs. No editor SQL is executed by navigation; R6 policy/origins are unchanged.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | `recent.order_id` returned no symbol before inference despite `SELECT o.id AS order_id FROM orders o`; the recorded regression now resolves its local declaration, source and three occurrences |
+| Passed | `pnpm validate`: 228 frontend tests / 33 files, 156 standard Rust tests (135 core plus 21 other checks), contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused regressions | 31 resolver cases cover direct/renamed/nested outputs, explicit lists, local declarations, duplicate/shadowed names, unknown metadata, quoted/case behavior, unsupported shapes and bounded recursion. An overlay regression labels source metadata without implying output constraints. An initial combined run exposed missing DOM cleanup between overlay tests; cleanup is now explicit and the complete run passes |
+| Browser | All five SQL navigation flows pass on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4. Three expanded flows cover inferred CTE outputs, explicit CTE lists and derived-table outputs with docs/usages/local definition jumps and no execution requests. A delayed source-schema response after an edit is discarded; metadata-denial/refresh and isolated-console protections still pass. Zero page errors |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `5292adff4fb9c1714db98366fa396d4543440bfc7cd16f3eba31b649043666af`; isolated ad-hoc bundle executable SHA-256 `93972d0ec65d9313cbc2646e5241789e38863076626a3ffa468311cd93f7f504`. Existing synthetic IPC/worker/cleanup baseline only; the new navigation interactions are browser-tested, not native UI-qualified |
+| Prior qualification | Full 86-flow browser suite belongs to `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc distribution bundle belong to `b80b6c7`; those broader checks were not rerun on this later source. Per-engine style checks remain recorded on `d39b89b` |
+| Open | Broader semantic analysis/projection shapes, secondary-session Structure navigation, context-aware templates/style controls, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Route Structure navigation through the originating console's session and context, with cache/stale-result isolation and disposable browser coverage, as the next bounded slice. Then continue remaining R5/R6 and R7/R8. Application push, merge, release and installation remain separate authorized steps |
+
+Logs: `.cache/r5-projection-validate.log`, `.cache/r5-projection-browser.log`,
+`.cache/r5-projection-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-projection-native-evidence.json`. Local, unmerged, unreleased and not
+installed. No hooks or authorization gates were bypassed. The earlier metadata-
+startup flake did not recur in these five browser flows; its cause remains open.
+
+## R5 follow-up: console-bound Structure (2 November 2026)
+
+Code `fe518fb5554f9975a29a878fae1eccfc08a1ba52`, tree `24dcdd37bfaef069c643ee2fc7d6e1df36da4121`, enables object/column Structure
+navigation from primary and isolated SQL consoles. Inspectors retain source tab,
+connection, session, frontend context epoch and the observed catalog revision.
+Tab identity includes that origin; reopening a matching target refreshes metadata
+and column highlighting. Source closure, session rebinding/disconnect, reconnect
+and context changes never substitute the primary session. Inspectors are not
+session owners, workspace drafts, bookmarks or connection-level recent locations.
+
+Metadata is read from the originating session. The catalog revision is checked
+before and after schema/details requests; column lookup uses the revision-checked
+completion schema path. Result identity includes tab, session, context, target
+and refresh revision. Cleanup and current-source guards reject obsolete replies.
+Extended-detail denial retains successful columns. Capabilities still gate
+extended object inspection. Local CTE/alias/output jumps and R6 execution origins
+are unchanged. Navigation makes no execution/preparation or table-browse request.
+
+These inspectors offer read-only Structure and DDL copying. Existing dependency,
+owner/index/trigger click-through and **Open in SQL editor** actions are withheld
+in this new path because their older actions select the primary session. The
+normal explorer retains its existing behavior. Context-preserving metadata links
+and explicit DDL-to-console insertion are the next bounded follow-up.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | A store regression initially failed because no session-aware object-opening action existed; a second regression reproduced the unbound DDL editor action and now confirms it is withheld; the former isolated-console browser test explicitly expected the withheld F12 jump. It now opens a highlighted inspector without primary table browsing |
+| Passed | `pnpm validate`: 237 frontend tests / 34 files, 156 standard Rust tests (135 core plus 21 other checks), contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused regressions | Two store cases and seven inspector cases verify identity/deduplication, no data browsing, denied details, observed context changes before/during reads, late replies after closure/rebinding/context change and no primary fallback |
+| Browser | All six SQL navigation flows pass on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4. The new PostgreSQL flow opens distinct Structure/DDL inspectors from two isolated sessions plus the primary console, asserts each details request's session ID and sees no browse/prepare/execute requests. Existing named-output/local-jump, stale metadata and permission flows pass; zero page errors in the instrumented engine and three-session flows. Async selection assertions now wait for navigation completion. Earlier in-progress runs were interrupted by source/contract regeneration; the final unchanged-source run passes |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `fbf89916efb0e158bc010f0f9203bcbd4b6a9a37b945c3ffd98c4a96fd74a7b8`; isolated ad-hoc bundle executable SHA-256 `99092751829fa9b95f4c4a5eccf6d3081e65a51f34c2ce31d878becf39aea1ca`. Existing synthetic IPC/worker/cleanup baseline only; Structure interaction evidence is browser-based, not native UI qualification |
+| Prior qualification | Full 86-flow browser suite belongs to `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc distribution bundle belong to `b80b6c7`; those broader checks were not rerun on this later source. Named-output and style evidence retain `c32f0c2` and `d39b89b` |
+| Open | Context-preserving inspector links/DDL-to-console insertion, broader semantic analysis/projection shapes, context-aware templates/style controls, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Preserve the inspector origin through dependency/owner/index/trigger navigation and explicit DDL insertion into a still-bound source console. Then continue bounded SQL refactoring/semantics and remaining R5/R6/R7/R8. Application push, merge, release and installation remain separate authorized steps |
+
+Logs: `.cache/r5-console-structure-validate.log`,
+`.cache/r5-console-structure-browser.log`,
+`.cache/r5-console-structure-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-console-structure-native-evidence.json`. Local, unmerged, unreleased
+and not installed. Owned database fixtures were stopped and removed; user
+services were preserved. No hooks or execution gates were bypassed. The earlier
+metadata-startup flake did not recur in these six flows; its cause remains open.
+A fresh `origin/main` fetch remains `a0ba1a6`. The live GitHub release refresh was
+blocked by automatic approval policy, so preview.15 remains **last verified**;
+the installed application was not requalified.
+
+## R5 follow-up: context-preserving inspector actions (2 November 2026)
+
+Code `34c001a57019619a1da9db215e117c3eb16b15f7`, tree `bd6ca32dff2965ff8e4905cd2117e8d1906177cf`, continues console-bound Structure
+through foreign-key, index, trigger, dependency and owner-table links. Every
+linked inspector retains the frozen source tab, session, frontend context epoch
+and observed catalog revision. It never owns a session, browses table data or
+substitutes the primary session. Normal explorer navigation retains its routing.
+
+**Append DDL to source console** checks the current catalog before explicitly
+appending the displayed DDL after existing SQL and returning to the source tab.
+It preserves the file token/name, saved baseline/dirty tracking, retained results
+and query-session ownership. No preparation or execution request is made. Empty
+DDL, a closed/rebound/disconnected/context-changed source, a queued/running
+console, denied metadata, a changed catalog or an obsolete inspector action
+cannot append. Current-origin checks run before and after the asynchronous
+catalog read; pending actions are serialized and unmounted/refreshed results
+are discarded. Database execution still follows the existing Rust approvals.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced and fixed | Five new store regressions initially failed because linked-session navigation and source DDL append actions did not exist. They now verify preserved SQL/file dirty tracking/session ownership and rejected invalid/busy sources |
+| Passed | `pnpm validate`: 253 frontend tests / 34 files, 156 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy. The final browser-only assertion fixes also pass their formatting check |
+| Focused regressions | 16 additional frontend cases cover linked target identity, all five link types, source closure/rebinding/context changes, denied/changed catalog replies, inspector refresh and DDL append without SQL loss or execution |
+| Browser | All six SQL navigation flows pass on fresh disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4. The expanded PostgreSQL flow follows index → owner table → trigger → function, follows a foreign key and appends exact DDL back to each of two isolated source consoles; the primary console also appends to itself. Each linked details request uses the originating session, all three retain existing SQL/session selection, and the flow sees no browse/prepare/execute requests or page errors. Test assertions restore the caret after editor remount, await the intended object's request and compare CodeMirror lines with newlines preserved |
+| Fixture | The PostgreSQL trigger/function chain is initialized by the tracked disposable fixture. The existing ignored object-explorer regression also passes against this database, covering overloaded identities, DDL, dependencies and permission limits; this is one additional fixture check, not a rerun of all 66 |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `199fcfc2c361e5e4ff912d4ddec5d9a083e5a79ca79317ee2833624d53732a94`; isolated ad-hoc bundle executable SHA-256 `58c8282b7492c9a22d75ff8cdb7f46ce0b39db7943d1de1915626ff4887a30c0`. This remains the synthetic IPC/worker/cleanup baseline; new inspector interaction evidence is browser-based, not native UI qualification |
+| Prior qualification | Full 86-flow browser suite belongs to `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and the normal ad-hoc distribution bundle belong to `b80b6c7`; those broader checks were not rerun on this source. Earlier formatting, named-output and initial console Structure evidence retains its revisions |
+| Open | Scope-correct refactoring, broader semantic analysis/projection shapes, context-aware templates/style controls, observed Snowflake identity/live account qualification, native UI/accessibility, representative performance, Windows/Linux runtime, Developer ID signing/notarization and release/install gates |
+| Next | Bounded alias rename preview (E10): prove the declaration/reference scope, preview edits and require explicit apply; preserve quoting/case and reject ambiguous/unsupported or stale document/session/context cases. One undo must restore the original text. Never rename a database object or execute SQL. Then continue remaining R5/R6/R7/R8 |
+
+Logs: `.cache/r5-inspector-actions-validate.log`,
+`.cache/r5-inspector-actions-browser.log`,
+`.cache/r5-inspector-actions-postgres-inspector.log`,
+`.cache/r5-inspector-actions-native-{build,runs}.log`. Immutable native evidence:
+`.cache/r5-inspector-actions-native-evidence.json`. Local, unmerged, unreleased
+and not installed. Owned database fixtures were stopped and removed; user
+services were preserved. No hooks or execution gates were bypassed. The earlier
+metadata-startup flake did not recur in these six flows; its cause remains open.
+The fetched `origin/main` remains `a0ba1a6`. Release metadata was not refreshed
+in this slice; preview.15 remains last verified, and the installed application
+was not requalified. Application push, merge, release and installation remain
+separate authorized steps.
+
+## R5 follow-up: bounded alias rename (2 November 2026)
+
+Code `e0526268fab3f9162b3bd890b1484a3d90b127db`, tree `2698b041469a6dfa2adab8ea464260367bee9f97`, adds **Rename alias** / Shift-F6.
+The dialog lists every local declaration/qualified-reference edit, requires
+explicit Apply, preserves quoted identifiers with escaped delimiters and applies
+one isolated CodeMirror transaction. One undo restores the original SQL.
+Comments, string literals, other statements and nested shadowing are preserved;
+proven correlated references follow their declaration. CTE bodies and non-lateral
+derived tables cannot adopt their containing query's FROM aliases. Renaming
+neither changes a database object nor prepares/executes SQL. Run shortcuts are
+isolated while the dialog owns keyboard focus.
+
+This independent analysis never uses the capped navigation usages as edit proof.
+It rejects name collisions, captured/unbound qualifiers, ambiguous whole-row/bare
+names, stale document identity (even after restoring identical text), editor/session/
+context/catalog changes, invalid or overlong names and partial scans. Bounds:
+65,536 UTF-16 units per statement / 4,096 lexical tokens / 16 nested levels / 64 query bodies /
+500 edits. New names stop at 128 UTF-16 units, with PostgreSQL's 63-byte and
+MySQL/MariaDB's 64-character bounds also enforced. MySQL alias case checks are
+conservative. SELECT/WITH with physical, CTE and SELECT-derived aliases is the
+supported subset; DML/data-modifying CTEs, set operations, LATERAL/APPLY, table
+functions, relation column lists, parenthesized joins and other unsupported
+relation modifiers are withheld. Nested multi-relation queries that hide an outer
+name are also withheld: earlier JOIN ON clauses have different visibility from
+the complete query. The SQL lexer is not a complete semantic SQL validator.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Missing rename analysis failed the initial behavior tests. A later dedicated regression reproduced unsafe whole-query name resolution for an earlier JOIN ON clause followed by a shadowing alias; this shape is now explicitly withheld |
+| Passed | `pnpm validate`: 277 frontend tests / 35 files, 156 standard Rust tests, contracts, types, production frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused unit/UI | 24 new cases cover full edit lists, shadowing/correlation, CTE/derived boundaries, capture/collisions, quoted delimiters across PostgreSQL/MySQL/Snowflake dialects, identifier limits, unsupported shapes, stale documents, explicit Apply/cancel and dialog shortcut isolation |
+| Browser | All nine focused flows pass against disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4: three new rename workflows plus all six SQL navigation regressions. Preview/cancel/apply, original SQL preservation, one-step undo, escaped quoted aliases, capture/unsupported rejection and document/context refresh invalidation pass, with no prepare/execute requests or page errors. A Vite module import drives a background document-change regression; the editor is correctly inert/hidden during preview |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `7410d2059eb94aa4c78cb1712305c1fea6995ba070389e989834a4c5a9209040`; isolated ad-hoc bundle executable SHA-256 `1f7374dcfb4748f785ffb792b1fbfd32148992d900c8cad0ba1ec863fee907e0`. Synthetic IPC/worker/cleanup baseline only; rename interaction evidence is browser-based, not native UI qualification |
+| Prior evidence | The single PostgreSQL inspector fixture belongs to `34c001a`. The full 86-flow browser run belongs to `db5cd1b`; all 66 ignored fixtures and normal ad-hoc distribution bundle belong to `b80b6c7`. None is relabeled as rerun here. Snowflake rename checks are local dialect tests, not live account qualification |
+| Open | Broader refactoring and semantic inspections/templates; R5/R6 depth, R7/R8, observed Snowflake identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates |
+| Next | Model ordered JOIN visibility for alias rename, reproduce earlier-ON correlated/shadowing cases, and enable only proven scopes with the same preview/capture/staleness/undo guarantees. Then continue bounded CTE rename, semantic inspections/templates and remaining R5/R6/R7/R8 |
+
+Logs: `.cache/r5-alias-rename-{reproduction,join-reproduction,validate,browser,native-build,native-runs}.log`.
+Immutable native evidence: `.cache/r5-alias-rename-native-evidence.json`.
+Initial browser assertions were corrected to inspect the modal-hidden editor via
+its DOM locator. A development-page reload interrupted one intermediate run;
+final focused runs pass. No known test failure was bypassed. Owned fixtures were
+removed; user services remain running. Fetched `origin/main` is `a0ba1a6`.
+Release metadata was not refreshed in this slice; preview.15 remains last verified.
+Local, unmerged, unreleased and not installed; application push/merge/release/
+installation remain separate authorized steps.
+
+## R5 follow-up: ordered JOIN alias visibility (2 November 2026)
+
+Code `1edc2d748d7fcac4bf59875249cbfecee82a1ce4`, tree `6b753a39e325f072a004cbe7b5648df945276be1`, removes the blanket rejection
+of nested multi-relation queries that shadow an outer alias. Each ON clause now
+owns the actual JOIN operands, including its correlated expression/subquery
+children. Later aliases cannot hide earlier outer references; earlier comma
+groups stay outside another JOIN's condition. A pending-JOIN stack preserves
+`a JOIN b JOIN c ON ... ON ...` association. Completed CROSS/NATURAL/USING joins
+retain their operands, and MySQL CROSS JOIN ON/USING conditions remain supported.
+SELECT/WHERE/ORDER clauses retain the complete query scope. Proposed-name capture
+checks use these same environments; later local aliases keep their own uses.
+
+The existing explicit preview/Apply, dialect quoting, complete edit list,
+identifier/statement/token/nesting/edit limits, stale document/session/context
+rejection and isolated one-step undo remain in force. Parenthesized joined tables,
+LATERAL, DML/set operations, table functions, relation-column lists and unsupported
+modifiers remain withheld; PostgreSQL USING-column aliases are explicitly rejected.
+This remains a bounded lexical analysis, not a full SQL semantic validator.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Ten new failures on the previous source cover earlier-ON shadowing, comma-group visibility, nested JOIN association and unsupported USING-column aliases |
+| Passed | `pnpm validate`: 290 frontend tests / 35 files, 156 standard Rust tests, contracts, types, frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused unit | Thirteen additional cases (91 navigation tests total) cover outer/later-local rename, capture/unbound qualifiers, comma groups, nested JOINs, completed CROSS/NATURAL/USING operands, MySQL CROSS conditions and local Snowflake dialect quoting/case |
+| Browser | Twelve focused PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4 flows pass: all nine previous rename/navigation flows plus three new ordered-JOIN workflows. Each new workflow checks three query shapes, explicit before/after test reads returning one row, exact preserved edits, capture rejection, zero execution requests during rename, and undo. No page errors |
+| Timing regression | The first PostgreSQL browser run opened preview after result arrival but before final query/session events; that legitimate context transition invalidated it. The test now waits for completed-query UI and refreshed context. The final twelve-flow run passes; staleness guards remain enabled |
+| Prior evidence | Native macOS hidden baseline belongs to `e052626`: three fresh processes / 30 cleanup cycles, synthetic IPC/worker/cleanup only. Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc bundle: `b80b6c7`. None was rerun or relabeled as current qualification |
+| Open | Bounded CTE rename, semantic inspections/templates and remaining R5/R6/R7/R8; observed Snowflake identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates |
+| Next | Prove declaration/relation scope for bounded non-recursive CTE rename, including ordered WITH entries, nested shadowing, implicit qualifiers and proposed-name capture, with the same complete preview/context/undo guarantees |
+
+Logs: `.cache/r5-ordered-join-{before,unit,validate,browser,fixtures}.log`.
+Direct disposable-engine checks independently confirmed the earlier-ON,
+comma-group, nested JOIN and completed CROSS association used by the tests.
+Reference semantics: [PostgreSQL SELECT](https://www.postgresql.org/docs/18/sql-select.html)
+and [MySQL 8.4 JOIN](https://dev.mysql.com/doc/refman/8.4/en/join.html).
+Snowflake remains local dialect evidence only. No external account was queried.
+Fetched `origin/main` is still `a0ba1a6`; preview.15 remains the last verified
+published application release, without a fresh release metadata check here.
+Local, unmerged, unreleased and not installed. No application push, merge,
+release or installation occurred.
+
+## R5 follow-up: bounded CTE rename (2 November 2026)
+
+Code `072e4ff3c9ce57988ce16c59f2dd4fd87aa2f78a`, tree `1f4ebf3f4327eec3adee933e0f7b2cfa032568bc`, extends
+Shift-F6 / **Rename alias / CTE** to nonrecursive SELECT CTEs. Declaration,
+unqualified FROM/JOIN relation uses and implicit qualified references share a
+scope identity. Earlier WITH entries become visible after their body; later
+siblings cannot capture an earlier body. Explicit aliases remain independent;
+schema-qualified physical tables, comments, strings and other statements are
+preserved. PostgreSQL nested WITH shadowing, explicit output lists and
+MATERIALIZED / NOT MATERIALIZED are covered. Quoted identifiers retain escaped
+delimiters. Proposed-name simulation checks every CTE/physical relation use and
+every relevant qualifier, including unresolved names, for changed binding.
+
+Preview lists the entire edit set and requires explicit Apply. One isolated
+transaction gives one-step undo; stale document/editor/session/context/catalog
+identity is rejected. Dialog run shortcuts cannot execute. This changes SQL text,
+never database objects or authorization. Existing bounds remain 65,536 UTF-16
+statement units / 4,096 tokens / 16 levels / 64 query bodies / 500 edits, with
+128-unit replacement names plus PostgreSQL 63-byte / MySQL-family 64-character
+limits. Recursive WITH, DML, set operations, whole-row/bare-name ambiguity,
+LATERAL/APPLY, functions, alias-column lists, parenthesized joins and unsupported
+modifiers remain withheld. This is bounded lexical analysis, not full SQL validation.
+
+**Engine boundary reproduced:** PostgreSQL 18 and MySQL 8.4 execute the outer-CTE
+read in an inner WITH definition; MariaDB 11.4 reports missing table `src`.
+This occurs both with a later same-name inner CTE and with a distinct inner name.
+The shared MySQL/MariaDB editor dialect therefore withholds nested WITH beneath
+an outer CTE scope for both alias and CTE rename, even for some valid MySQL SQL.
+It retains ordered top-level CTE entries and nested SELECT subqueries. The
+browser suite explicitly asserts both unsupported forms offer no rename and send
+no execution request. No backend-version detection or broader compatibility is claimed.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Initial missing-feature suite: 20 failures / 98 passes. Two intermediate browser runs exposed the MariaDB boundary above; direct CLI probes confirmed it. The unsupported scope is now rejected, rather than applying edits under another engine's resolution rules |
+| Passed | `pnpm validate`: 327 frontend tests / 35 files, 156 standard Rust tests, contracts, types, frontend build, formatting, compilation and strict all-target/all-feature Clippy |
+| Focused unit/UI | 37 additional cases: 36 analyzer cases plus the CTE dialog case. Ordered WITH visibility, declaration/relation/qualifier entry points, explicit aliases, physical relations, nested PostgreSQL shadowing, capture/unresolved names, quoting/limits/stale documents, unsupported shared-MySQL scopes, recursive/DML/set/whole-row/LATERAL rejection and complete edit bounds |
+| Browser | All fifteen focused flows pass on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4. Three new CTE flows each compare three original/renamed query pairs through decoded Arrow values, including exact `9007199254740992` / `9007199254740993` text on MySQL-family fixtures. Preview/cancel/Apply/one undo, quoting, sibling/alias collision, shortcut isolation, document/context invalidation, unsupported/recursive rejection and zero requests during rename pass. All twelve previous alias/JOIN/navigation flows pass; zero page errors |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass. Fixture SHA-256 `5e7efdfabcad243851d7b9d01b758e74c9ddf0917dfd0dc71f4441bd900697ec`; isolated ad-hoc bundle executable SHA-256 `d81323ba7b4c40522d427d995cf98da273bd11ff805755fd0167f713d4024814`. Synthetic IPC/worker/cleanup baseline only; CTE rename interaction evidence is browser-based, not native UI qualification |
+| Prior evidence | Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc distribution bundle: `b80b6c7`. None is relabeled as rerun here. Snowflake checks are local dialect evidence only |
+| Open | Broader refactoring, semantic inspections/templates and remaining R5/R6/R7/R8; observed Snowflake identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates |
+| Next | Bounded on-demand missing qualified-column inspection using successful current-session direct-table schema metadata, with user-selected real-column correction, exact preview/Apply/stale checks/undo and no execution. Withhold ambiguous, denied, partial or unsupported metadata; then continue richer templates and remaining roadmap |
+
+Logs: `.cache/r5-cte-rename-before.log`,
+`.cache/r5-cte-rename-validate-qualified.log`,
+`.cache/r5-cte-rename-browser-qualified.log`,
+`.cache/r5-cte-rename-native-{build,runs}.log`.
+Immutable native evidence: `.cache/r5-cte-rename-native-evidence.json`.
+Reference semantics: [PostgreSQL SELECT](https://www.postgresql.org/docs/18/sql-select.html),
+[MySQL 8.4 WITH](https://dev.mysql.com/doc/refman/8.4/en/with.html), and
+[MariaDB WITH](https://mariadb.com/docs/server/reference/sql-statements/data-manipulation/selecting-data/common-table-expressions/with).
+The precise MariaDB limitation above is fixture-derived, not inferred from those docs.
+Owned fixtures were removed; user services were preserved. No external account
+was queried. Fetched `origin/main` remains `a0ba1a6`; preview.15 is the last
+verified release, without a fresh release/installed-version qualification here.
+The earlier metadata-startup flake did not recur in fifteen focused flows; its
+cause remains open. Local, unmerged, unreleased and not installed. No application
+push, merge, release or installation occurred.
+
+## R5 follow-up: qualified-column inspections (2 November 2026)
+
+Code `cfb6139211c0a06080ab7cecca102e9a0006b1ee`, tree `6d0910aef9b2ec7b1554d7ba3424453385fd8740`, adds **Inspect columns** to SQL
+consoles. The first E08 slice checks qualified references in one direct-table
+SELECT on PostgreSQL/MySQL/MariaDB, including explicit/implicit aliases,
+WHERE/ORDER BY and non-query expressions. It uses the current console's catalog
+identity and a fresh `inspection_schema` read; cached or permission-filtered
+completion lists cannot prove absence. Unqualified relations require the
+server-observed visible-table set. Unresolved/ambiguous tables, views, incomplete
+syntax and unsupported shapes are withheld.
+
+The new backend read shares completion's active-session lane, revision, observed
+identity, visible-table and resource guards. PostgreSQL reads all physical column
+privilege flags together and rejects any nonselectable column before returning
+metadata. MySQL/MariaDB compare selectable SHOW FULL COLUMNS names with the full
+SHOW CREATE TABLE column AST; hidden/denied columns, unavailable DDL or unsupported
+parsing reject the read. No hidden column names or raw DDL enter the inspection
+response. Completion's permission-filtered behavior is preserved. These are
+metadata reads; no editor SQL is prepared or executed through inspection.
+
+The dialog reports checked qualified references and missing occurrences with
+line numbers. A replacement must be a real column from that exact metadata
+snapshot. It previews an escaped, always-quoted token replacement; Apply changes
+only the chosen occurrence in one isolated undo transaction. Changing SQL,
+editor/session/context/catalog revision or refreshing metadata invalidates it.
+Dialog shortcuts cannot run SQL. SQL execution errors retain their separate
+path. This neither validates the full query nor decides authorization.
+
+Limits: 65,536 UTF-16 statement units / 4,096 lexer tokens, 16 expression levels,
+one direct table and at most 2,048 returned columns; backend metadata remains
+bounded at 4,096 columns / 1 MiB. Overlong PostgreSQL/MySQL identifiers are
+withheld to avoid server-truncation assumptions. PostgreSQL physical system
+columns are recognized without offering them as catalog replacements. MySQL's
+implicit `_rowid`, joins/comma relations, CTEs, derived/nested queries, views,
+set operations, table-valued functions, three-part column inference and unsupported
+modifiers remain withheld. Snowflake/Redis inspections are unavailable. This is
+bounded lexical inspection, not full SQL semantics or automatic repair.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | Existing live completion fixtures return only `visible_note` under column grants. Treating that list as complete would mislabel a hidden column; inspection now rejects it. A new delayed-read/F1 browser regression reproduced a permanently disabled Inspect button; request-owned busy cleanup fixes it. The first native baseline on `f712649` failed all three guard checks because the new command lacked Tauri build-manifest and main-window ACL enrollment; the final source adds both and passes. Initial modal assertions used a role query against the correctly inert background editor; that test locator was corrected |
+| Standard | `pnpm validate`: 354 frontend tests / 37 files and 156 standard Rust tests; contracts, types, frontend build, formatting, Cargo fmt/check and strict all-target/all-feature Clippy pass. After the navigation-race fix, frontend checks and focused browser tests pass again; the native smoke build covers final types/build and registration |
+| Unit/UI | 27 added analyzer/dialog cases cover repeated references, comments/literals/other statements, exact quoted catalog choices, single-occurrence edits, PostgreSQL folded/quoted names and system columns, MySQL column/alias case policy, truncation limits, untrusted/stale edits, unknown visibility, duplicate/empty/wrong schemas, unsupported scopes, explicit Apply/cancel/focus and keyboard isolation |
+| Live fixtures | PostgreSQL completion role/search-path/rollback/permission test and MySQL-family database/role/column-grant test pass; the latter runs MySQL 8.4 and MariaDB 11.4. Full-grant inspection succeeds, partial columns and obsolete revisions reject, and existing completion output remains filtered. A first PostgreSQL attempt used the wrong port environment variable before readiness; corrected `JOINERY_TEST_PORT=55433` passes |
+| Browser | All eighteen focused flows pass on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4. Three new flows compare decoded Arrow values from explicit original/corrected reads, retaining exact large integer text. Fresh reads, preview/cancel/catalog choice/Apply/one undo, shortcut isolation, document/refresh invalidation, denied response, delayed stale response, navigation cancellation/retry, clean limited result and unsupported CTE rejection pass. No editor prepare/execute request during inspection; zero page errors. Prior fifteen rename/navigation flows also pass |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass, including disconnected-session rejection of the new IPC command. Fixture SHA-256 `9d03e7690ccadbf271013f28e01e85874215944e380c86950493e9eb37e61d96`; isolated ad-hoc bundle executable SHA-256 `b997b0363e01b2258b53e4e05d559b4b6d2d4ebbacab052ce20f7382774a9f1e`. Synthetic IPC/worker/cleanup only; inspection interaction is browser evidence, not native UI qualification |
+| Prior evidence | Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc distribution bundle: `b80b6c7`. These are not relabeled as rerun here |
+| Open / next | E08 and R5/R6 stay partial. Extend inspections to ordered direct-table JOIN scopes with complete per-table metadata and conservative ambiguity, then context-aware templates and remaining R5/R6/R7/R8. Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates remain open |
+
+Logs: `.cache/r5-column-inspections-validate-qualified.log`,
+`.cache/r5-column-inspections-check-final.log`,
+`.cache/r5-column-inspections-postgres-qualified.log`,
+`.cache/r5-column-inspections-mysql.log`,
+`.cache/r5-column-inspections-navigation-before.log`,
+`.cache/r5-column-inspections-browser-navigation-fixed.log`,
+`.cache/r5-column-inspections-browser-copy.log` (three final-copy flows),
+`.cache/r5-column-inspections-native-acl-{build,runs}.log`,
+`.cache/r5-column-inspections-native-build-final.log`,
+`.cache/r5-column-inspections-native-runs-final.log`.
+Immutable native record: `.cache/r5-column-inspections-native-evidence.json`.
+Initial native failure: `.cache/r5-column-inspections-native-before-evidence.json`.
+Owned fixtures and processes were removed; user services were preserved. No
+external account was queried. Fetched `origin/main` remains `a0ba1a6`;
+preview.15 is the last verified release without fresh release/install qualification.
+Local, unmerged, unreleased and not installed. No application push, merge,
+release or installation occurred.
+
+## R5 follow-up: ordered JOIN column inspections (2 November 2026)
+
+Code `46912f5582ed2eb8363332e67f6738f3551254ab`, tree `6460fdf56ea57a43211f60f6bedd2383e617b422`, extends **Inspect columns** from
+one base table to flat direct-table SELECTs with ordered JOINs/comma groups on
+PostgreSQL/MySQL/MariaDB. The bounded relation parser keeps explicit JOIN operands,
+pending JOIN association and comma precedence. An ON reference cannot see later
+relations or earlier comma groups outside its operands. Projection and remaining
+clauses see the completed relation scope. Supported forms include ordinary/INNER,
+LEFT/RIGHT, PostgreSQL FULL, CROSS, NATURAL and USING; MySQL-family optional inner
+conditions and CROSS conditions retain their dialect distinction. USING names
+and unqualified columns are not diagnosed. This is not full SQL validation.
+
+Fresh complete selectable metadata is requested sequentially on the existing
+active-session/revision IPC lane for every distinct table; self-joins share one
+read while preserving aliases. No new IPC/backend behavior is introduced. Stale
+document/session/context/refresh/navigation stops further reads and discards the
+result. Missing, duplicate, wrong, empty, oversized or denied table metadata
+withholds the whole result. Limits: 32 relation operands, 2,048 columns per table,
+8,192 columns / 4 MiB aggregate metadata, plus existing 65,536 UTF-16 statement
+units / 4,096 lexer tokens / 16 expression levels. No completion candidate cap
+is substituted for the relation scope. The backend's existing per-read metadata
+limits and permission checks remain.
+
+Issues identify qualifier, table and occurrence. The replacement list comes only
+from that issue's table; changing the issue clears the prior choice. Exact quoted
+preview, explicit Apply, one-occurrence edit, one undo and current-context checks
+remain. Inspection never prepares or runs editor SQL. Views, CTE/derived/nested
+queries, parenthesized relation groups, unsupported modifiers, ambiguous scope,
+unqualified-column inference and Snowflake/Redis inspections remain withheld.
+
+| State | Evidence for this source |
+|---|---|
+| Reproduced | The initial JOIN corpus on the single-table implementation produced eight failures / nine passes. The first extension passed 41 cases but rejected USING(id), because the dialect lexer classifies its bare name as Keyword; bounded name handling fixes it. An intermediate type check exposed a token predicate narrowing known tokens to never; the predicate now returns a boolean. No application runtime failure remained |
+| Standard | `pnpm validate` passes: 379 frontend tests / 38 files, 156 standard Rust tests, contracts/types, formatting, frontend production build, Cargo fmt/check and strict all-target/all-feature Clippy. The 69 ignored Rust tests are not relabeled as fixture passes |
+| Unit/UI | 26 JOIN analyzer cases plus one dialog case cover owning-table columns, exact PG/MySQL quotes, ON visibility, comma/CROSS precedence, pending joins, self-join deduplication, dialect JOIN forms, malformed/unsupported scope, nested expressions, 32 accepted versus 33 rejected operands, per-table/aggregate count and byte limits, unique/complete schemas, MySQL case-folded duplicate columns and issue-switch choice reset. Two prior single-table rejection cases now have positive JOIN coverage |
+| Browser | Six inspection flows plus fifteen existing alias/CTE rename/navigation flows pass on disposable PostgreSQL 18 / MySQL 8.4 / MariaDB 11.4. New JOIN flows compare decoded Arrow values `[7, SKU-7-2]` before/after two explicit corrections, test table-specific choices/reset, preview/Apply/undo, one self-join metadata read, stale-first-read suppression of the second request, denied second-table response and unknown future ON qualifier rejection before IPC. Inspection generates no editor prepare/execute requests; zero page errors. Existing single-table invalidation/cancel/retry and navigation/isolated-inspector flows also pass |
+| Native | Clean-source macOS arm64 hidden build records this code/tree with `sourceDirty: false`; three fresh WebView processes / 30 cleanup cycles pass, including the existing disconnected inspection IPC guard. Fixture SHA-256 `16a501f381351d32733b9a4c6cfbc8e4eae76a1834f6092507a6b6c45e670339`; isolated ad-hoc bundle executable SHA-256 `1e4b254ed4f12d4c878180b21b818ebccce115b84e1a039a948d88aec9566ec8`. Synthetic IPC/worker/cleanup only; JOIN interaction is browser evidence, not native UI/accessibility or performance qualification |
+| Prior evidence | Complete-selectable metadata permission/context fixtures remain on `cfb6139`; no backend code changed here. Inspector fixture: `34c001a`. Full 86-flow browser suite: `db5cd1b`. All 66 ignored SQL/Redis/SSH fixtures and normal ad-hoc distribution bundle: `b80b6c7`. These were not rerun or relabeled |
+| Open / next | E08 and R5/R6 remain partial. Context-aware live templates are the following section. Broader CTE/derived/unqualified inspection, semantic template placement, remaining R5/R6/R7/R8, Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and delivery gates remain open |
+
+Logs: `.cache/r5-join-inspections-before.log`,
+`.cache/r5-join-inspections-unit.log`, `.cache/r5-join-inspections-validate.log`,
+`.cache/r5-join-inspections-browser.log` (six flows),
+`.cache/r5-join-inspections-navigation.log` (fifteen flows),
+`.cache/r5-join-inspections-native-{build,runs}.log`.
+Immutable native record: `.cache/r5-join-inspections-native-evidence.json`.
+Owned fixtures/processes were removed; user services were preserved. No external
+account was queried. Fetched `origin/main` remains `a0ba1a6`; preview.15 is the
+last verified release without fresh release/install qualification. Local,
+unmerged, unreleased and not installed. No application push, merge, release or
+installation occurred.
+
+## R5 follow-up: context-aware live templates (2 November 2026)
+
+Code `51ad451e6cd0e044fdaa1f75d83d3049c1fa8f63`, tree `8d5334573bd545353868f97f5d225df98e301218`, adds `{{database}}`, `{{schema}}` and `{{selection}}` to built-in and custom SQL templates. Database and schema values are quoted identifiers from the active console's observed runtime state. MySQL/MariaDB schema means the current database and uses backticks; PostgreSQL and Snowflake use doubled double quotes. Selected text is inserted literally, including placeholder-like text, and is not expanded again. Unknown, incomplete or missing values block insertion and leave the document unchanged. Tab stops and one undo step remain. Expansion edits the editor only. It does not prepare or execute SQL.
+
+Completion and the Insert template chooser share that expansion. A completion failure is reported instead of becoming an unhandled rejection. A document, selection, session, snippet list or console-context change while context is loading rejects the pending insertion. Custom bodies still have the 16 KiB storage limit and round-trip through metadata backup. Expanded text is limited to 1 MiB UTF-8. The contract is [sql-live-templates.md](sql-live-templates.md).
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-template-context.test.ts` and `sql-snippets.test.ts`: 31 passed. Cases cover quoted odd identifiers for PostgreSQL, MySQL and Snowflake, literal repeated selection, tab stops, one undo, missing/unknown/incomplete variables, context-read failure, stale document/selection/context, and a completion failure notification. The Rust snippet backup test `sql_format_settings_and_snippets_validate_bounds_triggers_and_backup_recovery` passes with a body that contains these variables |
+| Browser | Six flows pass on disposable PostgreSQL 18, MySQL 8.4 and MariaDB 11.4 (50.9s). Each engine expands a custom template from completion on the primary console, wraps selected SQL from Insert template, repeats the expansion on an isolated console after `completion_alt`, and compares a harmless explicit read with the baseline value. Failure flows reject an unknown variable, an empty selection, missing schema, a context refresh during insertion, and cancel during the context read. Editor text stays unchanged and those flows issue no prepare/execute requests. The stale disposable PostgreSQL volume used by the first attempt had no `completion_alt` schema; it was recreated from `tests/fixtures/postgres.sql` before the passing run. An intermediate MySQL failure was the test holding `session_contexts` while the console was still settling |
+| Not executed | The ignored fixture suites, the full browser suite, and a clean-source native/bundle build were not rerun for this slice. Local `pnpm validate` later passed on `a01ef1a` (401 frontend tests, 156 standard Rust tests, fmt/check/clippy). GitHub integration on that revision then failed three end-to-end flows that parsed a released-result response; `f286642` waits for the HTTP 200 page. Snowflake quoting is unit-only. The owner-private Site was not updated; Sites tools are not available in this session |
+| Open / next | See the CTE/derived inspection section below. Semantic template placement, expressions/macros and remaining R5/R6/R7/R8 stay open. Snowflake observed identity/live qualification, native UI/accessibility, representative performance/recovery, Windows/Linux runtime, signing/notarization and release/install gates remain open |
+
+Log: `.cache/r5-live-templates-browser-3.log`. Fetched `origin/main` remains `a0ba1a6`. Local, unmerged, unreleased and not installed. No application push, merge, release or installation occurred.
+
+## R5 follow-up: CTE and derived column inspection (2 November 2026)
+
+Code `15089a180156477b9103411e79d96807e3a71e79` checks qualified columns in one non-recursive CTE, or one derived table, whose body is a direct-table SELECT with the existing JOIN bounds. Output names are simple column references and aliases. Stars, column lists, recursive CTEs, multiple CTEs and set operations still withhold the claim. A missing name is reported against the query output. The correction list is the projected names, not every column of the source table. Fresh metadata is still required for each base table, and a projected source column that is absent from that metadata withholds the inspection. PostgreSQL system columns count only when the query projects them. Inspection still does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts`, `sql-join-inspections.test.ts` and `SqlColumnInspectionDialog.test.tsx` cover a CTE alias, a derived table, nested derived output, a JOIN inside a CTE, body references that stay on the base catalog, quoted projection names, hidden catalog and system columns, a CTE that shadows a base table of the same name, and a derived JOIN operand |
+| Validate | `pnpm validate` passed before the two-line end-to-end predicate in `f286642`: 409 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run. Prettier was checked again after that predicate |
+| Not executed | The owner-private Site was not updated. This note does not claim the follow-up integration run is green |
+| CI | `3eb3181` was pushed on PR #31. Integration run `41431916649` failed the leftover end-to-end assertion that `WITH c AS (SELECT id …) SELECT c.typo FROM c` is unsupported. Check jobs on that revision passed. The column-inspection spec now expects the projection dialog for that query, still offers only `id`, and still expects two CTEs to withhold without another metadata read |
+| Open / next | See the unqualified select-list section below |
+
+Fetched `origin/main` remains `a0ba1a6`. Pushed on `feat/estimated-query-plans`, unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: unqualified select-list columns (2 November 2026)
+
+A top-level name in the select list is checked against the single relation in scope. That relation may be a base table, or the output of one supported CTE or derived query. The correction replaces that name and leaves an alias in place. When several relations are in scope, the name is kept only when exactly one of them owns it. Zero or several owners withhold the inspection, and no column claim is made. Names in WHERE, ORDER BY, GROUP BY, HAVING and function arguments are still ignored. Multiple CTEs, recursive queries and stars still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover one table, an aliased table, a derived output, a present projected name, MySQL `_rowid`, a joined column owned by one table, and joined names that match none or several relations |
+| Validate | `pnpm validate` passed: 410 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated. Integration on `d2d0cd1` / `ce7cdaf` is not claimed green |
+| Open / next | Semantic template placement, unqualified names outside the select list, multiple and recursive CTEs, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` remains `a0ba1a6`. Local until this revision is pushed. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

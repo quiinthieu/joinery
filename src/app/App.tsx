@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { planSourceForExecution } from "../features/studio/plan-snapshots";
 import {
   Activity,
   ArrowDownLeft,
@@ -47,7 +48,12 @@ import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
 import { Modal, InlineError } from "../components/ui/Modal";
 import { tabNavigation } from "../components/ui/tabs";
-import { client, messageOf } from "../ipc/client";
+import { appErrorOf, client, messageOf } from "../ipc/client";
+import {
+  editorDocument,
+  resolveExecutionError,
+  type SqlExecutionOrigin,
+} from "../features/studio/sql-navigation";
 import type {
   BrowseQuery,
   ChangePreview,
@@ -56,6 +62,8 @@ import type {
   InboundForeignKey,
   PreparedPlan,
   ProcessInfo,
+  QueryParamInput,
+  QueryParamSlot,
   ResourceUsage,
   TableChanges,
 } from "../ipc/generated";
@@ -63,6 +71,7 @@ import {
   useStudio,
   beginEventBatch,
   querySessionForTab,
+  metadataSessionForTab,
   isLastOwnerOfSecondarySession,
   sessionHasOpenTransaction,
   isTabFileDirty,
@@ -85,6 +94,13 @@ import {
   withFilter,
 } from "../features/grid/table-query";
 import type { EditorHandle } from "../features/studio/SqlEditor";
+import {
+  ParameterDialog,
+  clearTabParamDrafts,
+  pruneTabParamDrafts,
+  getTabParamDrafts,
+  setTabParamDrafts,
+} from "../features/studio/ParameterDialog";
 import { SearchEverywhere } from "../features/studio/SearchEverywhere";
 import type { SearchScope } from "../features/studio/search-everywhere";
 import { LibraryModal, SaveQueryDialog, type LibraryTab } from "../features/studio/LibraryModal";
@@ -100,6 +116,7 @@ type Dialog =
   | { kind: "value"; target: CellTarget }
   | {
       kind: "review";
+      origin?: SqlExecutionOrigin;
       plan: PreparedPlan;
       preview?: ChangePreview;
       tabId: string;
@@ -114,6 +131,17 @@ type Dialog =
   | { kind: "compare"; tabId?: string }
   | { kind: "library"; tab: LibraryTab }
   | { kind: "saveQuery"; tabId: string }
+  | {
+      kind: "parameters";
+      origin: SqlExecutionOrigin;
+      tabId: string;
+      sessionId: string | null;
+      sql: string;
+      slots: QueryParamSlot[];
+      profile?: ConnectionProfile;
+      allowSaveOnly?: boolean;
+      explain?: "estimate" | "analyze";
+    }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
@@ -141,8 +169,9 @@ export function App() {
   const profile = state.bootstrap?.profiles.find(
     (p) => p.id === (current?.connectionId ?? state.selectedConnectionId),
   );
-  const session =
-    current?.kind === "query"
+  const session = current?.metadataOrigin
+    ? metadataSessionForTab(current, state)
+    : current?.kind === "query"
       ? querySessionForTab(current, state.sessions)
       : profile
         ? state.sessions[profile.id]
@@ -549,11 +578,16 @@ export function App() {
     return () => clearInterval(timer);
   }, [session?.id]);
 
+  useEffect(() => {
+    pruneTabParamDrafts(state.tabs.map((tab) => tab.id));
+  }, [state.tabs]);
+
   async function executePrepared(
     tabId: string,
     plan: PreparedPlan,
     approval: string | null,
     onSuccess?: () => void,
+    origin?: SqlExecutionOrigin,
   ) {
     const active = useStudio.getState().tabs.find((tab) => tab.id === tabId);
     if (!active) return;
@@ -572,17 +606,31 @@ export function App() {
       state.updateTab(tabId, { results: [], activeResultId: null });
     }
     const revision = active.revision + 1;
+    const executionState = useStudio.getState();
+    const executionSession = querySessionForTab(active, executionState.sessions);
     state.updateTab(tabId, {
       status: "queued",
       error: null,
+      errorOrigin: origin,
       elapsedMs: 0,
       metrics: {},
       revision,
       dataSessionId: plan.sessionId,
+      planSource: planSourceForExecution(plan, executionSession, undefined),
+      runMetrics: undefined,
+      clientStartedAt: performance.now(),
+      clientElapsedMs: undefined,
     });
     const batch = beginEventBatch(tabId);
     try {
       const runId = await client.execute(plan.id, approval, (event) => {
+        if (event.type === "planContext") {
+          const latest = useStudio.getState().tabs.find((tab) => tab.id === tabId);
+          if (latest?.revision === revision && (!latest.runId || latest.runId === event.runId))
+            state.updateTab(tabId, {
+              planSource: planSourceForExecution(plan, executionSession, event.state ?? undefined),
+            });
+        }
         batch(event);
         if (event.type === "finished" && event.status === "completed") onSuccess?.();
       });
@@ -594,11 +642,52 @@ export function App() {
       if (useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision === revision)
         state.updateTab(tabId, {
           status: "failed",
-          error: { code: "database", message: messageOf(error) },
+          clientElapsedMs:
+            performance.now() -
+            (useStudio.getState().tabs.find((tab) => tab.id === tabId)?.clientStartedAt ??
+              performance.now()),
+          error: appErrorOf(error),
         });
     }
   }
-  async function runSql(sql?: string) {
+  async function prepareAndExecuteSql(
+    tabId: string,
+    sessionId: string,
+    targetSql: string,
+    params: QueryParamInput[] | undefined,
+    targetProfile?: ConnectionProfile,
+    explain?: "estimate" | "analyze",
+    origin?: SqlExecutionOrigin,
+  ) {
+    const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision;
+    try {
+      const plan = await client.call<PreparedPlan>(
+        explain ? "prepare_explain" : "prepare_execution",
+        {
+          sessionId,
+          sql: targetSql,
+          ...(params ? { params } : {}),
+          ...(explain ? { analyze: explain === "analyze" } : {}),
+        },
+      );
+      if (plan.requiresApproval) {
+        setDialog({ kind: "review", plan, tabId, profile: targetProfile, origin });
+      } else {
+        setDialog((prev) => (prev?.kind === "parameters" ? null : prev));
+        await executePrepared(tabId, plan, null, undefined, origin);
+      }
+    } catch (error) {
+      const latest = useStudio.getState().tabs.find((tab) => tab.id === tabId);
+      if (
+        latest &&
+        latest.revision === revision &&
+        querySessionForTab(latest, useStudio.getState().sessions)?.id === sessionId
+      )
+        state.updateTab(tabId, { status: "failed", error: appErrorOf(error), errorOrigin: origin });
+      throw error;
+    }
+  }
+  async function runSql(sql?: string, explain?: "estimate" | "analyze", fromUtf16?: number) {
     const active = references.current.current;
     if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
     const selected = querySessionForTab(active, useStudio.getState().sessions);
@@ -606,20 +695,60 @@ export function App() {
       state.notify("Connect this query tab to a database first.");
       return;
     }
+    const target = state.bootstrap?.profiles.find((p) => p.id === active.connectionId);
+    const engine = target?.engine ?? selected.engine;
+    let origin: SqlExecutionOrigin | undefined;
     try {
-      const plan = await client.call<PreparedPlan>("prepare_execution", {
-        sessionId: selected.id,
-        sql: sql ?? editor.current?.selection() ?? active.sql,
-      });
-      const target = state.bootstrap?.profiles.find((p) => p.id === active.connectionId);
-      if (plan.requiresApproval)
-        setDialog({ kind: "review", plan, tabId: active.id, profile: target });
-      else await executePrepared(active.id, plan, null);
+      const slice =
+        sql !== undefined
+          ? { sql, fromUtf16: fromUtf16 ?? 0 }
+          : (editor.current?.executionSlice() ?? { sql: active.sql, fromUtf16: 0 });
+      const targetSql = slice.sql;
+      origin = {
+        document: sql === active.sql ? active.sql : editorDocument(active.sql),
+        query: targetSql,
+        fromUtf16: slice.fromUtf16,
+      };
+      if (engine !== "redis") {
+        const slots = await client.call<QueryParamSlot[]>("extract_query_params", {
+          engine,
+          sql: targetSql,
+        });
+        if (slots.length > 0) {
+          setDialog({
+            kind: "parameters",
+            origin,
+            tabId: active.id,
+            sessionId: selected.id,
+            sql: targetSql,
+            slots,
+            profile: target,
+            allowSaveOnly: false,
+            explain,
+          });
+          return;
+        }
+      }
+      await prepareAndExecuteSql(
+        active.id,
+        selected.id,
+        targetSql,
+        undefined,
+        target,
+        explain,
+        origin,
+      );
     } catch (error) {
-      state.updateTab(active.id, {
-        status: "failed",
-        error: { code: "database", message: messageOf(error) },
-      });
+      const latest = useStudio.getState().tabs.find((tab) => tab.id === active.id);
+      if (
+        latest?.revision === active.revision &&
+        querySessionForTab(latest, useStudio.getState().sessions)?.id === selected.id
+      )
+        state.updateTab(active.id, {
+          status: "failed",
+          error: appErrorOf(error),
+          errorOrigin: origin,
+        });
     }
   }
   async function reviewEdits() {
@@ -715,6 +844,7 @@ export function App() {
     else action();
   }
   function closeWorkspace(id: string) {
+    clearTabParamDrafts(id);
     useStudio.getState().closeTab(id);
     requestAnimationFrame(() =>
       document
@@ -1034,7 +1164,26 @@ export function App() {
                 session={session ?? undefined}
                 editorRef={editor}
                 gridRef={grid}
-                onRun={(sql) => void runSql(sql)}
+                onRun={(sql, from) => void runSql(sql, undefined, from)}
+                onExplain={() => void runSql(undefined, "estimate")}
+                onAnalyze={() => void runSql(undefined, "analyze")}
+                onOpenParameters={(slots) => {
+                  if (current.kind !== "query") return;
+                  const selectedSession = querySessionForTab(
+                    current,
+                    useStudio.getState().sessions,
+                  );
+                  setDialog({
+                    kind: "parameters",
+                    origin: { document: current.sql, query: current.sql, fromUtf16: 0 },
+                    tabId: current.id,
+                    sessionId: selectedSession?.id ?? null,
+                    sql: current.sql,
+                    slots,
+                    profile,
+                    allowSaveOnly: true,
+                  });
+                }}
                 onReview={() => void reviewEdits()}
                 onConfirm={(title, description, action) =>
                   setDialog({ kind: "confirm", title, description, action })
@@ -1222,6 +1371,32 @@ export function App() {
         />
       )}
       {dialog?.kind === "settings" && <Preferences onClose={() => setDialog(null)} />}
+      {dialog?.kind === "parameters" && (
+        <ParameterDialog
+          slots={dialog.slots}
+          initialDrafts={getTabParamDrafts(dialog.tabId)}
+          profile={dialog.profile}
+          canRun={Boolean(dialog.sessionId)}
+          allowSaveOnly={Boolean(dialog.allowSaveOnly)}
+          onSaveDrafts={(drafts) => setTabParamDrafts(dialog.tabId, drafts)}
+          onRun={
+            dialog.sessionId
+              ? async (inputs) => {
+                  await prepareAndExecuteSql(
+                    dialog.tabId,
+                    dialog.sessionId!,
+                    dialog.sql,
+                    inputs,
+                    dialog.profile,
+                    dialog.explain,
+                    dialog.origin,
+                  );
+                }
+              : undefined
+          }
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "review" && (
         <ReviewDialog
           plan={dialog.plan}
@@ -1229,7 +1404,14 @@ export function App() {
           profile={dialog.profile}
           onExecute={async (approval) => {
             if (dialog.onApprove) await dialog.onApprove(approval);
-            else await executePrepared(dialog.tabId, dialog.plan, approval, dialog.onSuccess);
+            else
+              await executePrepared(
+                dialog.tabId,
+                dialog.plan,
+                approval,
+                dialog.onSuccess,
+                dialog.origin,
+              );
           }}
           onClose={() => setDialog(null)}
         />
@@ -1471,6 +1653,81 @@ export function App() {
                     icon: BookmarkPlus,
                     action: () => setDialog({ kind: "saveQuery", tabId: current.id }),
                   },
+                  ...(profile?.engine !== "redis"
+                    ? [
+                        {
+                          label: "Format SQL",
+                          shortcut: "⇧⌘ F",
+                          icon: Code2,
+                          action: () => {
+                            editor.current?.format();
+                          },
+                        },
+                        {
+                          label: "Go to SQL definition",
+                          shortcut: "F12",
+                          icon: ArrowUpRight,
+                          action: () => {
+                            void editor.current?.goToDefinition();
+                          },
+                        },
+                        {
+                          label: "Find SQL usages",
+                          shortcut: "⇧F12",
+                          icon: Search,
+                          action: () => {
+                            void editor.current?.findUsages();
+                          },
+                        },
+                        {
+                          label: "Quick SQL documentation",
+                          shortcut: "F1",
+                          icon: Code2,
+                          action: () => {
+                            void editor.current?.showQuickDocs();
+                          },
+                        },
+                        {
+                          label: "Previous SQL statement",
+                          shortcut: "⌥⌘ ↑",
+                          icon: Code2,
+                          action: () => {
+                            editor.current?.navigateStatement(-1);
+                          },
+                        },
+                        {
+                          label: "Next SQL statement",
+                          shortcut: "⌥⌘ ↓",
+                          icon: Code2,
+                          action: () => {
+                            editor.current?.navigateStatement(1);
+                          },
+                        },
+                        ...(resolveExecutionError(current.sql, current.error, current.errorOrigin)
+                          ? [
+                              {
+                                label: "Jump to SQL error",
+                                shortcut: "",
+                                icon: Code2,
+                                action: () => {
+                                  const latest = useStudio
+                                    .getState()
+                                    .tabs.find((tab) => tab.id === current.id);
+                                  const resolved =
+                                    latest &&
+                                    resolveExecutionError(
+                                      latest.sql,
+                                      latest.error,
+                                      latest.errorOrigin,
+                                    );
+                                  if (resolved)
+                                    editor.current?.revealRange(resolved.from, resolved.to);
+                                },
+                              },
+                            ]
+                          : []),
+                      ]
+                    : []),
                 ]
               : []),
             ...(current && bookmarkTargetForTab(current, state.catalog)

@@ -1,0 +1,238 @@
+use crate::domain::{ActualPlanFormat, AppError, AppResult, EngineKind, ErrorCode, ErrorLocation};
+use sqlparser::{
+    ast::Statement,
+    dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect},
+    parser::Parser,
+};
+
+/// Validate the complete input before adding EXPLAIN so a second statement
+/// can never escape the wrapper. Executing plans still require safety review.
+pub(crate) fn explain_sql(
+    engine: EngineKind,
+    sql: &str,
+    analyze: bool,
+    actual_plan: Option<ActualPlanFormat>,
+) -> AppResult<String> {
+    let (dialect, prefix): (Box<dyn Dialect>, &str) = match (engine, analyze) {
+        (EngineKind::Postgres, false) => (Box::new(PostgreSqlDialect {}), "EXPLAIN (FORMAT JSON)"),
+        (EngineKind::Postgres, true) => (
+            Box::new(PostgreSqlDialect {}),
+            "EXPLAIN (ANALYZE, FORMAT JSON)",
+        ),
+        (EngineKind::Mysql, false) => (Box::new(MySqlDialect {}), "EXPLAIN FORMAT=JSON"),
+        (EngineKind::Snowflake, false) => (Box::new(SnowflakeDialect {}), "EXPLAIN USING JSON"),
+        (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MariaDbJson) => {
+            (Box::new(MySqlDialect {}), "ANALYZE FORMAT=JSON")
+        }
+        (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MysqlTree) => {
+            (Box::new(MySqlDialect {}), "EXPLAIN ANALYZE FORMAT=TREE")
+        }
+        _ => {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                if analyze {
+                    "Actual plans are available for PostgreSQL and capability-checked MySQL/MariaDB sessions."
+                } else {
+                    "Estimated plans are available for PostgreSQL, MySQL/MariaDB, and Snowflake."
+                },
+            ));
+        }
+    };
+    if sql.len() > 1024 * 1024 - prefix.len() - 1 {
+        return Err(AppError::invalid("A query must be smaller than 1 MiB"));
+    }
+    if engine == EngineKind::Mysql && crate::safety::has_mysql_executable_comment(sql) {
+        return Err(AppError::invalid("Executable comments cannot be explained"));
+    }
+    let statements = Parser::parse_sql(dialect.as_ref(), sql).map_err(|error| {
+        let detail = error.to_string();
+        let mut error = AppError::invalid("Select one complete query to explain");
+        if let Some(span) = crate::sql_text::span_from_sqlparser_error(sql, &detail) {
+            error = error.with_location(ErrorLocation {
+                span,
+                statement_index: Some(0),
+                sql_state: None,
+                detail: Some(detail),
+                hint: None,
+            });
+        }
+        error
+    })?;
+    if statements.len() != 1 || !matches!(&statements[0], Statement::Query(_)) {
+        return Err(AppError::invalid(
+            "Select one SELECT or WITH query to explain",
+        ));
+    }
+    Ok(format!("{prefix}\n{sql}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explain_validation_exposes_location_in_the_unwrapped_unicode_query() {
+        let sql = "/* 🧪 café */\nSELEC 1";
+        for engine in [
+            EngineKind::Postgres,
+            EngineKind::Mysql,
+            EngineKind::Snowflake,
+        ] {
+            let error = explain_sql(engine, sql, false, None).unwrap_err();
+            let json = serde_json::to_value(error).unwrap();
+            assert_eq!(json["code"], "invalidInput");
+            assert_eq!(json["location"]["span"]["line"], 2, "{engine:?}");
+            assert_eq!(json["location"]["span"]["column"], 1, "{engine:?}");
+            assert_eq!(json["location"]["span"]["startUtf16"], 14, "{engine:?}");
+            assert_eq!(json["location"]["span"]["endUtf16"], 19, "{engine:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_one_query_without_rewriting_literals_or_comments() {
+        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+            let sql = "/* keep */ WITH q AS (SELECT ';' AS value) SELECT * FROM q; -- end";
+            let output = explain_sql(engine, sql, false, None).unwrap();
+            assert!(output.ends_with(sql));
+            assert!(!output.contains("ANALYZE"));
+        }
+    }
+
+    #[test]
+    fn rejects_batches_mutations_existing_explain_and_executable_comments() {
+        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+            for sql in [
+                "SELECT 1; DELETE FROM t",
+                "SELECT 1; SELECT 2",
+                "DELETE FROM t",
+                "EXPLAIN ANALYZE SELECT 1",
+                "",
+                "-- nothing",
+                "SELECT '",
+            ] {
+                assert!(
+                    explain_sql(engine, sql, false, None).is_err(),
+                    "{engine:?}: {sql}"
+                );
+            }
+        }
+        assert!(
+            explain_sql(
+                EngineKind::Mysql,
+                "SELECT 1 /*!; DELETE FROM t */",
+                false,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            explain_sql(
+                EngineKind::Mysql,
+                "SELECT 1 /*M!; DELETE FROM t */",
+                false,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unsupported_engines_and_oversized_input_fail_closed() {
+        assert!(explain_sql(EngineKind::Redis, "SELECT 1", false, None).is_err());
+        assert!(explain_sql(EngineKind::Postgres, &" ".repeat(1024 * 1024), false, None).is_err());
+    }
+
+    #[test]
+    fn snowflake_estimate_preserves_query() {
+        let sql = "/* keep é */ SELECT 'a;b' AS note, id FROM lab.public.events QUALIFY ROW_NUMBER() OVER (ORDER BY id)=1; -- keep";
+        let explained = explain_sql(EngineKind::Snowflake, sql, false, None).unwrap();
+        assert_eq!(explained, format!("EXPLAIN USING JSON\n{sql}"));
+        for sql in [
+            "SELECT 1; DELETE FROM t",
+            "SELECT 1; SELECT 2",
+            "DELETE FROM t",
+            "EXPLAIN SELECT 1",
+            "SELECT '",
+        ] {
+            assert!(explain_sql(EngineKind::Snowflake, sql, false, None).is_err());
+        }
+        assert!(explain_sql(EngineKind::Snowflake, &" ".repeat(1024 * 1024), false, None).is_err());
+    }
+
+    #[test]
+    fn actual_plan_requires_a_supported_engine_format_and_validates_the_whole_query() {
+        let sql = "/* preserve */ SELECT 'é; value'; -- end";
+        assert_eq!(
+            explain_sql(EngineKind::Postgres, sql, true, None).unwrap(),
+            format!("EXPLAIN (ANALYZE, FORMAT JSON)\n{sql}")
+        );
+        for engine in [EngineKind::Mysql, EngineKind::Snowflake, EngineKind::Redis] {
+            assert_eq!(
+                explain_sql(engine, "SELECT 1", true, None)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Unsupported
+            );
+        }
+        for sql in [
+            "SELECT 1; SELECT 2",
+            "DELETE FROM t",
+            "EXPLAIN SELECT 1",
+            "SELECT '",
+        ] {
+            assert!(
+                explain_sql(EngineKind::Postgres, sql, true, None).is_err(),
+                "{sql}"
+            );
+        }
+        let format = Some(ActualPlanFormat::MariaDbJson);
+        assert_eq!(
+            explain_sql(EngineKind::Mysql, sql, true, format).unwrap(),
+            format!("ANALYZE FORMAT=JSON\n{sql}")
+        );
+        assert_eq!(
+            explain_sql(
+                EngineKind::Mysql,
+                sql,
+                true,
+                Some(ActualPlanFormat::MysqlTree)
+            )
+            .unwrap(),
+            format!("EXPLAIN ANALYZE FORMAT=TREE\n{sql}")
+        );
+        for sql in [
+            "SELECT 1; SELECT 2",
+            "DELETE FROM t",
+            "ANALYZE SELECT 1",
+            "SELECT 1 /*!; DELETE FROM t */",
+            "SELECT 1 /*M!; DELETE FROM t */",
+            "SELECT '",
+        ] {
+            assert!(
+                explain_sql(EngineKind::Mysql, sql, true, format).is_err(),
+                "{sql}"
+            );
+            assert!(
+                explain_sql(
+                    EngineKind::Mysql,
+                    sql,
+                    true,
+                    Some(ActualPlanFormat::MysqlTree)
+                )
+                .is_err(),
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            explain_sql(
+                EngineKind::Mysql,
+                sql,
+                true,
+                Some(ActualPlanFormat::PostgresJson)
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
+    }
+}

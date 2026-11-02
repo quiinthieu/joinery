@@ -1,6 +1,6 @@
 import type { EditorState } from "@codemirror/state";
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
-import type { EngineKind, TableInfo, TableRef, TableSchema } from "../../ipc/generated";
+import type { EngineKind, SqlSnippet, TableInfo, TableRef, TableSchema } from "../../ipc/generated";
 import type { CompletionItem } from "../../data/completion-index";
 import type {
   CompletionRequest,
@@ -12,16 +12,21 @@ import {
   catalogCompletions,
   columnCompletions,
   completionTarget,
+  joinCompletions,
   referencedTables,
   tableLookup,
+  type CompletionTarget,
   type SqlScope,
 } from "./sql-context";
 import { identifierValue, quoteIdentifier } from "./sql-identifiers";
+import { snippetCompletions } from "./sql-snippets";
+import type { SqlTemplateApplier } from "./sql-template-context";
 
 interface Configuration {
   engine: EngineKind;
   sessionId: string | null;
   tables: TableInfo[];
+  snippets?: readonly SqlSnippet[];
   database?: string;
   defaultSchema?: string;
   searchPath?: string[];
@@ -98,6 +103,7 @@ export class CompletionSchemas {
 
 interface Pending {
   stamp: CompletionStamp;
+  target: CompletionTarget;
   revision: number | null;
   finish(result: CompletionResult | null): void;
   resume(): void;
@@ -131,6 +137,7 @@ export class CompletionSession {
   private sequence = 0;
   private scopeKey = "";
   private scope: SqlScope = { references: [], names: [], allowBare: false };
+  private loadedSchemas: (TableSchema | null)[] = [];
   private loading = false;
   private timer?: ReturnType<typeof setTimeout>;
   private pending = new Map<number, Pending>();
@@ -144,6 +151,7 @@ export class CompletionSession {
       contextRevision?: string,
     ) => Promise<TableSchema>,
     private notify: (error: unknown) => void,
+    private expandTemplate?: SqlTemplateApplier,
   ) {}
 
   configure(config: Configuration) {
@@ -159,8 +167,14 @@ export class CompletionSession {
       previous.unqualifiedTables === config.unqualifiedTables &&
       previous.caseSensitiveTableNames === config.caseSensitiveTableNames &&
       previous.contextRevision === config.contextRevision
-    )
+    ) {
+      if (previous.snippets !== config.snippets) {
+        this.configuration = config;
+        this.cancelPending();
+        return true;
+      }
       return false;
+    }
     this.configuration = config;
     this.context++;
     this.cancel();
@@ -183,6 +197,7 @@ export class CompletionSession {
           ];
     this.replace("catalog", items);
     this.scopeKey = "";
+    this.loadedSchemas = [];
     return true;
   }
 
@@ -206,6 +221,7 @@ export class CompletionSession {
     this.cancel();
     this.scopeKey = key;
     this.scope = scope;
+    this.loadedSchemas = [];
     const current = ++this.context;
     this.replace("columns", []);
     this.schemas.retain(scope.references.map((ref) => JSON.stringify(ref.table)));
@@ -226,6 +242,7 @@ export class CompletionSession {
         ),
       ).then((schemas) => {
         if (this.disposed || this.context !== current) return;
+        this.loadedSchemas = schemas;
         this.replace("columns", columnCompletions(scope, schemas, config.engine));
         this.loading = false;
         for (const pending of this.pending.values()) pending.resume();
@@ -258,6 +275,7 @@ export class CompletionSession {
       };
       const pending: Pending = {
         stamp,
+        target,
         revision: null,
         finish: (result) => finish(result && { ...result, from: target.from, to: target.to }),
         resume: () => {
@@ -308,15 +326,78 @@ export class CompletionSession {
       pending.finish(null);
       return;
     }
-    const engine = this.configuration!.engine;
+    const config = this.configuration!;
+    const engine = config.engine;
+    const fkOptions =
+      engine === "redis" || !this.state
+        ? []
+        : joinCompletions(
+            this.state,
+            pending.stamp.position,
+            pending.target,
+            this.scope,
+            this.loadedSchemas,
+            config.tables,
+            this.lookup,
+          );
+    const barePrefix =
+      pending.target.parts.length === 1 && !pending.target.parts[0].quoted
+        ? pending.target.parts[0].value.toLowerCase()
+        : null;
+    const templateState = this.state;
+    const snippetOptions =
+      engine === "redis" || barePrefix === null || (barePrefix.length === 0 && fkOptions.length > 0)
+        ? []
+        : snippetCompletions(
+            engine,
+            pending.target,
+            config.snippets ?? [],
+            this.expandTemplate
+              ? (body, editor, option, from, to) => {
+                  if (
+                    this.disposed ||
+                    this.configuration !== config ||
+                    !templateState ||
+                    editor.state.doc !== templateState.doc ||
+                    !editor.state.selection.eq(templateState.selection)
+                  ) {
+                    this.notify(
+                      new Error(
+                        "The editor or console context changed. Insert the template again.",
+                      ),
+                    );
+                    return;
+                  }
+                  void Promise.resolve()
+                    .then(() => this.expandTemplate!(body, editor, option, from, to))
+                    .catch((error: unknown) => {
+                      if (!this.disposed)
+                        this.notify(error instanceof Error ? error : new Error(String(error)));
+                    });
+                }
+              : undefined,
+          );
+    const exactSnippets =
+      barePrefix && barePrefix.length > 0
+        ? snippetOptions.filter((option) => option.label.toLowerCase() === barePrefix)
+        : [];
+    const prefixSnippets =
+      barePrefix && barePrefix.length > 0
+        ? snippetOptions.filter((option) => option.label.toLowerCase() !== barePrefix)
+        : snippetOptions;
     pending.finish({
       from: 0,
       filter: false,
-      options: message.items.map((item) => {
-        if (!item.path || item.apply) return item;
-        const label = item.path.map((part) => quoteIdentifier(part, engine)).join(".");
-        return { ...item, label, apply: label + (item.type === "namespace" ? "." : "") };
-      }),
+      options: [
+        ...fkOptions,
+        ...exactSnippets,
+        ...message.items.map((item) => {
+          if (!item.path || item.apply) return item;
+          const label = item.path.map((part) => quoteIdentifier(part, engine)).join(".");
+          return { ...item, label, apply: label + (item.type === "namespace" ? "." : "") };
+        }),
+        ...prefixSnippets,
+      ],
     });
   }
 
@@ -325,6 +406,7 @@ export class CompletionSession {
     this.context++;
     this.cancel();
     this.schemas.retain([]);
+    this.loadedSchemas = [];
     this.state = undefined;
   }
 

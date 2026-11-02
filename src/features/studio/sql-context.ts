@@ -9,18 +9,46 @@ import {
   type Identifier,
 } from "./sql-identifiers";
 
-export function selectedStatement(state: EditorState): string {
+export interface StatementSlice {
+  sql: string;
+  fromUtf16: number;
+  toUtf16: number;
+}
+
+export function selectedStatementSlice(state: EditorState): StatementSlice {
   const selected = state.selection.main;
-  if (!selected.empty) return state.sliceDoc(selected.from, selected.to);
+  if (!selected.empty) {
+    return {
+      sql: state.sliceDoc(selected.from, selected.to),
+      fromUtf16: selected.from,
+      toUtf16: selected.to,
+    };
+  }
   const tree = ensureSyntaxTree(state, state.doc.length, 75);
   if (!tree) throw new Error("Select the SQL to run while this large document finishes parsing.");
   let previous: { from: number; to: number } | null = null;
   for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
     if (node.name !== "Statement") continue;
-    if (selected.head < node.to) return state.sliceDoc(node.from, node.to);
+    if (selected.head < node.to) {
+      return {
+        sql: state.sliceDoc(node.from, node.to),
+        fromUtf16: node.from,
+        toUtf16: node.to,
+      };
+    }
     previous = node;
   }
-  return previous ? state.sliceDoc(previous.from, previous.to) : "";
+  return previous
+    ? {
+        sql: state.sliceDoc(previous.from, previous.to),
+        fromUtf16: previous.from,
+        toUtf16: previous.to,
+      }
+    : { sql: "", fromUtf16: 0, toUtf16: 0 };
+}
+
+export function selectedStatement(state: EditorState): string {
+  return selectedStatementSlice(state).sql;
 }
 
 export function tableLookup(
@@ -90,7 +118,7 @@ export function tableLookup(
     },
   };
 }
-type TableLookup = ReturnType<typeof tableLookup>;
+export type TableLookup = ReturnType<typeof tableLookup>;
 
 export function catalogCompletions(tables: TableInfo[], lookup: TableLookup): CompletionItem[] {
   const database = lookup.database;
@@ -118,17 +146,124 @@ export function catalogCompletions(tables: TableInfo[], lookup: TableLookup): Co
 }
 
 type Node = ReturnType<typeof syntaxTree>["topNode"];
-interface Token {
+export interface SqlToken {
   kind: string;
   from: number;
   to: number;
   text: string;
-  children?: Token[];
+  children?: SqlToken[];
 }
+type Token = SqlToken;
 const isName = (token?: Token) =>
   token?.kind === "Identifier" || token?.kind === "QuotedIdentifier";
 const word = (token?: Token) => (token?.kind === "Keyword" ? token.text.toUpperCase() : "");
 const isComment = (token: Token) => token.kind.endsWith("Comment");
+
+const NON_ALIAS_KEYWORDS = new Set([
+  "ALL",
+  "AND",
+  "ANTI",
+  "ANY",
+  "APPLY",
+  "AS",
+  "ASC",
+  "ASOF",
+  "AT",
+  "BEFORE",
+  "BETWEEN",
+  "BY",
+  "CASE",
+  "CAST",
+  "CHANGES",
+  "CONNECT",
+  "CREATE",
+  "CROSS",
+  "CURRENT",
+  "DEFAULT",
+  "DELETE",
+  "DESC",
+  "DISTINCT",
+  "DROP",
+  "ELSE",
+  "END",
+  "EXCEPT",
+  "EXISTS",
+  "FALSE",
+  "FETCH",
+  "FOR",
+  "FORCE",
+  "FROM",
+  "FULL",
+  "GROUP",
+  "HAVING",
+  "IGNORE",
+  "ILIKE",
+  "IN",
+  "INDEX",
+  "INNER",
+  "INSERT",
+  "INTERSECT",
+  "INTO",
+  "IS",
+  "JOIN",
+  "LATERAL",
+  "LEFT",
+  "LIKE",
+  "LIMIT",
+  "LOCK",
+  "MATCH_RECOGNIZE",
+  "MINUS",
+  "NATURAL",
+  "NOT",
+  "NULL",
+  "OFFSET",
+  "ON",
+  "ONLY",
+  "OR",
+  "ORDER",
+  "OUTER",
+  "OVER",
+  "PARTITION",
+  "PIVOT",
+  "QUALIFY",
+  "RETURNING",
+  "RIGHT",
+  "SAMPLE",
+  "SEED",
+  "SELECT",
+  "SEMI",
+  "SET",
+  "SOME",
+  "START",
+  "STRAIGHT_JOIN",
+  "TABLESAMPLE",
+  "THEN",
+  "TO",
+  "TRUE",
+  "UNION",
+  "UNIQUE",
+  "UNPIVOT",
+  "UPDATE",
+  "USE",
+  "USING",
+  "VALUES",
+  "WHEN",
+  "WHERE",
+  "WINDOW",
+  "WITH",
+]);
+
+function isRelationOrAliasToken(token?: Token): boolean {
+  if (isName(token)) return true;
+  if (!token) return false;
+  if (token.kind !== "Keyword" && token.kind !== "Builtin" && token.kind !== "Type") {
+    return false;
+  }
+  return (
+    /^[A-Za-z_][A-Za-z0-9_$]*$/.test(token.text) &&
+    !NON_ALIAS_KEYWORDS.has(token.text.toUpperCase())
+  );
+}
 
 function tokens(state: EditorState, node: Node): Token[] | null {
   let budget = 4096;
@@ -208,6 +343,33 @@ function statementAt(state: EditorState, position: number, complete: boolean): N
   return null;
 }
 
+export function statementTokensAt(
+  state: EditorState,
+  position: number,
+): { from: number; to: number; tokens: SqlToken[] } | null {
+  const stmt = statementAt(state, position, true);
+  if (!stmt) return null;
+  const parsed = tokens(state, stmt);
+  if (!parsed) return null;
+  return { from: stmt.from, to: stmt.to, tokens: parsed };
+}
+
+export function allStatementTokenBlocks(
+  state: EditorState,
+): Array<{ from: number; to: number; tokens: SqlToken[] }> {
+  const tree = ensureSyntaxTree(state, state.doc.length, 75);
+  if (!tree) return [];
+  const blocks: Array<{ from: number; to: number; tokens: SqlToken[] }> = [];
+  for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
+    if (node.name !== "Statement") continue;
+    const parsed = tokens(state, node);
+    if (parsed && parsed.length > 0) {
+      blocks.push({ from: node.from, to: node.to, tokens: parsed });
+    }
+  }
+  return blocks;
+}
+
 export interface CompletionTarget {
   from: number;
   to: number;
@@ -274,15 +436,15 @@ function withNames(list: Token[], engine: EngineKind) {
   return names;
 }
 
-export function referencedTables(
+function queryBlockAt(
   state: EditorState,
   lookup: TableLookup,
-  position = state.selection.main.head,
-): SqlScope {
+  position: number,
+): { block: Token[]; shadows: Set<string> } | null {
   const statement = statementAt(state, position, true);
-  if (!statement) return emptyScope();
+  if (!statement) return null;
   const parsed = tokens(state, statement);
-  if (!parsed) return emptyScope();
+  if (!parsed) return null;
   const shadows = new Set<string>();
   const clean = (list: Token[]) => list.filter((t) => !isComment(t));
   let block = clean(parsed);
@@ -315,7 +477,7 @@ export function referencedTables(
         block[i + 2]?.kind === "QuotedIdentifier",
     )
   )
-    return emptyScope();
+    return null;
   // Set-operation arms have separate bindings.
   let start = 0,
     end = block.length;
@@ -333,15 +495,35 @@ export function referencedTables(
     start > 0 &&
     block.some((t) => ["ORDER", "LIMIT", "OFFSET"].includes(word(t)) && position >= t.from)
   )
-    return emptyScope();
+    return null;
   if (
     !["SELECT", "WITH", "UPDATE", "DELETE", "INSERT", "EXPLAIN"].includes(word(block[0])) ||
     block.some((t) => t.kind === "⚠")
   )
-    return emptyScope();
-  const bindings: { table?: TableRef; qualifier?: Qualifier; name: string }[] = [];
+    return null;
+  return { block, shadows };
+}
+
+interface ParsedBinding {
+  table?: TableRef;
+  qualifier?: Qualifier;
+  alias?: string;
+  aliasSql?: string;
+  name: string;
+  isJoin: boolean;
+}
+
+function parseBlockBindings(
+  block: Token[],
+  shadows: Set<string>,
+  lookup: TableLookup,
+  maxPos = Number.POSITIVE_INFINITY,
+  caretPos?: number,
+): ParsedBinding[] {
+  const bindings: ParsedBinding[] = [];
   let inFrom = false;
   for (let i = 0; i < block.length; i++) {
+    if (block[i].to > maxPos) break;
     const keyword = word(block[i]);
     if (
       [
@@ -367,25 +549,41 @@ export function referencedTables(
     if (!relation) continue;
     inFrom = keyword !== "INTO";
     let next = i + 1;
-    while (["ONLY", "LATERAL"].includes(word(block[next]))) next++;
+    while (
+      block[next] &&
+      block[next].to <= maxPos &&
+      ["ONLY", "LATERAL"].includes(word(block[next]))
+    )
+      next++;
+    const nameFrom = block[next]?.from ?? block[i].to;
     const parts: Identifier[] = [];
-    if (isName(block[next])) {
+    if (block[next] && block[next].to <= maxPos && isRelationOrAliasToken(block[next])) {
       parts.push(readIdentifier(block[next++].text));
-      while (block[next]?.text === "." && isName(block[next + 1]) && parts.length < 3) {
+      while (
+        block[next]?.text === "." &&
+        block[next + 1] &&
+        block[next + 1].to <= maxPos &&
+        isRelationOrAliasToken(block[next + 1]) &&
+        parts.length < 3
+      ) {
         parts.push(readIdentifier(block[next + 1].text));
         next += 2;
       }
     }
-    const incompleteName = block[next]?.text === ".";
+    const incompleteName = block[next] && block[next].to <= maxPos && block[next]?.text === ".";
+    const nameTo = incompleteName ? block[next].to : (block[next - 1]?.to ?? nameFrom);
     let derived = false;
-    if (block[next]?.children) {
+    if (block[next] && block[next].to <= maxPos && block[next]?.children) {
       derived = keyword !== "INTO";
       next++;
     }
     if (!parts.length && !derived) continue;
-    if (word(block[next]) === "AS") next++;
-    const alias = isName(block[next]) ? block[next++] : undefined;
-    if (alias && block[next]?.children) {
+    if (block[next] && block[next].to <= maxPos && word(block[next]) === "AS") next++;
+    const alias =
+      block[next] && block[next].to <= maxPos && isRelationOrAliasToken(block[next])
+        ? block[next++]
+        : undefined;
+    if (alias && block[next] && block[next].to <= maxPos && block[next]?.children) {
       derived = true;
       next++;
     }
@@ -398,13 +596,37 @@ export function referencedTables(
       !(parts.length === 1 && shadows.has(identifierValue(parts[0], lookup.engine)))
         ? lookup.resolve(parts)
         : undefined;
-    bindings.push({
-      table,
-      name,
-      qualifier: alias ? { path: [name], sql: [alias.text] } : undefined,
-    });
+    const activelyTypingTarget =
+      caretPos !== undefined &&
+      !derived &&
+      !alias &&
+      (!table || keyword === "JOIN") &&
+      caretPos >= nameFrom &&
+      caretPos <= nameTo;
+    if (!activelyTypingTarget) {
+      bindings.push({
+        table,
+        name,
+        alias: alias ? name : undefined,
+        aliasSql: alias?.text,
+        qualifier: alias ? { path: [name], sql: [alias.text] } : undefined,
+        isJoin: keyword === "JOIN",
+      });
+    }
     i = next - 1;
   }
+  return bindings;
+}
+
+export function referencedTables(
+  state: EditorState,
+  lookup: TableLookup,
+  position = state.selection.main.head,
+): SqlScope {
+  const resolved = queryBlockAt(state, lookup, position);
+  if (!resolved) return emptyScope();
+  const { block, shadows } = resolved;
+  const bindings = parseBlockBindings(block, shadows, lookup, Number.POSITIVE_INFINITY, position);
   const names = [...shadows, ...bindings.map((b) => b.name)];
   const counts = new Map<string, number>();
   bindings.forEach((b) => counts.set(b.name, (counts.get(b.name) ?? 0) + 1));
@@ -474,5 +696,363 @@ export function columnCompletions(
       }
     }),
   );
+  return items;
+}
+
+const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name]);
+const sameTable = (a?: TableRef, b?: TableRef) =>
+  Boolean(a && b && a.schema === b.schema && a.name === b.name);
+
+function partMatchesPrefix(candidate: string, part: Identifier): boolean {
+  return part.quoted
+    ? candidate.startsWith(part.value)
+    : candidate.toLowerCase().startsWith(part.value.toLowerCase());
+}
+
+function partMatchesExact(candidate: string, part: Identifier, engine: EngineKind): boolean {
+  return engine === "mysql" && !part.quoted
+    ? candidate.toLowerCase() === part.value.toLowerCase()
+    : candidate === identifierValue(part, engine);
+}
+
+function matchesPartnerPrefix(
+  partner: TableRef,
+  parts: Identifier[],
+  lookup: TableLookup,
+): boolean {
+  const { engine, database } = lookup;
+  if (parts.length === 1) {
+    return (
+      partMatchesPrefix(partner.name, parts[0]) ||
+      partMatchesPrefix(partner.schema, parts[0]) ||
+      Boolean(database && partMatchesPrefix(database, parts[0]))
+    );
+  }
+  if (parts.length === 2) {
+    return (
+      (partMatchesExact(partner.schema, parts[0], engine) &&
+        partMatchesPrefix(partner.name, parts[1])) ||
+      Boolean(
+        database &&
+        partMatchesExact(database, parts[0], engine) &&
+        partMatchesPrefix(partner.schema, parts[1]),
+      )
+    );
+  }
+  if (parts.length === 3 && database) {
+    return (
+      partMatchesExact(database, parts[0], engine) &&
+      partMatchesExact(partner.schema, parts[1], engine) &&
+      partMatchesPrefix(partner.name, parts[2])
+    );
+  }
+  return false;
+}
+
+function aliasStem(tableName: string): string {
+  const words = tableName
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean);
+  const initials = words
+    .map((w) => w[0])
+    .join("")
+    .toLowerCase();
+  if (/^[a-z][a-z0-9_]*$/.test(initials)) return initials;
+  const ascii = tableName.toLowerCase().replace(/[^a-z0-9_]/g, "");
+  if (/^[a-z][a-z0-9_]*$/.test(ascii)) return ascii.slice(0, 3);
+  return "t";
+}
+
+function pickPartnerAlias(tableName: string, usedLower: Set<string>, engine: EngineKind): string {
+  const stem = aliasStem(tableName);
+  const valid = (candidate: string) =>
+    !usedLower.has(candidate.toLowerCase()) && quoteIdentifier(candidate, engine) === candidate;
+  if (valid(stem)) return stem;
+  for (let n = 2; n < 100; n++) {
+    const candidate = `${stem}${n}`;
+    if (valid(candidate)) return candidate;
+  }
+  return quoteIdentifier(`${stem}_join`, engine);
+}
+
+function qualifierForBinding(
+  binding: ParsedBinding,
+  allBindings: ParsedBinding[],
+  shadows: Set<string>,
+  lookup: TableLookup,
+): { value: string; sql: string; schemaQualified: boolean } | null {
+  if (!binding.table) return null;
+  const { engine } = lookup;
+  const fold = (s: string) => (engine === "mysql" ? s.toLowerCase() : s);
+  const sameNameCount = allBindings.filter((b) => fold(b.name) === fold(binding.name)).length;
+  if (binding.alias && binding.aliasSql) {
+    if (sameNameCount !== 1) return null;
+    return { value: binding.alias, sql: binding.aliasSql, schemaQualified: false };
+  }
+  const shortNorm = identifierValue({ value: binding.table.name, quoted: true }, engine);
+  const shortUnique =
+    sameNameCount === 1 &&
+    !shadows.has(shortNorm) &&
+    sameTable(lookup.resolve([{ value: binding.table.name, quoted: true }]), binding.table);
+  if (shortUnique) {
+    return {
+      value: binding.table.name,
+      sql: quoteIdentifier(binding.table.name, engine),
+      schemaQualified: false,
+    };
+  }
+  const sameTableCount = allBindings.filter(
+    (b) => !b.alias && b.table && sameTable(b.table, binding.table),
+  ).length;
+  if (sameTableCount !== 1) return null;
+  return {
+    value: binding.table.name,
+    sql: `${quoteIdentifier(binding.table.schema, engine)}.${quoteIdentifier(binding.table.name, engine)}`,
+    schemaQualified: true,
+  };
+}
+
+export function joinCompletions(
+  state: EditorState,
+  position: number,
+  target: CompletionTarget,
+  scope: SqlScope,
+  schemas: (TableSchema | null)[],
+  tables: TableInfo[],
+  lookup: TableLookup,
+): CompletionItem[] {
+  const resolved = queryBlockAt(state, lookup, position);
+  if (!resolved) return [];
+  const { block, shadows } = resolved;
+  const { engine, database } = lookup;
+
+  let anchorIdx = -1;
+  for (let i = 0; i < block.length; i++) {
+    if (block[i].to <= target.from) anchorIdx = i;
+    else break;
+  }
+  if (anchorIdx < 0) return [];
+  const anchorWord = word(block[anchorIdx]);
+  const nextAfterAnchor = block[anchorIdx + 1];
+
+  const isJoinTarget =
+    anchorWord === "JOIN" && (!nextAfterAnchor || nextAfterAnchor.from >= target.from);
+  const isOnParensStart =
+    anchorWord === "ON" &&
+    nextAfterAnchor?.kind === "Parens" &&
+    position > nextAfterAnchor.from &&
+    position <= nextAfterAnchor.to &&
+    (!nextAfterAnchor.children?.[0] || nextAfterAnchor.children[0].from >= target.from);
+  const isOnPredicate =
+    (anchorWord === "ON" && (!nextAfterAnchor || nextAfterAnchor.from >= target.from)) ||
+    isOnParensStart;
+
+  if (!isJoinTarget && !isOnPredicate) return [];
+
+  if (isJoinTarget) {
+    let prefixIdx = anchorIdx - 1;
+    while (
+      prefixIdx >= 0 &&
+      ["INNER", "LEFT", "RIGHT", "FULL", "OUTER"].includes(word(block[prefixIdx]))
+    ) {
+      prefixIdx--;
+    }
+    if (prefixIdx >= 0 && ["CROSS", "NATURAL"].includes(word(block[prefixIdx]))) return [];
+  }
+
+  const schemaByTable = new Map<string, TableSchema>();
+  scope.references.forEach((ref, idx) => {
+    const schema = schemas[idx];
+    if (schema) schemaByTable.set(tableKey(ref.table), schema);
+  });
+  if (!schemaByTable.size) return [];
+
+  const visibleTables = new Set(tables.map((t) => tableKey(t.table)));
+
+  if (isJoinTarget) {
+    const priorBindings = parseBlockBindings(block, shadows, lookup, block[anchorIdx].from);
+    if (!priorBindings.length) return [];
+    const anyAliased = priorBindings.some((b) => Boolean(b.alias));
+    const usedLower = new Set(
+      [...shadows, ...priorBindings.map((b) => b.name)].map((n) => n.toLowerCase()),
+    );
+    const boundTableKeys = new Set(
+      priorBindings.flatMap((b) => (b.table ? [tableKey(b.table)] : [])),
+    );
+    const freshItems: CompletionItem[] = [];
+    const rejoinItems: CompletionItem[] = [];
+    const seenApply = new Set<string>();
+
+    const emitJoin = (
+      bound: ParsedBinding,
+      partner: TableRef,
+      boundCols: string[],
+      partnerCols: string[],
+      constraintName: string,
+    ) => {
+      if (!boundCols.length || boundCols.length !== partnerCols.length) return;
+      if (!visibleTables.has(tableKey(partner))) return;
+      if (!matchesPartnerPrefix(partner, target.parts, lookup)) return;
+
+      const collision = usedLower.has(partner.name.toLowerCase());
+      const partnerAlias =
+        anyAliased || collision ? pickPartnerAlias(partner.name, usedLower, engine) : undefined;
+      const simulatedPartner: ParsedBinding = {
+        table: partner,
+        alias: partnerAlias,
+        aliasSql: partnerAlias,
+        name: partnerAlias ?? partner.name,
+        isJoin: true,
+      };
+      const boundQual = qualifierForBinding(
+        bound,
+        [...priorBindings, simulatedPartner],
+        shadows,
+        lookup,
+      );
+      if (!boundQual) return;
+
+      const partnerShortNorm = identifierValue({ value: partner.name, quoted: true }, engine);
+      const shortResolved = !shadows.has(partnerShortNorm)
+        ? lookup.resolve([{ value: partner.name, quoted: true }])
+        : undefined;
+      const partnerTableSql =
+        target.parts.length === 3 && database
+          ? `${quoteIdentifier(database, engine)}.${quoteIdentifier(partner.schema, engine)}.${quoteIdentifier(partner.name, engine)}`
+          : target.parts.length === 1 && sameTable(shortResolved, partner)
+            ? quoteIdentifier(partner.name, engine)
+            : `${quoteIdentifier(partner.schema, engine)}.${quoteIdentifier(partner.name, engine)}`;
+      const partnerQualSql = partnerAlias ?? partnerTableSql;
+      const predicate = boundCols
+        .map(
+          (col, k) =>
+            `${boundQual.sql}.${quoteIdentifier(col, engine)} = ${partnerQualSql}.${quoteIdentifier(partnerCols[k], engine)}`,
+        )
+        .join(" AND ");
+      const apply = partnerAlias
+        ? `${partnerTableSql} ${partnerAlias} ON ${predicate}`
+        : `${partnerTableSql} ON ${predicate}`;
+      if (seenApply.has(apply)) return;
+      seenApply.add(apply);
+      const item: CompletionItem = {
+        label: apply,
+        apply,
+        type: "interface",
+        detail: `${constraintName} · FK join`,
+      };
+      if (boundTableKeys.has(tableKey(partner))) rejoinItems.push(item);
+      else freshItems.push(item);
+    };
+
+    for (let idx = priorBindings.length - 1; idx >= 0; idx--) {
+      const bound = priorBindings[idx];
+      if (!bound.table) continue;
+      const boundSchema = schemaByTable.get(tableKey(bound.table));
+      if (!boundSchema) continue;
+      for (const fk of boundSchema.foreignKeys ?? []) {
+        emitJoin(bound, fk.target, fk.columns, fk.targetColumns, fk.name);
+      }
+      for (const fk of boundSchema.inboundForeignKeys ?? []) {
+        emitJoin(bound, fk.source, fk.targetColumns, fk.columns, fk.name);
+      }
+    }
+    return [...freshItems, ...rejoinItems];
+  }
+
+  // isOnPredicate: JOIN <partner> [AS] [alias] ON <target>
+  const bindingsBeforeOn = parseBlockBindings(block, shadows, lookup, block[anchorIdx].from);
+  if (bindingsBeforeOn.length < 2) return [];
+  const joined = bindingsBeforeOn.at(-1)!;
+  if (!joined.isJoin || !joined.table) return [];
+  const joinedQual = qualifierForBinding(joined, bindingsBeforeOn, shadows, lookup);
+  if (!joinedQual) return [];
+  const joinedSchema = schemaByTable.get(tableKey(joined.table));
+  const priorBindings = bindingsBeforeOn.slice(0, -1);
+  const items: CompletionItem[] = [];
+  const seenApply = new Set<string>();
+
+  const matchDirection = (
+    qual: { value: string; sql: string; schemaQualified: boolean },
+    table: TableRef,
+    cols: string[],
+  ): boolean => {
+    if (target.parts.length === 1) {
+      const p0 = target.parts[0];
+      return (
+        p0.value === "" ||
+        partMatchesPrefix(qual.value, p0) ||
+        (qual.schemaQualified && partMatchesPrefix(table.schema, p0)) ||
+        cols.some((c) => partMatchesPrefix(c, p0))
+      );
+    }
+    if (target.parts.length === 2) {
+      const [p0, p1] = target.parts;
+      if (qual.schemaQualified) {
+        return partMatchesExact(table.schema, p0, engine) && partMatchesPrefix(table.name, p1);
+      }
+      return partMatchesExact(qual.value, p0, engine) && cols.some((c) => partMatchesPrefix(c, p1));
+    }
+    if (target.parts.length === 3 && qual.schemaQualified) {
+      const [p0, p1, p2] = target.parts;
+      return (
+        partMatchesExact(table.schema, p0, engine) &&
+        partMatchesExact(table.name, p1, engine) &&
+        cols.some((c) => partMatchesPrefix(c, p2))
+      );
+    }
+    return false;
+  };
+
+  for (let idx = priorBindings.length - 1; idx >= 0; idx--) {
+    const bound = priorBindings[idx];
+    if (!bound.table) continue;
+    const boundQual = qualifierForBinding(bound, bindingsBeforeOn, shadows, lookup);
+    if (!boundQual) continue;
+    const boundSchema = schemaByTable.get(tableKey(bound.table));
+
+    const pairs: { boundCols: string[]; joinedCols: string[]; name: string }[] = [];
+    for (const fk of boundSchema?.foreignKeys ?? []) {
+      if (sameTable(fk.target, joined.table))
+        pairs.push({ boundCols: fk.columns, joinedCols: fk.targetColumns, name: fk.name });
+    }
+    for (const fk of boundSchema?.inboundForeignKeys ?? []) {
+      if (sameTable(fk.source, joined.table))
+        pairs.push({ boundCols: fk.targetColumns, joinedCols: fk.columns, name: fk.name });
+    }
+    for (const fk of joinedSchema?.inboundForeignKeys ?? []) {
+      if (sameTable(fk.source, bound.table))
+        pairs.push({ boundCols: fk.columns, joinedCols: fk.targetColumns, name: fk.name });
+    }
+    for (const fk of joinedSchema?.foreignKeys ?? []) {
+      if (sameTable(fk.target, bound.table))
+        pairs.push({ boundCols: fk.targetColumns, joinedCols: fk.columns, name: fk.name });
+    }
+
+    for (const pair of pairs) {
+      if (!pair.boundCols.length || pair.boundCols.length !== pair.joinedCols.length) continue;
+      const matchesBoundFirst = matchDirection(boundQual, bound.table, pair.boundCols);
+      const matchesJoinedFirst = matchDirection(joinedQual, joined.table, pair.joinedCols);
+      if (!matchesBoundFirst && !matchesJoinedFirst) continue;
+      const joinedFirst = !matchesBoundFirst && matchesJoinedFirst;
+      const [leftQual, leftCols, rightQual, rightCols] = joinedFirst
+        ? [joinedQual.sql, pair.joinedCols, boundQual.sql, pair.boundCols]
+        : [boundQual.sql, pair.boundCols, joinedQual.sql, pair.joinedCols];
+      const apply = leftCols
+        .map(
+          (col, k) =>
+            `${leftQual}.${quoteIdentifier(col, engine)} = ${rightQual}.${quoteIdentifier(rightCols[k], engine)}`,
+        )
+        .join(" AND ");
+      if (seenApply.has(apply)) continue;
+      seenApply.add(apply);
+      items.push({
+        label: apply,
+        apply,
+        type: "interface",
+        detail: `${pair.name} · FK join`,
+      });
+    }
+  }
   return items;
 }

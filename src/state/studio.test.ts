@@ -2,9 +2,16 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
 import type { PreparedPlan, SessionInfo, TablePage, TableSchema } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
-import { useStudio, querySessionForTab, isTabFileDirty, MAX_RECENT_LOCATIONS } from "./studio";
+import {
+  useStudio,
+  metadataSessionForTab,
+  querySessionForTab,
+  isTabFileDirty,
+  MAX_RECENT_LOCATIONS,
+} from "./studio";
 import { workspaceSnapshot } from "./workspace";
 import { dirtyStore } from "../data/dirty-store";
+import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
 
 vi.mock("../ipc/client", () => ({
   client: { call: vi.fn() },
@@ -70,6 +77,7 @@ function tableTab() {
   return id;
 }
 beforeEach(() => {
+  planSnapshots.clear();
   vi.clearAllMocks();
   useStudio.setState({
     bootstrap: null,
@@ -85,8 +93,89 @@ beforeEach(() => {
     sessionContextRevision: {},
     savedQueries: [],
     bookmarks: [],
+    sqlFormatSettings: {
+      keywordCase: "upper",
+      indentWidth: 2,
+      linesBetweenQueries: 1,
+    },
+    sqlSnippets: [],
     recentLocations: [],
   });
+});
+
+test("format preferences serialize writes and retain the latest successful settings on failure", async () => {
+  const initial = useStudio.getState().sqlFormatSettings;
+  const firstSettings = { ...initial, keywordCase: "lower" as const };
+  const latestSettings = { ...firstSettings, indentWidth: 4 };
+  let finishFirst!: (settings: typeof initial) => void;
+  vi.mocked(client.call).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishFirst = resolve;
+      }),
+  );
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Metadata disk full"));
+  const first = useStudio.getState().saveSqlFormatSettings(firstSettings);
+  const latest = useStudio.getState().saveSqlFormatSettings(latestSettings);
+  const rejected = expect(latest).rejects.toThrow("Metadata disk full");
+  await Promise.resolve();
+  expect(client.call).toHaveBeenCalledTimes(1);
+  expect(useStudio.getState().sqlFormatSettings).toEqual(latestSettings);
+  finishFirst(firstSettings);
+  await first;
+  await rejected;
+  expect(client.call).toHaveBeenCalledTimes(2);
+  expect(useStudio.getState().sqlFormatSettings).toEqual(firstSettings);
+});
+
+test("plan captures survive result replacement but close/retire release their owners and metadata", () => {
+  const state = useStudio.getState();
+  const a = state.openQuery("profile"),
+    b = state.openQuery("profile");
+  const source: PlanSource = {
+    engine: "postgres",
+    serverVersion: "18",
+    connectionId: "profile",
+    sessionId: "session",
+    context: "known",
+    query: "SELECT 'snapshot-only-secret'",
+    executedSql: "EXPLAIN (FORMAT JSON)\nSELECT 'snapshot-only-secret'",
+  };
+  const raw = '[{"Plan":{"Node Type":"Result","Plan Rows":1}}]';
+  state.updateTab(a, { planSource: source });
+  state.updateTab(b, { planSource: source });
+  planSnapshots.capture(a, "ra", source, raw);
+  planSnapshots.capture(b, "rb", source, raw);
+  state.updateTab(a, { results: [], planSource: undefined });
+  expect(planSnapshots.snapshot()).toHaveLength(2);
+  expect(JSON.stringify(workspaceSnapshot())).not.toContain("snapshot-only-secret");
+  state.closeTab(a);
+  expect(planSnapshots.snapshot().map((row) => row.ownerTabId)).toEqual([b]);
+  state.retireSession("session");
+  expect(planSnapshots.retainedBytes).toBe(0);
+  expect(useStudio.getState().tabs.find((tab) => tab.id === b)?.planSource).toBeUndefined();
+});
+
+test("disconnecting a connection clears its snapshots without affecting another connection", () => {
+  const source: PlanSource = {
+    engine: "postgres",
+    serverVersion: "18",
+    connectionId: "profile",
+    sessionId: "session",
+    context: "known",
+    query: "SELECT 1",
+    executedSql: "EXPLAIN (FORMAT JSON)\nSELECT 1",
+  };
+  const raw = '[{"Plan":{"Node Type":"Result"}}]';
+  planSnapshots.capture("a", "ra", source, raw);
+  planSnapshots.capture(
+    "b",
+    "rb",
+    { ...source, connectionId: "other", sessionId: "other-session" },
+    raw,
+  );
+  useStudio.getState().disconnected("profile");
+  expect(planSnapshots.snapshot().map((row) => row.resultId)).toEqual(["rb"]);
 });
 
 test("an isolated query session replaces only its tab binding and releases old results", () => {
@@ -270,6 +359,12 @@ test("a new tab opened during startup cannot overwrite recoverable drafts", asyn
     rowLimit: 0,
     savedQueries: [],
     bookmarks: [],
+    sqlFormatSettings: {
+      keywordCase: "upper",
+      indentWidth: 2,
+      linesBetweenQueries: 1,
+    },
+    sqlSnippets: [],
     workspace: {
       theme: "contrast",
       density: "compact",
@@ -831,3 +926,163 @@ test("saved queries, bookmarks, recent-locations ring buffer, and profile deleti
   expect(useStudio.getState().recentLocations).toHaveLength(MAX_RECENT_LOCATIONS);
   expect(useStudio.getState().recentLocations[0]?.key).toBe("item:64");
 });
+
+test("execution timings retain measured zero, reject foreign/stale runs and stay out of restoration", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.updateTab(id, { revision: 7, clientStartedAt: performance.now() - 100 });
+  const metrics = {
+    type: "runMetrics",
+    runId: "run",
+    queueMs: 40,
+    activeMs: 0,
+    firstRowMs: null,
+    totalMs: 40,
+  } as const;
+  state.applyEvents(
+    id,
+    [
+      { type: "started", runId: "run" },
+      { ...metrics, runId: "other" },
+    ],
+    7,
+  );
+  expect(useStudio.getState().tabs[0].runMetrics).toBeUndefined();
+  state.applyEvents(id, [metrics], 6);
+  expect(useStudio.getState().tabs[0].runMetrics).toBeUndefined();
+  state.applyEvents(
+    id,
+    [metrics, { type: "finished", runId: "run", status: "completed", elapsedMs: 40 }],
+    7,
+  );
+  const tab = useStudio.getState().tabs[0];
+  expect(tab.runMetrics?.activeMs).toBe(0);
+  expect(tab.runMetrics?.firstRowMs).toBeNull();
+  expect(tab.clientElapsedMs).toBeGreaterThanOrEqual(100);
+  const persisted = JSON.stringify(workspaceSnapshot());
+  expect(persisted).not.toContain("runMetrics");
+  expect(persisted).not.toContain("clientStartedAt");
+  expect(persisted).not.toContain("clientElapsedMs");
+  state.bindQuerySession(id, session);
+  expect(useStudio.getState().tabs[0].runMetrics).toBeUndefined();
+  expect(useStudio.getState().tabs[0].clientElapsedMs).toBeUndefined();
+});
+
+test("console Structure tabs keep their session and never browse table data", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  const object = { schema: "public", name: "orders", kind: "table" as const, identity: null };
+  state.openSessionObject(id, object, "id");
+  let inspector = useStudio.getState().tabs.at(-1)!;
+  expect(inspector.kind).toBe("object");
+  expect(inspector.metadataOrigin).toEqual({
+    tabId: id,
+    sessionId: "isolated",
+    contextRevision: 0,
+  });
+  expect(inspector.highlightedColumn).toBe("id");
+  expect(client.call).not.toHaveBeenCalled();
+  state.openSessionObject(id, object, "customer_id");
+  expect(useStudio.getState().tabs).toHaveLength(2);
+  inspector = useStudio.getState().tabs.at(-1)!;
+  expect(inspector.highlightedColumn).toBe("customer_id");
+  useStudio.setState({ sessionContextRevision: { isolated: 1 } });
+  state.openSessionObject(id, object);
+  expect(useStudio.getState().tabs).toHaveLength(3);
+});
+
+test("metadata loses its session after context changes, rebinding, or source closure", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  state.openSessionObject(
+    id,
+    { schema: "public", name: "orders", kind: "table", identity: null },
+    "id",
+    "observed",
+  );
+  const inspector = useStudio.getState().tabs.at(-1)!;
+  expect(metadataSessionForTab(inspector, useStudio.getState())?.id).toBe("isolated");
+  expect(querySessionForTab(inspector, state.sessions)).toBeUndefined();
+  useStudio.setState({ sessionContextRevision: { isolated: 1 } });
+  expect(metadataSessionForTab(inspector, useStudio.getState())).toBeUndefined();
+  useStudio.setState({ sessionContextRevision: {} });
+  state.attachQuerySession(id, null);
+  expect(metadataSessionForTab(inspector, useStudio.getState())).toBeUndefined();
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  state.closeTab(id);
+  expect(metadataSessionForTab(inspector, useStudio.getState())).toBeUndefined();
+});
+
+test("linked inspectors retain their origin and append DDL without replacing SQL or session ownership", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile", "SELECT 'unfinished work'; -- keep this");
+  state.bindQuerySession(id, { ...session, id: "isolated" });
+  state.updateTab(id, {
+    fileToken: "grant",
+    fileName: "work.sql",
+    savedSql: "SELECT 'unfinished work';",
+  });
+  state.openSessionObject(
+    id,
+    { schema: "public", name: "orders", kind: "table", identity: null },
+    undefined,
+    "observed",
+  );
+  const first = useStudio.getState().tabs.at(-1)!;
+  state.openLinkedSessionObject(first.id, {
+    schema: "public",
+    name: "orders_pkey",
+    kind: "index",
+    identity: "orders",
+  });
+  const linked = useStudio.getState().tabs.at(-1)!;
+  expect(linked.metadataOrigin).toEqual(first.metadataOrigin);
+  expect(linked.querySession).toBeNull();
+  expect(state.appendSessionDdl(linked.id, "CREATE INDEX example ON orders(id);")).toBe(true);
+  const source = useStudio.getState().tabs.find((t) => t.id === id)!;
+  expect(source.sql).toBe(
+    "SELECT 'unfinished work'; -- keep this\n\nCREATE INDEX example ON orders(id);",
+  );
+  expect(source.querySession?.id).toBe("isolated");
+  expect(isTabFileDirty(source)).toBe(true);
+  expect(useStudio.getState().activeTabId).toBe(id);
+  expect(useStudio.getState().tabs).toHaveLength(3);
+  expect(client.call).not.toHaveBeenCalled();
+});
+
+test.each(["rebound", "context", "closed", "running"])(
+  "inspector actions reject a %s source without primary fallback",
+  (change) => {
+    const state = useStudio.getState();
+    const id = state.openQuery("profile", "SELECT 42;");
+    state.bindQuerySession(id, { ...session, id: "isolated" });
+    state.openSessionObject(
+      id,
+      { schema: "public", name: "orders", kind: "table", identity: null },
+      undefined,
+      "observed",
+    );
+    const inspector = useStudio.getState().tabs.at(-1)!;
+    if (change === "rebound") state.attachQuerySession(id, null);
+    if (change === "context") useStudio.setState({ sessionContextRevision: { isolated: 1 } });
+    if (change === "closed") state.closeTab(id);
+    if (change === "running") state.updateTab(id, { status: "running" });
+    const before = useStudio.getState().tabs;
+    expect(state.appendSessionDdl(inspector.id, "DROP TABLE orders;")).toBe(false);
+    if (change !== "running") {
+      state.openLinkedSessionObject(inspector.id, {
+        schema: "public",
+        name: "customers",
+        kind: "table",
+        identity: null,
+      });
+      expect(useStudio.getState().tabs).toEqual(before);
+    }
+    expect(useStudio.getState().tabs.find((t) => t.id === id)?.sql ?? "SELECT 42;").toBe(
+      "SELECT 42;",
+    );
+    expect(client.call).not.toHaveBeenCalledWith("prepare_execution", expect.anything());
+  },
+);

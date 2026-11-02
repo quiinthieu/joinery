@@ -67,8 +67,8 @@ Complexity is Low/Medium/High. Priority P0–P3 is separate from blueprint miles
 | E | `src/features/studio/SqlEditor.tsx`, `sql-context.ts` (`selectedStatement`, `referencedTables`, `tableLookup`, `catalogCompletions`), `completion-session.ts` (`CompletionSession`, `CompletionSchemas`), `sql-identifiers.ts`; `src/data/{completion-index,completion-protocol,sql-identifier}.ts` (`CompletionWorkerIndex`), completion/formatter workers | Context/session/protocol/index unit tests and browser completion/studio/mysql/snowflake specs. Baseline regex defects reproduced and repaired; current token reader and `completion-session.ts` cover bounded direct-base-table scopes. Default context is configured, not live SQL-session context |
 | X | `src-tauri/src/execution.rs` (`prepare_execution`, `store_plan`, `execute_plan`), `safety.rs` (`prepare`, AST visitor); `src/app/App.tsx` (`runSql`, `executePrepared`) | Safety unit tests and engine integration tests. Immutable expiring plans, one-use approval, cancellation quarantine, no replay. Plain EXPLAIN can use SQL; ANALYZE is not assumed read-only |
 | G | `src/features/grid/{DatabaseGrid,ValueDialog,TableFilterBar,ColumnConfigPopover,CopyAsMenu,ExportDialog,ImportCsvDialog,DataCompareDialog}.tsx`, `{paste,table-layout,table-query,value-format,copy-format}.ts`; `src/data/{dirty-store,result-cache,columnar}.ts`; table paging in `src/state/studio.ts`; backend `browse_query.rs`, `file_capability.rs`, `export.rs`, `import.rs`, `compare.rs`, `prepare_changes_batch` and driver `apply` | Dirty/cache/columnar/paste/layout/viewer/copy-format/file-capability/export/import/compare tests and database/browser edit & data-movement tests. Glide canvas, sparse overlay, primary-key provenance, atomic insert/update/delete plans, typed server sort/filter, Safe-Mode-classified raw WHERE/ORDER BY, outbound & inbound FK navigation, persisted column hide/reorder/width, atomic multi-cell paste, binary hex/ASCII, PostgreSQL array & lossless JSON viewers (R1 batches 1–2, merged #25/#27), plus Copy-as (`CSV`/`TSV`/`JSON`/`NDJSON`/`SQL INSERT`/`Markdown`), capability-gated `.partial` streaming exports, CSV/TSV import validation/remapping into reviewed 500-row `ChangePlan` batches, and key-aware bounded table/snapshot comparison (R2, merged #28 `c8d8aa1`). No arbitrary-result editing, PK editing on existing rows, or Snowflake table sort/filter |
-| N | `src/features/connections/{Sidebar.tsx,explorer-tree.ts}`, `src/features/studio/{UtilityViews,ObjectInspectorView,SearchEverywhere,LibraryModal}.tsx`, `search-everywhere.ts`; backend `drivers/{postgres,mysql}/explorer.rs`, `drivers/snowflake/catalog.rs` (`object_details`), `domain.rs` (`DatabaseObjectKind`, `DatabaseObjectRef`, `ObjectDetails`, `ObjectDdlStatus`, `DependencyEdge`, `SavedQuery`, `SavedBookmark`) | Explorer tree, object inspector, Search Everywhere unit/component tests, PG/MySQL/MariaDB integration tests (`object_explorer_*`), and `tests/e2e/explorer.spec.ts`. Categorized object explorer (`Tables`, `Views`, `Materialized views`, `Functions`, `Procedures`, `Sequences`, `Triggers`, `Indexes`) with WAI-ARIA keyboard tree traversal, kind filter chips, Structure constraints/indexes/triggers, bounded 256 KiB read-only DDL (`Copy DDL`, `Open in SQL editor`), bounded 200-edge `Uses`/`Used by` dependencies, and cross-connection Search Everywhere (`⌘K` / `⇧⌘O`, merged #29 `2625933`) plus `Saved` queries scope, bookmarks and recent locations (R4 local on `feat/consoles-sessions-files`). No DDL mutation UI (`N08`) or graphical execution plans (`A01`) |
-| W | `src/state/{studio,workspace}.ts`, `src/app/{App,Workbench}.tsx`, `src/features/studio/LibraryModal.tsx`, `Preferences.tsx`; backend `persistence/{workspace,library}.rs`, `file_capability.rs` (`GrantKind::SqlFile`), `execution.rs` (`session_contexts`, `switch_session_context`, `set_transaction_mode`, `commit_transaction`, `rollback_transaction`, `open_sql_file`, `save_sql_file`) | Workspace/studio/library/file-capability unit tests, PG/MySQL/MariaDB transaction & context integration tests, and `tests/e2e/{sessions,consoles-files}.spec.ts`. Shared primary sessions plus named multi-console session pool (up to 4 per connection), per-session `Auto-commit`/`Manual commit` transaction controls, per-session schema/database switcher, capability-gated `.sql` file Open/Save/Save As (excluded from opt-in workspace drafts), saved queries library, persistent bookmarks (`⌘D`) and in-memory recent locations (`⇧⌘E`) (R4 local on `feat/consoles-sessions-files`) |
+| N | `src/features/connections/{Sidebar.tsx,explorer-tree.ts}`, `src/features/studio/{UtilityViews,ObjectInspectorView,SearchEverywhere,LibraryModal}.tsx`, `search-everywhere.ts`; backend `drivers/{postgres,mysql}/explorer.rs`, `drivers/snowflake/catalog.rs` (`object_details`), `domain.rs` (`DatabaseObjectKind`, `DatabaseObjectRef`, `ObjectDetails`, `ObjectDdlStatus`, `DependencyEdge`, `SavedQuery`, `SavedBookmark`) | Explorer tree, object inspector, Search Everywhere unit/component tests, PG/MySQL/MariaDB integration tests (`object_explorer_*`), and `tests/e2e/explorer.spec.ts`. Categorized object explorer (`Tables`, `Views`, `Materialized views`, `Functions`, `Procedures`, `Sequences`, `Triggers`, `Indexes`) with WAI-ARIA keyboard tree traversal, kind filter chips, Structure constraints/indexes/triggers, bounded 256 KiB read-only DDL (`Copy DDL`, `Open in SQL editor`), bounded 200-edge `Uses`/`Used by` dependencies, and cross-connection Search Everywhere (`⌘K` / `⇧⌘O`, merged #29 `2625933`) plus `Saved` queries scope, bookmarks and recent locations (R4 merged in PR #30 (`a0ba1a6`), unreleased). No DDL mutation UI (`N08`); R6 local estimated-plan views are recorded below |
+| W | `src/state/{studio,workspace}.ts`, `src/app/{App,Workbench}.tsx`, `src/features/studio/LibraryModal.tsx`, `Preferences.tsx`; backend `persistence/{workspace,library}.rs`, `file_capability.rs` (`GrantKind::SqlFile`), `execution.rs` (`session_contexts`, `switch_session_context`, `set_transaction_mode`, `commit_transaction`, `rollback_transaction`, `open_sql_file`, `save_sql_file`) | Workspace/studio/library/file-capability unit tests, PG/MySQL/MariaDB transaction & context integration tests, and `tests/e2e/{sessions,consoles-files}.spec.ts`. Shared primary sessions plus named multi-console session pool (up to 4 per connection), per-session `Auto-commit`/`Manual commit` transaction controls, per-session schema/database switcher, capability-gated `.sql` file Open/Save/Save As (excluded from opt-in workspace drafts), saved queries library, persistent bookmarks (`⌘D`) and in-memory recent locations (`⇧⌘E`) (R4 merged in PR #30 (`a0ba1a6`), unreleased) |
 | L | `src-tauri/src/persistence.rs`, `persistence/{workspace,recovery}.rs`, `commands/recovery.rs`; `MetadataRecovery.tsx` | Persistence/recovery tests and `tests/e2e/recovery.spec.ts`. Version/schema guards, WAL crash recovery, bounded snapshots and undo. Does not restore results, sessions, edits or execute SQL |
 | B | `src-tauri/src/results.rs` (`ResultStore`), `commands.rs` (`result_range`), `src/ipc/{client,generated}.ts`, Arrow worker, result cache | Result/cache/columnar unit tests; native smoke fixture. Rust 64 MiB, frontend 32 MiB/512 pages, dirty edits 8 MiB, result 100,000 rows, pages 500 rows/2 MiB, IPC 4 MiB. Generated DTOs but `call<T>(command: string, ...)` is not a closed command map |
 | Q | `scripts/{native-smoke.py,runtime_memory.py,verify-macos-bundle.mjs}`, `src/native-smoke.ts`, `.github/workflows/ci.yml`, `docs/IMPLEMENTATION_STATUS.md` | Python attribution tests, hidden WebView fixture, standard three-platform CI compilation. Hidden DOM readiness and synthetic cleanup are not visible startup, total representative idle memory, or FPS qualification |
@@ -111,8 +111,8 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | M02 Authentication and credential storage — DG-C | C | PARTIAL / H | Password/keychain and Snowflake OAuth exist; broader auth and real locked-store cases need qualification | P1 / High | OS stores, engine auth; PMSR; transport | Native denial, token lifecycle and no-secret logging / hold |
 | M03 SSH/TLS and engine security — DG-C | C, D | IMPLEMENTED_UNVERIFIED / H | One-hop tunnels and hostname verification exist; rerun CA/name/trust/drop/cleanup cases | P0 / High | Transport; PMR (S uses HTTPS); transport | SSH/engine integration / existing |
 | M04 Hierarchical connection groups — DG-C | C | IMPLEMENTED_UNVERIFIED / H | Group policy and hierarchy exist; rerun UI moves and policy inheritance | P1 / Low | Profiles; PMSR; gate | Group/browser tests / existing |
-| M05 Multiple databases/schemas — DG-C, DG-EC | `execution.rs` (`session_contexts`, `switch_session_context`), `drivers/{postgres,mysql,snowflake}.rs`, `SqlEditor.tsx` (`Active schema` / `Active database`) | VERIFIED_COMPLETE / H (bounded R4) | Per-session active schema switcher on PostgreSQL (`set_config('search_path', …, false)`, preserving explicit `pg_catalog`) and Snowflake (stateless request-scoped schema verification), plus active database switcher on MySQL/MariaDB (`USE`), bumping completion revisions and refreshing live CodeMirror completion immediately without affecting sibling sessions | P1 / High | Session context; PMS (`none` on R); read | Rust PG/Snowflake context unit tests, PG/MySQL/MariaDB live integration tests, and browser per-session schema/database switcher workflow; local on `feat/consoles-sessions-files` / hold until merged & released |
-| M06 Session management — DG-S | `studio.ts` (`sessionPool`, `bindQuerySession`, `attachQuerySession`, `renameQuerySession`, `disconnectQuerySession`), `Workbench.tsx`, D, W | VERIFIED_COMPLETE / H (bounded R4) | Named & attachable multi-console session pool (up to 4 total sessions per connection, primary + 3 secondary): multiple consoles attach to a named secondary session or `Shared session`, rename/disconnect sessions, isolate cancellation, and disconnect a pooled session on tab close only when closing its last attached owner | P1 / High | Context identity; PM, restricted S/R; engine | `studio.test.ts` multi-console pool/last-owner/retirement tests, `tests/e2e/sessions.spec.ts` (PG/MySQL/MariaDB) and `tests/e2e/consoles-files.spec.ts` (PG/MySQL shared named session); local on `feat/consoles-sessions-files` / hold until merged & released |
+| M05 Multiple databases/schemas — DG-C, DG-EC | `execution.rs` (`session_contexts`, `switch_session_context`), `drivers/{postgres,mysql,snowflake}.rs`, `SqlEditor.tsx` (`Active schema` / `Active database`) | VERIFIED_COMPLETE / H (bounded R4) | Per-session active schema switcher on PostgreSQL (`set_config('search_path', …, false)`, preserving explicit `pg_catalog`) and Snowflake (stateless request-scoped schema verification), plus active database switcher on MySQL/MariaDB (`USE`), bumping completion revisions and refreshing live CodeMirror completion immediately without affecting sibling sessions | P1 / High | Session context; PMS (`none` on R); read | Rust PG/Snowflake context unit tests, PG/MySQL/MariaDB live integration tests, and browser per-session schema/database switcher workflow; merged in PR #30 (`a0ba1a6`) / hold until released |
+| M06 Session management — DG-S | `studio.ts` (`sessionPool`, `bindQuerySession`, `attachQuerySession`, `renameQuerySession`, `disconnectQuerySession`), `Workbench.tsx`, D, W | VERIFIED_COMPLETE / H (bounded R4) | Named & attachable multi-console session pool (up to 4 total sessions per connection, primary + 3 secondary): multiple consoles attach to a named secondary session or `Shared session`, rename/disconnect sessions, isolate cancellation, and disconnect a pooled session on tab close only when closing its last attached owner | P1 / High | Context identity; PM, restricted S/R; engine | `studio.test.ts` multi-console pool/last-owner/retirement tests, `tests/e2e/sessions.spec.ts` (PG/MySQL/MariaDB) and `tests/e2e/consoles-files.spec.ts` (PG/MySQL shared named session); merged in PR #30 (`a0ba1a6`) / hold until released |
 | M07 Driver capabilities/configuration — DG-C | D | PARTIAL / H | Six capability booleans exist; finer object/analysis/auth capabilities need contracts | P2 / Medium | Driver trait/DTOs; PMSR; engine | Unsupported controls disabled and backend rejects / hold |
 
 ## Database navigation
@@ -135,17 +135,17 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | E03 Direct-base-table statement/block/alias scope — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Caret block/UNION arm isolated; comments/strings ignored; CTE/derived shadows suppress physical columns. Advanced output inference remains outside this acceptance | P1 / Medium | E01; PMS; read | 24 context cases plus PM accepted-and-executed SELECTs and synthetic S browser flow; see batch evidence / shipped in preview.12; see hub |
 | E04 Standard-delimiter identifier completion — DG-E | E | VERIFIED_COMPLETE / H (bounded repair) | Case/segments/escaped delimiters/Unicode preserved; accepted identifiers execute on PM fixtures. PostgreSQL U& escape decoding is deliberately declined | P1 / Medium | Identifier-aware lookup; PMS; read | Unit case twins/Unicode/dots/escaping; PM accepted-and-executed fixtures, synthetic S qualification / shipped in preview.12; see hub |
 | E05 Completion invalidation — DG-EC | E | VERIFIED_COMPLETE / H (known input context) | Document/caret/config/index revisions reject stale replies; partial failures preserve successful metadata; eight retained/in-flight reads. Live session discovery remains E02/I04 | P1 / Medium | E03/E04; PMSR; local | Seven session/cache tests, three worker-protocol tests, browser regression / shipped in preview.12; see hub |
-| E06 FK JOIN suggestions — DG-E, DG-FK | D, E | MISSING / H | Add grouped constraint metadata, then explicit JOIN/ON insertion | P1 / High | E03/E04/N03; PM first; read | Composite FKs, aliases, multiple candidate relationships / hold |
-| E07 Syntax diagnostics and execution error locations — DG-I | E, X; AppError has code/message only | MISSING / H | Structured positions and UTF-8/UTF-16 mapping, navigate to offending statement | P1 / High | Error DTOs and adapters; PMS; read | Multibyte text, later-batch errors, driver missing position / hold |
-| E08 Inspections/quick fixes — DG-I | X safety checks at execution, no editor inspections | MISSING / H | Local diagnostics with explicit fixes; backend safety stays authoritative | P2 / High | E07 and scope analysis; PMS; gate | Fix preserves intent and cannot authorize writes / hold |
-| E09 SQL formatting — DG-F | E, formatter.worker.ts | PARTIAL / H | Whole-document worker formatting exists; selection formatting and per-dialect settings missing | P2 / Medium | Editor selections; PMS; local | Comments/literals unchanged and stale formatter results ignored / hold |
-| E10 Rename and SQL refactoring — DG-R | E | MISSING / H | Preview scope-correct text edits; database renames separately authorized | P2 / High | Scope/definition graph; PMS; gate | Alias shadowing and reviewed DDL / hold |
-| E11 Go to definition and usages — DG-SE | E, N | MISSING / H | Resolve identifiers to metadata/editor locations | P1 / High | E02/N06; PMS; read | Ambiguity and inaccessible objects / hold |
-| E12 Snippets/live templates — DG-T | E | MISSING / H | Local dialect-aware templates with keyboard placeholders | P2 / Medium | Existing editor/persistence; PMS; local | Expansion/undo and no automatic execution / hold |
-| E13 Statement navigation — DG-X | E selectedStatement | PARTIAL / H | Caret/selection execution exists; next/previous statement navigation missing | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, large documents / hold |
-| E14 Multiple consoles/files — DG-S, DG-SQ | `file_capability.rs` (`GrantKind::SqlFile`), `studio.ts` (`openSqlFile`, `saveSqlFile`, `isTabFileDirty`), `workspace.ts`, `Workbench.tsx`, `App.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Multiple consoles with named session attachment plus capability-gated `.sql` file Open (`⌘O`), atomic in-place Save (`⌘S` on query tabs; `reviewEdits` preserved on table tabs) and Save As (`⇧⌘S`) via reusable `GrantKind::SqlFile` tokens (max 64 grants, ≤ 4 MiB UTF-8, symlink/NUL rejection, sibling `.tmp` + `sync_all` + `rename`, dirty dot, unsaved-close/quit guard, zero raw paths over IPC, excluded from `SavedWorkspace.drafts`) | P1 / High | M06, native file capability; PMSR; local | Rust `sql_file_capabilities` unit test, `studio.test.ts` dirty/draft-exclusion tests, and browser Open/dirty-guard/Save/Save-As workflow; local on `feat/consoles-sessions-files` / hold until merged & released |
-| E15 Query parameters — DG-P | X; no typed editor parameter workflow | MISSING / H | Bind values through engine adapters and include bindings in reviewed plan | P1 / High | Typed execution request; PMS by capability; gate | Literal/comment exclusion, NULL/types, approval digest / hold |
-| E16 Context documentation — DG-DOC | E, N | MISSING / H | Metadata documentation at caret with permission-aware fallback | P2 / Medium | E11; PMS; read | Correct object, stale/denied metadata / hold |
+| E06 FK JOIN suggestions — DG-E, DG-FK | D, E; `completion_fks_on`, `joinCompletions` | PARTIAL / H | Direct-base-table outbound/inbound composite JOIN and initial ON insertion verified on PG/MySQL/MariaDB; multiple/self constraints and quoting covered. Snowflake relationships and advanced output inference remain open | P1 / High | E03/E04/N03; PM; read | Two live metadata fixtures and three browser flows execute nine inserted composite joins; local `e0dad5f`, unmerged / hold |
+| E07 Syntax diagnostics and execution error locations — DG-I | `AppError.location`, `sql_text.rs`, safety/driver/execution adapters | PARTIAL / H | Structured UTF-16 spans, SQLSTATE and parser/policy/server positions verified locally; MySQL syntax ranges best-effort, missing positions use statement fallback. Inline marks, gutters, SQLSTATE/details, jumps and statement navigation now use exact submitted source identity; Unicode/CRLF, parameters and Explain origins are reconciled; edits and delayed errors cannot mark changed SQL | P1 / High | Error DTOs and adapters; PMS; read | Unicode/CJK/emoji, later-batch, leading whitespace and missing-position live tests; six real diagnostics/navigation browser flows plus twelve focused unit cases; local `65530c0`, unmerged / hold |
+| E08 Inspections/quick fixes — DG-I | X execution safety; local qualified-column inspection across ordered direct-table JOINs, plus one non-recursive CTE or derived query, with fresh complete per-table metadata and explicit correction | PARTIAL / H | Select-list unqualified names resolve to one owner; other clauses, multiple/recursive CTEs, stars and broader contextual fixes remain open. Local `15089a1` offers projected names and withholds partial/denied/stale/ambiguous metadata | P2 / High | E07 and scope analysis; PMS; gate | ON operands/comma precedence/pending joins, owning-table preview/Apply/undo and no inspection execution locally verified / hold |
+| E09 SQL formatting — DG-F | `sql-format.ts`, formatter worker, Preferences | PARTIAL / H | Selection/document formatting, global and per-dialect case/indent/spacing, inheritance/reset, stale-reply rejection, serialized saves and bind compatibility. Broader style controls remain open | P2 / Medium | Editor selections; PMS; local | Selection/newline/undo, literal/comment/bind preservation, ordered saves, inheritance/reset/recovery and three real engine flows; local `d39b89b`, unmerged / hold |
+| E10 Rename and SQL refactoring — DG-R | `sql-navigation.ts`, `SqlAliasRenameDialog.tsx`, `SqlEditor.tsx` | PARTIAL / H | Bounded SELECT alias and nonrecursive CTE preview/Apply; ordered JOIN/WITH scope, relation/qualifier capture and undo verified locally. MySQL-family nested WITH beneath outer CTE scopes, recursive/broader refactoring and database renames remain open | P2 / High | Scope/definition graph; PMS; gate | Alias/CTE capture/quoting/undo and exact before/after results locally verified; local `072e4ff`, wider scopes and reviewed DDL / hold |
+| E11 Go to definition and usages — DG-SE | `sql-navigation.ts`, `SqlEditor.tsx`, object Structure | PARTIAL / H | Scoped CTE/alias/output jumps, proven direct-column outputs through CTEs/derived tables and per-candidate references. Expressions, wildcards, set-operation outputs and ambiguity are withheld. Primary/isolated consoles retain their originating context through read-only Structure/DDL and linked objects; explicit DDL append preserves SQL/session without execution | P1 / High | E02/N06; PMS; read | Nested outputs plus context/session isolation, denied/stale replies and six real navigation flows; local `34c001a`, unmerged / hold |
+| E12 Snippets/live templates — DG-T | `sql-snippets.ts`, Preferences, bounded SQLite metadata | PARTIAL / H | Built-ins and global/engine custom templates, override precedence, Tab/Shift+Tab and final cursor stop; no automatic execution. Context-aware variables/semantic placement remain open | P2 / Medium | Existing editor/persistence; PMS; local | Expansion, scope precedence, real CRUD/reload/explicit-run flows and validated backup/restore; local `db5cd1b`, unmerged / hold |
+| E13 Statement navigation — DG-X | `sql-context.ts`, `sql-navigation.ts`, editor/palette | PARTIAL / H | Caret/selection execution and dialect-tree previous/next statement navigation verified locally; incomplete parsing withholds navigation; representative large-document performance remains open | P2 / Low | Syntax boundaries; PMS; read | Comments, quoted semicolons, dialect ranges and real diagnostics/navigation flows; local `65530c0` and current regressions, unmerged / hold |
+| E14 Multiple consoles/files — DG-S, DG-SQ | `file_capability.rs` (`GrantKind::SqlFile`), `studio.ts` (`openSqlFile`, `saveSqlFile`, `isTabFileDirty`), `workspace.ts`, `Workbench.tsx`, `App.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Multiple consoles with named session attachment plus capability-gated `.sql` file Open (`⌘O`), atomic in-place Save (`⌘S` on query tabs; `reviewEdits` preserved on table tabs) and Save As (`⇧⌘S`) via reusable `GrantKind::SqlFile` tokens (max 64 grants, ≤ 4 MiB UTF-8, symlink/NUL rejection, sibling `.tmp` + `sync_all` + `rename`, dirty dot, unsaved-close/quit guard, zero raw paths over IPC, excluded from `SavedWorkspace.drafts`) | P1 / High | M06, native file capability; PMSR; local | Rust `sql_file_capabilities` unit test, `studio.test.ts` dirty/draft-exclusion tests, and browser Open/dirty-guard/Save/Save-As workflow; merged in PR #30 (`a0ba1a6`) / hold until released |
+| E15 Query parameters — DG-P | `params.rs`, `ParameterDialog.tsx`, immutable execution plans and engine adapters | PARTIAL / H | Named/positional typed values and NULL, bounded transient drafts, exact reviewed bindings, parameterized Explain/Analyze and binding-aware comparison verified on PG/MySQL/MariaDB; Snowflake transport remains synthetic and wider engine/native UI qualification remains open | P1 / High | Typed execution request; PMS by capability; gate | Scanner exclusions, precision/Unicode/budget rejection, all kinds/NULL, reviewed writes, one-use/stale approvals, template-only history; six browser flows; local `39359e7`, unmerged / hold |
+| E16 Context documentation — DG-DOC | `SqlNavigationOverlay.tsx`, current-console catalog/details | PARTIAL / H | F1 catalog metadata and proven CTE/derived-output source column/type; local output declarations/usages, object-level dependents and explicit denied/stale metadata. Broader semantic inference and Snowflake/live breadth remain open | P2 / Medium | E11; PMS; read | Output/source distinction, edit/refresh/close races, denied metadata, focus/Escape, isolated inspector links and exact DDL append; local `34c001a`, unmerged / hold |
 
 ## Query execution
 
@@ -153,10 +153,10 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | X01 Statement/script execution — DG-X | X, E | IMPLEMENTED_UNVERIFIED / H | Preflight and sequential execution exist; rerun exact statement/selection/batch fixtures | P0 / Medium | Drivers/safety; PMS, R command grammar; gate | Partial failures, comments, unknown SQL / existing |
 | X02 Multiple result sets — DG-X, DG-G | X, B, W | IMPLEMENTED_UNVERIFIED / H | Results/subtabs exist; verify prior results survive later failures | P0 / Medium | Retention; PMS; read | Empty/multiple result sets and later errors / existing |
 | X03 Async execution/cancellation — DG-X | X, D | IMPLEMENTED_UNVERIFIED / H | Owned cancellation/quarantine exist; rerun races and cleanup | P0 / High | Jobs/session lifetime; PMSR; engine | Queued/active/late cancellation, lost acknowledgements / existing |
-| X04 Transactions/session controls — DG-S | `drivers/{postgres,mysql}.rs`, `execution.rs` (`set_transaction_mode`, `commit_transaction`, `rollback_transaction`), `Workbench.tsx`, W | VERIFIED_COMPLETE / H (bounded R4) | Per-session `Auto-commit` vs `Manual commit` mode on PostgreSQL & MySQL/MariaDB, wire-observed `TransactionState` (`idle` / `inTransaction` / `failed`), explicit `Commit` (`ReadOnly` blocked, audit-logged) and `Rollback` (`Failed` recovery, audit-logged), `ErrorCode::Conflict` refusal on `Manual` → `Auto-commit` while open, MySQL phantom-tx cleanup, and independent grid commits. Savepoint UI and S/R transactions excluded | P1 / High | M06; PM; gate | Rust PG auto-BEGIN unit test, PG (`25P02` failed state) & MySQL/MariaDB manual-tx/grid-isolation integration tests, `studio.test.ts`, and browser PG/MySQL shared manual-tx Commit/Rollback/grid-isolation workflows; local on `feat/consoles-sessions-files` / hold until merged & released |
-| X05 Execution metrics — DG-X, DG-Q | QueryEvent, W | PARTIAL / H | Client elapsed/affected rows exist; queue/first-row/server timing missing | P2 / Medium | Driver metrics; PMSR; read | Correct units and no client/server-time conflation / hold |
+| X04 Transactions/session controls — DG-S | `drivers/{postgres,mysql}.rs`, `execution.rs` (`set_transaction_mode`, `commit_transaction`, `rollback_transaction`), `Workbench.tsx`, W | VERIFIED_COMPLETE / H (bounded R4) | Per-session `Auto-commit` vs `Manual commit` mode on PostgreSQL & MySQL/MariaDB, wire-observed `TransactionState` (`idle` / `inTransaction` / `failed`), explicit `Commit` (`ReadOnly` blocked, audit-logged) and `Rollback` (`Failed` recovery, audit-logged), `ErrorCode::Conflict` refusal on `Manual` → `Auto-commit` while open, MySQL phantom-tx cleanup, and independent grid commits. Savepoint UI and S/R transactions excluded | P1 / High | M06; PM; gate | Rust PG auto-BEGIN unit test, PG (`25P02` failed state) & MySQL/MariaDB manual-tx/grid-isolation integration tests, `studio.test.ts`, and browser PG/MySQL shared manual-tx Commit/Rollback/grid-isolation workflows; merged in PR #30 (`a0ba1a6`) / hold until released |
+| X05 Execution metrics — DG-X, DG-Q | QueryEvent, W, `QueryPlanView.tsx` | PARTIAL / H | Run-scoped queue wait, backend active/total, first nonempty row batch and client elapsed are distinct; missing values stay unavailable. PostgreSQL server plan times remain separate; general server/render profiling is open | P2 / Medium | Driver metrics; PMSR; read | Correct units and no client/server-time conflation / hold |
 | X06 Query history — DG-SQ | N, L, X | IMPLEMENTED_UNVERIFIED / H | Search/reopen and opt-in text exist; rerun privacy and replay paths | P1 / Low | Persistence/plans; PMSR; local | Metadata-only history and explicit rerun authorization / existing |
-| X07 Raw EXPLAIN — DG-Q | X, safety AST visitor | PARTIAL / H | SQL entry point exists; capability-aware action and plan result typing missing | P2 / Medium | A01; PMS by capability; gate | Nested writes and ANALYZE approval / hold |
+| X07 Raw EXPLAIN — DG-Q | `query_plan.rs`, `Studio::prepare_explain`, `QueryPlanView.tsx` | PARTIAL / H | Estimated PostgreSQL/MySQL/MariaDB/Snowflake plans; reviewed PostgreSQL plus capability-checked MariaDB JSON / MySQL TREE analysis. Raw/tree/grid share retained text. Snowflake has no executing analysis or qualified live account | P2 / Medium | A01; PM and separate S contract; gate | Current 148 frontend / 136 Rust tests and four synthetic Snowflake browser flows; prior PM fixture/browser evidence recorded separately. Local `48dfb21`, unreleased / hold |
 | X08 Error reporting/navigation — DG-X | AppError, QueryEvent.Error, W | PARTIAL / H | Error panel exists; statement source ranges/navigation absent | P1 / Medium | E07; PMSR; read | Unicode offsets and missing server positions / hold |
 
 ## Data exploration and editing
@@ -189,9 +189,9 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 ## Developer productivity
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
-| P01 Search Everywhere/object symbol search — DG-SE | `SearchEverywhere.tsx`, `search-everywhere.ts`, `App.tsx` | VERIFIED_COMPLETE / H (bounded R3 + R4 `Saved` scope) | Unified Search Everywhere (`⌘K` `All` scope, `⇧⌘O` `Objects` scope) with `All` / `Objects` / `Saved` / `Actions` / `History` tabs, deterministic ranking across commands, open tabs, saved queries, all connected sessions' `catalog` + `objects` (excluding offline profiles with explicit connected/offline count note), and recent `HistoryEntry[]` (capped at 80 results) | P1 / Medium | Object identity/index; PMSR; read | 4 `search-everywhere` unit tests, existing `studio.spec.ts` palette focus/trap regression, and browser PG + MySQL + Saved query Search Everywhere workflows; R3 merged in #29 (`2625933`), R4 `Saved` scope local on `feat/consoles-sessions-files` / hold until released |
-| P02 Recent locations/bookmarks — DG-RL, DG-B | `persistence/library.rs`, `LibraryModal.tsx`, `studio.ts` (`bookmarks`, `recentLocations`, `toggleBookmark`, `openLocation`), `Sidebar.tsx`, `Workbench.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Persistent object & saved-query bookmarks (`⌘D`, max 256 in SQLite `settings` `'bookmarks'`, deduplicated by canonical target, purged on `delete_profile` / `delete_saved_query`, `onNeedsConnect` routing for offline profiles) plus a 50-item in-memory `Recent locations` ring buffer (`⇧⌘E`, never persisted to SQLite) | P2 / Medium | Stable document/object IDs; PMSR; local | Rust `library.rs` & backup-validation unit tests, `studio.test.ts` bookmark/50-item ring buffer/profile-delete tests, and browser bookmark + recent-locations jump & reload persistence workflow; local on `feat/consoles-sessions-files` / hold until merged & released |
-| P03 Saved queries/scratch files — DG-SQ | `persistence/library.rs`, `LibraryModal.tsx` (`SaveQueryDialog`, `LibraryModal`), `studio.ts` (`savedQueries`), `SearchEverywhere.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Named SQLite saved-queries library (`settings` `'saved-queries'`, max 256 entries, ≤ 256 KiB SQL each / 4 MiB total, optional `connectionId` defaulting detached when `storeQueryText === false`, production/`!storeQueryText` purge vs non-production detach on `delete_profile`) paired with capability-gated `.sql` files (`E14`) and opt-in drafts | P2 / Medium | E14/persistence; PMSR; local | Rust `library.rs` bounds/cascade/backup-validation tests, `studio.test.ts` privacy-default & profile-delete cascade tests, and browser Save-to-library + SearchEverywhere reopen + reload persistence workflow; local on `feat/consoles-sessions-files` / hold until merged & released |
+| P01 Search Everywhere/object symbol search — DG-SE | `SearchEverywhere.tsx`, `search-everywhere.ts`, `App.tsx` | VERIFIED_COMPLETE / H (bounded R3 + R4 `Saved` scope) | Unified Search Everywhere (`⌘K` `All` scope, `⇧⌘O` `Objects` scope) with `All` / `Objects` / `Saved` / `Actions` / `History` tabs, deterministic ranking across commands, open tabs, saved queries, all connected sessions' `catalog` + `objects` (excluding offline profiles with explicit connected/offline count note), and recent `HistoryEntry[]` (capped at 80 results) | P1 / Medium | Object identity/index; PMSR; read | 4 `search-everywhere` unit tests, existing `studio.spec.ts` palette focus/trap regression, and browser PG + MySQL + Saved query Search Everywhere workflows; R3 merged in #29 (`2625933`), R4 `Saved` scope merged in PR #30 (`a0ba1a6`) / hold until released |
+| P02 Recent locations/bookmarks — DG-RL, DG-B | `persistence/library.rs`, `LibraryModal.tsx`, `studio.ts` (`bookmarks`, `recentLocations`, `toggleBookmark`, `openLocation`), `Sidebar.tsx`, `Workbench.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Persistent object & saved-query bookmarks (`⌘D`, max 256 in SQLite `settings` `'bookmarks'`, deduplicated by canonical target, purged on `delete_profile` / `delete_saved_query`, `onNeedsConnect` routing for offline profiles) plus a 50-item in-memory `Recent locations` ring buffer (`⇧⌘E`, never persisted to SQLite) | P2 / Medium | Stable document/object IDs; PMSR; local | Rust `library.rs` & backup-validation unit tests, `studio.test.ts` bookmark/50-item ring buffer/profile-delete tests, and browser bookmark + recent-locations jump & reload persistence workflow; merged in PR #30 (`a0ba1a6`) / hold until released |
+| P03 Saved queries/scratch files — DG-SQ | `persistence/library.rs`, `LibraryModal.tsx` (`SaveQueryDialog`, `LibraryModal`), `studio.ts` (`savedQueries`), `SearchEverywhere.tsx` | VERIFIED_COMPLETE / H (bounded R4) | Named SQLite saved-queries library (`settings` `'saved-queries'`, max 256 entries, ≤ 256 KiB SQL each / 4 MiB total, optional `connectionId` defaulting detached when `storeQueryText === false`, production/`!storeQueryText` purge vs non-production detach on `delete_profile`) paired with capability-gated `.sql` files (`E14`) and opt-in drafts | P2 / Medium | E14/persistence; PMSR; local | Rust `library.rs` bounds/cascade/backup-validation tests, `studio.test.ts` privacy-default & profile-delete cascade tests, and browser Save-to-library + SearchEverywhere reopen + reload persistence workflow; merged in PR #30 (`a0ba1a6`) / hold until released |
 | P04 Keyboard navigation — DG-SE | W, Modal, tabs helpers | PARTIAL / H | Existing tab/dialog/resize flows; full explorer/grid accessibility open | P1 / Medium | Accessible controls; PMSR; local | Keyboard end-to-end and native assistive tech / hold |
 | P05 Command palette/custom shortcuts — DG-SE | App command list | PARTIAL / H | Fixed actions exist; discoverable contextual actions and rebinding missing | P2 / Medium | Command registry; PMSR; local | Conflicts, focus scopes, disabled capabilities / hold |
 | P06 Workspace layouts/tab management — DG-S | W | PARTIAL / H | One-window panes/tabs and resize exist; richer persisted layout/tab controls absent | P2 / Medium | Existing Zustand/workspace DTO; PMSR; local | Restart, resize, dirty close, session independence / hold |
@@ -201,8 +201,8 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 ## Advanced tools
 
 | ID / feature / DataGrip ref | Joinery evidence | State / confidence | Missing behavior → acceptance | Priority / complexity | Dependencies; engines; security | Tests needed / release |
-| A01 EXPLAIN visualizer — DG-Q | X raw SQL, no plan UI/DTO | MISSING / H | Raw and normalized tree views with explicit engine support | P2 / High | Plan adapters/capabilities; PM first, S separately; gate | Raw/tree consistency, ANALYZE authorization / hold |
-| A02 Query analysis/profiling/plan comparison — DG-Q | X05 basic elapsed metrics | MISSING / H | Estimated/actual metrics and comparable plan snapshots | P2 / High | A01/X05; engine-specific; gate | Units, estimates vs actuals, unknown metrics and budgets / hold |
+| A01 EXPLAIN visualizer — DG-Q | `QueryPlanView.tsx`, `query-plan.ts`, `mysql-tree-plan.ts`, `snowflake-plan.ts` | PARTIAL / H | Bounded JSON/TREE and Snowflake step-local DAG views preserve shared edges, exact raw text and estimate/actual units. Snowflake unsafe numeric estimates defer to raw; cycles/orphans/unsupported shapes fall back. Wider formats/versions and live Snowflake remain open | P2 / High | Plan adapters/capabilities; PMS; gate | Four new Snowflake adapter tests plus identity/result-detection tests, loopback Rust transport and two new plan browser flows. Local `48dfb21`, unreleased / hold |
+| A02 Query analysis/profiling/plan comparison — DG-Q | X05 basic elapsed metrics; local PostgreSQL plan metrics | PARTIAL / H | Estimated/actual plan metrics and bounded explicit compatible snapshots are implemented locally; independent trees/raw plan text, no automatic rerun or guessed node deltas. Run timing is separately scoped with unavailable states; Snowflake snapshots are unavailable until warehouse/session context can be observed; broader server/render profiling remains open | P2 / High | A01/X05; engine-specific; gate | Nine snapshot tests, two lifecycle tests and live-engine comparison browser flows; shared ten-capture / 2 MiB payload bound; local `48dfb21`, unreleased / hold |
 | A03 Index/storage statistics — DG-N, DG-Q | TableInfo estimatedRows/totalBytes | PARTIAL / H | Some estimates exist; index utilization/storage tools missing | P2 / Medium | N04, permission-aware stats; PM first; read | No automatic COUNT, stale estimates and permission denial / hold |
 | A04 Session/process monitoring — DG-S | ProcessesView, Driver.processes | PARTIAL / H | PM process listing and guarded PG cancellation exist; broader monitoring not implemented | P2 / High | Stable process identity; PM; gate | Permission denial, reused IDs, own-session races / hold |
 | A05 Lock inspection | D process data only | MISSING / M | Add engine-specific bounded lock/wait inspection; dedicated DataGrip lock-tool equivalence not established by cited docs | P2 / High | Process/lock metadata; PM; read | Blocking chains, races, partial privileges / hold |
@@ -572,13 +572,13 @@ Evidence (2026-10-31, macOS Apple Silicon, local Node 24 / Rust 1.99.1):
 | Passed | Clean-commit (`26f5136`, `sourceDirty=false`) `pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature, `Joinery.app` `20.66 MiB`, bundle executable SHA-256 `04d4ae86…b000`), `pnpm desktop:smoke:build` and `python3 scripts/native-smoke.py --runs 3 --cycles 10`: three hidden runs (`6,622 / 3,010 / 3,034 ms`), 30 cleanup cycles, main-process peak RSS `106.89–107.41 MiB`, fixture SHA-256 `cc044b44…b83c` (including WebView IPC ACL guards for `database_objects` and `object_details`) |
 | Not executed | Production accounts, live Snowflake accounts, Windows/Linux packaged runtime, Developer ID signing/notarization, representative performance qualification |
 
-## Consoles, sessions, SQL files and library batch (Milestone R4) — local on feat/consoles-sessions-files (unmerged)
+## Consoles, sessions, SQL files and library batch (Milestone R4) — merged in PR #30 (unreleased)
 
 Branch `feat/consoles-sessions-files` (`78a5283..79878e9`) from fetched
 `origin/main` `2625933` (PR #29). It implements Milestone R4 (Consoles,
 sessions & files: `M05`, `M06`, `X04`, `E14`, `P02`, `P03`) of
-[implementation-roadmap.md](implementation-roadmap.md) and is locally verified,
-unmerged and unreleased.
+[implementation-roadmap.md](implementation-roadmap.md). Merged in PR #30
+(`a0ba1a6`); unreleased. The verification record below is historical.
 
 | Field | Consoles, sessions, SQL files and library workflow |
 |---|---|
@@ -601,3 +601,365 @@ Evidence (2026-10-31, macOS Apple Silicon, local Node 24 / Rust 1.99.1):
 | Passed | Clean-commit (`79878e9`, `sourceDirty=false`) `pnpm desktop:build`, `pnpm desktop:bundle:mac` (strict ad-hoc signature, `Joinery.app` `21.07 MiB`, bundle executable SHA-256 `2d16256a…f054`), `pnpm desktop:smoke:build` and `python3 scripts/native-smoke.py --runs 3 --cycles 10`: three hidden runs (`5,842 / 3,182 / 3,274 ms`), 30 cleanup cycles, main-process peak RSS `102.44–107.66 MiB`, fixture SHA-256 `06af4333…5f5a` (including WebView IPC ACL guards for all 12 new R4 commands) |
 | Blocked by environment | Case-mode-1 MariaDB fixture: port 53407 is held by the host agent process, so `mysql_live_completion_uses_server_case_policy` was skipped locally (covered by CI `integration` job); host port 55432 is held by an external process so local PostgreSQL fixtures ran on `JOINERY_POSTGRES_PORT=55433` |
 | Not executed | Production accounts, live Snowflake accounts, Windows/Linux packaged runtime, Developer ID signing/notarization, representative performance qualification |
+
+## R6 estimated-plan slice — local, unmerged and unreleased (1 November 2026)
+
+Commit `fad0341` implements the first bounded X07/A01 slice on current `main`
+(`a0ba1a6`). R6 remains partial. See [query-plans.md](query-plans.md) for
+single-query validation, byte/depth/node limits and authorization; see the
+[implementation status](IMPLEMENTATION_STATUS.md#current-assessment-and-r6-estimated-plans-1-november-2026)
+for exact verification and unrun checks. A02 comparison/profiling and X05
+queue/first-row/server metrics remain open. An existing R5 candidate is
+preserved separately; its recorded evidence is not an independent rerun.
+
+### R6 PostgreSQL actual-plan follow-up — local `fa1ff17`
+
+X07/A01 now include explicitly reviewed PostgreSQL actual plans, including
+mandatory Rust review of recognized directly entered ANALYZE forms on Silent
+profiles. ReadOnly and production restrictions remain enforced. Two PostgreSQL
+approval/session fixtures and five plan browser workflows pass, together with
+full standard validation, four session/file regressions and clean-source macOS
+bundle/native checks. See [query-plans.md](query-plans.md) and
+[exact evidence](IMPLEMENTATION_STATUS.md#r6-postgresql-actual-plans-1-november-2026).
+R6 is still partial; A02 comparison, X05 richer timing and separate engine
+adapters remain open. This candidate is unmerged, unpublished and not installed.
+
+### R6 bounded snapshot comparison follow-up — local `ba984f2`
+
+A02 now includes explicit memory-only capture from completed retained plans,
+compatible estimated/actual side-by-side trees/raw JSON, exact executed query
+identity and observed engine/version/session/context guards. Captures share ten
+entries / 2 MiB UTF-8 serialized payload, including SQL/context, with FIFO
+eviction and owner/session/connection cleanup. No automatic execution,
+persistence, node pairing or timing derivation. Tests verify count/byte limits,
+malformed/unsupported/oversized input, mismatches, raw numeric text, cleanup,
+persistence exclusion and live PostgreSQL/MySQL/MariaDB comparisons. R6 remains
+partial: richer X05 timing, broader profiling and independent engine adapters
+remain open. See [scope](query-plans.md) and
+[exact evidence](IMPLEMENTATION_STATUS.md#r6-bounded-plan-snapshots-and-comparison-1-november-2026).
+
+### R6 timing and execution-lane context follow-up — local `cb1ca1a`
+
+X05 adds queue wait, backend active/total, first nonempty driver row batch and
+client request-to-finish timing, with explicit scopes/units and unavailable
+values. PostgreSQL plan server values remain separate. Context for A02 capture
+is observed on the serialized editor lane immediately before execution;
+unavailable observation withholds capture. No network/render duration or server
+execution is inferred. Tests cover measured zero, stale/foreign events,
+restoration exclusion, queued context, empty/error/multi-result runs and active/
+queued cancellation. All 26 PostgreSQL fixtures and twelve relevant browser
+flows pass. R6 remains partial: independent MySQL/MariaDB actual-plan adapters,
+Snowflake plans and broader profiling remain open. See the
+[contract](query-plans.md) and [evidence](IMPLEMENTATION_STATUS.md#r6-execution-timing-and-observed-plan-context-1-november-2026).
+
+### R6 reviewed MariaDB actual-plan follow-up — local `c660bc4`
+
+X07/A01/A02 now include a prepare-only capability-checked MariaDB action,
+mandatory review even on Silent/parser fallback, owned-session execution and
+compatible estimated/actual snapshots without replay. Inclusive node time,
+average rows per loop, actual filtering and optimization are distinctly labeled.
+Validation passes 138 frontend / 133 standard Rust tests, 26 PostgreSQL fixtures,
+24 MySQL/MariaDB base fixtures and fifteen relevant browser workflows. The
+case-folded fixture and full browser suite were not run for this slice. Exact
+native provenance and broader qualification limits are in
+[implementation evidence](IMPLEMENTATION_STATUS.md#r6-reviewed-mariadb-actual-plans-1-november-2026).
+MySQL's 8.4.13 JSON-format 1/2 probe is planning evidence only. R6 remains partial,
+unmerged, unreleased and separate from R5.
+
+### R6 reviewed MySQL TREE actual-plan follow-up — local `c54ecab`
+
+X07/A01/A02 now include independently capability-checked MySQL TREE analysis,
+JSON-estimated/TREE-actual snapshots without replay, settings preservation and
+bounded iterator metrics. A reproduced DESC ANALYZE FOR SCHEMA review bypass
+and partial-plan cancellation success are fixed with regression evidence.
+Eight adapter and eight snapshot tests pass; standard validation passes 142
+frontend / 133 Rust, all 26 PostgreSQL + 25 MySQL/MariaDB base fixtures, and
+eighteen relevant browser workflows. Separate case-folded fixture excluded.
+MySQL 8.4.13 and MariaDB 11.4.13 qualification remains bounded. Clean-source
+macOS checks are recorded in [implementation evidence](IMPLEMENTATION_STATUS.md#r6-reviewed-mysql-tree-actual-plans-1-november-2026).
+R6 stays partial, unmerged, unreleased and separate from R5; Snowflake plans,
+integration, broader profiling and external qualification remain open.
+
+### R6 Snowflake estimated-plan follow-up — local `48dfb21`
+
+X07/A01 now include explicit read-only Snowflake logical plans with every
+step-local parent edge preserved, bounded shared-node references, upper-bound
+pruning labels and exact raw fallback. Snowflake CONTENT detection requires a
+recognized execution, and ordinary queries clear that identity. A02 intentionally
+keeps Snowflake capture/comparison unavailable until observed warehouse/session
+context exists. `pnpm validate` passes 148 frontend / 136 Rust; four synthetic
+Snowflake browser flows pass. Prior PM fixture/browser counts were not rerun in
+this slice. Live account, native Snowflake UI/transport and platform/performance
+qualification remain open. The old R5 worktree/branch are absent; recorded
+commit `bb77b0f` remains readable, pending review and integrated validation.
+See [current evidence](IMPLEMENTATION_STATUS.md#r6-snowflake-estimated-logical-plans-1-november-2026).
+
+### R5 integration: bounded FK JOIN assistance — local `e0dad5f`
+
+E06 is now partial rather than missing. Recorded R5 `40c59a7` and the SQL alias
+fix from `41957ea` are integrated with R6. Live session metadata filters complete
+ordered relationships by permissions and avoids permanent-table leakage through
+temporary shadows. Completion respects known query-block scope, CTE shadows,
+quoted identity, distinct constraints and self-join aliases; it never executes
+automatically. Existing metadata/read/response bounds remain.
+
+Current validation passes 152 frontend / 136 Rust, two live-completion fixture
+tests spanning three relational engines, and fourteen completion/Snowflake
+browser workflows. Nine composite outbound/inbound/ON suggestions are accepted
+and executed. The browser check reproduced PostgreSQL dropping the `ln` alias;
+the pulled-forward alias fix has a dedicated regression. Other R5 features are
+still recorded source pending integration. Full-suite/native/release and external
+gates remain open; see [exact scope and evidence](IMPLEMENTATION_STATUS.md#r5-integration-live-fk-join-completion-1-november-2026).
+
+### R5 integration: typed query parameters — local `39359e7`
+
+E15 now has bounded typed editor workflows, integrated with all R6 preparation
+and one-use approval paths. Rust canonicalizes values/types/NULL and stores
+immutable bindings with template SQL. Changed bindings reject old approvals and
+snapshot comparison. Drafts remain transient; metadata/history stores templates
+only. Rewritten positions and generated Explain input origins map back before
+future inline editor markers. PostgreSQL uses typed SQL PREPARE/EXECUTE with
+hex-encoded constants, MySQL/MariaDB protocol binds, and Snowflake synthetic
+SQL API bindings; no live Snowflake account qualification is claimed.
+
+Validation passes 156 frontend / 154 standard Rust, all 58 SQL fixture tests and
+23 relevant browser flows, including six new parameter flows. The exact clean
+native baseline and remaining gaps are recorded in
+[implementation evidence](IMPLEMENTATION_STATUS.md#r5-integration-typed-query-parameters-1-november-2026).
+R5/R6 remain partial, local, unmerged, unreleased and not installed. Inline
+markers/navigation, remaining editor features and full qualification continue.
+
+### R5 integration: inline diagnostics/navigation — local `65530c0`
+
+E07/X08 now include wavy marks, gutter badges, Unicode line/column, SQLSTATE,
+submitted-batch statement index, detail/hint, error jumps and previous/next SQL
+statement navigation. Exact full source/slice identity passes through parameters
+and review. Backend placeholder/Explain mappings are shifted once into the
+editor, including CRLF/bare CR conversion. Edits clear markers; delayed errors,
+malformed spans and source mismatches cannot mark changed text. Navigation uses
+the configured dialect tree and waits for parsing rather than guessing.
+
+Current validation passes 168 frontend / 154 standard Rust and 26 database
+browser flows (six diagnostics/navigation, six parameters, fourteen plan/timing).
+The 58 ignored SQL fixture passes remain specific to prior `39359e7` and were
+not rerun for this frontend slice. Clean-source macOS arm64 hidden build and
+three WebView runs / 30 cleanup cycles pass; synthetic baseline only. R5/R6 remain
+partial, local, unmerged, unreleased and not installed. Definition/usages/context documentation,
+selection formatting, snippets and format-save serialization remain next;
+[exact evidence and limitations](IMPLEMENTATION_STATUS.md#r5-integration-inline-diagnostics-and-navigation-1-november-2026).
+
+### R5 integration: SQL definitions/usages/documentation — local `8ef9dfb`
+
+E11/E16 are now partial: F12/Cmd/Ctrl-click navigates local declarations and
+primary-session structure/columns; Shift+F12 lists scope-resolved editor
+references; F1 and Docs show available current-session metadata. Ambiguous
+columns, unknown bindings, projection aliases and routine overloads are not
+guessed. Nested scopes, correlated names and search paths have regressions.
+Database dependents are object-level, not column lineage. Secondary-console
+object Structure navigation is withheld; quick docs remain available.
+
+Edits/context refresh/session changes/close invalidate requests and replace the
+schema cache. References are bounded to 500 entries / 10,000 name tokens with a
+visible notice. Validation passes 183 frontend / 154 standard Rust and 46 real
+database browser flows, including five symbol flows. Clean-source macOS baseline
+passes three processes / 30 cleanup cycles. Prior ignored fixture counts remain
+historical; full semantic analysis, inference, secondary-session structure,
+Snowflake/live breadth and release/platform/performance gates remain open. R5/R6
+are partial, local, unmerged, unreleased and not installed. Next are selection
+formatting/settings, snippets and format-save serialization. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-sql-definitions-usages-and-documentation-1-november-2026).
+
+### R5 integration: formatting/settings/snippets — local `db5cd1b`
+
+E09/E12 are partial: selection/document formatting, persisted global case/indent/
+spacing and built-in/custom templates with global/engine override precedence.
+Document identity rejects stale formatter replies; saves serialize and roll back
+to the latest successful settings. Bind placeholders, literals/comments, casts
+and covered Snowflake paths retain their meaning in dialect regressions.
+Templates use keyboard tab stops and require explicit normal-policy execution.
+Metadata backup/restore validates settings and bounded snippets.
+
+Validation passes 194 frontend / 155 standard Rust and all 86 local browser flows,
+including three new editor flows and simulated Snowflake. Clean-source macOS
+hidden baseline passes three fresh processes / 30 cleanup cycles. Per-dialect
+styles, context variables, broader semantic inference and native UI/distribution/
+external/platform/performance qualification remain open. R5/R6 are partial,
+local, unmerged, unreleased and not installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-integration-formatting-and-snippets-2-november-2026).
+
+### Per-engine style follow-up — local `d39b89b`
+
+E09 remains partial with bounded case/indent/spacing options. Global defaults and
+independent PostgreSQL, MySQL/MariaDB and Snowflake styles now support inheritance
+and reset. Legacy settings migrate, Rust validates every override, and metadata
+recovery preserves styles. Validation passes 196 frontend / 156 standard Rust,
+three expanded real SQL browser flows and a clean-source native baseline of three
+processes / 30 cleanup cycles. The preceding `b80b6c7` candidate passed 66 ignored
+fixtures and a normal ad-hoc macOS bundle; `db5cd1b` passed all 86 browser flows.
+Those prior counts remain tied to their revisions. Context variables, broader
+semantic inference, native UI/external/platform/performance and delivery gates
+remain open. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-per-engine-formatting-styles-2-november-2026).
+
+### Named-output follow-up — local `c32f0c2`
+
+E11/E16 remain partial. Direct-column outputs through CTEs and derived tables now
+have local definitions/usages and proven source documentation; full CTE column
+lists rename outputs. Source constraints are not implied on derived results.
+Inference requires current metadata and is bounded/memoized per action. Nested
+scopes, quoted/case names, duplicate/unknown outputs and stale responses have
+regressions. Wildcards, expressions, set operations, partial lists and table-valued
+functions remain withheld. Secondary-session Structure navigation is next.
+
+Validation passes 228 frontend / 156 standard Rust, five expanded SQL navigation
+browser flows and the clean-source native baseline (three processes / 30 cleanup
+cycles). Navigation interaction evidence is headless browser, not native UI.
+Prior full browser, ignored fixture and normal bundle counts retain their source
+revisions. Local, unmerged, unreleased and not installed; broader semantic,
+native/platform/external/accessibility/performance and delivery gates remain open.
+See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-named-query-outputs-2-november-2026).
+
+### Console-bound Structure follow-up — local `fe518fb`
+
+E11/E16 remain partial. Primary and isolated console object/column jumps now
+open read-only Structure/DDL inspectors bound to their source tab, session and
+observed catalog revision. Pre/post metadata checks, origin-aware tab/result
+identity and source lifecycle checks prevent primary-session fallback or stale
+metadata adoption. Successful column metadata survives extended-detail denial.
+Local declaration jumps and R6 origins/gates remain intact; no table data is
+browsed and no editor SQL is executed by navigation.
+
+Dependency/owner/index/trigger links and DDL-to-console insertion in these new
+inspectors remain withheld until they preserve that origin; this is next.
+Validation passes 237 frontend / 156 standard Rust, six SQL navigation browser
+flows (including two isolated sessions plus primary) and the clean-source native
+synthetic baseline (three processes / 30 cleanup cycles). New interaction evidence
+is browser-based. Historical full browser/fixture/normal-bundle counts keep their
+revisions. Local, unmerged, unreleased and not installed; broader semantics,
+platform/external/accessibility/performance and delivery gates remain open.
+See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).
+
+### Context-preserving inspector actions — local `34c001a`
+
+E11/E16 remain partial. Foreign-key, index, trigger, dependency and owner-table
+links retain the originating console/session and observed catalog revision.
+Explicit DDL append preserves source text, file dirty tracking and session
+ownership without preparation/execution. Fresh catalog checks and source/action
+lifecycle guards reject stale or denied continuations; busy consoles cannot
+receive DDL. Normal explorer routing and Rust execution approvals remain intact.
+
+Validation passes 253 frontend / 156 standard Rust, six real SQL navigation flows,
+one ignored PostgreSQL inspector fixture and the clean-source native synthetic
+baseline (three processes / 30 cycles). New interactions are browser-tested.
+Prior full browser/fixture/bundle counts retain their exact revisions. E10 alias
+rename preview is next; wider semantics, platform/external/accessibility/
+performance and delivery gates remain open. Local, unmerged, unreleased and not
+installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-preserving-inspector-actions-2-november-2026).
+
+### Bounded alias rename — local `e052626`
+
+E10 is partial: Shift-F6 / Rename alias previews all supported SELECT declaration
+and qualified-reference edits, preserves quoting/shadowing and requires explicit
+Apply with one-step undo. Capture, collisions, stale document/session/context,
+identifier limits and unsupported shapes are rejected. CTE/derived scope barriers
+are explicit; nested multi-relation queries hiding an outer name stay withheld
+until ordered JOIN ON visibility is modeled. No database object is renamed and
+no SQL is prepared/executed. See [bounds and exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-alias-rename-2-november-2026).
+
+Validation passes 277 frontend / 156 standard Rust, nine focused PostgreSQL/MySQL/
+MariaDB browser flows and the clean-source native synthetic baseline (three
+processes / 30 cycles). Snowflake dialect checks are local only. Prior broad
+browser/fixture/normal-bundle evidence retains its revisions. Ordered JOIN
+visibility, bounded CTE rename, semantics/templates and remaining R5/R6/R7/R8 are
+next. Local, unmerged, unreleased and not installed; platform/external/native UI/
+accessibility/performance and delivery gates remain open.
+
+### Ordered JOIN alias rename — local `1edc2d7`
+
+E10 remains partial. Rename now follows earlier-ON correlation, comma precedence,
+nested JOIN association and later local shadowing, with the same explicit
+preview/Apply, capture simulation, context guards and one-step undo. Completed
+CROSS/NATURAL/USING joins and MySQL CROSS conditions retain their scopes;
+parenthesized joins, LATERAL, relation-column lists and USING-column aliases
+remain unsupported. This is SQL text refactoring; no database object is renamed.
+
+Validation passes 290 frontend / 156 standard Rust and twelve focused
+PostgreSQL/MySQL/MariaDB browser flows. Three new flows each compare three
+correlated query shapes before/after explicit rename; rename itself does not
+prepare/execute SQL. Native baseline evidence belongs to `e052626`, inspector
+fixture evidence to `34c001a`, the full 86-flow browser run to `db5cd1b`, and all
+66 ignored fixtures / normal ad-hoc bundle to `b80b6c7`; none was rerun here.
+Snowflake has local dialect tests only. Bounded CTE rename is next; R5/R6/R7/R8
+and qualification/delivery gates remain open. Local, unmerged, unreleased and
+not installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).
+
+### Bounded nonrecursive CTE rename — local `072e4ff`
+
+E10 remains partial. Rename alias / CTE (Shift-F6) follows ordered WITH
+declarations, relation names and implicit qualifiers while preserving explicit
+aliases, physical tables, comments and other statements. Complete preview,
+capture/collision simulation, quoted delimiters, stale-document/context checks,
+explicit Apply and one-step undo apply. Recursive, DML, set-operation and other
+unsupported shapes remain withheld. PostgreSQL nested WITH shadowing is covered;
+the shared MySQL/MariaDB dialect withholds nested WITH under an outer CTE scope
+after direct fixture probes exposed different visibility, including distinct names.
+
+Validation passes 327 frontend / 156 standard Rust and fifteen focused browser
+flows. Three new CTE flows compare decoded rows before/after rename on PostgreSQL
+18, MySQL 8.4 and MariaDB 11.4, including exact large integer text. Rename itself
+does not prepare/execute SQL. Clean-source macOS hidden baseline: three processes /
+30 cleanup cycles, synthetic IPC/worker/cleanup only. Prior broad fixture/browser/
+normal-bundle evidence retains its revisions. Snowflake has local dialect tests
+only. Next: bounded direct-table qualified-column inspections with explicit
+correction preview, then templates and remaining R5/R6/R7/R8. Local, unmerged,
+unreleased and not installed; external/platform/native UI/accessibility/
+performance and delivery gates remain open. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
+
+### Bounded qualified-column inspection — local `cfb6139`
+
+E08 moves to partial. Inspect columns checks qualified references in one direct
+base-table SELECT, including aliases and nested non-query expressions, on
+PostgreSQL/MySQL/MariaDB. Its fresh active-session metadata read requires complete
+selectable columns; permission-filtered completion data is never treated as proof
+that a column is absent. Unqualified relations require server-observed visibility.
+Unknown/ambiguous tables, partial grants, stale metadata and unsupported shapes
+withhold the claim. PostgreSQL physical system columns are recognized; MySQL's
+implicit row identifier and overlong identifiers are withheld.
+
+A user-selected catalog column produces an exact quoted one-occurrence preview,
+explicit Apply and one-step undo, guarded by document/editor/session/context
+identity. No editor SQL is prepared/executed; SQL execution errors remain separate.
+Validation: 354 frontend / 156 standard Rust, eighteen focused browser flows,
+two live permission/context fixture tests (MySQL and MariaDB share one test), and
+three native synthetic processes / 30 cleanup cycles. Browser reads compare exact
+result values before/after an explicit correction. Joins, CTE/derived inference,
+unqualified columns, automatic fixes and Snowflake inspection remain open, along
+with native UI/accessibility, platform/performance and delivery qualification.
+Next: ordered direct-table JOIN inspections, then templates and remaining roadmap.
+Local, unmerged, unreleased and not installed. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-qualified-column-inspections-2-november-2026).
+
+### Ordered JOIN qualified-column inspections — local `46912f5`
+
+E08 remains partial. Flat direct-table SELECTs now include bounded JOINs and comma
+groups on PostgreSQL/MySQL/MariaDB. Qualified references in projections, ON and
+remaining clauses resolve to their owning base table. ON operands preserve
+comma precedence, pending JOIN association and ordered visibility; unknown or
+duplicate aliases, nested/derived/CTE relations and unsupported shapes withhold
+claims. Self-joins deduplicate fresh metadata without merging alias identity.
+Every distinct table must return complete selectable metadata on the current
+session/revision. Sequential reads stop after stale context or a failed read;
+there is no partial clean/missing result. Inspection allows 32 relation operands,
+2,048 columns per table and 8,192 columns / 4 MiB aggregate metadata.
+
+Each issue offers only its table's catalog columns, clears the choice when the
+issue changes, previews exact quoting and explicitly applies one occurrence in
+one undo step. No editor SQL is prepared or executed by inspection. Validation:
+379 frontend / 156 standard Rust, 21 focused browser flows and three clean-source
+native synthetic processes / 30 cleanup cycles. New JOIN browser reads compare
+decoded Arrow values before/after corrections on all three engines; native UI
+and performance remain unqualified. Earlier live permission fixtures retain
+`cfb6139` evidence and were not rerun for this frontend-only extension. CTE/derived
+and unqualified-column inspections, automatic repair, Snowflake inspection and
+delivery/external gates remain open. Next: context-aware templates, then remaining
+R5/R6/R7/R8. Local, unmerged, unreleased and not installed. See
+[exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-column-inspections-2-november-2026).

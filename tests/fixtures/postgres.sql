@@ -14,6 +14,9 @@ CREATE TABLE orders (
   placed_at timestamptz NOT NULL DEFAULT now(),
   notes text
 );
+-- Read-only inspector chains exercise trigger -> function and owner navigation.
+CREATE FUNCTION public.inspector_touch_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$;
+CREATE TRIGGER inspector_touch AFTER INSERT ON public.orders FOR EACH ROW EXECUTE FUNCTION public.inspector_touch_fn();
 INSERT INTO customers(id,name,email,active,metadata)
 SELECT i, 'Customer ' || i, 'customer' || i || '@example.test', i % 7 <> 0,
        jsonb_build_object('tier', CASE WHEN i % 3 = 0 THEN 'pro' ELSE 'starter' END)

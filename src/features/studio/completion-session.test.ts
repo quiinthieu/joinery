@@ -236,3 +236,84 @@ test("bounds in-flight reads through rapid scope changes and drops obsolete queu
   await expect(current).resolves.toEqual(schema());
   expect(load).toHaveBeenCalledOnce();
 });
+
+test("ranks FK JOIN and ON completions ahead of catalog and column options", async () => {
+  vi.useFakeTimers();
+  const ordersWithFk: TableSchema = {
+    table: { schema: "public", name: "orders" },
+    columns: [
+      {
+        id: "c0",
+        name: "customer_id",
+        databaseType: "bigint",
+        kind: "integer",
+        nullable: false,
+        primaryKey: false,
+        foreignKey: true,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+    ],
+    primaryKey: [],
+    foreignKeys: [
+      {
+        name: "orders_customer_id_fkey",
+        columns: ["customer_id"],
+        target: { schema: "public", name: "customers" },
+        targetColumns: ["id"],
+      },
+    ],
+    inboundForeignKeys: [],
+    editable: false,
+  };
+  const customersSchema: TableSchema = {
+    table: { schema: "public", name: "customers" },
+    columns: [
+      {
+        id: "c0",
+        name: "id",
+        databaseType: "bigint",
+        kind: "integer",
+        nullable: false,
+        primaryKey: true,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+    ],
+    primaryKey: ["id"],
+    foreignKeys: [],
+    inboundForeignKeys: [],
+    editable: false,
+  };
+  const load = vi.fn(async (_sessionId: string, table: TableRef) =>
+    table.name === "orders" ? ordersWithFk : customersSchema,
+  );
+  const { session } = setup(load);
+
+  const joinEditor = state("SELECT * FROM orders o JOIN c|");
+  const joinPending = request(session, joinEditor);
+  await vi.advanceTimersByTimeAsync(100);
+  const joinResult = (await joinPending)!;
+  expect(joinResult.options[0].apply).toBe('customers c ON o.customer_id = c."id"');
+  expect(
+    joinEditor
+      .update({
+        changes: {
+          from: joinResult.from,
+          to: joinResult.to,
+          insert: joinResult.options[0].apply as string,
+        },
+      })
+      .state.doc.toString(),
+  ).toBe('SELECT * FROM orders o JOIN customers c ON o.customer_id = c."id"');
+
+  const onEditor = state("SELECT * FROM orders o JOIN customers c ON |");
+  const onPending = request(session, onEditor);
+  await vi.advanceTimersByTimeAsync(100);
+  const onResult = (await onPending)!;
+  expect(onResult.options[0].apply).toBe('o.customer_id = c."id"');
+  session.dispose();
+});

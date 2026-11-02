@@ -120,9 +120,20 @@ async fn rpc(
                 )?;
                 Value::Null
             }
-            "prepare_execution" => json!(studio.prepare_execution(
-                &arg::<String>(&args, "sessionId")?,
+            "extract_query_params" => json!(joinery_core::params::extract_query_params(
+                arg::<EngineKind>(&args, "engine")?,
                 &arg::<String>(&args, "sql")?
+            )?),
+            "prepare_explain" => json!(studio.prepare_explain_with_params(
+                &arg::<String>(&args, "sessionId")?,
+                &arg::<String>(&args, "sql")?,
+                arg::<Option<bool>>(&args, "analyze")?.unwrap_or(false),
+                arg::<Option<Vec<QueryParamInput>>>(&args, "params")?
+            )?),
+            "prepare_execution" => json!(studio.prepare_execution_with_params(
+                &arg::<String>(&args, "sessionId")?,
+                &arg::<String>(&args, "sql")?,
+                arg::<Option<Vec<QueryParamInput>>>(&args, "params")?
             )?),
             "authorize_plan" => json!(studio.authorize(
                 &arg::<String>(&args, "planId")?,
@@ -177,6 +188,7 @@ async fn rpc(
             "redis_inspect" => json!(studio.redis_inspect(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"argument")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
             "completion_catalog" => json!(studio.completion_catalog(&arg::<String>(&args, "sessionId")?).await?),
             "completion_schema" => json!(studio.completion_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
+            "inspection_schema" => json!(studio.inspection_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
             "database_objects" => {
                 json!(studio.database_objects(&arg::<String>(&args, "sessionId")?).await?)
@@ -392,6 +404,14 @@ async fn rpc(
             )?),
             "delete_bookmark" => {
                 studio.delete_bookmark(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "save_sql_format_settings" => {
+                json!(studio.save_sql_format_settings(arg(&args, "settings")?)?)
+            }
+            "save_sql_snippet" => json!(studio.save_sql_snippet(arg(&args, "input")?)?),
+            "delete_sql_snippet" => {
+                studio.delete_sql_snippet(&arg::<String>(&args, "id")?)?;
                 Value::Null
             }
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.

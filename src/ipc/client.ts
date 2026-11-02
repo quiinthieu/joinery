@@ -1,5 +1,5 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { AppError, ExportEvent, ExportRequest, QueryEvent } from "./generated";
+import type { AppError, ErrorCode, ExportEvent, ExportRequest, QueryEvent } from "./generated";
 
 export interface StudioClient {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -126,7 +126,7 @@ class BrowserTestClient implements StudioClient {
 }
 
 class PreviewClient implements StudioClient {
-  async call<T>(command: string): Promise<T> {
+  async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     if (command === "bootstrap")
       return {
         profiles: [],
@@ -142,10 +142,36 @@ class PreviewClient implements StudioClient {
         workspace: null,
         savedQueries: [],
         bookmarks: [],
+        sqlFormatSettings: {
+          keywordCase: "upper",
+          indentWidth: 2,
+          linesBetweenQueries: 1,
+        },
+        sqlSnippets: [],
       } as T;
+    if (command === "save_sql_format_settings") return args?.settings as T;
+    if (command === "save_sql_snippet") {
+      const input = args?.input as {
+        id: string | null;
+        trigger: string;
+        title: string;
+        body: string;
+        engine: string | null;
+      };
+      return {
+        id: input?.id ?? crypto.randomUUID(),
+        trigger: input?.trigger ?? "",
+        title: input?.title ?? "",
+        body: input?.body ?? "",
+        engine: input?.engine ?? null,
+        updatedAtMs: Date.now(),
+      } as T;
+    }
+    if (command === "delete_sql_snippet") return null as T;
     if (command === "resource_usage")
       return { retainedBytes: 0, resultCount: 0, sessionCount: 0, activeRuns: 0 } as T;
-    if (command === "history" || command === "audit_log") return [] as T;
+    if (command === "history" || command === "audit_log" || command === "extract_query_params")
+      return [] as T;
     throw new Error(
       "Open Joinery on your desktop to connect to a database. You can explore the grid benchmark here.",
     );
@@ -174,4 +200,22 @@ export const desktopAvailable = isTauri() || import.meta.env.MODE === "integrati
 export function messageOf(error: unknown): string {
   if (error && typeof error === "object" && "message" in error) return String(error.message);
   return String(error);
+}
+export function appErrorOf(error: unknown, fallbackCode: ErrorCode = "database"): AppError {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const candidate = error as AppError;
+    return {
+      code: candidate.code,
+      message: candidate.message,
+      ...(candidate.location ? { location: candidate.location } : {}),
+    };
+  }
+  return { code: fallbackCode, message: messageOf(error) };
 }

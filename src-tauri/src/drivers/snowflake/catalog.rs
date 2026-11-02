@@ -198,6 +198,7 @@ impl Snowflake {
             columns: result.columns,
             primary_key: Vec::new(),
             foreign_keys: Vec::new(),
+            inbound_foreign_keys: Vec::new(),
             editable: false,
         })
     }

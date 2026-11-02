@@ -121,6 +121,27 @@ impl Mysql {
             version.ok_or_else(|| AppError::internal("The server returned no version"))?;
         let maria = version.to_ascii_lowercase().contains("mariadb");
         initialize(&mut conn, profile.safe_mode == SafeMode::ReadOnly, maria).await?;
+        // COM_STMT_PREPARE checks syntax/support without executing the SELECT.
+        // Never collect actual measurements during connection or change the
+        // user's optimizer/JSON-format settings to enable a plan action.
+        let (probe, format) = if maria {
+            (
+                "ANALYZE FORMAT=JSON SELECT 1",
+                ActualPlanFormat::MariaDbJson,
+            )
+        } else {
+            (
+                "EXPLAIN ANALYZE FORMAT=TREE SELECT 1",
+                ActualPlanFormat::MysqlTree,
+            )
+        };
+        let actual_plan = match conn.prep(probe).await {
+            Ok(statement) => {
+                conn.close(statement).await.map_err(mysql_error)?;
+                Some(format)
+            }
+            Err(_) => None,
+        };
         if profile.tls_mode == TlsMode::VerifyFull {
             let cipher: Option<(String, String)> = conn
                 .query_first("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
@@ -180,6 +201,7 @@ impl Mysql {
                     table_filtering: true,
                     processes: true,
                     object_explorer: true,
+                    actual_plan,
                 },
             },
         ))
@@ -253,6 +275,205 @@ impl Mysql {
         cache.dirty = false;
         Ok((database, role))
     }
+    async fn execute_editor_sql(
+        &self,
+        original_sql: &str,
+        wire_sql: &str,
+        positional: Option<Vec<Value>>,
+        rewrite_map: Option<&crate::sql_text::RewriteMap>,
+        kind: StatementKind,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        let mut editor = self.editor.connection.lock().await;
+        let conn = &mut *editor;
+        let mut result = self
+            .bounded(async {
+                if self.cancel_requested.is_cancelled() {
+                    return Err(AppError::new(
+                        ErrorCode::Cancelled,
+                        "The query was cancelled before submission",
+                    ));
+                }
+                conn.query_drop("SET NAMES utf8mb4; SET SESSION sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'; SET SESSION time_zone='+00:00'")
+                    .await
+                    .map_err(mysql_error)?;
+                if self.cancel_requested.is_cancelled() {
+                    return Err(AppError::new(
+                        ErrorCode::Cancelled,
+                        "The query was cancelled before submission",
+                    ));
+                }
+                if let Some(values) = positional {
+                    let result = conn
+                        .exec_iter(wire_sql, Params::Positional(values))
+                        .await
+                        .map_err(|e| mysql_sql_error_mapped(e, original_sql, wire_sql, rewrite_map))?;
+                    self.stream_mysql_result(result, original_sql, wire_sql, rewrite_map, kind, sink)
+                        .await
+                } else {
+                    let result = conn
+                        .query_iter(wire_sql)
+                        .await
+                        .map_err(|e| mysql_sql_error_mapped(e, original_sql, wire_sql, rewrite_map))?;
+                    self.stream_mysql_result(result, original_sql, wire_sql, rewrite_map, kind, sink)
+                        .await
+                }
+            })
+            .await;
+        if result.as_ref().is_err_and(|e| {
+            matches!(
+                e.code,
+                ErrorCode::ResultLimitReached
+                    | ErrorCode::Internal
+                    | ErrorCode::NotFound
+                    | ErrorCode::Unsupported
+                    | ErrorCode::InvalidInput
+            )
+        }) {
+            self.closed.cancel();
+            if kind != StatementKind::Read {
+                result = Err(AppError::new(
+                    ErrorCode::OutcomeUnknown,
+                    "The write result could not be fully observed. Verify the database state before retrying.",
+                ));
+            }
+        }
+        if mysql_may_change_identity(original_sql) {
+            self.identity_cache.lock().dirty = true;
+        }
+        if self.closed.is_cancelled()
+            || result.as_ref().is_err_and(|e| {
+                matches!(
+                    e.code,
+                    ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
+                )
+            })
+        {
+            self.closed.cancel();
+        }
+        result
+    }
+
+    async fn stream_mysql_result<'a, 't, P: mysql_async::prelude::Protocol + Send>(
+        &self,
+        mut result: mysql_async::QueryResult<'a, 't, P>,
+        original_sql: &str,
+        wire_sql: &str,
+        rewrite_map: Option<&crate::sql_text::RewriteMap>,
+        kind: StatementKind,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        if (kind == StatementKind::Read || crate::safety::mysql_executes_analysis(original_sql))
+            && self.cancel_requested.is_cancelled()
+        {
+            return Err(AppError::new(
+                ErrorCode::Cancelled,
+                "The query was cancelled",
+            ));
+        }
+        let mut total = 0u64;
+        // next() returns None at a result-set boundary and advances to the
+        // next set. Always consume every set, including write RETURNING rows.
+        loop {
+            let columns = result.columns_ref().to_vec();
+            let affected = if columns.is_empty() {
+                result.affected_rows()
+            } else {
+                0
+            };
+            if !columns.is_empty() {
+                sink.describe(
+                    columns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| column(i, c))
+                        .collect(),
+                )?;
+            }
+            let mut pending = Vec::new();
+            let mut bytes = 0;
+            let mut retaining = true;
+            while let Some(row) = result
+                .next()
+                .await
+                .map_err(|e| mysql_sql_error_mapped(e, original_sql, wire_sql, rewrite_map))?
+            {
+                if !retaining {
+                    continue;
+                }
+                let row = text_row(row)?;
+                let size = row
+                    .iter()
+                    .map(|v| v.as_ref().map_or(5, |v| v.len() + 5))
+                    .sum::<usize>();
+                if size > 2 * 1024 * 1024 {
+                    sink.limit(
+                        "A returned row exceeds the 2 MiB viewer limit. Use a smaller projection.",
+                    );
+                    retaining = false;
+                } else {
+                    bytes += size;
+                    pending.push(row);
+                }
+                if (pending.len() >= 500 || bytes >= 256 * 1024 || !retaining)
+                    && !pending.is_empty()
+                {
+                    retaining = sink.rows(std::mem::take(&mut pending))? && retaining;
+                    bytes = 0;
+                }
+                if !retaining && kind == StatementKind::Read {
+                    sink.complete(total)?;
+                    self.closed.cancel();
+                    return Ok(total);
+                }
+            }
+            if !pending.is_empty() {
+                let _ = sink.rows(pending)?;
+            }
+            total = total.saturating_add(affected);
+            sink.complete(affected)?;
+            if result.is_empty() {
+                break;
+            }
+        }
+        result
+            .drop_result()
+            .await
+            .map_err(|e| mysql_sql_error_mapped(e, original_sql, wire_sql, rewrite_map))?;
+        if (kind == StatementKind::Read || crate::safety::mysql_executes_analysis(original_sql))
+            && self.cancel_requested.is_cancelled()
+        {
+            return Err(AppError::new(
+                ErrorCode::Cancelled,
+                "The query was cancelled",
+            ));
+        }
+        Ok(total)
+    }
+}
+
+fn mysql_bind_value(bind: &crate::params::TypedBind) -> AppResult<Value> {
+    let Some(raw) = bind.value.as_deref() else {
+        return Ok(Value::NULL);
+    };
+    match bind.kind {
+        QueryParamKind::Integer => Ok(Value::Int(raw.parse::<i64>().map_err(|_| {
+            AppError::invalid(format!("Parameter {} must be a 64-bit integer", bind.key))
+        })?)),
+        QueryParamKind::Boolean => Ok(Value::Int(if raw == "true" { 1 } else { 0 })),
+        QueryParamKind::Timestamp => Ok(Value::Bytes(
+            bind.mysql_datetime
+                .as_deref()
+                .unwrap_or(raw)
+                .as_bytes()
+                .to_vec(),
+        )),
+        QueryParamKind::Text
+        | QueryParamKind::Decimal
+        | QueryParamKind::Uuid
+        | QueryParamKind::Date
+        | QueryParamKind::Json => Ok(Value::Bytes(raw.as_bytes().to_vec())),
+    }
 }
 
 async fn connect(opts: &Opts) -> AppResult<Connection> {
@@ -303,78 +524,34 @@ impl Driver for Mysql {
         kind: StatementKind,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
-        let mut editor = self.editor.connection.lock().await;
-        let conn = &mut *editor;
-        let mut result=self.bounded(async {
-            if self.cancel_requested.is_cancelled() { return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled before submission")); }
-            conn.query_drop("SET NAMES utf8mb4; SET SESSION sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'; SET SESSION time_zone='+00:00'").await.map_err(mysql_error)?;
-            if self.cancel_requested.is_cancelled() { return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled before submission")); }
-            let mut result=conn.query_iter(sql).await.map_err(mysql_error)?;
-            if kind==StatementKind::Read && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
-            let mut total=0u64;
-            // next() returns None at a result-set boundary and advances to the
-            // next set. Always consume every set, including write RETURNING rows.
-            loop {
-                let columns=result.columns_ref().to_vec();
-                let affected=if columns.is_empty() {result.affected_rows()}else{0};
-                if !columns.is_empty() { sink.describe(columns.iter().enumerate().map(|(i,c)|column(i,c)).collect())?; }
-                let mut pending=Vec::new();let mut bytes=0;let mut retaining=true;
-                while let Some(row)=result.next().await.map_err(mysql_error)? {
-                    if !retaining {continue;}
-                    let row=text_row(row)?;
-                    let size=row.iter().map(|v|v.as_ref().map_or(5,|v|v.len()+5)).sum::<usize>();
-                    if size>2*1024*1024 {
-                        sink.limit("A returned row exceeds the 2 MiB viewer limit. Use a smaller projection.");retaining=false;
-                    } else { bytes+=size;pending.push(row); }
-                    if (pending.len()>=500 || bytes>=256*1024 || !retaining) && !pending.is_empty() {
-                        retaining=sink.rows(std::mem::take(&mut pending))? && retaining; bytes=0;
-                    }
-                    if !retaining && kind==StatementKind::Read {
-                        sink.complete(total)?;
-                        self.closed.cancel();
-                        return Ok(total);
-                    }
-                }
-                if !pending.is_empty() { let _=sink.rows(pending)?; }
-                total=total.saturating_add(affected);sink.complete(affected)?;
-                if result.is_empty() {break;}
-            }
-            result.drop_result().await.map_err(mysql_error)?;
-            if kind==StatementKind::Read && self.cancel_requested.is_cancelled() {return Err(AppError::new(ErrorCode::Cancelled,"The query was cancelled"));}
-            Ok(total)
-        }).await;
-        if result.as_ref().is_err_and(|e| {
-            matches!(
-                e.code,
-                ErrorCode::ResultLimitReached
-                    | ErrorCode::Internal
-                    | ErrorCode::NotFound
-                    | ErrorCode::Unsupported
-                    | ErrorCode::InvalidInput
-            )
-        }) {
-            self.closed.cancel();
-            if kind != StatementKind::Read {
-                result = Err(AppError::new(
-                    ErrorCode::OutcomeUnknown,
-                    "The write result could not be fully observed. Verify the database state before retrying.",
-                ));
-            }
+        self.execute_editor_sql(sql, sql, None, None, kind, sink)
+            .await
+    }
+
+    async fn execute_bound(
+        &self,
+        sql: &str,
+        kind: StatementKind,
+        bound: &crate::params::BoundStatement,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        if bound.binds.is_empty() {
+            return self.execute(sql, kind, sink).await;
         }
-        if mysql_may_change_identity(sql) {
-            self.identity_cache.lock().dirty = true;
-        }
-        if self.closed.is_cancelled()
-            || result.as_ref().is_err_and(|e| {
-                matches!(
-                    e.code,
-                    ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
-                )
-            })
-        {
-            self.closed.cancel();
-        }
-        result
+        let values = bound
+            .binds
+            .iter()
+            .map(mysql_bind_value)
+            .collect::<AppResult<Vec<_>>>()?;
+        self.execute_editor_sql(
+            sql,
+            &bound.rewritten_sql,
+            Some(values),
+            Some(&bound.rewrite_map),
+            kind,
+            sink,
+        )
+        .await
     }
     async fn cancel(&self) -> AppResult<()> {
         // Hold the actual owning connection alive, including a short-lived grid
@@ -590,7 +767,10 @@ impl Driver for Mysql {
         self.live_completion_catalog().await
     }
     async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
-        self.live_completion_schema(table).await
+        self.live_completion_schema(table, false).await
+    }
+    async fn inspection_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        self.live_completion_schema(table, true).await
     }
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         self.table_schema(table).await
@@ -764,4 +944,45 @@ fn mysql_error(error: mysql_async::Error) -> AppError {
             "The MySQL connection failed or closed. Check network, authentication, and verified TLS settings.",
         ),
     }
+}
+
+fn mysql_sql_error_mapped(
+    error: mysql_async::Error,
+    original_sql: &str,
+    wire_sql: &str,
+    rewrite_map: Option<&crate::sql_text::RewriteMap>,
+) -> AppError {
+    let mut error = mysql_sql_error(error, wire_sql);
+    if let (Some(map), Some(location)) = (rewrite_map, error.location.as_mut()) {
+        location.span = map.map_span(original_sql, wire_sql, location.span);
+    }
+    error
+}
+
+pub(crate) fn mysql_sql_error(error: mysql_async::Error, sql: &str) -> AppError {
+    let sql_state = match &error {
+        mysql_async::Error::Server(server) if !server.state.is_empty() => {
+            Some(server.state.clone())
+        }
+        _ => None,
+    };
+    let is_server = matches!(&error, mysql_async::Error::Server(_));
+    let base = mysql_error(error);
+    if !is_server || base.code == ErrorCode::Cancelled {
+        return base;
+    }
+    // MySQL and MariaDB count syntax-error lines after stripping leading
+    // whitespace from the submitted statement. Preserve the editor's origin.
+    let body = sql.trim_start();
+    let origin = crate::sql_text::span_for_byte_range(sql, sql.len() - body.len(), sql.len());
+    let span = crate::sql_text::span_from_mysql_error(body, &base.message)
+        .map(|span| crate::sql_text::shift_child_span(origin, span))
+        .unwrap_or_else(|| crate::sql_text::trimmed_span(sql));
+    base.with_location(ErrorLocation {
+        span,
+        statement_index: None,
+        sql_state,
+        detail: None,
+        hint: None,
+    })
 }

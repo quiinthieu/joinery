@@ -1,3 +1,4 @@
+import type { SqlExecutionOrigin } from "../features/studio/sql-navigation";
 import { create } from "zustand";
 import type {
   AppError,
@@ -20,12 +21,16 @@ import type {
   SessionContextOptions,
   SessionInfo,
   SessionRuntimeState,
+  SqlFormatSettings,
+  SqlSnippet,
+  SqlSnippetInput,
   TableInfo,
   TableRef,
   TableSchema,
   TransactionMode,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
+import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
 import {
@@ -49,6 +54,8 @@ import {
   tableTabTitle,
 } from "../features/grid/table-query";
 
+import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
+
 export type TabKind = "query" | "table" | "object" | "benchmark" | "history" | "processes";
 export type TabStatus =
   "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | "outcomeUnknown";
@@ -57,17 +64,29 @@ export interface TablePageState {
   result: ResultInfo;
   after: (string | null)[] | null;
 }
+export interface MetadataOrigin {
+  tabId: string;
+  sessionId: string;
+  contextRevision: number;
+  catalogRevision?: string;
+}
 export interface StudioTab {
+  metadataOrigin?: MetadataOrigin;
+  errorOrigin?: SqlExecutionOrigin;
   id: string;
   kind: TabKind;
   title: string;
   connectionId: string | null;
   sql: string;
   results: ResultInfo[];
+  planSource?: PlanSource;
   activeResultId: string | null;
   status: TabStatus;
   runId: string | null;
   elapsedMs: number;
+  runMetrics?: Extract<QueryEvent, { type: "runMetrics" }>;
+  clientStartedAt?: number;
+  clientElapsedMs?: number;
   error: AppError | null;
   table: TableRef | null;
   object: DatabaseObjectRef | null;
@@ -81,6 +100,7 @@ export interface StudioTab {
   nextKey: (string | null)[] | null;
   loadingPage: boolean;
   view: "data" | "structure" | "ddl";
+  highlightedColumn?: string | null;
   revision: number;
   metrics: Record<number, { affectedRows: string; elapsedMs: number }>;
   dataSessionId: string | null;
@@ -122,6 +142,11 @@ export interface NamedSession {
   primary: boolean;
 }
 
+let sqlFormatSaveTail: Promise<void> = Promise.resolve();
+let sqlFormatSaveSequence = 0;
+let sqlFormatPending = 0;
+let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
+
 interface StudioState {
   bootstrap: Bootstrap | null;
   error: string | null;
@@ -138,6 +163,8 @@ interface StudioState {
   tableLayouts: SavedTableLayout[];
   savedQueries: SavedQuery[];
   bookmarks: SavedBookmark[];
+  sqlFormatSettings: SqlFormatSettings;
+  sqlSnippets: SqlSnippet[];
   recentLocations: RecentLocation[];
   theme: "dark" | "light" | "contrast";
   density: "comfortable" | "compact";
@@ -172,6 +199,9 @@ interface StudioState {
   openSavedQuery(id: string): string | null;
   toggleBookmark(target: BookmarkTarget, label: string): Promise<boolean>;
   deleteBookmark(id: string): Promise<void>;
+  saveSqlFormatSettings(settings: SqlFormatSettings): Promise<SqlFormatSettings>;
+  saveSqlSnippet(input: SqlSnippetInput): Promise<SqlSnippet>;
+  deleteSqlSnippet(id: string): Promise<void>;
   openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
@@ -180,12 +210,22 @@ interface StudioState {
     table: TableRef,
     query?: BrowseQuery,
     preferredView?: StudioTab["view"],
+    highlightedColumn?: string | null,
   ): Promise<void>;
   openObject(
     connectionId: string,
     object: DatabaseObjectRef,
     preferredView?: StudioTab["view"],
+    highlightedColumn?: string | null,
   ): Promise<void>;
+  openSessionObject(
+    tabId: string,
+    object: DatabaseObjectRef,
+    highlightedColumn?: string,
+    catalogRevision?: string,
+  ): void;
+  openLinkedSessionObject(inspectorId: string, object: DatabaseObjectRef): void;
+  appendSessionDdl(inspectorId: string, ddl: string): boolean;
   /** Applies a new sort/filter or requests review for non-Read raw SQL clauses. */
   setTableQuery(
     id: string,
@@ -219,6 +259,9 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     status: "idle",
     runId: null,
     elapsedMs: 0,
+    runMetrics: undefined,
+    clientStartedAt: undefined,
+    clientElapsedMs: undefined,
     error: null,
     table: null,
     object: null,
@@ -231,6 +274,7 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     nextKey: null,
     loadingPage: false,
     view: "data",
+    highlightedColumn: null,
     revision: 0,
     metrics: {},
     dataSessionId: null,
@@ -260,6 +304,7 @@ export function bookmarkTargetForTab(
   tab: StudioTab,
   catalog: Readonly<Record<string, readonly TableInfo[] | undefined>>,
 ): { target: BookmarkTarget; defaultLabel: string } | null {
+  if (tab.metadataOrigin) return null;
   if (tab.kind === "table" && tab.connectionId && tab.table) {
     const match = catalog[tab.connectionId]?.find(
       (entry) => entry.table.schema === tab.table!.schema && entry.table.name === tab.table!.name,
@@ -301,9 +346,25 @@ export function bookmarkTargetForTab(
   return null;
 }
 export function querySessionForTab(tab: StudioTab, sessions: Record<string, SessionInfo>) {
+  if (tab.metadataOrigin) return undefined;
   if (tab.kind === "query" && tab.querySession)
     return tab.querySessionClosed ? undefined : tab.querySession;
   return tab.connectionId ? sessions[tab.connectionId] : undefined;
+}
+/** Metadata never adopts another session after its source console is closed or rebound. */
+export function metadataSessionForTab(
+  tab: StudioTab,
+  state: Pick<StudioState, "tabs" | "sessions" | "sessionContextRevision">,
+): SessionInfo | undefined {
+  const origin = tab.metadataOrigin;
+  if (!origin) return undefined;
+  const console = state.tabs.find((entry) => entry.id === origin.tabId && entry.kind === "query");
+  const session = console && querySessionForTab(console, state.sessions);
+  return session?.id === origin.sessionId &&
+    session.connectionId === tab.connectionId &&
+    (state.sessionContextRevision[session.id] ?? 0) === origin.contextRevision
+    ? session
+    : undefined;
 }
 export function isLastOwnerOfSecondarySession(tabs: readonly StudioTab[], tab: StudioTab): boolean {
   if (!tab.querySession || tab.querySessionClosed) return false;
@@ -398,6 +459,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   tableLayouts: [],
   savedQueries: [],
   bookmarks: [],
+  sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
+  sqlSnippets: [],
   recentLocations: [],
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
   density: "comfortable",
@@ -437,6 +500,8 @@ export const useStudio = create<StudioState>((set, get) => ({
         bootstrap,
         savedQueries: bootstrap.savedQueries ?? [],
         bookmarks: bootstrap.bookmarks ?? [],
+        sqlFormatSettings: bootstrap.sqlFormatSettings ?? DEFAULT_SQL_FORMAT_SETTINGS,
+        sqlSnippets: bootstrap.sqlSnippets ?? [],
         error: null,
         ...(workspace
           ? {
@@ -524,6 +589,7 @@ export const useStudio = create<StudioState>((set, get) => ({
                 querySession: session,
                 querySessionClosed: false,
                 results: [],
+                planSource: undefined,
                 activeResultId: null,
                 dataSessionId: null,
                 runId: null,
@@ -531,6 +597,9 @@ export const useStudio = create<StudioState>((set, get) => ({
                 status: "idle",
                 metrics: {},
                 elapsedMs: 0,
+                runMetrics: undefined,
+                clientStartedAt: undefined,
+                clientElapsedMs: undefined,
                 revision: current.revision + 1,
               }
             : t,
@@ -569,6 +638,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       querySession: targetInfo,
       querySessionClosed: false,
       results: [],
+      planSource: undefined,
       activeResultId: null,
       dataSessionId: null,
       runId: null,
@@ -576,6 +646,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       status: "idle",
       metrics: {},
       elapsedMs: 0,
+      runMetrics: undefined,
+      clientStartedAt: undefined,
+      clientElapsedMs: undefined,
       revision: current.revision + 1,
     });
     return true;
@@ -708,6 +781,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().notify("Transaction rolled back");
   },
   retireSession(sessionId) {
+    planSnapshots.removeSession(sessionId);
     set((state) => {
       const retiredConnections = Object.entries(state.sessions)
         .filter(([, s]) => s.id === sessionId)
@@ -726,9 +800,11 @@ export const useStudio = create<StudioState>((set, get) => ({
         sessionPool,
         ...purgeSessionRuntimeMaps(state, [sessionId]),
         objects,
-        tabs: state.tabs.map((t) =>
-          t.querySession?.id === sessionId ? { ...t, querySessionClosed: true } : t,
-        ),
+        tabs: state.tabs.map((t) => ({
+          ...t,
+          ...(t.querySession?.id === sessionId ? { querySessionClosed: true } : {}),
+          ...(t.planSource?.sessionId === sessionId ? { planSource: undefined } : {}),
+        })),
       };
     });
   },
@@ -977,6 +1053,71 @@ export const useStudio = create<StudioState>((set, get) => ({
       };
     });
   },
+  async saveSqlFormatSettings(settings) {
+    const sequence = ++sqlFormatSaveSequence;
+    if (sqlFormatPending === 0) sqlFormatPersisted = get().sqlFormatSettings;
+    sqlFormatPending++;
+    set((state) => ({
+      sqlFormatSettings: settings,
+      bootstrap: state.bootstrap ? { ...state.bootstrap, sqlFormatSettings: settings } : null,
+    }));
+    const operation = sqlFormatSaveTail.then(async () => {
+      try {
+        const saved = await client.call<SqlFormatSettings>("save_sql_format_settings", {
+          settings,
+        });
+        sqlFormatPersisted = saved;
+        if (sequence === sqlFormatSaveSequence) {
+          set((state) => ({
+            sqlFormatSettings: saved,
+            bootstrap: state.bootstrap ? { ...state.bootstrap, sqlFormatSettings: saved } : null,
+          }));
+        }
+        return saved;
+      } catch (error) {
+        if (sequence === sqlFormatSaveSequence) {
+          set((state) => ({
+            sqlFormatSettings: sqlFormatPersisted,
+            bootstrap: state.bootstrap
+              ? { ...state.bootstrap, sqlFormatSettings: sqlFormatPersisted }
+              : null,
+          }));
+        }
+        throw error;
+      } finally {
+        sqlFormatPending--;
+      }
+    });
+    sqlFormatSaveTail = operation.then(
+      () => {},
+      () => {},
+    );
+    return operation;
+  },
+  async saveSqlSnippet(input) {
+    const saved = await client.call<SqlSnippet>("save_sql_snippet", { input });
+    set((state) => {
+      const sqlSnippets = [
+        saved,
+        ...state.sqlSnippets.filter((entry) => entry.id !== saved.id),
+      ].sort((a, b) => a.trigger.toLowerCase().localeCompare(b.trigger.toLowerCase()));
+      return {
+        sqlSnippets,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, sqlSnippets } : null,
+      };
+    });
+    return saved;
+  },
+  async deleteSqlSnippet(id) {
+    await client.call("delete_sql_snippet", { id });
+    set((state) => {
+      const sqlSnippets = state.sqlSnippets.filter((entry) => entry.id !== id);
+      return {
+        sqlSnippets,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, sqlSnippets } : null,
+      };
+    });
+  },
   async openLocation(target) {
     const state = get();
     if (target.kind === "savedQuery") {
@@ -1023,7 +1164,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
-  async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView) {
+  async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView, highlightedColumn) {
     const query = normalizeQuery(rawQuery);
     const profileName =
       get().bootstrap?.profiles.find((p) => p.id === connectionId)?.name ?? connectionId;
@@ -1038,9 +1179,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (existing) {
       set((state) => ({
         activeTabId: existing.id,
-        tabs: preferredView
-          ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
-          : state.tabs,
+        tabs:
+          preferredView || highlightedColumn !== undefined
+            ? state.tabs.map((t) =>
+                t.id === existing.id
+                  ? {
+                      ...t,
+                      ...(preferredView ? { view: preferredView } : {}),
+                      ...(highlightedColumn !== undefined ? { highlightedColumn } : {}),
+                    }
+                  : t,
+              )
+            : state.tabs,
       }));
       get().recordRecentLocation({
         key: `table:${connectionId}:${table.schema}.${table.name}`,
@@ -1054,6 +1204,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     next.table = table;
     next.query = query;
     if (preferredView) next.view = preferredView;
+    if (highlightedColumn !== undefined) next.highlightedColumn = highlightedColumn;
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     get().recordRecentLocation({
       key: `table:${connectionId}:${table.schema}.${table.name}`,
@@ -1063,13 +1214,92 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
     await get().refreshTable(next.id);
   },
-  async openObject(connectionId, object, preferredView) {
+  openLinkedSessionObject(inspectorId, object) {
+    const state = get();
+    const inspector = state.tabs.find((entry) => entry.id === inspectorId);
+    if (!inspector?.metadataOrigin?.catalogRevision || !metadataSessionForTab(inspector, state))
+      return;
+    get().openSessionObject(
+      inspector.metadataOrigin.tabId,
+      object,
+      undefined,
+      inspector.metadataOrigin.catalogRevision,
+    );
+  },
+  appendSessionDdl(inspectorId, ddl) {
+    const state = get();
+    const inspector = state.tabs.find((entry) => entry.id === inspectorId);
+    if (!inspector?.metadataOrigin?.catalogRevision || !metadataSessionForTab(inspector, state))
+      return false;
+    const source = state.tabs.find((entry) => entry.id === inspector.metadataOrigin!.tabId)!;
+    if (!ddl.trim() || ["queued", "running"].includes(source.status)) return false;
+    // Preserve the editor text, file dirty tracking, results and session ownership.
+    set({
+      tabs: state.tabs.map((entry) =>
+        entry.id === source.id
+          ? { ...entry, sql: entry.sql + (entry.sql ? "\n\n" : "") + ddl }
+          : entry,
+      ),
+      activeTabId: source.id,
+    });
+    return true;
+  },
+  openSessionObject(tabId, object, highlightedColumn, catalogRevision) {
+    const state = get();
+    const source = state.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    const session = source && querySessionForTab(source, state.sessions);
+    if (!source?.connectionId || !session || session.connectionId !== source.connectionId) return;
+    const origin: MetadataOrigin = {
+      tabId,
+      sessionId: session.id,
+      contextRevision: state.sessionContextRevision[session.id] ?? 0,
+      catalogRevision,
+    };
+    const existing = state.tabs.find(
+      (entry) =>
+        entry.kind === "object" &&
+        entry.connectionId === source.connectionId &&
+        entry.object &&
+        sameDatabaseObject(entry.object, object) &&
+        entry.metadataOrigin?.tabId === tabId &&
+        entry.metadataOrigin.sessionId === session.id &&
+        entry.metadataOrigin.contextRevision === origin.contextRevision &&
+        entry.metadataOrigin.catalogRevision === catalogRevision,
+    );
+    if (existing) {
+      set({
+        activeTabId: existing.id,
+        tabs: state.tabs.map((entry) =>
+          entry.id === existing.id
+            ? {
+                ...entry,
+                view: "structure",
+                highlightedColumn: highlightedColumn ?? null,
+                revision: entry.revision + 1,
+              }
+            : entry,
+        ),
+      });
+      return;
+    }
+    const label =
+      state.sessionPool[source.connectionId]?.find((entry) => entry.info.id === session.id)
+        ?.label ?? "Shared session";
+    const next = tab("object", `${objectTabTitle(object)} · ${label}`, source.connectionId);
+    next.object = object;
+    next.view = "structure";
+    next.highlightedColumn = highlightedColumn ?? null;
+    next.metadataOrigin = origin;
+    set({ tabs: [...state.tabs, next], activeTabId: next.id });
+  },
+  async openObject(connectionId, object, preferredView, highlightedColumn) {
     if (isTabularObjectKind(object.kind)) {
       await get().openTable(
         connectionId,
         { schema: object.schema, name: object.name },
         EMPTY_QUERY,
         preferredView,
+        highlightedColumn,
       );
       return;
     }
@@ -1300,12 +1530,22 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   updateTab(id, update) {
     set((state) => ({
-      tabs: state.tabs.map((t) =>
-        t.id === id ? { ...t, ...(typeof update === "function" ? update(t) : update) } : t,
-      ),
+      tabs: state.tabs.map((t) => {
+        if (t.id !== id) return t;
+        const patch = typeof update === "function" ? update(t) : update;
+        const changedSql = patch.sql !== undefined && patch.sql !== t.sql;
+        return {
+          ...t,
+          ...patch,
+          ...(changedSql || (patch.error === null && !patch.errorOrigin)
+            ? { errorOrigin: undefined }
+            : {}),
+        };
+      }),
     }));
   },
   closeTab(id) {
+    planSnapshots.removeOwner(id);
     const stateSnapshot = get();
     const current = stateSnapshot.tabs.find((t) => t.id === id);
     if (!current) return;
@@ -1423,6 +1663,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   disconnected(connectionId) {
+    planSnapshots.removeConnection(connectionId);
     set((state) => {
       const retiredIds = new Set<string>();
       if (state.sessions[connectionId]) retiredIds.add(state.sessions[connectionId].id);
@@ -1442,8 +1683,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         ...purgeSessionRuntimeMaps(state, retiredIds),
         objects,
         tabs: state.tabs.map((t) =>
-          t.connectionId === connectionId && t.querySession
-            ? { ...t, querySessionClosed: true }
+          t.connectionId === connectionId
+            ? {
+                ...t,
+                planSource: undefined,
+                ...(t.querySession ? { querySessionClosed: true } : {}),
+              }
             : t,
         ),
       };
@@ -1460,6 +1705,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       get().updateTab(tab.id, {
         results: [],
+        planSource: undefined,
         pages: [],
         pageKeys: {},
         loadedRows: 0,
@@ -1541,7 +1787,10 @@ export const useStudio = create<StudioState>((set, get) => ({
             [event.index]: { affectedRows: event.affectedRows, elapsedMs: event.elapsedMs },
           };
         }
+        if (event.type === "runMetrics" && event.runId === next.runId) next.runMetrics = event;
         if (event.type === "finished") {
+          if (next.clientStartedAt !== undefined)
+            next.clientElapsedMs = Math.max(0, performance.now() - next.clientStartedAt);
           next.status = event.status;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;

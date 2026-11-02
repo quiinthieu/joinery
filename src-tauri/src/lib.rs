@@ -10,10 +10,13 @@ mod files;
 pub mod import;
 #[cfg(any(feature = "native-smoke", test))]
 mod native_smoke_config;
+pub mod params;
 pub mod persistence;
+mod query_plan;
 pub mod results;
 pub mod safety;
 pub mod secrets;
+pub mod sql_text;
 pub mod ssh;
 
 #[cfg(feature = "desktop")]
@@ -99,12 +102,15 @@ pub fn run() {
             commands::connect,
             commands::disconnect,
             commands::set_passphrase,
+            commands::extract_query_params,
             commands::prepare_execution,
+            commands::prepare_explain,
             commands::authorize_plan,
             commands::execute_plan,
             commands::cancel_run,
             commands::completion_catalog,
             commands::completion_schema,
+            commands::inspection_schema,
             commands::catalog,
             commands::database_objects,
             commands::object_details,
@@ -146,6 +152,9 @@ pub fn run() {
             commands::delete_saved_query,
             commands::save_bookmark,
             commands::delete_bookmark,
+            commands::save_sql_format_settings,
+            commands::save_sql_snippet,
+            commands::delete_sql_snippet,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

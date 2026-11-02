@@ -2,8 +2,8 @@
 
 M06-Q (merged on `main` via PR #26 `877904b`) introduced bounded console/session
 ownership for PostgreSQL and MySQL/MariaDB. Milestone R4 (`feat/consoles-sessions-files`,
-local and unmerged) extends that foundation with a named multi-console session
-pool (`M06`), explicit per-session `Auto-commit` / `Manual commit` transaction
+merged in PR #30 `a0ba1a6`, unreleased) extends that foundation with a named
+multi-console session pool (`M06`), explicit per-session `Auto-commit` / `Manual commit` transaction
 controls and server-observed transaction state (`X04`), and an active per-session
 schema/database switcher (`M05`). The private hub remains canonical shipping
 status (`v0.1.0-preview.15` is the published release); external account/auth/platform
@@ -140,3 +140,40 @@ Branch `feat/consoles-sessions-files` (local, unmerged) extends `M06-Q` across
 - **Remaining boundaries**: Savepoint UI, persistent live-session or open-transaction
   recovery across app restarts, and Snowflake/Redis interactive transactions
   remain intentionally unsupported.
+
+## R5 console metadata continuation — local `fe518fb`
+
+Object/column navigation from primary and isolated SQL consoles opens read-only
+Structure/DDL inspectors carrying the source tab, session, connection and observed
+catalog revision. These tabs do not own a session. Closing/rebinding the source,
+disconnecting/reconnecting or changing context makes them unavailable; navigation
+must be repeated from the current console. They never adopt the primary session.
+Catalog identity is checked before and after metadata reads; schema requests use
+the observed revision. Tabs/results are isolated by origin and target, stale
+replies are rejected and denied extended details preserve successful columns.
+No table data is browsed and no editor SQL is executed. Context-preserving
+inspector links and explicit DDL-to-console insertion are the next follow-up.
+
+Validation passes 237 frontend / 156 standard Rust and six real navigation
+browser flows, including distinct inspectors on two isolated sessions plus the
+primary. The clean-source hidden native baseline passes three processes / 30
+cleanup cycles; the new interactions are browser-tested, not native UI-qualified.
+Local, unmerged, unreleased and not installed. See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-console-bound-structure-2-november-2026).
+
+## Context-preserving inspector actions — local `34c001a`
+
+Linked foreign-key, dependency, index, trigger and owner-table inspectors carry
+the same frozen source console/session/catalog origin. They do not own sessions
+or browse table data. Every continuation rechecks the current catalog and source
+lifecycle. Closure, rebinding, context changes, denial and obsolete replies cannot
+adopt the primary session or alter source text.
+
+**Append DDL to source console** explicitly appends displayed DDL after existing
+SQL and returns to the original console. File dirty tracking, retained results
+and session ownership are preserved. Queued/running or unavailable sources reject
+append; no SQL is prepared or executed. Validation passes 253 frontend / 156 Rust,
+six navigation browser flows (two isolated chains plus primary), one PostgreSQL
+inspector fixture and three native synthetic processes / 30 cleanup cycles.
+New interactions remain browser-tested, not native UI-qualified. Local,
+unmerged, unreleased and not installed. Next is bounded alias rename preview.
+See [exact evidence](IMPLEMENTATION_STATUS.md#r5-follow-up-context-preserving-inspector-actions-2-november-2026).

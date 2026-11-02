@@ -3,6 +3,7 @@ import { Activity, History, RefreshCw, Search, ArrowUpRight } from "lucide-react
 import type {
   AuditEntry,
   ConstraintKind,
+  DatabaseObjectRef,
   HistoryEntry,
   ObjectDetails,
   ProcessInfo,
@@ -368,12 +369,26 @@ export function StructureView({
   details = null,
   detailsError = null,
   connectionId = null,
+  highlightedColumn = null,
+  onOpenObject,
 }: {
   schema: TableSchema | null;
   details?: ObjectDetails | null;
   detailsError?: string | null;
   connectionId?: string | null;
+  highlightedColumn?: string | null;
+  onOpenObject?: (object: DatabaseObjectRef) => void;
 }) {
+  const openObject =
+    onOpenObject ??
+    (connectionId
+      ? (object: DatabaseObjectRef) => {
+          void useStudio
+            .getState()
+            .openObject(connectionId, object, "structure")
+            .catch((error) => useStudio.getState().notify(messageOf(error)));
+        }
+      : undefined);
   if (!schema) return <div className="grid-empty">Loading table structure…</div>;
   return (
     <div className="structure-scroll">
@@ -389,6 +404,10 @@ export function StructureView({
         </thead>
         <tbody>
           {schema.columns.map((column) => {
+            const highlighted =
+              highlightedColumn !== null &&
+              highlightedColumn !== undefined &&
+              column.name === highlightedColumn;
             const references = schema.foreignKeys.flatMap((key) => {
               const index = key.columns.indexOf(column.name);
               return index < 0
@@ -399,7 +418,18 @@ export function StructureView({
                   ];
             });
             return (
-              <tr key={column.id}>
+              <tr
+                key={column.id}
+                className={highlighted ? "structure-row-highlighted" : undefined}
+                data-highlighted={highlighted ? "true" : undefined}
+                ref={
+                  highlighted
+                    ? (node) => {
+                        node?.scrollIntoView?.({ block: "nearest" });
+                      }
+                    : undefined
+                }
+              >
                 <td className="mono">{column.name}</td>
                 <td>
                   <code>{column.databaseType}</code>
@@ -476,15 +506,18 @@ export function StructureView({
                 </td>
                 <td className="mono">
                   {constraint.target ? (
-                    connectionId ? (
+                    openObject ? (
                       <button
                         type="button"
                         className="structure-link-button"
-                        onClick={() =>
-                          void useStudio
-                            .getState()
-                            .openTable(connectionId, constraint.target!, undefined, "structure")
-                        }
+                        onClick={() => {
+                          if (onOpenObject)
+                            onOpenObject({ ...constraint.target!, kind: "table", identity: null });
+                          else
+                            void useStudio
+                              .getState()
+                              .openTable(connectionId!, constraint.target!, undefined, "structure");
+                        }}
                       >
                         {`${constraint.target.schema}.${constraint.target.name}${
                           constraint.targetColumns.length
@@ -522,21 +555,17 @@ export function StructureView({
             {details.indexes.map((index) => (
               <tr key={index.name}>
                 <td className="mono">
-                  {connectionId ? (
+                  {openObject ? (
                     <button
                       type="button"
                       className="structure-link-button"
                       onClick={() =>
-                        void useStudio.getState().openObject(
-                          connectionId,
-                          {
-                            schema: details.object.schema,
-                            name: index.name,
-                            kind: "index",
-                            identity: details.object.name,
-                          },
-                          "structure",
-                        )
+                        openObject!({
+                          schema: details.object.schema,
+                          name: index.name,
+                          kind: "index",
+                          identity: details.object.name,
+                        })
                       }
                     >
                       {index.name}
@@ -579,21 +608,17 @@ export function StructureView({
             {details.triggers.map((trigger) => (
               <tr key={trigger.name}>
                 <td className="mono">
-                  {connectionId ? (
+                  {openObject ? (
                     <button
                       type="button"
                       className="structure-link-button"
                       onClick={() =>
-                        void useStudio.getState().openObject(
-                          connectionId,
-                          {
-                            schema: details.object.schema,
-                            name: trigger.name,
-                            kind: "trigger",
-                            identity: trigger.tableName,
-                          },
-                          "structure",
-                        )
+                        openObject!({
+                          schema: details.object.schema,
+                          name: trigger.name,
+                          kind: "trigger",
+                          identity: trigger.tableName,
+                        })
                       }
                     >
                       {trigger.name}
@@ -621,6 +646,7 @@ export function StructureView({
             connectionId={connectionId}
             uses={details.uses}
             usedBy={details.usedBy}
+            onOpenObject={openObject}
           />
         </div>
       )}

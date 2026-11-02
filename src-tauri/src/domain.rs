@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum EngineKind {
     Postgres,
@@ -142,6 +142,18 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub object_explorer: bool,
+    /// Executing plan format available to this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub actual_plan: Option<ActualPlanFormat>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ActualPlanFormat {
+    PostgresJson,
+    MariaDbJson,
+    MysqlTree,
 }
 
 /// One table-browser ordering key; primary-key tie-breakers are implicit.
@@ -245,12 +257,73 @@ pub enum StatementKind {
     Unknown,
 }
 
+/// Half-open UTF-16 code-unit range `[start_utf16, end_utf16)` plus 1-based
+/// Unicode scalar line and column coordinates within the submitted SQL buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlSpan {
+    pub start_utf16: usize,
+    pub end_utf16: usize,
+    pub line: u32,
+    pub column: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorLocation {
+    pub span: SqlSpan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub statement_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sql_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum QueryParamKind {
+    Text,
+    Integer,
+    Decimal,
+    Boolean,
+    Uuid,
+    Date,
+    Timestamp,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryParamSlot {
+    pub key: String,
+    pub positional: bool,
+    pub occurrences: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryParamInput {
+    pub key: String,
+    pub kind: QueryParamKind,
+    pub value: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementPlan {
     pub sql: String,
     pub kind: StatementKind,
     pub missing_where: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub span: Option<SqlSpan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -259,6 +332,12 @@ pub struct PreparedPlan {
     pub id: String,
     pub session_id: String,
     pub statements: Vec<StatementPlan>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<QueryParamInput>>")]
+    pub bound_parameters: Vec<QueryParamInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub binding_digest: Option<String>,
     pub requires_approval: bool,
     pub requires_passphrase: bool,
     pub confirmation_text: Option<String>,
@@ -389,6 +468,9 @@ pub struct TableSchema {
     pub columns: Vec<ColumnInfo>,
     pub primary_key: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<InboundForeignKey>>")]
+    pub inbound_foreign_keys: Vec<InboundForeignKey>,
     pub editable: bool,
 }
 
@@ -621,6 +703,17 @@ pub enum QueryEvent {
     Started {
         run_id: String,
     },
+    RunMetrics {
+        run_id: String,
+        queue_ms: u32,
+        active_ms: u32,
+        first_row_ms: Option<u32>,
+        total_ms: u32,
+    },
+    PlanContext {
+        run_id: String,
+        state: Option<SessionRuntimeState>,
+    },
     StatementStarted {
         run_id: String,
         index: usize,
@@ -815,6 +908,84 @@ pub struct SavedBookmark {
     pub created_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SqlKeywordCase {
+    Preserve,
+    #[default]
+    Upper,
+    Lower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFormatSettings {
+    pub keyword_case: SqlKeywordCase,
+    pub indent_width: u8,
+    pub lines_between_queries: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub dialects: Option<SqlFormatDialects>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFormatStyle {
+    pub keyword_case: SqlKeywordCase,
+    pub indent_width: u8,
+    pub lines_between_queries: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFormatDialects {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub postgres: Option<SqlFormatStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mysql: Option<SqlFormatStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake: Option<SqlFormatStyle>,
+}
+
+impl Default for SqlFormatSettings {
+    fn default() -> Self {
+        Self {
+            keyword_case: SqlKeywordCase::Upper,
+            indent_width: 2,
+            lines_between_queries: 1,
+            dialects: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlSnippet {
+    pub id: String,
+    pub trigger: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub engine: Option<EngineKind>,
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlSnippetInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub trigger: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub engine: Option<EngineKind>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
@@ -829,6 +1000,10 @@ pub struct Bootstrap {
     pub saved_queries: Vec<SavedQuery>,
     #[serde(default)]
     pub bookmarks: Vec<SavedBookmark>,
+    #[serde(default)]
+    pub sql_format_settings: SqlFormatSettings,
+    #[serde(default)]
+    pub sql_snippets: Vec<SqlSnippet>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -903,6 +1078,9 @@ pub enum ErrorCode {
 pub struct AppError {
     pub code: ErrorCode,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<ErrorLocation>")]
+    pub location: Option<Box<ErrorLocation>>,
 }
 
 impl AppError {
@@ -910,7 +1088,12 @@ impl AppError {
         Self {
             code,
             message: message.into(),
+            location: None,
         }
+    }
+    pub fn with_location(mut self, location: ErrorLocation) -> Self {
+        self.location = Some(Box::new(location));
+        self
     }
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidInput, message)

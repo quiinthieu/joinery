@@ -116,12 +116,32 @@ pub async fn set_passphrase(
 }
 
 #[tauri::command]
+pub async fn extract_query_params(
+    engine: EngineKind,
+    sql: String,
+) -> AppResult<Vec<QueryParamSlot>> {
+    crate::params::extract_query_params(engine, &sql)
+}
+
+#[tauri::command]
 pub async fn prepare_execution(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
     sql: String,
+    params: Option<Vec<QueryParamInput>>,
 ) -> AppResult<PreparedPlan> {
-    studio.prepare_execution(&session_id, &sql)
+    studio.prepare_execution_with_params(&session_id, &sql, params)
+}
+
+#[tauri::command]
+pub async fn prepare_explain(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    sql: String,
+    analyze: Option<bool>,
+    params: Option<Vec<QueryParamInput>>,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_explain_with_params(&session_id, &sql, analyze.unwrap_or(false), params)
 }
 
 #[tauri::command]
@@ -483,6 +503,18 @@ pub async fn completion_schema(
 }
 
 #[tauri::command]
+pub async fn inspection_schema(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    revision: String,
+    table: TableRef,
+) -> AppResult<TableSchema> {
+    studio
+        .inspection_schema(&session_id, &revision, &table)
+        .await
+}
+
+#[tauri::command]
 pub async fn pick_export_destination(
     studio: State<'_, Arc<Studio>>,
     suggested_name: String,
@@ -664,6 +696,36 @@ pub async fn save_bookmark(
 pub async fn delete_bookmark(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
     let studio = studio.inner().clone();
     tokio::task::spawn_blocking(move || studio.delete_bookmark(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn save_sql_format_settings(
+    studio: State<'_, Arc<Studio>>,
+    settings: SqlFormatSettings,
+) -> AppResult<SqlFormatSettings> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_sql_format_settings(settings))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn save_sql_snippet(
+    studio: State<'_, Arc<Studio>>,
+    input: SqlSnippetInput,
+) -> AppResult<SqlSnippet> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_sql_snippet(input))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_sql_snippet(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_sql_snippet(&id))
         .await
         .map_err(join_error)?
 }

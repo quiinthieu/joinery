@@ -22,6 +22,7 @@ pub struct Postgres {
     edit_cancel: Mutex<Option<tokio_postgres::CancelToken>>,
     tx_mode: Mutex<TransactionMode>,
     cached_identity: Mutex<CompletionIdentity>,
+    stale_prepared: Mutex<Vec<String>>,
     own_pid: i32,
 }
 
@@ -109,6 +110,7 @@ impl Postgres {
                 table_filtering: true,
                 processes: true,
                 object_explorer: true,
+                actual_plan: Some(ActualPlanFormat::PostgresJson),
             },
         };
         let driver = Self {
@@ -121,6 +123,7 @@ impl Postgres {
             edit_cancel: Mutex::new(None),
             tx_mode: Mutex::new(TransactionMode::AutoCommit),
             cached_identity: Mutex::new(initial_identity),
+            stale_prepared: Mutex::new(Vec::new()),
         };
         Ok((Arc::new(driver), info))
     }
@@ -159,38 +162,40 @@ impl Postgres {
             })
             .await
     }
-}
+    async fn drain_stale_prepared(&self) {
+        let names = std::mem::take(&mut *self.stale_prepared.lock());
+        for name in names {
+            let _ = self
+                .client
+                .batch_execute(&format!("DEALLOCATE {name}"))
+                .await;
+        }
+    }
 
-#[async_trait]
-impl Driver for Postgres {
-    async fn execute(
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_simple_sql(
         &self,
-        sql: &str,
+        wire_sql: &str,
+        original_sql: &str,
+        rewritten_sql: &str,
+        rewrite_map: Option<&crate::sql_text::RewriteMap>,
         kind: StatementKind,
+        metadata: Option<Vec<ColumnInfo>>,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
-        if *self.tx_mode.lock() == TransactionMode::Manual
-            && should_auto_begin_postgres(sql, kind)
-            && self.observe_transaction_state().await? == TransactionState::Idle
-        {
-            self.client.batch_execute("BEGIN").await.map_err(pg_error)?;
-        }
-        let metadata = if kind == StatementKind::Read {
-            Some(
-                self.client
-                    .prepare(sql)
-                    .await
-                    .map_err(pg_error)?
-                    .columns()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| column(i, c.name(), c.type_().name()))
-                    .collect::<Vec<_>>(),
+        let stream = self.client.simple_query_raw(wire_sql).await.map_err(|e| {
+            pg_sql_error_mapped(
+                e,
+                original_sql,
+                rewritten_sql,
+                rewrite_map,
+                if wire_sql == rewritten_sql {
+                    0
+                } else {
+                    isize::MAX
+                },
             )
-        } else {
-            None
-        };
-        let stream = self.client.simple_query_raw(sql).await.map_err(pg_error)?;
+        })?;
         futures_util::pin_mut!(stream);
         let mut pending = Vec::new();
         let mut pending_bytes = 0usize;
@@ -205,7 +210,19 @@ impl Driver for Postgres {
                     sink.complete(total)?;
                     return Ok(total);
                 }
-                Err(error) => return Err(pg_error(error)),
+                Err(error) => {
+                    return Err(pg_sql_error_mapped(
+                        error,
+                        original_sql,
+                        rewritten_sql,
+                        rewrite_map,
+                        if wire_sql == rewritten_sql {
+                            0
+                        } else {
+                            isize::MAX
+                        },
+                    ));
+                }
             };
             match message {
                 SimpleQueryMessage::RowDescription(columns) => {
@@ -269,6 +286,168 @@ impl Driver for Postgres {
             self.close();
         }
         Ok(total)
+    }
+}
+
+#[async_trait]
+impl Driver for Postgres {
+    async fn execute(
+        &self,
+        sql: &str,
+        kind: StatementKind,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        if !self.stale_prepared.lock().is_empty()
+            && self.observe_transaction_state().await? != TransactionState::Failed
+        {
+            self.drain_stale_prepared().await;
+        }
+        if *self.tx_mode.lock() == TransactionMode::Manual
+            && should_auto_begin_postgres(sql, kind)
+            && self.observe_transaction_state().await? == TransactionState::Idle
+        {
+            self.client.batch_execute("BEGIN").await.map_err(pg_error)?;
+        }
+        let metadata = if kind == StatementKind::Read {
+            Some(
+                self.client
+                    .prepare(sql)
+                    .await
+                    .map_err(|e| pg_sql_error(e, sql))?
+                    .columns()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| column(i, c.name(), c.type_().name()))
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        self.stream_simple_sql(sql, sql, sql, None, kind, metadata, sink)
+            .await
+    }
+
+    async fn execute_bound(
+        &self,
+        sql: &str,
+        kind: StatementKind,
+        bound: &crate::params::BoundStatement,
+        sink: &mut dyn QuerySink,
+    ) -> AppResult<u64> {
+        if bound.binds.is_empty() {
+            return self.execute(sql, kind, sink).await;
+        }
+        if !self.stale_prepared.lock().is_empty()
+            && self.observe_transaction_state().await? != TransactionState::Failed
+        {
+            self.drain_stale_prepared().await;
+        }
+        if *self.tx_mode.lock() == TransactionMode::Manual
+            && should_auto_begin_postgres(&bound.rewritten_sql, kind)
+            && self.observe_transaction_state().await? == TransactionState::Idle
+        {
+            self.client.batch_execute("BEGIN").await.map_err(pg_error)?;
+        }
+
+        use tokio_postgres::types::Type;
+        let mut pg_types = Vec::with_capacity(bound.binds.len());
+        let mut sql_types = Vec::with_capacity(bound.binds.len());
+        let mut exec_args = Vec::with_capacity(bound.binds.len());
+        for bind in &bound.binds {
+            let (ty, sql_ty) = match bind.kind {
+                QueryParamKind::Text => (Type::TEXT, "pg_catalog.text"),
+                QueryParamKind::Integer => (Type::INT8, "pg_catalog.int8"),
+                QueryParamKind::Decimal => (Type::NUMERIC, "pg_catalog.numeric"),
+                QueryParamKind::Boolean => (Type::BOOL, "pg_catalog.bool"),
+                QueryParamKind::Uuid => (Type::UUID, "pg_catalog.uuid"),
+                QueryParamKind::Date => (Type::DATE, "pg_catalog.date"),
+                QueryParamKind::Timestamp => (Type::TIMESTAMPTZ, "pg_catalog.timestamptz"),
+                QueryParamKind::Json => (Type::JSONB, "pg_catalog.jsonb"),
+            };
+            pg_types.push(ty);
+            sql_types.push(sql_ty);
+            match &bind.value {
+                None => exec_args.push(format!("NULL::{sql_ty}")),
+                Some(val) => {
+                    let hex_bytes = hex::encode(val.as_bytes());
+                    exec_args.push(format!(
+                        "pg_catalog.convert_from(pg_catalog.decode('{hex_bytes}', 'hex'), 'UTF8')::{sql_ty}"
+                    ));
+                }
+            }
+        }
+
+        let metadata = if kind == StatementKind::Read {
+            Some(
+                self.client
+                    .prepare_typed(&bound.rewritten_sql, &pg_types)
+                    .await
+                    .map_err(|e| {
+                        pg_sql_error_mapped(
+                            e,
+                            sql,
+                            &bound.rewritten_sql,
+                            Some(&bound.rewrite_map),
+                            0,
+                        )
+                    })?
+                    .columns()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| column(i, c.name(), c.type_().name()))
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+
+        let stmt_name = format!("__joinery_p_{}", uuid::Uuid::new_v4().simple());
+        let prefix = format!("PREPARE {stmt_name} ({}) AS ", sql_types.join(", "));
+        // SQL PREPARE accepts the underlying DML, not EXPLAIN itself.
+        // EXPLAIN EXECUTE keeps the exact options and executes these same binds.
+        let (explain_prefix, inner_sql) = postgres_explain_parts(&bound.rewritten_sql)?;
+        let prepare_sql = format!("{prefix}{inner_sql}");
+        self.client.batch_execute(&prepare_sql).await.map_err(|e| {
+            pg_sql_error_mapped(
+                e,
+                sql,
+                &bound.rewritten_sql,
+                Some(&bound.rewrite_map),
+                prefix.chars().count() as isize - explain_prefix.chars().count() as isize,
+            )
+        })?;
+
+        let execute_sql = format!(
+            "{explain_prefix}EXECUTE {stmt_name}({})",
+            exec_args.join(", ")
+        );
+        let result = self
+            .stream_simple_sql(
+                &execute_sql,
+                sql,
+                &bound.rewritten_sql,
+                Some(&bound.rewrite_map),
+                kind,
+                metadata,
+                sink,
+            )
+            .await;
+
+        if !self.is_closed() {
+            match self.observe_transaction_state().await {
+                Ok(state) if state != TransactionState::Failed => {
+                    let _ = self
+                        .client
+                        .batch_execute(&format!("DEALLOCATE {stmt_name}"))
+                        .await;
+                }
+                _ => {
+                    self.stale_prepared.lock().push(stmt_name);
+                }
+            }
+        }
+
+        result
     }
 
     async fn cancel(&self) -> AppResult<()> {
@@ -435,7 +614,9 @@ impl Driver for Postgres {
         self.client
             .batch_execute("ROLLBACK")
             .await
-            .map_err(pg_error)
+            .map_err(pg_error)?;
+        self.drain_stale_prepared().await;
+        Ok(())
     }
     async fn completion_catalog(
         &self,
@@ -475,6 +656,9 @@ impl Driver for Postgres {
     }
     async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         schema_on(&self.client, table, true).await
+    }
+    async fn inspection_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        schema_on_mode(&self.client, table, true, true).await
     }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         let rows=self.metadata().await?.query(
@@ -1033,15 +1217,121 @@ fn pg_error(error: tokio_postgres::Error) -> AppError {
     }
 }
 
+pub(crate) fn pg_sql_error(error: tokio_postgres::Error, sql: &str) -> AppError {
+    pg_sql_error_mapped(error, sql, sql, None, 0)
+}
+
+fn postgres_explain_parts(sql: &str) -> AppResult<(&str, &str)> {
+    use sqlparser::{
+        dialect::PostgreSqlDialect,
+        tokenizer::{Token, Tokenizer},
+    };
+    let tokens = Tokenizer::new(&PostgreSqlDialect {}, sql)
+        .tokenize_with_location()
+        .map_err(|_| AppError::invalid("Cannot tokenize parameterized SQL"))?;
+    let mut words = tokens.iter().filter_map(|token| {
+        if let Token::Word(word) = &token.token {
+            Some((word, token.span.start))
+        } else {
+            None
+        }
+    });
+    if !words.next().is_some_and(|(word, _)| {
+        word.quote_style.is_none() && word.value.eq_ignore_ascii_case("EXPLAIN")
+    }) {
+        return Ok(("", sql));
+    }
+    for (word, location) in words {
+        if word.quote_style.is_none()
+            && [
+                "SELECT", "WITH", "VALUES", "TABLE", "INSERT", "UPDATE", "DELETE", "MERGE",
+            ]
+            .iter()
+            .any(|candidate| word.value.eq_ignore_ascii_case(candidate))
+        {
+            let byte = crate::safety::byte_offset(sql, location);
+            return Ok((&sql[..byte], &sql[byte..]));
+        }
+    }
+    Err(AppError::new(
+        ErrorCode::Unsupported,
+        "Parameterized EXPLAIN requires a supported query or mutation",
+    ))
+}
+
+pub(crate) fn pg_sql_error_mapped(
+    error: tokio_postgres::Error,
+    original_sql: &str,
+    rewritten_sql: &str,
+    rewrite_map: Option<&crate::sql_text::RewriteMap>,
+    prefix_chars: isize,
+) -> AppError {
+    if let Some(db) = error.as_db_error() {
+        let state = db.code().code();
+        let code = match state {
+            "57014" => ErrorCode::Cancelled,
+            "42501" => ErrorCode::PermissionDenied,
+            _ => ErrorCode::Database,
+        };
+        let base = AppError::new(code, db.message());
+        if code == ErrorCode::Cancelled {
+            return base;
+        }
+        let span = match db.position() {
+            Some(tokio_postgres::error::ErrorPosition::Original(pos)) => {
+                let adjusted = (*pos as isize - prefix_chars).max(0) as usize;
+                if adjusted == 0 {
+                    crate::sql_text::trimmed_span(original_sql)
+                } else if let Some(map) = rewrite_map {
+                    map.span_from_rewritten_pg_char_pos(
+                        original_sql,
+                        rewritten_sql,
+                        adjusted as u32,
+                    )
+                } else {
+                    crate::sql_text::span_from_pg_char_pos(original_sql, adjusted as u32)
+                }
+            }
+            Some(tokio_postgres::error::ErrorPosition::Internal { .. }) | None => {
+                crate::sql_text::trimmed_span(original_sql)
+            }
+        };
+        base.with_location(ErrorLocation {
+            span,
+            statement_index: None,
+            sql_state: Some(state.to_owned()),
+            detail: db.detail().filter(|s| !s.is_empty()).map(str::to_owned),
+            hint: db.hint().filter(|s| !s.is_empty()).map(str::to_owned),
+        })
+    } else {
+        pg_error(error)
+    }
+}
+
 async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppResult<TableSchema> {
+    schema_on_mode(client, table, completion, false).await
+}
+
+async fn schema_on_mode(
+    client: &Client,
+    table: &TableRef,
+    completion: bool,
+    require_complete: bool,
+) -> AppResult<TableSchema> {
     let qualified = qualified(table);
     let rows=client.query(
             "SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),t.typname,a.attnotnull,a.attgenerated::pg_catalog.text,a.attidentity::pg_catalog.text,
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='p' AND a.attnum=ANY(k.conkey)),
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text,
-              a.atthasdef
+              a.atthasdef, pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT')
              FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
-             WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion]).await.map_err(pg_error)?;
+             WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR $3 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion, &require_complete]).await.map_err(pg_error)?;
+    if require_complete && rows.iter().any(|row| !row.get::<_, bool>(10)) {
+        return Err(AppError::new(
+            ErrorCode::PermissionDenied,
+            "Complete selectable column metadata is unavailable; no column claim was made",
+        ));
+    }
     if rows.is_empty() {
         return Err(AppError::new(
             ErrorCode::NotFound,
@@ -1049,6 +1339,12 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         ));
     }
     let physical = matches!(rows[0].get::<_, String>(8).as_str(), "r" | "p");
+    if require_complete && !physical {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Column inspection requires a direct base table",
+        ));
+    }
     let mut columns: Vec<ColumnInfo> = rows
         .iter()
         .enumerate()
@@ -1082,11 +1378,13 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         .map(|c| c.name.clone())
         .collect::<Vec<_>>();
     if completion {
+        let (foreign_keys, inbound_foreign_keys) = completion_fks_on(client, &qualified).await?;
         return Ok(TableSchema {
             table: table.clone(),
             columns,
             primary_key,
-            foreign_keys: vec![],
+            foreign_keys,
+            inbound_foreign_keys,
             editable: false,
         });
     }
@@ -1125,8 +1423,112 @@ async fn schema_on(client: &Client, table: &TableRef, completion: bool) -> AppRe
         columns,
         primary_key,
         foreign_keys,
+        inbound_foreign_keys: Vec::new(),
         editable,
     })
+}
+
+async fn completion_fks_on(
+    client: &Client,
+    qualified: &str,
+) -> AppResult<(Vec<ForeignKey>, Vec<InboundForeignKey>)> {
+    let outbound_rows = client
+        .query(
+            "SELECT k.conname::pg_catalog.text, a.attname, n.nspname, c.relname, b.attname,
+                    pg_catalog.cardinality(k.conkey)::pg_catalog.int4
+             FROM pg_catalog.pg_constraint k
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey), pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src, dst, ord)
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = x.src AND NOT a.attisdropped
+             JOIN pg_catalog.pg_class c ON c.oid = k.confrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute b ON b.attrelid = k.confrelid AND b.attnum = x.dst AND NOT b.attisdropped
+             WHERE k.contype = 'f'
+               AND k.conrelid = pg_catalog.to_regclass($1)
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+               AND pg_catalog.has_column_privilege(k.conrelid, a.attnum, 'SELECT')
+               AND pg_catalog.has_column_privilege(k.confrelid, b.attnum, 'SELECT')
+             ORDER BY k.conname, k.oid, x.ord
+             LIMIT 200",
+            &[&qualified],
+        )
+        .await
+        .map_err(pg_error)?;
+    let mut outbound_widths: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    let outbound = ForeignKey::group(outbound_rows.iter().map(|r| {
+        let name: String = r.get(0);
+        let target = TableRef {
+            schema: r.get(2),
+            name: r.get(3),
+        };
+        let expected: i32 = r.get(5);
+        outbound_widths.insert(
+            (target.schema.clone(), target.name.clone(), name.clone()),
+            expected.max(0) as usize,
+        );
+        (name, r.get(1), target, r.get(4))
+    }))
+    .into_iter()
+    .filter(|key| {
+        outbound_widths
+            .get(&(
+                key.target.schema.clone(),
+                key.target.name.clone(),
+                key.name.clone(),
+            ))
+            .is_none_or(|&w| key.columns.len() == w)
+    })
+    .collect();
+
+    let inbound_rows = client
+        .query(
+            "SELECT k.conname::pg_catalog.text, n.nspname, c.relname, a.attname, b.attname,
+                    pg_catalog.cardinality(k.conkey)::pg_catalog.int4
+             FROM pg_catalog.pg_constraint k
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey), pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src, dst, ord)
+             JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = x.src AND NOT a.attisdropped
+             JOIN pg_catalog.pg_attribute b ON b.attrelid = k.confrelid AND b.attnum = x.dst AND NOT b.attisdropped
+             WHERE k.contype = 'f'
+               AND k.confrelid = pg_catalog.to_regclass($1)
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+               AND pg_catalog.has_column_privilege(k.conrelid, a.attnum, 'SELECT')
+               AND pg_catalog.has_column_privilege(k.confrelid, b.attnum, 'SELECT')
+             ORDER BY n.nspname, c.relname, k.conname, k.oid, x.ord
+             LIMIT 200",
+            &[&qualified],
+        )
+        .await
+        .map_err(pg_error)?;
+    let mut inbound_widths: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    let inbound = InboundForeignKey::group(inbound_rows.iter().map(|r| {
+        let name: String = r.get(0);
+        let source = TableRef {
+            schema: r.get(1),
+            name: r.get(2),
+        };
+        let expected: i32 = r.get(5);
+        inbound_widths.insert(
+            (source.schema.clone(), source.name.clone(), name.clone()),
+            expected.max(0) as usize,
+        );
+        (name, source, r.get(3), r.get(4))
+    }))
+    .into_iter()
+    .filter(|key| {
+        inbound_widths
+            .get(&(
+                key.source.schema.clone(),
+                key.source.name.clone(),
+                key.name.clone(),
+            ))
+            .is_none_or(|&w| key.columns.len() == w)
+    })
+    .collect();
+
+    Ok((outbound, inbound))
 }
 
 async fn referencing_keys_on(
