@@ -2450,6 +2450,19 @@ Completion classifies a parenthesized query used as a function argument. `SELECT
 | Unit | `sql-snippets.test.ts` covers a call that is not a query, a comma argument, an inner FROM list, an inner WHERE clause, a bare parenthesized argument, and a prefix after the closing parenthesis |
 | Validate | `pnpm validate` passed: 418 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. Stars, CTE column lists, longer set operations, and template expressions remain open |
+| Open / next | See the CTE column-list section below |
 
 Fetched `origin/main` is `96e1fbe`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: explicit CTE column lists (3 November 2026)
+
+A full name list between a CTE name and `AS` renames that CTE's projected outputs. `WITH c(order_id) AS (SELECT id FROM orders)` offers `order_id`, including to a later CTE and to the recursive arm of a two-arm `WITH RECURSIVE` CTE. A shorter list, a longer list, a repeated name, and a star still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a rename, a hidden source name, a matching list, a later CTE, a comment in the list, a recursive arm, a quoted name, and MySQL case. A short list, a long list, and a repeated name still withhold |
+| Validate | `pnpm validate` passed: 421 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. Stars, longer set operations, and template expressions remain open |
+
+Fetched `origin/main` is `0a6a173`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

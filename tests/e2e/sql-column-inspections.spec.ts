@@ -185,13 +185,14 @@ for (const [engine, port] of [
     expect(metadataReads).toBe(readsBeforeSeveral + 1);
     expect(executions).toBe(beforeDenied);
     await dialog.getByRole("button", { name: "Cancel" }).click();
-    await editor.fill(`WITH c(id) AS (SELECT id FROM ${table}) SELECT c.typo FROM c`);
-    const readsBeforeUnsupported = metadataReads;
+    await editor.fill(`WITH c(order_id) AS (SELECT id FROM ${table}) SELECT c.typo FROM c`);
+    const readsBeforeList = metadataReads;
     await inspect.click();
-    await expect(page.getByRole("alert")).toContainText("direct-table SELECT");
-    await expect(dialog).toHaveCount(0);
-    expect(metadataReads).toBe(readsBeforeUnsupported);
+    await expect(dialog).toContainText("not projected by c");
+    await expect(projected.locator("option")).toHaveText(["Choose a column…", "order_id"]);
+    expect(metadataReads).toBe(readsBeforeList + 1);
     expect(executions).toBe(beforeDenied);
+    await dialog.getByRole("button", { name: "Cancel" }).click();
     expect(errors).toEqual([]);
   });
 

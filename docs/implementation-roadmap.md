@@ -587,6 +587,7 @@ R6 remains partial, local, unmerged and unreleased.
    fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
    suite passed on `db5cd1b`.
    Next: the remaining R5/R6/R7/R8 scope.
+   A full explicit CTE column list renames that CTE's projected outputs. A partial list still withholds.
    A parenthesized query in a function argument uses the same template placement.
    A parenthesized statement after EXPLAIN uses the same template placement.
    A custom snippet can declare its completion site. A built-in trigger keeps its place.
