@@ -45,9 +45,10 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 /**
  * Flat direct-table SELECTs, plus one non-recursive CTE or derived table whose
  * body is that shape. Stars, column lists, recursive and multiple CTEs withhold.
- * shortcut: unqualified names are read only as top-level select-list items;
- * a name owned by more than one relation withholds the inspection.
- * upgrade for WHERE/ORDER/GROUP names, function arguments, and multiple CTEs.
+ * shortcut: unqualified names are select-list items and bare names in
+ * WHERE, GROUP BY, HAVING, ORDER BY and ON. Function arguments stay unread.
+ * A name owned by more than one relation withholds the inspection.
+ * upgrade for nested function arguments and multiple CTEs.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -416,7 +417,77 @@ export function prepareColumnInspection(
       "QUALIFY",
       "TABLESAMPLE",
     ]);
-    function scan(raw: readonly SqlToken[], depth: number, scope: Scope) {
+    // Unquoted clause words and type names are not column references.
+    const skipBare = new Set([
+      ...forbidden,
+      ...clauses,
+      "AND",
+      "OR",
+      "NOT",
+      "IS",
+      "IN",
+      "LIKE",
+      "ILIKE",
+      "BETWEEN",
+      "NULL",
+      "TRUE",
+      "FALSE",
+      "ASC",
+      "DESC",
+      "NULLS",
+      "FIRST",
+      "LAST",
+      "ON",
+      "USING",
+      "BY",
+      "AS",
+      "WHEN",
+      "THEN",
+      "ELSE",
+      "CASE",
+      "END",
+      "EXISTS",
+      "CAST",
+      "INNER",
+      "LEFT",
+      "RIGHT",
+      "FULL",
+      "OUTER",
+      "CROSS",
+      "NATURAL",
+      "TEXT",
+      "INT",
+      "INTEGER",
+      "BIGINT",
+      "BOOLEAN",
+      "NUMERIC",
+      "DATE",
+      "TIMESTAMP",
+      "VARCHAR",
+    ]);
+    function noteUnqualified(token: SqlToken, owners: Binding[]) {
+      if (context.engine === "mysql" && readIdentifier(token.text).value.toLowerCase() === "_rowid")
+        throw unsupported();
+      checkName(token);
+      if (!owners.length) throw unsupported();
+      const ref: MissingSqlColumn = {
+        name: identifierValue(readIdentifier(token.text), context.engine),
+        qualifier: owners.length === 1 ? owners[0].label : "",
+        table: owners[0].table,
+        from: token.from,
+        to: token.to,
+        line: state.doc.lineAt(token.from).number,
+        ...(owners.length === 1 && owners[0].outputs
+          ? {
+              outputOf: owners[0].outputOf,
+              projectedColumns: owners[0].outputs.map((output) => output.name),
+            }
+          : {}),
+      };
+      references.push(ref);
+      if (owners.length !== 1) unqualifiedOwners.set(ref, [...owners]);
+    }
+    function scan(raw: readonly SqlToken[], depth: number, scope: Scope, bare: boolean) {
       if (depth > 16) throw unsupported();
       const list = clean(raw);
       for (let i = 0; i < list.length; i++) {
@@ -425,9 +496,25 @@ export function prepareColumnInspection(
         if (forbidden.has(word(token))) throw unsupported();
         if (token.children) {
           if (!token.text.endsWith(")")) throw unsupported();
-          scan(token.children, depth + 1, scope);
+          const caller = list[i - 1];
+          const call =
+            !!caller &&
+            nameLike(caller) &&
+            caller.kind !== "QuotedIdentifier" &&
+            !skipBare.has(word(caller));
+          scan(token.children, depth + 1, scope, bare && !call);
           continue;
         }
+        if (
+          bare &&
+          nameLike(token) &&
+          list[i - 1]?.text !== "." &&
+          list[i + 1]?.text !== "." &&
+          !list[i + 1]?.children &&
+          token.kind !== "Type" &&
+          (token.kind === "QuotedIdentifier" || !skipBare.has(word(token)))
+        )
+          noteUnqualified(token, scope);
         if (!nameToken(token) || list[i + 1]?.text !== ".") continue;
         const column = list[i + 2];
         if (column?.text === "*") {
@@ -468,9 +555,9 @@ export function prepareColumnInspection(
         i += 2;
       }
     }
-    scan(tokens.slice(1, from), 0, bindings);
-    for (const condition of conditions) scan(condition.tokens, 0, condition.scope);
-    scan(tokens.slice(next), 0, bindings);
+    scan(tokens.slice(1, from), 0, bindings, false);
+    for (const condition of conditions) scan(condition.tokens, 0, condition.scope, true);
+    scan(tokens.slice(next), 0, bindings, true);
     // Top-level select-list names only. Expressions, stars and other clauses stay out.
     let selectAt = 1;
     if (word(tokens[1]) === "DISTINCT" || word(tokens[1]) === "ALL") selectAt = 2;
@@ -487,27 +574,7 @@ export function prepareColumnInspection(
       else if (item.length >= 2 && nameLike(item.at(-1)) && item.at(-2)?.text !== ".")
         column = item.slice(0, -1);
       if (column.length !== 1 || !nameLike(column[0])) continue;
-      const token = column[0];
-      if (context.engine === "mysql" && readIdentifier(token.text).value.toLowerCase() === "_rowid")
-        throw unsupported();
-      checkName(token);
-      if (!bindings.length) throw unsupported();
-      const ref: MissingSqlColumn = {
-        name: identifierValue(readIdentifier(token.text), context.engine),
-        qualifier: bindings.length === 1 ? bindings[0].label : "",
-        table: bindings[0].table,
-        from: token.from,
-        to: token.to,
-        line: state.doc.lineAt(token.from).number,
-        ...(bindings.length === 1 && bindings[0].outputs
-          ? {
-              outputOf: bindings[0].outputOf,
-              projectedColumns: bindings[0].outputs.map((output) => output.name),
-            }
-          : {}),
-      };
-      references.push(ref);
-      if (bindings.length !== 1) unqualifiedOwners.set(ref, [...bindings]);
+      noteUnqualified(column[0], bindings);
     }
     return {
       references,

@@ -19,7 +19,7 @@ import {
   type SqlScope,
 } from "./sql-context";
 import { identifierValue, quoteIdentifier } from "./sql-identifiers";
-import { snippetCompletions } from "./sql-snippets";
+import { snippetCompletions, sqlTemplateSite } from "./sql-snippets";
 import type { SqlTemplateApplier } from "./sql-template-context";
 
 interface Configuration {
@@ -376,6 +376,7 @@ export class CompletionSession {
                     });
                 }
               : undefined,
+            templateState ? sqlTemplateSite(templateState, pending.target.from) : undefined,
           );
     const exactSnippets =
       barePrefix && barePrefix.length > 0

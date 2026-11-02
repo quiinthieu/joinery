@@ -2281,6 +2281,32 @@ A top-level name in the select list is checked against the single relation in sc
 | Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover one table, an aliased table, a derived output, a present projected name, MySQL `_rowid`, a joined column owned by one table, and joined names that match none or several relations |
 | Validate | `pnpm validate` passed: 410 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated. Integration on `d2d0cd1` / `ce7cdaf` is not claimed green |
-| Open / next | Semantic template placement, unqualified names outside the select list, multiple and recursive CTEs, then remaining R5/R6/R7/R8 |
+| Open / next | See the template completion placement section below |
 
 Fetched `origin/main` remains `a0ba1a6`. Local until this revision is pushed. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: template completion placement (2 November 2026)
+
+SQL completion offers `sel`, `ctxsel`, `cnt`, `cte`, `ins`, `upd`, `del` and `txn` only at the start of a statement. It offers `join` and `ljoin` only in a top-level FROM or JOIN list, and `lim` only after a top-level FROM. Custom triggers stay available. A custom snippet that reuses a built-in trigger keeps that trigger's place. **Insert template** still lists every template, including when completion would hide it. Expansion still does not prepare or execute SQL. Nested queries, `EXPLAIN` wrappers and declared per-template contexts are not classified.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-snippets.test.ts` covers a statement start, a FROM list, a WHERE clause, a custom trigger that remains available, and a custom `sel` override that stays at the statement start |
+| Validate | `pnpm validate` passed: 410 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | See the clause-name section below |
+
+Fetched `origin/main` is `102d9bb`. Pushed on PR #32. Unmerged, unreleased and not installed. Preview.15 remains the last verified release. Post-merge Validate on `102d9bb` was still running when this branch was cut.
+
+## R5 follow-up: unqualified clause names (2 November 2026)
+
+A bare name in `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` or `ON` is checked with the same one-owner rule as a select-list name. Several owners, or none, withhold the inspection. Names inside function calls stay unread. Clause keywords and a short list of unquoted type names are not treated as columns. Inspection still does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, a present name, `LOWER(typo)`, MySQL `_rowid`, a joined name owned by one table, and a joined name that matches none |
+| Validate | `pnpm validate` passed: 411 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated. GitHub checks on PR #32 are not claimed green |
+| Open / next | Function arguments, multiple and recursive CTEs, nested template placement, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` is `102d9bb`. This follow-up is local until it is pushed onto PR #32. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

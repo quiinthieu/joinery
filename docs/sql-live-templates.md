@@ -40,7 +40,13 @@ or switching/refreshing the console while context is loading prevents a delayed
 insertion. Expanded text is limited to 1 MiB UTF-8. Custom bodies retain the
 existing 16 KiB storage limit and travel unchanged through metadata backup/restore.
 
-These variables provide local editor convenience. Automatic semantic placement,
-arbitrary expressions/macros and broader DataGrip template parity remain open.
+These variables provide local editor convenience. SQL completion places the
+built-in statement templates at the start of a statement, `join` and `ljoin`
+in a top-level FROM or JOIN list, and `lim` after a top-level FROM. Custom
+triggers stay available in every completion site. A custom snippet that reuses
+a built-in trigger keeps that trigger's place. **Insert template** still lists
+every template. Nested queries, `EXPLAIN` wrappers, declared per-template
+contexts, arbitrary expressions/macros and broader DataGrip template parity
+remain open.
 Snowflake quoting has local unit coverage; external Snowflake qualification
 remains separate.
