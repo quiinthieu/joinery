@@ -109,7 +109,8 @@ describe("bounded qualified-column inspections", () => {
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL) d",
     "SELECT d.id FROM (SELECT id FROM orders UNION ALL SELECT * FROM orders) d",
     "WITH c(id) AS (SELECT * FROM orders) SELECT c.id FROM c",
-    "WITH c AS (SELECT *, id FROM orders) SELECT c.id FROM c",
+    "WITH c AS (SELECT *, * FROM orders) SELECT c.id FROM c",
+    "WITH c(id) AS (SELECT *, id AS order_id FROM orders) SELECT c.typo FROM c",
     "WITH c AS (SELECT * FROM orders a, orders b) SELECT c.id FROM c",
     "WITH c AS (SELECT public.orders.* FROM public.orders) SELECT c.id FROM c",
     "WITH RECURSIVE c AS (SELECT id, customer_id FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
@@ -512,6 +513,46 @@ describe("bounded qualified-column inspections", () => {
     ).result;
     expect(distinct.columnsFor(distinct.issues[0])).toEqual(columns);
     const mysql = inspect("SELECT d.typo FROM (SELECT * FROM orders) d", "mysql").result;
+    expect(mysql.columnsFor(mysql.issues[0])).toEqual(columns);
+  });
+  test("inspects a star beside simple columns", () => {
+    const columns = [...schema.columns.map((column) => column.name), "order_id"];
+    const mixed = inspect(
+      "WITH c AS (SELECT *, id AS order_id FROM orders) SELECT c.typo FROM c",
+    ).result;
+    expect(mixed.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "typo"]]);
+    expect(mixed.columnsFor(mixed.issues[0])).toEqual(columns);
+    expect(
+      inspect("WITH c AS (SELECT *, id AS order_id FROM orders) SELECT c.id, c.order_id FROM c")
+        .result.issues,
+    ).toEqual([]);
+    expect(() => inspect("WITH c AS (SELECT *, id FROM orders) SELECT c.typo FROM c")).toThrow();
+    const derived = inspect(
+      "SELECT d.typo FROM (SELECT customer_id AS buyer, * FROM orders) d",
+    ).result;
+    expect(derived.columnsFor(derived.issues[0])).toEqual([
+      ...schema.columns.map((column) => column.name),
+      "buyer",
+    ]);
+    const joined = inspect(
+      "SELECT d.typo FROM (SELECT o.*, b.id AS other_id FROM orders o JOIN orders b ON o.id = b.id) d",
+    ).result;
+    expect(joined.columnsFor(joined.issues[0])).toEqual([
+      ...schema.columns.map((column) => column.name),
+      "other_id",
+    ]);
+    const copied = inspect(
+      "WITH c AS (SELECT id FROM orders) SELECT d.bad FROM (SELECT *, c.id AS extra FROM c) d",
+    ).result;
+    expect(copied.columnsFor(copied.issues[0])).toEqual(["id", "extra"]);
+    const chained = inspect(
+      "WITH c AS (SELECT *, id AS order_id FROM orders) SELECT d.bad FROM (SELECT * FROM c) d",
+    ).result;
+    expect(chained.columnsFor(chained.issues[0])).toEqual(columns);
+    const mysql = inspect(
+      "SELECT d.typo FROM (SELECT *, id AS order_id FROM orders) d",
+      "mysql",
+    ).result;
     expect(mysql.columnsFor(mysql.issues[0])).toEqual(columns);
   });
   test("keeps base-table corrections for references inside the query body", () => {

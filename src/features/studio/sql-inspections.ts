@@ -47,13 +47,13 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * shape. A CTE or derived table may join two or more flat SELECT arms with
  * UNION, INTERSECT, or EXCEPT, including ALL or DISTINCT. Its names come from
  * the anchor arm. Only a recursive arm can read that CTE. A full explicit
- * column list renames those outputs. A select list that is only `*` or
- * `alias.*` for one relation expands to that relation's columns. A partial
- * column list withholds.
- * shortcut: a star beside other select items, a schema-qualified star, a star
- * in a set operation, a top-level set operation, more arms than the relation
- * limit, and an arm that is not a flat SELECT withhold. A name owned by more
- * than one relation withholds the inspection. upgrade for those shapes.
+ * column list renames those outputs. A select list may be `*` or `alias.*`
+ * for one relation, alone or beside simple columns. That expands to the
+ * relation's columns plus those extra names. A partial column list withholds.
+ * shortcut: a schema-qualified star, a star in a set operation, a top-level
+ * set operation, more arms than the relation limit, and an arm that is not a
+ * flat SELECT withhold. A repeated output name, or a name owned by more than
+ * one relation, withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -163,6 +163,16 @@ export function prepareColumnInspection(
   let relations = 0;
   let visited = 0;
   const starRefs = new Set<MissingSqlColumn>();
+  const starExtras = new Map<MissingSqlColumn, readonly string[]>();
+  const rememberStar = (ref: MissingSqlColumn, binding: Binding) => {
+    if (!binding.starTable) return;
+    starRefs.add(ref);
+    if (binding.outputs?.length)
+      starExtras.set(
+        ref,
+        binding.outputs.map((output) => output.name),
+      );
+  };
   const projectedFields = (binding: Binding) => {
     if (!binding.outputOf) return {};
     if (binding.starTable) return { outputOf: binding.outputOf };
@@ -171,21 +181,23 @@ export function prepareColumnInspection(
       projectedColumns: binding.outputs!.map((output) => output.name),
     };
   };
-  function project(list: readonly SqlToken[], scope: Scope): QueryOutput[] {
-    if (word(list[0]) !== "SELECT") throw unsupported();
-    let at = 1;
-    if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
-    const from = list.findIndex((token) => word(token) === "FROM");
-    if (from < at) throw unsupported();
-    const select = list.slice(at, from);
-    if (!select.length || select.length > 2048) throw unsupported();
-    const outputs: QueryOutput[] = [];
+  function selectItems(select: readonly SqlToken[]): SqlToken[][] {
+    const items: SqlToken[][] = [];
     let start = 0;
     for (let i = 0; i <= select.length; i++) {
       if (i < select.length && select[i].text !== ",") continue;
       const item = select.slice(start, i);
       start = i + 1;
       if (!item.length) throw unsupported();
+      items.push(item);
+    }
+    return items;
+  }
+  function projectItems(items: readonly SqlToken[][], scope: Scope): QueryOutput[] {
+    if (items.length > 2048) throw unsupported();
+    const outputs: QueryOutput[] = [];
+    for (const raw of items) {
+      const item = [...raw];
       let alias: SqlToken | undefined;
       if (item.length >= 3 && word(item.at(-2)) === "AS" && nameLike(item.at(-1))) {
         alias = item.at(-1);
@@ -202,22 +214,37 @@ export function prepareColumnInspection(
       let sourceTable: TableRef;
       let source = written;
       if (item.length === 1) {
-        const bases = scope.filter((binding) => !binding.outputs);
+        const bases = scope.filter((binding) => !binding.outputs || binding.starTable);
         if (bases.length !== 1) throw unsupported();
-        sourceTable = bases[0].table;
+        const owner = bases[0];
+        const found = owner.outputs?.filter(
+          (output) => columnKey(output.name) === columnKey(written),
+        );
+        if (found && found.length > 1) throw unsupported();
+        if (found?.length === 1) {
+          sourceTable = found[0].table;
+          source = found[0].source;
+        } else if (owner.starTable) sourceTable = owner.starTable;
+        else if (owner.outputs) throw unsupported();
+        else sourceTable = owner.table;
       } else {
         checkName(item[0]);
         const owners = scope.filter((binding) => binding.key === key(item[0].text));
         if (owners.length !== 1) throw unsupported();
         const owner = owners[0];
-        if (owner.outputs) {
-          const found = owner.outputs.filter(
-            (output) => columnKey(output.name) === columnKey(written),
-          );
-          if (found.length !== 1) throw unsupported();
+        const found = owner.outputs?.filter(
+          (output) => columnKey(output.name) === columnKey(written),
+        );
+        if (found && found.length > 1) throw unsupported();
+        if (owner.outputs && !owner.starTable) {
+          if (found?.length !== 1) throw unsupported();
           sourceTable = found[0].table;
           source = found[0].source;
-        } else sourceTable = owner.table;
+        } else if (found?.length === 1) {
+          sourceTable = found[0].table;
+          source = found[0].source;
+        } else if (owner.starTable) sourceTable = owner.starTable;
+        else sourceTable = owner.table;
       }
       outputs.push({
         name: identifierValue(readIdentifier((alias ?? columnTok).text), context.engine),
@@ -226,7 +253,21 @@ export function prepareColumnInspection(
       });
       if (outputs.length > 256) throw unsupported();
     }
-    if (new Set(outputs.map((output) => columnKey(output.name))).size !== outputs.length)
+    return outputs;
+  }
+  function project(list: readonly SqlToken[], scope: Scope): QueryOutput[] {
+    if (word(list[0]) !== "SELECT") throw unsupported();
+    let at = 1;
+    if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
+    const from = list.findIndex((token) => word(token) === "FROM");
+    if (from < at) throw unsupported();
+    const select = list.slice(at, from);
+    if (!select.length || select.length > 2048) throw unsupported();
+    const outputs = projectItems(selectItems(select), scope);
+    if (
+      !outputs.length ||
+      new Set(outputs.map((output) => columnKey(output.name))).size !== outputs.length
+    )
       throw unsupported();
     return outputs;
   }
@@ -274,8 +315,11 @@ export function prepareColumnInspection(
         const nested = analyze(body, depth + 1, ctes);
         const star = singleStar(body, nested.bindings);
         if (star && "starTable" in star) {
-          absorb(nested, []);
-          return { starTable: star.starTable };
+          absorb(nested, star.outputs ?? []);
+          return {
+            starTable: star.starTable,
+            ...(star.outputs?.length ? { outputs: star.outputs } : {}),
+          };
         }
         const outputs = star && "outputs" in star ? star.outputs : project(body, nested.bindings);
         absorb(nested, outputs);
@@ -319,6 +363,7 @@ export function prepareColumnInspection(
               table: produced.starTable,
               outputOf,
               starTable: produced.starTable,
+              ...(produced.outputs?.length ? { outputs: produced.outputs } : {}),
             }
           : {
               key: key(alias.text),
@@ -354,7 +399,12 @@ export function prepareColumnInspection(
           outputOf: alias
             ? identifierValue(readIdentifier(alias.text), context.engine)
             : prior.outputOf,
-          ...(prior.starTable ? { starTable: prior.starTable } : { outputs: prior.outputs }),
+          ...(prior.starTable
+            ? {
+                starTable: prior.starTable,
+                ...(prior.outputs?.length ? { outputs: prior.outputs } : {}),
+              }
+            : { outputs: prior.outputs }),
         };
         remember(binding);
         return binding;
@@ -545,7 +595,7 @@ export function prepareColumnInspection(
         ...(owners.length === 1 ? projectedFields(owners[0]) : {}),
       };
       references.push(ref);
-      if (owners.length === 1 && owners[0].starTable) starRefs.add(ref);
+      if (owners.length === 1) rememberStar(ref, owners[0]);
       if (owners.length !== 1) unqualifiedOwners.set(ref, [...owners]);
     }
     function scan(raw: readonly SqlToken[], depth: number, scope: Scope, bare: boolean) {
@@ -603,7 +653,7 @@ export function prepareColumnInspection(
             ...projectedFields(binding),
           };
           references.push(ref);
-          if (binding.starTable) starRefs.add(ref);
+          rememberStar(ref, binding);
         }
         i += 2;
       }
@@ -710,35 +760,54 @@ export function prepareColumnInspection(
   const cteOwners = new Map<MissingSqlColumn, Binding[]>();
   const cteProofs: QueryOutput[] = [];
   const cteTables: TableRef[] = [];
-  /** A select list that is only `*` or `alias.*`. Mixed lists stay with project(). */
+  function isStarItem(item: readonly SqlToken[]) {
+    return (
+      (item.length === 1 && item[0].text === "*") ||
+      (item.length === 3 && item[1].text === "." && item[2].text === "*" && nameLike(item[0]))
+    );
+  }
+  /** One `*` or `alias.*`, optionally beside simple columns. Other shapes stay with project(). */
   function singleStar(
     list: readonly SqlToken[],
     scope: Scope,
-  ): { starTable: TableRef } | { outputs: QueryOutput[] } | null {
+  ): { starTable: TableRef; outputs?: QueryOutput[] } | { outputs: QueryOutput[] } | null {
     if (word(list[0]) !== "SELECT") return null;
     let at = 1;
     if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
     const from = list.findIndex((token) => word(token) === "FROM");
-    if (from < at) return null;
-    const select = list.slice(at, from);
-    let owner: Binding | undefined;
-    if (select.length === 1 && select[0].text === "*") {
-      if (scope.length !== 1) return null;
-      owner = scope[0];
-    } else if (
-      select.length === 3 &&
-      select[1].text === "." &&
-      select[2].text === "*" &&
-      nameLike(select[0])
-    ) {
-      const found = scope.filter((binding) => binding.key === key(select[0].text));
-      if (found.length !== 1) return null;
-      owner = found[0];
-    } else return null;
-    if (owner.outputs && owner.outputs.length > 256) throw unsupported();
-    if (owner.starTable) return { starTable: owner.starTable };
-    if (owner.outputs) return { outputs: owner.outputs.map((output) => ({ ...output })) };
-    return { starTable: owner.table };
+    if (from < at || from - at > 2048) return null;
+    const items = selectItems(list.slice(at, from));
+    const stars = items.filter(isStarItem);
+    if (stars.length === 0) return null;
+    if (stars.length > 1) throw unsupported();
+    const star = stars[0];
+    const owner =
+      star.length === 1
+        ? scope.length === 1
+          ? scope[0]
+          : undefined
+        : scope.filter((binding) => binding.key === key(star[0].text)).length === 1
+          ? scope.find((binding) => binding.key === key(star[0].text))
+          : undefined;
+    if (!owner) return null;
+    const extras = projectItems(
+      items.filter((item) => item !== star),
+      scope,
+    );
+    const carried = owner.outputs?.map((output) => ({ ...output })) ?? [];
+    if (owner.starTable || !owner.outputs) {
+      const outputs = [...(owner.starTable ? carried : []), ...extras];
+      if (outputs.length > 256) throw unsupported();
+      if (new Set(outputs.map((output) => columnKey(output.name))).size !== outputs.length)
+        throw unsupported();
+      const starTable = owner.starTable ?? owner.table;
+      return outputs.length ? { starTable, outputs } : { starTable };
+    }
+    const outputs = [...carried, ...extras];
+    if (outputs.length > 256) throw unsupported();
+    if (new Set(outputs.map((output) => columnKey(output.name))).size !== outputs.length)
+      throw unsupported();
+    return { outputs };
   }
   const recordCte = (analyzed: Analysis, extra: QueryOutput[]) => {
     cteReferences.push(...analyzed.references);
@@ -768,8 +837,9 @@ export function prepareColumnInspection(
       if (star && "starTable" in star) {
         // shortcut: an explicit column list cannot rename a star until its width is known.
         if (def.columns) throw unsupported();
-        recordCte(analyzed, []);
+        recordCte(analyzed, star.outputs ?? []);
         starTable = star.starTable;
+        outputs = star.outputs;
       } else {
         const projected = rename(
           star && "outputs" in star ? star.outputs : project(def.body, analyzed.bindings),
@@ -805,7 +875,7 @@ export function prepareColumnInspection(
       label: def.name.text,
       table: starTable ?? outputs![0].table,
       outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
-      ...(starTable ? { starTable } : { outputs }),
+      ...(starTable ? { starTable, ...(outputs?.length ? { outputs } : {}) } : { outputs }),
     });
   }
   const outer = analyze(leading ? leading.rest : tokens, 0, ctes);
@@ -859,7 +929,9 @@ export function prepareColumnInspection(
         const names = columns.get(tableKey(ref.table));
         if (!names?.length)
           throw new Error("Complete table metadata is unavailable; no column claim was made.");
-        ref.projectedColumns = names;
+        const combined = [...names, ...(starExtras.get(ref) ?? [])];
+        if (new Set(combined.map(columnKey)).size !== combined.length) throw unsupported();
+        ref.projectedColumns = combined;
       }
       for (const proof of proofs)
         if (!existing.get(tableKey(proof.table))?.has(columnKey(proof.source)))
@@ -869,11 +941,16 @@ export function prepareColumnInspection(
       const issues = references.filter((ref) => {
         const owners = unqualifiedOwners.get(ref);
         if (owners) {
-          const matches = owners.filter((owner) =>
-            owner.outputs
-              ? owner.outputs.some((output) => columnKey(output.name) === columnKey(ref.name))
-              : existing.get(tableKey(owner.table))!.has(columnKey(ref.name)),
-          );
+          const matches = owners.filter((owner) => {
+            const named = owner.outputs?.some(
+              (output) => columnKey(output.name) === columnKey(ref.name),
+            );
+            if (owner.starTable)
+              return !!named || !!existing.get(tableKey(owner.table))?.has(columnKey(ref.name));
+            return owner.outputs
+              ? !!named
+              : !!existing.get(tableKey(owner.table))?.has(columnKey(ref.name));
+          });
           if (matches.length !== 1)
             throw new Error(
               "An unqualified column does not resolve to one relation; no column claim was made.",
