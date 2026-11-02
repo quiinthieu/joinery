@@ -111,7 +111,11 @@ describe("bounded qualified-column inspections", () => {
     "WITH c AS (SELECT * FROM orders UNION ALL SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT *, id AS extra FROM orders UNION ALL SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c(id) AS (SELECT * FROM orders UNION ALL SELECT * FROM orders) SELECT c.id FROM c",
-    "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.id FROM c",
+    "WITH c AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.id FROM c",
+    "WITH RECURSIVE c(id) AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.id FROM c",
+    "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT id FROM c) SELECT c.id FROM c",
+    "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT *, id FROM c) SELECT c.id FROM c",
+    "SELECT d.id FROM (SELECT * FROM orders UNION ALL SELECT * FROM d) d",
     "WITH c(id) AS (SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT *, * FROM orders) SELECT c.id FROM c",
     "WITH c(id) AS (SELECT *, id AS order_id FROM orders) SELECT c.typo FROM c",
@@ -631,6 +635,68 @@ describe("bounded qualified-column inspections", () => {
       prepareColumnInspection(
         stateOf(
           "WITH c AS (SELECT * FROM orders UNION ALL SELECT * FROM customers) SELECT c.id FROM c",
+        ),
+        7,
+        {
+          ...context(),
+          tables: [
+            ...context().tables,
+            { table: customers, kind: "table", estimatedRows: null, totalBytes: null },
+          ],
+          unqualifiedTables: [table, customers],
+        },
+      ),
+    ).toThrow(/direct-table SELECT/);
+  });
+  test("inspects a recursive star of the same relation", () => {
+    const columns = schema.columns.map((column) => column.name);
+    const star = inspect(
+      "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.typo FROM c",
+    ).result;
+    expect(star.tables).toEqual([table]);
+    expect(star.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "typo"]]);
+    expect(star.columnsFor(star.issues[0])).toEqual(columns);
+    expect(
+      inspect(
+        "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT c.* FROM c) SELECT c.id FROM c",
+      ).result.issues,
+    ).toEqual([]);
+    const alias = inspect(
+      "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT x.* FROM c x) SELECT c.typo FROM c",
+    ).result;
+    expect(alias.columnsFor(alias.issues[0])).toEqual(columns);
+    const inside = inspect(
+      "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT * FROM c WHERE c.typo = 1) SELECT c.id FROM c",
+    ).result;
+    expect(inside.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["c", "typo"]]);
+    expect(inside.columnsFor(inside.issues[0])).toEqual(columns);
+    const qualified = inspect(
+      "WITH RECURSIVE c AS (SELECT public.orders.* FROM public.orders UNION ALL SELECT * FROM c) SELECT c.typo FROM c",
+    ).result;
+    expect(qualified.columnsFor(qualified.issues[0])).toEqual(columns);
+    const three = inspect(
+      "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT * FROM c UNION ALL SELECT c.* FROM c) SELECT c.typo FROM c",
+    ).result;
+    expect(three.columnsFor(three.issues[0])).toEqual(columns);
+    const quoted = inspect(
+      'WITH RECURSIVE c AS (SELECT "public"."orders".* FROM "public"."orders" EXCEPT SELECT c.* FROM c) SELECT c.typo FROM c',
+    ).result;
+    expect(quoted.columnsFor(quoted.issues[0])).toEqual(columns);
+    const mysql = inspect(
+      "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.typo FROM c",
+      "mysql",
+    ).result;
+    expect(mysql.columnsFor(mysql.issues[0])).toEqual(columns);
+    const system = inspect(
+      "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT * FROM c) SELECT c.ctid FROM c",
+    ).result;
+    expect(system.issues.map((issue) => issue.name)).toEqual(["ctid"]);
+    expect(system.columnsFor(system.issues[0])).toEqual(columns);
+    const customers = { schema: "public", name: "customers" };
+    expect(() =>
+      prepareColumnInspection(
+        stateOf(
+          "WITH RECURSIVE c AS (SELECT * FROM orders UNION ALL SELECT * FROM c UNION ALL SELECT * FROM customers) SELECT c.id FROM c",
         ),
         7,
         {

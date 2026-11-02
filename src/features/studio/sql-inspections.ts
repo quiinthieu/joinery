@@ -53,13 +53,13 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * expands only when FROM writes that same name and the list is only that
  * star. A partial column list withholds. Every arm of a set operation may
  * be a lone `*`, `alias.*`, or unaliased `schema.table.*` of that same
- * relation. The offered names are that relation's columns.
+ * relation, including a later arm of a recursive CTE. The offered names are
+ * that relation's columns.
  * shortcut: a schema-qualified star beside other items, a star beside
- * columns or of another relation inside a set operation, a recursive star,
- * a top-level set operation, more arms than the relation limit, and an arm
- * that is not a flat SELECT withhold. A repeated output name, or a name
- * owned by more than one relation, withholds the inspection. upgrade for
- * those shapes.
+ * columns or of another relation inside a set operation, a top-level set
+ * operation, more arms than the relation limit, and an arm that is not a
+ * flat SELECT withhold. A repeated output name, or a name owned by more
+ * than one relation, withholds the inspection. upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -921,11 +921,20 @@ export function prepareColumnInspection(
       const anchorAnalyzed = analyze(arms[0], 0, ctes);
       const anchorArm = armOutput(arms[0], anchorAnalyzed.bindings);
       if (anchorArm.kind === "bare") {
-        // shortcut: a recursive star and an explicit column list withhold until the width is known.
-        if (def.columns || recursiveWith) throw unsupported();
+        // shortcut: an explicit column list cannot rename a star until its width is known.
+        if (def.columns) throw unsupported();
         recordCte(anchorAnalyzed, []);
+        const scope = [...ctes];
+        if (recursiveWith)
+          scope.push({
+            key: key(def.name.text),
+            label: def.name.text,
+            table: anchorArm.starTable,
+            outputOf: identifierValue(readIdentifier(def.name.text), context.engine),
+            starTable: anchorArm.starTable,
+          });
         for (const arm of arms.slice(1)) {
-          const nested = analyze(arm, 0, ctes);
+          const nested = analyze(arm, 0, scope);
           const later = armOutput(arm, nested.bindings);
           recordCte(nested, []);
           if (later.kind !== "bare" || tableKey(later.starTable) !== tableKey(anchorArm.starTable))
