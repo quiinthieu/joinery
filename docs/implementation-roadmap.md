@@ -586,11 +586,13 @@ R6 remains partial, local, unmerged and unreleased.
    Prior combined-source qualification passed all 66 ignored local SQL/Redis/SSH
    fixtures and a normal ad-hoc macOS bundle on `b80b6c7`; the full 86-flow browser
    suite passed on `db5cd1b`.
-   Next: unqualified column inference and semantic template placement, then
-   remaining R5/R6/R7/R8 scope. One non-recursive CTE or derived query can now
-   be inspected from its projected names (`15089a1`). Multiple CTEs, recursive
-   queries and stars still withhold. Context-aware templates are local on
-   `51ad451`. Preserve conservative ambiguity handling, every
+   Next: semantic template placement, then unqualified names outside the select
+   list and the remaining R5/R6/R7/R8 scope. A top-level select-list name is
+   inspected when one relation owns it. Several owners withhold the claim.
+   One non-recursive CTE or derived query can be inspected from its projected
+   names (`15089a1`). Multiple CTEs, recursive queries and stars still withhold.
+   Context-aware templates are local on `51ad451`. Preserve conservative ambiguity
+   handling, every
    preparation/approval path and exact editor origins. Keep the earlier startup
    flake open until its cause is known.
    Application merge, release and installation remain separate authorized gates.

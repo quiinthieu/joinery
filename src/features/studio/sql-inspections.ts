@@ -45,8 +45,9 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
 /**
  * Flat direct-table SELECTs, plus one non-recursive CTE or derived table whose
  * body is that shape. Stars, column lists, recursive and multiple CTEs withhold.
- * shortcut: nested output projection is proved only through simple column names;
- * upgrade for multiple CTEs, recursive queries, and unqualified inference.
+ * shortcut: unqualified names are read only as top-level select-list items;
+ * a name owned by more than one relation withholds the inspection.
+ * upgrade for WHERE/ORDER/GROUP names, function arguments, and multiple CTEs.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -116,12 +117,15 @@ export function prepareColumnInspection(
   }
   interface Binding {
     key: string;
+    /** Alias or table text, used when an unqualified name has one owner. */
+    label: string;
     table: TableRef;
     outputOf?: string;
     outputs?: QueryOutput[];
   }
   interface Analysis {
     references: MissingSqlColumn[];
+    unqualifiedOwners: Map<MissingSqlColumn, Binding[]>;
     proofs: QueryOutput[];
     tables: TableRef[];
     bindings: Binding[];
@@ -215,6 +219,7 @@ export function prepareColumnInspection(
     if (from < 0) throw unsupported();
     const bindings: Scope = [];
     const references: MissingSqlColumn[] = [];
+    const unqualifiedOwners = new Map<MissingSqlColumn, Binding[]>();
     const proofs: QueryOutput[] = [];
     const nestedTables: TableRef[] = [];
     const conditions: { tokens: SqlToken[]; scope: Scope }[] = [];
@@ -248,9 +253,11 @@ export function prepareColumnInspection(
         const outputs = project(body, nested.bindings);
         nestedTables.push(...nested.tables);
         references.push(...nested.references);
+        for (const [ref, owners] of nested.unqualifiedOwners) unqualifiedOwners.set(ref, owners);
         proofs.push(...nested.proofs, ...outputs);
         const binding: Binding = {
           key: key(alias.text),
+          label: alias.text,
           table: outputs[0].table,
           outputOf: identifierValue(readIdentifier(alias.text), context.engine),
           outputs,
@@ -272,8 +279,10 @@ export function prepareColumnInspection(
       if (explicitAlias && !alias) throw unsupported();
       for (const token of [...relation, ...(alias ? [alias] : [])]) checkName(token);
       if (cte && relation.length === 1 && key(relation[0].text) === cte.key) {
+        const shown = alias ?? relation[0];
         const binding: Binding = {
-          key: key((alias ?? relation[0]).text),
+          key: key(shown.text),
+          label: shown.text,
           table: cte.table,
           outputOf: alias
             ? identifierValue(readIdentifier(alias.text), context.engine)
@@ -296,7 +305,8 @@ export function prepareColumnInspection(
         throw new Error(
           "A unique direct base table could not be resolved; no column claim was made.",
         );
-      const binding = { key: key((alias ?? relation.at(-1))!.text), table };
+      const shown = alias ?? relation.at(-1)!;
+      const binding = { key: key(shown.text), label: shown.text, table };
       remember(binding);
       return binding;
     }
@@ -461,8 +471,47 @@ export function prepareColumnInspection(
     scan(tokens.slice(1, from), 0, bindings);
     for (const condition of conditions) scan(condition.tokens, 0, condition.scope);
     scan(tokens.slice(next), 0, bindings);
+    // Top-level select-list names only. Expressions, stars and other clauses stay out.
+    let selectAt = 1;
+    if (word(tokens[1]) === "DISTINCT" || word(tokens[1]) === "ALL") selectAt = 2;
+    const select = tokens.slice(selectAt, from);
+    let itemStart = 0;
+    for (let i = 0; i <= select.length; i++) {
+      if (i < select.length && select[i].text !== ",") continue;
+      const item = select.slice(itemStart, i);
+      itemStart = i + 1;
+      if (!item.length) throw unsupported();
+      let column = item;
+      if (item.length >= 3 && word(item.at(-2)) === "AS" && nameLike(item.at(-1)))
+        column = item.slice(0, -2);
+      else if (item.length >= 2 && nameLike(item.at(-1)) && item.at(-2)?.text !== ".")
+        column = item.slice(0, -1);
+      if (column.length !== 1 || !nameLike(column[0])) continue;
+      const token = column[0];
+      if (context.engine === "mysql" && readIdentifier(token.text).value.toLowerCase() === "_rowid")
+        throw unsupported();
+      checkName(token);
+      if (!bindings.length) throw unsupported();
+      const ref: MissingSqlColumn = {
+        name: identifierValue(readIdentifier(token.text), context.engine),
+        qualifier: bindings.length === 1 ? bindings[0].label : "",
+        table: bindings[0].table,
+        from: token.from,
+        to: token.to,
+        line: state.doc.lineAt(token.from).number,
+        ...(bindings.length === 1 && bindings[0].outputs
+          ? {
+              outputOf: bindings[0].outputOf,
+              projectedColumns: bindings[0].outputs.map((output) => output.name),
+            }
+          : {}),
+      };
+      references.push(ref);
+      if (bindings.length !== 1) unqualifiedOwners.set(ref, [...bindings]);
+    }
     return {
       references,
+      unqualifiedOwners,
       proofs,
       bindings,
       tables: [
@@ -497,6 +546,7 @@ export function prepareColumnInspection(
   const cte = leading
     ? {
         key: key(leading.name.text),
+        label: leading.name.text,
         table: leadingOutputs[0].table,
         outputOf: identifierValue(readIdentifier(leading.name.text), context.engine),
         outputs: leadingOutputs,
@@ -504,6 +554,10 @@ export function prepareColumnInspection(
     : undefined;
   const outer = analyze(leading ? leading.rest : tokens, 0, cte);
   const references = [...(body?.references ?? []), ...outer.references];
+  const unqualifiedOwners = new Map([
+    ...(body?.unqualifiedOwners ?? []),
+    ...outer.unqualifiedOwners,
+  ]);
   const proofs = [...(body?.proofs ?? []), ...leadingOutputs, ...outer.proofs];
   const tables = [
     ...new Map(
@@ -555,11 +609,24 @@ export function prepareColumnInspection(
           throw new Error(
             "A projected column is not in the complete table metadata; no column claim was made.",
           );
-      const issues = references.filter((ref) =>
-        ref.projectedColumns
+      const issues = references.filter((ref) => {
+        const owners = unqualifiedOwners.get(ref);
+        if (owners) {
+          const matches = owners.filter((owner) =>
+            owner.outputs
+              ? owner.outputs.some((output) => columnKey(output.name) === columnKey(ref.name))
+              : existing.get(tableKey(owner.table))!.has(columnKey(ref.name)),
+          );
+          if (matches.length !== 1)
+            throw new Error(
+              "An unqualified column does not resolve to one relation; no column claim was made.",
+            );
+          return false;
+        }
+        return ref.projectedColumns
           ? !ref.projectedColumns.some((name) => columnKey(name) === columnKey(ref.name))
-          : !existing.get(tableKey(ref.table))!.has(columnKey(ref.name)),
-      );
+          : !existing.get(tableKey(ref.table))!.has(columnKey(ref.name));
+      });
       const columnsFor = (issue: MissingSqlColumn) => {
         if (!issues.includes(issue))
           throw new Error("Choose a column from this inspection's table metadata.");

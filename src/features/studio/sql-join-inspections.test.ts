@@ -206,6 +206,21 @@ describe("ordered direct-table JOIN column inspections", () => {
       ),
     ).toThrow(/metadata is unavailable/);
   });
+  test("resolves an unqualified select column only when one joined relation owns it", () => {
+    const unique = inspect(
+      "SELECT customer_only FROM orders o JOIN customers c ON o.id = c.id",
+    ).result;
+    expect(unique.issues).toEqual([]);
+    expect(unique.checked).toBe(3);
+    const missing = stateOf("SELECT typo FROM orders o JOIN customers c ON o.id = c.id");
+    expect(() =>
+      prepareColumnInspection(missing, 7, context()).finish(missing, schemas.slice(0, 2)),
+    ).toThrow(/unqualified column/);
+    const ambiguous = stateOf("SELECT id FROM orders o JOIN customers c ON o.customer_id = c.id");
+    expect(() =>
+      prepareColumnInspection(ambiguous, 7, context()).finish(ambiguous, schemas.slice(0, 2)),
+    ).toThrow(/unqualified column/);
+  });
   test("inspects a derived JOIN operand by its projected names", () => {
     const { result } = inspect(
       "SELECT a.id, c.customer_only FROM orders a JOIN (SELECT id FROM customers) c ON a.id = c.id",

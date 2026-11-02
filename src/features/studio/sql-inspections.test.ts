@@ -101,7 +101,6 @@ describe("bounded qualified-column inspections", () => {
     "WITH c AS (SELECT id FROM orders), d AS (SELECT id FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT * FROM orders) SELECT c.id FROM c",
     "WITH c AS (SELECT id FROM orders a JOIN orders b ON a.id = b.id) SELECT c.id FROM c",
-    "SELECT id FROM (SELECT id FROM orders) d",
   ])("withholds unsupported or unresolved shapes: %s", (doc) => {
     const state = stateOf(doc);
     expect(() => prepareColumnInspection(state, 7, context())).toThrow();
@@ -147,6 +146,37 @@ describe("bounded qualified-column inspections", () => {
   test("recognizes PostgreSQL system columns and withholds MySQL implicit row identifiers", () => {
     expect(inspect("SELECT o.ctid, o.xmin, o.tableoid FROM orders o").result.issues).toEqual([]);
     const state = stateOf("SELECT o._rowid FROM orders o", "mysql");
+    expect(() => prepareColumnInspection(state, 7, context("mysql"))).toThrow(
+      /direct-table SELECT/,
+    );
+  });
+  test("inspects one unqualified select-list column against its single owner", () => {
+    const bare = inspect("SELECT typo FROM orders").result;
+    expect(bare.issues.map((issue) => [issue.qualifier, issue.name, issue.outputOf])).toEqual([
+      ["orders", "typo", undefined],
+    ]);
+    expect(bare.columnsFor(bare.issues[0])).toContain("customer_id");
+    expect(bare.preview(stateOf("SELECT typo FROM orders"), bare.issues[0], "id").insert).toBe(
+      '"id"',
+    );
+    const aliased = inspect("SELECT typo AS keep FROM orders o").result;
+    expect(aliased.issues.map((issue) => issue.qualifier)).toEqual(["o"]);
+    expect(
+      stateOf("SELECT typo AS keep FROM orders o")
+        .update({
+          changes: aliased.preview(
+            stateOf("SELECT typo AS keep FROM orders o"),
+            aliased.issues[0],
+            "id",
+          ),
+        })
+        .state.doc.toString(),
+    ).toBe('SELECT "id" AS keep FROM orders o');
+    const derived = inspect("SELECT typo FROM (SELECT id FROM orders) d").result;
+    expect(derived.issues.map((issue) => [issue.outputOf, issue.name])).toEqual([["d", "typo"]]);
+    expect(derived.columnsFor(derived.issues[0])).toEqual(["id"]);
+    expect(inspect("SELECT id FROM (SELECT id FROM orders) d").result.issues).toEqual([]);
+    const state = stateOf("SELECT _rowid FROM orders", "mysql");
     expect(() => prepareColumnInspection(state, 7, context("mysql"))).toThrow(
       /direct-table SELECT/,
     );

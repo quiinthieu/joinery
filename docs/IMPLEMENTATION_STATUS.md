@@ -2268,6 +2268,19 @@ Code `15089a180156477b9103411e79d96807e3a71e79` checks qualified columns in one 
 | Validate | `pnpm validate` passed before the two-line end-to-end predicate in `f286642`: 409 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run. Prettier was checked again after that predicate |
 | Not executed | The owner-private Site was not updated. This note does not claim the follow-up integration run is green |
 | CI | `3eb3181` was pushed on PR #31. Integration run `41431916649` failed the leftover end-to-end assertion that `WITH c AS (SELECT id …) SELECT c.typo FROM c` is unsupported. Check jobs on that revision passed. The column-inspection spec now expects the projection dialog for that query, still offers only `id`, and still expects two CTEs to withhold without another metadata read |
-| Open / next | Unqualified column inference, semantic template placement, multiple and recursive CTEs, then remaining R5/R6/R7/R8 |
+| Open / next | See the unqualified select-list section below |
 
 Fetched `origin/main` remains `a0ba1a6`. Pushed on `feat/estimated-query-plans`, unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: unqualified select-list columns (2 November 2026)
+
+A top-level name in the select list is checked against the single relation in scope. That relation may be a base table, or the output of one supported CTE or derived query. The correction replaces that name and leaves an alias in place. When several relations are in scope, the name is kept only when exactly one of them owns it. Zero or several owners withhold the inspection, and no column claim is made. Names in WHERE, ORDER BY, GROUP BY, HAVING and function arguments are still ignored. Multiple CTEs, recursive queries and stars still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` and `sql-join-inspections.test.ts` cover one table, an aliased table, a derived output, a present projected name, MySQL `_rowid`, a joined column owned by one table, and joined names that match none or several relations |
+| Validate | `pnpm validate` passed: 410 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated. Integration on `d2d0cd1` / `ce7cdaf` is not claimed green |
+| Open / next | Semantic template placement, unqualified names outside the select list, multiple and recursive CTEs, then remaining R5/R6/R7/R8 |
+
+Fetched `origin/main` remains `a0ba1a6`. Local until this revision is pushed. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
