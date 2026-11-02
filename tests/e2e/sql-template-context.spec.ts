@@ -119,8 +119,8 @@ for (const engine of ["PostgreSQL", "MySQL", "MariaDB"] as const) {
         .click();
     };
     const run = async () => {
-      const result = page.waitForResponse((response) =>
-        /\/result\/[^?]+\?start=0&/.test(response.url()),
+      const result = page.waitForResponse(
+        (response) => response.ok() && /\/result\/[^?]+\?start=0&/.test(response.url()),
       );
       await page.getByRole("button", { name: "Run all statements", exact: true }).click();
       await expect(page.locator(".result-footer")).toContainText("1 rows");

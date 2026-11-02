@@ -78,7 +78,9 @@ for (const [engine, port] of [
       await placeCaret(editor, original.replace("WITH ", "WITH |"));
       const run = async () => {
         const response = page.waitForResponse((r) => r.url().endsWith("/rpc/execute_plan"));
-        const result = page.waitForResponse((r) => /\/result\/[^?]+\?start=0&/.test(r.url()));
+        const result = page.waitForResponse(
+          (r) => r.ok() && /\/result\/[^?]+\?start=0&/.test(r.url()),
+        );
         await editor.press("ControlOrMeta+Enter");
         expect((await response).ok()).toBe(true);
         await expect(page.locator(".result-footer")).toContainText("2 rows");
