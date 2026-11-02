@@ -2632,9 +2632,22 @@ A full explicit CTE column list renames a star when the list matches that star's
 | Unit | `sql-inspections.test.ts` covers a lone star, a star beside an extra column, a set operation, a recursive arm, a chained star, a quoted name, and MySQL. A shorter list and a longer list still withhold |
 | Validate | `pnpm validate` passed: 461 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star beside other items, a partial column list, a top-level set operation, and other template expressions remain open |
+| Open / next | See the top-level set operation section below |
 
 Fetched base is `c28ddcc` on `feat/set-star-width`. `origin/main` is `59a80a8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: top-level set operation (3 November 2026)
+
+A top-level UNION, INTERSECT, or EXCEPT of flat SELECT arms uses the same width check as a CTE set operation. A reference inside an arm resolves to that arm's tables. There is no combined output name. A trailing ORDER BY or LIMIT stays in the last arm. A parenthesized arm, a different extra count on the same relation, a schema-qualified star beside columns, a partial column list, and other template expressions still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers UNION, INTERSECT, EXCEPT, a trailing ORDER BY, a CTE reference, and a star whose width matches. A parenthesized arm, a different column count, and a width mismatch still withhold |
+| Validate | `pnpm validate` passed: 466 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star beside other items, a partial column list, and other template expressions remain open |
+
+Fetched `origin/main` is `fee37a7`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
 ## R5 follow-up: template case expressions (3 November 2026)
 
