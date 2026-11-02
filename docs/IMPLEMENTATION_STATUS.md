@@ -2593,9 +2593,22 @@ A recursive CTE may use a lone `*`, `alias.*`, or unaliased `schema.table.*` on 
 | Unit | `sql-inspections.test.ts` covers a recursive `UNION ALL`, `alias.*`, a star of the CTE, a schema-qualified anchor, three arms, a quoted `EXCEPT`, and MySQL. An explicit column list, a later projection, a non-recursive self-reference, and another relation still withhold |
 | Validate | `pnpm validate` passed: 463 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A star beside columns inside a set operation and other template expressions remain open |
+| Open / next | See the star beside columns in a set operation section below |
 
 Fetched `origin/main` is `c0bc8c2`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: star beside columns in a set operation (3 November 2026)
+
+Every arm of a CTE or derived-table set operation may add the same number of simple columns beside a lone `*` or `alias.*` of the same relation. The offered names are that relation's columns plus the anchor arm's extra names. A recursive arm may use that shape, including a star of the CTE. A different extra count, another relation, a schema-qualified star beside columns, a later projection, and an explicit column list still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers `UNION ALL`, `EXCEPT` with `alias.*`, two extra columns, a recursive star of the CTE, three arms, and MySQL. A different extra count, a later projection, a non-recursive self-reference, an explicit column list, and another relation still withhold |
+| Validate | `pnpm validate` passed: 468 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A star of another relation inside a set operation and other template expressions remain open |
+
+Fetched base is `b234c56` on `feat/recursive-star`. `origin/main` is `c0bc8c2`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
 ## R5 follow-up: template case expressions (3 November 2026)
 
