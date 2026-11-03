@@ -2674,3 +2674,20 @@ Fetched `origin/main` is `6158948`. Unmerged, unreleased and not installed. Prev
 | Open / next | Remaining R5/R6/R7/R8. A star beside other select items, a star in a set operation, a schema-qualified star, and other template expressions remain open |
 
 Fetched `origin/main` is `3887e39`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R7 slice 1: read-only ER diagrams (3 November 2026)
+
+`schema_diagram(sessionId, schema)` returns one schema's relations, readable columns and outbound foreign keys in a single metadata call. PostgreSQL reads `pg_class`, `pg_attribute` and `pg_constraint`, lists only columns with column-level `SELECT`, omits partitions and cloned partition constraints, and withholds a constraint when any of its columns is unreadable (`restricted`). MySQL/MariaDB reads `INFORMATION_SCHEMA` for the named database. Bounds: 500 relations, 20,000 columns and 20,000 key-column rows; anything cut is dropped whole and reported as `truncated`. Targets in another schema appear as external nodes. Snowflake and Redis return `Unsupported`. The command is enrolled in the capability allowlist, test harness and native disconnected-session guard. It never prepares or executes editor SQL.
+
+The diagram tab uses a deterministic layered layout: referenced tables to the left, cycles broken by name order, self-references drawn as loops. It offers a table filter that keeps direct neighbors, zoom, roving keyboard focus (arrows, Home/End) and Enter or click to open a table. Open it from a schema heading in the explorer or from **Open schema diagram** in the command palette.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | Two Rust `SchemaDiagram::assemble` tests cover composite grouping, cross-schema targets, withheld partial constraints and all three bounds. `er-layout.test.ts` (5) and `DiagramView.test.tsx` (3) cover layering, determinism under reordering, cycles, self-references, external nodes, column anchors, the visible-column cap, filtering, truncation disclosure, keyboard traversal and Enter-to-open, and an unsupported-engine error |
+| Fixtures | `schema_diagram_groups_composite_keys_and_hides_unreadable_columns` (PostgreSQL 18, including a role with `SELECT (note_order)` only) and `schema_diagram_groups_composite_keys_on_mysql_and_mariadb` (MySQL 8.4 and MariaDB 11.4) pass on task-owned Compose project `joinery-r7` |
+| Browser | `schema-diagram.spec.ts`: two flows pass against the real Rust service on PostgreSQL, MySQL and MariaDB, with no page errors |
+| Validate | `pnpm validate`: 476 frontend tests / 41 files, 158 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun for this slice. The owner-private Site was not updated |
+| Open / next | Diagram image export, manual placement, saved diagrams and notation options. Next slice: A05 lock/wait inspection with A04 session monitoring |
+
+Branch `feat/er-diagram` from `origin/main` `a0a6df8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

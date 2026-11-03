@@ -11,6 +11,7 @@ import {
   History,
   Layers,
   ListTree,
+  Network,
   Pencil,
   Plus,
   Search,
@@ -113,6 +114,7 @@ export function Sidebar({
           openQuery,
           openUtility,
           openObject,
+          openDiagram,
         }) => ({
           bootstrap,
           sessions,
@@ -127,6 +129,7 @@ export function Sidebar({
           openQuery,
           openUtility,
           openObject,
+          openDiagram,
         }),
       ),
     ),
@@ -427,18 +430,32 @@ export function Sidebar({
             const schemaOpen = isSchemaExpanded(group.schema);
             return (
               <div className="schema-group" key={group.schema}>
-                <button
-                  type="button"
-                  data-tree-node={`schema:${group.schema}`}
-                  className="schema-heading"
-                  aria-expanded={schemaOpen}
-                  onClick={() => setSchemaOpen(group.schema, !schemaOpen)}
-                >
-                  {schemaOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  <Database size={13} />
-                  <span>{group.schema}</span>
-                  <span className="schema-count">{group.totalCount}</span>
-                </button>
+                <div className="schema-heading-row">
+                  <button
+                    type="button"
+                    data-tree-node={`schema:${group.schema}`}
+                    className="schema-heading"
+                    aria-expanded={schemaOpen}
+                    onClick={() => setSchemaOpen(group.schema, !schemaOpen)}
+                  >
+                    {schemaOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    <Database size={13} />
+                    <span>{group.schema}</span>
+                    <span className="schema-count">{group.totalCount}</span>
+                  </button>
+                  {(selected.engine === "postgres" || selected.engine === "mysql") && (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      className="schema-diagram"
+                      aria-label={`Open schema diagram for ${group.schema}`}
+                      title="Open schema diagram"
+                      onClick={() => state.openDiagram(selected.id, group.schema)}
+                    >
+                      <Network size={12} />
+                    </button>
+                  )}
+                </div>
                 {schemaOpen &&
                   group.categories.map((cat) => {
                     const catOpen = isCategoryExpanded(cat.key);

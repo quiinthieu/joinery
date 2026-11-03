@@ -214,6 +214,14 @@ async fn rpc(
                     )
                     .await?
             ),
+            "schema_diagram" => json!(
+                studio
+                    .schema_diagram(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg::<String>(&args, "schema")?
+                    )
+                    .await?
+            ),
             "prepare_browse_table" => json!(
                 studio
                     .prepare_browse(

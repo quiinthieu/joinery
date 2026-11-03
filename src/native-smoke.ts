@@ -79,6 +79,13 @@ export async function runNativeSmoke() {
         },
       ],
       [
+        "schema_diagram",
+        {
+          sessionId: "missing-native-fixture",
+          schema: "public",
+        },
+      ],
+      [
         "database_objects",
         {
           sessionId: "missing-native-fixture",

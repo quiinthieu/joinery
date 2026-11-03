@@ -227,6 +227,15 @@ pub async fn referencing_foreign_keys(
 }
 
 #[tauri::command]
+pub async fn schema_diagram(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    schema: String,
+) -> AppResult<SchemaDiagram> {
+    studio.schema_diagram(&session_id, &schema).await
+}
+
+#[tauri::command]
 pub async fn prepare_browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

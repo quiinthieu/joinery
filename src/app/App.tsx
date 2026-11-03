@@ -23,6 +23,7 @@ import {
   History,
   Keyboard,
   LockKeyhole,
+  Network,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
@@ -40,6 +41,7 @@ import { Sidebar } from "../features/connections/Sidebar";
 import { ConnectionDialog, ConnectDialog } from "../features/connections/ConnectionDialog";
 import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
+import { DiagramView } from "../features/diagram/DiagramView";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
 import { ExportDialog } from "../features/grid/ExportDialog";
 import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
@@ -1111,6 +1113,8 @@ export function App() {
                   <History size={13} />
                 ) : tab.kind === "processes" ? (
                   <Activity size={13} />
+                ) : tab.kind === "diagram" ? (
+                  <Network size={13} />
                 ) : (
                   <Gauge size={13} />
                 )}
@@ -1157,6 +1161,16 @@ export function App() {
               <HistoryView />
             ) : current.kind === "processes" ? (
               <ProcessesView tab={current} onCancel={(process) => void cancelProcess(process)} />
+            ) : current.kind === "diagram" ? (
+              <DiagramView
+                tab={current}
+                onOpenTable={(table) => {
+                  if (!current.connectionId) return;
+                  void state
+                    .openTable(current.connectionId, table)
+                    .catch((error) => state.notify(messageOf(error)));
+                }}
+              />
             ) : (
               <Workbench
                 tab={current}
@@ -1776,6 +1790,24 @@ export function App() {
               icon: Gauge,
               action: () => state.openUtility("benchmark"),
             },
+            ...(() => {
+              const connectionId = current?.connectionId ?? state.selectedConnectionId;
+              if (!connectionId || !state.sessions[connectionId]) return [];
+              const schemas = [
+                ...new Set((state.catalog[connectionId] ?? []).map((t) => t.table.schema)),
+              ];
+              const preferred = current?.table?.schema ?? current?.diagramSchema;
+              const ordered =
+                preferred && schemas.includes(preferred)
+                  ? [preferred, ...schemas.filter((s) => s !== preferred)]
+                  : schemas;
+              return ordered.slice(0, 20).map((schema) => ({
+                label: `Open schema diagram: ${schema}`,
+                shortcut: "",
+                icon: Network,
+                action: () => state.openDiagram(connectionId, schema),
+              }));
+            })(),
             {
               label: "Preferences",
               shortcut: "⌘ ,",

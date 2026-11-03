@@ -1748,6 +1748,18 @@ impl Studio {
             .referencing_keys(table)
             .await
     }
+    pub async fn schema_diagram(&self, session_id: &str, schema: &str) -> AppResult<SchemaDiagram> {
+        if schema.is_empty() || schema.len() > 1024 || schema.contains('\0') {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Choose a schema to diagram",
+            ));
+        }
+        self.session(session_id)?
+            .driver
+            .schema_diagram(schema)
+            .await
+    }
     async fn schema_for_session(
         &self,
         session: &Session,

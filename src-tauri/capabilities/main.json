@@ -40,6 +40,7 @@
     "allow-redis-inspect",
     "allow-table-schema",
     "allow-referencing-foreign-keys",
+    "allow-schema-diagram",
     "allow-prepare-browse-table",
     "allow-browse-table",
     "allow-result-range",

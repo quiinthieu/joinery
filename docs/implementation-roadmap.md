@@ -642,6 +642,16 @@ R7 schema/design and R8 remaining productivity follow these R6 slices. Release,
 platform, security, accessibility, recovery and performance qualification run
 throughout; application publication and installation remain separate actions.
 
+### R7 slice 1: read-only ER diagrams (branch `feat/er-diagram`)
+
+The owner asked on 3 November to continue until Joinery can replace DataGrip.
+Read-only slices go first: D01 diagrams, then A05/A04 monitoring, A03 statistics,
+D02 snapshots/diff, D03 DDL generation, D05/N08 reviewed editors, D04 migration
+review, P05/P06, RX and the v1.0 gates. `schema_diagram` reads one schema's
+relations, readable columns and outbound foreign keys in one bounded metadata call
+on PostgreSQL and MySQL/MariaDB. It never prepares or executes editor SQL. See
+[evidence](IMPLEMENTATION_STATUS.md#r7-slice-1-read-only-er-diagrams-3-november-2026).
+
 ## Subsequent phases and blueprint cross-reference
 
 | Phase | Feature IDs / user value | Priority / complexity | Dependencies and exit criteria | Blueprint relationship |

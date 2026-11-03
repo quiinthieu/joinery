@@ -1667,6 +1667,71 @@ async fn referencing_foreign_keys_group_composite_inbound_constraints_on_mysql_a
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB services"]
+async fn schema_diagram_groups_composite_keys_on_mysql_and_mariadb() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::ReadOnly).await;
+        let diagram = studio.schema_diagram(&session.id, "joinery").await.unwrap();
+        assert!(!diagram.truncated, "port {port}");
+        assert!(!diagram.restricted, "port {port}");
+        let names: Vec<&str> = diagram
+            .tables
+            .iter()
+            .map(|t| t.table.name.as_str())
+            .collect();
+        for expected in [
+            "sample",
+            "child_rows",
+            "note_orders",
+            "order_lines",
+            "line_notes",
+        ] {
+            assert!(names.contains(&expected), "port {port}: missing {expected}");
+        }
+        assert!(diagram.tables.iter().all(|t| t.table.schema == "joinery"));
+        let lines = diagram
+            .tables
+            .iter()
+            .find(|t| t.table.name == "order_lines")
+            .unwrap();
+        assert!(
+            lines
+                .columns
+                .iter()
+                .any(|c| c.name == "order_id" && c.primary_key)
+        );
+        let composite = diagram
+            .foreign_keys
+            .iter()
+            .find(|k| k.name == "line_notes_line_fk")
+            .unwrap();
+        assert_eq!(
+            composite.columns,
+            ["note_order", "note_line"],
+            "port {port}"
+        );
+        assert_eq!(composite.target.name, "order_lines");
+        assert_eq!(composite.target_columns, ["order_id", "line_no"]);
+        assert!(
+            diagram
+                .foreign_keys
+                .iter()
+                .any(|k| k.source.name == "child_rows" && k.target.name == "sample")
+        );
+        assert_eq!(
+            studio
+                .schema_diagram(&session.id, "missing_database")
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound,
+            "port {port}"
+        );
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
 async fn table_changes_insert_update_delete_atomically_and_conflict_check_deletes_on_both_engines()
 {
     for port in [53306, 53307] {

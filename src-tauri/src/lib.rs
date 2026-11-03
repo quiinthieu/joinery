@@ -118,6 +118,7 @@ pub fn run() {
             commands::redis_inspect,
             commands::table_schema,
             commands::referencing_foreign_keys,
+            commands::schema_diagram,
             commands::prepare_browse_table,
             commands::browse_table,
             commands::result_range,

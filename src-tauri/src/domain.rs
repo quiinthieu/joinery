@@ -461,6 +461,165 @@ impl InboundForeignKey {
     }
 }
 
+/// Bounds for one schema relationship diagram.
+pub const MAX_DIAGRAM_TABLES: usize = 500;
+pub const MAX_DIAGRAM_COLUMNS: usize = 20_000;
+pub const MAX_DIAGRAM_KEY_ROWS: usize = 20_000;
+
+/// One column shown in a schema diagram node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagramColumn {
+    pub name: String,
+    pub database_type: String,
+    pub nullable: bool,
+    pub primary_key: bool,
+}
+
+/// One relation in a schema diagram. Columns are in ordinal order and only
+/// include columns the session may read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagramTable {
+    pub table: TableRef,
+    pub kind: String,
+    pub columns: Vec<DiagramColumn>,
+}
+
+/// One foreign-key constraint whose source is in the diagram schema. The
+/// target may be in another schema. `columns[i]` references `target_columns[i]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagramForeignKey {
+    pub name: String,
+    pub source: TableRef,
+    pub columns: Vec<String>,
+    pub target: TableRef,
+    pub target_columns: Vec<String>,
+}
+
+/// Read-only relationship graph for one schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaDiagram {
+    pub schema: String,
+    pub tables: Vec<DiagramTable>,
+    pub foreign_keys: Vec<DiagramForeignKey>,
+    /// Tables, columns or constraints were omitted by the diagram bounds.
+    pub truncated: bool,
+    /// Constraints were omitted because some of their columns are not readable.
+    pub restricted: bool,
+}
+
+/// One catalog row per foreign-key column, in source table, constraint and
+/// ordinal order. `expected` is the constraint width when the engine reports it.
+pub struct DiagramKeyRow {
+    pub name: String,
+    pub source_table: String,
+    pub target: TableRef,
+    pub column: String,
+    pub target_column: String,
+    pub expected: Option<usize>,
+}
+
+impl SchemaDiagram {
+    /// Builds a bounded diagram from catalog rows. Each input may hold one
+    /// row beyond its bound, which marks the diagram as truncated.
+    pub fn assemble(
+        schema: &str,
+        tables: Vec<(String, String)>,
+        columns: Vec<(String, DiagramColumn)>,
+        keys: Vec<DiagramKeyRow>,
+    ) -> Self {
+        let mut truncated = false;
+        let mut tables = tables;
+        if tables.len() > MAX_DIAGRAM_TABLES {
+            tables.truncate(MAX_DIAGRAM_TABLES);
+            truncated = true;
+        }
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut nodes: Vec<DiagramTable> = Vec::with_capacity(tables.len());
+        for (name, kind) in tables {
+            if index.contains_key(&name) {
+                continue;
+            }
+            index.insert(name.clone(), nodes.len());
+            nodes.push(DiagramTable {
+                table: TableRef {
+                    schema: schema.to_owned(),
+                    name,
+                },
+                kind,
+                columns: Vec::new(),
+            });
+        }
+        let mut columns = columns;
+        if columns.len() > MAX_DIAGRAM_COLUMNS {
+            columns.truncate(MAX_DIAGRAM_COLUMNS);
+            truncated = true;
+        }
+        for (table, column) in columns {
+            if let Some(&i) = index.get(&table) {
+                nodes[i].columns.push(column);
+            }
+        }
+        let mut keys = keys;
+        let key_rows_limited = keys.len() > MAX_DIAGRAM_KEY_ROWS;
+        if key_rows_limited {
+            keys.truncate(MAX_DIAGRAM_KEY_ROWS);
+            truncated = true;
+        }
+        let mut grouped: Vec<(DiagramForeignKey, Option<usize>)> = Vec::new();
+        for row in keys {
+            match grouped.last_mut() {
+                Some((key, _)) if key.name == row.name && key.source.name == row.source_table => {
+                    key.columns.push(row.column);
+                    key.target_columns.push(row.target_column);
+                }
+                _ => grouped.push((
+                    DiagramForeignKey {
+                        name: row.name,
+                        source: TableRef {
+                            schema: schema.to_owned(),
+                            name: row.source_table,
+                        },
+                        columns: vec![row.column],
+                        target: row.target,
+                        target_columns: vec![row.target_column],
+                    },
+                    row.expected,
+                )),
+            }
+        }
+        // The last constraint may be cut by the row bound.
+        if key_rows_limited {
+            grouped.pop();
+        }
+        let mut restricted = false;
+        let mut foreign_keys = Vec::with_capacity(grouped.len());
+        for (key, expected) in grouped {
+            if expected.is_some_and(|width| width != key.columns.len()) {
+                restricted = true;
+                continue;
+            }
+            let source_known = index.contains_key(&key.source.name);
+            let target_known = key.target.schema != schema || index.contains_key(&key.target.name);
+            if !source_known || !target_known {
+                truncated = true;
+                continue;
+            }
+            foreign_keys.push(key);
+        }
+        Self {
+            schema: schema.to_owned(),
+            tables: nodes,
+            foreign_keys,
+            truncated,
+            restricted,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSchema {
@@ -1570,6 +1729,148 @@ pub struct DataCompareReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn diagram_column(name: &str, primary_key: bool) -> DiagramColumn {
+        DiagramColumn {
+            name: name.into(),
+            database_type: "bigint".into(),
+            nullable: !primary_key,
+            primary_key,
+        }
+    }
+
+    fn key_row(
+        name: &str,
+        source: &str,
+        target: (&str, &str),
+        columns: (&str, &str),
+        expected: Option<usize>,
+    ) -> DiagramKeyRow {
+        DiagramKeyRow {
+            name: name.into(),
+            source_table: source.into(),
+            target: TableRef {
+                schema: target.0.into(),
+                name: target.1.into(),
+            },
+            column: columns.0.into(),
+            target_column: columns.1.into(),
+            expected,
+        }
+    }
+
+    #[test]
+    fn schema_diagram_groups_composite_keys_and_keeps_cross_schema_targets() {
+        let diagram = SchemaDiagram::assemble(
+            "public",
+            vec![
+                ("line_notes".into(), "r".into()),
+                ("order_lines".into(), "r".into()),
+                ("orders".into(), "r".into()),
+            ],
+            vec![
+                ("orders".into(), diagram_column("id", true)),
+                ("order_lines".into(), diagram_column("order_id", true)),
+                ("order_lines".into(), diagram_column("line_no", true)),
+                ("line_notes".into(), diagram_column("note_order", false)),
+                ("line_notes".into(), diagram_column("note_line", false)),
+                ("missing".into(), diagram_column("ignored", false)),
+            ],
+            vec![
+                key_row(
+                    "line_notes_line_fk",
+                    "line_notes",
+                    ("public", "order_lines"),
+                    ("note_order", "order_id"),
+                    Some(2),
+                ),
+                key_row(
+                    "line_notes_line_fk",
+                    "line_notes",
+                    ("public", "order_lines"),
+                    ("note_line", "line_no"),
+                    Some(2),
+                ),
+                key_row(
+                    "order_lines_order_id_fkey",
+                    "order_lines",
+                    ("public", "orders"),
+                    ("order_id", "id"),
+                    Some(1),
+                ),
+                key_row(
+                    "orders_audit_fk",
+                    "orders",
+                    ("audit", "events"),
+                    ("id", "order_id"),
+                    None,
+                ),
+            ],
+        );
+        assert!(!diagram.truncated);
+        assert!(!diagram.restricted);
+        assert_eq!(diagram.tables.len(), 3);
+        assert_eq!(
+            diagram.tables[1]
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["order_id", "line_no"]
+        );
+        assert_eq!(diagram.foreign_keys.len(), 3);
+        assert_eq!(diagram.foreign_keys[0].columns, ["note_order", "note_line"]);
+        assert_eq!(
+            diagram.foreign_keys[0].target_columns,
+            ["order_id", "line_no"]
+        );
+        assert_eq!(diagram.foreign_keys[2].target.schema, "audit");
+    }
+
+    #[test]
+    fn schema_diagram_withholds_partially_readable_keys_and_marks_bounds() {
+        let restricted = SchemaDiagram::assemble(
+            "public",
+            vec![("a".into(), "r".into()), ("b".into(), "r".into())],
+            vec![],
+            vec![key_row("a_b", "a", ("public", "b"), ("x", "y"), Some(2))],
+        );
+        assert!(restricted.restricted);
+        assert!(!restricted.truncated);
+        assert!(restricted.foreign_keys.is_empty());
+
+        let tables = (0..=MAX_DIAGRAM_TABLES)
+            .map(|i| (format!("t{i:04}"), "r".to_string()))
+            .collect();
+        let bounded = SchemaDiagram::assemble(
+            "public",
+            tables,
+            vec![],
+            vec![key_row(
+                "late",
+                &format!("t{MAX_DIAGRAM_TABLES:04}"),
+                ("public", "t0000"),
+                ("x", "y"),
+                Some(1),
+            )],
+        );
+        assert!(bounded.truncated);
+        assert_eq!(bounded.tables.len(), MAX_DIAGRAM_TABLES);
+        assert!(bounded.foreign_keys.is_empty());
+
+        let mut rows: Vec<DiagramKeyRow> = (0..MAX_DIAGRAM_KEY_ROWS)
+            .map(|i| key_row(&format!("k{i}"), "a", ("public", "b"), ("x", "y"), None))
+            .collect();
+        rows.push(key_row("cut", "a", ("public", "b"), ("x", "y"), None));
+        let keys = SchemaDiagram::assemble(
+            "public",
+            vec![("a".into(), "r".into()), ("b".into(), "r".into())],
+            vec![],
+            rows,
+        );
+        assert!(keys.truncated);
+        assert_eq!(keys.foreign_keys.len(), MAX_DIAGRAM_KEY_ROWS - 1);
+    }
 
     fn row(
         name: &str,

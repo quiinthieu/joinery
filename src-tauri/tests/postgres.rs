@@ -1557,6 +1557,148 @@ async fn referencing_foreign_keys_preserve_composite_ordinals_and_filter_unreada
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL service"]
+async fn schema_diagram_groups_composite_keys_and_hides_unreadable_columns() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let diagram = studio.schema_diagram(&session.id, "public").await.unwrap();
+    assert!(!diagram.truncated);
+    assert!(!diagram.restricted);
+    let names: Vec<&str> = diagram
+        .tables
+        .iter()
+        .map(|t| t.table.name.as_str())
+        .collect();
+    for expected in [
+        "customers",
+        "orders",
+        "order_lines",
+        "line_notes",
+        "browse_sort",
+    ] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+    let lines = diagram
+        .tables
+        .iter()
+        .find(|t| t.table.name == "order_lines")
+        .unwrap();
+    assert!(
+        lines
+            .columns
+            .iter()
+            .filter(|c| c.primary_key)
+            .map(|c| c.name.as_str())
+            .eq(["order_id", "line_no"])
+    );
+    let composite = diagram
+        .foreign_keys
+        .iter()
+        .find(|k| k.name == "line_notes_line_fk")
+        .unwrap();
+    assert_eq!(composite.source.name, "line_notes");
+    assert_eq!(composite.columns, ["note_order", "note_line"]);
+    assert_eq!(composite.target.name, "order_lines");
+    assert_eq!(composite.target_columns, ["order_id", "line_no"]);
+    assert!(
+        diagram
+            .foreign_keys
+            .iter()
+            .any(|k| k.source.name == "orders" && k.target.name == "customers")
+    );
+    assert_eq!(
+        studio
+            .schema_diagram(&session.id, "missing_schema")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        studio
+            .schema_diagram(&session.id, "")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+
+    // Without SELECT on line_notes.note_line, the composite key is withheld
+    // and the hidden column is not listed.
+    run(
+        &studio,
+        &session,
+        "DROP ROLE IF EXISTS joinery_diagram_limited;
+         CREATE ROLE joinery_diagram_limited LOGIN PASSWORD 'joinery-limited-only';
+         GRANT CONNECT ON DATABASE joinery TO joinery_diagram_limited;
+         GRANT USAGE ON SCHEMA public TO joinery_diagram_limited;
+         GRANT SELECT ON public.orders, public.order_lines TO joinery_diagram_limited;
+         GRANT SELECT (note_order) ON public.line_notes TO joinery_diagram_limited;",
+    )
+    .await;
+    let mut limited_profile = studio.bootstrap().unwrap().profiles[0].clone();
+    limited_profile.id = new_id();
+    limited_profile.name = "Diagram limited".into();
+    limited_profile.username = "joinery_diagram_limited".into();
+    limited_profile.safe_mode = SafeMode::ReadOnly;
+    let saved = studio.save_profile(limited_profile, None).unwrap();
+    let limited = studio
+        .connect(
+            &saved.id,
+            ConnectionSecrets {
+                password: Some("joinery-limited-only".into()),
+                ssh_password: None,
+                key_passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+    let visible = studio.schema_diagram(&limited.id, "public").await.unwrap();
+    assert!(visible.restricted);
+    let notes = visible
+        .tables
+        .iter()
+        .find(|t| t.table.name == "line_notes")
+        .unwrap();
+    assert!(
+        notes
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .eq(["note_order"])
+    );
+    assert!(
+        visible
+            .foreign_keys
+            .iter()
+            .all(|k| k.name != "line_notes_line_fk")
+    );
+    assert!(
+        visible
+            .foreign_keys
+            .iter()
+            .any(|k| k.name == "line_notes_order_fk")
+    );
+    assert!(
+        visible
+            .tables
+            .iter()
+            .find(|t| t.table.name == "customers")
+            .is_some_and(|t| t.columns.is_empty())
+    );
+    studio.disconnect(&limited.id);
+    run(
+        &studio,
+        &session,
+        "REVOKE ALL PRIVILEGES ON public.orders, public.order_lines, public.line_notes FROM joinery_diagram_limited;
+         REVOKE USAGE ON SCHEMA public FROM joinery_diagram_limited;
+         REVOKE CONNECT ON DATABASE joinery FROM joinery_diagram_limited;
+         DROP ROLE joinery_diagram_limited;",
+    )
+    .await;
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
 async fn table_changes_insert_update_delete_atomically_and_conflict_check_deletes() {
     let (_root, studio, session) = setup(SafeMode::Silent).await;
     assert_eq!(
