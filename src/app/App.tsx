@@ -27,6 +27,9 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
+  Pin,
+  PinOff,
+  Play,
   Plus,
   RotateCcw,
   Save,
@@ -78,9 +81,16 @@ import {
   isLastOwnerOfSecondarySession,
   sessionHasOpenTransaction,
   isTabFileDirty,
+  isTabProtectedFromBulkClose,
   bookmarkTargetForTab,
   type StudioTab,
 } from "../state/studio";
+import {
+  effectiveShortcutBadge,
+  effectiveShortcutBinding,
+  matchesKeyboardEvent,
+  type ShortcutActionId,
+} from "../features/studio/shortcuts";
 import { flushWorkspace, watchWorkspace } from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
@@ -946,52 +956,102 @@ export function App() {
   };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || references.current.dialog) return;
-      const key = event.key.toLowerCase(),
-        active = references.current.current;
-      if (key === "k") {
+      if (references.current.dialog) return;
+      const snap = useStudio.getState();
+      const active = references.current.current;
+      const matchesAction = (id: ShortcutActionId) =>
+        matchesKeyboardEvent(event, effectiveShortcutBinding(id, snap.shortcuts));
+
+      if (matchesAction("openPalette")) {
         event.preventDefault();
         setDialog({ kind: "palette", initialScope: "all" });
-      } else if (key === "o" && event.shiftKey) {
+        return;
+      }
+      if (matchesAction("searchObjects")) {
         event.preventDefault();
         setDialog({ kind: "palette", initialScope: "objects" });
-      } else if (key === "o" && !event.shiftKey) {
-        event.preventDefault();
-        actions.current.handleOpenSqlFile();
-      } else if (key === "e" && event.shiftKey) {
+        return;
+      }
+      if (matchesAction("recentLocations")) {
         event.preventDefault();
         setDialog({ kind: "library", tab: "recents" });
-      } else if (key === "d" && !event.shiftKey && active) {
+        return;
+      }
+      if (matchesAction("openSqlFile")) {
+        event.preventDefault();
+        actions.current.handleOpenSqlFile();
+        return;
+      }
+      if (matchesAction("toggleBookmark") && active) {
         event.preventDefault();
         actions.current.handleToggleBookmark(active);
-      } else if (key === "t") {
+        return;
+      }
+      if (matchesAction("reopenClosedTab")) {
         event.preventDefault();
-        useStudio.getState().openQuery();
-      } else if (key === "w" && active) {
+        void snap.reopenClosedTab();
+        return;
+      }
+      if (matchesAction("newQuery")) {
+        event.preventDefault();
+        snap.openQuery();
+        return;
+      }
+      if (matchesAction("togglePinTab") && active) {
+        event.preventDefault();
+        snap.togglePinTab(active.id);
+        return;
+      }
+      if (matchesAction("closeCleanTabs")) {
+        event.preventDefault();
+        snap.closeCleanTabs();
+        return;
+      }
+      if (matchesAction("closeOtherTabs") && active) {
+        event.preventDefault();
+        snap.closeOtherTabs(active.id);
+        return;
+      }
+      if (matchesAction("closeActiveTab") && active) {
         event.preventDefault();
         confirmDiscard(active, () => closeWorkspace(active.id));
-      } else if (key === "b" && event.shiftKey) {
+        return;
+      }
+      if (matchesAction("toggleSidebar")) {
+        event.preventDefault();
+        snap.toggleSidebar();
+        return;
+      }
+      if (matchesAction("toggleInspector")) {
+        event.preventDefault();
+        snap.toggleInspector();
+        return;
+      }
+      if (matchesAction("preferences")) {
+        event.preventDefault();
+        setDialog({ kind: "settings" });
+        return;
+      }
+      if (matchesAction("saveSqlFileAs") && active?.kind === "query") {
+        event.preventDefault();
+        actions.current.handleSaveSqlFile(active.id, true);
+        return;
+      }
+      if (matchesAction("saveSqlFile")) {
+        event.preventDefault();
+        if (active?.kind === "query") actions.current.handleSaveSqlFile(active.id, false);
+        else void actions.current.reviewEdits();
+        return;
+      }
+
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "b" && event.shiftKey) {
         event.preventDefault();
         actions.current.goToReferenced();
       } else if (key === "g" && event.shiftKey) {
         event.preventDefault();
         void actions.current.goToReferencing();
-      } else if (key === "b") {
-        event.preventDefault();
-        useStudio.setState((state) => ({ sidebarVisible: !state.sidebarVisible }));
-      } else if (key === "i") {
-        event.preventDefault();
-        useStudio.setState((state) => ({ inspectorVisible: !state.inspectorVisible }));
-      } else if (key === ",") {
-        event.preventDefault();
-        setDialog({ kind: "settings" });
-      } else if (key === "s" && event.shiftKey && active?.kind === "query") {
-        event.preventDefault();
-        actions.current.handleSaveSqlFile(active.id, true);
-      } else if (key === "s" && !event.shiftKey) {
-        event.preventDefault();
-        if (active?.kind === "query") actions.current.handleSaveSqlFile(active.id, false);
-        else void actions.current.reviewEdits();
       } else if (key === "." && active?.runId) {
         event.preventDefault();
         void client
@@ -1053,7 +1113,8 @@ export function App() {
               className="icon-button"
               aria-label="Toggle sidebar"
               aria-expanded={state.sidebarVisible}
-              onClick={() => useStudio.setState({ sidebarVisible: !state.sidebarVisible })}
+              title={`Toggle sidebar · ${effectiveShortcutBadge("toggleSidebar", state.shortcuts)}`}
+              onClick={() => state.toggleSidebar()}
             >
               {state.sidebarVisible ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
             </button>
@@ -1073,13 +1134,14 @@ export function App() {
             <button className="command-trigger" onClick={() => setDialog({ kind: "palette" })}>
               <Search size={13} />
               <span>Jump to anything</span>
-              <kbd>⌘ K</kbd>
+              <kbd>{effectiveShortcutBadge("openPalette", state.shortcuts)}</kbd>
             </button>
             <button
               className={`icon-button ${state.inspectorVisible ? "active" : ""}`}
               aria-label="Toggle inspector"
               aria-expanded={state.inspectorVisible}
-              onClick={() => useStudio.setState({ inspectorVisible: !state.inspectorVisible })}
+              title={`Toggle inspector · ${effectiveShortcutBadge("toggleInspector", state.shortcuts)}`}
+              onClick={() => state.toggleInspector()}
             >
               <PanelRight size={16} />
             </button>
@@ -1092,7 +1154,10 @@ export function App() {
           onKeyDown={tabNavigation}
         >
           {state.tabs.map((tab) => (
-            <div className={`workspace-tab ${tab.id === current?.id ? "active" : ""}`} key={tab.id}>
+            <div
+              className={`workspace-tab ${tab.id === current?.id ? "active" : ""} ${tab.pinned ? "pinned" : ""}`.trim()}
+              key={tab.id}
+            >
               <button
                 role="tab"
                 id={`workspace-tab-${tab.id}`}
@@ -1130,6 +1195,20 @@ export function App() {
                 )}
               </button>
               <button
+                type="button"
+                className={`tab-pin ${tab.pinned ? "pinned" : ""}`}
+                aria-label={tab.pinned ? `Unpin ${tab.title}` : `Pin ${tab.title}`}
+                aria-pressed={Boolean(tab.pinned)}
+                title={
+                  tab.pinned
+                    ? `Unpin ${tab.title} · ${effectiveShortcutBadge("togglePinTab", state.shortcuts)}`
+                    : `Pin ${tab.title} · ${effectiveShortcutBadge("togglePinTab", state.shortcuts)}`
+                }
+                onClick={() => state.togglePinTab(tab.id)}
+              >
+                {tab.pinned ? <PinOff size={11} /> : <Pin size={11} />}
+              </button>
+              <button
                 className="tab-close"
                 aria-label={`Close ${tab.title}`}
                 onClick={() => confirmDiscard(tab, () => closeWorkspace(tab.id))}
@@ -1141,11 +1220,33 @@ export function App() {
           <button
             className="icon-button new-query"
             aria-label="New query tab"
-            title="New query tab · ⌘ T"
+            title={`New query tab · ${effectiveShortcutBadge("newQuery", state.shortcuts)}`}
             onClick={() => state.openQuery()}
           >
             <Plus size={15} />
           </button>
+          {current && state.tabs.some((t) => t.id !== current.id && !t.pinned) && (
+            <button
+              type="button"
+              className="icon-button tab-strip-action"
+              aria-label="Close other tabs"
+              title={`Close other tabs · ${effectiveShortcutBadge("closeOtherTabs", state.shortcuts)}`}
+              onClick={() => state.closeOtherTabs(current.id)}
+            >
+              Close others
+            </button>
+          )}
+          {state.closedTabs.length > 0 && (
+            <button
+              type="button"
+              className="icon-button tab-strip-action"
+              aria-label="Reopen closed tab"
+              title={`Reopen closed tab · ${effectiveShortcutBadge("reopenClosedTab", state.shortcuts)}`}
+              onClick={() => void state.reopenClosedTab()}
+            >
+              <RotateCcw size={13} />
+            </button>
+          )}
         </div>
         <div className="workspace-body">
           <section
@@ -1647,27 +1748,55 @@ export function App() {
           commands={[
             {
               label: "New query tab",
-              shortcut: "⌘ T",
+              shortcut: effectiveShortcutBadge("newQuery", state.shortcuts),
+              contextBadge: "Workspace",
               icon: FileCode2,
               action: () => state.openQuery(),
             },
             {
               label: "Open SQL file…",
-              shortcut: "⌘ O",
+              shortcut: effectiveShortcutBadge("openSqlFile", state.shortcuts),
+              contextBadge: "SQL & Files",
               icon: FolderOpen,
               action: () => handleOpenSqlFile(),
             },
             ...(current?.kind === "query"
               ? [
                   {
+                    label: "Run SQL statement",
+                    shortcut: "⌘ ↩",
+                    contextBadge: "Active tab",
+                    disabledReason: !session
+                      ? "Connect this query tab to a database first."
+                      : ["queued", "running"].includes(current.status)
+                        ? "A query is already running in this tab."
+                        : null,
+                    icon: Play,
+                    action: () => void runSql(),
+                  },
+                  {
+                    label: "Explain query plan",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason: !session
+                      ? "Connect this query tab to a database first."
+                      : profile?.engine === "redis"
+                        ? "This database engine does not support EXPLAIN plans."
+                        : null,
+                    icon: Gauge,
+                    action: () => void runSql(undefined, "estimate"),
+                  },
+                  {
                     label: "Save SQL file",
-                    shortcut: "⌘ S",
+                    shortcut: effectiveShortcutBadge("saveSqlFile", state.shortcuts),
+                    contextBadge: "Active tab",
                     icon: Save,
                     action: () => handleSaveSqlFile(current.id, false),
                   },
                   {
                     label: "Save SQL file as…",
-                    shortcut: "⇧⌘ S",
+                    shortcut: effectiveShortcutBadge("saveSqlFileAs", state.shortcuts),
+                    contextBadge: "Active tab",
                     icon: Save,
                     action: () => handleSaveSqlFile(current.id, true),
                   },
@@ -1676,6 +1805,7 @@ export function App() {
                       ? "Update query in library…"
                       : "Save query to library…",
                     shortcut: "",
+                    contextBadge: "Active tab",
                     icon: BookmarkPlus,
                     action: () => setDialog({ kind: "saveQuery", tabId: current.id }),
                   },
@@ -1684,6 +1814,7 @@ export function App() {
                         {
                           label: "Format SQL",
                           shortcut: "⇧⌘ F",
+                          contextBadge: "Active tab",
                           icon: Code2,
                           action: () => {
                             editor.current?.format();
@@ -1692,6 +1823,7 @@ export function App() {
                         {
                           label: "Go to SQL definition",
                           shortcut: "F12",
+                          contextBadge: "Active tab",
                           icon: ArrowUpRight,
                           action: () => {
                             void editor.current?.goToDefinition();
@@ -1700,6 +1832,7 @@ export function App() {
                         {
                           label: "Find SQL usages",
                           shortcut: "⇧F12",
+                          contextBadge: "Active tab",
                           icon: Search,
                           action: () => {
                             void editor.current?.findUsages();
@@ -1708,6 +1841,7 @@ export function App() {
                         {
                           label: "Quick SQL documentation",
                           shortcut: "F1",
+                          contextBadge: "Active tab",
                           icon: Code2,
                           action: () => {
                             void editor.current?.showQuickDocs();
@@ -1716,6 +1850,7 @@ export function App() {
                         {
                           label: "Previous SQL statement",
                           shortcut: "⌥⌘ ↑",
+                          contextBadge: "Active tab",
                           icon: Code2,
                           action: () => {
                             editor.current?.navigateStatement(-1);
@@ -1724,6 +1859,7 @@ export function App() {
                         {
                           label: "Next SQL statement",
                           shortcut: "⌥⌘ ↓",
+                          contextBadge: "Active tab",
                           icon: Code2,
                           action: () => {
                             editor.current?.navigateStatement(1);
@@ -1734,6 +1870,7 @@ export function App() {
                               {
                                 label: "Jump to SQL error",
                                 shortcut: "",
+                                contextBadge: "Active tab",
                                 icon: Code2,
                                 action: () => {
                                   const latest = useStudio
@@ -1756,49 +1893,148 @@ export function App() {
                     : []),
                 ]
               : []),
+            ...(current?.kind === "table"
+              ? [
+                  {
+                    label: "Switch table view to Data",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason: current.view === "data" ? "Already viewing table data." : null,
+                    icon: Database,
+                    action: () => state.updateTab(current.id, { view: "data" }),
+                  },
+                  {
+                    label: "Switch table view to Structure",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason:
+                      current.view === "structure" ? "Already viewing table structure." : null,
+                    icon: Columns3,
+                    action: () => state.updateTab(current.id, { view: "structure" }),
+                  },
+                  {
+                    label: "Switch table view to DDL",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason: current.view === "ddl" ? "Already viewing table DDL." : null,
+                    icon: Code2,
+                    action: () => state.updateTab(current.id, { view: "ddl" }),
+                  },
+                ]
+              : []),
             ...(current && bookmarkTargetForTab(current, state.catalog)
               ? [
                   {
                     label: "Toggle bookmark",
-                    shortcut: "⌘ D",
+                    shortcut: effectiveShortcutBadge("toggleBookmark", state.shortcuts),
+                    contextBadge: "Active tab",
                     icon: Star,
                     action: () => handleToggleBookmark(current),
                   },
                 ]
               : []),
             {
+              label: current?.pinned ? "Unpin active tab" : "Pin active tab",
+              shortcut: effectiveShortcutBadge("togglePinTab", state.shortcuts),
+              contextBadge: "Tabs",
+              disabledReason: !current ? "Open a tab first to pin or unpin it." : null,
+              icon: current?.pinned ? PinOff : Pin,
+              action: () => current && state.togglePinTab(current.id),
+            },
+            {
+              label: "Close active tab",
+              shortcut: effectiveShortcutBadge("closeActiveTab", state.shortcuts),
+              contextBadge: "Tabs",
+              disabledReason: !current ? "No active tab to close." : null,
+              icon: X,
+              action: () => current && confirmDiscard(current, () => closeWorkspace(current.id)),
+            },
+            {
+              label: "Close other tabs",
+              shortcut: effectiveShortcutBadge("closeOtherTabs", state.shortcuts),
+              contextBadge: "Tabs",
+              disabledReason: !current
+                ? "No active tab selected."
+                : !state.tabs.some((t) => t.id !== current.id && !t.pinned)
+                  ? "No other unpinned tabs to close."
+                  : null,
+              icon: X,
+              action: () => current && state.closeOtherTabs(current.id),
+            },
+            {
+              label: "Close unmodified tabs",
+              shortcut: effectiveShortcutBadge("closeCleanTabs", state.shortcuts),
+              contextBadge: "Tabs",
+              disabledReason: !state.tabs.some(
+                (t) => !t.pinned && !isTabProtectedFromBulkClose(state.tabs, t),
+              )
+                ? "No unmodified unpinned tabs to close."
+                : null,
+              icon: X,
+              action: () => state.closeCleanTabs(),
+            },
+            {
+              label: "Reopen closed tab",
+              shortcut: effectiveShortcutBadge("reopenClosedTab", state.shortcuts),
+              contextBadge: "Tabs",
+              disabledReason:
+                state.closedTabs.length === 0 ? "No recently closed tabs to reopen." : null,
+              icon: RotateCcw,
+              action: () => void state.reopenClosedTab(),
+            },
+            {
+              label: "Toggle left sidebar",
+              shortcut: effectiveShortcutBadge("toggleSidebar", state.shortcuts),
+              contextBadge: "Layout",
+              icon: state.sidebarVisible ? PanelLeftClose : PanelLeftOpen,
+              action: () => state.toggleSidebar(),
+            },
+            {
+              label: "Toggle right inspector",
+              shortcut: effectiveShortcutBadge("toggleInspector", state.shortcuts),
+              contextBadge: "Layout",
+              icon: PanelRight,
+              action: () => state.toggleInspector(),
+            },
+            {
               label: "Saved queries library",
               shortcut: "",
+              contextBadge: "Navigation",
               icon: Bookmark,
               action: () => setDialog({ kind: "library", tab: "saved" }),
             },
             {
               label: "Bookmarks",
               shortcut: "",
+              contextBadge: "Navigation",
               icon: Star,
               action: () => setDialog({ kind: "library", tab: "bookmarks" }),
             },
             {
               label: "Recent locations",
-              shortcut: "⇧⌘ E",
+              shortcut: effectiveShortcutBadge("recentLocations", state.shortcuts),
+              contextBadge: "Navigation",
               icon: Clock3,
               action: () => setDialog({ kind: "library", tab: "recents" }),
             },
             {
               label: "New database connection",
               shortcut: "",
+              contextBadge: "Workspace",
               icon: Database,
               action: () => setDialog({ kind: "connection" }),
             },
             {
               label: "Query history",
               shortcut: "",
+              contextBadge: "Workspace",
               icon: History,
               action: () => state.openUtility("history"),
             },
             {
               label: "Grid benchmark",
               shortcut: "1M rows",
+              contextBadge: "Workspace",
               icon: Gauge,
               action: () => state.openUtility("benchmark"),
             },
@@ -1817,12 +2053,14 @@ export function App() {
                 {
                   label: `Open schema diagram: ${schema}`,
                   shortcut: "",
+                  contextBadge: "Schema",
                   icon: Network,
                   action: () => state.openDiagram(connectionId, schema),
                 },
                 {
                   label: `Compare schema: ${schema}`,
                   shortcut: "",
+                  contextBadge: "Schema",
                   icon: ArrowLeftRight,
                   action: () => state.openSchemaDiff(connectionId, schema),
                 },
@@ -1830,7 +2068,8 @@ export function App() {
             })(),
             {
               label: "Preferences",
-              shortcut: "⌘ ,",
+              shortcut: effectiveShortcutBadge("preferences", state.shortcuts),
+              contextBadge: "Workspace",
               icon: Command,
               action: () => setDialog({ kind: "settings" }),
             },

@@ -32,6 +32,7 @@ beforeEach(() => {
     },
     sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
     sqlSnippets: [],
+    shortcuts: {},
   });
 });
 
@@ -213,4 +214,37 @@ test("engine styles inherit, stay independent, persist across scope switches and
   fireEvent.click(screen.getByRole("button", { name: "Use global defaults" }));
   await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
   expect(useStudio.getState().sqlFormatSettings.dialects).toBeUndefined();
+});
+
+test("edits keyboard shortcuts, flags conflicts and reserved chords, and resets bindings", () => {
+  vi.mocked(client.call).mockResolvedValue([]);
+  render(<Preferences onClose={vi.fn()} />);
+
+  const paletteInput = screen.getByLabelText(
+    "Shortcut for Open command palette",
+  ) as HTMLInputElement;
+  expect(paletteInput.value).toBe("Mod+K");
+
+  // Rebind Open command palette to Mod+J
+  fireEvent.change(paletteInput, { target: { value: "Mod+J" } });
+  fireEvent.keyDown(paletteInput, { key: "Enter" });
+  expect(useStudio.getState().shortcuts.openPalette).toBe("Mod+J");
+  expect(screen.getByLabelText("Current badge for Open command palette").textContent).toBe("⌘ J");
+
+  // Attempt to bind New query tab to Mod+J (conflict with Open command palette)
+  const newQueryInput = screen.getByLabelText("Shortcut for New query tab") as HTMLInputElement;
+  fireEvent.change(newQueryInput, { target: { value: "Mod+J" } });
+  fireEvent.keyDown(newQueryInput, { key: "Enter" });
+  expect(screen.getByText('⌘ J is already assigned to "Open command palette".')).toBeTruthy();
+  expect(useStudio.getState().shortcuts.newQuery).toBeUndefined();
+
+  // Attempt to bind to reserved Mod+C
+  fireEvent.change(newQueryInput, { target: { value: "Mod+C" } });
+  fireEvent.keyDown(newQueryInput, { key: "Enter" });
+  expect(screen.getByText(/reserved for text and grid copying/i)).toBeTruthy();
+
+  // Reset all shortcuts
+  fireEvent.click(screen.getByRole("button", { name: "Reset all shortcuts" }));
+  expect(useStudio.getState().shortcuts).toEqual({});
+  expect(screen.getByLabelText("Current badge for Open command palette").textContent).toBe("⌘ K");
 });

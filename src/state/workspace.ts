@@ -61,6 +61,7 @@ export function workspaceSnapshot(): SavedWorkspace {
       connectionId: tab.connectionId!,
       title: tab.title,
       sql: tab.sql,
+      ...(tab.pinned ? { pinned: true } : {}),
     }));
   const tableLayouts = state.tableLayouts.filter((layout) =>
     state.bootstrap?.profiles.some((profile) => profile.id === layout.connectionId),
@@ -69,12 +70,14 @@ export function workspaceSnapshot(): SavedWorkspace {
     theme: state.theme,
     density: state.density,
     sidebarVisible: state.sidebarVisible,
+    sidebarCollapsed: !state.sidebarVisible,
     inspectorVisible: state.inspectorVisible,
     activeDraftId: drafts.some((draft) => draft.id === state.activeTabId)
       ? state.activeTabId
       : null,
     drafts,
     tableLayouts,
+    shortcuts: state.shortcuts,
   };
 }
 

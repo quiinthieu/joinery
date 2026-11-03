@@ -83,6 +83,7 @@ beforeEach(() => {
     bootstrap: null,
     tabs: [],
     activeTabId: null,
+    closedTabs: [],
     tableLayouts: [],
     catalog: {},
     objects: {},
@@ -100,6 +101,10 @@ beforeEach(() => {
     },
     sqlSnippets: [],
     recentLocations: [],
+    shortcuts: {},
+    sidebarVisible: true,
+    sidebarCollapsed: false,
+    inspectorVisible: false,
   });
 });
 
@@ -1086,3 +1091,50 @@ test.each(["rebound", "context", "closed", "running"])(
     expect(client.call).not.toHaveBeenCalledWith("prepare_execution", expect.anything());
   },
 );
+
+test("togglePinTab groups pinned tabs first and closeOtherTabs preserves pinned and dirty tabs", async () => {
+  const id1 = useStudio.getState().openQuery("profile", "SELECT 1;");
+  const id2 = useStudio.getState().openQuery("profile", "SELECT 2;");
+  const id3 = useStudio.getState().openQuery("profile", "SELECT 3;");
+  const id4 = useStudio.getState().openQuery("profile", "SELECT 4;");
+
+  // Pin tab 3 -> it moves to the front of the tab strip
+  useStudio.getState().togglePinTab(id3);
+  expect(useStudio.getState().tabs.map((t) => t.id)).toEqual([id3, id1, id2, id4]);
+  expect(useStudio.getState().tabs[0].pinned).toBe(true);
+
+  // Mark tab 4 as a dirty SQL file tab
+  useStudio.getState().updateTab(id4, {
+    fileName: "dirty.sql",
+    savedSql: "SELECT 0;",
+    sql: "SELECT 4 -- modified;",
+  });
+
+  // Close other tabs keeping id2 -> id3 (pinned) and id4 (dirty) stay open, id1 closes
+  const closedCount = useStudio.getState().closeOtherTabs(id2);
+  expect(closedCount).toBe(1);
+  expect(useStudio.getState().tabs.map((t) => t.id)).toEqual([id3, id2, id4]);
+  expect(useStudio.getState().activeTabId).toBe(id2);
+  expect(useStudio.getState().toast).toMatch(/Kept 1 tab/i);
+
+  // Reopen closed tab restores id1
+  const reopenedId = await useStudio.getState().reopenClosedTab();
+  expect(reopenedId).toBe(id1);
+  expect(useStudio.getState().tabs.map((t) => t.id)).toEqual([id3, id2, id4, id1]);
+  expect(useStudio.getState().activeTabId).toBe(id1);
+});
+
+test("closedTabs stack is bounded to 10 entries and purged when connection is removed", () => {
+  const openedIds: string[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    openedIds.push(useStudio.getState().openQuery("profile", `SELECT ${i};`));
+  }
+  for (const id of openedIds) {
+    useStudio.getState().closeTab(id);
+  }
+  expect(useStudio.getState().closedTabs).toHaveLength(10);
+  expect(useStudio.getState().closedTabs[0].id).toBe(openedIds[11]);
+
+  useStudio.getState().removeConnection("profile");
+  expect(useStudio.getState().closedTabs).toHaveLength(0);
+});

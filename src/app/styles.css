@@ -4016,3 +4016,104 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+/* R8.3 Keyboard shortcuts preferences, pinned tabs, and contextual palette badges */
+.shortcut-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+}
+
+.shortcut-row-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.shortcut-row-label {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.shortcut-category-pill,
+.palette-context-badge {
+  font-size: 10.5px;
+  font-style: normal;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg-panel);
+  white-space: nowrap;
+}
+
+.shortcut-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shortcut-input {
+  width: 136px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 4px 7px;
+}
+
+.workspace-tab.pinned {
+  border-color: var(--accent-muted, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+}
+
+.tab-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px;
+  border-radius: 4px;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.tab-pin:hover,
+.tab-pin.pinned {
+  opacity: 1;
+  color: var(--text);
+}
+
+.tab-strip-action {
+  width: auto;
+  height: 26px;
+  font-size: 11px;
+  padding: 0 8px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.palette-commands button.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
