@@ -259,6 +259,14 @@ async fn rpc(
                 &arg::<String>(&args, "sessionId")?,
                 arg(&args, "action")?
             )?),
+            "preview_table_maintenance" => json!(studio.preview_table_maintenance(
+                arg(&args, "engine")?,
+                arg(&args, "action")?
+            )?),
+            "prepare_table_maintenance" => json!(studio.prepare_table_maintenance(
+                &arg::<String>(&args, "sessionId")?,
+                arg(&args, "action")?
+            )?),
             "prepare_migration_ddl" => json!(
                 studio
                     .prepare_migration_ddl(

@@ -1112,7 +1112,13 @@ export function StructureView({
       )}
       {details?.storage && (
         <div className="structure-dependencies">
-          <StorageStatsSection storage={details.storage} />
+          <StorageStatsSection
+            storage={details.storage}
+            connectionId={connectionId}
+            table={isTableLike ? tableRef : null}
+            columns={schema.columns.map((c) => c.name)}
+            onMaintained={onRefresh}
+          />
         </div>
       )}
       {details && (

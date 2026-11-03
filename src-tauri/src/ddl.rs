@@ -3417,6 +3417,310 @@ pub fn build_table_object_ddl(
     }
 }
 
+/// Engine-specific table maintenance action for `A06` reviewed administration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(rename_all_fields = "camelCase")]
+pub enum TableMaintenanceAction {
+    /// PostgreSQL `ANALYZE [(VERBOSE)] "schema"."table" [("col1", ...)]`.
+    Analyze {
+        table: TableRef,
+        verbose: bool,
+        #[serde(default)]
+        columns: Vec<String>,
+    },
+    /// PostgreSQL `VACUUM [(FULL, ANALYZE, VERBOSE)] "schema"."table"`.
+    Vacuum {
+        table: TableRef,
+        analyze: bool,
+        verbose: bool,
+        full: bool,
+    },
+    /// PostgreSQL `REINDEX TABLE "schema"."table"`.
+    ReindexTable { table: TableRef },
+    /// MySQL / MariaDB `ANALYZE TABLE \`schema\`.\`table\``.
+    AnalyzeTable { table: TableRef },
+    /// MySQL / MariaDB `OPTIMIZE TABLE \`schema\`.\`table\``.
+    OptimizeTable { table: TableRef },
+    /// MySQL / MariaDB `CHECK TABLE \`schema\`.\`table\``.
+    CheckTable { table: TableRef },
+}
+
+/// Preview of a single reviewed table maintenance statement and its operational warnings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TableMaintenancePreview {
+    pub statement: DdlStatement,
+    pub warnings: Vec<String>,
+    /// True when the statement cannot execute inside an open transaction block (e.g. PostgreSQL `VACUUM`).
+    pub non_transactional: bool,
+}
+
+/// Builds a reviewed, engine-specific table maintenance statement (`VACUUM`, `ANALYZE`,
+/// `REINDEX TABLE`, `ANALYZE TABLE`, `OPTIMIZE TABLE`, `CHECK TABLE`) with explicit lock
+/// and transaction warnings.
+pub fn build_table_maintenance_sql(
+    engine: EngineKind,
+    action: &TableMaintenanceAction,
+) -> AppResult<TableMaintenancePreview> {
+    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Table maintenance commands are only supported for PostgreSQL and MySQL/MariaDB",
+        ));
+    }
+
+    match (engine, action) {
+        (
+            EngineKind::Postgres,
+            TableMaintenanceAction::Analyze {
+                table,
+                verbose,
+                columns,
+            },
+        ) => {
+            validate_table_ref(table, "Target")?;
+            if columns.len() > MAX_TABLE_COLUMNS {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    format!("ANALYZE column list cannot exceed {MAX_TABLE_COLUMNS} columns"),
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            let mut quoted_cols = Vec::with_capacity(columns.len());
+            for col in columns {
+                let valid_col = validate_identifier(col, "Column name")?;
+                if !seen.insert(valid_col) {
+                    return Err(AppError::new(
+                        ErrorCode::InvalidInput,
+                        format!("Duplicate column \"{valid_col}\" in ANALYZE column list"),
+                    ));
+                }
+                quoted_cols.push(quote_engine_identifier(EngineKind::Postgres, valid_col));
+            }
+            let opts = if *verbose { " (VERBOSE)" } else { "" };
+            let cols_clause = if quoted_cols.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", quoted_cols.join(", "))
+            };
+            let qualified =
+                quote_qualified(EngineKind::Postgres, table.schema.trim(), table.name.trim());
+            let sql = format!("ANALYZE{opts} {qualified}{cols_clause};");
+            let warnings = vec![
+                "ANALYZE samples table pages and updates pg_statistic planner estimates while acquiring only a SHARE UPDATE EXCLUSIVE lock (concurrent reads and writes remain allowed)."
+                    .to_string(),
+            ];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!(
+                        "Analyze table {}.{}",
+                        table.schema.trim(),
+                        table.name.trim()
+                    ),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: false,
+            })
+        }
+        (
+            EngineKind::Postgres,
+            TableMaintenanceAction::Vacuum {
+                table,
+                analyze,
+                verbose,
+                full,
+            },
+        ) => {
+            validate_table_ref(table, "Target")?;
+            let mut options = Vec::new();
+            if *full {
+                options.push("FULL");
+            }
+            if *analyze {
+                options.push("ANALYZE");
+            }
+            if *verbose {
+                options.push("VERBOSE");
+            }
+            let opts_clause = if options.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", options.join(", "))
+            };
+            let qualified =
+                quote_qualified(EngineKind::Postgres, table.schema.trim(), table.name.trim());
+            let sql = format!("VACUUM{opts_clause} {qualified};");
+            let mut warnings = vec![
+                "VACUUM cannot run inside a transaction block. Commit or roll back any open manual transaction before running VACUUM."
+                    .to_string(),
+            ];
+            if *full {
+                warnings.push(
+                    "VACUUM FULL rewrites the entire table onto new disk pages and holds an ACCESS EXCLUSIVE lock that blocks all concurrent reads and writes until completion."
+                        .to_string(),
+                );
+            } else {
+                warnings.push(
+                    "Standard VACUUM reclaims dead tuple space for reuse without blocking concurrent reads and writes (SHARE UPDATE EXCLUSIVE lock)."
+                        .to_string(),
+                );
+            }
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: if *full {
+                        format!(
+                            "Vacuum full table {}.{}",
+                            table.schema.trim(),
+                            table.name.trim()
+                        )
+                    } else if *analyze {
+                        format!(
+                            "Vacuum and analyze table {}.{}",
+                            table.schema.trim(),
+                            table.name.trim()
+                        )
+                    } else {
+                        format!("Vacuum table {}.{}", table.schema.trim(), table.name.trim())
+                    },
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: *full,
+                },
+                warnings,
+                non_transactional: true,
+            })
+        }
+        (EngineKind::Postgres, TableMaintenanceAction::ReindexTable { table }) => {
+            validate_table_ref(table, "Target")?;
+            let qualified =
+                quote_qualified(EngineKind::Postgres, table.schema.trim(), table.name.trim());
+            let sql = format!("REINDEX TABLE {qualified};");
+            let warnings = vec![
+                "REINDEX TABLE rebuilds all indexes on the table and acquires a SHARE lock that blocks concurrent writes until index rebuilds complete."
+                    .to_string(),
+            ];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!(
+                        "Reindex table {}.{}",
+                        table.schema.trim(),
+                        table.name.trim()
+                    ),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: false,
+            })
+        }
+        (EngineKind::Mysql, TableMaintenanceAction::AnalyzeTable { table }) => {
+            validate_table_ref(table, "Target")?;
+            let qualified =
+                quote_qualified(EngineKind::Mysql, table.schema.trim(), table.name.trim());
+            let sql = format!("ANALYZE TABLE {qualified};");
+            let warnings = vec![
+                "ANALYZE TABLE recalculates index key distribution statistics and causes an implicit commit of any open transaction on this session."
+                    .to_string(),
+            ];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!(
+                        "Analyze table {}.{}",
+                        table.schema.trim(),
+                        table.name.trim()
+                    ),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: false,
+            })
+        }
+        (EngineKind::Mysql, TableMaintenanceAction::OptimizeTable { table }) => {
+            validate_table_ref(table, "Target")?;
+            let qualified =
+                quote_qualified(EngineKind::Mysql, table.schema.trim(), table.name.trim());
+            let sql = format!("OPTIMIZE TABLE {qualified};");
+            let warnings = vec![
+                "OPTIMIZE TABLE defragments table data, reclaims unused space, and rebuilds indexes. It causes an implicit commit of any open transaction on this session."
+                    .to_string(),
+            ];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!(
+                        "Optimize table {}.{}",
+                        table.schema.trim(),
+                        table.name.trim()
+                    ),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: false,
+            })
+        }
+        (EngineKind::Mysql, TableMaintenanceAction::CheckTable { table }) => {
+            validate_table_ref(table, "Target")?;
+            let qualified =
+                quote_qualified(EngineKind::Mysql, table.schema.trim(), table.name.trim());
+            let sql = format!("CHECK TABLE {qualified};");
+            let warnings = vec![
+                "CHECK TABLE scans table pages and indexes for structural corruption and causes an implicit commit of any open transaction on this session."
+                    .to_string(),
+            ];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!(
+                        "Check table {}.{}",
+                        table.schema.trim(),
+                        table.name.trim()
+                    ),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: false,
+            })
+        }
+        (
+            EngineKind::Postgres,
+            TableMaintenanceAction::AnalyzeTable { .. }
+            | TableMaintenanceAction::OptimizeTable { .. }
+            | TableMaintenanceAction::CheckTable { .. },
+        ) => Err(AppError::new(
+            ErrorCode::Unsupported,
+            "This table maintenance command is only supported on MySQL and MariaDB",
+        )),
+        (
+            EngineKind::Mysql,
+            TableMaintenanceAction::Analyze { .. }
+            | TableMaintenanceAction::Vacuum { .. }
+            | TableMaintenanceAction::ReindexTable { .. },
+        ) => Err(AppError::new(
+            ErrorCode::Unsupported,
+            "This table maintenance command is only supported on PostgreSQL",
+        )),
+        _ => Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Table maintenance commands are only supported for PostgreSQL and MySQL/MariaDB",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4200,6 +4504,207 @@ mod tests {
                     nullable: false,
                     default_expression: None,
                     using_expression: Some("CAST(kind AS CHAR(64))".into()),
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
+    }
+
+    #[test]
+    fn postgres_table_maintenance_builds_analyze_vacuum_and_reindex_with_warnings() {
+        let table = TableRef {
+            schema: "public".into(),
+            name: "Order Items".into(),
+        };
+
+        let analyze_all = build_table_maintenance_sql(
+            EngineKind::Postgres,
+            &TableMaintenanceAction::Analyze {
+                table: table.clone(),
+                verbose: false,
+                columns: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            analyze_all.statement.sql,
+            "ANALYZE \"public\".\"Order Items\";"
+        );
+        assert!(!analyze_all.statement.destructive);
+        assert!(!analyze_all.non_transactional);
+        assert!(
+            analyze_all
+                .warnings
+                .iter()
+                .any(|w| w.contains("SHARE UPDATE EXCLUSIVE"))
+        );
+
+        let analyze_cols = build_table_maintenance_sql(
+            EngineKind::Postgres,
+            &TableMaintenanceAction::Analyze {
+                table: table.clone(),
+                verbose: true,
+                columns: vec!["Unit Price".into(), "status".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            analyze_cols.statement.sql,
+            "ANALYZE (VERBOSE) \"public\".\"Order Items\" (\"Unit Price\", \"status\");"
+        );
+
+        // Duplicate column is rejected
+        let dup_err = build_table_maintenance_sql(
+            EngineKind::Postgres,
+            &TableMaintenanceAction::Analyze {
+                table: table.clone(),
+                verbose: false,
+                columns: vec!["status".into(), "status".into()],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(dup_err.code, ErrorCode::InvalidInput);
+
+        let vacuum_std = build_table_maintenance_sql(
+            EngineKind::Postgres,
+            &TableMaintenanceAction::Vacuum {
+                table: table.clone(),
+                analyze: true,
+                verbose: false,
+                full: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            vacuum_std.statement.sql,
+            "VACUUM (ANALYZE) \"public\".\"Order Items\";"
+        );
+        assert!(!vacuum_std.statement.destructive);
+        assert!(vacuum_std.non_transactional);
+        assert!(
+            vacuum_std
+                .warnings
+                .iter()
+                .any(|w| w.contains("cannot run inside a transaction block"))
+        );
+
+        let vacuum_full = build_table_maintenance_sql(
+            EngineKind::Postgres,
+            &TableMaintenanceAction::Vacuum {
+                table: table.clone(),
+                analyze: true,
+                verbose: true,
+                full: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            vacuum_full.statement.sql,
+            "VACUUM (FULL, ANALYZE, VERBOSE) \"public\".\"Order Items\";"
+        );
+        assert!(vacuum_full.statement.destructive);
+        assert!(vacuum_full.non_transactional);
+        assert!(
+            vacuum_full
+                .warnings
+                .iter()
+                .any(|w| w.contains("ACCESS EXCLUSIVE"))
+        );
+
+        let reindex = build_table_maintenance_sql(
+            EngineKind::Postgres,
+            &TableMaintenanceAction::ReindexTable { table },
+        )
+        .unwrap();
+        assert_eq!(
+            reindex.statement.sql,
+            "REINDEX TABLE \"public\".\"Order Items\";"
+        );
+        assert!(!reindex.non_transactional);
+    }
+
+    #[test]
+    fn mysql_table_maintenance_builds_analyze_optimize_and_check_and_rejects_mismatched_engines() {
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "order_items".into(),
+        };
+
+        let analyze = build_table_maintenance_sql(
+            EngineKind::Mysql,
+            &TableMaintenanceAction::AnalyzeTable {
+                table: table.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            analyze.statement.sql,
+            "ANALYZE TABLE `joinery`.`order_items`;"
+        );
+        assert!(!analyze.non_transactional);
+        assert!(
+            analyze
+                .warnings
+                .iter()
+                .any(|w| w.contains("implicit commit"))
+        );
+
+        let optimize = build_table_maintenance_sql(
+            EngineKind::Mysql,
+            &TableMaintenanceAction::OptimizeTable {
+                table: table.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            optimize.statement.sql,
+            "OPTIMIZE TABLE `joinery`.`order_items`;"
+        );
+
+        let check = build_table_maintenance_sql(
+            EngineKind::Mysql,
+            &TableMaintenanceAction::CheckTable {
+                table: table.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(check.statement.sql, "CHECK TABLE `joinery`.`order_items`;");
+
+        // Cross-engine and Snowflake/Redis rejection
+        assert_eq!(
+            build_table_maintenance_sql(
+                EngineKind::Mysql,
+                &TableMaintenanceAction::Vacuum {
+                    table: table.clone(),
+                    analyze: true,
+                    verbose: false,
+                    full: false,
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            build_table_maintenance_sql(
+                EngineKind::Postgres,
+                &TableMaintenanceAction::OptimizeTable {
+                    table: table.clone(),
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            build_table_maintenance_sql(
+                EngineKind::Snowflake,
+                &TableMaintenanceAction::Analyze {
+                    table,
+                    verbose: false,
+                    columns: vec![],
                 },
             )
             .unwrap_err()

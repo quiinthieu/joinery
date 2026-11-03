@@ -65,6 +65,8 @@ fn main() {
         TableColumnDraft::decl(),
         TableObjectAction::decl(),
         TableObjectPreview::decl(),
+        TableMaintenanceAction::decl(),
+        TableMaintenancePreview::decl(),
         TableSchema::decl(),
         DatabaseObjectKind::decl(),
         DatabaseObjectRef::decl(),

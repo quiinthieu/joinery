@@ -4912,3 +4912,173 @@ async fn migration_sync_executes_reviewed_ddl_detects_drift_and_rejects_read_onl
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn table_maintenance_executes_reviewed_analyze_vacuum_and_reindex_and_guards_transactions() {
+    let (_root, studio, session) = setup(SafeMode::Guard).await;
+    let cleanup = "DROP SCHEMA IF EXISTS r8_maint CASCADE;";
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     CREATE SCHEMA r8_maint;
+                     CREATE TABLE r8_maint.events (
+                       id BIGINT PRIMARY KEY,
+                       category TEXT NOT NULL,
+                       payload TEXT NOT NULL
+                     );
+                     INSERT INTO r8_maint.events
+                     SELECT g, 'cat-' || (g % 5), repeat('x', 40)
+                     FROM generate_series(1, 200) AS g;
+                     DELETE FROM r8_maint.events WHERE id <= 50;"
+                ),
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let table = TableRef {
+        schema: "r8_maint".into(),
+        name: "events".into(),
+    };
+    let object_ref = DatabaseObjectRef {
+        schema: "r8_maint".into(),
+        name: "events".into(),
+        kind: DatabaseObjectKind::Table,
+        identity: None,
+    };
+
+    let run_maint = |action: TableMaintenanceAction| {
+        let studio = studio.clone();
+        let session_id = session.id.clone();
+        async move {
+            let preview = studio
+                .preview_table_maintenance(EngineKind::Postgres, action.clone())
+                .unwrap();
+            assert!(!preview.statement.sql.is_empty());
+            let plan = studio
+                .prepare_table_maintenance(&session_id, action)
+                .unwrap();
+            assert!(plan.requires_approval);
+            assert_eq!(plan.confirmation_text.as_deref(), Some("Integration"));
+            let approval = studio
+                .authorize(&plan.id, None, plan.confirmation_text.as_deref())
+                .unwrap();
+            finish(start(&studio, &plan, Some(&approval)).1).await
+        }
+    };
+
+    // 1. ANALYZE specific columns clears stats_stale and populates last_analyze
+    let analyze_events = run_maint(TableMaintenanceAction::Analyze {
+        table: table.clone(),
+        verbose: false,
+        columns: vec!["category".into(), "payload".into()],
+    })
+    .await;
+    assert_eq!(status(&analyze_events), RunStatus::Completed);
+
+    let after_analyze = studio
+        .object_details(&session.id, &object_ref)
+        .await
+        .unwrap()
+        .storage
+        .expect("storage stats present");
+    assert!(
+        !after_analyze.stats_stale,
+        "after_analyze: {after_analyze:?}"
+    );
+    assert!(after_analyze.last_analyze.is_some());
+
+    // 2. VACUUM is rejected with ErrorCode::Conflict when a manual transaction is open
+    studio
+        .set_transaction_mode(&session.id, TransactionMode::Manual)
+        .await
+        .unwrap();
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "INSERT INTO r8_maint.events VALUES (999, 'open-tx', 'pending')"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let vacuum_in_tx = run_maint(TableMaintenanceAction::Vacuum {
+        table: table.clone(),
+        analyze: true,
+        verbose: false,
+        full: false,
+    })
+    .await;
+    assert!(
+        vacuum_in_tx.iter().any(|e| matches!(
+            e,
+            QueryEvent::Error {
+                error: AppError {
+                    code: ErrorCode::Conflict,
+                    ..
+                },
+                ..
+            }
+        )),
+        "Expected Conflict when running VACUUM in open manual transaction, got: {vacuum_in_tx:?}"
+    );
+    studio.rollback_transaction(&session.id).await.unwrap();
+
+    // 3. Once the manual transaction is idle, VACUUM (ANALYZE) succeeds without auto-BEGIN
+    let vacuum_idle = run_maint(TableMaintenanceAction::Vacuum {
+        table: table.clone(),
+        analyze: true,
+        verbose: false,
+        full: false,
+    })
+    .await;
+    assert_eq!(status(&vacuum_idle), RunStatus::Completed);
+    studio
+        .set_transaction_mode(&session.id, TransactionMode::AutoCommit)
+        .await
+        .unwrap();
+
+    let after_vacuum = studio
+        .object_details(&session.id, &object_ref)
+        .await
+        .unwrap()
+        .storage
+        .expect("storage stats present");
+    assert!(after_vacuum.last_vacuum.is_some());
+
+    // 4. REINDEX TABLE succeeds
+    let reindex_events = run_maint(TableMaintenanceAction::ReindexTable {
+        table: table.clone(),
+    })
+    .await;
+    assert_eq!(status(&reindex_events), RunStatus::Completed);
+
+    // 5. ReadOnly profile blocks prepare_table_maintenance with ErrorCode::PolicyBlocked
+    let (_ro_root, ro_studio, ro_session) = setup(SafeMode::ReadOnly).await;
+    let blocked = ro_studio
+        .prepare_table_maintenance(
+            &ro_session.id,
+            TableMaintenanceAction::Analyze {
+                table,
+                verbose: false,
+                columns: vec![],
+            },
+        )
+        .unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
+    ro_studio.shutdown();
+
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

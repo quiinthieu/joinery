@@ -57,6 +57,8 @@ import type {
   SshHostKey,
   TableChanges,
   TableInfo,
+  TableMaintenanceAction,
+  TableMaintenancePreview,
   TableObjectAction,
   TableObjectPreview,
   TablePage,
@@ -255,6 +257,14 @@ export interface JoineryCommandMap {
   };
   prepare_table_object_ddl: {
     args: { sessionId: string; action: TableObjectAction };
+    result: PreparedPlan;
+  };
+  preview_table_maintenance: {
+    args: { engine: EngineKind; action: TableMaintenanceAction };
+    result: TableMaintenancePreview;
+  };
+  prepare_table_maintenance: {
+    args: { sessionId: string; action: TableMaintenanceAction };
     result: PreparedPlan;
   };
   prepare_browse_table: {

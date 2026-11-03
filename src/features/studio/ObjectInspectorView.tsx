@@ -12,6 +12,7 @@ import {
   Lock,
   Table2,
   Trash2,
+  Wrench,
   Zap,
 } from "lucide-react";
 import type {
@@ -23,12 +24,14 @@ import type {
   ObjectDetails,
   SessionInfo,
   TableInfo,
+  TableRef,
   TableStorageStats,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
 import { objectTabTitle } from "../connections/explorer-tree";
 import { IndexConstraintDialog, type IndexConstraintDialogMode } from "./IndexConstraintDialog";
+import { TableMaintenanceDialog } from "./TableMaintenanceDialog";
 import {
   deadTupleSummary,
   describeIndexUsage,
@@ -264,7 +267,8 @@ export function ObjectInspectorView({
   const [loadedDetails, setDetails] = useState<ObjectDetails | null>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState<string | null>(null),
-    [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null);
+    [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null),
+    [refreshNonce, setRefreshNonce] = useState(0);
   const storeProfile = useStudio((s) =>
     tab.connectionId
       ? (s.bootstrap?.profiles.find((p) => p.id === tab.connectionId) ?? null)
@@ -318,6 +322,7 @@ export function ObjectInspectorView({
     target?.name,
     target?.kind,
     target?.identity,
+    refreshNonce,
   ]);
 
   if (!target) {
@@ -569,7 +574,18 @@ export function ObjectInspectorView({
           })()}
       </div>
 
-      {details.storage && <StorageStatsSection storage={details.storage} />}
+      {details.storage && (
+        <StorageStatsSection
+          storage={details.storage}
+          connectionId={tab.connectionId}
+          table={
+            details.object.kind === "table" || details.object.kind === "partitionedTable"
+              ? { schema: details.object.schema, name: details.object.name }
+              : null
+          }
+          onMaintained={() => setRefreshNonce((n) => n + 1)}
+        />
+      )}
 
       <DependencySection
         connectionId={tab.connectionId}
@@ -609,7 +625,31 @@ export function ObjectInspectorView({
   );
 }
 
-export function StorageStatsSection({ storage }: { storage: TableStorageStats }) {
+export function StorageStatsSection({
+  storage,
+  connectionId = null,
+  table = null,
+  columns = [],
+  onMaintained,
+}: {
+  storage: TableStorageStats;
+  connectionId?: string | null;
+  table?: TableRef | null;
+  columns?: readonly string[];
+  onMaintained?: () => void;
+}) {
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
+  const profile = useStudio((s) =>
+    connectionId ? (s.bootstrap?.profiles.find((p) => p.id === connectionId) ?? null) : null,
+  );
+  const session = useStudio((s) => (connectionId ? (s.sessions[connectionId] ?? null) : null));
+  const canMaintainEngine =
+    Boolean(connectionId && table) &&
+    (profile?.engine === "postgres" ||
+      profile?.engine === "mysql" ||
+      session?.engine === "postgres" ||
+      session?.engine === "mysql");
+  const isReadOnly = profile?.safeMode === "readOnly";
   const hasMetrics =
     storage.totalBytes !== null ||
     storage.tableBytes !== null ||
@@ -634,11 +674,32 @@ export function StorageStatsSection({ storage }: { storage: TableStorageStats })
             Planner and collector estimates only — Joinery never runs automatic COUNT(*) or ANALYZE.
           </p>
         </div>
-        {storage.statsStale && (
-          <span className="lock-badge waiting" data-testid="storage-stats-stale">
-            Stale / unanalyzed estimate
-          </span>
-        )}
+        <div className="structure-toolbar-actions">
+          {storage.statsStale && (
+            <span className="lock-badge waiting" data-testid="storage-stats-stale">
+              Stale / unanalyzed estimate
+            </span>
+          )}
+          {canMaintainEngine && connectionId && table && (
+            <button
+              type="button"
+              className="button ghost small"
+              aria-label="Table maintenance"
+              disabled={!session || isReadOnly}
+              title={
+                isReadOnly
+                  ? "Connection is in read-only safe mode"
+                  : !session
+                    ? "Connect this profile to run table maintenance"
+                    : "Run reviewed ANALYZE / VACUUM / OPTIMIZE maintenance"
+              }
+              onClick={() => setMaintenanceOpen(true)}
+            >
+              <Wrench size={12} />
+              Maintenance…
+            </button>
+          )}
+        </div>
       </div>
       {hasMetrics && (
         <dl className="object-meta-grid" aria-label="Storage breakdown">
@@ -712,6 +773,16 @@ export function StorageStatsSection({ storage }: { storage: TableStorageStats })
             <p>{storage.restrictedReason}</p>
           </div>
         </div>
+      )}
+      {maintenanceOpen && connectionId && table && (
+        <TableMaintenanceDialog
+          connectionId={connectionId}
+          table={table}
+          columns={columns}
+          storage={storage}
+          onClose={() => setMaintenanceOpen(false)}
+          onCompleted={() => onMaintained?.()}
+        />
       )}
     </section>
   );

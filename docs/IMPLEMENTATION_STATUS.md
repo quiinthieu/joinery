@@ -2865,3 +2865,20 @@ Branch `feat/shortcuts-and-layouts` from `origin/main` `83b1260`; merged in PR #
 
 Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
+## R8 slice 5: engine administration and table maintenance tools (3 November 2026)
+
+`build_table_maintenance_sql` (`src-tauri/src/ddl.rs`) validates target table and column identifiers and generates engine-specific maintenance statements: PostgreSQL `ANALYZE [(VERBOSE)] "schema"."table" [("col1", ...)]`, `VACUUM [(FULL, ANALYZE, VERBOSE)] "schema"."table"` (`non_transactional = true`, `destructive = full`), and `REINDEX TABLE "schema"."table"`; MySQL/MariaDB ``ANALYZE TABLE `schema`.`table`;``, ``OPTIMIZE TABLE `schema`.`table`;``, and ``CHECK TABLE `schema`.`table`;``. `prepare_table_maintenance` classifies the generated statement as `StatementKind::Ddl` via `safety::plan_for_statements` (`SafeMode::ReadOnly` rejected with `ErrorCode::PolicyBlocked`, `SafeMode::Guard` confirmation text, `SafeMode::PasswordGated` passphrase, `requires_approval = true`) and attaches lock, implicit-commit, and non-transactional warnings. `Postgres::execute` and `Postgres::execute_bound` check `is_non_transactional_postgres_statement(sql)` and return `ErrorCode::Conflict` if the session is in `TransactionState::InTransaction` or `TransactionState::Failed`, while skipping auto-`BEGIN` when the session is `Idle` in `TransactionMode::Manual`.
+
+`StorageStatsSection` (`ObjectInspectorView.tsx`, `UtilityViews.tsx`) adds a **Maintenance…** button that opens `TableMaintenanceDialog.tsx` with engine-specific options, stale-statistic and dead-tuple callouts, open-manual-transaction blocking for `VACUUM`, `Copy SQL`, `Open in SQL editor`, and `Review & authorize…` via `ReviewDialog`, refreshing `Storage & activity` metadata upon completion.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `postgres_table_maintenance_builds_analyze_vacuum_and_reindex_with_warnings` and `mysql_table_maintenance_builds_analyze_optimize_and_check_and_rejects_mismatched_engines` in `ddl.rs`. `TableMaintenanceDialog.test.tsx` (2): previews `ANALYZE`/`VACUUM`, executes through `ReviewDialog`, and blocks `VACUUM` when a manual transaction is open |
+| Fixtures | `table_maintenance_executes_reviewed_analyze_vacuum_and_reindex_and_guards_transactions` in `src-tauri/tests/postgres.rs` (PostgreSQL 18) and `table_maintenance_executes_reviewed_analyze_optimize_and_check_and_rejects_read_only` in `src-tauri/tests/mysql.rs` (MySQL 8.4 and MariaDB 11.4) |
+| Browser | `table-maintenance.spec.ts`: opens `TableMaintenanceDialog` from `StructureView`, previews `ANALYZE` and `VACUUM`, and executes `ANALYZE` through `ReviewDialog` |
+| Validate | `pnpm validate`: 512 frontend tests / 50 files, 174 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Single-table query result editing (`G14`). Next slice: RX.1 (`G14` single-table query result editing with Rust-proven provenance) |
+
+Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+

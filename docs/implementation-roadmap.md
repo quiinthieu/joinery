@@ -770,6 +770,20 @@ backend command with its exact argument and result DTOs from
 `StructureView`, `ObjectInspectorView` and `Workbench`. See
 [evidence](IMPLEMENTATION_STATUS.md#r8-slice-4-closed-typed-ipc-command-map-and-granular-engine-capabilities-3-november-2026).
 
+### R8 slice 5: engine administration and table maintenance tools (branch `feat/typed-commands-capabilities`)
+
+`build_table_maintenance_sql` (`src-tauri/src/ddl.rs`),
+`preview_table_maintenance`, and `prepare_table_maintenance` generate reviewed
+PostgreSQL (`ANALYZE`, `VACUUM`, `VACUUM FULL`, `REINDEX TABLE`) and
+MySQL/MariaDB (`ANALYZE TABLE`, `OPTIMIZE TABLE`, `CHECK TABLE`) maintenance
+statements with lock, implicit-commit, and non-transactional warnings.
+`Postgres::execute` / `execute_bound` reject non-transactional maintenance
+statements (`VACUUM`, `CLUSTER`, `CONCURRENTLY`) with `ErrorCode::Conflict` when
+a manual transaction is open. `StorageStatsSection` (`ObjectInspectorView.tsx`,
+`UtilityViews.tsx`) adds a **Maintenance…** action opening
+`TableMaintenanceDialog.tsx` and routing execution through `ReviewDialog`. See
+[evidence](IMPLEMENTATION_STATUS.md#r8-slice-5-engine-administration-and-table-maintenance-tools-3-november-2026).
+
 ## Subsequent phases and blueprint cross-reference
 
 | Phase | Feature IDs / user value | Priority / complexity | Dependencies and exit criteria | Blueprint relationship |

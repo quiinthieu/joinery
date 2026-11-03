@@ -3,7 +3,7 @@ use ts_rs::TS;
 
 pub use crate::ddl::{
     DdlStatement, IndexConstraintAction, IndexConstraintPreview, SchemaDdlPlan, TableColumnDraft,
-    TableObjectAction, TableObjectPreview,
+    TableMaintenanceAction, TableMaintenancePreview, TableObjectAction, TableObjectPreview,
 };
 pub use crate::schema_diff::{
     MAX_SNAPSHOT_COLUMNS, MAX_SNAPSHOT_CONSTRAINTS, MAX_SNAPSHOT_INDEXES, MAX_SNAPSHOT_RELATIONS,

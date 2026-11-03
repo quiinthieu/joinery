@@ -1937,6 +1937,44 @@ impl Studio {
             bytes,
         )
     }
+    pub fn preview_table_maintenance(
+        &self,
+        engine: EngineKind,
+        action: TableMaintenanceAction,
+    ) -> AppResult<TableMaintenancePreview> {
+        crate::ddl::build_table_maintenance_sql(engine, &action)
+    }
+    pub fn prepare_table_maintenance(
+        &self,
+        session_id: &str,
+        action: TableMaintenanceAction,
+    ) -> AppResult<PreparedPlan> {
+        let session = self.session(session_id)?;
+        let preview = crate::ddl::build_table_maintenance_sql(session.profile.engine, &action)?;
+        let sql = preview.statement.sql;
+        let statement = StatementPlan {
+            span: Some(crate::sql_text::span_for_byte_range(&sql, 0, sql.len())),
+            sql: sql.clone(),
+            kind: StatementKind::Ddl,
+            missing_where: false,
+        };
+        let mut plan = safety::plan_for_statements(session_id, &session.profile, vec![statement])?;
+        plan.requires_approval = true;
+        for warning in preview.warnings {
+            if !plan.warnings.contains(&warning) {
+                plan.warnings.push(warning);
+            }
+        }
+        let bytes = sql.len();
+        self.store_plan(
+            plan,
+            Action::Sql {
+                bound: Vec::new(),
+                error_source: None,
+            },
+            bytes,
+        )
+    }
     pub async fn prepare_migration_ddl(
         &self,
         session_id: &str,
