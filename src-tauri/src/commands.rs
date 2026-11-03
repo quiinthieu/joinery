@@ -273,6 +273,24 @@ pub fn generate_migration_ddl(
 }
 
 #[tauri::command]
+pub fn preview_index_constraint_ddl(
+    studio: State<'_, Arc<Studio>>,
+    engine: EngineKind,
+    action: IndexConstraintAction,
+) -> AppResult<IndexConstraintPreview> {
+    studio.preview_index_constraint_ddl(engine, action)
+}
+
+#[tauri::command]
+pub fn prepare_index_constraint_ddl(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    action: IndexConstraintAction,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_index_constraint_ddl(&session_id, action)
+}
+
+#[tauri::command]
 pub async fn prepare_browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

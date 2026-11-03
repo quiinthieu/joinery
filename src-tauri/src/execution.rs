@@ -1828,6 +1828,44 @@ impl Studio {
         }
         crate::ddl::generate_migration_ddl(&left, &right, target_schema)
     }
+    pub fn preview_index_constraint_ddl(
+        &self,
+        engine: EngineKind,
+        action: IndexConstraintAction,
+    ) -> AppResult<IndexConstraintPreview> {
+        crate::ddl::build_index_constraint_ddl(engine, &action)
+    }
+    pub fn prepare_index_constraint_ddl(
+        &self,
+        session_id: &str,
+        action: IndexConstraintAction,
+    ) -> AppResult<PreparedPlan> {
+        let session = self.session(session_id)?;
+        let preview = crate::ddl::build_index_constraint_ddl(session.profile.engine, &action)?;
+        let sql = preview.statement.sql;
+        let statement = StatementPlan {
+            span: Some(crate::sql_text::span_for_byte_range(&sql, 0, sql.len())),
+            sql: sql.clone(),
+            kind: StatementKind::Ddl,
+            missing_where: false,
+        };
+        let mut plan = safety::plan_for_statements(session_id, &session.profile, vec![statement])?;
+        plan.requires_approval = true;
+        for warning in preview.warnings {
+            if !plan.warnings.contains(&warning) {
+                plan.warnings.push(warning);
+            }
+        }
+        let bytes = sql.len();
+        self.store_plan(
+            plan,
+            Action::Sql {
+                bound: Vec::new(),
+                error_source: None,
+            },
+            bytes,
+        )
+    }
     async fn schema_for_session(
         &self,
         session: &Session,

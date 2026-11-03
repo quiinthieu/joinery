@@ -695,8 +695,20 @@ PostgreSQL and MySQL/MariaDB full-schema and migration DDL scripts in Rust
 destructive `DROP` statements and warnings without auto-executing SQL. Round-trip
 disposable fixture tests on PostgreSQL 18, MySQL 8.4 and MariaDB 11.4 verify
 zero structural diffs (`compare_schemas == 0`) after executing both full-schema
-and migration DDL plans. See
+and migration DDL plans. Merged in PR #65 (`b67e65b`). See
 [evidence](IMPLEMENTATION_STATUS.md#r7-slice-3-rust-ddl-generator-and-migration-preview-3-november-2026).
+
+### R7 slice 4: index and constraint editor (branch `feat/index-constraint-editor`)
+
+`preview_index_constraint_ddl(engine, action)` and
+`prepare_index_constraint_ddl(sessionId, action)` build and authorize
+engine-aware `CREATE INDEX`, `DROP INDEX`, `ADD CONSTRAINT` (`PRIMARY KEY`,
+`UNIQUE`, `CHECK`, `FOREIGN KEY` with `ON DELETE`/`ON UPDATE` and PostgreSQL
+`NOT VALID`) and `DROP CONSTRAINT` statements on PostgreSQL and MySQL/MariaDB.
+`StructureView` and `ObjectInspectorView` wire `IndexConstraintDialog` with live
+Rust DDL previews, lock/implicit-commit warnings, `Constraint-backed` index
+guardrails, and mandatory `ReviewDialog` approval. See
+[evidence](IMPLEMENTATION_STATUS.md#r7-slice-4-index-and-constraint-editor-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 

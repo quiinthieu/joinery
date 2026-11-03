@@ -60,6 +60,8 @@ fn main() {
         SchemaDiffReport::decl(),
         DdlStatement::decl(),
         SchemaDdlPlan::decl(),
+        IndexConstraintAction::decl(),
+        IndexConstraintPreview::decl(),
         TableSchema::decl(),
         DatabaseObjectKind::decl(),
         DatabaseObjectRef::decl(),

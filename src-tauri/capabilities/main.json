@@ -45,6 +45,8 @@
     "allow-compare-schemas",
     "allow-generate-schema-ddl",
     "allow-generate-migration-ddl",
+    "allow-preview-index-constraint-ddl",
+    "allow-prepare-index-constraint-ddl",
     "allow-prepare-browse-table",
     "allow-browse-table",
     "allow-result-range",

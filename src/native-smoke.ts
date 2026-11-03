@@ -173,6 +173,18 @@ export async function runNativeSmoke() {
           sessionId: "missing-native-fixture",
         },
       ],
+      [
+        "prepare_index_constraint_ddl",
+        {
+          sessionId: "missing-native-fixture",
+          action: {
+            type: "dropIndex",
+            table: { schema: "public", name: "orders" },
+            name: "idx_orders",
+            concurrently: false,
+          },
+        },
+      ],
     ] as const) {
       let denied = false;
       try {
@@ -345,6 +357,20 @@ export async function runNativeSmoke() {
               unsupportedObjects: [],
               truncated: false,
               restricted: false,
+            },
+          }),
+      ],
+      [
+        "preview_index_constraint_ddl",
+        "invalidInput",
+        () =>
+          client.call("preview_index_constraint_ddl", {
+            engine: "postgres",
+            action: {
+              type: "dropIndex",
+              table: { schema: "public", name: "orders" },
+              name: "",
+              concurrently: false,
             },
           }),
       ],

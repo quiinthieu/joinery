@@ -2764,4 +2764,27 @@ Migration DDL (`generate_migration_ddl`) compares canonicalized snapshots from t
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | Reviewed one-use DDL execution and drift check (`D04`), dedicated index/constraint editor (`D05`) and object creation/table modification UI (`N08`). Next slice: R7.4 (`D05` index and constraint editor) |
 
-Branch `feat/ddl-generator` from `origin/main` `046d05c`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/ddl-generator` from `origin/main` `046d05c`; merged in PR #65 (`b67e65b`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R7 slice 4: index and constraint editor (3 November 2026)
+
+`preview_index_constraint_ddl(engine, action)` and `prepare_index_constraint_ddl(sessionId, action)` provide an engine-aware index and constraint editor (`IndexConstraintAction`, `IndexConstraintPreview`, `build_index_constraint_ddl`) on PostgreSQL and MySQL/MariaDB without bypassing the safety gateway.
+
+`build_index_constraint_ddl` quotes identifiers per engine, validates SQL expressions/predicates against comment tokens, semicolons and unterminated quotes, and builds:
+- `CREATE INDEX`: composite key order, custom key expressions, PostgreSQL access methods (`btree`, `hash`, `gin`, `gist`, `spgist`, `brin`), `CONCURRENTLY`, and partial `WHERE` predicates; MySQL/MariaDB access methods (`btree`, `hash`, `fulltext`, `spatial`).
+- `DROP INDEX`: PostgreSQL `DROP INDEX [CONCURRENTLY] "schema"."idx";` and MySQL/MariaDB `DROP INDEX \`idx\` ON \`schema\`.\`table\`;`.
+- `ADD CONSTRAINT`: `PRIMARY KEY`, `UNIQUE`, `CHECK` (with optional PostgreSQL `NOT VALID`), and `FOREIGN KEY` (`REFERENCES`, `ON DELETE`, `ON UPDATE`, and optional PostgreSQL `NOT VALID`).
+- `DROP CONSTRAINT`: PostgreSQL `ALTER TABLE … DROP CONSTRAINT "name" [CASCADE];` and MySQL/MariaDB constraint-kind-specific `DROP PRIMARY KEY`, `DROP FOREIGN KEY`, `DROP INDEX` (for `UNIQUE` constraints), and `DROP CHECK`.
+
+`prepare_index_constraint_ddl` classifies the statement as `StatementKind::Ddl` via `safety::plan_for_statements`, rejecting `SafeMode::ReadOnly` (`ErrorCode::PolicyBlocked`), enforcing `SafeMode::Guard` confirmation text and `SafeMode::PasswordGated` passphrases, forcing `requires_approval = true`, and attaching engine lock, implicit-commit and destructive warnings. `StructureView` and `ObjectInspectorView` expose **Create index…**, **Add constraint…** and **Drop…** actions, mark primary/unique/exclusion-backed indexes as **Constraint-backed**, and route execution through `ReviewDialog`.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | Two Rust unit tests in `ddl.rs` cover PostgreSQL composite/partial/`CONCURRENTLY` index and `NOT VALID` FK/`CASCADE` drop DDL plus MySQL/MariaDB kind-specific constraint drops and unsupported-flag rejection. `IndexConstraintDialog.test.tsx` (3) covers composite partial index creation through `ReviewDialog`, `FOREIGN KEY … NOT VALID` DDL preview/editor handoff, and `readOnly` safe-mode button disabling |
+| Fixtures | `index_and_constraint_editor_executes_reviewed_ddl_and_rejects_read_only` in `src-tauri/tests/postgres.rs` (PostgreSQL 18) and `src-tauri/tests/mysql.rs` (MySQL 8.4 and MariaDB 11.4) execute reviewed `CreateIndex`, `AddConstraint`, `DropIndex` and `DropConstraint` plans and verify `SafeMode::ReadOnly` rejection |
+| Browser | `index-constraint-editor.spec.ts`: creates a PostgreSQL composite partial `CONCURRENTLY` index, adds a `FOREIGN KEY … ON DELETE CASCADE NOT VALID` constraint, and drops the secondary index through `StructureView` and `ReviewDialog` with zero page errors |
+| Validate | `pnpm validate`: 491 frontend tests / 46 files, 167 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Object creation and table column modification UI (`N08`) and reviewed schema synchronization workflow (`D04`). Next slice: R7.5 (`N08` object creation & table modification UI) |
+
+Branch `feat/index-constraint-editor` from `origin/main` `b67e65b`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
