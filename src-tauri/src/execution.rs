@@ -82,10 +82,26 @@ enum Action {
     Changes {
         schema: TableSchema,
         rows: Vec<RowMutation>,
+        anchor_id: Option<String>,
+        updates: Vec<ResultChanges>,
+        deletes: Vec<ResultDeletes>,
+        inserted_rows: Vec<TextRow>,
     },
     CancelProcess {
         id: String,
         identity: String,
+    },
+}
+
+enum StatementProvenance {
+    None,
+    Candidate {
+        candidate: safety::SingleTableSelectCandidate,
+        live_schema: Box<TableSchema>,
+        safe_mode: SafeMode,
+    },
+    ReadOnly {
+        reason: String,
     },
 }
 
@@ -849,6 +865,12 @@ impl Studio {
         params: Option<Vec<QueryParamInput>>,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if analyze && !session.info.capabilities.explain_analyze {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "EXPLAIN ANALYZE is not supported by this session's engine capabilities",
+            ));
+        }
         let classification =
             crate::params::rewrite_for_classification(session.profile.engine, sql)?;
         let explained = crate::query_plan::explain_sql(
@@ -922,7 +944,7 @@ impl Studio {
                 serde_json::to_vec(&(table, query))
                     .map_err(|_| AppError::internal("Could not fingerprint table filter"))?,
             ),
-            Action::Changes { schema, rows } => fingerprint.update(
+            Action::Changes { schema, rows, .. } => fingerprint.update(
                 serde_json::to_vec(&(schema, rows))
                     .map_err(|_| AppError::internal("Could not fingerprint bound changes"))?,
             ),
@@ -1114,11 +1136,13 @@ impl Studio {
                         break;
                     }
                     let clock = Instant::now();
+                    let provenance = self.resolve_statement_provenance(&session, statement).await;
                     let mut sink = Output {
                         studio: &self,
                         session_id: &session.info.id,
                         run_id: &run_id,
                         index,
+                        provenance,
                         current: None,
                         truncated: false,
                         viewer_closed: false,
@@ -1217,21 +1241,44 @@ impl Studio {
                     }
                 }
             }
-            Action::Changes { schema, rows } => {
+            Action::Changes {
+                schema,
+                rows,
+                anchor_id,
+                updates,
+                deletes,
+                inserted_rows,
+            } => {
                 if token.is_cancelled() {
                     status = RunStatus::Cancelled;
-                } else if let Err(error) = session.driver.apply(schema, rows).await {
-                    status = if error.code == ErrorCode::Cancelled {
-                        RunStatus::Cancelled
-                    } else if error.code == ErrorCode::OutcomeUnknown {
-                        RunStatus::OutcomeUnknown
-                    } else {
-                        RunStatus::Failed
-                    };
-                    events(QueryEvent::Error {
-                        error,
-                        statement_index: 0,
-                    });
+                } else {
+                    match session.driver.apply(schema, rows).await {
+                        Ok(()) => {
+                            if let Ok(updated_results) = self.results.apply_committed_changes(
+                                anchor_id.as_deref(),
+                                updates,
+                                deletes,
+                                inserted_rows,
+                            ) {
+                                for result in updated_results {
+                                    events(QueryEvent::Result { result });
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            status = if error.code == ErrorCode::Cancelled {
+                                RunStatus::Cancelled
+                            } else if error.code == ErrorCode::OutcomeUnknown {
+                                RunStatus::OutcomeUnknown
+                            } else {
+                                RunStatus::Failed
+                            };
+                            events(QueryEvent::Error {
+                                error,
+                                statement_index: 0,
+                            });
+                        }
+                    }
                 }
             }
             Action::CancelProcess { id, identity } => {
@@ -1738,6 +1785,69 @@ impl Studio {
         let session = self.session(session_id)?;
         self.schema_for_session(&session, table).await
     }
+    async fn resolve_statement_provenance(
+        &self,
+        session: &Session,
+        statement: &StatementPlan,
+    ) -> StatementProvenance {
+        if !matches!(
+            session.profile.engine,
+            EngineKind::Postgres | EngineKind::Mysql
+        ) || !session.info.capabilities.table_editing
+        {
+            return StatementProvenance::None;
+        }
+        if statement.kind != StatementKind::Read {
+            return StatementProvenance::ReadOnly {
+                reason: "Statement is not a SELECT query".into(),
+            };
+        }
+        const UNQUALIFIED_SENTINEL: &str = "\0joinery_unqualified\0";
+        let mut candidate = match safety::analyze_single_table_select(
+            session.profile.engine,
+            &statement.sql,
+            Some(UNQUALIFIED_SENTINEL),
+        ) {
+            Ok(candidate) => candidate,
+            Err(reason) => return StatementProvenance::ReadOnly { reason },
+        };
+        let safe_mode = safety::effective_mode(&session.profile);
+        if safe_mode == SafeMode::ReadOnly {
+            return StatementProvenance::ReadOnly {
+                reason: "Connection is in read-only mode".into(),
+            };
+        }
+        if candidate.table.schema == UNQUALIFIED_SENTINEL {
+            let default_schema = match session.driver.session_state(&session.info.id).await {
+                Ok(state) => state.active_context.or(Some(state.database)),
+                Err(_) => Some(if session.profile.engine == EngineKind::Postgres {
+                    "public".into()
+                } else {
+                    session.profile.database.clone()
+                }),
+            }
+            .unwrap_or_default();
+            if default_schema.trim().is_empty() {
+                return StatementProvenance::ReadOnly {
+                    reason: "Table reference is unqualified and no active schema is set".into(),
+                };
+            }
+            candidate.table.schema = default_schema;
+        }
+        match self.schema_for_session(session, &candidate.table).await {
+            Ok(live_schema) => StatementProvenance::Candidate {
+                candidate,
+                live_schema: Box::new(live_schema),
+                safe_mode,
+            },
+            Err(_) => StatementProvenance::ReadOnly {
+                reason: format!(
+                    "Table \"{}.{}\" is not an editable base table or its schema is unavailable",
+                    candidate.table.schema, candidate.table.name
+                ),
+            },
+        }
+    }
     pub async fn referencing_foreign_keys(
         &self,
         session_id: &str,
@@ -1755,10 +1865,14 @@ impl Studio {
                 "Choose a schema to diagram",
             ));
         }
-        self.session(session_id)?
-            .driver
-            .schema_diagram(schema)
-            .await
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.schema_diagram {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Schema diagrams are not supported for this database engine",
+            ));
+        }
+        session.driver.schema_diagram(schema).await
     }
     pub async fn schema_snapshot(
         &self,
@@ -1771,10 +1885,14 @@ impl Studio {
                 "Choose a schema to snapshot",
             ));
         }
-        self.session(session_id)?
-            .driver
-            .schema_snapshot(schema)
-            .await
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.schema_diff {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Schema snapshots and comparison are not supported for this database engine",
+            ));
+        }
+        session.driver.schema_snapshot(schema).await
     }
     pub fn compare_schemas(
         &self,
@@ -1841,6 +1959,12 @@ impl Studio {
         action: IndexConstraintAction,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if !session.info.capabilities.ddl_editing {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Structured DDL editing is not supported for this database engine",
+            ));
+        }
         let preview = crate::ddl::build_index_constraint_ddl(session.profile.engine, &action)?;
         let sql = preview.statement.sql;
         let statement = StatementPlan {
@@ -1879,6 +2003,12 @@ impl Studio {
         action: TableObjectAction,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if !session.info.capabilities.ddl_editing {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Structured DDL editing is not supported for this database engine",
+            ));
+        }
         let preview = crate::ddl::build_table_object_ddl(session.profile.engine, &action)?;
         let mut statements = Vec::with_capacity(preview.statements.len());
         let mut bytes = 0usize;
@@ -1911,6 +2041,44 @@ impl Studio {
             bytes,
         )
     }
+    pub fn preview_table_maintenance(
+        &self,
+        engine: EngineKind,
+        action: TableMaintenanceAction,
+    ) -> AppResult<TableMaintenancePreview> {
+        crate::ddl::build_table_maintenance_sql(engine, &action)
+    }
+    pub fn prepare_table_maintenance(
+        &self,
+        session_id: &str,
+        action: TableMaintenanceAction,
+    ) -> AppResult<PreparedPlan> {
+        let session = self.session(session_id)?;
+        let preview = crate::ddl::build_table_maintenance_sql(session.profile.engine, &action)?;
+        let sql = preview.statement.sql;
+        let statement = StatementPlan {
+            span: Some(crate::sql_text::span_for_byte_range(&sql, 0, sql.len())),
+            sql: sql.clone(),
+            kind: StatementKind::Ddl,
+            missing_where: false,
+        };
+        let mut plan = safety::plan_for_statements(session_id, &session.profile, vec![statement])?;
+        plan.requires_approval = true;
+        for warning in preview.warnings {
+            if !plan.warnings.contains(&warning) {
+                plan.warnings.push(warning);
+            }
+        }
+        let bytes = sql.len();
+        self.store_plan(
+            plan,
+            Action::Sql {
+                bound: Vec::new(),
+                error_source: None,
+            },
+            bytes,
+        )
+    }
     pub async fn prepare_migration_ddl(
         &self,
         session_id: &str,
@@ -1921,7 +2089,9 @@ impl Studio {
         if !matches!(
             session.profile.engine,
             EngineKind::Postgres | EngineKind::Mysql
-        ) {
+        ) || !session.info.capabilities.ddl_editing
+            || !session.info.capabilities.schema_diff
+        {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
                 "Schema migration execution is available for PostgreSQL and MySQL/MariaDB",
@@ -2089,7 +2259,14 @@ impl Studio {
         self.session(session_id)?.driver.processes().await
     }
     pub async fn lock_waits(&self, session_id: &str) -> AppResult<LockWaitSnapshot> {
-        self.session(session_id)?.driver.lock_waits().await
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.lock_inspection {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Lock inspection is unavailable for this engine",
+            ));
+        }
+        session.driver.lock_waits().await
     }
 
     pub async fn browse(
@@ -2339,6 +2516,9 @@ impl Studio {
             ));
         }
         let schema = self.results.provenance(anchor_id)?;
+        let retained_anchor = Some(anchor_id.to_owned());
+        let retained_updates = changes.updates.clone();
+        let retained_deletes = changes.deletes.clone();
         let update_cells = changes
             .updates
             .iter()
@@ -2563,12 +2743,31 @@ impl Studio {
         plan.requires_approval = true;
         plan.warnings.push("Grid edits use the login role in a separate transaction. SQL-editor transactions and session settings are independent.".into());
         bytes += sql.iter().map(String::len).sum::<usize>();
+        let inserted_rows: Vec<TextRow> = mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                RowMutation::Insert { values } => {
+                    let mut row = vec![None; schema.columns.len()];
+                    for (idx, val) in values {
+                        if *idx < row.len() {
+                            row[*idx] = val.clone();
+                        }
+                    }
+                    Some(row)
+                }
+                _ => None,
+            })
+            .collect();
         let row_count = mutations.len();
         let plan = self.store_plan(
             plan,
             Action::Changes {
                 schema,
                 rows: mutations,
+                anchor_id: retained_anchor,
+                updates: retained_updates,
+                deletes: retained_deletes,
+                inserted_rows,
             },
             bytes,
         )?;
@@ -3270,6 +3469,10 @@ impl Studio {
             Action::Changes {
                 schema,
                 rows: prepared.mutations,
+                anchor_id: None,
+                updates: Vec::new(),
+                deletes: Vec::new(),
+                inserted_rows: Vec::new(),
             },
             total_bytes,
         )?;
@@ -3657,6 +3860,7 @@ struct Output<'a> {
     session_id: &'a str,
     run_id: &'a str,
     index: usize,
+    provenance: StatementProvenance,
     current: Option<String>,
     truncated: bool,
     viewer_closed: bool,
@@ -3690,11 +3894,46 @@ impl QuerySink for Output<'_> {
         if self.viewer_closed {
             return Ok(());
         }
-        let info = match self
-            .studio
-            .results
-            .create(self.run_id, self.index, columns, None)
-        {
+        let (resolved_columns, resolved_schema, resolved_editability) = if columns.is_empty() {
+            (columns, None, None)
+        } else {
+            match &self.provenance {
+                StatementProvenance::None => (columns, None, None),
+                StatementProvenance::ReadOnly { reason } => (
+                    columns,
+                    None,
+                    Some(ResultEditability::ReadOnly {
+                        reason: reason.clone(),
+                    }),
+                ),
+                StatementProvenance::Candidate {
+                    candidate,
+                    live_schema,
+                    safe_mode,
+                } => match safety::verify_result_provenance(
+                    candidate,
+                    live_schema,
+                    &columns,
+                    *safe_mode,
+                ) {
+                    safety::ProvenanceResolution::Editable {
+                        schema,
+                        columns: enriched,
+                        editability,
+                    } => (enriched, Some(*schema), Some(editability)),
+                    safety::ProvenanceResolution::ReadOnly { reason } => {
+                        (columns, None, Some(ResultEditability::ReadOnly { reason }))
+                    }
+                },
+            }
+        };
+        let info = match self.studio.results.create_with_editability(
+            self.run_id,
+            self.index,
+            resolved_columns,
+            resolved_schema,
+            resolved_editability,
+        ) {
             Ok(info) => info,
             Err(error) => {
                 self.limit(&error.message);
@@ -4028,6 +4267,12 @@ mod browse_classification_tests {
                         table_filtering: true,
                         processes: true,
                         object_explorer: true,
+                        schema_diagram: false,
+                        schema_diff: false,
+                        ddl_editing: false,
+                        lock_inspection: false,
+                        explain_analyze: false,
+                        oauth_browser: false,
                     },
                 },
                 profile: saved,
@@ -4171,5 +4416,103 @@ mod browse_classification_tests {
             .await
             .expect_err("disconnected session should fail");
         assert_eq!(err.code, ErrorCode::ConnectionClosed);
+    }
+
+    #[tokio::test]
+    async fn granular_engine_capabilities_gate_unsupported_operations() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let saved = studio
+            .save_profile(profile(EngineKind::Postgres, SafeMode::Silent), None)
+            .unwrap();
+        let recorder = Arc::new(RecordingDriver {
+            calls: Mutex::new(Vec::new()),
+        });
+        let session_id = "cap-test-session".to_string();
+        studio.sessions.lock().insert(
+            session_id.clone(),
+            Arc::new(Session {
+                info: SessionInfo {
+                    id: session_id.clone(),
+                    connection_id: saved.id.clone(),
+                    engine: EngineKind::Postgres,
+                    server_version: "17.0".into(),
+                    latency_ms: 1,
+                    encrypted: false,
+                    capabilities: EngineCapabilities {
+                        sql: true,
+                        actual_plan: None,
+                        transactions: true,
+                        cancellation: true,
+                        table_browsing: false,
+                        table_editing: false,
+                        table_filtering: false,
+                        processes: false,
+                        object_explorer: false,
+                        schema_diagram: false,
+                        schema_diff: false,
+                        ddl_editing: false,
+                        lock_inspection: false,
+                        explain_analyze: false,
+                        oauth_browser: false,
+                    },
+                },
+                profile: saved,
+                driver: recorder,
+                lane: tokio::sync::Mutex::new(()),
+                cancellation_gate: tokio::sync::Mutex::new(()),
+                active_run: Mutex::new(None),
+                closed: AtomicBool::new(false),
+                tunnel: None,
+                completion: Mutex::new(None),
+            }),
+        );
+
+        let diag_err = studio
+            .schema_diagram(&session_id, "public")
+            .await
+            .expect_err(
+                "schema_diagram should be rejected when schema_diagram capability is false",
+            );
+        assert_eq!(diag_err.code, ErrorCode::Unsupported);
+
+        let snap_err = studio
+            .schema_snapshot(&session_id, "public")
+            .await
+            .expect_err("schema_snapshot should be rejected when schema_diff capability is false");
+        assert_eq!(snap_err.code, ErrorCode::Unsupported);
+
+        let ddl_err = studio
+            .prepare_table_object_ddl(
+                &session_id,
+                TableObjectAction::DropObject {
+                    object: DatabaseObjectRef {
+                        schema: "public".into(),
+                        name: "items".into(),
+                        kind: DatabaseObjectKind::Table,
+                        identity: None,
+                    },
+                    cascade: false,
+                },
+            )
+            .expect_err(
+                "prepare_table_object_ddl should be rejected when ddl_editing capability is false",
+            );
+        assert_eq!(ddl_err.code, ErrorCode::Unsupported);
+
+        let lock_err = studio
+            .lock_waits(&session_id)
+            .await
+            .expect_err("lock_waits should be rejected when lock_inspection capability is false");
+        assert_eq!(lock_err.code, ErrorCode::Unsupported);
+
+        let analyze_err = studio
+            .prepare_explain(&session_id, "SELECT 1", true)
+            .expect_err("prepare_explain(analyze=true) should be rejected when explain_analyze capability is false");
+        assert_eq!(analyze_err.code, ErrorCode::Unsupported);
     }
 }

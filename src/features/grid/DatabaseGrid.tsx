@@ -25,7 +25,7 @@ import "@glideapps/glide-data-grid/dist/index.css";
 import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
-import { useStudio, type StudioTab } from "../../state/studio";
+import { useStudio, querySessionForTab, type StudioTab } from "../../state/studio";
 import {
   copyFormatLabel,
   formatGridCells,
@@ -171,9 +171,23 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     rows: CompactSelection.empty(),
     columns: CompactSelection.empty(),
   });
-  const connected = useStudio(
-    (state) => !!(tab.connectionId && state.sessions[tab.connectionId]?.id === tab.dataSessionId),
-  );
+  const connected = useStudio((state) => {
+    if (!tab.connectionId) return false;
+    const activeSession =
+      tab.kind === "query"
+        ? querySessionForTab(tab, state.sessions)
+        : state.sessions[tab.connectionId];
+    return !!(activeSession && activeSession.id === tab.dataSessionId);
+  });
+  const readOnlyProfile = useStudio((state) => {
+    const profile = state.bootstrap?.profiles.find((p) => p.id === tab.connectionId);
+    return profile?.safeMode === "readOnly";
+  });
+  const isGridEditable =
+    tab.kind === "table"
+      ? !!tab.schema?.editable
+      : tab.kind === "query" && result?.editability?.status === "editable" && !readOnlyProfile;
+  const insertScopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
   const model = useRef({ tab, result });
   model.current = { tab, result };
@@ -228,7 +242,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       }),
     [visibleColumns, resolvedLayout.widths, tab.kind, widths, sortQuery],
   );
-  const draftInserts = tab.kind === "table" ? dirtyStore.insertsForTab(tab.id) : [];
+  const draftInserts = isGridEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
   const rowCount =
     tab.kind === "benchmark"
       ? 1_000_000
@@ -236,7 +250,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         ? draftInserts.length > 0
           ? tab.loadedRows + draftInserts.length
           : tab.loadedRows + (tab.hasMore ? 1 : 0)
-        : (result?.retainedRows ?? 0);
+        : (result?.retainedRows ?? 0) + draftInserts.length;
   const theme = useMemo<Partial<Theme>>(() => {
     const style = getComputedStyle(document.documentElement),
       color = (key: string) => style.getPropertyValue(key).trim();
@@ -307,12 +321,16 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   }, []);
 
   const locateDraft = useCallback((row: number) => {
-    const { tab } = model.current;
-    if (tab.kind !== "table" || row < tab.loadedRows) return null;
-    const inserts = dirtyStore.insertsForTab(tab.id);
-    const index = row - tab.loadedRows;
+    const { tab, result } = model.current;
+    const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+    const scopeId = tab.kind === "table" ? tab.id : result?.id;
+    if (!scopeId || (tab.kind !== "table" && tab.kind !== "query") || row < loaded) {
+      return null;
+    }
+    const inserts = dirtyStore.insertsForTab(scopeId);
+    const index = row - loaded;
     const draft = inserts[index];
-    return draft ? { tabId: tab.id, draft, index } : null;
+    return draft ? { tabId: scopeId, draft, index } : null;
   }, []);
 
   const targetAt = useCallback(
@@ -322,7 +340,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       const tableEditable =
         connected &&
         !["running", "queued", "outcomeUnknown"].includes(model.current.tab.status) &&
-        !!model.current.tab.schema?.editable;
+        isGridEditable;
       const draftSource = locateDraft(row);
       if (draftSource) {
         const hasExplicit = column.id in draftSource.draft.values;
@@ -357,7 +375,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         deleted,
       };
     },
-    [locate, locateDraft, visibleColumns, connected],
+    [locate, locateDraft, visibleColumns, connected, isGridEditable],
   );
 
   const pendingCanvasFocus = useRef(false);
@@ -366,7 +384,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     if (!focusRowRequest || !columns.length) return;
     const targetRow = focusRowRequest.row;
     if (targetRow < 0 || targetRow >= rowCount) return;
-    const isDraft = model.current.tab.kind === "table" && targetRow >= model.current.tab.loadedRows;
+    const loaded =
+      model.current.tab.kind === "table"
+        ? model.current.tab.loadedRows
+        : (model.current.result?.retainedRows ?? 0);
+    const isDraft =
+      (model.current.tab.kind === "table" || model.current.tab.kind === "query") &&
+      targetRow >= loaded;
     const targetCol = isDraft
       ? Math.max(
           0,
@@ -432,8 +456,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       if (draftSource) {
         const tableEditable =
           connected &&
-          tab.kind === "table" &&
-          !!tab.schema?.editable &&
+          isGridEditable &&
           !["outcomeUnknown", "queued", "running"].includes(tab.status);
         const editable = tableEditable && column.insertable;
         const hasExplicit = column.id in draftSource.draft.values;
@@ -497,9 +520,8 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       const editable =
         !deleted &&
         connected &&
-        tab.kind === "table" &&
+        isGridEditable &&
         column.editable &&
-        !!tab.schema?.editable &&
         !["outcomeUnknown", "queued", "running"].includes(tab.status) &&
         !cached.large;
       const override = deleted
@@ -531,13 +553,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         themeOverride: override,
       };
     },
-    [visibleColumns, locate, locateDraft, themeName, connected],
+    [visibleColumns, locate, locateDraft, themeName, connected, isGridEditable],
   );
 
   const edit = useCallback(
     (cell: Item, edited: EditableGridCell) => {
       const target = targetAt(cell, true);
-      if (!target || !target.column.editable || !model.current.tab.schema?.editable) return;
+      if (!target || !target.column.editable || !isGridEditable) return;
       try {
         if (target.insert) {
           if (edited.kind === GridCellKind.Boolean) {
@@ -634,7 +656,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           .notify(error instanceof Error ? error.message : "Could not edit this value");
       }
     },
-    [onSelect, targetAt],
+    [onSelect, targetAt, isGridEditable],
   );
 
   const selectionRef = useRef(selection);
@@ -642,28 +664,35 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
 
   const applyPaste = useCallback(
     (anchor: Item, values: readonly (readonly string[])[]) => {
-      const currentTab = model.current.tab;
+      const { tab: currentTab, result: currentResult } = model.current;
       const tableEditable =
         connected &&
-        currentTab.kind === "table" &&
-        !!currentTab.schema?.editable &&
+        isGridEditable &&
         !["outcomeUnknown", "queued", "running"].includes(currentTab.status);
-      const inserts = currentTab.kind === "table" ? dirtyStore.insertsForTab(currentTab.id) : [];
+      const scopeId =
+        currentTab.kind === "table" ? currentTab.id : (currentResult?.id ?? currentTab.id);
+      const loaded =
+        currentTab.kind === "table" ? currentTab.loadedRows : (currentResult?.retainedRows ?? 0);
+      const inserts = isGridEditable ? dirtyStore.insertsForTab(scopeId) : [];
       const outcome = validatePasteMatrix({
         anchor,
         values,
         visibleColumns,
         tableEditable,
         resolveRow: (visualRow) => {
-          if (currentTab.kind !== "table" || visualRow < 0) return { kind: "outOfBounds" };
-          if (visualRow >= currentTab.loadedRows) {
+          if ((currentTab.kind !== "table" && currentTab.kind !== "query") || visualRow < 0)
+            return { kind: "outOfBounds" };
+          if (visualRow >= loaded) {
             if (inserts.length > 0) {
-              const draft = inserts[visualRow - currentTab.loadedRows];
+              const draft = inserts[visualRow - loaded];
               return draft
-                ? { kind: "draftInsert", tabId: currentTab.id, insertId: draft.id }
+                ? { kind: "draftInsert", tabId: scopeId, insertId: draft.id }
                 : { kind: "outOfBounds" };
             }
-            const totalRows = currentTab.loadedRows + (currentTab.hasMore ? 1 : 0);
+            const totalRows =
+              currentTab.kind === "table"
+                ? currentTab.loadedRows + (currentTab.hasMore ? 1 : 0)
+                : loaded;
             return visualRow < totalRows ? { kind: "unloaded" } : { kind: "outOfBounds" };
           }
           const source = locate(visualRow);
@@ -692,7 +721,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           .notify(error instanceof Error ? error.message : "Could not paste these cells");
       }
     },
-    [connected, locate, onSelect, targetAt, visibleColumns],
+    [connected, isGridEditable, locate, onSelect, targetAt, visibleColumns],
   );
 
   const applyPasteRef = useRef(applyPaste);
@@ -701,14 +730,18 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   const resolveCopyMatrix = useCallback(
     (scope: CopyScope) => {
       const { tab: currentTab, result: currentResult } = model.current;
+      const scopeId =
+        currentTab.kind === "table" ? currentTab.id : (currentResult?.id ?? currentTab.id);
       const draftCount =
-        currentTab.kind === "table" ? dirtyStore.insertsForTab(currentTab.id).length : 0;
+        currentTab.kind === "table" || currentTab.kind === "query"
+          ? dirtyStore.insertsForTab(scopeId).length
+          : 0;
       const maxCopyableRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
           : currentTab.kind === "table"
             ? currentTab.loadedRows + draftCount
-            : (currentResult?.retainedRows ?? 0);
+            : (currentResult?.retainedRows ?? 0) + draftCount;
       const loadedDefaultRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
@@ -716,7 +749,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
             ? currentTab.loadedRows > 0
               ? currentTab.loadedRows
               : draftCount
-            : (currentResult?.retainedRows ?? 0);
+            : (currentResult?.retainedRows ?? 0) > 0
+              ? (currentResult?.retainedRows ?? 0)
+              : draftCount;
 
       const sel = selectionRef.current;
       const rowList = sel.rows.toArray().filter((r) => r >= 0 && r < maxCopyableRows);

@@ -227,7 +227,7 @@ export async function runNativeSmoke() {
     ] as const) {
       let denied = false;
       try {
-        await client.call(command, args);
+        await client.call<unknown>(command, args);
       } catch (error) {
         denied =
           !!error &&

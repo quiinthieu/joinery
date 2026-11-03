@@ -280,20 +280,28 @@ export function ProcessesView({
     [hideIdle, setHideIdle] = useState(false),
     [autoRefresh, setAutoRefresh] = useState(false);
   const request = useRef(0);
+  const supportsLockInspection = session
+    ? (session.capabilities.lockInspection ?? session.capabilities.processes)
+    : false;
   async function refresh() {
     if (!session) return;
     const id = ++request.current;
     setLoading(true);
     const [list, waits] = await Promise.allSettled([
       client.call<ProcessInfo[]>("processes", { sessionId: session.id }),
-      client.call<LockWaitSnapshot>("lock_waits", { sessionId: session.id }),
+      supportsLockInspection
+        ? client.call<LockWaitSnapshot>("lock_waits", { sessionId: session.id })
+        : Promise.resolve<LockWaitSnapshot | null>(null),
     ]);
     if (id !== request.current) return;
     if (list.status === "fulfilled") {
       setProcesses(list.value);
       setError(null);
     } else setError(messageOf(list.reason));
-    if (waits.status === "fulfilled") {
+    if (!supportsLockInspection) {
+      setLocks(null);
+      setLockError(null);
+    } else if (waits.status === "fulfilled") {
       setLocks(waits.value);
       setLockError(null);
     } else {
@@ -329,7 +337,8 @@ export function ProcessesView({
           value.toLocaleLowerCase().includes(needle),
         )),
   );
-  const lockUnsupported = lockError?.includes("unavailable for this engine") ?? false;
+  const lockUnsupported =
+    !supportsLockInspection || (lockError?.includes("unavailable for this engine") ?? false);
   return (
     <div className="utility-view">
       <header className="utility-header">
@@ -569,19 +578,14 @@ export function StructureView({
   const isTableLike =
     !details || details.object.kind === "table" || details.object.kind === "partitionedTable";
   const isViewLike = details?.object.kind === "view" || details?.object.kind === "materializedView";
+  const ddlEditingSupported =
+    session?.capabilities.ddlEditing ??
+    (profile?.engine === "postgres" || profile?.engine === "mysql");
   const canManageSchema = Boolean(
-    details &&
-    isTableLike &&
-    profile &&
-    session &&
-    (profile.engine === "postgres" || profile.engine === "mysql"),
+    details && isTableLike && profile && session && ddlEditingSupported,
   );
   const canDropObject = Boolean(
-    details &&
-    (isTableLike || isViewLike) &&
-    profile &&
-    session &&
-    (profile.engine === "postgres" || profile.engine === "mysql"),
+    details && (isTableLike || isViewLike) && profile && session && ddlEditingSupported,
   );
   const isReadOnly = profile?.safeMode === "readOnly";
   const tableRef = details
@@ -1108,7 +1112,13 @@ export function StructureView({
       )}
       {details?.storage && (
         <div className="structure-dependencies">
-          <StorageStatsSection storage={details.storage} />
+          <StorageStatsSection
+            storage={details.storage}
+            connectionId={connectionId}
+            table={isTableLike ? tableRef : null}
+            columns={schema.columns.map((c) => c.name)}
+            onMaintained={onRefresh}
+          />
         </div>
       )}
       {details && (

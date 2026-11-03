@@ -3,7 +3,7 @@ use ts_rs::TS;
 
 pub use crate::ddl::{
     DdlStatement, IndexConstraintAction, IndexConstraintPreview, SchemaDdlPlan, TableColumnDraft,
-    TableObjectAction, TableObjectPreview,
+    TableMaintenanceAction, TableMaintenancePreview, TableObjectAction, TableObjectPreview,
 };
 pub use crate::schema_diff::{
     MAX_SNAPSHOT_COLUMNS, MAX_SNAPSHOT_CONSTRAINTS, MAX_SNAPSHOT_INDEXES, MAX_SNAPSHOT_RELATIONS,
@@ -154,6 +154,30 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub object_explorer: bool,
+    /// Per-schema entity-relationship diagram generation.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub schema_diagram: bool,
+    /// Structural schema snapshots and schema diff comparison.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub schema_diff: bool,
+    /// Structured table, column, index, constraint, and migration DDL editing.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub ddl_editing: bool,
+    /// Active lock-wait and blocker chain inspection.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub lock_inspection: bool,
+    /// Executing query plan analysis (EXPLAIN ANALYZE / ANALYZE FORMAT=JSON).
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub explain_analyze: bool,
+    /// External system-browser OAuth sign-in flow.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub oauth_browser: bool,
     /// Executing plan format available to this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -632,7 +656,7 @@ impl SchemaDiagram {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSchema {
     pub table: TableRef,
@@ -877,7 +901,23 @@ pub enum RetentionStatus {
     Truncated,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ResultEditability {
+    Editable {
+        table: TableRef,
+        primary_key: Vec<String>,
+    },
+    ReadOnly {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultInfo {
     pub id: String,
@@ -887,6 +927,9 @@ pub struct ResultInfo {
     pub retained_rows: usize,
     pub status: RetentionStatus,
     pub table: Option<TableRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub editability: Option<ResultEditability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

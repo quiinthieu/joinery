@@ -1,8 +1,32 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { AppError, ErrorCode, ExportEvent, ExportRequest, QueryEvent } from "./generated";
+import type {
+  JoineryCommandCallTuple,
+  JoineryCommandMap,
+  JoineryCommandName,
+  NoArgCommandName,
+  RequiredArgCommandName,
+} from "./command-map";
+
+export type {
+  JoineryCommandArgs,
+  JoineryCommandCallTuple,
+  JoineryCommandMap,
+  JoineryCommandName,
+  JoineryCommandResult,
+  NoArgCommandName,
+  RequiredArgCommandName,
+} from "./command-map";
 
 export interface StudioClient {
-  call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+  call<T = never, K extends JoineryCommandName = JoineryCommandName>(
+    command: K,
+    ...args: [T] extends [never]
+      ? undefined extends JoineryCommandMap[K]["args"]
+        ? [args?: JoineryCommandMap[K]["args"]]
+        : [args: JoineryCommandMap[K]["args"]]
+      : [args?: Record<string, unknown>]
+  ): Promise<[T] extends [never] ? JoineryCommandMap[K]["result"] : T>;
   execute(
     planId: string,
     approval: string | null,
@@ -13,7 +37,7 @@ export interface StudioClient {
 }
 
 class NativeClient implements StudioClient {
-  call<T>(command: string, args: Record<string, unknown> = {}) {
+  call<T>(command: JoineryCommandName, args: Record<string, unknown> = {}) {
     return invoke<T>(command, args);
   }
   execute(planId: string, approval: string | null, onEvent: (event: QueryEvent) => void) {
@@ -54,7 +78,7 @@ class BrowserTestClient implements StudioClient {
   private headers() {
     return { "Content-Type": "application/json", Authorization: `Bearer ${this.token}` };
   }
-  async call<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  async call<T>(command: JoineryCommandName, args: Record<string, unknown> = {}): Promise<T> {
     const response = await fetch(`${this.url}/rpc/${command}`, {
       method: "POST",
       headers: this.headers(),
@@ -126,7 +150,7 @@ class BrowserTestClient implements StudioClient {
 }
 
 class PreviewClient implements StudioClient {
-  async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  async call<T>(command: JoineryCommandName, args?: Record<string, unknown>): Promise<T> {
     if (command === "bootstrap")
       return {
         profiles: [],

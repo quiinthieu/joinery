@@ -1,6 +1,9 @@
 use crate::domain::*;
 use sqlparser::{
-    ast::{Query, SetExpr, Statement, Visit, Visitor},
+    ast::{
+        Expr, GroupByExpr, Ident, Query, SelectItem, SelectItemQualifiedWildcardKind, SetExpr,
+        Statement, TableFactor, Visit, Visitor, WildcardAdditionalOptions,
+    },
     dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect},
     parser::Parser,
     tokenizer::{Location, Token, Tokenizer},
@@ -750,6 +753,547 @@ fn unrestricted(selection: Option<&sqlparser::ast::Expr>) -> bool {
     })
 }
 
+/// Candidate single-table `SELECT` extracted from the SQL AST before live
+/// catalog verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SingleTableSelectCandidate {
+    pub engine: EngineKind,
+    pub table: TableRef,
+    pub projection: Vec<ProjectedSelectItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectedSelectItem {
+    Wildcard,
+    Column(Ident),
+}
+
+/// Outcome of verifying a `SingleTableSelectCandidate` against the live
+/// `TableSchema` and result column metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProvenanceResolution {
+    Editable {
+        schema: Box<TableSchema>,
+        columns: Vec<ColumnInfo>,
+        editability: ResultEditability,
+    },
+    ReadOnly {
+        reason: String,
+    },
+}
+
+fn dialect_for_provenance(engine: EngineKind) -> &'static dyn Dialect {
+    static PG: PostgreSqlDialect = PostgreSqlDialect {};
+    static MYSQL: MySqlDialect = MySqlDialect {};
+    static SNOWFLAKE: SnowflakeDialect = SnowflakeDialect {};
+    match engine {
+        EngineKind::Postgres | EngineKind::Redis => &PG,
+        EngineKind::Mysql => &MYSQL,
+        EngineKind::Snowflake => &SNOWFLAKE,
+    }
+}
+
+fn normalize_lookup_ident(engine: EngineKind, ident: &Ident) -> String {
+    if engine == EngineKind::Postgres && ident.quote_style.is_none() {
+        ident.value.to_ascii_lowercase()
+    } else {
+        ident.value.clone()
+    }
+}
+
+fn ident_matches_target(engine: EngineKind, ident: &Ident, target: &str) -> bool {
+    match engine {
+        EngineKind::Postgres => {
+            if ident.quote_style.is_some() {
+                ident.value == target
+            } else {
+                ident.value.eq_ignore_ascii_case(target)
+            }
+        }
+        EngineKind::Mysql => ident.value.eq_ignore_ascii_case(target),
+        _ => false,
+    }
+}
+
+fn ident_matches_ident(engine: EngineKind, left: &Ident, right: &Ident) -> bool {
+    match engine {
+        EngineKind::Postgres => match (left.quote_style.is_some(), right.quote_style.is_some()) {
+            (true, true) => left.value == right.value,
+            (true, false) => left.value == right.value.to_ascii_lowercase(),
+            (false, true) => left.value.to_ascii_lowercase() == right.value,
+            (false, false) => left.value.eq_ignore_ascii_case(&right.value),
+        },
+        EngineKind::Mysql => left.value.eq_ignore_ascii_case(&right.value),
+        _ => false,
+    }
+}
+
+fn wildcard_has_modifiers(opts: &WildcardAdditionalOptions) -> bool {
+    opts.opt_ilike.is_some()
+        || opts.opt_exclude.is_some()
+        || opts.opt_except.is_some()
+        || opts.opt_replace.is_some()
+        || opts.opt_rename.is_some()
+}
+
+fn validate_relation_qualifier(
+    engine: EngineKind,
+    qualifier_parts: &[Ident],
+    resolved_schema: &str,
+    explicit_schema: Option<&Ident>,
+    table_ident: &Ident,
+    alias_ident: Option<&Ident>,
+) -> Result<(), String> {
+    if let Some(alias) = alias_ident {
+        if qualifier_parts.len() == 1 && ident_matches_ident(engine, &qualifier_parts[0], alias) {
+            return Ok(());
+        }
+        return Err(format!(
+            "Column qualifier does not match table alias \"{}\"",
+            alias.value
+        ));
+    }
+
+    match qualifier_parts {
+        [rel] => {
+            if ident_matches_ident(engine, rel, table_ident) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Column qualifier \"{}\" does not match table \"{}\"",
+                    rel.value, table_ident.value
+                ))
+            }
+        }
+        [sch, rel] => {
+            let schema_ok = if let Some(exp_sch) = explicit_schema {
+                ident_matches_ident(engine, sch, exp_sch)
+            } else {
+                ident_matches_target(engine, sch, resolved_schema)
+            };
+            if schema_ok && ident_matches_ident(engine, rel, table_ident) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Column qualifier \"{}.{}\" does not match target table",
+                    sch.value, rel.value
+                ))
+            }
+        }
+        _ => Err("Projection uses an unsupported multi-part column qualifier".into()),
+    }
+}
+
+fn extract_projected_column(
+    engine: EngineKind,
+    expr: &Expr,
+    resolved_schema: &str,
+    explicit_schema: Option<&Ident>,
+    table_ident: &Ident,
+    alias_ident: Option<&Ident>,
+) -> Result<Ident, String> {
+    match expr {
+        Expr::Identifier(ident) => Ok(ident.clone()),
+        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+            let (qualifiers, col_ident) = parts.split_at(parts.len() - 1);
+            validate_relation_qualifier(
+                engine,
+                qualifiers,
+                resolved_schema,
+                explicit_schema,
+                table_ident,
+                alias_ident,
+            )?;
+            Ok(col_ident[0].clone())
+        }
+        Expr::Function(_) => Err("Query uses GROUP BY or aggregate/function expressions".into()),
+        _ => Err("Projection contains computed expressions or literals".into()),
+    }
+}
+
+/// Pure, deterministic AST analyzer that checks whether `sql` is a single-table
+/// `SELECT` statement eligible for provenance verification.
+pub fn analyze_single_table_select(
+    engine: EngineKind,
+    sql: &str,
+    default_schema: Option<&str>,
+) -> Result<SingleTableSelectCandidate, String> {
+    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+        return Err("Engine does not support query result editing".into());
+    }
+
+    let statements = Parser::parse_sql(dialect_for_provenance(engine), sql)
+        .map_err(|_| "Query could not be parsed for single-table provenance".to_string())?;
+    if statements.len() != 1 {
+        return Err("Statement is not a single SELECT query".into());
+    }
+
+    let Statement::Query(query) = &statements[0] else {
+        return Err("Statement is not a SELECT query".into());
+    };
+
+    if query.with.is_some() {
+        return Err("Query uses a WITH clause (CTE)".into());
+    }
+    if !query.locks.is_empty() {
+        return Err("Query uses a locking clause".into());
+    }
+
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return Err("Query uses set operations (UNION, INTERSECT, or EXCEPT)".into());
+    };
+
+    if select.distinct.is_some() {
+        return Err("Query uses DISTINCT".into());
+    }
+    if select.into.is_some() {
+        return Err("Query uses SELECT INTO".into());
+    }
+    match &select.group_by {
+        GroupByExpr::Expressions(exprs, _) if exprs.is_empty() => {}
+        _ => return Err("Query uses GROUP BY or aggregate expressions".into()),
+    }
+    if select.having.is_some() {
+        return Err("Query uses GROUP BY or HAVING".into());
+    }
+    if select.qualify.is_some() {
+        return Err("Query uses QUALIFY".into());
+    }
+    if !select.named_window.is_empty()
+        || !select.lateral_views.is_empty()
+        || !select.cluster_by.is_empty()
+        || !select.distribute_by.is_empty()
+        || !select.sort_by.is_empty()
+        || !select.connect_by.is_empty()
+    {
+        return Err("Query uses window, lateral, or grouping clauses".into());
+    }
+
+    if select.from.is_empty() {
+        return Err("Query does not select from a table".into());
+    }
+    if select.from.len() > 1 || !select.from[0].joins.is_empty() {
+        return Err("Query joins multiple tables".into());
+    }
+
+    let TableFactor::Table {
+        name,
+        alias,
+        args,
+        with_hints,
+        version,
+        with_ordinality,
+        partitions,
+        json_path,
+        sample,
+        index_hints,
+    } = &select.from[0].relation
+    else {
+        return Err("Query does not select directly from a base table".into());
+    };
+
+    if args.is_some()
+        || !with_hints.is_empty()
+        || version.is_some()
+        || *with_ordinality
+        || !partitions.is_empty()
+        || json_path.is_some()
+        || sample.is_some()
+        || !index_hints.is_empty()
+    {
+        return Err("Query uses table functions, hints, or partition clauses".into());
+    }
+
+    let alias_ident = if let Some(table_alias) = alias {
+        if !table_alias.columns.is_empty() {
+            return Err("Table alias renames columns".into());
+        }
+        Some(&table_alias.name)
+    } else {
+        None
+    };
+
+    let mut name_parts = Vec::with_capacity(name.0.len());
+    for part in &name.0 {
+        let Some(ident) = part.as_ident() else {
+            return Err("Table name is not a simple identifier".into());
+        };
+        name_parts.push(ident);
+    }
+
+    let (explicit_schema, table_ident, resolved_schema) = match name_parts.as_slice() {
+        [tbl] => {
+            let schema = default_schema
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or_else(|| (engine == EngineKind::Postgres).then(|| "public".to_owned()))
+                .ok_or_else(|| {
+                    "Unqualified table requires an active schema or database".to_string()
+                })?;
+            (None, *tbl, schema)
+        }
+        [sch, tbl] => (Some(*sch), *tbl, normalize_lookup_ident(engine, sch)),
+        _ => return Err("Cross-catalog table references are read-only".into()),
+    };
+
+    let resolved_table = TableRef {
+        schema: resolved_schema.clone(),
+        name: normalize_lookup_ident(engine, table_ident),
+    };
+
+    if select.projection.is_empty() {
+        return Err("Projection has no columns".into());
+    }
+
+    let mut projection = Vec::with_capacity(select.projection.len());
+    for item in &select.projection {
+        match item {
+            SelectItem::Wildcard(opts) => {
+                if wildcard_has_modifiers(opts) {
+                    return Err("Wildcard projection modifies or excludes columns".into());
+                }
+                projection.push(ProjectedSelectItem::Wildcard);
+            }
+            SelectItem::QualifiedWildcard(kind, opts) => {
+                if wildcard_has_modifiers(opts) {
+                    return Err("Wildcard projection modifies or excludes columns".into());
+                }
+                let SelectItemQualifiedWildcardKind::ObjectName(qualifier_name) = kind else {
+                    return Err("Projection uses an unsupported wildcard qualifier".into());
+                };
+                let mut q_parts = Vec::with_capacity(qualifier_name.0.len());
+                for part in &qualifier_name.0 {
+                    let Some(ident) = part.as_ident() else {
+                        return Err("Projection uses an unsupported wildcard qualifier".into());
+                    };
+                    q_parts.push(ident.clone());
+                }
+                validate_relation_qualifier(
+                    engine,
+                    &q_parts,
+                    &resolved_schema,
+                    explicit_schema,
+                    table_ident,
+                    alias_ident,
+                )?;
+                projection.push(ProjectedSelectItem::Wildcard);
+            }
+            SelectItem::UnnamedExpr(expr) => {
+                let col = extract_projected_column(
+                    engine,
+                    expr,
+                    &resolved_schema,
+                    explicit_schema,
+                    table_ident,
+                    alias_ident,
+                )?;
+                projection.push(ProjectedSelectItem::Column(col));
+            }
+            SelectItem::ExprWithAlias { expr, alias } => {
+                let col = extract_projected_column(
+                    engine,
+                    expr,
+                    &resolved_schema,
+                    explicit_schema,
+                    table_ident,
+                    alias_ident,
+                )?;
+                if !ident_matches_ident(engine, &col, alias) {
+                    return Err(format!(
+                        "Projection renames column \"{}\" to \"{}\"",
+                        col.value, alias.value
+                    ));
+                }
+                projection.push(ProjectedSelectItem::Column(col));
+            }
+            SelectItem::ExprWithAliases { .. } => {
+                return Err("Projection uses multiple aliases".into());
+            }
+        }
+    }
+
+    Ok(SingleTableSelectCandidate {
+        engine,
+        table: resolved_table,
+        projection,
+    })
+}
+
+/// Verifies a `SingleTableSelectCandidate` against the live `TableSchema` and
+/// driver-reported result columns, producing a projected `TableSchema` and
+/// enriched `Vec<ColumnInfo>` when proven editable.
+pub fn verify_result_provenance(
+    candidate: &SingleTableSelectCandidate,
+    live_schema: &TableSchema,
+    result_columns: &[ColumnInfo],
+    safe_mode: SafeMode,
+) -> ProvenanceResolution {
+    if safe_mode == SafeMode::ReadOnly {
+        return ProvenanceResolution::ReadOnly {
+            reason: "Connection is in read-only mode".into(),
+        };
+    }
+
+    if live_schema.primary_key.is_empty() {
+        return ProvenanceResolution::ReadOnly {
+            reason: format!(
+                "Table \"{}.{}\" has no primary key",
+                live_schema.table.schema, live_schema.table.name
+            ),
+        };
+    }
+
+    if !live_schema.editable {
+        return ProvenanceResolution::ReadOnly {
+            reason: format!(
+                "Table \"{}.{}\" is read-only",
+                live_schema.table.schema, live_schema.table.name
+            ),
+        };
+    }
+
+    let mut expanded_live_cols: Vec<&ColumnInfo> = Vec::with_capacity(result_columns.len());
+    for item in &candidate.projection {
+        match item {
+            ProjectedSelectItem::Wildcard => {
+                expanded_live_cols.extend(live_schema.columns.iter());
+            }
+            ProjectedSelectItem::Column(ident) => {
+                let mut matches = live_schema
+                    .columns
+                    .iter()
+                    .filter(|col| ident_matches_target(candidate.engine, ident, &col.name));
+                let Some(found) = matches.next() else {
+                    return ProvenanceResolution::ReadOnly {
+                        reason: format!(
+                            "Column \"{}\" was not found in table \"{}.{}\"",
+                            ident.value, live_schema.table.schema, live_schema.table.name
+                        ),
+                    };
+                };
+                if matches.next().is_some() {
+                    return ProvenanceResolution::ReadOnly {
+                        reason: format!("Column reference \"{}\" is ambiguous", ident.value),
+                    };
+                }
+                expanded_live_cols.push(found);
+            }
+        }
+    }
+
+    if expanded_live_cols.len() != result_columns.len() {
+        return ProvenanceResolution::ReadOnly {
+            reason: "Result column count does not match table schema".into(),
+        };
+    }
+
+    let mut seen_names = std::collections::HashSet::with_capacity(expanded_live_cols.len());
+    let mut enriched_columns = Vec::with_capacity(expanded_live_cols.len());
+
+    for (index, (live_col, reported_col)) in expanded_live_cols
+        .iter()
+        .zip(result_columns.iter())
+        .enumerate()
+    {
+        let same_name = if candidate.engine == EngineKind::Mysql {
+            reported_col.name.eq_ignore_ascii_case(&live_col.name)
+        } else {
+            reported_col.name == live_col.name
+        };
+        if !same_name {
+            return ProvenanceResolution::ReadOnly {
+                reason: format!(
+                    "Result column \"{}\" does not match table column \"{}\"",
+                    reported_col.name, live_col.name
+                ),
+            };
+        }
+
+        let dedup_key = if candidate.engine == EngineKind::Mysql {
+            live_col.name.to_ascii_lowercase()
+        } else {
+            live_col.name.clone()
+        };
+        if !seen_names.insert(dedup_key) {
+            return ProvenanceResolution::ReadOnly {
+                reason: format!("Projection repeats column \"{}\"", live_col.name),
+            };
+        }
+
+        let mut col = (*live_col).clone();
+        col.id = format!("c{index}");
+        enriched_columns.push(col);
+    }
+
+    for pk in &live_schema.primary_key {
+        let has_pk = enriched_columns.iter().any(|col| {
+            col.primary_key
+                && if candidate.engine == EngineKind::Mysql {
+                    col.name.eq_ignore_ascii_case(pk)
+                } else {
+                    &col.name == pk
+                }
+        });
+        if !has_pk {
+            return ProvenanceResolution::ReadOnly {
+                reason: format!("Projection omits primary key column \"{pk}\""),
+            };
+        }
+    }
+
+    if !enriched_columns.iter().any(|col| col.editable) {
+        return ProvenanceResolution::ReadOnly {
+            reason: "Projection contains no editable columns".into(),
+        };
+    }
+
+    let omits_required_insert_column = live_schema.columns.iter().any(|table_col| {
+        let is_projected = enriched_columns.iter().any(|proj_col| {
+            if candidate.engine == EngineKind::Mysql {
+                proj_col.name.eq_ignore_ascii_case(&table_col.name)
+            } else {
+                proj_col.name == table_col.name
+            }
+        });
+        !is_projected && !table_col.nullable && !table_col.has_default
+    });
+    if omits_required_insert_column {
+        for col in &mut enriched_columns {
+            col.insertable = false;
+        }
+    }
+
+    let projected_schema = TableSchema {
+        table: live_schema.table.clone(),
+        columns: enriched_columns.clone(),
+        primary_key: live_schema.primary_key.clone(),
+        foreign_keys: live_schema
+            .foreign_keys
+            .iter()
+            .filter(|fk| {
+                fk.columns
+                    .iter()
+                    .all(|fk_col| enriched_columns.iter().any(|c| &c.name == fk_col))
+            })
+            .cloned()
+            .collect(),
+        inbound_foreign_keys: live_schema.inbound_foreign_keys.clone(),
+        editable: true,
+    };
+
+    let editability = ResultEditability::Editable {
+        table: live_schema.table.clone(),
+        primary_key: live_schema.primary_key.clone(),
+    };
+
+    ProvenanceResolution::Editable {
+        schema: Box::new(projected_schema),
+        columns: enriched_columns,
+        editability,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1120,6 +1664,248 @@ mod tests {
             )
             .unwrap(),
             "DELETE FROM orders WHERE id = 1"
+        );
+    }
+
+    fn sample_orders_schema() -> TableSchema {
+        TableSchema {
+            table: TableRef {
+                schema: "public".into(),
+                name: "orders".into(),
+            },
+            columns: vec![
+                ColumnInfo {
+                    id: "c0".into(),
+                    name: "id".into(),
+                    database_type: "bigint".into(),
+                    kind: ColumnKind::Integer,
+                    nullable: false,
+                    primary_key: true,
+                    foreign_key: false,
+                    editable: false,
+                    insertable: true,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "c1".into(),
+                    name: "customer_id".into(),
+                    database_type: "bigint".into(),
+                    kind: ColumnKind::Integer,
+                    nullable: false,
+                    primary_key: false,
+                    foreign_key: true,
+                    editable: true,
+                    insertable: true,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "c2".into(),
+                    name: "status".into(),
+                    database_type: "text".into(),
+                    kind: ColumnKind::Text,
+                    nullable: false,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: true,
+                    insertable: true,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "c3".into(),
+                    name: "notes".into(),
+                    database_type: "text".into(),
+                    kind: ColumnKind::Text,
+                    nullable: true,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: true,
+                    insertable: true,
+                    has_default: false,
+                },
+            ],
+            primary_key: vec!["id".into()],
+            foreign_keys: Vec::new(),
+            inbound_foreign_keys: Vec::new(),
+            editable: true,
+        }
+    }
+
+    fn reported_cols(names: &[&str]) -> Vec<ColumnInfo> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, &name)| ColumnInfo {
+                id: format!("c{i}"),
+                name: name.into(),
+                database_type: "text".into(),
+                kind: ColumnKind::Text,
+                nullable: true,
+                primary_key: false,
+                foreign_key: false,
+                editable: false,
+                insertable: false,
+                has_default: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn single_table_select_provenance_accepts_wildcard_subset_and_alias() {
+        let live = sample_orders_schema();
+
+        let cand = analyze_single_table_select(
+            EngineKind::Postgres,
+            "SELECT * FROM orders WHERE status = 'pending' ORDER BY id DESC LIMIT 25",
+            Some("public"),
+        )
+        .expect("wildcard select should be eligible");
+        assert_eq!(
+            cand.table,
+            TableRef {
+                schema: "public".into(),
+                name: "orders".into()
+            }
+        );
+        let res = verify_result_provenance(
+            &cand,
+            &live,
+            &reported_cols(&["id", "customer_id", "status", "notes"]),
+            SafeMode::Silent,
+        );
+        match res {
+            ProvenanceResolution::Editable {
+                schema,
+                columns,
+                editability,
+            } => {
+                assert_eq!(
+                    editability,
+                    ResultEditability::Editable {
+                        table: live.table.clone(),
+                        primary_key: vec!["id".into()],
+                    }
+                );
+                assert_eq!(columns.len(), 4);
+                assert!(columns[0].primary_key && !columns[0].editable && columns[0].insertable);
+                assert!(schema.editable);
+            }
+            other => panic!("expected Editable, got {other:?}"),
+        }
+
+        let cand_subset = analyze_single_table_select(
+            EngineKind::Postgres,
+            "SELECT o.id, o.status AS status FROM public.orders AS o WHERE o.id = 1",
+            Some("public"),
+        )
+        .expect("subset select with table alias should be eligible");
+        let res_subset = verify_result_provenance(
+            &cand_subset,
+            &live,
+            &reported_cols(&["id", "status"]),
+            SafeMode::Confirm,
+        );
+        match res_subset {
+            ProvenanceResolution::Editable {
+                schema,
+                columns,
+                editability,
+            } => {
+                assert_eq!(
+                    editability,
+                    ResultEditability::Editable {
+                        table: live.table.clone(),
+                        primary_key: vec!["id".into()],
+                    }
+                );
+                assert_eq!(
+                    columns.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+                    vec!["c0", "c1"]
+                );
+                assert_eq!(
+                    columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                    vec!["id", "status"]
+                );
+                assert!(!columns[0].editable && columns[1].editable);
+                assert!(columns.iter().all(|c| !c.insertable));
+                assert_eq!(schema.columns.len(), 2);
+            }
+            other => panic!("expected Editable for subset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_table_select_provenance_rejects_ineligible_ast_and_missing_pk() {
+        let live = sample_orders_schema();
+
+        for (sql, expected_fragment) in [
+            (
+                "SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id",
+                "joins multiple tables",
+            ),
+            (
+                "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
+                "WITH clause",
+            ),
+            ("SELECT DISTINCT id, status FROM orders", "DISTINCT"),
+            (
+                "SELECT status, count(*) FROM orders GROUP BY status",
+                "GROUP BY",
+            ),
+            (
+                "SELECT id, upper(status) FROM orders",
+                "aggregate/function expressions",
+            ),
+            (
+                "SELECT id, status AS order_status FROM orders",
+                "renames column",
+            ),
+            (
+                "SELECT id FROM orders UNION SELECT id FROM orders",
+                "set operations",
+            ),
+        ] {
+            let err = analyze_single_table_select(EngineKind::Postgres, sql, Some("public"))
+                .expect_err(sql);
+            assert!(
+                err.contains(expected_fragment),
+                "sql={sql} expected '{expected_fragment}' in '{err}'"
+            );
+        }
+
+        let no_pk_cand = analyze_single_table_select(
+            EngineKind::Postgres,
+            "SELECT status, notes FROM public.orders WHERE id = 1",
+            Some("public"),
+        )
+        .unwrap();
+        assert_eq!(
+            verify_result_provenance(
+                &no_pk_cand,
+                &live,
+                &reported_cols(&["status", "notes"]),
+                SafeMode::Silent,
+            ),
+            ProvenanceResolution::ReadOnly {
+                reason: "Projection omits primary key column \"id\"".into(),
+            }
+        );
+
+        let dup_cand = analyze_single_table_select(
+            EngineKind::Postgres,
+            "SELECT id, status, status FROM public.orders",
+            Some("public"),
+        )
+        .unwrap();
+        assert_eq!(
+            verify_result_provenance(
+                &dup_cand,
+                &live,
+                &reported_cols(&["id", "status", "status"]),
+                SafeMode::Silent,
+            ),
+            ProvenanceResolution::ReadOnly {
+                reason: "Projection repeats column \"status\"".into(),
+            }
         );
     }
 }

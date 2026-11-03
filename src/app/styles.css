@@ -1058,6 +1058,27 @@ kbd {
   border-color: var(--danger);
   color: var(--danger);
 }
+.result-provenance-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+}
+.result-provenance-badge.editable {
+  color: #9dc68f;
+  background: #8cbb7612;
+  border-color: #8cbb7638;
+}
+.result-provenance-badge.read-only {
+  color: var(--muted);
+  background: var(--surface);
+  border-color: var(--border);
+}
 .editor-context-row {
   display: flex;
   align-items: center;

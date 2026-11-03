@@ -178,6 +178,12 @@ impl Snowflake {
                 table_filtering: false,
                 processes: false,
                 object_explorer: false,
+                schema_diagram: false,
+                schema_diff: false,
+                ddl_editing: false,
+                lock_inspection: false,
+                explain_analyze: false,
+                oauth_browser: true,
                 actual_plan: None,
             },
         };

@@ -755,8 +755,48 @@ and layout actions. `studio.ts` adds tab pinning (`QueryDraft.pinned`),
 `closeOtherTabs`, `closeCleanTabs` (preserving pinned, dirty, running and
 last-secondary-session-owner tabs), a bounded 10-entry `closedTabs` reopen stack
 (`reopenClosedTab`, purged on connection removal), and persisted
-`sidebarCollapsed` / `inspectorVisible` toggles. See
+`sidebarCollapsed` / `inspectorVisible` toggles. Merged in PR #69 (`8be971a`). See
 [evidence](IMPLEMENTATION_STATUS.md#r8-slice-3-contextual-command-palette-custom-shortcuts-and-tab-management-3-november-2026).
+
+### R8 slice 4: closed typed IPC command map and granular engine capabilities (branch `feat/typed-commands-capabilities`)
+
+`src/ipc/command-map.ts` defines the closed `JoineryCommandMap` pairing every
+backend command with its exact argument and result DTOs from
+`src/ipc/generated.ts`, enforced by `StudioClient.call` in `src/ipc/client.ts`.
+`EngineCapabilities` (`src-tauri/src/domain.rs`) adds `schemaDiagram`,
+`schemaDiff`, `ddlEditing`, `lockInspection`, `explainAnalyze` and
+`oauthBrowser`, populated by each engine driver and enforced in `Studio`
+(`ErrorCode::Unsupported`) as well as in `Sidebar`, `ProcessesView`,
+`StructureView`, `ObjectInspectorView` and `Workbench`. See
+[evidence](IMPLEMENTATION_STATUS.md#r8-slice-4-closed-typed-ipc-command-map-and-granular-engine-capabilities-3-november-2026).
+
+### R8 slice 5: engine administration and table maintenance tools (branch `feat/typed-commands-capabilities`)
+
+`build_table_maintenance_sql` (`src-tauri/src/ddl.rs`),
+`preview_table_maintenance`, and `prepare_table_maintenance` generate reviewed
+PostgreSQL (`ANALYZE`, `VACUUM`, `VACUUM FULL`, `REINDEX TABLE`) and
+MySQL/MariaDB (`ANALYZE TABLE`, `OPTIMIZE TABLE`, `CHECK TABLE`) maintenance
+statements with lock, implicit-commit, and non-transactional warnings.
+`Postgres::execute` / `execute_bound` reject non-transactional maintenance
+statements (`VACUUM`, `CLUSTER`, `CONCURRENTLY`) with `ErrorCode::Conflict` when
+a manual transaction is open. `StorageStatsSection` (`ObjectInspectorView.tsx`,
+`UtilityViews.tsx`) adds a **Maintenance…** action opening
+`TableMaintenanceDialog.tsx` and routing execution through `ReviewDialog`. See
+[evidence](IMPLEMENTATION_STATUS.md#r8-slice-5-engine-administration-and-table-maintenance-tools-3-november-2026).
+
+### RX slice 1: single-table query result editing with Rust-proven provenance (branch `feat/typed-commands-capabilities`)
+
+`safety::analyze_single_table_select` and `safety::verify_result_provenance`
+(`src-tauri/src/safety.rs`) inspect `SELECT` statements on PostgreSQL and
+MySQL/MariaDB against the live `TableSchema` and driver-reported result columns,
+proving single-base-table and primary-key provenance or recording an explicit
+`ResultEditability::ReadOnly { reason }`. Proven results store a projected
+`TableSchema` in `ResultStore` and expose `ResultEditability::Editable { table,
+primary_key }` on `ResultInfo`, enabling inline cell edits, row inserts, row
+deletes, TSV paste, and reviewed `prepare_table_changes` commits (`SELECT … FOR
+UPDATE` full-row conflict checks + in-place `ResultStore::apply_committed_changes`
+refresh) directly inside SQL query result grids. See
+[evidence](IMPLEMENTATION_STATUS.md#rx-slice-1-single-table-query-result-editing-with-rust-proven-provenance-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 

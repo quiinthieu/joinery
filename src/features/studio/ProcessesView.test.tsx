@@ -136,3 +136,27 @@ it("hides the lock section for engines without lock inspection", async () => {
   await screen.findAllByText("app");
   expect(screen.queryByRole("region", { name: "Lock waits" })).toBeNull();
 });
+
+it("skips lock_waits RPC and hides Lock waits section when lockInspection capability is false", async () => {
+  useStudio.setState({
+    sessions: {
+      profile: {
+        ...session,
+        capabilities: {
+          ...session.capabilities,
+          lockInspection: false,
+        },
+      },
+    },
+  });
+  vi.mocked(client.call).mockImplementation(async (command: string) => {
+    if (command === "processes") return processes;
+    throw new Error(`Unexpected command: ${command}`);
+  });
+
+  render(<ProcessesView tab={tab} onCancel={vi.fn()} />);
+  await screen.findAllByText("app");
+  expect(client.call).toHaveBeenCalledWith("processes", { sessionId: "session-1" });
+  expect(client.call).not.toHaveBeenCalledWith("lock_waits", expect.anything());
+  expect(screen.queryByRole("region", { name: "Lock waits" })).toBeNull();
+});

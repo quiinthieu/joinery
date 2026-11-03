@@ -158,15 +158,26 @@ type Dialog =
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
 export function dirtyFor(tab: StudioTab) {
-  return tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
+  if (tab.kind === "table") {
+    return tab.pages.flatMap((page) => dirtyStore.forResult(page.result.id));
+  }
+  if (tab.kind === "query") {
+    const activeResult = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
+    return activeResult ? dirtyStore.forResult(activeResult.id) : [];
+  }
+  return [];
 }
 export function pendingCountFor(tab: StudioTab) {
-  return tab.kind === "table"
-    ? dirtyStore.pendingCountForTab(
-        tab.id,
-        tab.pages.map((page) => page.result.id),
-      )
-    : 0;
+  if (tab.kind === "table") {
+    return dirtyStore.pendingCountForTab(
+      tab.id,
+      tab.pages.map((page) => page.result.id),
+    );
+  }
+  if (tab.kind === "query") {
+    return tab.results.reduce((sum, r) => sum + dirtyStore.pendingCountForTab(r.id, [r.id]), 0);
+  }
+  return 0;
 }
 
 export function App() {
@@ -601,6 +612,7 @@ export function App() {
     approval: string | null,
     onSuccess?: () => void,
     origin?: SqlExecutionOrigin,
+    preserveResults?: boolean,
   ) {
     const active = useStudio.getState().tabs.find((tab) => tab.id === tabId);
     if (!active) return;
@@ -611,9 +623,10 @@ export function App() {
       state.notify("The query session changed. Run the statement again in its current session.");
       return;
     }
-    if (active.kind === "query") {
+    if (active.kind === "query" && !preserveResults) {
       for (const previous of active.results) {
         resultCache.release(previous.id);
+        dirtyStore.clearTab(previous.id, [previous.id]);
         await client.call("release_result", { resultId: previous.id });
       }
       state.updateTab(tabId, { results: [], activeResultId: null });
@@ -766,18 +779,44 @@ export function App() {
   }
   async function reviewEdits() {
     const active = references.current.current;
-    if (!active || active.kind !== "table") return;
-    const session = active.connectionId ? useStudio.getState().sessions[active.connectionId] : null;
+    if (!active || (active.kind !== "table" && active.kind !== "query")) return;
+    const activeQueryResult =
+      active.kind === "query"
+        ? (active.results.find((r) => r.id === active.activeResultId) ?? active.results[0])
+        : undefined;
+    if (active.kind === "query" && activeQueryResult?.editability?.status !== "editable") {
+      return;
+    }
+    const session =
+      active.kind === "query"
+        ? querySessionForTab(active, useStudio.getState().sessions)
+        : active.connectionId
+          ? useStudio.getState().sessions[active.connectionId]
+          : null;
     if (!session) {
-      state.notify("Reconnect and refresh the table before applying edits.");
+      state.notify(
+        active.kind === "query"
+          ? "Reconnect and re-run the query before applying edits."
+          : "Reconnect and refresh the table before applying edits.",
+      );
       return;
     }
     if (active.dataSessionId !== session.id) {
-      state.notify("This page belongs to an earlier session. Refresh the table before editing.");
+      state.notify(
+        active.kind === "query"
+          ? "This result belongs to an earlier session. Re-run the query before editing."
+          : "This page belongs to an earlier session. Refresh the table before editing.",
+      );
       return;
     }
-    const resultIds = active.pages.map((page) => page.result.id);
-    if (!dirtyStore.pendingCountForTab(active.id, resultIds)) {
+    const scopeId = active.kind === "table" ? active.id : (activeQueryResult?.id ?? active.id);
+    const resultIds =
+      active.kind === "table"
+        ? active.pages.map((page) => page.result.id)
+        : activeQueryResult
+          ? [activeQueryResult.id]
+          : [];
+    if (!dirtyStore.pendingCountForTab(scopeId, resultIds)) {
       state.notify("There are no pending edits.");
       return;
     }
@@ -793,15 +832,18 @@ export function App() {
       const deletes = resultIds
         .map((resultId) => ({ resultId, rows: dirtyStore.deletesForResult(resultId) }))
         .filter((entry) => entry.rows.length > 0);
-      const schemaColumns = active.schema?.columns ?? [];
+      const schemaColumns =
+        active.kind === "table"
+          ? (active.schema?.columns ?? [])
+          : (activeQueryResult?.columns ?? []);
       const columnOrder = new Map(schemaColumns.map((column, index) => [column.id, index]));
-      const inserts = dirtyStore.insertsForTab(active.id).map((draft) => ({
+      const inserts = dirtyStore.insertsForTab(scopeId).map((draft) => ({
         values: Object.entries(draft.values)
           .sort(([a], [b]) => (columnOrder.get(a) ?? 999999) - (columnOrder.get(b) ?? 999999))
           .map(([column, value]) => ({ column, value })),
       }));
       const changes: TableChanges = {
-        resultId: active.pages[0]?.result.id ?? null,
+        resultId: resultIds[0] ?? null,
         updates: [...grouped].map(([resultId, items]) => ({
           resultId,
           changes: items.map(({ row, column, value }) => ({ row, column, value })),
@@ -821,6 +863,13 @@ export function App() {
         tabId: active.id,
         onSuccess: () => {
           const latestTab = useStudio.getState().tabs.find((t) => t.id === active.id);
+          if (active.kind === "query" && activeQueryResult) {
+            dirtyStore.clearTab(activeQueryResult.id, [activeQueryResult.id]);
+            resultCache.release(activeQueryResult.id);
+            setSelectedCell(null);
+            state.notify("Changes committed");
+            return;
+          }
           dirtyStore.clearTab(
             active.id,
             (latestTab ?? active).pages.map((page) => page.result.id),
@@ -1187,9 +1236,7 @@ export function App() {
                   <Gauge size={13} />
                 )}
                 <span title={tab.title}>{tab.title}</span>
-                {((tab.kind === "table" && pendingCountFor(tab) > 0) || isTabFileDirty(tab)) && (
-                  <i className="dirty-dot" />
-                )}
+                {(pendingCountFor(tab) > 0 || isTabFileDirty(tab)) && <i className="dirty-dot" />}
                 {["queued", "running"].includes(tab.status) && (
                   <span className="tab-running">●</span>
                 )}
@@ -1538,6 +1585,7 @@ export function App() {
                 approval,
                 dialog.onSuccess,
                 dialog.origin,
+                Boolean(dialog.preview),
               );
           }}
           onClose={() => setDialog(null)}

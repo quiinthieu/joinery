@@ -292,3 +292,44 @@ test("repaints the frozen primary-key column when pages load after scrolling", a
       });
   await expect.poll(unpainted, { timeout: 5000 }).toBe(0);
 });
+
+test("edits a single-table SELECT query result with proven provenance and shows read-only reason when PK is omitted", async ({
+  page,
+}) => {
+  const updatedStatus = `query_edit_${Date.now()}`;
+  await connect(page, "Result edit fixture");
+  await page.getByRole("button", { name: "New query tab" }).click();
+  const editor = page.getByRole("textbox", { name: "SQL editor" });
+
+  await editor.fill("SELECT id, status FROM public.orders WHERE id = 3;");
+  await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+  await expect(page.getByTestId("result-provenance-badge")).toHaveText(
+    "Editable result · public.orders (PK: id)",
+  );
+
+  const grid = page.locator(".grid-host");
+  const box = (await grid.boundingBox())!;
+  await expect(async () => {
+    await page.mouse.dblclick(box.x + 44 + 110 + 70, box.y + 37 + 18);
+    await expect(page.locator("#portal textarea, #portal input").first()).toBeVisible({
+      timeout: 500,
+    });
+  }).toPass({ timeout: 10000 });
+  const overlay = page.locator("#portal textarea, #portal input").first();
+  await overlay.fill(updatedStatus);
+  await overlay.press("Enter");
+
+  await page.getByRole("button", { name: "Review 1 edit", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Review pending changes" })).toBeVisible();
+  await expect(page.locator(".sql-preview")).toContainText('UPDATE "public"."orders"');
+  await page.getByRole("button", { name: "Apply changes", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("status")).toContainText("Changes committed");
+
+  // Query omitting the primary key column is declined with an explicit provenance reason
+  await editor.fill("SELECT status FROM public.orders WHERE id = 3;");
+  await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+  await expect(page.getByTestId("result-provenance-badge")).toHaveText(
+    'Read-only result · Projection omits primary key column "id"',
+  );
+});

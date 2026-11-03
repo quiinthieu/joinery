@@ -309,6 +309,24 @@ pub fn prepare_table_object_ddl(
 }
 
 #[tauri::command]
+pub fn preview_table_maintenance(
+    studio: State<'_, Arc<Studio>>,
+    engine: EngineKind,
+    action: TableMaintenanceAction,
+) -> AppResult<TableMaintenancePreview> {
+    studio.preview_table_maintenance(engine, action)
+}
+
+#[tauri::command]
+pub fn prepare_table_maintenance(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    action: TableMaintenanceAction,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_table_maintenance(&session_id, action)
+}
+
+#[tauri::command]
 pub async fn prepare_migration_ddl(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

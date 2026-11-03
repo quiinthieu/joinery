@@ -2848,5 +2848,54 @@ Branch `feat/migration-sync` from `origin/main` `c855c04`; merged in PR #68 (`83
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | Closed typed IPC command map and granular engine capabilities (`I03` + `M07`), engine administration & table maintenance tools (`A06`), and single-table query result editing (`G14`). Next slice: R8.4 (`I03` + `M07` closed typed command map and granular engine capabilities) |
 
-Branch `feat/shortcuts-and-layouts` from `origin/main` `83b1260`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/shortcuts-and-layouts` from `origin/main` `83b1260`; merged in PR #69 (`8be971a`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R8 slice 4: closed typed IPC command map and granular engine capabilities (3 November 2026)
+
+`src/ipc/command-map.ts` defines a closed `JoineryCommandMap` pairing every Tauri and test-harness command with its exact argument payload and result DTO from `src/ipc/generated.ts`. `StudioClient.call` (`src/ipc/client.ts`) enforces `JoineryCommandName` and `JoineryCommandMap[K]["args"]` on both inferred calls (`client.call("table_schema", ...)`) and explicit-generic calls (`client.call<TableSchema>("table_schema", ...)`), rejecting unknown commands and mismatched arguments at compile time.
+
+`EngineCapabilities` (`src-tauri/src/domain.rs`) adds six granular capability flags (`schema_diagram`, `schema_diff`, `ddl_editing`, `lock_inspection`, `explain_analyze`, `oauth_browser`), populated by `Postgres`, `Mysql`, `Snowflake`, and `Redis` drivers. `Studio` (`src-tauri/src/execution.rs`) enforces capability checks on `schema_diagram`, `schema_snapshot`, `prepare_index_constraint_ddl`, `prepare_table_object_ddl`, `prepare_migration_ddl`, `lock_waits`, and `prepare_explain_with_params(..., analyze = true)`, returning `ErrorCode::Unsupported` when a session's capabilities disallow the operation. `Sidebar`, `ProcessesView`, `StructureView`, `ObjectInspectorView`, and `Workbench` gate their corresponding UI controls on `session.capabilities`.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `command-map.test.ts` (2): runtime and `@ts-expect-error` compile-time command/argument checks. `ProcessesView.test.tsx`: skips `lock_waits` RPC and hides `Lock waits` when `lockInspection: false`. `ObjectInspectorView.test.tsx`: hides DDL editing controls when `ddlEditing: false`. Rust `granular_engine_capabilities_gate_unsupported_operations` in `execution.rs` |
+| Validate | `pnpm validate`: 510 frontend tests / 49 files, 172 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Engine administration & table maintenance tools (`A06`) and single-table query result editing (`G14`). Next slice: R8.5 (`A06` engine administration & table maintenance tools) |
+
+Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R8 slice 5: engine administration and table maintenance tools (3 November 2026)
+
+`build_table_maintenance_sql` (`src-tauri/src/ddl.rs`) validates target table and column identifiers and generates engine-specific maintenance statements: PostgreSQL `ANALYZE [(VERBOSE)] "schema"."table" [("col1", ...)]`, `VACUUM [(FULL, ANALYZE, VERBOSE)] "schema"."table"` (`non_transactional = true`, `destructive = full`), and `REINDEX TABLE "schema"."table"`; MySQL/MariaDB ``ANALYZE TABLE `schema`.`table`;``, ``OPTIMIZE TABLE `schema`.`table`;``, and ``CHECK TABLE `schema`.`table`;``. `prepare_table_maintenance` classifies the generated statement as `StatementKind::Ddl` via `safety::plan_for_statements` (`SafeMode::ReadOnly` rejected with `ErrorCode::PolicyBlocked`, `SafeMode::Guard` confirmation text, `SafeMode::PasswordGated` passphrase, `requires_approval = true`) and attaches lock, implicit-commit, and non-transactional warnings. `Postgres::execute` and `Postgres::execute_bound` check `is_non_transactional_postgres_statement(sql)` and return `ErrorCode::Conflict` if the session is in `TransactionState::InTransaction` or `TransactionState::Failed`, while skipping auto-`BEGIN` when the session is `Idle` in `TransactionMode::Manual`.
+
+`StorageStatsSection` (`ObjectInspectorView.tsx`, `UtilityViews.tsx`) adds a **Maintenance…** button that opens `TableMaintenanceDialog.tsx` with engine-specific options, stale-statistic and dead-tuple callouts, open-manual-transaction blocking for `VACUUM`, `Copy SQL`, `Open in SQL editor`, and `Review & authorize…` via `ReviewDialog`, refreshing `Storage & activity` metadata upon completion.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `postgres_table_maintenance_builds_analyze_vacuum_and_reindex_with_warnings` and `mysql_table_maintenance_builds_analyze_optimize_and_check_and_rejects_mismatched_engines` in `ddl.rs`. `TableMaintenanceDialog.test.tsx` (2): previews `ANALYZE`/`VACUUM`, executes through `ReviewDialog`, and blocks `VACUUM` when a manual transaction is open |
+| Fixtures | `table_maintenance_executes_reviewed_analyze_vacuum_and_reindex_and_guards_transactions` in `src-tauri/tests/postgres.rs` (PostgreSQL 18) and `table_maintenance_executes_reviewed_analyze_optimize_and_check_and_rejects_read_only` in `src-tauri/tests/mysql.rs` (MySQL 8.4 and MariaDB 11.4) |
+| Browser | `table-maintenance.spec.ts`: opens `TableMaintenanceDialog` from `StructureView`, previews `ANALYZE` and `VACUUM`, and executes `ANALYZE` through `ReviewDialog` |
+| Validate | `pnpm validate`: 512 frontend tests / 50 files, 174 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Single-table query result editing (`G14`). Next slice: RX.1 (`G14` single-table query result editing with Rust-proven provenance) |
+
+Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## RX slice 1: single-table query result editing with Rust-proven provenance (3 November 2026)
+
+`safety::analyze_single_table_select` and `safety::verify_result_provenance` (`src-tauri/src/safety.rs`) analyze `SELECT` queries on PostgreSQL and MySQL/MariaDB and verify them against the session's live `TableSchema` and driver-reported result columns. Queries that select directly from a single editable base table (without `WITH` CTEs, joins, set operations, `DISTINCT`, `GROUP BY`, `HAVING`, window functions, computed expressions, or renaming column aliases) and project every primary-key column without duplicate columns receive a projected `TableSchema` in `ResultStore` and `ResultEditability::Editable { table, primary_key }` on `ResultInfo`. All other `SELECT` results receive `ResultEditability::ReadOnly { reason }` explaining why the result set is read-only.
+
+`DatabaseGrid.tsx`, `Workbench.tsx`, and `App.tsx` render a provenance badge (`Editable result · schema.table (PK: …)` or `Read-only result · reason`) in the query result toolbar and enable inline cell edits, draft row inserts (when all omitted `NOT NULL` columns have defaults), row deletes, TSV paste, and **Review N edits** via `prepare_table_changes` and `ReviewDialog`. Committing a `ChangePreview` on a query result runs the existing `SELECT … FOR UPDATE` full-row conflict check and updates the retained result batches in `ResultStore` via `apply_committed_changes`.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `single_table_select_provenance_accepts_wildcard_subset_and_alias` and `single_table_select_provenance_rejects_ineligible_ast_and_missing_pk` in `safety.rs`. `editable query result tracks pending edits in dirtyStore and cleans up when released` in `studio.test.ts` |
+| Fixtures | `single_table_select_result_provenance_commits_edits_and_rejects_missing_pk` in `src-tauri/tests/postgres.rs` (PostgreSQL 18) and `mysql_and_mariadb_single_table_select_result_provenance_commits_and_rejects_missing_pk` in `src-tauri/tests/mysql.rs` (MySQL 8.4 and MariaDB 11.4) |
+| Browser | `edits a single-table SELECT query result with proven provenance and shows read-only reason when PK is omitted` in `tests/e2e/studio.spec.ts` |
+| Validate | `pnpm validate`: 513 frontend tests / 50 files, 176 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | External release-qualification gates (Apple Developer ID signing/notarization, Windows/Linux packaged host runtime, live production/Snowflake account qualification) |
+
+Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 

@@ -4450,3 +4450,201 @@ async fn migration_sync_executes_reviewed_ddl_detects_drift_and_rejects_read_onl
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn table_maintenance_executes_reviewed_analyze_optimize_and_check_and_rejects_read_only() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Guard).await;
+        let cleanup = "DROP TABLE IF EXISTS joinery.r8_maint_items;";
+        completed(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     CREATE TABLE joinery.r8_maint_items (
+                       id BIGINT NOT NULL PRIMARY KEY,
+                       category VARCHAR(64) NOT NULL,
+                       payload VARCHAR(128) NOT NULL
+                     ) ENGINE=InnoDB;
+                     INSERT INTO joinery.r8_maint_items VALUES
+                       (1, 'alpha', 'row-1'),
+                       (2, 'beta', 'row-2'),
+                       (3, 'gamma', 'row-3');"
+                ),
+            )
+            .await,
+        );
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "r8_maint_items".into(),
+        };
+
+        for action in [
+            TableMaintenanceAction::AnalyzeTable {
+                table: table.clone(),
+            },
+            TableMaintenanceAction::OptimizeTable {
+                table: table.clone(),
+            },
+            TableMaintenanceAction::CheckTable {
+                table: table.clone(),
+            },
+        ] {
+            let preview = studio
+                .preview_table_maintenance(EngineKind::Mysql, action.clone())
+                .unwrap();
+            assert!(!preview.statement.sql.is_empty());
+            assert!(
+                preview
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("implicit commit")),
+                "port {port}: expected implicit-commit warning"
+            );
+            let plan = studio
+                .prepare_table_maintenance(&session.id, action)
+                .unwrap();
+            assert!(plan.requires_approval);
+            assert_eq!(plan.confirmation_text.as_deref(), Some("Disposable MySQL"));
+            let approval = studio
+                .authorize(&plan.id, None, plan.confirmation_text.as_deref())
+                .unwrap();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            studio
+                .execute(
+                    &plan.id,
+                    Some(&approval),
+                    Arc::new(move |e| tx.send(e).is_ok()),
+                )
+                .unwrap();
+            let mut events = Vec::new();
+            while let Some(ev) = rx.recv().await {
+                if let QueryEvent::Result { result } = &ev {
+                    studio.release_result(&result.id);
+                }
+                let done = matches!(ev, QueryEvent::Finished { .. });
+                events.push(ev);
+                if done {
+                    break;
+                }
+            }
+            completed(&events);
+        }
+
+        // ReadOnly profile blocks prepare_table_maintenance with ErrorCode::PolicyBlocked
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let blocked = ro_studio
+            .prepare_table_maintenance(
+                &ro_session.id,
+                TableMaintenanceAction::AnalyzeTable { table },
+            )
+            .unwrap_err();
+        assert_eq!(blocked.code, ErrorCode::PolicyBlocked, "port {port}");
+        ro_studio.shutdown();
+
+        completed(&run(&studio, &session, cleanup).await);
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rejects_missing_pk() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+
+        let editable_res = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT id, note FROM sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
+        assert_eq!(
+            editable_res.editability,
+            Some(ResultEditability::Editable {
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "sample".into(),
+                },
+                primary_key: vec!["id".into()],
+            }),
+            "port {port}"
+        );
+        let original_note = studio.results.row(&editable_res.id, 0).unwrap()[1].clone();
+        let next_note = format!("rx1_mysql_{port}_{}", now_ms());
+
+        let preview = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(editable_res.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: editable_res.id.clone(),
+                        changes: vec![CellChange {
+                            row: 0,
+                            column: "c1".into(),
+                            value: Some(next_note.clone()),
+                        }],
+                    }],
+                    deletes: Vec::new(),
+                    inserts: Vec::new(),
+                },
+            )
+            .unwrap();
+        completed(&execute(&studio, &preview.plan).await);
+
+        assert_eq!(
+            studio.results.row(&editable_res.id, 0).unwrap()[1].as_deref(),
+            Some(next_note.as_str()),
+            "port {port}"
+        );
+
+        let missing_pk = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT note FROM sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
+        assert_eq!(
+            studio.results.row(&missing_pk.id, 0).unwrap()[0].as_deref(),
+            Some(next_note.as_str()),
+            "port {port}"
+        );
+        assert_eq!(
+            missing_pk.editability,
+            Some(ResultEditability::ReadOnly {
+                reason: "Projection omits primary key column \"id\"".into(),
+            }),
+            "port {port}"
+        );
+
+        // Restore original value
+        let restore = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(editable_res.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: editable_res.id,
+                        changes: vec![CellChange {
+                            row: 0,
+                            column: "c1".into(),
+                            value: original_note,
+                        }],
+                    }],
+                    deletes: Vec::new(),
+                    inserts: Vec::new(),
+                },
+            )
+            .unwrap();
+        completed(&execute(&studio, &restore.plan).await);
+        studio.shutdown();
+    }
+}

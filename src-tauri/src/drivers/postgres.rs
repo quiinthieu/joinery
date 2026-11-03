@@ -110,6 +110,12 @@ impl Postgres {
                 table_filtering: true,
                 processes: true,
                 object_explorer: true,
+                schema_diagram: true,
+                schema_diff: true,
+                ddl_editing: true,
+                lock_inspection: true,
+                explain_analyze: true,
+                oauth_browser: false,
                 actual_plan: Some(ActualPlanFormat::PostgresJson),
             },
         };
@@ -302,6 +308,14 @@ impl Driver for Postgres {
         {
             self.drain_stale_prepared().await;
         }
+        if is_non_transactional_postgres_statement(sql)
+            && self.observe_transaction_state().await? != TransactionState::Idle
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "This maintenance command cannot run inside an open transaction block. Commit or roll back the current transaction first.",
+            ));
+        }
         if *self.tx_mode.lock() == TransactionMode::Manual
             && should_auto_begin_postgres(sql, kind)
             && self.observe_transaction_state().await? == TransactionState::Idle
@@ -341,6 +355,14 @@ impl Driver for Postgres {
             && self.observe_transaction_state().await? != TransactionState::Failed
         {
             self.drain_stale_prepared().await;
+        }
+        if is_non_transactional_postgres_statement(&bound.rewritten_sql)
+            && self.observe_transaction_state().await? != TransactionState::Idle
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "This maintenance command cannot run inside an open transaction block. Commit or roll back the current transaction first.",
+            ));
         }
         if *self.tx_mode.lock() == TransactionMode::Manual
             && should_auto_begin_postgres(&bound.rewritten_sql, kind)
@@ -902,6 +924,29 @@ impl Driver for Postgres {
     }
 }
 
+fn row_matches_original(
+    schema: &TableSchema,
+    actual: &[Option<String>],
+    original: &[Option<String>],
+) -> bool {
+    if actual.len() != original.len() || actual.len() != schema.columns.len() {
+        return false;
+    }
+    schema
+        .columns
+        .iter()
+        .enumerate()
+        .all(|(idx, col)| match (&actual[idx], &original[idx]) {
+            (None, None) => true,
+            (Some(act), Some(orig)) if col.database_type.eq_ignore_ascii_case("bytea") => {
+                let norm_orig = orig.strip_prefix("\\x").unwrap_or(orig);
+                act.eq_ignore_ascii_case(norm_orig)
+            }
+            (Some(act), Some(orig)) => act == orig,
+            _ => false,
+        })
+}
+
 impl Postgres {
     async fn apply_on(
         &self,
@@ -934,7 +979,7 @@ impl Postgres {
                     let actual = (0..locked[0].len())
                         .map(|i| locked[0].get::<_, Option<String>>(i))
                         .collect::<TextRow>();
-                    if &actual != original {
+                    if !row_matches_original(schema, &actual, original) {
                         return Err(AppError::new(
                             ErrorCode::Conflict,
                             "A row changed since it was loaded. No edits were committed.",
@@ -1862,6 +1907,28 @@ fn postgres_keyword_tokens(sql: &str) -> Vec<String> {
     tokens
 }
 
+fn is_non_transactional_postgres_statement(sql: &str) -> bool {
+    let tokens = postgres_keyword_tokens(sql);
+    let Some(first) = tokens.first().map(String::as_str) else {
+        return false;
+    };
+    if matches!(first, "VACUUM" | "CLUSTER") {
+        return true;
+    }
+    let second = tokens.get(1).map(String::as_str);
+    if first == "ALTER" && second == Some("SYSTEM") {
+        return true;
+    }
+    if matches!(first, "CREATE" | "DROP") && matches!(second, Some("DATABASE" | "TABLESPACE")) {
+        return true;
+    }
+    if matches!(first, "CREATE" | "DROP" | "REINDEX") && tokens.iter().any(|t| t == "CONCURRENTLY")
+    {
+        return true;
+    }
+    false
+}
+
 fn should_auto_begin_postgres(sql: &str, kind: StatementKind) -> bool {
     if kind == StatementKind::Transaction {
         return false;
@@ -1872,22 +1939,11 @@ fn should_auto_begin_postgres(sql: &str, kind: StatementKind) -> bool {
     };
     if matches!(
         first,
-        "BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "VACUUM" | "CLUSTER"
+        "BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT"
     ) {
         return false;
     }
-    let second = tokens.get(1).map(String::as_str);
-    if first == "ALTER" && second == Some("SYSTEM") {
-        return false;
-    }
-    if matches!(first, "CREATE" | "DROP") && matches!(second, Some("DATABASE" | "TABLESPACE")) {
-        return false;
-    }
-    if matches!(first, "CREATE" | "DROP" | "REINDEX") && tokens.iter().any(|t| t == "CONCURRENTLY")
-    {
-        return false;
-    }
-    true
+    !is_non_transactional_postgres_statement(sql)
 }
 
 #[cfg(test)]
