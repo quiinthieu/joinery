@@ -103,6 +103,18 @@ test("PostgreSQL schema diff compares live schemas, captures snapshots, and disc
     const snapshotStrip = page.getByLabel("Captured schema snapshots");
     await expect(snapshotStrip).toBeVisible();
     await expect(snapshotStrip).toContainText("e2e_diff_left");
+
+    // Preview Migration DDL (Left -> Right) and verify generated statements and destructive badge
+    await page.getByRole("button", { name: "Migrate Left → Right DDL" }).click();
+    const ddlPreview = page.getByTestId("schema-ddl-preview");
+    await expect(ddlPreview).toBeVisible();
+    await expect(ddlPreview).toContainText("destructive");
+    const ddlScript = page.getByTestId("schema-ddl-script");
+    await expect(ddlScript).toContainText('DROP TABLE "e2e_diff_left"."only_left_archive";');
+    await expect(ddlScript).toContainText('CREATE TABLE "e2e_diff_left"."only_right_staging"');
+    await expect(ddlScript).toContainText(
+      'ALTER TABLE "e2e_diff_left"."Line Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
+    );
   } finally {
     await page.getByRole("button", { name: "New query tab" }).click();
     await page.getByRole("textbox", { name: "SQL editor" }).fill(cleanupSql);

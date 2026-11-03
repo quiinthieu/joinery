@@ -234,6 +234,15 @@ async fn rpc(
                 arg(&args, "left")?,
                 arg(&args, "right")?
             )?),
+            "generate_schema_ddl" => json!(studio.generate_schema_ddl(
+                arg(&args, "snapshot")?,
+                arg::<Option<String>>(&args, "targetSchema")?.as_deref()
+            )?),
+            "generate_migration_ddl" => json!(studio.generate_migration_ddl(
+                arg(&args, "left")?,
+                arg(&args, "right")?,
+                arg::<Option<String>>(&args, "targetSchema")?.as_deref()
+            )?),
             "prepare_browse_table" => json!(
                 studio
                     .prepare_browse(

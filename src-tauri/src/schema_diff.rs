@@ -278,7 +278,28 @@ impl SchemaSnapshot {
     }
 }
 
-fn format_column_spec(col: &SnapshotColumn) -> String {
+pub fn normalize_self_schema_sql(sql: &str, engine: EngineKind, own_schema: &str) -> String {
+    let base = sql.trim().trim_end_matches(';').trim_end();
+    let trimmed_schema = own_schema.trim();
+    if trimmed_schema.is_empty() {
+        return base.to_owned();
+    }
+    let quoted_prefix = format!("{}.", quote_engine_identifier(engine, trimmed_schema));
+    let unquoted_prefix = format!("{trimmed_schema}.");
+    let single_quoted_prefix = format!("'{trimmed_schema}.");
+    let single_quoted_quoted_prefix =
+        format!("'{}.", quote_engine_identifier(engine, trimmed_schema));
+    base.replace(&single_quoted_quoted_prefix, "'$self_schema.")
+        .replace(&single_quoted_prefix, "'$self_schema.")
+        .replace(&quoted_prefix, "$self_schema.")
+        .replace(&unquoted_prefix, "$self_schema.")
+}
+
+pub(crate) fn format_column_spec(
+    col: &SnapshotColumn,
+    engine: EngineKind,
+    own_schema: &str,
+) -> String {
     let mut parts = vec![col.data_type.clone()];
     parts.push(if col.nullable {
         "NULL".into()
@@ -298,7 +319,7 @@ fn format_column_spec(col: &SnapshotColumn) -> String {
         {
             parts.push(format!(
                 "GENERATED ({}) {}",
-                expr.trim(),
+                normalize_self_schema_sql(expr, engine, own_schema),
                 generated_kind.trim()
             ));
         } else {
@@ -307,12 +328,19 @@ fn format_column_spec(col: &SnapshotColumn) -> String {
     } else if let Some(default) = &col.default_expression
         && !default.trim().is_empty()
     {
-        parts.push(format!("DEFAULT {}", default.trim()));
+        parts.push(format!(
+            "DEFAULT {}",
+            normalize_self_schema_sql(default, engine, own_schema)
+        ));
     }
     parts.join(" ")
 }
 
-fn format_constraint_spec(c: &ConstraintInfo) -> String {
+pub(crate) fn format_constraint_spec(
+    c: &ConstraintInfo,
+    engine: EngineKind,
+    own_schema: &str,
+) -> String {
     let kind_label = match c.kind {
         ConstraintKind::PrimaryKey => "PRIMARY KEY",
         ConstraintKind::ForeignKey => "FOREIGN KEY",
@@ -321,12 +349,20 @@ fn format_constraint_spec(c: &ConstraintInfo) -> String {
         ConstraintKind::Exclusion => "EXCLUDE",
     };
     if !c.definition.trim().is_empty() {
-        format!("{kind_label}: {}", c.definition.trim())
+        format!(
+            "{kind_label}: {}",
+            normalize_self_schema_sql(&c.definition, engine, own_schema)
+        )
     } else if let Some(target) = &c.target {
+        let target_schema = if target.schema == own_schema {
+            "$self_schema"
+        } else {
+            target.schema.as_str()
+        };
         format!(
             "{kind_label} ({}) REFERENCES {}.{} ({})",
             c.columns.join(", "),
-            target.schema,
+            target_schema,
             target.name,
             c.target_columns.join(", ")
         )
@@ -335,7 +371,11 @@ fn format_constraint_spec(c: &ConstraintInfo) -> String {
     }
 }
 
-fn format_index_spec(idx: &SnapshotIndex) -> String {
+pub(crate) fn format_index_spec(
+    idx: &SnapshotIndex,
+    engine: EngineKind,
+    own_schema: &str,
+) -> String {
     let mut parts = Vec::new();
     if idx.primary {
         parts.push("PRIMARY".to_owned());
@@ -349,12 +389,19 @@ fn format_index_spec(idx: &SnapshotIndex) -> String {
     if let Some(pred) = &idx.predicate
         && !pred.trim().is_empty()
     {
-        parts.push(format!("WHERE {}", pred.trim()));
+        parts.push(format!(
+            "WHERE {}",
+            normalize_self_schema_sql(pred, engine, own_schema)
+        ));
     }
     parts.join(" ")
 }
 
-fn format_trigger_spec(trg: &TriggerInfo) -> String {
+pub(crate) fn format_trigger_spec(
+    trg: &TriggerInfo,
+    engine: EngineKind,
+    own_schema: &str,
+) -> String {
     let mut events = trg.events.clone();
     events.sort();
     let status = if trg.enabled { "ENABLED" } else { "DISABLED" };
@@ -364,7 +411,7 @@ fn format_trigger_spec(trg: &TriggerInfo) -> String {
             trg.timing,
             events.join(" OR "),
             trg.orientation,
-            def.trim()
+            normalize_self_schema_sql(def, engine, own_schema)
         ),
         _ => format!(
             "{} {} FOR EACH {} ({status})",
@@ -375,7 +422,11 @@ fn format_trigger_spec(trg: &TriggerInfo) -> String {
     }
 }
 
-fn format_routine_spec(r: &SnapshotRoutine) -> String {
+pub(crate) fn format_routine_spec(
+    r: &SnapshotRoutine,
+    engine: EngineKind,
+    own_schema: &str,
+) -> String {
     let ret = r.return_type.as_deref().unwrap_or("void");
     let vol = r.volatility.as_deref().unwrap_or("VOLATILE");
     let sec = if r.security_definer {
@@ -388,12 +439,15 @@ fn format_routine_spec(r: &SnapshotRoutine) -> String {
         r.arguments, r.language
     );
     match &r.definition {
-        Some(def) if !def.trim().is_empty() => format!("{header}\n{}", def.trim()),
+        Some(def) if !def.trim().is_empty() => format!(
+            "{header}\n{}",
+            normalize_self_schema_sql(def, engine, own_schema)
+        ),
         _ => header,
     }
 }
 
-fn format_sequence_spec(seq: &SnapshotSequence) -> String {
+pub(crate) fn format_sequence_spec(seq: &SnapshotSequence) -> String {
     format!(
         "AS {} START {} INCREMENT {} MINVALUE {} MAXVALUE {} CACHE {} {}",
         seq.data_type,
@@ -438,22 +492,24 @@ fn summarize_member_diffs(diffs: &[SchemaMemberDiff]) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diff_named_specs<T>(
     left: &[T],
     right: &[T],
     engine: EngineKind,
     category: SchemaMemberCategory,
     name_of: impl Fn(&T) -> &str,
-    spec_of: impl Fn(&T) -> String,
+    left_spec_of: impl Fn(&T) -> String,
+    right_spec_of: impl Fn(&T) -> String,
     out: &mut Vec<SchemaMemberDiff>,
 ) {
     let left_map: BTreeMap<&str, String> = left
         .iter()
-        .map(|item| (name_of(item), spec_of(item)))
+        .map(|item| (name_of(item), left_spec_of(item)))
         .collect();
     let right_map: BTreeMap<&str, String> = right
         .iter()
-        .map(|item| (name_of(item), spec_of(item)))
+        .map(|item| (name_of(item), right_spec_of(item)))
         .collect();
 
     let mut keys: Vec<&str> = left_map.keys().chain(right_map.keys()).copied().collect();
@@ -495,6 +551,8 @@ fn diff_table(
     left: &SnapshotTable,
     right: &SnapshotTable,
     engine: EngineKind,
+    left_schema: &str,
+    right_schema: &str,
 ) -> Vec<SchemaMemberDiff> {
     let mut diffs = Vec::new();
     if left.kind != right.kind {
@@ -527,7 +585,8 @@ fn diff_table(
         engine,
         SchemaMemberCategory::Column,
         |c| &c.name,
-        format_column_spec,
+        |c| format_column_spec(c, engine, left_schema),
+        |c| format_column_spec(c, engine, right_schema),
         &mut diffs,
     );
     diff_named_specs(
@@ -536,7 +595,8 @@ fn diff_table(
         engine,
         SchemaMemberCategory::Constraint,
         |c| &c.name,
-        format_constraint_spec,
+        |c| format_constraint_spec(c, engine, left_schema),
+        |c| format_constraint_spec(c, engine, right_schema),
         &mut diffs,
     );
     diff_named_specs(
@@ -545,7 +605,8 @@ fn diff_table(
         engine,
         SchemaMemberCategory::Index,
         |i| &i.name,
-        format_index_spec,
+        |i| format_index_spec(i, engine, left_schema),
+        |i| format_index_spec(i, engine, right_schema),
         &mut diffs,
     );
     diff_named_specs(
@@ -554,31 +615,32 @@ fn diff_table(
         engine,
         SchemaMemberCategory::Trigger,
         |t| &t.name,
-        format_trigger_spec,
+        |t| format_trigger_spec(t, engine, left_schema),
+        |t| format_trigger_spec(t, engine, right_schema),
         &mut diffs,
     );
     let left_view = left
         .view_definition
         .as_deref()
-        .map(str::trim)
+        .map(|s| normalize_self_schema_sql(s, engine, left_schema))
         .filter(|s| !s.is_empty());
     let right_view = right
         .view_definition
         .as_deref()
-        .map(str::trim)
+        .map(|s| normalize_self_schema_sql(s, engine, right_schema))
         .filter(|s| !s.is_empty());
     if left_view != right_view {
         diffs.push(SchemaMemberDiff {
             category: SchemaMemberCategory::Definition,
             name: "view definition".into(),
             quoted_name: "view definition".into(),
-            kind: match (left_view, right_view) {
+            kind: match (&left_view, &right_view) {
                 (Some(_), None) => SchemaDiffKind::OnlyLeft,
                 (None, Some(_)) => SchemaDiffKind::OnlyRight,
                 _ => SchemaDiffKind::Modified,
             },
-            left_value: left_view.map(str::to_owned),
-            right_value: right_view.map(str::to_owned),
+            left_value: left_view,
+            right_value: right_view,
         });
     }
     diffs
@@ -650,7 +712,7 @@ pub fn compare_schema_snapshots(
                 });
             }
             (Some(l), Some(r)) => {
-                let member_diffs = diff_table(l, r, quote_engine);
+                let member_diffs = diff_table(l, r, quote_engine, &left.schema, &right.schema);
                 if member_diffs.is_empty() {
                     identical_count += 1;
                 } else {
@@ -725,8 +787,8 @@ pub fn compare_schema_snapshots(
                 });
             }
             (Some(l), Some(r)) => {
-                let left_spec = format_routine_spec(l);
-                let right_spec = format_routine_spec(r);
+                let left_spec = format_routine_spec(l, quote_engine, &left.schema);
+                let right_spec = format_routine_spec(r, quote_engine, &right.schema);
                 if left_spec == right_spec && l.kind == r.kind {
                     identical_count += 1;
                 } else {

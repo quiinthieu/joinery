@@ -254,6 +254,25 @@ pub fn compare_schemas(
 }
 
 #[tauri::command]
+pub fn generate_schema_ddl(
+    studio: State<'_, Arc<Studio>>,
+    snapshot: SchemaSnapshot,
+    target_schema: Option<String>,
+) -> AppResult<SchemaDdlPlan> {
+    studio.generate_schema_ddl(snapshot, target_schema.as_deref())
+}
+
+#[tauri::command]
+pub fn generate_migration_ddl(
+    studio: State<'_, Arc<Studio>>,
+    left: SchemaSnapshot,
+    right: SchemaSnapshot,
+    target_schema: Option<String>,
+) -> AppResult<SchemaDdlPlan> {
+    studio.generate_migration_ddl(left, right, target_schema.as_deref())
+}
+
+#[tauri::command]
 pub async fn prepare_browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

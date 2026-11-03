@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 pub mod compare;
+pub mod ddl;
 pub mod domain;
 pub mod drivers;
 pub mod execution;
@@ -122,6 +123,8 @@ pub fn run() {
             commands::schema_diagram,
             commands::schema_snapshot,
             commands::compare_schemas,
+            commands::generate_schema_ddl,
+            commands::generate_migration_ddl,
             commands::prepare_browse_table,
             commands::browse_table,
             commands::result_range,

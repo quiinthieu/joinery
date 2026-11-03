@@ -217,6 +217,56 @@ it("loads snapshots, renders member diffs and unsupported disclosures, filters, 
     if (command === "compare_schemas") {
       return sampleReport;
     }
+    if (command === "generate_migration_ddl") {
+      return {
+        engine: "postgres",
+        targetSchema: "public",
+        statements: [
+          {
+            sql: 'DROP TABLE "public"."legacy_audit";',
+            description: "Drop table legacy_audit",
+            objectKind: "table",
+            objectName: "legacy_audit",
+            destructive: true,
+          },
+          {
+            sql: 'ALTER TABLE "public"."Order Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
+            description: "Change type of Order Items.Unit Price",
+            objectKind: "table",
+            objectName: "Order Items.Unit Price",
+            destructive: false,
+          },
+        ],
+        script:
+          'DROP TABLE "public"."legacy_audit";\n\nALTER TABLE "public"."Order Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
+        truncated: false,
+        destructiveCount: 1,
+        warnings: [
+          "1 destructive statement(s) (DROP) detected; review carefully before executing.",
+        ],
+        unsupported: [],
+      };
+    }
+    if (command === "generate_schema_ddl") {
+      return {
+        engine: "postgres",
+        targetSchema: "public",
+        statements: [
+          {
+            sql: 'CREATE TABLE "public"."orders" (\n  "id" bigint NOT NULL\n);',
+            description: "Create table orders",
+            objectKind: "table",
+            objectName: "orders",
+            destructive: false,
+          },
+        ],
+        script: 'CREATE TABLE "public"."orders" (\n  "id" bigint NOT NULL\n);',
+        truncated: false,
+        destructiveCount: 0,
+        warnings: [],
+        unsupported: [],
+      };
+    }
     throw new Error(`Unexpected command: ${command}`);
   });
 
@@ -262,6 +312,23 @@ it("loads snapshots, renders member diffs and unsupported disclosures, filters, 
   fireEvent.click(screen.getByRole("button", { name: "Capture left schema snapshot" }));
   await waitFor(() =>
     expect(screen.getByLabelText("Captured schema snapshots").textContent).toContain("public"),
+  );
+
+  // Preview Migration DDL (Left -> Right) and verify destructive warning & SQL script
+  fireEvent.click(screen.getByRole("button", { name: "Migrate Left → Right DDL" }));
+  const ddlPreview = await screen.findByTestId("schema-ddl-preview");
+  expect(ddlPreview.textContent).toContain("1 destructive");
+  expect(ddlPreview.textContent).toContain("1 destructive statement(s) (DROP) detected");
+  expect(screen.getByTestId("schema-ddl-script").textContent).toContain(
+    'DROP TABLE "public"."legacy_audit";',
+  );
+
+  // Switch to Full Left Schema DDL
+  fireEvent.click(screen.getByRole("button", { name: "Full Left Schema DDL" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("schema-ddl-script").textContent).toContain(
+      'CREATE TABLE "public"."orders"',
+    ),
   );
 });
 

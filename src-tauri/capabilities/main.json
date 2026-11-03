@@ -43,6 +43,8 @@
     "allow-schema-diagram",
     "allow-schema-snapshot",
     "allow-compare-schemas",
+    "allow-generate-schema-ddl",
+    "allow-generate-migration-ddl",
     "allow-prepare-browse-table",
     "allow-browse-table",
     "allow-result-range",

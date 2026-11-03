@@ -683,8 +683,20 @@ tables, non-view rewrite rules, and MySQL scheduled events). `compare_schemas`
 computes a deterministic `SchemaDiffReport` independent of catalog row order,
 with engine-quoted object and member names. `SchemaDiffView` compares any two
 live schemas or up to 16 in-memory captured snapshots and never prepares or
-executes DDL. See
+executes DDL. Merged in PR #64 (`046d05c`). See
 [evidence](IMPLEMENTATION_STATUS.md#r7-slice-2-schema-snapshots-and-deterministic-schema-diff-3-november-2026).
+
+### R7 slice 3: Rust DDL generator and migration preview (branch `feat/ddl-generator`)
+
+`generate_schema_ddl(snapshot, targetSchema)` and
+`generate_migration_ddl(left, right, targetSchema)` generate dependency-ordered
+PostgreSQL and MySQL/MariaDB full-schema and migration DDL scripts in Rust
+(`src-tauri/src/ddl.rs`), retargeting self-schema references and flagging
+destructive `DROP` statements and warnings without auto-executing SQL. Round-trip
+disposable fixture tests on PostgreSQL 18, MySQL 8.4 and MariaDB 11.4 verify
+zero structural diffs (`compare_schemas == 0`) after executing both full-schema
+and migration DDL plans. See
+[evidence](IMPLEMENTATION_STATUS.md#r7-slice-3-rust-ddl-generator-and-migration-preview-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 

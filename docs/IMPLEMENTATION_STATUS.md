@@ -2745,4 +2745,23 @@ Branch `feat/storage-statistics` from `origin/main` `80de7aa`; merged in PR #63 
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | Cross-engine schema diff, persisted snapshot files. Next slice: R7.3 (`D03` accurate Rust DDL generator for tables, columns, indexes, constraints and views) |
 
-Branch `feat/schema-diff` from `origin/main` `130e192`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/schema-diff` from `origin/main` `130e192`; merged in PR #64 (`046d05c`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R7 slice 3: Rust DDL generator and migration preview (3 November 2026)
+
+`generate_schema_ddl(snapshot, targetSchema)` and `generate_migration_ddl(left, right, targetSchema)` generate deterministic, dependency-ordered PostgreSQL and MySQL/MariaDB DDL in Rust (`src-tauri/src/ddl.rs`) without executing SQL or mutating database state.
+
+Full-schema DDL orders standalone sequences (skipping PostgreSQL internal `IDENTITY` sequences), base and partitioned tables with inline `PRIMARY KEY`, `UNIQUE`, `CHECK` and `EXCLUDE` constraints plus comments, non-constraint-backed secondary indexes, outbound `FOREIGN KEY` constraints (`ALTER TABLE … ADD CONSTRAINT …`), views and materialized views in topological dependency order, overloaded routines (`FUNCTION` / `PROCEDURE`), and triggers (preserving PostgreSQL `DISABLE TRIGGER` state), while retargeting self-schema references (`retarget_schema_sql`) to `target_schema`.
+
+Migration DDL (`generate_migration_ddl`) compares canonicalized snapshots from the same engine (`ErrorCode::InvalidInput` on cross-engine calls) and orders statements across seven phases: (1) drop removed/modified triggers, dependent views/materialized views, routines, foreign keys, secondary indexes and non-FK constraints; (2) drop removed tables (child-first by FK dependency) and standalone sequences (`destructive: true`); (3) create or `ALTER SEQUENCE` for standalone sequences; (4) `CREATE TABLE` for new tables and `ALTER TABLE` (`DROP COLUMN`, `ADD COLUMN`, PostgreSQL `ALTER COLUMN … TYPE / SET|DROP NOT NULL / ADD|SET|DROP IDENTITY / SET|DROP DEFAULT`, MySQL `MODIFY COLUMN`, and table comments) for modified tables; (5) add new/modified non-FK constraints, secondary indexes and foreign keys; (6) recreate views and materialized views in dependency order; and (7) recreate routines and triggers. `SchemaDdlPlan` reports `destructiveCount`, truncation/privilege/destructive/unsupported warnings, and per-statement metadata. `SchemaDiffView` adds a **DDL Preview** panel (**Migrate Left → Right DDL**, **Migrate Right → Left DDL**, **Full Left Schema DDL**, **Full Right Schema DDL**) with destructive badges, warnings, **Copy DDL**, and **Open in SQL editor**.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | Three Rust unit tests in `ddl.rs` cover PostgreSQL full-schema dependency ordering/retargeting, PostgreSQL migration `ALTER`/`DROP` generation with destructive counts, and MySQL/MariaDB backtick quoting, default formatting and `MODIFY COLUMN` generation. `SchemaDiffView.test.tsx` (2) covers migration and full-schema DDL preview modes |
+| Fixtures | `schema_ddl_round_trip_and_migration_produce_zero_diffs` in `src-tauri/tests/postgres.rs` (PostgreSQL 18) and `src-tauri/tests/mysql.rs` (MySQL 8.4 and MariaDB 11.4) execute generated full-schema DDL into a fresh schema/database and verify `compare_schemas == 0` differences, then execute generated migration DDL and verify `compare_schemas == 0` differences against the target schema |
+| Browser | `schema-diff.spec.ts`: verifies live PostgreSQL schema comparison, snapshot capture, and **Migrate Left → Right DDL** preview (`DROP TABLE`, `CREATE TABLE`, `ALTER TABLE … ALTER COLUMN`) with zero page errors |
+| Validate | `pnpm validate`: 488 frontend tests / 45 files, 165 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Reviewed one-use DDL execution and drift check (`D04`), dedicated index/constraint editor (`D05`) and object creation/table modification UI (`N08`). Next slice: R7.4 (`D05` index and constraint editor) |
+
+Branch `feat/ddl-generator` from `origin/main` `046d05c`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
