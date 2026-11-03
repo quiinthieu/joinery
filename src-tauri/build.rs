@@ -43,6 +43,7 @@ fn main() {
             "prepare_index_constraint_ddl",
             "preview_table_object_ddl",
             "prepare_table_object_ddl",
+            "prepare_migration_ddl",
             "prepare_browse_table",
             "browse_table",
             "result_range",

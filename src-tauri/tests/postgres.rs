@@ -4778,3 +4778,137 @@ async fn table_and_object_ddl_editor_executes_reviewed_ddl_and_rejects_read_only
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn migration_sync_executes_reviewed_ddl_detects_drift_and_rejects_read_only() {
+    let (_root, studio, session) = setup(SafeMode::Guard).await;
+    let cleanup = "
+        DROP SCHEMA IF EXISTS r7_mig_sync_src CASCADE;
+        DROP SCHEMA IF EXISTS r7_mig_sync_dst CASCADE;
+    ";
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     CREATE SCHEMA r7_mig_sync_src;
+                     CREATE SCHEMA r7_mig_sync_dst;
+                     CREATE TABLE r7_mig_sync_src.items (
+                         id BIGINT PRIMARY KEY,
+                         price NUMERIC(12,2) NOT NULL DEFAULT 0,
+                         sku TEXT NOT NULL DEFAULT 'N/A'
+                     );
+                     CREATE INDEX items_sku_idx ON r7_mig_sync_src.items (sku);
+                     CREATE TABLE r7_mig_sync_dst.items (
+                         id BIGINT PRIMARY KEY,
+                         price NUMERIC(10,2) NOT NULL DEFAULT 0,
+                         obsolete_flag BOOLEAN DEFAULT false
+                     );
+                     CREATE TABLE r7_mig_sync_dst.legacy_log (
+                         id INTEGER PRIMARY KEY
+                     );"
+                ),
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let src_snap = studio
+        .schema_snapshot(&session.id, "r7_mig_sync_src")
+        .await
+        .unwrap();
+    let dst_snap = studio
+        .schema_snapshot(&session.id, "r7_mig_sync_dst")
+        .await
+        .unwrap();
+
+    let mig_plan = studio
+        .generate_migration_ddl(dst_snap.clone(), src_snap.clone(), Some("r7_mig_sync_dst"))
+        .unwrap();
+    assert!(!mig_plan.statements.is_empty());
+
+    // 1. SafeMode::ReadOnly rejection (ErrorCode::PolicyBlocked)
+    let (_ro_root, ro_studio, ro_session) = setup(SafeMode::ReadOnly).await;
+    let ro_err = ro_studio
+        .prepare_migration_ddl(
+            &ro_session.id,
+            dst_snap.clone(),
+            mig_plan.statements.clone(),
+        )
+        .await
+        .expect_err("ReadOnly session must block prepare_migration_ddl");
+    assert_eq!(ro_err.code, ErrorCode::PolicyBlocked);
+    ro_studio.shutdown();
+
+    // 2. Drift detection (ErrorCode::Conflict) when target schema changes after snapshot capture
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "CREATE TABLE r7_mig_sync_dst.unexpected_drift (id INT PRIMARY KEY);",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let drift_err = studio
+        .prepare_migration_ddl(&session.id, dst_snap.clone(), mig_plan.statements.clone())
+        .await
+        .expect_err("Drifted target schema must be rejected with Conflict");
+    assert_eq!(drift_err.code, ErrorCode::Conflict);
+    assert!(drift_err.message.contains("has drifted"));
+
+    // Remove the drifted table so target schema matches dst_snap again
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE r7_mig_sync_dst.unexpected_drift;",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    // 3. Successful reviewed migration execution producing compare_schemas == 0 differences
+    let prepared = studio
+        .prepare_migration_ddl(&session.id, dst_snap, mig_plan.statements)
+        .await
+        .expect("prepare_migration_ddl should succeed when schema has not drifted");
+    assert!(prepared.requires_approval);
+    assert!(
+        prepared
+            .warnings
+            .iter()
+            .any(|w| w.contains("ACCESS EXCLUSIVE locks"))
+    );
+
+    let approval = studio
+        .authorize(&prepared.id, None, prepared.confirmation_text.as_deref())
+        .expect("Guard confirmation text should authorize migration plan");
+    let events = finish(start(&studio, &prepared, Some(&approval)).1).await;
+    assert_eq!(status(&events), RunStatus::Completed, "events: {events:?}");
+
+    let dst_after = studio
+        .schema_snapshot(&session.id, "r7_mig_sync_dst")
+        .await
+        .unwrap();
+    let diff_after = studio.compare_schemas(dst_after, src_snap).unwrap();
+    assert!(
+        diff_after.entries.is_empty(),
+        "Expected 0 differences after reviewed migration execution, found: {:?}",
+        diff_after.entries
+    );
+
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

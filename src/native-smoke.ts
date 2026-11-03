@@ -196,6 +196,34 @@ export async function runNativeSmoke() {
           },
         },
       ],
+      [
+        "prepare_migration_ddl",
+        {
+          sessionId: "missing-native-fixture",
+          expectedSnapshot: {
+            engine: "postgres",
+            serverVersion: "PostgreSQL 17.2",
+            database: "joinery",
+            schema: "public",
+            role: "joinery",
+            tables: [],
+            routines: [],
+            sequences: [],
+            unsupportedObjects: [],
+            truncated: false,
+            restricted: false,
+          },
+          statements: [
+            {
+              sql: 'DROP TABLE "public"."orders";',
+              description: "Drop table orders",
+              objectKind: "table",
+              objectName: "orders",
+              destructive: true,
+            },
+          ],
+        },
+      ],
     ] as const) {
       let denied = false;
       try {

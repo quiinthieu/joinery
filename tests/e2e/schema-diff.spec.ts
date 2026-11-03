@@ -115,6 +115,27 @@ test("PostgreSQL schema diff compares live schemas, captures snapshots, and disc
     await expect(ddlScript).toContainText(
       'ALTER TABLE "e2e_diff_left"."Line Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
     );
+
+    // Select non-destructive statements only, then re-select all
+    await page.getByRole("button", { name: "Select non-destructive migration statements" }).click();
+    await expect(ddlScript).not.toContainText('DROP TABLE "e2e_diff_left"."only_left_archive";');
+    await expect(ddlScript).toContainText('CREATE TABLE "e2e_diff_left"."only_right_staging"');
+
+    await page.getByRole("button", { name: "Select all migration statements" }).click();
+    await expect(ddlScript).toContainText('DROP TABLE "e2e_diff_left"."only_left_archive";');
+
+    // Review and apply migration to synchronize e2e_diff_left with e2e_diff_right
+    await page.getByRole("button", { name: "Review and apply migration" }).click();
+    const reviewDialog = page.getByRole("dialog", {
+      name: "Review this operation",
+    });
+    await expect(reviewDialog).toBeVisible();
+    await reviewDialog.getByRole("button", { name: "Authorize and run" }).click();
+    await expect(reviewDialog).toHaveCount(0);
+
+    await expect(page.locator(".compare-empty-diff").first()).toContainText(
+      "No DDL statements needed",
+    );
   } finally {
     await page.getByRole("button", { name: "New query tab" }).click();
     await page.getByRole("textbox", { name: "SQL editor" }).fill(cleanupSql);

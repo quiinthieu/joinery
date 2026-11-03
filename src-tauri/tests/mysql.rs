@@ -4296,3 +4296,157 @@ async fn table_and_object_ddl_editor_executes_reviewed_ddl_and_rejects_read_only
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn migration_sync_executes_reviewed_ddl_detects_drift_and_rejects_read_only() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Guard).await;
+        let mut admin = profile(port, SafeMode::Silent);
+        admin.name = "Disposable root mig sync".into();
+        admin.username = "root".into();
+        let admin = studio.save_profile(admin, None).unwrap();
+        let root_session = studio
+            .connect(
+                &admin.id,
+                ConnectionSecrets {
+                    password: Some("joinery-root-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let cleanup = "
+            DROP DATABASE IF EXISTS r7_mig_sync_src;
+            DROP DATABASE IF EXISTS r7_mig_sync_dst;
+        ";
+        completed(
+            &run(
+                &studio,
+                &root_session,
+                &format!(
+                    "{cleanup}
+                     CREATE DATABASE r7_mig_sync_src;
+                     CREATE DATABASE r7_mig_sync_dst;
+                     GRANT ALL PRIVILEGES ON r7_mig_sync_src.* TO 'joinery'@'%';
+                     GRANT ALL PRIVILEGES ON r7_mig_sync_dst.* TO 'joinery'@'%';
+                     CREATE TABLE r7_mig_sync_src.items (
+                         id BIGINT NOT NULL PRIMARY KEY,
+                         price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                         sku VARCHAR(64) NOT NULL DEFAULT 'STD',
+                         KEY idx_items_sku (sku)
+                     ) ENGINE=InnoDB;
+                     CREATE TABLE r7_mig_sync_dst.items (
+                         id BIGINT NOT NULL PRIMARY KEY,
+                         price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                         obsolete_note VARCHAR(60) NULL
+                     ) ENGINE=InnoDB;
+                     CREATE TABLE r7_mig_sync_dst.legacy_log (
+                         id INT NOT NULL PRIMARY KEY
+                     ) ENGINE=InnoDB;"
+                ),
+            )
+            .await,
+        );
+
+        let src_snap = studio
+            .schema_snapshot(&session.id, "r7_mig_sync_src")
+            .await
+            .unwrap();
+        let dst_snap = studio
+            .schema_snapshot(&session.id, "r7_mig_sync_dst")
+            .await
+            .unwrap();
+
+        let mig_plan = studio
+            .generate_migration_ddl(dst_snap.clone(), src_snap.clone(), Some("r7_mig_sync_dst"))
+            .unwrap();
+        assert!(!mig_plan.statements.is_empty(), "port {port}");
+
+        // 1. SafeMode::ReadOnly rejection (ErrorCode::PolicyBlocked)
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let ro_err = ro_studio
+            .prepare_migration_ddl(
+                &ro_session.id,
+                dst_snap.clone(),
+                mig_plan.statements.clone(),
+            )
+            .await
+            .expect_err("ReadOnly session must block prepare_migration_ddl");
+        assert_eq!(ro_err.code, ErrorCode::PolicyBlocked, "port {port}");
+        ro_studio.shutdown();
+
+        // 2. Drift detection (ErrorCode::Conflict)
+        completed(
+            &run(
+                &studio,
+                &session,
+                "CREATE TABLE r7_mig_sync_dst.unexpected_drift (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;",
+            )
+            .await,
+        );
+        let drift_err = studio
+            .prepare_migration_ddl(&session.id, dst_snap.clone(), mig_plan.statements.clone())
+            .await
+            .expect_err("Drifted schema must fail with Conflict");
+        assert_eq!(drift_err.code, ErrorCode::Conflict, "port {port}");
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE r7_mig_sync_dst.unexpected_drift;",
+            )
+            .await,
+        );
+
+        // 3. Reviewed migration execution -> 0 differences
+        let prepared = studio
+            .prepare_migration_ddl(&session.id, dst_snap, mig_plan.statements)
+            .await
+            .expect("prepare_migration_ddl should succeed after resolving drift");
+        assert!(prepared.requires_approval, "port {port}");
+        assert!(
+            prepared
+                .warnings
+                .iter()
+                .any(|w| w.contains("implicit commit")),
+            "port {port}"
+        );
+
+        let approval = studio
+            .authorize(&prepared.id, None, prepared.confirmation_text.as_deref())
+            .expect("Guard confirmation should authorize MySQL migration plan");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        studio
+            .execute(
+                &prepared.id,
+                Some(&approval),
+                Arc::new(move |e| tx.send(e).is_ok()),
+            )
+            .unwrap();
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let done = matches!(ev, QueryEvent::Finished { .. });
+            events.push(ev);
+            if done {
+                break;
+            }
+        }
+        completed(&events);
+
+        let after_snap = studio
+            .schema_snapshot(&session.id, "r7_mig_sync_dst")
+            .await
+            .unwrap();
+        let diff_after = studio.compare_schemas(after_snap, src_snap).unwrap();
+        assert!(
+            diff_after.entries.is_empty(),
+            "Expected 0 differences on port {port} after migration execution, got: {:?}",
+            diff_after.entries
+        );
+
+        completed(&run(&studio, &root_session, cleanup).await);
+        studio.shutdown();
+    }
+}

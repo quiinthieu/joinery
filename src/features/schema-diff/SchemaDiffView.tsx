@@ -9,6 +9,7 @@ import {
   Code2,
   Copy,
   FileCode2,
+  Play,
   RefreshCw,
   Search,
   Trash2,
@@ -16,7 +17,11 @@ import {
 import type {
   DatabaseObjectKind,
   DatabaseObjectRef,
+  DdlStatement,
   EngineKind,
+  PreparedPlan,
+  QueryEvent,
+  RunStatus,
   SchemaDdlPlan,
   SchemaDiffKind,
   SchemaDiffReport,
@@ -27,6 +32,25 @@ import type {
 import { client, messageOf } from "../../ipc/client";
 import { InlineError } from "../../components/ui/Modal";
 import { useStudio, type StudioTab } from "../../state/studio";
+import { ReviewDialog } from "../safety/ReviewDialog";
+
+function runApprovedPlan(
+  planId: string,
+  approval: string,
+): Promise<{ status: RunStatus; errorMessage: string | null }> {
+  return new Promise((resolve, reject) => {
+    let errorMessage: string | null = null;
+    client
+      .execute(planId, approval, (event: QueryEvent) => {
+        if (event.type === "error") {
+          errorMessage = event.error.message;
+        } else if (event.type === "finished") {
+          resolve({ status: event.status, errorMessage });
+        }
+      })
+      .catch(reject);
+  });
+}
 
 export const MAX_CAPTURED_SCHEMA_SNAPSHOTS = 16;
 
@@ -181,6 +205,7 @@ export function SchemaDiffView({
   const objects = useStudio((s) => s.objects);
   const notify = useStudio((s) => s.notify);
   const openQuery = useStudio((s) => s.openQuery);
+  const refreshCatalog = useStudio((s) => s.refreshCatalog);
   const captured = useSyncExternalStore(schemaSnapshots.subscribe, schemaSnapshots.snapshot);
 
   const primaryConnectionId = tab.connectionId ?? "";
@@ -253,6 +278,11 @@ export function SchemaDiffView({
   const [ddlMode, setDdlMode] = useState<SchemaDdlMode>("none");
   const [ddlPlan, setDdlPlan] = useState<SchemaDdlPlan | null>(null);
   const [ddlLoading, setDdlLoading] = useState(false);
+  const [selectedStatementIndices, setSelectedStatementIndices] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const [preparingMigration, setPreparingMigration] = useState(false);
+  const [preparedMigrationPlan, setPreparedMigrationPlan] = useState<PreparedPlan | null>(null);
   const [loading, setLoading] = useState(false);
   const [capturingSide, setCapturingSide] = useState<"left" | "right" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -329,6 +359,8 @@ export function SchemaDiffView({
   ) {
     if (mode === "none" || !pair) {
       setDdlPlan(null);
+      setSelectedStatementIndices(new Set());
+      setPreparedMigrationPlan(null);
       return;
     }
     const reqId = ++ddlRequestSeq.current;
@@ -360,9 +392,13 @@ export function SchemaDiffView({
       }
       if (reqId !== ddlRequestSeq.current) return;
       setDdlPlan(plan);
+      setSelectedStatementIndices(new Set(plan.statements.map((_, idx) => idx)));
+      setPreparedMigrationPlan(null);
     } catch (failure) {
       if (reqId !== ddlRequestSeq.current) return;
       setDdlPlan(null);
+      setSelectedStatementIndices(new Set());
+      setPreparedMigrationPlan(null);
       setError(messageOf(failure));
     } finally {
       if (reqId === ddlRequestSeq.current) setDdlLoading(false);
@@ -375,10 +411,87 @@ export function SchemaDiffView({
     void loadDdlPreview(toggled, resolvedPair);
   }
 
-  async function handleCopyDdl() {
-    if (!ddlPlan?.script) return;
+  const isMigrationMode =
+    ddlMode === "migrate_left_to_right" || ddlMode === "migrate_right_to_left";
+
+  const selectedStatements: DdlStatement[] = useMemo(() => {
+    if (!ddlPlan) return [];
+    if (!isMigrationMode) return [...ddlPlan.statements];
+    return ddlPlan.statements.filter((_, idx) => selectedStatementIndices.has(idx));
+  }, [ddlPlan, isMigrationMode, selectedStatementIndices]);
+
+  const activeScript = useMemo(() => {
+    if (!ddlPlan) return "";
+    if (!isMigrationMode) return ddlPlan.script;
+    return selectedStatements.map((s) => s.sql).join("\n\n");
+  }, [ddlPlan, isMigrationMode, selectedStatements]);
+
+  const selectedDestructiveCount = useMemo(
+    () =>
+      isMigrationMode
+        ? selectedStatements.filter((s) => s.destructive).length
+        : (ddlPlan?.destructiveCount ?? 0),
+    [ddlPlan, isMigrationMode, selectedStatements],
+  );
+
+  const mutatedSideTarget: DiffSideTarget | null =
+    ddlMode === "migrate_left_to_right"
+      ? leftTarget
+      : ddlMode === "migrate_right_to_left"
+        ? rightTarget
+        : null;
+
+  const expectedSnapshot: SchemaSnapshot | null =
+    ddlMode === "migrate_left_to_right"
+      ? (resolvedPair?.left ?? null)
+      : ddlMode === "migrate_right_to_left"
+        ? (resolvedPair?.right ?? null)
+        : null;
+
+  const mutatedLiveConnection =
+    mutatedSideTarget?.mode === "live"
+      ? (compatibleConnections.find((c) => c.connectionId === mutatedSideTarget.connectionId) ??
+        null)
+      : null;
+
+  const mutatedProfile = mutatedLiveConnection
+    ? (profiles.find((p) => p.id === mutatedLiveConnection.connectionId) ?? null)
+    : null;
+
+  const canApplyMigration = Boolean(
+    isMigrationMode &&
+    mutatedLiveConnection &&
+    mutatedProfile &&
+    mutatedProfile.safeMode !== "readOnly" &&
+    expectedSnapshot &&
+    selectedStatements.length > 0 &&
+    !preparingMigration &&
+    !loading &&
+    !ddlLoading,
+  );
+
+  async function handlePrepareMigration() {
+    if (!mutatedLiveConnection || !expectedSnapshot || selectedStatements.length === 0) return;
+    setPreparingMigration(true);
+    setError(null);
     try {
-      await navigator.clipboard?.writeText(ddlPlan.script);
+      const plan = await client.call<PreparedPlan>("prepare_migration_ddl", {
+        sessionId: mutatedLiveConnection.session.id,
+        expectedSnapshot,
+        statements: selectedStatements,
+      });
+      setPreparedMigrationPlan(plan);
+    } catch (failure) {
+      setError(messageOf(failure));
+    } finally {
+      setPreparingMigration(false);
+    }
+  }
+
+  async function handleCopyDdl() {
+    if (!activeScript) return;
+    try {
+      await navigator.clipboard?.writeText(activeScript);
       notify("Copied DDL script to clipboard");
     } catch {
       notify("Could not copy DDL to clipboard");
@@ -386,7 +499,7 @@ export function SchemaDiffView({
   }
 
   function handleOpenDdlInEditor() {
-    if (!ddlPlan?.script) return;
+    if (!activeScript || !ddlPlan) return;
     const preferredConnId =
       (ddlMode === "migrate_right_to_left" || ddlMode === "full_right"
         ? rightTarget.mode === "live"
@@ -398,7 +511,7 @@ export function SchemaDiffView({
       primaryConnectionId ??
       compatibleConnections[0]?.connectionId ??
       null;
-    openQuery(preferredConnId, ddlPlan.script);
+    openQuery(preferredConnId, activeScript);
     notify(`Opened DDL script for ${ddlPlan.targetSchema} in SQL editor`);
   }
 
@@ -713,26 +826,59 @@ export function SchemaDiffView({
                     <strong>DDL Preview · {ddlPlan.targetSchema}</strong>
                   </div>
                   <span className="sql-nav-badge">
-                    {ddlPlan.statements.length}{" "}
-                    {ddlPlan.statements.length === 1 ? "statement" : "statements"}
+                    {isMigrationMode
+                      ? `${selectedStatements.length} of ${ddlPlan.statements.length} selected`
+                      : `${ddlPlan.statements.length} ${ddlPlan.statements.length === 1 ? "statement" : "statements"}`}
                   </span>
                   <span
                     className={
-                      ddlPlan.destructiveCount > 0
+                      selectedDestructiveCount > 0
                         ? "compare-status-badge onlyLeft"
                         : "compare-status-badge identical"
                     }
                   >
-                    {ddlPlan.destructiveCount > 0
-                      ? `${ddlPlan.destructiveCount} destructive`
+                    {selectedDestructiveCount > 0
+                      ? `${selectedDestructiveCount} destructive`
                       : "Non-destructive"}
                   </span>
                   <div className="diagram-toolbar" style={{ marginLeft: "auto" }}>
+                    {isMigrationMode && ddlPlan.statements.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="button ghost small"
+                          aria-label="Select all migration statements"
+                          onClick={() =>
+                            setSelectedStatementIndices(
+                              new Set(ddlPlan.statements.map((_, idx) => idx)),
+                            )
+                          }
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          className="button ghost small"
+                          aria-label="Select non-destructive migration statements"
+                          onClick={() =>
+                            setSelectedStatementIndices(
+                              new Set(
+                                ddlPlan.statements
+                                  .map((stmt, idx) => (!stmt.destructive ? idx : -1))
+                                  .filter((idx) => idx >= 0),
+                              ),
+                            )
+                          }
+                        >
+                          Select non-destructive
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       className="button ghost small"
                       aria-label="Copy generated DDL"
-                      disabled={!ddlPlan.script}
+                      disabled={!activeScript}
                       onClick={() => void handleCopyDdl()}
                     >
                       <Copy size={12} />
@@ -742,12 +888,33 @@ export function SchemaDiffView({
                       type="button"
                       className="button ghost small"
                       aria-label="Open generated DDL in SQL editor"
-                      disabled={!ddlPlan.script}
+                      disabled={!activeScript}
                       onClick={handleOpenDdlInEditor}
                     >
                       <ArrowUpRight size={12} />
                       Open in SQL editor
                     </button>
+                    {isMigrationMode && ddlPlan.statements.length > 0 && (
+                      <button
+                        type="button"
+                        className="button primary small"
+                        aria-label="Review and apply migration"
+                        disabled={!canApplyMigration}
+                        title={
+                          mutatedSideTarget?.mode !== "live"
+                            ? "Select a live database connection on the target schema side to apply migration DDL"
+                            : mutatedProfile?.safeMode === "readOnly"
+                              ? "Target connection is in Read-Only Safe Mode"
+                              : selectedStatements.length === 0
+                                ? "Select at least one migration statement to apply"
+                                : `Apply ${selectedStatements.length} statement(s) to ${ddlPlan.targetSchema}`
+                        }
+                        onClick={() => void handlePrepareMigration()}
+                      >
+                        <Play size={12} />
+                        {preparingMigration ? "Checking drift…" : "Review & apply migration…"}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -761,13 +928,65 @@ export function SchemaDiffView({
                   </ul>
                 )}
 
+                {isMigrationMode && ddlPlan.statements.length > 0 && (
+                  <div
+                    className="migration-statement-list"
+                    role="group"
+                    aria-label="Migration statements"
+                    data-testid="migration-statement-list"
+                  >
+                    {ddlPlan.statements.map((stmt, idx) => {
+                      const checked = selectedStatementIndices.has(idx);
+                      return (
+                        <label
+                          key={`${idx}:${stmt.objectKind}:${stmt.objectName}:${stmt.description}`}
+                          className="migration-statement-row"
+                          data-testid={`migration-statement-item-${idx}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            aria-label={`Include statement: ${stmt.description}`}
+                            onChange={() => {
+                              setSelectedStatementIndices((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(idx)) next.delete(idx);
+                                else next.add(idx);
+                                return next;
+                              });
+                            }}
+                          />
+                          <span className="migration-statement-description">
+                            {stmt.description}
+                          </span>
+                          <span
+                            className={
+                              stmt.destructive
+                                ? "compare-status-badge onlyLeft"
+                                : "compare-status-badge identical"
+                            }
+                          >
+                            {stmt.destructive ? "Destructive" : "Safe"}
+                          </span>
+                          <code className="migration-statement-sql">{stmt.sql}</code>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+
                 {ddlPlan.statements.length === 0 ? (
                   <div className="compare-empty-diff">
                     No DDL statements needed — schemas are structurally identical.
                   </div>
+                ) : selectedStatements.length === 0 ? (
+                  <div className="compare-empty-diff">
+                    No migration statements selected. Select at least one statement above to preview
+                    or apply DDL.
+                  </div>
                 ) : (
                   <pre className="sql-code-block" data-testid="schema-ddl-script">
-                    <code>{ddlPlan.script}</code>
+                    <code>{activeScript}</code>
                   </pre>
                 )}
               </section>
@@ -944,6 +1163,36 @@ export function SchemaDiffView({
           </>
         )}
       </div>
+      {preparedMigrationPlan && mutatedProfile && mutatedLiveConnection && (
+        <ReviewDialog
+          key={preparedMigrationPlan.id}
+          plan={preparedMigrationPlan}
+          profile={mutatedProfile}
+          onExecute={async (approval) => {
+            const targetConnId = mutatedLiveConnection.connectionId;
+            const targetSchemaName = ddlPlan?.targetSchema ?? expectedSnapshot?.schema ?? "schema";
+            const appliedCount = selectedStatements.length;
+            const outcome = await runApprovedPlan(preparedMigrationPlan.id, approval);
+            if (outcome.status === "completed") {
+              setPreparedMigrationPlan(null);
+              await refreshCatalog(targetConnId);
+              await runComparison();
+              notify(
+                `Applied ${appliedCount} migration ${appliedCount === 1 ? "statement" : "statements"} to ${targetSchemaName}`,
+              );
+              return;
+            }
+            setPreparedMigrationPlan(null);
+            setError(
+              outcome.errorMessage ??
+                (outcome.status === "outcomeUnknown"
+                  ? "The connection closed while applying migration DDL. Re-compare schemas to verify the outcome."
+                  : "The migration DDL operation failed."),
+            );
+          }}
+          onClose={() => setPreparedMigrationPlan(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1911,6 +1911,122 @@ impl Studio {
             bytes,
         )
     }
+    pub async fn prepare_migration_ddl(
+        &self,
+        session_id: &str,
+        expected_snapshot: SchemaSnapshot,
+        statements: Vec<crate::ddl::DdlStatement>,
+    ) -> AppResult<PreparedPlan> {
+        let session = self.session(session_id)?;
+        if !matches!(
+            session.profile.engine,
+            EngineKind::Postgres | EngineKind::Mysql
+        ) {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Schema migration execution is available for PostgreSQL and MySQL/MariaDB",
+            ));
+        }
+        if session.profile.engine != expected_snapshot.engine {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Target session engine does not match the migration snapshot engine",
+            ));
+        }
+        let target_schema = expected_snapshot.schema.trim();
+        if target_schema.is_empty() || target_schema.len() > 1024 || target_schema.contains('\0') {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Choose a valid target schema to migrate",
+            ));
+        }
+        if statements.is_empty() || statements.len() > 500 {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Select between 1 and 500 migration DDL statements to prepare",
+            ));
+        }
+        for stmt in &statements {
+            if stmt.sql.trim().is_empty() || stmt.sql.contains('\0') {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    "Each migration DDL statement must contain non-empty SQL",
+                ));
+            }
+        }
+
+        let mut statement_plans = Vec::with_capacity(statements.len());
+        let mut bytes = 0usize;
+        for stmt in &statements {
+            bytes = bytes.saturating_add(stmt.sql.len());
+            statement_plans.push(StatementPlan {
+                sql: stmt.sql.clone(),
+                kind: StatementKind::Ddl,
+                missing_where: false,
+                span: Some(crate::sql_text::span_for_byte_range(
+                    &stmt.sql,
+                    0,
+                    stmt.sql.len(),
+                )),
+            });
+        }
+        let mut plan = safety::plan_for_statements(session_id, &session.profile, statement_plans)?;
+
+        let live_snapshot = session.driver.schema_snapshot(target_schema).await?;
+        let drift = crate::schema_diff::compare_schema_snapshots(
+            live_snapshot.clone(),
+            expected_snapshot.clone(),
+        );
+        if !drift.entries.is_empty()
+            || live_snapshot.truncated != expected_snapshot.truncated
+            || live_snapshot.restricted != expected_snapshot.restricted
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                format!(
+                    "Target schema \"{}\" has drifted since the comparison snapshot was captured ({} difference(s) detected). Re-compare schemas before applying migration DDL.",
+                    expected_snapshot.schema,
+                    drift.entries.len()
+                ),
+            ));
+        }
+
+        plan.requires_approval = true;
+
+        let destructive_count = statements.iter().filter(|s| s.destructive).count();
+        if destructive_count > 0 {
+            let warning = format!(
+                "{destructive_count} destructive statement(s) (DROP) selected; review carefully before executing."
+            );
+            if !plan.warnings.contains(&warning) {
+                plan.warnings.push(warning);
+            }
+        }
+        match session.profile.engine {
+            EngineKind::Mysql => {
+                let warning = "Migration DDL on MySQL/MariaDB causes an implicit commit of any open transaction on this session before and after each DDL statement.".to_string();
+                if !plan.warnings.contains(&warning) {
+                    plan.warnings.push(warning);
+                }
+            }
+            EngineKind::Postgres => {
+                let warning = "Migration DDL on PostgreSQL acquires ACCESS EXCLUSIVE locks on altered or dropped objects and may block concurrent queries until completion.".to_string();
+                if !plan.warnings.contains(&warning) {
+                    plan.warnings.push(warning);
+                }
+            }
+            _ => {}
+        }
+
+        self.store_plan(
+            plan,
+            Action::Sql {
+                bound: Vec::new(),
+                error_source: None,
+            },
+            bytes,
+        )
+    }
     async fn schema_for_session(
         &self,
         session: &Session,
@@ -4017,5 +4133,43 @@ mod browse_classification_tests {
             }
         }
         assert!(checked_files >= 1);
+    }
+
+    #[tokio::test]
+    async fn prepare_migration_ddl_rejects_disconnected_session() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let snap = crate::schema_diff::SchemaSnapshot {
+            engine: EngineKind::Postgres,
+            server_version: "PostgreSQL 17".into(),
+            database: "joinery".into(),
+            schema: "public".into(),
+            role: "joinery".into(),
+            tables: vec![],
+            routines: vec![],
+            sequences: vec![],
+            unsupported_objects: vec![],
+            truncated: false,
+            restricted: false,
+        };
+        let err = studio
+            .prepare_migration_ddl(
+                "missing-session",
+                snap,
+                vec![crate::ddl::DdlStatement {
+                    sql: "DROP TABLE \"public\".\"t\";".into(),
+                    description: "Drop table t".into(),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: "t".into(),
+                    destructive: true,
+                }],
+            )
+            .await
+            .expect_err("disconnected session should fail");
+        assert_eq!(err.code, ErrorCode::ConnectionClosed);
     }
 }
