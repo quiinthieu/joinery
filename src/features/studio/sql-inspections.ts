@@ -58,13 +58,16 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * same number of simple columns. A star of another relation is accepted
  * when metadata gives every arm the same width. The offered names are the
  * anchor relation's columns, plus the anchor arm's extra names.
+ * The outer statement may be that same set operation. A reference inside an
+ * arm resolves to that arm's tables, and there is no combined output name.
  * One pair of parentheses may wrap a flat arm of a CTE or derived-table set
  * operation. A second pair still withholds.
  * shortcut: a schema-qualified star beside other items, a different extra
- * count on the same relation, a top-level set operation, more arms than the
- * relation limit, a second pair of parentheses, and an arm that is not a
- * flat SELECT withhold. A repeated output name, or a name owned by more than
- * one relation, withholds the inspection. upgrade for those shapes.
+ * count on the same relation, more arms than the relation limit, a second
+ * pair of parentheses, and an arm that is not a flat SELECT withhold. A
+ * trailing ORDER BY or LIMIT stays in the last arm. A repeated output name,
+ * or a name owned by more than one relation, withholds the inspection.
+ * upgrade for those shapes.
  */
 export function prepareColumnInspection(
   state: EditorState,
@@ -213,7 +216,11 @@ export function prepareColumnInspection(
     }
     return items;
   }
-  function projectItems(items: readonly SqlToken[][], scope: Scope): QueryOutput[] {
+  function projectItems(
+    items: readonly SqlToken[][],
+    scope: Scope,
+    requireKnown = true,
+  ): QueryOutput[] {
     if (items.length > 2048) throw unsupported();
     const outputs: QueryOutput[] = [];
     for (const raw of items) {
@@ -245,7 +252,7 @@ export function prepareColumnInspection(
           sourceTable = found[0].table;
           source = found[0].source;
         } else if (owner.starTable) sourceTable = owner.starTable;
-        else if (owner.outputs) throw unsupported();
+        else if (owner.outputs && requireKnown) throw unsupported();
         else sourceTable = owner.table;
       } else {
         checkName(item[0]);
@@ -257,9 +264,14 @@ export function prepareColumnInspection(
         );
         if (found && found.length > 1) throw unsupported();
         if (owner.outputs && !owner.starTable) {
-          if (found?.length !== 1) throw unsupported();
-          sourceTable = found[0].table;
-          source = found[0].source;
+          if (found?.length !== 1 && requireKnown) throw unsupported();
+          if (found?.length === 1) {
+            sourceTable = found[0].table;
+            source = found[0].source;
+          } else {
+            sourceTable = owner.table;
+            source = written;
+          }
         } else if (found?.length === 1) {
           sourceTable = found[0].table;
           source = found[0].source;
@@ -275,7 +287,7 @@ export function prepareColumnInspection(
     }
     return outputs;
   }
-  function project(list: readonly SqlToken[], scope: Scope): QueryOutput[] {
+  function project(list: readonly SqlToken[], scope: Scope, requireKnown = true): QueryOutput[] {
     if (word(list[0]) !== "SELECT") throw unsupported();
     let at = 1;
     if (word(list[1]) === "DISTINCT" || word(list[1]) === "ALL") at = 2;
@@ -283,7 +295,7 @@ export function prepareColumnInspection(
     if (from < at) throw unsupported();
     const select = list.slice(at, from);
     if (!select.length || select.length > 2048) throw unsupported();
-    const outputs = projectItems(selectItems(select), scope);
+    const outputs = projectItems(selectItems(select), scope, requireKnown);
     if (
       !outputs.length ||
       new Set(outputs.map((output) => columnKey(output.name))).size !== outputs.length
@@ -914,6 +926,7 @@ export function prepareColumnInspection(
   function armOutput(
     body: readonly SqlToken[],
     scope: Scope,
+    requireKnown = true,
   ):
     | { kind: "bare"; starTable: TableRef; extras: QueryOutput[]; columnList?: readonly string[] }
     | { kind: "named"; outputs: QueryOutput[] } {
@@ -927,7 +940,7 @@ export function prepareColumnInspection(
       };
     return {
       kind: "named",
-      outputs: star && "outputs" in star ? star.outputs : project(body, scope),
+      outputs: star && "outputs" in star ? star.outputs : project(body, scope, requireKnown),
     };
   }
   function shapeOf(
@@ -1057,7 +1070,43 @@ export function prepareColumnInspection(
         : { outputs }),
     });
   }
-  const outer = analyze(leading ? leading.rest : tokens, 0, ctes);
+  // Same arm-width rules as a CTE. Each arm keeps its own tables; nothing names the set.
+  function inspectSet(arms: readonly (readonly SqlToken[])[], scope: readonly Binding[]): Analysis {
+    if (
+      arms.length < 2 ||
+      arms.length > columnInspectionLimits.relations ||
+      arms.some((arm) => arm.length === 0)
+    )
+      throw unsupported();
+    const parts: Analysis[] = [];
+    const shapes: SetArm[] = [];
+    const extras: QueryOutput[] = [];
+    for (const arm of arms) {
+      const nested = analyze(arm, 0, scope);
+      // A missing name is an issue, so the width count does not require it to exist.
+      const later = armOutput(arm, nested.bindings, false);
+      if (shapes.length) acceptLater(shapes[0], shapeOf(later));
+      parts.push(nested);
+      // Named select items can be the missing columns. Star extras must exist in metadata.
+      if (later.kind === "bare") extras.push(...later.extras);
+      shapes.push(shapeOf(later));
+    }
+    setWidths.push(shapes);
+    return {
+      references: parts.flatMap((part) => part.references),
+      unqualifiedOwners: new Map(parts.flatMap((part) => [...part.unqualifiedOwners])),
+      proofs: [...parts.flatMap((part) => part.proofs), ...extras],
+      bindings: [],
+      tables: [
+        ...new Map(
+          parts.flatMap((part) => part.tables).map((item) => [tableKey(item), item]),
+        ).values(),
+      ],
+    };
+  }
+  const outerSource = leading ? leading.rest : tokens;
+  const outerArms = unionArms(outerSource);
+  const outer = outerArms ? inspectSet(outerArms, ctes) : analyze(outerSource, 0, ctes);
   const references = [...cteReferences, ...outer.references];
   const unqualifiedOwners = new Map([...cteOwners, ...outer.unqualifiedOwners]);
   const proofs = [...cteProofs, ...outer.proofs];

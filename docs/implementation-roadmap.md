@@ -599,6 +599,7 @@ R6 remains partial, local, unmerged and unreleased.
    Every arm of a set operation may add the same number of simple columns beside that star.
    A star of another relation is accepted when metadata gives every arm the same width.
    A full explicit column list renames a star when the list matches that star's width.
+   A top-level UNION, INTERSECT, or EXCEPT of flat SELECT arms uses that same width check.
    One pair of parentheses may wrap a flat arm of a CTE or derived-table set operation.
    `{{lower(selection)}}` and `{{upper(selection)}}` change the selected text's case.
    A recursive CTE of more than two flat SELECT arms is inspected from the anchor projection.
