@@ -325,6 +325,14 @@ pub async fn processes(
 }
 
 #[tauri::command]
+pub async fn lock_waits(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<LockWaitSnapshot> {
+    studio.lock_waits(&session_id).await
+}
+
+#[tauri::command]
 pub async fn prepare_process_cancel(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

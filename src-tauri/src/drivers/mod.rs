@@ -178,6 +178,13 @@ pub trait Driver: Send + Sync {
     }
     async fn apply(&self, schema: &TableSchema, rows: &[RowMutation]) -> AppResult<()>;
     async fn processes(&self) -> AppResult<Vec<ProcessInfo>>;
+    /// Sessions currently waiting on locks and the sessions blocking them.
+    async fn lock_waits(&self) -> AppResult<LockWaitSnapshot> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Lock inspection is unavailable for this engine",
+        ))
+    }
     async fn cancel_process(&self, id: &str, identity: &str) -> AppResult<()>;
     async fn redis_scan(&self, _pattern: &str, _cursor: Option<&str>) -> AppResult<RedisScanPage> {
         Err(AppError::new(

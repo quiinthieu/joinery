@@ -824,6 +824,76 @@ impl Driver for Mysql {
             })
             .collect())
     }
+    async fn lock_waits(&self) -> AppResult<LockWaitSnapshot> {
+        let sql = if self.maria {
+            // MariaDB 11.4 truncates these ENUM columns over the binary
+            // protocol ("RE" for RECORD); an explicit text cast keeps them whole.
+            "SELECT r.trx_mysql_thread_id, COALESCE(p.USER, ''),
+                    COALESCE(TIMESTAMPDIFF(SECOND, r.trx_wait_started, NOW()), 0),
+                    COALESCE(CAST(l.lock_type AS CHAR(32)), ''),
+                    COALESCE(CAST(l.lock_mode AS CHAR(32)), ''), NULL, l.lock_table,
+                    LEFT(r.trx_query, 4096), b.trx_mysql_thread_id
+             FROM INFORMATION_SCHEMA.INNODB_LOCK_WAITS w
+             JOIN INFORMATION_SCHEMA.INNODB_TRX r ON r.trx_id = w.requesting_trx_id
+             JOIN INFORMATION_SCHEMA.INNODB_TRX b ON b.trx_id = w.blocking_trx_id
+             LEFT JOIN INFORMATION_SCHEMA.INNODB_LOCKS l ON l.lock_id = w.requested_lock_id
+             LEFT JOIN INFORMATION_SCHEMA.PROCESSLIST p ON p.ID = r.trx_mysql_thread_id
+             ORDER BY 3 DESC, 1, 9 LIMIT 2001"
+        } else {
+            "SELECT r.trx_mysql_thread_id, COALESCE(p.USER, ''),
+                    COALESCE(TIMESTAMPDIFF(SECOND, r.trx_wait_started, NOW()), 0),
+                    COALESCE(dl.LOCK_TYPE, ''), COALESCE(dl.LOCK_MODE, ''),
+                    dl.OBJECT_SCHEMA, dl.OBJECT_NAME,
+                    LEFT(r.trx_query, 4096), b.trx_mysql_thread_id
+             FROM performance_schema.data_lock_waits w
+             JOIN INFORMATION_SCHEMA.INNODB_TRX r ON r.trx_id = w.REQUESTING_ENGINE_TRANSACTION_ID
+             JOIN INFORMATION_SCHEMA.INNODB_TRX b ON b.trx_id = w.BLOCKING_ENGINE_TRANSACTION_ID
+             LEFT JOIN performance_schema.data_locks dl ON dl.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+             LEFT JOIN INFORMATION_SCHEMA.PROCESSLIST p ON p.ID = r.trx_mysql_thread_id
+             ORDER BY 3 DESC, 1, 9 LIMIT 2001"
+        };
+        let maria = self.maria;
+        let rows = self
+            .metadata(move |conn| Box::pin(fetch(conn, sql, vec![], 2001, 4 * 1024 * 1024)))
+            .await
+            .map_err(|error| {
+                if error.code == ErrorCode::PermissionDenied {
+                    AppError::new(
+                        ErrorCode::PermissionDenied,
+                        if maria {
+                            "Lock inspection needs the PROCESS privilege."
+                        } else {
+                            "Lock inspection needs the PROCESS privilege and SELECT on performance_schema."
+                        },
+                    )
+                } else {
+                    error
+                }
+            })?;
+        let (waits, truncated) = LockWait::merge(rows.iter().map(|r| {
+            let id = cell(r, 0).to_owned();
+            let object = if maria {
+                r[6].as_deref().and_then(parse_quoted_table)
+            } else {
+                r[5].clone()
+                    .zip(r[6].clone())
+                    .map(|(schema, name)| TableRef { schema, name })
+            };
+            LockWait {
+                own_session: id == self.own_id.to_string(),
+                waiting_id: id,
+                user: cell(r, 1).into(),
+                wait_seconds: cell(r, 2).parse().unwrap_or(0.0),
+                lock_type: cell(r, 3).into(),
+                lock_mode: cell(r, 4).into(),
+                object,
+                wait_event: None,
+                query: r[7].clone(),
+                blocking_ids: vec![cell(r, 8).into()],
+            }
+        }));
+        Ok(LockWaitSnapshot { waits, truncated })
+    }
     async fn cancel_process(&self, _id: &str, _identity: &str) -> AppResult<()> {
         Err(AppError::new(
             ErrorCode::Unsupported,
@@ -902,6 +972,38 @@ async fn collect_metadata<P: mysql_async::prelude::Protocol + Send>(
 }
 fn cell(row: &TextRow, index: usize) -> &str {
     row[index].as_deref().unwrap_or("")
+}
+/// Parses MariaDB's backtick-quoted `` `schema`.`table` `` lock target.
+/// Returns `None` for any other shape rather than guessing.
+fn parse_quoted_table(text: &str) -> Option<TableRef> {
+    let mut parts = Vec::new();
+    let mut chars = text.chars().peekable();
+    while chars.peek().is_some() {
+        if chars.next()? != '`' {
+            return None;
+        }
+        let mut part = String::new();
+        loop {
+            match chars.next()? {
+                '`' if chars.peek() == Some(&'`') => {
+                    chars.next();
+                    part.push('`');
+                }
+                '`' => break,
+                c => part.push(c),
+            }
+        }
+        parts.push(part);
+        match chars.next() {
+            Some('.') => continue,
+            None => break,
+            Some(_) => return None,
+        }
+    }
+    match <[String; 2]>::try_from(parts) {
+        Ok([schema, name]) => Some(TableRef { schema, name }),
+        Err(_) => None,
+    }
 }
 fn bind(value: Option<String>) -> Value {
     value.map_or(Value::NULL, |v| Value::Bytes(v.into_bytes()))
@@ -988,4 +1090,33 @@ pub(crate) fn mysql_sql_error(error: mysql_async::Error, sql: &str) -> AppError 
         detail: None,
         hint: None,
     })
+}
+
+#[cfg(test)]
+mod lock_target_tests {
+    use super::parse_quoted_table;
+
+    #[test]
+    fn mariadb_lock_targets_parse_only_two_quoted_parts() {
+        let parsed = parse_quoted_table("`joinery`.`browse_sort`").unwrap();
+        assert_eq!(
+            (parsed.schema.as_str(), parsed.name.as_str()),
+            ("joinery", "browse_sort")
+        );
+        let quoted = parse_quoted_table("`a``b`.`c.d`").unwrap();
+        assert_eq!(
+            (quoted.schema.as_str(), quoted.name.as_str()),
+            ("a`b", "c.d")
+        );
+        for invalid in [
+            "",
+            "joinery.browse_sort",
+            "`only`",
+            "`a`.`b`.`c`",
+            "`a`x`b`",
+            "`open",
+        ] {
+            assert!(parse_quoted_table(invalid).is_none(), "{invalid}");
+        }
+    }
 }

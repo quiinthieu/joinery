@@ -2691,3 +2691,22 @@ The diagram tab uses a deterministic layered layout: referenced tables to the le
 | Open / next | Diagram image export, manual placement, saved diagrams and notation options. Next slice: A05 lock/wait inspection with A04 session monitoring |
 
 Branch `feat/er-diagram` from `origin/main` `a0a6df8`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R8 slice 1: lock waits and session monitoring (3 November 2026)
+
+`lock_waits(sessionId)` lists sessions waiting on locks and the sessions that block them. PostgreSQL combines `pg_blocking_pids` with the ungranted `pg_locks` row and `pg_stat_activity` wait events. MySQL 8.4 reads `performance_schema.data_lock_waits` with `INNODB_TRX`; MariaDB 11.4 reads `INFORMATION_SCHEMA.INNODB_LOCK_WAITS`. Rows for one waiter merge into one entry with every distinct blocker; at most 500 waiters, longest first, with truncation reported. Without `PROCESS` (and `performance_schema` access on MySQL) the call returns a permission error naming the privilege. Snowflake and Redis return `Unsupported`, and the view hides the section. Process identifiers match the existing Processes list. Nothing is cancelled automatically; PostgreSQL cancellation keeps its existing reviewed identity check.
+
+The Processes view adds a lock-waits table, a **Blocking N** badge on root blockers (sessions that block others and wait on nothing), **Waiting on** badges, a possible-deadlock warning for cycles, a text filter, **Hide idle** (lock participants stay visible) and an optional 5-second refresh.
+
+Reproduced engine behaviour: MariaDB 11.4 returned `INNODB_LOCKS.lock_type` as `RE` instead of `RECORD` over the binary protocol. The query now casts both ENUM columns to text; the fixture test asserts the full value on both engines.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | Rust `LockWait::merge` (blocker de-duplication, ordering, bound) and MariaDB lock-target parsing (escaped backticks, rejected shapes). `lock-chains.test.ts` (3): roots, transitive counts, cycles. `ProcessesView.test.tsx` (3): table, badges, filters, deadlock and truncation notices, the privilege message, and an unsupported engine |
+| Fixtures | `lock_waits_report_the_blocking_session_and_clear_after_rollback` (PostgreSQL 18) and `lock_waits_need_process_privilege_and_report_innodb_blockers` (MySQL 8.4 and MariaDB 11.4, including the PROCESS-less fixture account) use real blocked sessions and pass on Compose project `joinery-r7` |
+| Browser | `lock-monitoring.spec.ts`: an advisory lock held in one console blocks an isolated console; the view shows the wait and the **Blocking 1** root, and clears after release |
+| Validate | `pnpm validate`: 482 frontend tests / 43 files, 160 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | MySQL metadata-lock waits, lock history, server metrics. Next slice: A03 index and storage statistics |
+
+Branch `feat/lock-monitoring`, stacked on `feat/er-diagram`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

@@ -49,6 +49,7 @@
     "allow-prepare-changes-batch",
     "allow-prepare-table-changes",
     "allow-processes",
+    "allow-lock-waits",
     "allow-prepare-process-cancel",
     "allow-health",
     "allow-history",

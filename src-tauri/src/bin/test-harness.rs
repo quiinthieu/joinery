@@ -264,6 +264,11 @@ async fn rpc(
                     .processes(&arg::<String>(&args, "sessionId")?)
                     .await?
             ),
+            "lock_waits" => json!(
+                studio
+                    .lock_waits(&arg::<String>(&args, "sessionId")?)
+                    .await?
+            ),
             "prepare_process_cancel" => json!(studio.prepare_process_cancel(
                 &arg::<String>(&args, "sessionId")?,
                 &arg::<String>(&args, "id")?,

@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
-import { Activity, History, RefreshCw, Search, ArrowUpRight } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Activity, History, Lock, RefreshCw, Search, ArrowUpRight } from "lucide-react";
 import type {
   AuditEntry,
   ConstraintKind,
   DatabaseObjectRef,
   HistoryEntry,
+  LockWaitSnapshot,
   ObjectDetails,
   ProcessInfo,
   TableSchema,
@@ -13,6 +14,7 @@ import { client, messageOf } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
 import { Modal, InlineError } from "../../components/ui/Modal";
 import { DependencySection } from "./ObjectInspectorView";
+import { summarizeLocks } from "./lock-chains";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]),
@@ -254,25 +256,63 @@ export function ProcessesView({
   const session = useStudio((s) => (tab.connectionId ? s.sessions[tab.connectionId] : null));
   const [processes, setProcesses] = useState<ProcessInfo[]>([]),
     [error, setError] = useState<string | null>(null),
-    [loading, setLoading] = useState(false);
+    [loading, setLoading] = useState(false),
+    [locks, setLocks] = useState<LockWaitSnapshot | null>(null),
+    [lockError, setLockError] = useState<string | null>(null),
+    [filter, setFilter] = useState(""),
+    [hideIdle, setHideIdle] = useState(false),
+    [autoRefresh, setAutoRefresh] = useState(false);
+  const request = useRef(0);
   async function refresh() {
     if (!session) return;
+    const id = ++request.current;
     setLoading(true);
-    try {
-      setProcesses(await client.call("processes", { sessionId: session.id }));
+    const [list, waits] = await Promise.allSettled([
+      client.call<ProcessInfo[]>("processes", { sessionId: session.id }),
+      client.call<LockWaitSnapshot>("lock_waits", { sessionId: session.id }),
+    ]);
+    if (id !== request.current) return;
+    if (list.status === "fulfilled") {
+      setProcesses(list.value);
       setError(null);
-    } catch (error) {
-      setError(messageOf(error));
-    } finally {
-      setLoading(false);
+    } else setError(messageOf(list.reason));
+    if (waits.status === "fulfilled") {
+      setLocks(waits.value);
+      setLockError(null);
+    } else {
+      setLocks(null);
+      setLockError(messageOf(waits.reason));
     }
+    setLoading(false);
   }
   useEffect(() => {
     void refresh();
+    return () => {
+      request.current++;
+    };
   }, [session?.id]);
   useEffect(() => {
     if (tab.status === "completed") void refresh();
   }, [tab.status]);
+  useEffect(() => {
+    if (!autoRefresh || !session) return;
+    const timer = setInterval(() => void refresh(), 5000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, session?.id]);
+  const summary = useMemo(() => summarizeLocks(locks?.waits ?? []), [locks]);
+  const needle = filter.trim().toLocaleLowerCase();
+  const visible = processes.filter(
+    (process) =>
+      (!hideIdle ||
+        process.state !== "idle" ||
+        summary.blocks.has(process.id) ||
+        summary.waitingOn.has(process.id)) &&
+      (!needle ||
+        [process.id, process.user, process.database, process.query ?? ""].some((value) =>
+          value.toLocaleLowerCase().includes(needle),
+        )),
+  );
+  const lockUnsupported = lockError?.includes("unavailable for this engine") ?? false;
   return (
     <div className="utility-view">
       <header className="utility-header">
@@ -281,18 +321,45 @@ export function ProcessesView({
           <h1>Processes</h1>
           <p>
             {session?.engine === "mysql"
-              ? "Inspect server sessions. Cancel your own queries from their SQL tabs."
-              : "Inspect active sessions and cancel long-running queries."}
+              ? "Inspect server sessions and lock waits. Cancel your own queries from their SQL tabs."
+              : "Inspect active sessions and lock waits, and cancel long-running queries."}
           </p>
         </div>
-        <button
-          className="button ghost"
-          disabled={loading || !session}
-          onClick={() => void refresh()}
-        >
-          <RefreshCw size={14} className={loading ? "spin" : ""} />
-          Refresh
-        </button>
+        <div className="process-toolbar">
+          <label className="diagram-filter">
+            <Search size={13} />
+            <input
+              aria-label="Filter processes"
+              placeholder="Filter"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+            />
+          </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={hideIdle}
+              onChange={(event) => setHideIdle(event.target.checked)}
+            />
+            Hide idle
+          </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(event) => setAutoRefresh(event.target.checked)}
+            />
+            Every 5 s
+          </label>
+          <button
+            className="button ghost"
+            disabled={loading || !session}
+            onClick={() => void refresh()}
+          >
+            <RefreshCw size={14} className={loading ? "spin" : ""} />
+            Refresh
+          </button>
+        </div>
       </header>
       {error && (
         <div className="inline-error" role="alert">
@@ -307,6 +374,69 @@ export function ProcessesView({
         </div>
       ) : (
         <div className="structure-scroll">
+          {!lockUnsupported && (
+            <section className="lock-waits" aria-label="Lock waits">
+              <h2>
+                <Lock size={13} /> Lock waits
+                {locks && <span className="schema-count">{locks.waits.length}</span>}
+              </h2>
+              {lockError ? (
+                <p className="lock-note" role="status">
+                  {lockError}
+                </p>
+              ) : !locks ? null : locks.waits.length === 0 ? (
+                <p className="lock-note">No sessions are waiting on locks.</p>
+              ) : (
+                <>
+                  {summary.cycle.length > 0 && (
+                    <p className="lock-note warning" role="status">
+                      {`Sessions ${summary.cycle.join(", ")} wait on each other (possible deadlock).`}
+                    </p>
+                  )}
+                  {locks.truncated && (
+                    <p className="lock-note" role="status">
+                      More sessions are waiting than shown.
+                    </p>
+                  )}
+                  <table className="structure-table">
+                    <thead>
+                      <tr>
+                        <th>Waiting</th>
+                        <th>Blocked by</th>
+                        <th>Lock</th>
+                        <th>Object</th>
+                        <th>Waited</th>
+                        <th>Query</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {locks.waits.map((wait) => (
+                        <tr key={wait.waitingId} data-lock-wait={wait.waitingId}>
+                          <td className="mono">
+                            {wait.waitingId}
+                            {wait.ownSession && <span className="state-pill">this session</span>}
+                          </td>
+                          <td className="mono">{wait.blockingIds.join(", ")}</td>
+                          <td>
+                            {[wait.lockType, wait.lockMode].filter(Boolean).join(" · ") ||
+                              wait.waitEvent ||
+                              "Unknown"}
+                          </td>
+                          <td>{wait.object ? `${wait.object.schema}.${wait.object.name}` : "—"}</td>
+                          <td>{wait.waitSeconds.toFixed(0)} s</td>
+                          <td>
+                            <code className="process-sql" title={wait.query ?? ""}>
+                              {wait.query ?? "Unavailable"}
+                            </code>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </section>
+          )}
           <table className="structure-table">
             <thead>
               <tr>
@@ -320,34 +450,44 @@ export function ProcessesView({
               </tr>
             </thead>
             <tbody>
-              {processes.map((process) => (
-                <tr key={`${process.id}:${process.identity}`}>
-                  <td className="mono">{process.id}</td>
-                  <td>{process.user}</td>
-                  <td>{process.database}</td>
-                  <td>
-                    <span className={`state-pill ${process.state === "active" ? "active" : ""}`}>
-                      {process.state || "unknown"}
-                    </span>
-                  </td>
-                  <td>{process.durationSeconds.toFixed(1)} s</td>
-                  <td>
-                    <code className="process-sql" title={process.query ?? ""}>
-                      {process.query ?? "Unavailable"}
-                    </code>
-                  </td>
-                  <td>
-                    {process.state === "active" && session.engine !== "mysql" && (
-                      <button
-                        className="button small danger-text"
-                        onClick={() => onCancel(process)}
-                      >
-                        Cancel query
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {visible.map((process) => {
+                const blocked = summary.blockedCount.get(process.id) ?? 0;
+                const waitingOn = summary.waitingOn.get(process.id);
+                return (
+                  <tr key={`${process.id}:${process.identity}`} data-process={process.id}>
+                    <td className="mono">{process.id}</td>
+                    <td>{process.user}</td>
+                    <td>{process.database}</td>
+                    <td>
+                      <span className={`state-pill ${process.state === "active" ? "active" : ""}`}>
+                        {process.state || "unknown"}
+                      </span>
+                      {summary.roots.includes(process.id) && (
+                        <span className="state-pill blocking">{`Blocking ${blocked}`}</span>
+                      )}
+                      {waitingOn && (
+                        <span className="state-pill waiting">{`Waiting on ${waitingOn.join(", ")}`}</span>
+                      )}
+                    </td>
+                    <td>{process.durationSeconds.toFixed(1)} s</td>
+                    <td>
+                      <code className="process-sql" title={process.query ?? ""}>
+                        {process.query ?? "Unavailable"}
+                      </code>
+                    </td>
+                    <td>
+                      {process.state === "active" && session.engine !== "mysql" && (
+                        <button
+                          className="button small danger-text"
+                          onClick={() => onCancel(process)}
+                        >
+                          Cancel query
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

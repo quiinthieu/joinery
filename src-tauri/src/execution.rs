@@ -1821,6 +1821,9 @@ impl Studio {
     pub async fn processes(&self, session_id: &str) -> AppResult<Vec<ProcessInfo>> {
         self.session(session_id)?.driver.processes().await
     }
+    pub async fn lock_waits(&self, session_id: &str) -> AppResult<LockWaitSnapshot> {
+        self.session(session_id)?.driver.lock_waits().await
+    }
 
     pub async fn browse(
         &self,

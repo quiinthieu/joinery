@@ -1699,6 +1699,121 @@ async fn schema_diagram_groups_composite_keys_and_hides_unreadable_columns() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL service"]
+async fn lock_waits_report_the_blocking_session_and_clear_after_rollback() {
+    let (_root, studio, observer) = setup(SafeMode::Silent).await;
+    let secrets = || ConnectionSecrets {
+        password: Some("joinery-local-only".into()),
+        ..Default::default()
+    };
+    let holder = studio
+        .connect(&observer.connection_id, secrets())
+        .await
+        .unwrap();
+    let waiter = studio
+        .connect(&observer.connection_id, secrets())
+        .await
+        .unwrap();
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &observer,
+                "DROP TABLE IF EXISTS public.r8_lock_probe;
+                 CREATE TABLE public.r8_lock_probe (id int PRIMARY KEY, v int NOT NULL);
+                 INSERT INTO public.r8_lock_probe VALUES (1, 0);",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    assert!(
+        studio
+            .lock_waits(&observer.id)
+            .await
+            .unwrap()
+            .waits
+            .is_empty()
+    );
+
+    let own_pid = |sessions: Vec<ProcessInfo>| {
+        sessions
+            .into_iter()
+            .find(|p| p.own_session)
+            .map(|p| p.id)
+            .unwrap()
+    };
+    let holder_pid = own_pid(studio.processes(&holder.id).await.unwrap());
+    let waiter_pid = own_pid(studio.processes(&waiter.id).await.unwrap());
+    studio
+        .set_transaction_mode(&holder.id, TransactionMode::Manual)
+        .await
+        .unwrap();
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &holder,
+                "UPDATE public.r8_lock_probe SET v = 1 WHERE id = 1"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let blocked = {
+        let studio = studio.clone();
+        let waiter = waiter.clone();
+        tokio::spawn(async move {
+            run(
+                &studio,
+                &waiter,
+                "UPDATE public.r8_lock_probe SET v = 2 WHERE id = 1",
+            )
+            .await
+        })
+    };
+    let wait = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = studio.lock_waits(&observer.id).await.unwrap();
+            if let Some(wait) = snapshot
+                .waits
+                .into_iter()
+                .find(|w| w.waiting_id == waiter_pid)
+            {
+                break wait;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the waiter never appeared");
+    assert_eq!(wait.blocking_ids, std::slice::from_ref(&holder_pid));
+    assert_eq!(wait.lock_type, "transactionid");
+    assert_eq!(wait.lock_mode, "ShareLock");
+    assert_eq!(wait.wait_event.as_deref(), Some("Lock:transactionid"));
+    assert!(wait.query.as_deref().unwrap().contains("SET v = 2"));
+    assert!(!wait.own_session);
+
+    studio.rollback_transaction(&holder.id).await.unwrap();
+    assert_eq!(status(&blocked.await.unwrap()), RunStatus::Completed);
+    assert!(
+        studio
+            .lock_waits(&observer.id)
+            .await
+            .unwrap()
+            .waits
+            .iter()
+            .all(|w| w.waiting_id != waiter_pid)
+    );
+    studio
+        .set_transaction_mode(&holder.id, TransactionMode::AutoCommit)
+        .await
+        .unwrap();
+    run(&studio, &observer, "DROP TABLE public.r8_lock_probe").await;
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
 async fn table_changes_insert_update_delete_atomically_and_conflict_check_deletes() {
     let (_root, studio, session) = setup(SafeMode::Silent).await;
     assert_eq!(

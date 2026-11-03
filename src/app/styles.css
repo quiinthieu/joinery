@@ -2520,6 +2520,54 @@ kbd {
 .state-pill.active {
   color: var(--accent);
 }
+.state-pill.blocking,
+.state-pill.waiting {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.state-pill.blocking {
+  color: var(--danger, #e07a6f);
+  border-color: currentColor;
+}
+.state-pill.waiting {
+  color: var(--muted);
+}
+.process-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.process-toolbar .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.lock-waits {
+  margin-bottom: 16px;
+}
+.lock-waits h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.lock-note {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.lock-note.warning {
+  color: var(--danger, #e07a6f);
+}
 .process-sql {
   display: block;
   max-width: 370px;

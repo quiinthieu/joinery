@@ -43,6 +43,7 @@ fn main() {
             "prepare_changes_batch",
             "prepare_table_changes",
             "processes",
+            "lock_waits",
             "prepare_process_cancel",
             "health",
             "history",
