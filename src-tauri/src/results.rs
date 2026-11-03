@@ -433,6 +433,14 @@ impl ResultStore {
             let Some(entry) = state.results.get(&id) else {
                 continue;
             };
+            if entry.info.run_id.starts_with("table:")
+                || !matches!(
+                    entry.info.editability,
+                    Some(crate::domain::ResultEditability::Editable { .. })
+                )
+            {
+                continue;
+            }
             let col_count = entry.info.columns.len();
             let col_positions: HashMap<String, usize> = entry
                 .info
