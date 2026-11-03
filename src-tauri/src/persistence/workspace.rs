@@ -9,9 +9,36 @@ const MAX_LAYOUT_COLUMNS: usize = 256;
 const MAX_LAYOUT_NAME_BYTES: usize = 256;
 const MIN_COLUMN_WIDTH: u32 = 60;
 const MAX_COLUMN_WIDTH: u32 = 1600;
+const MAX_SHORTCUT_OVERRIDES: usize = 32;
+const MAX_SHORTCUT_CHORD_LEN: usize = 32;
+const ALLOWED_SHORTCUT_ACTIONS: &[&str] = &[
+    "openPalette",
+    "searchObjects",
+    "recentLocations",
+    "newQuery",
+    "openSqlFile",
+    "saveSqlFile",
+    "saveSqlFileAs",
+    "toggleBookmark",
+    "preferences",
+    "closeActiveTab",
+    "closeOtherTabs",
+    "closeCleanTabs",
+    "reopenClosedTab",
+    "togglePinTab",
+    "toggleSidebar",
+    "toggleInspector",
+];
 
 fn valid_identifier(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= MAX_LAYOUT_NAME_BYTES && !name.contains('\0')
+}
+
+fn valid_shortcut_chord(chord: &str) -> bool {
+    let trimmed = chord.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= MAX_SHORTCUT_CHORD_LEN
+        && trimmed.chars().all(|ch| !ch.is_control())
 }
 
 fn valid_column_list(names: &[String]) -> bool {
@@ -29,10 +56,22 @@ fn validate(workspace: &SavedWorkspace) -> AppResult<()> {
         || !["comfortable", "compact"].contains(&workspace.density.as_str())
         || workspace.drafts.len() > 32
         || workspace.table_layouts.len() > MAX_TABLE_LAYOUTS
+        || workspace.shortcuts.len() > MAX_SHORTCUT_OVERRIDES
     {
         return Err(AppError::invalid(
             "Invalid workspace preferences, query drafts, or table layouts",
         ));
+    }
+    let mut seen_chords = HashSet::with_capacity(workspace.shortcuts.len());
+    for (action_id, chord) in &workspace.shortcuts {
+        if !ALLOWED_SHORTCUT_ACTIONS.contains(&action_id.as_str())
+            || !valid_shortcut_chord(chord)
+            || !seen_chords.insert(chord.as_str())
+        {
+            return Err(AppError::invalid(
+                "A custom keyboard shortcut action or chord is invalid or duplicated",
+            ));
+        }
     }
     let mut ids = HashSet::new();
     let mut bytes = 0;
@@ -220,6 +259,7 @@ mod tests {
             theme: "contrast".into(),
             density: "compact".into(),
             sidebar_visible: true,
+            sidebar_collapsed: false,
             inspector_visible: true,
             active_draft_id: Some(id.clone()),
             drafts: vec![QueryDraft {
@@ -227,6 +267,7 @@ mod tests {
                 connection_id: profile.id.clone(),
                 title: "Draft".into(),
                 sql: "SELECT 'synthetic-sensitive-literal'".into(),
+                pinned: true,
             }],
             table_layouts: vec![SavedTableLayout {
                 connection_id: profile.id.clone(),
@@ -238,6 +279,9 @@ mod tests {
                 hidden_columns: vec!["metadata".into()],
                 column_widths: [("email".to_string(), 320)].into_iter().collect(),
             }],
+            shortcuts: [("openPalette".to_string(), "Mod+J".to_string())]
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -397,5 +441,45 @@ mod tests {
 
         db.delete_profile(&profile.id).unwrap();
         assert!(db.workspace().unwrap().unwrap().table_layouts.is_empty());
+    }
+
+    #[test]
+    fn shortcuts_pinned_drafts_and_sidebar_collapsed_round_trip_and_validate_bounds() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        let profile = profile(true);
+        db.save_profile(&profile).unwrap();
+        let mut original = workspace(&profile);
+        original.sidebar_visible = false;
+        original.sidebar_collapsed = true;
+        db.save_workspace(original.clone()).unwrap();
+
+        let restored = db.workspace().unwrap().unwrap();
+        assert!(restored.drafts[0].pinned);
+        assert!(restored.sidebar_collapsed);
+        assert!(!restored.sidebar_visible);
+        assert_eq!(
+            restored.shortcuts.get("openPalette").map(String::as_str),
+            Some("Mod+J")
+        );
+
+        let mut bad_action = original.clone();
+        bad_action
+            .shortcuts
+            .insert("unknownAction".into(), "Mod+U".into());
+        assert!(db.save_workspace(bad_action).is_err());
+
+        let mut long_chord = original.clone();
+        long_chord.shortcuts.insert(
+            "newQuery".into(),
+            "Shift+Alt+Mod+".to_string() + &"X".repeat(25),
+        );
+        assert!(db.save_workspace(long_chord).is_err());
+
+        let mut dup_chord = original;
+        dup_chord
+            .shortcuts
+            .insert("newQuery".into(), "Mod+J".into());
+        assert!(db.save_workspace(dup_chord).is_err());
     }
 }

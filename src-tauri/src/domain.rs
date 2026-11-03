@@ -1307,6 +1307,9 @@ pub struct QueryDraft {
     pub connection_id: String,
     pub title: String,
     pub sql: String,
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1325,11 +1328,17 @@ pub struct SavedWorkspace {
     pub theme: String,
     pub density: String,
     pub sidebar_visible: bool,
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub sidebar_collapsed: bool,
     pub inspector_visible: bool,
     pub active_draft_id: Option<String>,
     pub drafts: Vec<QueryDraft>,
     #[serde(default)]
     pub table_layouts: Vec<SavedTableLayout>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<std::collections::BTreeMap<String, String>>")]
+    pub shortcuts: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -2,11 +2,13 @@ import { useState, type FormEvent } from "react";
 import {
   Check,
   Code2,
+  Keyboard,
   LockKeyhole,
   Monitor,
   Moon,
   Pencil,
   Plus,
+  RotateCcw,
   Sun,
   Loader2,
   Trash2,
@@ -24,6 +26,13 @@ import { useStudio } from "../../state/studio";
 import { sqlFormatStyle, updateSqlFormatStyle, type SqlFormatScope } from "../../data/sql-format";
 import { GroupManager } from "../connections/GroupManager";
 import { MetadataRecovery } from "./MetadataRecovery";
+import {
+  SHORTCUT_DEFINITIONS,
+  effectiveShortcutBadge,
+  effectiveShortcutBinding,
+  shortcutFromKeyboardEvent,
+  type ShortcutActionId,
+} from "./shortcuts";
 
 function engineBadgeLabel(engine: EngineKind | null): string {
   switch (engine) {
@@ -54,7 +63,50 @@ export function Preferences({ onClose }: { onClose(): void }) {
     [snippetPlace, setSnippetPlace] = useState<SqlSnippetPlace>("any"),
     [snippetBody, setSnippetBody] = useState(""),
     [snippetBusy, setSnippetBusy] = useState(false),
-    [snippetError, setSnippetError] = useState<string | null>(null);
+    [snippetError, setSnippetError] = useState<string | null>(null),
+    [shortcutDrafts, setShortcutDrafts] = useState<Partial<Record<ShortcutActionId, string>>>({}),
+    [shortcutError, setShortcutError] = useState<string | null>(null);
+
+  function applyShortcutInput(actionId: ShortcutActionId, rawValue: string) {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      setShortcutDrafts((prev) => {
+        const next = { ...prev };
+        delete next[actionId];
+        return next;
+      });
+      setShortcutError(null);
+      return;
+    }
+    const result = state.setShortcut(actionId, trimmed);
+    if (!result.valid) {
+      setShortcutError(result.error ?? "Invalid shortcut binding.");
+      return;
+    }
+    setShortcutError(null);
+    setShortcutDrafts((prev) => {
+      const next = { ...prev };
+      delete next[actionId];
+      return next;
+    });
+  }
+
+  function resetSingleShortcut(actionId: ShortcutActionId) {
+    state.setShortcut(actionId, null);
+    setShortcutError(null);
+    setShortcutDrafts((prev) => {
+      const next = { ...prev };
+      delete next[actionId];
+      return next;
+    });
+  }
+
+  function handleResetAllShortcuts() {
+    state.resetShortcuts();
+    setShortcutDrafts({});
+    setShortcutError(null);
+    state.notify("Keyboard shortcuts reset to defaults");
+  }
   async function save(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -187,6 +239,125 @@ export function Preferences({ onClose }: { onClose(): void }) {
             <option value="compact">Compact</option>
           </select>
         </label>
+        <div className="preference-divider" />
+        <section className="shortcut-settings" aria-label="Keyboard shortcuts">
+          <div className="shortcut-settings-header">
+            <h3>
+              <Keyboard size={15} />
+              Keyboard shortcuts
+            </h3>
+            {Object.keys(state.shortcuts).length > 0 && (
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={busy || snippetBusy}
+                onClick={handleResetAllShortcuts}
+              >
+                <RotateCcw size={12} />
+                Reset all shortcuts
+              </button>
+            )}
+          </div>
+          <p className="form-note">
+            Press a key combination in any field or type a chord such as <code>Mod+J</code> or{" "}
+            <code>Shift+Mod+K</code>, then press Enter. Standard editing keys (<code>⌘C</code>,{" "}
+            <code>⌘V</code>, <code>⌘Z</code>) stay reserved.
+          </p>
+          <InlineError message={shortcutError} />
+          <div className="shortcut-list" role="list" aria-label="Shortcut bindings">
+            {SHORTCUT_DEFINITIONS.map((def) => {
+              const effective = effectiveShortcutBinding(def.id, state.shortcuts);
+              const badge = effectiveShortcutBadge(def.id, state.shortcuts);
+              const isCustomized = Boolean(state.shortcuts[def.id]);
+              const draftValue = shortcutDrafts[def.id] ?? effective;
+              return (
+                <div className="shortcut-row" role="listitem" key={def.id}>
+                  <div className="shortcut-row-info">
+                    <span className="shortcut-row-label">{def.label}</span>
+                    <span className="shortcut-category-pill">{def.category}</span>
+                  </div>
+                  <div className="shortcut-row-controls">
+                    <kbd className="shortcut-badge" aria-label={`Current badge for ${def.label}`}>
+                      {badge}
+                    </kbd>
+                    <input
+                      aria-label={`Shortcut for ${def.label}`}
+                      className="shortcut-input"
+                      value={draftValue}
+                      disabled={busy || snippetBusy}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setShortcutDrafts((prev) => ({ ...prev, [def.id]: value }));
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Tab") return;
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setShortcutDrafts((prev) => {
+                            const next = { ...prev };
+                            delete next[def.id];
+                            return next;
+                          });
+                          setShortcutError(null);
+                          return;
+                        }
+                        if (
+                          event.key === "Enter" &&
+                          !event.metaKey &&
+                          !event.ctrlKey &&
+                          !event.altKey &&
+                          !event.shiftKey
+                        ) {
+                          event.preventDefault();
+                          applyShortcutInput(def.id, draftValue);
+                          return;
+                        }
+                        if (
+                          event.metaKey ||
+                          event.ctrlKey ||
+                          event.altKey ||
+                          /^F([1-9]|1[0-2])$/i.test(event.key)
+                        ) {
+                          const recorded = shortcutFromKeyboardEvent(event.nativeEvent);
+                          if (recorded) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setShortcutDrafts((prev) => ({
+                              ...prev,
+                              [def.id]: recorded.canonical,
+                            }));
+                            applyShortcutInput(def.id, recorded.canonical);
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        if (
+                          shortcutDrafts[def.id] !== undefined &&
+                          shortcutDrafts[def.id] !== effective
+                        ) {
+                          applyShortcutInput(def.id, shortcutDrafts[def.id]!);
+                        }
+                      }}
+                    />
+                    {isCustomized && (
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={`Reset shortcut for ${def.label}`}
+                        title={`Reset to ${def.defaultBinding}`}
+                        disabled={busy || snippetBusy}
+                        onClick={() => resetSingleShortcut(def.id)}
+                      >
+                        <RotateCcw size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
         <div className="preference-divider" />
         <section className="format-settings">
           <h3>

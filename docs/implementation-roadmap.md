@@ -737,8 +737,26 @@ change), classifies selected `DdlStatement`s as `StatementKind::Ddl` via
 passphrase), and attaches destructive, implicit-commit and lock warnings.
 `SchemaDiffView` adds per-statement checkboxes (`Select all`, `Select
 non-destructive`), **Review & apply migration…**, and `ReviewDialog` integration,
-refreshing the catalog and schema comparison upon completion. See
+refreshing the catalog and schema comparison upon completion. Merged in PR #68
+(`83b1260`). See
 [evidence](IMPLEMENTATION_STATUS.md#r7-slice-6-migration-review-and-schema-synchronization-workflow-3-november-2026).
+
+### R8 slice 3: contextual command palette, custom shortcuts and tab management (branch `feat/shortcuts-and-layouts`)
+
+`shortcuts.ts` defines 16 canonical keyboard shortcut actions (`openPalette`,
+`searchObjects`, `recentLocations`, `newQuery`, `openSqlFile`, `saveSqlFile`,
+`saveSqlFileAs`, `toggleBookmark`, `preferences`, `closeActiveTab`,
+`closeOtherTabs`, `closeCleanTabs`, `reopenClosedTab`, `togglePinTab`,
+`toggleSidebar`, `toggleInspector`) with conflict and reserved-chord
+(`Mod+C`/`V`/`X`/`Z`/`A`) validation, persisted in `SavedWorkspace.shortcuts`
+(validated in `persistence/workspace.rs`). `SearchEverywhere` renders contextual
+`contextBadge` pills and `disabledReason` subtitles for active-tab, tab-strip
+and layout actions. `studio.ts` adds tab pinning (`QueryDraft.pinned`),
+`closeOtherTabs`, `closeCleanTabs` (preserving pinned, dirty, running and
+last-secondary-session-owner tabs), a bounded 10-entry `closedTabs` reopen stack
+(`reopenClosedTab`, purged on connection removal), and persisted
+`sidebarCollapsed` / `inspectorVisible` toggles. See
+[evidence](IMPLEMENTATION_STATUS.md#r8-slice-3-contextual-command-palette-custom-shortcuts-and-tab-management-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 

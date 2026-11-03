@@ -57,6 +57,8 @@ export interface SearchCommandInput<TIcon = unknown> {
   shortcut: string;
   icon: TIcon;
   keepOpen?: boolean;
+  disabledReason?: string | null;
+  contextBadge?: string | null;
   action(): unknown;
 }
 
@@ -76,6 +78,8 @@ export type SearchResultItem<TIcon = unknown> =
       shortcut: string;
       icon: TIcon;
       keepOpen: boolean;
+      disabledReason?: string | null;
+      contextBadge?: string | null;
       action(): unknown;
     }
   | {
@@ -230,19 +234,24 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
 
   if (includeActions) {
     for (const command of input.commands) {
+      const disabledReason = command.disabledReason ?? null;
+      const contextBadge = command.contextBadge ?? null;
       actionItems.push({
         item: {
           id: `cmd:${command.label}`,
           kind: "command",
           label: command.label,
-          subtitle: null,
+          subtitle: disabledReason,
           shortcut: command.shortcut,
           icon: command.icon,
           keepOpen: Boolean(command.keepOpen),
+          disabledReason,
+          contextBadge,
           action: command.action,
         },
         primary: command.label,
-        haystack: `${command.label} ${command.shortcut}`,
+        haystack:
+          `${command.label} ${command.shortcut} ${contextBadge ?? ""} ${disabledReason ?? ""}`.trim(),
       });
     }
 

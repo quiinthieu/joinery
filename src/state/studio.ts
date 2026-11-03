@@ -55,6 +55,13 @@ import {
 } from "../features/grid/table-query";
 
 import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
+import {
+  SHORTCUT_BY_ID,
+  sanitizeShortcutOverrides,
+  validateShortcutOverride,
+  type ShortcutActionId,
+  type ShortcutValidationResult,
+} from "../features/studio/shortcuts";
 
 export type TabKind =
   "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram" | "schemaDiff";
@@ -111,11 +118,30 @@ export interface StudioTab {
   fileName: string | null;
   savedSql: string | null;
   savedQueryId: string | null;
+  /** Whether the tab is pinned in the workspace tab strip. */
+  pinned?: boolean;
   /** Schema shown by a diagram tab. */
   diagramSchema?: string;
 }
 
 export const MAX_RECENT_LOCATIONS = 50;
+export const MAX_CLOSED_TABS = 10;
+
+export interface ClosedTabSnapshot {
+  id: string;
+  kind: TabKind;
+  title: string;
+  connectionId: string | null;
+  sql: string;
+  table: TableRef | null;
+  object: DatabaseObjectRef | null;
+  query: BrowseQuery;
+  view: StudioTab["view"];
+  savedQueryId: string | null;
+  pinned: boolean;
+  diagramSchema?: string;
+  closedAtMs: number;
+}
 
 export type RecentLocationTarget =
   | { kind: "table"; connectionId: string; table: TableRef }
@@ -163,20 +189,27 @@ interface StudioState {
   selectedConnectionId: string | null;
   tabs: StudioTab[];
   activeTabId: string | null;
+  closedTabs: ClosedTabSnapshot[];
   tableLayouts: SavedTableLayout[];
   savedQueries: SavedQuery[];
   bookmarks: SavedBookmark[];
   sqlFormatSettings: SqlFormatSettings;
   sqlSnippets: SqlSnippet[];
   recentLocations: RecentLocation[];
+  shortcuts: Record<string, string>;
   theme: "dark" | "light" | "contrast";
   density: "comfortable" | "compact";
   sidebarVisible: boolean;
+  sidebarCollapsed: boolean;
   inspectorVisible: boolean;
   toast: string | null;
   initialize(): Promise<void>;
   notify(message: string): void;
   setTheme(theme: StudioState["theme"]): void;
+  toggleSidebar(): void;
+  toggleInspector(): void;
+  setShortcut(actionId: ShortcutActionId, binding: string | null): ShortcutValidationResult;
+  resetShortcuts(): void;
   setTableLayout(connectionId: string, table: TableRef, layout: SavedTableLayout | null): void;
   resetTableLayout(connectionId: string, table: TableRef): void;
   setSession(session: SessionInfo): void;
@@ -244,7 +277,11 @@ interface StudioState {
     id: string,
     update: Partial<StudioTab> | ((tab: StudioTab) => Partial<StudioTab>),
   ): void;
+  togglePinTab(id: string): void;
   closeTab(id: string): void;
+  closeOtherTabs(keepTabId: string): number;
+  closeCleanTabs(): number;
+  reopenClosedTab(): Promise<string | null>;
   removeConnection(id: string): void;
   disconnected(connectionId: string): void;
   resetConnectionResults(connectionId: string): void;
@@ -289,10 +326,53 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     fileName: null,
     savedSql: null,
     savedQueryId: null,
+    pinned: false,
   };
 }
 export function isTabFileDirty(tab: StudioTab): boolean {
   return tab.kind === "query" && tab.fileName !== null && tab.sql !== tab.savedSql;
+}
+export function isTabProtectedFromBulkClose(
+  allTabs: readonly StudioTab[],
+  candidate: StudioTab,
+): boolean {
+  const resultIds = [
+    ...candidate.results.map((r) => r.id),
+    ...candidate.pages.map((p) => p.result.id),
+  ];
+  return (
+    dirtyStore.pendingCountForTab(candidate.id, resultIds) > 0 ||
+    isTabFileDirty(candidate) ||
+    ["queued", "running"].includes(candidate.status) ||
+    isLastOwnerOfSecondarySession(allTabs, candidate)
+  );
+}
+function snapshotClosedTab(candidate: StudioTab): ClosedTabSnapshot | null {
+  if (candidate.metadataOrigin) return null;
+  return {
+    id: candidate.id,
+    kind: candidate.kind,
+    title: candidate.title,
+    connectionId: candidate.connectionId,
+    sql: candidate.sql,
+    table: candidate.table,
+    object: candidate.object,
+    query: candidate.query,
+    view: candidate.view,
+    savedQueryId: candidate.savedQueryId,
+    pinned: Boolean(candidate.pinned),
+    diagramSchema: candidate.diagramSchema,
+    closedAtMs: Date.now(),
+  };
+}
+function orderPinnedFirst(tabs: readonly StudioTab[]): StudioTab[] {
+  const pinned: StudioTab[] = [];
+  const unpinned: StudioTab[] = [];
+  for (const entry of tabs) {
+    if (entry.pinned) pinned.push(entry);
+    else unpinned.push(entry);
+  }
+  return [...pinned, ...unpinned];
 }
 export function bookmarkTargetKey(target: BookmarkTarget): string {
   if (target.kind === "savedQuery") return `saved:${target.savedQueryId}`;
@@ -461,15 +541,18 @@ export const useStudio = create<StudioState>((set, get) => ({
   selectedConnectionId: null,
   tabs: [],
   activeTabId: null,
+  closedTabs: [],
   tableLayouts: [],
   savedQueries: [],
   bookmarks: [],
   sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
   sqlSnippets: [],
   recentLocations: [],
+  shortcuts: {},
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
   density: "comfortable",
   sidebarVisible: true,
+  sidebarCollapsed: false,
   inspectorVisible: false,
   toast: null,
   async initialize() {
@@ -487,6 +570,7 @@ export const useStudio = create<StudioState>((set, get) => ({
             ...tab("query", draft.title, draft.connectionId),
             id: draft.id,
             sql: draft.sql,
+            pinned: Boolean(draft.pinned),
           })) ?? [];
       const restoredLayouts =
         workspace?.tableLayouts
@@ -497,10 +581,15 @@ export const useStudio = create<StudioState>((set, get) => ({
           )
           .slice(-MAX_TABLE_LAYOUTS) ?? [];
       const existing = get().tabs;
-      const tabs = [
+      const tabs = orderPinnedFirst([
         ...restored.filter((draft) => !existing.some((tab) => tab.id === draft.id)),
         ...existing,
-      ];
+      ]);
+      const sidebarVisible = workspace
+        ? workspace.sidebarCollapsed
+          ? false
+          : workspace.sidebarVisible
+        : get().sidebarVisible;
       set({
         bootstrap,
         savedQueries: bootstrap.savedQueries ?? [],
@@ -512,8 +601,12 @@ export const useStudio = create<StudioState>((set, get) => ({
           ? {
               theme: workspace.theme as StudioState["theme"],
               density: workspace.density as StudioState["density"],
-              sidebarVisible: workspace.sidebarVisible,
+              sidebarVisible,
+              sidebarCollapsed: !sidebarVisible,
               inspectorVisible: workspace.inspectorVisible,
+              shortcuts: sanitizeShortcutOverrides(
+                (workspace.shortcuts ?? {}) as Record<string, string>,
+              ),
               tabs,
               tableLayouts: restoredLayouts,
               activeTabId:
@@ -537,6 +630,40 @@ export const useStudio = create<StudioState>((set, get) => ({
     localStorage.setItem("joinery.theme", theme);
     document.documentElement.dataset.theme = theme;
     set({ theme });
+  },
+  toggleSidebar() {
+    set((state) => {
+      const sidebarVisible = !state.sidebarVisible;
+      return { sidebarVisible, sidebarCollapsed: !sidebarVisible };
+    });
+  },
+  toggleInspector() {
+    set((state) => ({ inspectorVisible: !state.inspectorVisible }));
+  },
+  setShortcut(actionId, binding) {
+    const currentOverrides = get().shortcuts;
+    if (binding === null || binding.trim() === "") {
+      const next = { ...currentOverrides };
+      delete next[actionId];
+      set({ shortcuts: next });
+      const def = SHORTCUT_BY_ID[actionId];
+      return { valid: true, canonical: def.defaultBinding };
+    }
+    const validation = validateShortcutOverride(actionId, binding, currentOverrides);
+    if (!validation.valid || !validation.canonical) {
+      return validation;
+    }
+    const next = { ...currentOverrides };
+    if (validation.canonical === SHORTCUT_BY_ID[actionId].defaultBinding) {
+      delete next[actionId];
+    } else {
+      next[actionId] = validation.canonical;
+    }
+    set({ shortcuts: next });
+    return validation;
+  },
+  resetShortcuts() {
+    set({ shortcuts: {} });
   },
   setTableLayout(connectionId, table, layout) {
     set((state) => {
@@ -1575,11 +1702,21 @@ export const useStudio = create<StudioState>((set, get) => ({
       }),
     }));
   },
+  togglePinTab(id) {
+    set((state) => {
+      const target = state.tabs.find((t) => t.id === id);
+      if (!target) return {};
+      const nextPinned = !target.pinned;
+      const updated = state.tabs.map((t) => (t.id === id ? { ...t, pinned: nextPinned } : t));
+      return { tabs: orderPinnedFirst(updated) };
+    });
+  },
   closeTab(id) {
     planSnapshots.removeOwner(id);
     const stateSnapshot = get();
     const current = stateSnapshot.tabs.find((t) => t.id === id);
     if (!current) return;
+    const closedSnapshot = snapshotClosedTab(current);
     if (current.fileToken) {
       void client.call("release_sql_file_grant", { token: current.fileToken }).catch(() => {});
     }
@@ -1612,8 +1749,15 @@ export const useStudio = create<StudioState>((set, get) => ({
           if (remaining.length > 0) sessionPool[connId] = remaining;
         }
       }
+      const closedTabs = closedSnapshot
+        ? [
+            closedSnapshot,
+            ...state.closedTabs.filter((entry) => entry.id !== closedSnapshot.id),
+          ].slice(0, MAX_CLOSED_TABS)
+        : state.closedTabs;
       return {
         tabs,
+        closedTabs,
         sessionPool,
         recentLocations: state.recentLocations.filter((entry) => entry.key !== `tab:${id}`),
         ...(disconnectSecondary ? purgeSessionRuntimeMaps(state, [disconnectSecondary]) : {}),
@@ -1621,6 +1765,130 @@ export const useStudio = create<StudioState>((set, get) => ({
           state.activeTabId === id ? (tabs[Math.max(0, index - 1)]?.id ?? null) : state.activeTabId,
       };
     });
+  },
+  closeOtherTabs(keepTabId) {
+    const stateSnapshot = get();
+    const keepExists = stateSnapshot.tabs.some((t) => t.id === keepTabId);
+    if (!keepExists) return 0;
+    let skippedProtected = 0;
+    const toCloseIds: string[] = [];
+    for (const candidate of stateSnapshot.tabs) {
+      if (candidate.id === keepTabId || candidate.pinned) continue;
+      if (isTabProtectedFromBulkClose(stateSnapshot.tabs, candidate)) {
+        skippedProtected += 1;
+        continue;
+      }
+      toCloseIds.push(candidate.id);
+    }
+    for (const id of toCloseIds) {
+      get().closeTab(id);
+    }
+    set({ activeTabId: keepTabId });
+    if (skippedProtected > 0) {
+      get().notify(
+        `Kept ${skippedProtected} tab${skippedProtected === 1 ? "" : "s"} with unsaved changes or active sessions open.`,
+      );
+    }
+    return toCloseIds.length;
+  },
+  closeCleanTabs() {
+    const stateSnapshot = get();
+    let skippedProtected = 0;
+    const toCloseIds: string[] = [];
+    for (const candidate of stateSnapshot.tabs) {
+      if (candidate.pinned) continue;
+      if (isTabProtectedFromBulkClose(stateSnapshot.tabs, candidate)) {
+        skippedProtected += 1;
+        continue;
+      }
+      toCloseIds.push(candidate.id);
+    }
+    for (const id of toCloseIds) {
+      get().closeTab(id);
+    }
+    if (skippedProtected > 0) {
+      get().notify(
+        `Kept ${skippedProtected} modified or active tab${skippedProtected === 1 ? "" : "s"} open.`,
+      );
+    }
+    return toCloseIds.length;
+  },
+  async reopenClosedTab() {
+    const stateSnapshot = get();
+    const [entry, ...remaining] = stateSnapshot.closedTabs;
+    if (!entry) {
+      get().notify("No recently closed tabs to reopen.");
+      return null;
+    }
+    set({ closedTabs: remaining });
+
+    if (entry.kind === "table" && entry.connectionId && entry.table) {
+      if (get().sessions[entry.connectionId]) {
+        await get().openTable(entry.connectionId, entry.table, entry.query, entry.view);
+        const activeId = get().activeTabId;
+        if (activeId && entry.pinned) {
+          get().togglePinTab(activeId);
+        }
+        return activeId;
+      }
+      const reopened: StudioTab = {
+        ...tab("table", entry.title, entry.connectionId),
+        id: entry.id,
+        table: entry.table,
+        object: {
+          schema: entry.table.schema,
+          name: entry.table.name,
+          kind: "table",
+          identity: null,
+        },
+        query: entry.query,
+        view: entry.view,
+        pinned: entry.pinned,
+      };
+      set((state) => ({
+        tabs: orderPinnedFirst([...state.tabs, reopened]),
+        activeTabId: reopened.id,
+      }));
+      return reopened.id;
+    }
+
+    if (entry.kind === "object" && entry.connectionId && entry.object) {
+      if (get().sessions[entry.connectionId]) {
+        await get().openObject(entry.connectionId, entry.object, entry.view);
+        const activeId = get().activeTabId;
+        if (activeId && entry.pinned) {
+          get().togglePinTab(activeId);
+        }
+        return activeId;
+      }
+      const reopened: StudioTab = {
+        ...tab("object", entry.title, entry.connectionId),
+        id: entry.id,
+        object: entry.object,
+        view: entry.view,
+        pinned: entry.pinned,
+      };
+      set((state) => ({
+        tabs: orderPinnedFirst([...state.tabs, reopened]),
+        activeTabId: reopened.id,
+      }));
+      return reopened.id;
+    }
+
+    const reopenedId = get().tabs.some((t) => t.id === entry.id) ? crypto.randomUUID() : entry.id;
+    const reopened: StudioTab = {
+      ...tab(entry.kind, entry.title, entry.connectionId),
+      id: reopenedId,
+      sql: entry.sql,
+      savedQueryId: entry.savedQueryId,
+      pinned: entry.pinned,
+      diagramSchema: entry.diagramSchema,
+    };
+    set((state) => ({
+      tabs: orderPinnedFirst([...state.tabs, reopened]),
+      activeTabId: reopened.id,
+    }));
+    return reopened.id;
   },
   removeConnection(id) {
     const state = get();
@@ -1672,6 +1940,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         savedQueries,
         bookmarks,
         recentLocations,
+        closedTabs: state.closedTabs.filter((entry) => entry.connectionId !== id),
         tabs:
           purgedQueryIds.size > 0
             ? state.tabs.map((t) =>

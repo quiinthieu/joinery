@@ -349,4 +349,38 @@ describe("buildSearchEverywhereResults", () => {
     });
     expect(allScope.items[0]?.id).toBe("saved:sq-pg");
   });
+
+  it("propagates contextual command badges and disabled reasons", () => {
+    const res = buildSearchEverywhereResults({
+      query: "export",
+      scope: "actions",
+      commands: [
+        {
+          label: "Export data to file…",
+          shortcut: "CSV · JSON · SQL",
+          icon: "dl",
+          contextBadge: "Active tab",
+          disabledReason: "Load table rows in Data view before exporting.",
+          action: () => {},
+        },
+      ],
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: null,
+      profiles: [],
+      sessions: {},
+      catalog: {},
+      objects: {},
+      history: [],
+    });
+
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]).toMatchObject({
+      kind: "command",
+      label: "Export data to file…",
+      contextBadge: "Active tab",
+      disabledReason: "Load table rows in Data view before exporting.",
+      subtitle: "Load table rows in Data view before exporting.",
+    });
+  });
 });

@@ -25,6 +25,11 @@ import {
   type SearchResultItem,
   type SearchScope,
 } from "./search-everywhere";
+import {
+  effectiveShortcutBadge,
+  effectiveShortcutBinding,
+  matchesKeyboardEvent,
+} from "./shortcuts";
 
 function TabKindGlyph({ kind }: { kind: TabKind }) {
   switch (kind) {
@@ -87,12 +92,14 @@ export function SearchEverywhere({
   const currentTab = state.tabs.find((tab) => tab.id === state.activeTabId);
   const preferredConnectionId = currentTab?.connectionId ?? state.selectedConnectionId ?? null;
 
+  const searchObjectsBadge = effectiveShortcutBadge("searchObjects", state.shortcuts);
   const paletteCommands = useMemo<readonly SearchCommandInput<LucideIcon>[]>(
     () => [
       ...commands,
       {
         label: "Search database objects",
-        shortcut: "⇧⌘ O",
+        shortcut: searchObjectsBadge,
+        contextBadge: "Navigation",
         icon: Search,
         keepOpen: true,
         action: () => {
@@ -101,7 +108,7 @@ export function SearchEverywhere({
         },
       },
     ],
-    [commands],
+    [commands, searchObjectsBadge],
   );
 
   const output = useMemo(
@@ -141,6 +148,10 @@ export function SearchEverywhere({
 
   function triggerItem(item: SearchResultItem<LucideIcon>) {
     if (item.kind === "command") {
+      if (item.disabledReason) {
+        useStudio.getState().notify(item.disabledReason);
+        return;
+      }
       if (item.keepOpen) {
         item.action();
         inputRef.current?.focus();
@@ -223,9 +234,13 @@ export function SearchEverywhere({
           }}
           onKeyDown={(event) => {
             if (
-              (event.metaKey || event.ctrlKey) &&
-              event.shiftKey &&
-              event.key.toLowerCase() === "o"
+              matchesKeyboardEvent(
+                event.nativeEvent,
+                effectiveShortcutBinding("searchObjects", state.shortcuts),
+              ) ||
+              ((event.metaKey || event.ctrlKey) &&
+                event.shiftKey &&
+                event.key.toLowerCase() === "o")
             ) {
               event.preventDefault();
               setScope("objects");
@@ -233,9 +248,13 @@ export function SearchEverywhere({
               return;
             }
             if (
-              (event.metaKey || event.ctrlKey) &&
-              !event.shiftKey &&
-              event.key.toLowerCase() === "k"
+              matchesKeyboardEvent(
+                event.nativeEvent,
+                effectiveShortcutBinding("openPalette", state.shortcuts),
+              ) ||
+              ((event.metaKey || event.ctrlKey) &&
+                !event.shiftKey &&
+                event.key.toLowerCase() === "k")
             ) {
               event.preventDefault();
               setScope("all");
@@ -299,12 +318,14 @@ export function SearchEverywhere({
       <div className="palette-commands" ref={listRef}>
         {items.map((item, idx) => {
           const selected = idx === clampedIndex;
+          const isDisabled = item.kind === "command" && Boolean(item.disabledReason);
           return (
             <button
               key={item.id}
               type="button"
               data-palette-index={idx}
-              className={selected ? "selected" : ""}
+              aria-disabled={isDisabled || undefined}
+              className={`${selected ? "selected" : ""} ${isDisabled ? "disabled" : ""}`.trim()}
               onMouseEnter={() => setActiveIndex(idx)}
               onClick={() => triggerItem(item)}
             >
@@ -323,6 +344,9 @@ export function SearchEverywhere({
                 <span className="palette-item-label">{item.label}</span>
                 {item.subtitle && <small className="palette-item-subtitle">{item.subtitle}</small>}
               </span>
+              {item.kind === "command" && item.contextBadge && (
+                <em className="palette-context-badge">{item.contextBadge}</em>
+              )}
               {item.kind === "object" && item.environment && (
                 <em className={`environment ${item.environment}`}>{item.environment}</em>
               )}

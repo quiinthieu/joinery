@@ -2830,4 +2830,23 @@ Branch `feat/table-object-editor` from `origin/main` `792aa99`; merged in PR #67
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | Contextual command palette, custom shortcuts and persisted layouts (`P05` + `P06`), closed typed command map & granular capabilities (`I03` + `M07`), engine maintenance tools (`A06`), and single-table result editing (`G14`). Next slice: R8.3 (`P05` + `P06` contextual command palette, custom shortcuts & persisted layouts) |
 
-Branch `feat/migration-sync` from `origin/main` `c855c04`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/migration-sync` from `origin/main` `c855c04`; merged in PR #68 (`83b1260`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R8 slice 3: contextual command palette, custom shortcuts and tab management (3 November 2026)
+
+`src/features/studio/shortcuts.ts` defines 16 canonical shortcut actions (`openPalette`, `searchObjects`, `recentLocations`, `newQuery`, `openSqlFile`, `saveSqlFile`, `saveSqlFileAs`, `toggleBookmark`, `preferences`, `closeActiveTab`, `closeOtherTabs`, `closeCleanTabs`, `reopenClosedTab`, `togglePinTab`, `toggleSidebar`, `toggleInspector`) with platform-neutral `Mod+…` normalization, conflict detection against active default and custom bindings, and reserved editing-chord rejection (`Mod+C`, `Mod+V`, `Mod+X`, `Mod+Z`, `Shift+Mod+Z`, `Mod+A`, `Escape`, `Tab`, `Enter`). `Preferences.tsx` adds a **Keyboard shortcuts** section supporting live key-chord capture, conflict/reserved error reporting, per-action reset, and **Reset all shortcuts**. `SavedWorkspace.shortcuts` persists up to 32 validated overrides in SQLite (`persistence/workspace.rs`).
+
+`SearchEverywhere` and `App.tsx` surface contextual active-tab commands (`Run SQL statement`, `Explain query plan`, `Format SQL`, `Save SQL file`, `Save SQL file as…`, `Switch table view to Data / Structure / DDL`, `Export data to file…`, `Import CSV into table…`), tab-management commands (`Pin / Unpin active tab`, `Close active tab`, `Close other tabs`, `Close unmodified tabs`, `Reopen closed tab`), and layout toggles (`Toggle left sidebar`, `Toggle right inspector`) with `contextBadge` pills, dynamic custom shortcut badges, and explicit `disabledReason` subtitles/toast feedback when an action is unavailable for the active tab or engine capabilities.
+
+`useStudio` adds `togglePinTab` (keeping pinned tabs grouped at the start of the tab strip and persisting `QueryDraft.pinned` for opted-in drafts), `closeOtherTabs` and `closeCleanTabs` (preserving pinned tabs, tabs with uncommitted grid or `.sql` file edits, running queries, and the last owner of a secondary session), a bounded 10-entry in-memory `closedTabs` stack (`reopenClosedTab`, purged when a connection is deleted), and persisted `sidebarCollapsed` / `inspectorVisible` layout toggles.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `shortcuts.test.ts` (4): canonical chord normalization, keyboard event matching (`code` fallback under `Alt`), reserved/conflict validation, and override sanitization. `Preferences.test.tsx`: shortcut rebinding, duplicate/reserved error display, and reset. `search-everywhere.test.ts`: `contextBadge` and `disabledReason` propagation. `studio.test.ts` (2): `togglePinTab` ordering, `closeOtherTabs` dirty/pinned preservation, `reopenClosedTab`, and 10-entry `closedTabs` cap/connection-delete purge. `workspace.test.ts`: `pinned`, `sidebarCollapsed`, and `shortcuts` snapshot serialization. Rust `shortcuts_pinned_drafts_and_sidebar_collapsed_round_trip_and_validate_bounds` in `persistence/workspace.rs` |
+| Browser | `workspace.spec.ts`: verifies tab pinning, `Close other tabs`, `Reopen closed tab`, custom shortcut conflict warning and rebinding (`Mod+J`), sidebar/inspector toggles, and full persistence across page reload |
+| Validate | `pnpm validate`: 506 frontend tests / 48 files, 171 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Closed typed IPC command map and granular engine capabilities (`I03` + `M07`), engine administration & table maintenance tools (`A06`), and single-table query result editing (`G14`). Next slice: R8.4 (`I03` + `M07` closed typed command map and granular engine capabilities) |
+
+Branch `feat/shortcuts-and-layouts` from `origin/main` `83b1260`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
