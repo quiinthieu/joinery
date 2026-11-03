@@ -703,6 +703,10 @@ impl Driver for Postgres {
         schema_diagram_on(self.metadata().await?, schema).await
     }
 
+    async fn schema_snapshot(&self, schema: &str) -> AppResult<SchemaSnapshot> {
+        explorer::schema_snapshot_on(self.metadata().await?, schema).await
+    }
+
     async fn browse(
         &self,
         schema: &TableSchema,

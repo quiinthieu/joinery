@@ -35,6 +35,8 @@ fn main() {
             "table_schema",
             "referencing_foreign_keys",
             "schema_diagram",
+            "schema_snapshot",
+            "compare_schemas",
             "prepare_browse_table",
             "browse_table",
             "result_range",

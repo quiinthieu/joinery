@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  ArrowLeftRight,
   Bookmark,
   Code2,
   Database,
   FileCode2,
   Gauge,
   History,
+  Network,
   Search,
   type LucideIcon,
 } from "lucide-react";
@@ -36,6 +38,10 @@ function TabKindGlyph({ kind }: { kind: TabKind }) {
       return <History size={16} />;
     case "processes":
       return <Activity size={16} />;
+    case "diagram":
+      return <Network size={16} />;
+    case "schemaDiff":
+      return <ArrowLeftRight size={16} />;
     case "benchmark":
       return <Gauge size={16} />;
   }

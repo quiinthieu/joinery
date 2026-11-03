@@ -669,8 +669,22 @@ filtering and optional refresh. Merged in PR #62 (`80de7aa`). See
 issues automatic `COUNT(*)` or `ANALYZE`, withholds PostgreSQL relation storage
 and index counters when the session lacks `SELECT` privilege on the relation,
 and degrades cleanly on MySQL/MariaDB when `mysql.innodb_index_stats` or
-`performance_schema` is unreadable or disabled. See
+`performance_schema` is unreadable or disabled. Merged in PR #63 (`130e192`). See
 [evidence](IMPLEMENTATION_STATUS.md#r8-slice-2-relation-storage-and-index-usage-statistics-3-november-2026).
+
+### R7 slice 2: schema snapshots and deterministic schema diff (branch `feat/schema-diff`)
+
+`schema_snapshot(sessionId, schema)` captures a bounded, canonical structural
+snapshot (`SchemaSnapshot`) of a PostgreSQL schema or MySQL/MariaDB database
+(tables, views, materialized views, partitioned tables, columns, constraints,
+indexes, triggers, overloaded routines, sequences, and disclosed unsupported
+objects such as custom PostgreSQL enum/domain/range/composite types, foreign
+tables, non-view rewrite rules, and MySQL scheduled events). `compare_schemas`
+computes a deterministic `SchemaDiffReport` independent of catalog row order,
+with engine-quoted object and member names. `SchemaDiffView` compares any two
+live schemas or up to 16 in-memory captured snapshots and never prepares or
+executes DDL. See
+[evidence](IMPLEMENTATION_STATUS.md#r7-slice-2-schema-snapshots-and-deterministic-schema-diff-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 

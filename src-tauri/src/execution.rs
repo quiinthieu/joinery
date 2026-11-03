@@ -1760,6 +1760,35 @@ impl Studio {
             .schema_diagram(schema)
             .await
     }
+    pub async fn schema_snapshot(
+        &self,
+        session_id: &str,
+        schema: &str,
+    ) -> AppResult<SchemaSnapshot> {
+        if schema.is_empty() || schema.len() > 1024 || schema.contains('\0') {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Choose a schema to snapshot",
+            ));
+        }
+        self.session(session_id)?
+            .driver
+            .schema_snapshot(schema)
+            .await
+    }
+    pub fn compare_schemas(
+        &self,
+        left: SchemaSnapshot,
+        right: SchemaSnapshot,
+    ) -> AppResult<SchemaDiffReport> {
+        if left.engine != right.engine {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Compare schemas from the same database engine",
+            ));
+        }
+        Ok(crate::schema_diff::compare_schema_snapshots(left, right))
+    }
     async fn schema_for_session(
         &self,
         session: &Session,

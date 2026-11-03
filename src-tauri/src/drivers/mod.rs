@@ -155,6 +155,13 @@ pub trait Driver: Send + Sync {
             "Schema diagrams are unavailable for this engine",
         ))
     }
+    /// Bounded, canonical structural snapshot for one schema.
+    async fn schema_snapshot(&self, _schema: &str) -> AppResult<SchemaSnapshot> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Schema snapshots are unavailable for this engine",
+        ))
+    }
     async fn browse(
         &self,
         schema: &TableSchema,

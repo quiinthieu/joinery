@@ -1572,6 +1572,543 @@ fn decode_dep_row(row: tokio_postgres::Row) -> Option<DependencyEdge> {
     })
 }
 
+pub(super) async fn schema_snapshot_on(client: &Client, schema: &str) -> AppResult<SchemaSnapshot> {
+    let ctx = client
+        .query_opt(
+            "SELECT pg_catalog.version()::pg_catalog.text,
+                    pg_catalog.current_database()::pg_catalog.text,
+                    current_user::pg_catalog.text
+             FROM pg_catalog.pg_namespace n
+             WHERE n.nspname = $1
+               AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')",
+            &[&schema],
+        )
+        .await
+        .map_err(pg_error)?;
+    let Some(ctx_row) = ctx else {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The schema is missing or unavailable",
+        ));
+    };
+    let server_version: String = ctx_row.get(0);
+    let database: String = ctx_row.get(1);
+    let role: String = ctx_row.get(2);
+
+    let mut truncated = false;
+    let mut restricted = false;
+
+    let rel_limit = (MAX_SNAPSHOT_RELATIONS + 1) as i64;
+    let rel_rows = client
+        .query(
+            "SELECT c.relname::pg_catalog.text,
+                    c.relkind::pg_catalog.text,
+                    pg_catalog.obj_description(c.oid, 'pg_class')::pg_catalog.text,
+                    CASE
+                      WHEN c.relkind = 'p'
+                      THEN pg_catalog.pg_get_partkeydef(c.oid)::pg_catalog.text
+                      ELSE NULL::pg_catalog.text
+                    END,
+                    CASE
+                      WHEN c.relkind IN ('v', 'm')
+                       AND (pg_catalog.has_table_privilege(c.oid, 'SELECT')
+                            OR pg_catalog.has_any_column_privilege(c.oid, 'SELECT'))
+                      THEN pg_catalog.pg_get_viewdef(c.oid, true)::pg_catalog.text
+                      ELSE NULL::pg_catalog.text
+                    END,
+                    (pg_catalog.has_table_privilege(c.oid, 'SELECT')
+                     OR pg_catalog.has_any_column_privilege(c.oid, 'SELECT')),
+                    EXISTS (
+                      SELECT 1
+                      FROM pg_catalog.pg_attribute a
+                      WHERE a.attrelid = c.oid
+                        AND a.attnum > 0
+                        AND NOT a.attisdropped
+                        AND NOT pg_catalog.has_column_privilege(c.oid, a.attnum, 'SELECT')
+                    )
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1
+               AND c.relkind IN ('r', 'p', 'v', 'm')
+               AND NOT c.relispartition
+             ORDER BY c.relname
+             LIMIT $2",
+            &[&schema, &rel_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    let mut tables = Vec::with_capacity(rel_rows.len().min(MAX_SNAPSHOT_RELATIONS));
+    let mut table_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (idx, r) in rel_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_RELATIONS {
+            truncated = true;
+            break;
+        }
+        let name: String = r.get(0);
+        let relkind: String = r.get(1);
+        let Some(kind) = relkind_to_kind(&relkind) else {
+            continue;
+        };
+        let readable: bool = r.get(5);
+        let has_unreadable_column: bool = r.get(6);
+        if !readable || has_unreadable_column {
+            restricted = true;
+        }
+        let pos = tables.len();
+        table_index.insert(name.clone(), pos);
+        tables.push(SnapshotTable {
+            name,
+            kind,
+            comment: r.get(2),
+            partition_key: r.get(3),
+            view_definition: r.get(4),
+            columns: Vec::new(),
+            constraints: Vec::new(),
+            indexes: Vec::new(),
+            triggers: Vec::new(),
+        });
+    }
+
+    let col_limit = (MAX_SNAPSHOT_COLUMNS + 1) as i64;
+    let col_rows = client
+        .query(
+            "SELECT c.relname::pg_catalog.text,
+                    a.attname::pg_catalog.text,
+                    pg_catalog.format_type(a.atttypid, a.atttypmod)::pg_catalog.text,
+                    NOT a.attnotnull,
+                    CASE
+                      WHEN ad.adbin IS NOT NULL
+                      THEN pg_catalog.pg_get_expr(ad.adbin, ad.adrelid, true)::pg_catalog.text
+                      ELSE NULL::pg_catalog.text
+                    END,
+                    a.attidentity::pg_catalog.text,
+                    a.attgenerated::pg_catalog.text,
+                    ROW_NUMBER() OVER (PARTITION BY c.oid ORDER BY a.attnum)::pg_catalog.int4
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute a
+               ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+             LEFT JOIN pg_catalog.pg_attrdef ad
+               ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+             WHERE n.nspname = $1
+               AND c.relkind IN ('r', 'p', 'v', 'm')
+               AND NOT c.relispartition
+               AND pg_catalog.has_column_privilege(c.oid, a.attnum, 'SELECT')
+             ORDER BY c.relname, a.attnum
+             LIMIT $2",
+            &[&schema, &col_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    for (idx, r) in col_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_COLUMNS {
+            truncated = true;
+            break;
+        }
+        let relname: String = r.get(0);
+        let Some(&t_idx) = table_index.get(&relname) else {
+            continue;
+        };
+        let identity_code: String = r.get(5);
+        let generated_code: String = r.get(6);
+        let ordinal: i32 = r.get(7);
+        tables[t_idx].columns.push(SnapshotColumn {
+            name: r.get(1),
+            data_type: r.get(2),
+            nullable: r.get(3),
+            default_expression: r.get(4),
+            identity: match identity_code.as_str() {
+                "a" => Some("ALWAYS".into()),
+                "d" => Some("BY DEFAULT".into()),
+                _ => None,
+            },
+            generated: (generated_code == "s").then(|| "STORED".into()),
+            ordinal_position: ordinal.max(1) as u32,
+        });
+    }
+
+    let con_limit = (MAX_SNAPSHOT_CONSTRAINTS + 1) as i64;
+    let con_rows = client
+        .query(
+            "SELECT c.relname::pg_catalog.text,
+                    k.conname::pg_catalog.text,
+                    k.contype::pg_catalog.text,
+                    ARRAY(
+                      SELECT a.attname::pg_catalog.text
+                      FROM pg_catalog.unnest(COALESCE(k.conkey, '{}'::pg_catalog.int2[])) WITH ORDINALITY AS u(attnum, ord)
+                      JOIN pg_catalog.pg_attribute a
+                        ON a.attrelid = k.conrelid AND a.attnum = u.attnum AND NOT a.attisdropped
+                      ORDER BY u.ord
+                    )::pg_catalog.text[],
+                    tn.nspname::pg_catalog.text,
+                    tc.relname::pg_catalog.text,
+                    ARRAY(
+                      SELECT b.attname::pg_catalog.text
+                      FROM pg_catalog.unnest(COALESCE(k.confkey, '{}'::pg_catalog.int2[])) WITH ORDINALITY AS u(attnum, ord)
+                      JOIN pg_catalog.pg_attribute b
+                        ON b.attrelid = k.confrelid AND b.attnum = u.attnum AND NOT b.attisdropped
+                      ORDER BY u.ord
+                    )::pg_catalog.text[],
+                    pg_catalog.pg_get_constraintdef(k.oid, true)::pg_catalog.text,
+                    (NOT EXISTS (
+                      SELECT 1
+                      FROM pg_catalog.unnest(COALESCE(k.conkey, '{}'::pg_catalog.int2[])) AS u(attnum)
+                      WHERE NOT pg_catalog.has_column_privilege(k.conrelid, u.attnum, 'SELECT')
+                    ) AND (
+                      k.confrelid = 0 OR (
+                        pg_catalog.has_schema_privilege(tn.oid, 'USAGE')
+                        AND NOT EXISTS (
+                          SELECT 1
+                          FROM pg_catalog.unnest(COALESCE(k.confkey, '{}'::pg_catalog.int2[])) AS u2(attnum)
+                          WHERE NOT pg_catalog.has_column_privilege(k.confrelid, u2.attnum, 'SELECT')
+                        )
+                      )
+                    ))
+             FROM pg_catalog.pg_constraint k
+             JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             LEFT JOIN pg_catalog.pg_class tc ON tc.oid = NULLIF(k.confrelid, 0)
+             LEFT JOIN pg_catalog.pg_namespace tn ON tn.oid = tc.relnamespace
+             WHERE n.nspname = $1
+               AND c.relkind IN ('r', 'p', 'v', 'm')
+               AND NOT c.relispartition
+               AND k.contype IN ('p', 'f', 'u', 'c', 'x')
+               AND k.conparentid = 0
+             ORDER BY c.relname, k.conname
+             LIMIT $2",
+            &[&schema, &con_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    for (idx, r) in con_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_CONSTRAINTS {
+            truncated = true;
+            break;
+        }
+        let relname: String = r.get(0);
+        let Some(&t_idx) = table_index.get(&relname) else {
+            continue;
+        };
+        let readable_constraint: bool = r.get(8);
+        if !readable_constraint {
+            restricted = true;
+            continue;
+        }
+        let Some(kind) = (match r.get::<_, &str>(2) {
+            "p" => Some(ConstraintKind::PrimaryKey),
+            "f" => Some(ConstraintKind::ForeignKey),
+            "u" => Some(ConstraintKind::Unique),
+            "c" => Some(ConstraintKind::Check),
+            "x" => Some(ConstraintKind::Exclusion),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let target = match (r.get::<_, Option<String>>(4), r.get::<_, Option<String>>(5)) {
+            (Some(s), Some(t)) => Some(TableRef { schema: s, name: t }),
+            _ => None,
+        };
+        tables[t_idx].constraints.push(ConstraintInfo {
+            name: r.get(1),
+            kind,
+            columns: r.get(3),
+            target,
+            target_columns: r.get(6),
+            definition: r.get(7),
+        });
+    }
+
+    let idx_limit = (MAX_SNAPSHOT_INDEXES + 1) as i64;
+    let idx_rows = client
+        .query(
+            "SELECT tbl.relname::pg_catalog.text,
+                    idx.relname::pg_catalog.text,
+                    am.amname::pg_catalog.text,
+                    i.indisunique,
+                    i.indisprimary,
+                    ARRAY(
+                      SELECT pg_catalog.pg_get_indexdef(i.indexrelid, k::pg_catalog.int4, true)
+                      FROM pg_catalog.generate_series(1, i.indnkeyatts::pg_catalog.int4) AS g(k)
+                      ORDER BY g.k
+                    )::pg_catalog.text[],
+                    CASE
+                      WHEN i.indpred IS NOT NULL
+                      THEN pg_catalog.pg_get_expr(i.indpred, i.indrelid, true)::pg_catalog.text
+                      ELSE NULL::pg_catalog.text
+                    END,
+                    pg_catalog.pg_get_indexdef(i.indexrelid)::pg_catalog.text
+             FROM pg_catalog.pg_index i
+             JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
+             JOIN pg_catalog.pg_class tbl ON tbl.oid = i.indrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = tbl.relnamespace
+             JOIN pg_catalog.pg_am am ON am.oid = idx.relam
+             WHERE n.nspname = $1
+               AND tbl.relkind IN ('r', 'p', 'v', 'm')
+               AND NOT tbl.relispartition
+             ORDER BY tbl.relname, idx.relname
+             LIMIT $2",
+            &[&schema, &idx_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    for (idx, r) in idx_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_INDEXES {
+            truncated = true;
+            break;
+        }
+        let relname: String = r.get(0);
+        let Some(&t_idx) = table_index.get(&relname) else {
+            continue;
+        };
+        tables[t_idx].indexes.push(SnapshotIndex {
+            name: r.get(1),
+            method: r.get(2),
+            unique: r.get(3),
+            primary: r.get(4),
+            expressions: r.get(5),
+            predicate: r.get(6),
+            definition: r.get(7),
+        });
+    }
+
+    let trig_limit = (MAX_SNAPSHOT_TRIGGERS + 1) as i64;
+    let trig_rows = client
+        .query(
+            "SELECT tbl.relname::pg_catalog.text,
+                    t.tgname::pg_catalog.text,
+                    t.tgtype::pg_catalog.int2,
+                    t.tgenabled::pg_catalog.text,
+                    pg_catalog.pg_get_triggerdef(t.oid, true)::pg_catalog.text
+             FROM pg_catalog.pg_trigger t
+             JOIN pg_catalog.pg_class tbl ON tbl.oid = t.tgrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = tbl.relnamespace
+             WHERE n.nspname = $1
+               AND tbl.relkind IN ('r', 'p', 'v', 'm')
+               AND NOT tbl.relispartition
+               AND NOT t.tgisinternal
+             ORDER BY tbl.relname, t.tgname
+             LIMIT $2",
+            &[&schema, &trig_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    for (idx, r) in trig_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_TRIGGERS {
+            truncated = true;
+            break;
+        }
+        let relname: String = r.get(0);
+        let Some(&t_idx) = table_index.get(&relname) else {
+            continue;
+        };
+        let tgtype: i16 = r.get(2);
+        let (timing, events, orientation) = decode_pg_trigger_type(tgtype);
+        let enabled_flag: String = r.get(3);
+        tables[t_idx].triggers.push(TriggerInfo {
+            name: r.get(1),
+            table_name: relname,
+            timing: timing.into(),
+            events,
+            orientation: orientation.into(),
+            enabled: enabled_flag != "D",
+            definition: r.get(4),
+        });
+    }
+
+    let routine_limit = (MAX_SNAPSHOT_ROUTINES + 1) as i64;
+    let routine_rows = client
+        .query(
+            "SELECT p.proname::pg_catalog.text,
+                    p.prokind::pg_catalog.text,
+                    pg_catalog.pg_get_function_identity_arguments(p.oid)::pg_catalog.text,
+                    pg_catalog.pg_get_function_arguments(p.oid)::pg_catalog.text,
+                    pg_catalog.pg_get_function_result(p.oid)::pg_catalog.text,
+                    l.lanname::pg_catalog.text,
+                    p.provolatile::pg_catalog.text,
+                    p.prosecdef,
+                    CASE
+                      WHEN l.lanname IN ('internal', 'c') THEN NULL::pg_catalog.text
+                      ELSE pg_catalog.pg_get_functiondef(p.oid)::pg_catalog.text
+                    END,
+                    pg_catalog.obj_description(p.oid, 'pg_proc')::pg_catalog.text
+             FROM pg_catalog.pg_proc p
+             JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+             JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+             WHERE n.nspname = $1
+               AND p.prokind IN ('f', 'p')
+             ORDER BY p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid)
+             LIMIT $2",
+            &[&schema, &routine_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    let mut routines = Vec::with_capacity(routine_rows.len().min(MAX_SNAPSHOT_ROUTINES));
+    for (idx, r) in routine_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_ROUTINES {
+            truncated = true;
+            break;
+        }
+        let prokind: String = r.get(1);
+        let kind = if prokind == "p" {
+            DatabaseObjectKind::Procedure
+        } else {
+            DatabaseObjectKind::Function
+        };
+        let provolatile: String = r.get(6);
+        let volatility = if kind == DatabaseObjectKind::Procedure {
+            None
+        } else {
+            Some(
+                match provolatile.as_str() {
+                    "i" => "IMMUTABLE",
+                    "s" => "STABLE",
+                    _ => "VOLATILE",
+                }
+                .into(),
+            )
+        };
+        routines.push(SnapshotRoutine {
+            name: r.get(0),
+            kind,
+            identity_arguments: r.get(2),
+            arguments: r.get(3),
+            return_type: r.get(4),
+            language: r.get(5),
+            volatility,
+            security_definer: r.get(7),
+            definition: r.get(8),
+            comment: r.get(9),
+        });
+    }
+
+    let seq_limit = (MAX_SNAPSHOT_SEQUENCES + 1) as i64;
+    let seq_rows = client
+        .query(
+            "SELECT c.relname::pg_catalog.text,
+                    pg_catalog.format_type(s.seqtypid, NULL)::pg_catalog.text,
+                    s.seqstart::pg_catalog.text,
+                    s.seqmin::pg_catalog.text,
+                    s.seqmax::pg_catalog.text,
+                    s.seqincrement::pg_catalog.text,
+                    s.seqcache::pg_catalog.text,
+                    s.seqcycle
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_sequence s ON s.seqrelid = c.oid
+             WHERE n.nspname = $1
+               AND c.relkind = 'S'
+             ORDER BY c.relname
+             LIMIT $2",
+            &[&schema, &seq_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    let mut sequences = Vec::with_capacity(seq_rows.len().min(MAX_SNAPSHOT_SEQUENCES));
+    for (idx, r) in seq_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_SEQUENCES {
+            truncated = true;
+            break;
+        }
+        sequences.push(SnapshotSequence {
+            name: r.get(0),
+            data_type: r.get(1),
+            start_value: r.get(2),
+            min_value: r.get(3),
+            max_value: r.get(4),
+            increment_by: r.get(5),
+            cache_size: r.get(6),
+            cycle: r.get(7),
+        });
+    }
+
+    let unsup_limit = (MAX_SNAPSHOT_UNSUPPORTED + 1) as i64;
+    let unsup_rows = client
+        .query(
+            "SELECT t.typname::pg_catalog.text,
+                    CASE t.typtype
+                      WHEN 'e' THEN 'enum type'
+                      WHEN 'd' THEN 'domain'
+                      WHEN 'r' THEN 'range type'
+                      WHEN 'c' THEN 'composite type'
+                      ELSE 'custom type'
+                    END::pg_catalog.text,
+                    'Custom PostgreSQL types and domains are disclosed but not structurally diffed'::pg_catalog.text
+             FROM pg_catalog.pg_type t
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+             WHERE n.nspname = $1
+               AND (
+                 t.typtype IN ('e', 'd', 'r')
+                 OR (
+                   t.typtype = 'c'
+                   AND EXISTS (
+                     SELECT 1 FROM pg_catalog.pg_class tc
+                     WHERE tc.oid = t.typrelid AND tc.relkind = 'c'
+                   )
+                 )
+               )
+             UNION ALL
+             SELECT c.relname::pg_catalog.text,
+                    'foreign table'::pg_catalog.text,
+                    'Foreign tables depend on external FDW server options and are not structurally diffed'::pg_catalog.text
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1
+               AND c.relkind = 'f'
+             UNION ALL
+             SELECT (c.relname || '.' || r.rulename)::pg_catalog.text,
+                    'rule'::pg_catalog.text,
+                    'PostgreSQL rewrite rules are disclosed but not structurally diffed'::pg_catalog.text
+             FROM pg_catalog.pg_rewrite r
+             JOIN pg_catalog.pg_class c ON c.oid = r.ev_class
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1
+               AND r.rulename <> '_RETURN'
+             ORDER BY 2, 1
+             LIMIT $2",
+            &[&schema, &unsup_limit],
+        )
+        .await
+        .map_err(pg_error)?;
+
+    let mut unsupported_objects =
+        Vec::with_capacity(unsup_rows.len().min(MAX_SNAPSHOT_UNSUPPORTED));
+    for (idx, r) in unsup_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_UNSUPPORTED {
+            truncated = true;
+            break;
+        }
+        unsupported_objects.push(UnsupportedSchemaObject {
+            name: r.get(0),
+            object_type: r.get(1),
+            reason: r.get(2),
+        });
+    }
+
+    let mut snapshot = SchemaSnapshot {
+        engine: EngineKind::Postgres,
+        server_version,
+        database,
+        schema: schema.to_owned(),
+        role,
+        tables,
+        routines,
+        sequences,
+        unsupported_objects,
+        truncated,
+        restricted,
+    };
+    snapshot.canonicalize();
+    Ok(snapshot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

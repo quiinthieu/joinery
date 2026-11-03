@@ -4148,3 +4148,159 @@ async fn storage_and_index_statistics_report_estimates_scans_and_respect_select_
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn schema_snapshots_and_diffs_capture_live_schemas_and_unsupported_objects() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let cleanup = "
+        DROP SCHEMA IF EXISTS r7_diff_left CASCADE;
+        DROP SCHEMA IF EXISTS r7_diff_right CASCADE;
+    ";
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     CREATE SCHEMA r7_diff_left;
+                     CREATE SCHEMA r7_diff_right;
+
+                     CREATE TYPE r7_diff_left.order_state AS ENUM ('draft', 'paid');
+                     CREATE SEQUENCE r7_diff_left.invoice_seq AS bigint START WITH 100 INCREMENT BY 1;
+                     CREATE SEQUENCE r7_diff_right.invoice_seq AS bigint START WITH 100 INCREMENT BY 10;
+
+                     CREATE TABLE r7_diff_left.\"Order Items\" (
+                       id bigint PRIMARY KEY,
+                       \"Unit Price\" numeric(10, 2) NOT NULL DEFAULT 0,
+                       legacy_code text
+                     );
+                     CREATE INDEX r7_left_price_idx ON r7_diff_left.\"Order Items\" (\"Unit Price\");
+
+                     CREATE TABLE r7_diff_right.\"Order Items\" (
+                       id bigint PRIMARY KEY,
+                       \"Unit Price\" numeric(12, 2) NOT NULL DEFAULT 0,
+                       notes text,
+                       CONSTRAINT r7_price_nonneg CHECK (\"Unit Price\" >= 0)
+                     );
+                     CREATE UNIQUE INDEX r7_left_price_idx ON r7_diff_right.\"Order Items\" (\"Unit Price\");
+
+                     CREATE TABLE r7_diff_left.only_in_left_tbl (id integer PRIMARY KEY);
+                     CREATE TABLE r7_diff_right.only_in_right_tbl (id integer PRIMARY KEY);
+
+                     CREATE VIEW r7_diff_left.active_items_v AS
+                       SELECT id, \"Unit Price\" FROM r7_diff_left.\"Order Items\";
+                     CREATE VIEW r7_diff_right.active_items_v AS
+                       SELECT id, \"Unit Price\", notes FROM r7_diff_right.\"Order Items\";
+
+                     CREATE FUNCTION r7_diff_left.calc_tax(amount numeric) RETURNS numeric
+                       LANGUAGE sql IMMUTABLE AS $$ SELECT amount * 0.10; $$;
+                     CREATE FUNCTION r7_diff_right.calc_tax(amount numeric) RETURNS numeric
+                       LANGUAGE sql IMMUTABLE AS $$ SELECT amount * 0.15; $$;
+                    "
+                ),
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let left = studio
+        .schema_snapshot(&session.id, "r7_diff_left")
+        .await
+        .unwrap();
+    let right = studio
+        .schema_snapshot(&session.id, "r7_diff_right")
+        .await
+        .unwrap();
+
+    assert_eq!(left.engine, EngineKind::Postgres);
+    assert!(!left.truncated && !left.restricted);
+    assert!(
+        left.unsupported_objects
+            .iter()
+            .any(|u| u.name == "order_state" && u.object_type == "enum type"),
+        "custom enum type in left schema must be disclosed: {:?}",
+        left.unsupported_objects
+    );
+
+    let same = studio.compare_schemas(left.clone(), left.clone()).unwrap();
+    assert_eq!(same.entries.len(), 0);
+    assert!(same.identical_count >= 4);
+
+    let diff = studio.compare_schemas(left, right).unwrap();
+    assert_eq!(diff.only_left_count, 1);
+    assert_eq!(diff.only_right_count, 1);
+    assert!(diff.modified_count >= 4);
+
+    let order_items = diff
+        .entries
+        .iter()
+        .find(|e| e.name == "Order Items" && e.object_kind == DatabaseObjectKind::Table)
+        .expect("modified quoted table present");
+    assert_eq!(order_items.kind, SchemaDiffKind::Modified);
+    assert_eq!(order_items.quoted_name, "\"Order Items\"");
+    assert!(
+        order_items.member_diffs.iter().any(|m| {
+            m.category == SchemaMemberCategory::Column
+                && m.name == "Unit Price"
+                && m.quoted_name == "\"Unit Price\""
+                && m.kind == SchemaDiffKind::Modified
+        }),
+        "quoted column modification present: {:?}",
+        order_items.member_diffs
+    );
+    assert!(order_items.member_diffs.iter().any(|m| {
+        m.category == SchemaMemberCategory::Column
+            && m.name == "legacy_code"
+            && m.kind == SchemaDiffKind::OnlyLeft
+    }));
+    assert!(order_items.member_diffs.iter().any(|m| {
+        m.category == SchemaMemberCategory::Column
+            && m.name == "notes"
+            && m.kind == SchemaDiffKind::OnlyRight
+    }));
+    assert!(order_items.member_diffs.iter().any(|m| {
+        m.category == SchemaMemberCategory::Constraint
+            && m.name == "r7_price_nonneg"
+            && m.kind == SchemaDiffKind::OnlyRight
+    }));
+    assert!(order_items.member_diffs.iter().any(|m| {
+        m.category == SchemaMemberCategory::Index
+            && m.name == "r7_left_price_idx"
+            && m.kind == SchemaDiffKind::Modified
+    }));
+
+    assert!(
+        diff.entries
+            .iter()
+            .any(|e| e.name == "only_in_left_tbl" && e.kind == SchemaDiffKind::OnlyLeft)
+    );
+    assert!(
+        diff.entries
+            .iter()
+            .any(|e| e.name == "only_in_right_tbl" && e.kind == SchemaDiffKind::OnlyRight)
+    );
+    assert!(
+        diff.entries
+            .iter()
+            .any(|e| e.name == "active_items_v" && e.kind == SchemaDiffKind::Modified)
+    );
+    assert!(diff.entries.iter().any(|e| {
+        e.name == "calc_tax"
+            && e.identity.as_deref() == Some("amount numeric")
+            && e.kind == SchemaDiffKind::Modified
+    }));
+    assert!(
+        diff.entries
+            .iter()
+            .any(|e| e.name == "invoice_seq" && e.kind == SchemaDiffKind::Modified)
+    );
+
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

@@ -57,7 +57,7 @@ import {
 import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
 
 export type TabKind =
-  "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram";
+  "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram" | "schemaDiff";
 export type TabStatus =
   "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | "outcomeUnknown";
 export interface TablePageState {
@@ -209,6 +209,7 @@ interface StudioState {
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
   openDiagram(connectionId: string, schema: string): void;
+  openSchemaDiff(connectionId: string, schema: string): void;
   openTable(
     connectionId: string,
     table: TableRef,
@@ -1177,6 +1178,21 @@ export const useStudio = create<StudioState>((set, get) => ({
       return;
     }
     const next = { ...tab("diagram", `${schema} diagram`, connectionId), diagramSchema: schema };
+    set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
+  },
+  openSchemaDiff(connectionId, schema) {
+    const existing = get().tabs.find(
+      (t) =>
+        t.kind === "schemaDiff" && t.connectionId === connectionId && t.diagramSchema === schema,
+    );
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return;
+    }
+    const next = {
+      ...tab("schemaDiff", `${schema} schema diff`, connectionId),
+      diagramSchema: schema,
+    };
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
   async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView, highlightedColumn) {

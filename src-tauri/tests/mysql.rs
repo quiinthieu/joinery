@@ -3688,3 +3688,117 @@ async fn storage_and_index_statistics_report_estimates_and_degrade_without_admin
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn schema_snapshots_and_diffs_capture_live_databases_and_events() {
+    for port in [53306, 53307] {
+        let (_root, studio, _owner) = setup(port, SafeMode::Silent).await;
+        let mut admin = profile(port, SafeMode::Silent);
+        admin.name = "Disposable root diff".into();
+        admin.username = "root".into();
+        let admin = studio.save_profile(admin, None).unwrap();
+        let root_session = studio
+            .connect(
+                &admin.id,
+                ConnectionSecrets {
+                    password: Some("joinery-root-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let cleanup = "
+            DROP DATABASE IF EXISTS r7_diff_left;
+            DROP DATABASE IF EXISTS r7_diff_right;
+        ";
+        completed(
+            &run(
+                &studio,
+                &root_session,
+                &format!(
+                    "{cleanup}
+                     CREATE DATABASE r7_diff_left;
+                     CREATE DATABASE r7_diff_right;
+
+                     CREATE TABLE r7_diff_left.`Order Items` (
+                       id INT PRIMARY KEY,
+                       `Unit Price` DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+                       legacy_code VARCHAR(32),
+                       INDEX r7_price_idx (`Unit Price`)
+                     ) ENGINE=InnoDB;
+
+                     CREATE TABLE r7_diff_right.`Order Items` (
+                       id INT PRIMARY KEY,
+                       `Unit Price` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+                       notes VARCHAR(128),
+                       UNIQUE INDEX r7_price_idx (`Unit Price`)
+                     ) ENGINE=InnoDB;
+
+                     CREATE TABLE r7_diff_left.only_left_tbl (id INT PRIMARY KEY) ENGINE=InnoDB;
+                     CREATE TABLE r7_diff_right.only_right_tbl (id INT PRIMARY KEY) ENGINE=InnoDB;
+
+                     CREATE VIEW r7_diff_left.active_v AS
+                       SELECT id, `Unit Price` FROM r7_diff_left.`Order Items`;
+                     CREATE VIEW r7_diff_right.active_v AS
+                       SELECT id, `Unit Price`, notes FROM r7_diff_right.`Order Items`;
+
+                     CREATE FUNCTION r7_diff_left.double_val(x INT) RETURNS INT DETERMINISTIC
+                       RETURN x * 2;
+                     CREATE FUNCTION r7_diff_right.double_val(x INT) RETURNS INT DETERMINISTIC
+                       RETURN x * 3;
+                    "
+                ),
+            )
+            .await,
+        );
+
+        let left = studio
+            .schema_snapshot(&root_session.id, "r7_diff_left")
+            .await
+            .unwrap();
+        let right = studio
+            .schema_snapshot(&root_session.id, "r7_diff_right")
+            .await
+            .unwrap();
+
+        assert_eq!(left.engine, EngineKind::Mysql, "port {port}");
+        let same = studio.compare_schemas(left.clone(), left.clone()).unwrap();
+        assert_eq!(same.entries.len(), 0, "port {port}");
+
+        let diff = studio.compare_schemas(left, right).unwrap();
+        assert_eq!(diff.only_left_count, 1, "port {port}");
+        assert_eq!(diff.only_right_count, 1, "port {port}");
+        assert!(diff.modified_count >= 3, "port {port}: {:?}", diff.entries);
+
+        let order_items = diff
+            .entries
+            .iter()
+            .find(|e| e.name == "Order Items" && e.object_kind == DatabaseObjectKind::Table)
+            .expect("modified Order Items table");
+        assert_eq!(order_items.quoted_name, "`Order Items`", "port {port}");
+        assert!(
+            order_items.member_diffs.iter().any(|m| {
+                m.category == SchemaMemberCategory::Column
+                    && m.name == "Unit Price"
+                    && m.quoted_name == "`Unit Price`"
+                    && m.kind == SchemaDiffKind::Modified
+            }),
+            "port {port}: {:?}",
+            order_items.member_diffs
+        );
+        assert!(
+            order_items.member_diffs.iter().any(|m| {
+                m.category == SchemaMemberCategory::Index
+                    && m.name == "r7_price_idx"
+                    && m.kind == SchemaDiffKind::Modified
+            }),
+            "port {port}: {:?}",
+            order_items.member_diffs
+        );
+
+        completed(&run(&studio, &root_session, cleanup).await);
+        studio.shutdown();
+    }
+}

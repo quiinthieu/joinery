@@ -42,6 +42,7 @@ import { ConnectionDialog, ConnectDialog } from "../features/connections/Connect
 import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
+import { SchemaDiffView } from "../features/schema-diff/SchemaDiffView";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
 import { ExportDialog } from "../features/grid/ExportDialog";
 import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
@@ -1115,6 +1116,8 @@ export function App() {
                   <Activity size={13} />
                 ) : tab.kind === "diagram" ? (
                   <Network size={13} />
+                ) : tab.kind === "schemaDiff" ? (
+                  <ArrowLeftRight size={13} />
                 ) : (
                   <Gauge size={13} />
                 )}
@@ -1168,6 +1171,15 @@ export function App() {
                   if (!current.connectionId) return;
                   void state
                     .openTable(current.connectionId, table)
+                    .catch((error) => state.notify(messageOf(error)));
+                }}
+              />
+            ) : current.kind === "schemaDiff" ? (
+              <SchemaDiffView
+                tab={current}
+                onOpenObject={(connectionId, object) => {
+                  void state
+                    .openObject(connectionId, object)
                     .catch((error) => state.notify(messageOf(error)));
                 }}
               />
@@ -1801,12 +1813,20 @@ export function App() {
                 preferred && schemas.includes(preferred)
                   ? [preferred, ...schemas.filter((s) => s !== preferred)]
                   : schemas;
-              return ordered.slice(0, 20).map((schema) => ({
-                label: `Open schema diagram: ${schema}`,
-                shortcut: "",
-                icon: Network,
-                action: () => state.openDiagram(connectionId, schema),
-              }));
+              return ordered.slice(0, 20).flatMap((schema) => [
+                {
+                  label: `Open schema diagram: ${schema}`,
+                  shortcut: "",
+                  icon: Network,
+                  action: () => state.openDiagram(connectionId, schema),
+                },
+                {
+                  label: `Compare schema: ${schema}`,
+                  shortcut: "",
+                  icon: ArrowLeftRight,
+                  action: () => state.openSchemaDiff(connectionId, schema),
+                },
+              ]);
             })(),
             {
               label: "Preferences",

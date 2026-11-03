@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   Activity,
+  ArrowLeftRight,
   Bookmark,
   Braces,
   ChevronDown,
@@ -115,6 +116,7 @@ export function Sidebar({
           openUtility,
           openObject,
           openDiagram,
+          openSchemaDiff,
         }) => ({
           bootstrap,
           sessions,
@@ -130,6 +132,7 @@ export function Sidebar({
           openUtility,
           openObject,
           openDiagram,
+          openSchemaDiff,
         }),
       ),
     ),
@@ -444,16 +447,28 @@ export function Sidebar({
                     <span className="schema-count">{group.totalCount}</span>
                   </button>
                   {(selected.engine === "postgres" || selected.engine === "mysql") && (
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      className="schema-diagram"
-                      aria-label={`Open schema diagram for ${group.schema}`}
-                      title="Open schema diagram"
-                      onClick={() => state.openDiagram(selected.id, group.schema)}
-                    >
-                      <Network size={12} />
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        className="schema-diagram"
+                        aria-label={`Open schema diagram for ${group.schema}`}
+                        title="Open schema diagram"
+                        onClick={() => state.openDiagram(selected.id, group.schema)}
+                      >
+                        <Network size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        className="schema-diagram"
+                        aria-label={`Compare schema ${group.schema}`}
+                        title="Compare schema"
+                        onClick={() => state.openSchemaDiff(selected.id, group.schema)}
+                      >
+                        <ArrowLeftRight size={12} />
+                      </button>
+                    </>
                   )}
                 </div>
                 {schemaOpen &&

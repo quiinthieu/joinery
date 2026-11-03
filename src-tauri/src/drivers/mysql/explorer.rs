@@ -34,6 +34,16 @@ impl Mysql {
         })
         .await
     }
+
+    pub(super) async fn explorer_schema_snapshot(&self, schema: &str) -> AppResult<SchemaSnapshot> {
+        identifier(schema)?;
+        let maria = self.maria;
+        let schema = schema.to_owned();
+        self.metadata(move |conn| {
+            Box::pin(async move { schema_snapshot_on(conn, &schema, maria).await })
+        })
+        .await
+    }
 }
 
 async fn database_objects_on(
@@ -1450,6 +1460,658 @@ async fn index_details_on(
         uses,
         used_by: Vec::new(),
     })
+}
+
+async fn schema_snapshot_on(
+    conn: &mut Conn,
+    schema: &str,
+    maria: bool,
+) -> AppResult<SchemaSnapshot> {
+    let param = || vec![bind(Some(schema.to_owned()))];
+    let visible = fetch(
+        conn,
+        "SELECT 1 FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?",
+        param(),
+        1,
+        1024,
+    )
+    .await?;
+    if visible.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The database is missing or unavailable",
+        ));
+    }
+
+    let ctx_rows = fetch(
+        conn,
+        "SELECT VERSION(), CURRENT_USER()",
+        vec![],
+        1,
+        16 * 1024,
+    )
+    .await?;
+    let (server_version, role) = ctx_rows
+        .first()
+        .map(|r| (cell(r, 0).to_owned(), cell(r, 1).to_owned()))
+        .unwrap_or_default();
+
+    let mut truncated = false;
+    let mut restricted = false;
+
+    let rel_rows = fetch(
+        conn,
+        "SELECT t.TABLE_NAME,
+                t.TABLE_TYPE,
+                COALESCE(t.TABLE_COMMENT, ''),
+                COALESCE(v.VIEW_DEFINITION, '')
+         FROM INFORMATION_SCHEMA.TABLES t
+         LEFT JOIN INFORMATION_SCHEMA.VIEWS v
+           ON v.TABLE_SCHEMA = t.TABLE_SCHEMA AND v.TABLE_NAME = t.TABLE_NAME
+         WHERE t.TABLE_SCHEMA = ? AND t.TABLE_TYPE <> 'SEQUENCE'
+         ORDER BY t.TABLE_NAME
+         LIMIT 501",
+        param(),
+        MAX_SNAPSHOT_RELATIONS + 1,
+        4 * 1024 * 1024,
+    )
+    .await?;
+
+    let mut tables = Vec::with_capacity(rel_rows.len().min(MAX_SNAPSHOT_RELATIONS));
+    let mut table_index: HashMap<String, usize> = HashMap::new();
+    for (idx, r) in rel_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_RELATIONS {
+            truncated = true;
+            break;
+        }
+        let name = cell(&r, 0).to_owned();
+        let table_type = cell(&r, 1);
+        let kind = if table_type.contains("VIEW") {
+            DatabaseObjectKind::View
+        } else {
+            DatabaseObjectKind::Table
+        };
+        let comment = Some(cell(&r, 2).to_owned()).filter(|s| !s.is_empty());
+        let raw_view_def = cell(&r, 3).trim().to_owned();
+        let view_definition = if kind == DatabaseObjectKind::View {
+            if raw_view_def.is_empty() {
+                restricted = true;
+                None
+            } else {
+                Some(raw_view_def)
+            }
+        } else {
+            None
+        };
+        let pos = tables.len();
+        table_index.insert(name.clone(), pos);
+        tables.push(SnapshotTable {
+            name,
+            kind,
+            comment,
+            partition_key: None,
+            view_definition,
+            columns: Vec::new(),
+            constraints: Vec::new(),
+            indexes: Vec::new(),
+            triggers: Vec::new(),
+        });
+    }
+
+    let col_rows = fetch(
+        conn,
+        "SELECT TABLE_NAME,
+                COLUMN_NAME,
+                COLUMN_TYPE,
+                IS_NULLABLE,
+                COLUMN_DEFAULT,
+                COALESCE(EXTRA, ''),
+                COALESCE(GENERATION_EXPRESSION, ''),
+                ORDINAL_POSITION
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = ?
+         ORDER BY TABLE_NAME, ORDINAL_POSITION
+         LIMIT 20001",
+        param(),
+        MAX_SNAPSHOT_COLUMNS + 1,
+        8 * 1024 * 1024,
+    )
+    .await?;
+
+    for (idx, r) in col_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_COLUMNS {
+            truncated = true;
+            break;
+        }
+        let Some(&t_idx) = table_index.get(cell(&r, 0)) else {
+            continue;
+        };
+        let extra = cell(&r, 5);
+        let extra_upper = extra.to_ascii_uppercase();
+        let identity = extra_upper
+            .contains("AUTO_INCREMENT")
+            .then(|| "AUTO_INCREMENT".into());
+        let generated = if extra_upper.contains("STORED") {
+            Some("STORED".into())
+        } else if extra_upper.contains("VIRTUAL") {
+            Some("VIRTUAL".into())
+        } else {
+            None
+        };
+        let gen_expr = cell(&r, 6).trim().to_owned();
+        let default_expression = if generated.is_some() && !gen_expr.is_empty() {
+            Some(gen_expr)
+        } else {
+            r.get(4).and_then(Clone::clone)
+        };
+        let ordinal_position = cell(&r, 7).parse::<u32>().unwrap_or(1).max(1);
+        tables[t_idx].columns.push(SnapshotColumn {
+            name: cell(&r, 1).into(),
+            data_type: cell(&r, 2).into(),
+            nullable: cell(&r, 3).eq_ignore_ascii_case("YES"),
+            default_expression,
+            identity,
+            generated,
+            ordinal_position,
+        });
+    }
+
+    let tc_rows = fetch(
+        conn,
+        "SELECT TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_TYPE
+         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+         WHERE TABLE_SCHEMA = ?
+         ORDER BY TABLE_NAME,
+                  CASE CONSTRAINT_TYPE
+                    WHEN 'PRIMARY KEY' THEN 1
+                    WHEN 'FOREIGN KEY' THEN 2
+                    WHEN 'UNIQUE' THEN 3
+                    WHEN 'CHECK' THEN 4
+                    ELSE 5
+                  END,
+                  CONSTRAINT_NAME
+         LIMIT 10001",
+        param(),
+        MAX_SNAPSHOT_CONSTRAINTS + 1,
+        2 * 1024 * 1024,
+    )
+    .await?;
+
+    let kcu_rows = fetch(
+        conn,
+        "SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = ?
+         ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION
+         LIMIT 20000",
+        param(),
+        20_000,
+        4 * 1024 * 1024,
+    )
+    .await?;
+
+    let check_sql = if maria {
+        "SELECT tc.TABLE_NAME, tc.CONSTRAINT_NAME, cc.CHECK_CLAUSE
+         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+         JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc
+           ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+          AND cc.TABLE_NAME = tc.TABLE_NAME
+          AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+         WHERE tc.TABLE_SCHEMA = ? AND tc.CONSTRAINT_TYPE = 'CHECK'
+         ORDER BY tc.TABLE_NAME, tc.CONSTRAINT_NAME
+         LIMIT 5000"
+    } else {
+        "SELECT tc.TABLE_NAME, tc.CONSTRAINT_NAME, cc.CHECK_CLAUSE
+         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+         JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc
+           ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+          AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+         WHERE tc.TABLE_SCHEMA = ? AND tc.CONSTRAINT_TYPE = 'CHECK'
+         ORDER BY tc.TABLE_NAME, tc.CONSTRAINT_NAME
+         LIMIT 5000"
+    };
+    let check_rows = fetch(conn, check_sql, param(), 5000, 2 * 1024 * 1024)
+        .await
+        .unwrap_or_default();
+
+    let mut check_map: HashMap<(String, String), String> = HashMap::new();
+    for cr in &check_rows {
+        check_map.insert((cell(cr, 0).into(), cell(cr, 1).into()), cell(cr, 2).into());
+    }
+
+    type SchemaKeyUsageEntry = (Vec<String>, Option<TableRef>, Vec<String>);
+    let mut kcu_map: HashMap<(String, String), SchemaKeyUsageEntry> = HashMap::new();
+    for kr in &kcu_rows {
+        let key = (cell(kr, 0).to_owned(), cell(kr, 1).to_owned());
+        let entry = kcu_map
+            .entry(key)
+            .or_insert_with(|| (Vec::new(), None, Vec::new()));
+        let col = cell(kr, 2);
+        if !col.is_empty() {
+            entry.0.push(col.to_owned());
+        }
+        let ref_schema = cell(kr, 3);
+        let ref_table = cell(kr, 4);
+        let ref_col = cell(kr, 5);
+        if !ref_table.is_empty() {
+            entry.1 = Some(TableRef {
+                schema: if ref_schema.is_empty() {
+                    schema.into()
+                } else {
+                    ref_schema.into()
+                },
+                name: ref_table.into(),
+            });
+            if !ref_col.is_empty() {
+                entry.2.push(ref_col.to_owned());
+            }
+        }
+    }
+
+    for (idx, tr) in tc_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_CONSTRAINTS {
+            truncated = true;
+            break;
+        }
+        let tbl_name = cell(&tr, 0).to_owned();
+        let Some(&t_idx) = table_index.get(&tbl_name) else {
+            continue;
+        };
+        let cname = cell(&tr, 1).to_owned();
+        let ctype = cell(&tr, 2);
+        let kind = match ctype {
+            "PRIMARY KEY" => ConstraintKind::PrimaryKey,
+            "FOREIGN KEY" => ConstraintKind::ForeignKey,
+            "UNIQUE" => ConstraintKind::Unique,
+            "CHECK" => ConstraintKind::Check,
+            _ => continue,
+        };
+        let key = (tbl_name, cname.clone());
+        let (columns, target, target_columns) = kcu_map
+            .remove(&key)
+            .unwrap_or_else(|| (Vec::new(), None, Vec::new()));
+        let definition = match kind {
+            ConstraintKind::PrimaryKey => format!("PRIMARY KEY ({})", columns.join(", ")),
+            ConstraintKind::Unique => format!("UNIQUE ({})", columns.join(", ")),
+            ConstraintKind::ForeignKey => {
+                if let Some(t) = &target {
+                    format!(
+                        "FOREIGN KEY ({}) REFERENCES {}.{} ({})",
+                        columns.join(", "),
+                        quote(&t.schema),
+                        quote(&t.name),
+                        target_columns.join(", ")
+                    )
+                } else {
+                    format!("FOREIGN KEY ({})", columns.join(", "))
+                }
+            }
+            ConstraintKind::Check => match check_map.get(&key) {
+                Some(clause) if !clause.is_empty() => format!("CHECK ({clause})"),
+                _ => "CHECK (...)".into(),
+            },
+            ConstraintKind::Exclusion => continue,
+        };
+        tables[t_idx].constraints.push(ConstraintInfo {
+            name: cname,
+            kind,
+            columns,
+            target,
+            target_columns,
+            definition,
+        });
+    }
+
+    let idx_sql = if maria {
+        "SELECT TABLE_NAME, INDEX_NAME, INDEX_TYPE, NON_UNIQUE, COLUMN_NAME, SUB_PART, NULL
+         FROM INFORMATION_SCHEMA.STATISTICS
+         WHERE TABLE_SCHEMA = ?
+         ORDER BY TABLE_NAME, INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX
+         LIMIT 20000"
+    } else {
+        "SELECT TABLE_NAME, INDEX_NAME, INDEX_TYPE, NON_UNIQUE, COLUMN_NAME, SUB_PART, EXPRESSION
+         FROM INFORMATION_SCHEMA.STATISTICS
+         WHERE TABLE_SCHEMA = ?
+         ORDER BY TABLE_NAME, INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX
+         LIMIT 20000"
+    };
+    let idx_rows = fetch(conn, idx_sql, param(), 20_000, 4 * 1024 * 1024).await?;
+    let mut total_indexes = 0usize;
+    for r in idx_rows {
+        let tbl_name = cell(&r, 0);
+        let Some(&t_idx) = table_index.get(tbl_name) else {
+            continue;
+        };
+        let name = cell(&r, 1).to_owned();
+        let method = cell(&r, 2).to_ascii_lowercase();
+        let unique = cell(&r, 3) == "0";
+        let primary = name == "PRIMARY";
+        let col_name = cell(&r, 4);
+        let sub_part = cell(&r, 5);
+        let expr_text = cell(&r, 6);
+        let key_expr = if !col_name.is_empty() {
+            if !sub_part.is_empty() {
+                format!("{}({sub_part})", quote(col_name))
+            } else {
+                quote(col_name)
+            }
+        } else if !expr_text.is_empty() {
+            format!("({expr_text})")
+        } else {
+            continue;
+        };
+
+        match tables[t_idx].indexes.last_mut() {
+            Some(last) if last.name == name => {
+                last.expressions.push(key_expr);
+            }
+            _ => {
+                if total_indexes >= MAX_SNAPSHOT_INDEXES {
+                    truncated = true;
+                    break;
+                }
+                total_indexes += 1;
+                tables[t_idx].indexes.push(SnapshotIndex {
+                    name,
+                    method,
+                    unique,
+                    primary,
+                    expressions: vec![key_expr],
+                    predicate: None,
+                    definition: None,
+                });
+            }
+        }
+    }
+    for tbl in &mut tables {
+        let tbl_name = tbl.name.clone();
+        for idx in &mut tbl.indexes {
+            let info = IndexInfo {
+                name: idx.name.clone(),
+                method: idx.method.clone(),
+                unique: idx.unique,
+                primary: idx.primary,
+                expressions: idx.expressions.clone(),
+                predicate: idx.predicate.clone(),
+                definition: None,
+                size_bytes: None,
+                scans: None,
+                tuples_read: None,
+                tuples_fetched: None,
+                cardinality: None,
+            };
+            idx.definition = Some(format_mysql_index_ddl(schema, &tbl_name, &info));
+        }
+    }
+
+    let trig_rows = fetch(
+        conn,
+        "SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, ACTION_ORIENTATION, ACTION_STATEMENT
+         FROM INFORMATION_SCHEMA.TRIGGERS
+         WHERE TRIGGER_SCHEMA = ?
+         ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME
+         LIMIT 5001",
+        param(),
+        MAX_SNAPSHOT_TRIGGERS + 1,
+        4 * 1024 * 1024,
+    )
+    .await?;
+
+    for (idx, r) in trig_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_TRIGGERS {
+            truncated = true;
+            break;
+        }
+        let tbl_name = cell(&r, 0).to_owned();
+        let Some(&t_idx) = table_index.get(&tbl_name) else {
+            continue;
+        };
+        tables[t_idx].triggers.push(TriggerInfo {
+            name: cell(&r, 1).into(),
+            table_name: tbl_name,
+            timing: cell(&r, 2).into(),
+            events: vec![cell(&r, 3).into()],
+            orientation: cell(&r, 4).into(),
+            enabled: true,
+            definition: Some(cell(&r, 5).to_owned()).filter(|s| !s.is_empty()),
+        });
+    }
+
+    let routine_rows = fetch(
+        conn,
+        "SELECT ROUTINE_NAME,
+                ROUTINE_TYPE,
+                SPECIFIC_NAME,
+                COALESCE(DTD_IDENTIFIER, ''),
+                COALESCE(EXTERNAL_LANGUAGE, 'SQL'),
+                COALESCE(IS_DETERMINISTIC, 'NO'),
+                COALESCE(SECURITY_TYPE, 'DEFINER'),
+                COALESCE(ROUTINE_DEFINITION, ''),
+                COALESCE(ROUTINE_COMMENT, '')
+         FROM INFORMATION_SCHEMA.ROUTINES
+         WHERE ROUTINE_SCHEMA = ?
+           AND ROUTINE_TYPE IN ('FUNCTION', 'PROCEDURE')
+         ORDER BY ROUTINE_NAME, ROUTINE_TYPE
+         LIMIT 5001",
+        param(),
+        MAX_SNAPSHOT_ROUTINES + 1,
+        4 * 1024 * 1024,
+    )
+    .await?;
+
+    let mut routines = Vec::with_capacity(routine_rows.len().min(MAX_SNAPSHOT_ROUTINES));
+    if !routine_rows.is_empty() {
+        let param_rows = fetch(
+            conn,
+            "SELECT SPECIFIC_NAME,
+                    ROUTINE_TYPE,
+                    COALESCE(PARAMETER_MODE, ''),
+                    COALESCE(PARAMETER_NAME, ''),
+                    COALESCE(DTD_IDENTIFIER, '')
+             FROM INFORMATION_SCHEMA.PARAMETERS
+             WHERE SPECIFIC_SCHEMA = ?
+               AND ORDINAL_POSITION > 0
+             ORDER BY SPECIFIC_NAME, ROUTINE_TYPE, ORDINAL_POSITION
+             LIMIT 10000",
+            param(),
+            10_000,
+            4 * 1024 * 1024,
+        )
+        .await
+        .unwrap_or_default();
+
+        type RoutineParamTuple = (String, String, String);
+        let mut params_by_routine: HashMap<(String, String), Vec<RoutineParamTuple>> =
+            HashMap::new();
+        for pr in &param_rows {
+            params_by_routine
+                .entry((cell(pr, 0).to_owned(), cell(pr, 1).to_owned()))
+                .or_default()
+                .push((
+                    cell(pr, 2).to_owned(),
+                    cell(pr, 3).to_owned(),
+                    cell(pr, 4).to_owned(),
+                ));
+        }
+
+        for (idx, r) in routine_rows.into_iter().enumerate() {
+            if idx >= MAX_SNAPSHOT_ROUTINES {
+                truncated = true;
+                break;
+            }
+            let name = cell(&r, 0).to_owned();
+            let rtype = cell(&r, 1);
+            let specific = cell(&r, 2).to_owned();
+            let ret_type = cell(&r, 3);
+            let language = cell(&r, 4).to_owned();
+            let det = cell(&r, 5);
+            let sec = cell(&r, 6);
+            let body = cell(&r, 7).trim().to_owned();
+            let comment = Some(cell(&r, 8).to_owned()).filter(|s| !s.is_empty());
+
+            let kind = if rtype.eq_ignore_ascii_case("PROCEDURE") {
+                DatabaseObjectKind::Procedure
+            } else {
+                DatabaseObjectKind::Function
+            };
+            let plist = params_by_routine
+                .remove(&(specific, rtype.to_owned()))
+                .unwrap_or_default();
+            let identity_arguments = plist
+                .iter()
+                .map(|(_, _, ptype)| ptype.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let arguments = plist
+                .iter()
+                .map(|(mode, pname, ptype)| {
+                    if kind == DatabaseObjectKind::Procedure && !mode.is_empty() && mode != "IN" {
+                        format!("{mode} {pname} {ptype}").trim().to_owned()
+                    } else if !pname.is_empty() {
+                        format!("{pname} {ptype}").trim().to_owned()
+                    } else {
+                        ptype.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let definition = if body.is_empty() {
+                restricted = true;
+                None
+            } else {
+                Some(body)
+            };
+
+            routines.push(SnapshotRoutine {
+                name,
+                kind,
+                identity_arguments,
+                arguments,
+                return_type: (kind == DatabaseObjectKind::Function && !ret_type.is_empty())
+                    .then(|| ret_type.to_owned()),
+                language,
+                volatility: Some(
+                    if det.eq_ignore_ascii_case("YES") {
+                        "DETERMINISTIC"
+                    } else {
+                        "NOT DETERMINISTIC"
+                    }
+                    .into(),
+                ),
+                security_definer: sec.eq_ignore_ascii_case("DEFINER"),
+                definition,
+                comment,
+            });
+        }
+    }
+
+    let mut sequences = Vec::new();
+    if maria {
+        let seq_rows = fetch(
+            conn,
+            "SELECT TABLE_NAME
+             FROM INFORMATION_SCHEMA.TABLES
+             WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'SEQUENCE'
+             ORDER BY TABLE_NAME
+             LIMIT 5001",
+            param(),
+            MAX_SNAPSHOT_SEQUENCES + 1,
+            1024 * 1024,
+        )
+        .await
+        .unwrap_or_default();
+
+        for (idx, r) in seq_rows.into_iter().enumerate() {
+            if idx >= MAX_SNAPSHOT_SEQUENCES {
+                truncated = true;
+                break;
+            }
+            let seq_name = cell(&r, 0).to_owned();
+            if identifier(&seq_name).is_err() {
+                continue;
+            }
+            let seq_sql = format!(
+                "SELECT START_VALUE, MINIMUM_VALUE, MAXIMUM_VALUE, INCREMENT, CACHE_SIZE, CYCLE_OPTION
+                 FROM {}.{} LIMIT 1",
+                quote(schema),
+                quote(&seq_name)
+            );
+            match fetch_text(conn, &seq_sql, 1, 16 * 1024).await {
+                Ok(rows) if !rows.is_empty() => {
+                    let sr = &rows[0];
+                    sequences.push(SnapshotSequence {
+                        name: seq_name,
+                        data_type: "bigint".into(),
+                        start_value: cell(sr, 0).into(),
+                        min_value: cell(sr, 1).into(),
+                        max_value: cell(sr, 2).into(),
+                        increment_by: cell(sr, 3).into(),
+                        cache_size: cell(sr, 4).into(),
+                        cycle: cell(sr, 5) != "0",
+                    });
+                }
+                _ => {
+                    restricted = true;
+                    sequences.push(SnapshotSequence {
+                        name: seq_name,
+                        data_type: "bigint".into(),
+                        start_value: "1".into(),
+                        min_value: "1".into(),
+                        max_value: String::new(),
+                        increment_by: "1".into(),
+                        cache_size: "1000".into(),
+                        cycle: false,
+                    });
+                }
+            }
+        }
+    }
+
+    let event_rows = fetch(
+        conn,
+        "SELECT EVENT_NAME
+         FROM INFORMATION_SCHEMA.EVENTS
+         WHERE EVENT_SCHEMA = ?
+         ORDER BY EVENT_NAME
+         LIMIT 1001",
+        param(),
+        MAX_SNAPSHOT_UNSUPPORTED + 1,
+        512 * 1024,
+    )
+    .await
+    .unwrap_or_default();
+
+    let mut unsupported_objects =
+        Vec::with_capacity(event_rows.len().min(MAX_SNAPSHOT_UNSUPPORTED));
+    for (idx, r) in event_rows.into_iter().enumerate() {
+        if idx >= MAX_SNAPSHOT_UNSUPPORTED {
+            truncated = true;
+            break;
+        }
+        unsupported_objects.push(UnsupportedSchemaObject {
+            name: cell(&r, 0).into(),
+            object_type: "event".into(),
+            reason: "MySQL/MariaDB scheduled events are disclosed but not structurally diffed"
+                .into(),
+        });
+    }
+
+    let mut snapshot = SchemaSnapshot {
+        engine: EngineKind::Mysql,
+        server_version,
+        database: schema.to_owned(),
+        schema: schema.to_owned(),
+        role,
+        tables,
+        routines,
+        sequences,
+        unsupported_objects,
+        truncated,
+        restricted,
+    };
+    snapshot.canonicalize();
+    Ok(snapshot)
 }
 
 #[cfg(test)]
