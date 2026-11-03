@@ -119,12 +119,12 @@ async fn completion_verifies_request_context_and_binds_only_the_first_schema() {
     );
     let requests = server.await.unwrap();
     assert_eq!(requests.len(), 3);
-    assert!(
-        requests[0].1["statement"]
-            .as_str()
-            .unwrap()
-            .contains("CURRENT_SCHEMAS()")
+    let statement = requests[0].1["statement"].as_str().unwrap();
+    assert_eq!(
+        statement,
+        "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SCHEMAS()"
     );
+    assert!(!statement.contains("TO_JSON"));
     assert!(
         requests[1].1["statement"]
             .as_str()
@@ -138,6 +138,16 @@ async fn completion_verifies_request_context_and_binds_only_the_first_schema() {
         assert_eq!(request["role"], "READ_ONLY");
         assert_eq!(request["parameters"]["QUERY_TAG"], "Joinery/catalog-test");
     }
+
+    let (driver, server) = fixture(vec![
+        json!({"resultSetMetaData":{"numRows":1},"data":[["FIXTURE","read_only","db","public","wh","[DB.PRIVATE, DB.PUBLIC]"]]}),
+        quoted_case("false"),
+    ])
+    .await;
+    let identity = driver.completion_identity().await.unwrap();
+    assert_eq!(identity.database, "db");
+    assert_eq!(identity.search_path, ["DB.PRIVATE", "DB.PUBLIC"]);
+    assert_eq!(server.await.unwrap().len(), 2);
 }
 
 #[tokio::test]

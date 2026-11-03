@@ -1,9 +1,36 @@
 use super::*;
 
+fn parse_current_schemas(raw: &str) -> Option<Vec<String>> {
+    if let Ok(paths) = serde_json::from_str::<Vec<String>>(raw) {
+        return Some(paths);
+    }
+    let trimmed = raw.trim();
+    let inner = trimmed.strip_prefix('[')?.strip_suffix(']')?.trim();
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut paths = Vec::new();
+    for item in inner.split(',') {
+        let entry = item.trim();
+        if entry.is_empty()
+            || !entry.contains('.')
+            || entry.starts_with('"')
+            || entry.ends_with('"')
+            || entry.chars().any(char::is_control)
+        {
+            return None;
+        }
+        paths.push(entry.to_string());
+    }
+    Some(paths)
+}
+
 impl Snowflake {
     pub(super) async fn live_completion_identity(&self) -> AppResult<CompletionIdentity> {
         let expected_schema = self.current_schema();
-        let rows = self.context_rows("SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), TO_JSON(CURRENT_SCHEMAS())").await?;
+        let rows = self
+            .context_rows("SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SCHEMAS()")
+            .await?;
         let invalid = || {
             AppError::new(
                 ErrorCode::Database,
@@ -15,18 +42,22 @@ impl Snowflake {
             .as_deref()
             .filter(|v| !v.is_empty())
             .ok_or_else(invalid)?;
-        if row[1].as_deref() != Some(&self.role)
-            || row[2].as_deref() != Some(&self.database)
-            || row[3].as_deref() != Some(expected_schema.as_str())
-            || row[4].as_deref() != Some(&self.warehouse)
+        if !same(&row[1], &self.role)
+            || !same(&row[2], &self.database)
+            || !same(&row[3], &expected_schema)
+            || !same(&row[4], &self.warehouse)
         {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
                 "Snowflake completion context differs from the configured SQL request",
             ));
         }
-        let search_path: Vec<String> =
-            serde_json::from_str(row[5].as_deref().ok_or_else(invalid)?).map_err(|_| invalid())?;
+        let role = row[1].as_deref().ok_or_else(invalid)?;
+        let database = row[2].clone().ok_or_else(invalid)?;
+        let search_path = row[5]
+            .as_deref()
+            .and_then(parse_current_schemas)
+            .ok_or_else(invalid)?;
         if search_path.len() > 64 || search_path.iter().any(|s| s.is_empty() || s.len() > 1024) {
             return Err(invalid());
         }
@@ -39,7 +70,7 @@ impl Snowflake {
             .first()
             .filter(|r| r.len() >= 2)
             .ok_or_else(invalid)?;
-        if setting[0].as_deref() != Some("QUOTED_IDENTIFIERS_IGNORE_CASE") {
+        if !same(&setting[0], "QUOTED_IDENTIFIERS_IGNORE_CASE") {
             return Err(invalid());
         }
         match setting[1].as_deref() {
@@ -53,8 +84,8 @@ impl Snowflake {
             _ => return Err(invalid()),
         }
         Ok(CompletionIdentity {
-            database: self.database.clone(),
-            role: format!("{user} ({})", self.role),
+            database,
+            role: format!("{user} ({role})"),
             search_path,
             case_sensitive_table_names: None,
         })
@@ -68,7 +99,7 @@ impl Snowflake {
         // Catalog visibility cannot prove the absence of an inaccessible table
         // in an earlier schema. Bind known names in the first resolved schema
         // only; later schemas and cross-database paths retain qualified names.
-        let prefix = format!("{}.", self.database);
+        let prefix = format!("{}.", identity.database);
         let first_schema = identity
             .search_path
             .first()
