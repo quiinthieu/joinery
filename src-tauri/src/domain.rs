@@ -154,6 +154,30 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub object_explorer: bool,
+    /// Per-schema entity-relationship diagram generation.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub schema_diagram: bool,
+    /// Structural schema snapshots and schema diff comparison.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub schema_diff: bool,
+    /// Structured table, column, index, constraint, and migration DDL editing.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub ddl_editing: bool,
+    /// Active lock-wait and blocker chain inspection.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub lock_inspection: bool,
+    /// Executing query plan analysis (EXPLAIN ANALYZE / ANALYZE FORMAT=JSON).
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub explain_analyze: bool,
+    /// External system-browser OAuth sign-in flow.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub oauth_browser: bool,
     /// Executing plan format available to this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

@@ -448,44 +448,49 @@ export function Sidebar({
                     <span>{group.schema}</span>
                     <span className="schema-count">{group.totalCount}</span>
                   </button>
-                  {(selected.engine === "postgres" || selected.engine === "mysql") && (
-                    <>
-                      <button
-                        type="button"
-                        tabIndex={-1}
-                        className="schema-diagram"
-                        aria-label={`Create table in ${group.schema}`}
-                        title={
-                          selected.safeMode === "readOnly"
-                            ? "Connection is in read-only safe mode"
-                            : `Create table in ${group.schema}`
-                        }
-                        disabled={selected.safeMode === "readOnly"}
-                        onClick={() => setCreateTableSchema(group.schema)}
-                      >
-                        <Plus size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        tabIndex={-1}
-                        className="schema-diagram"
-                        aria-label={`Open schema diagram for ${group.schema}`}
-                        title="Open schema diagram"
-                        onClick={() => state.openDiagram(selected.id, group.schema)}
-                      >
-                        <Network size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        tabIndex={-1}
-                        className="schema-diagram"
-                        aria-label={`Compare schema ${group.schema}`}
-                        title="Compare schema"
-                        onClick={() => state.openSchemaDiff(selected.id, group.schema)}
-                      >
-                        <ArrowLeftRight size={12} />
-                      </button>
-                    </>
+                  {(selectedSession?.capabilities.ddlEditing ??
+                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      className="schema-diagram"
+                      aria-label={`Create table in ${group.schema}`}
+                      title={
+                        selected.safeMode === "readOnly"
+                          ? "Connection is in read-only safe mode"
+                          : `Create table in ${group.schema}`
+                      }
+                      disabled={selected.safeMode === "readOnly"}
+                      onClick={() => setCreateTableSchema(group.schema)}
+                    >
+                      <Plus size={12} />
+                    </button>
+                  )}
+                  {(selectedSession?.capabilities.schemaDiagram ??
+                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      className="schema-diagram"
+                      aria-label={`Open schema diagram for ${group.schema}`}
+                      title="Open schema diagram"
+                      onClick={() => state.openDiagram(selected.id, group.schema)}
+                    >
+                      <Network size={12} />
+                    </button>
+                  )}
+                  {(selectedSession?.capabilities.schemaDiff ??
+                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      className="schema-diagram"
+                      aria-label={`Compare schema ${group.schema}`}
+                      title="Compare schema"
+                      onClick={() => state.openSchemaDiff(selected.id, group.schema)}
+                    >
+                      <ArrowLeftRight size={12} />
+                    </button>
                   )}
                 </div>
                 {schemaOpen &&
@@ -565,9 +570,22 @@ export function Sidebar({
           Query history
         </button>
         <button
+          disabled={Boolean(selectedSession && !selectedSession.capabilities.processes)}
+          title={
+            selectedSession && !selectedSession.capabilities.processes
+              ? "Process inspection is not supported for this database engine"
+              : undefined
+          }
           onClick={() => {
-            if (selected && selectedSession) state.openUtility("processes");
-            else state.notify("Connect to a database to inspect processes.");
+            if (selected && selectedSession) {
+              if (!selectedSession.capabilities.processes) {
+                state.notify("Process inspection is not supported for this database engine.");
+                return;
+              }
+              state.openUtility("processes");
+            } else {
+              state.notify("Connect to a database to inspect processes.");
+            }
           }}
         >
           <Activity size={15} />

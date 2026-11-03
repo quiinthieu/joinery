@@ -2848,5 +2848,20 @@ Branch `feat/migration-sync` from `origin/main` `c855c04`; merged in PR #68 (`83
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | Closed typed IPC command map and granular engine capabilities (`I03` + `M07`), engine administration & table maintenance tools (`A06`), and single-table query result editing (`G14`). Next slice: R8.4 (`I03` + `M07` closed typed command map and granular engine capabilities) |
 
-Branch `feat/shortcuts-and-layouts` from `origin/main` `83b1260`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/shortcuts-and-layouts` from `origin/main` `83b1260`; merged in PR #69 (`8be971a`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R8 slice 4: closed typed IPC command map and granular engine capabilities (3 November 2026)
+
+`src/ipc/command-map.ts` defines a closed `JoineryCommandMap` pairing every Tauri and test-harness command with its exact argument payload and result DTO from `src/ipc/generated.ts`. `StudioClient.call` (`src/ipc/client.ts`) enforces `JoineryCommandName` and `JoineryCommandMap[K]["args"]` on both inferred calls (`client.call("table_schema", ...)`) and explicit-generic calls (`client.call<TableSchema>("table_schema", ...)`), rejecting unknown commands and mismatched arguments at compile time.
+
+`EngineCapabilities` (`src-tauri/src/domain.rs`) adds six granular capability flags (`schema_diagram`, `schema_diff`, `ddl_editing`, `lock_inspection`, `explain_analyze`, `oauth_browser`), populated by `Postgres`, `Mysql`, `Snowflake`, and `Redis` drivers. `Studio` (`src-tauri/src/execution.rs`) enforces capability checks on `schema_diagram`, `schema_snapshot`, `prepare_index_constraint_ddl`, `prepare_table_object_ddl`, `prepare_migration_ddl`, `lock_waits`, and `prepare_explain_with_params(..., analyze = true)`, returning `ErrorCode::Unsupported` when a session's capabilities disallow the operation. `Sidebar`, `ProcessesView`, `StructureView`, `ObjectInspectorView`, and `Workbench` gate their corresponding UI controls on `session.capabilities`.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `command-map.test.ts` (2): runtime and `@ts-expect-error` compile-time command/argument checks. `ProcessesView.test.tsx`: skips `lock_waits` RPC and hides `Lock waits` when `lockInspection: false`. `ObjectInspectorView.test.tsx`: hides DDL editing controls when `ddlEditing: false`. Rust `granular_engine_capabilities_gate_unsupported_operations` in `execution.rs` |
+| Validate | `pnpm validate`: 510 frontend tests / 49 files, 172 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Engine administration & table maintenance tools (`A06`) and single-table query result editing (`G14`). Next slice: R8.5 (`A06` engine administration & table maintenance tools) |
+
+Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 

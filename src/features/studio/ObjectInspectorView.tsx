@@ -403,7 +403,8 @@ export function ObjectInspectorView({
             !indexMeta.primary &&
             tab.connectionId &&
             activeProfile &&
-            (activeProfile.engine === "postgres" || activeProfile.engine === "mysql") && (
+            (session?.capabilities.ddlEditing ??
+              (activeProfile.engine === "postgres" || activeProfile.engine === "mysql")) && (
               <button
                 type="button"
                 className="button ghost small danger-text"

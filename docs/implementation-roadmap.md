@@ -755,8 +755,20 @@ and layout actions. `studio.ts` adds tab pinning (`QueryDraft.pinned`),
 `closeOtherTabs`, `closeCleanTabs` (preserving pinned, dirty, running and
 last-secondary-session-owner tabs), a bounded 10-entry `closedTabs` reopen stack
 (`reopenClosedTab`, purged on connection removal), and persisted
-`sidebarCollapsed` / `inspectorVisible` toggles. See
+`sidebarCollapsed` / `inspectorVisible` toggles. Merged in PR #69 (`8be971a`). See
 [evidence](IMPLEMENTATION_STATUS.md#r8-slice-3-contextual-command-palette-custom-shortcuts-and-tab-management-3-november-2026).
+
+### R8 slice 4: closed typed IPC command map and granular engine capabilities (branch `feat/typed-commands-capabilities`)
+
+`src/ipc/command-map.ts` defines the closed `JoineryCommandMap` pairing every
+backend command with its exact argument and result DTOs from
+`src/ipc/generated.ts`, enforced by `StudioClient.call` in `src/ipc/client.ts`.
+`EngineCapabilities` (`src-tauri/src/domain.rs`) adds `schemaDiagram`,
+`schemaDiff`, `ddlEditing`, `lockInspection`, `explainAnalyze` and
+`oauthBrowser`, populated by each engine driver and enforced in `Studio`
+(`ErrorCode::Unsupported`) as well as in `Sidebar`, `ProcessesView`,
+`StructureView`, `ObjectInspectorView` and `Workbench`. See
+[evidence](IMPLEMENTATION_STATUS.md#r8-slice-4-closed-typed-ipc-command-map-and-granular-engine-capabilities-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 

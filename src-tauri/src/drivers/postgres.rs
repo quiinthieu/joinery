@@ -110,6 +110,12 @@ impl Postgres {
                 table_filtering: true,
                 processes: true,
                 object_explorer: true,
+                schema_diagram: true,
+                schema_diff: true,
+                ddl_editing: true,
+                lock_inspection: true,
+                explain_analyze: true,
+                oauth_browser: false,
                 actual_plan: Some(ActualPlanFormat::PostgresJson),
             },
         };

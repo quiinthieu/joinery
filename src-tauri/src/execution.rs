@@ -849,6 +849,12 @@ impl Studio {
         params: Option<Vec<QueryParamInput>>,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if analyze && !session.info.capabilities.explain_analyze {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "EXPLAIN ANALYZE is not supported by this session's engine capabilities",
+            ));
+        }
         let classification =
             crate::params::rewrite_for_classification(session.profile.engine, sql)?;
         let explained = crate::query_plan::explain_sql(
@@ -1755,10 +1761,14 @@ impl Studio {
                 "Choose a schema to diagram",
             ));
         }
-        self.session(session_id)?
-            .driver
-            .schema_diagram(schema)
-            .await
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.schema_diagram {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Schema diagrams are not supported for this database engine",
+            ));
+        }
+        session.driver.schema_diagram(schema).await
     }
     pub async fn schema_snapshot(
         &self,
@@ -1771,10 +1781,14 @@ impl Studio {
                 "Choose a schema to snapshot",
             ));
         }
-        self.session(session_id)?
-            .driver
-            .schema_snapshot(schema)
-            .await
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.schema_diff {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Schema snapshots and comparison are not supported for this database engine",
+            ));
+        }
+        session.driver.schema_snapshot(schema).await
     }
     pub fn compare_schemas(
         &self,
@@ -1841,6 +1855,12 @@ impl Studio {
         action: IndexConstraintAction,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if !session.info.capabilities.ddl_editing {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Structured DDL editing is not supported for this database engine",
+            ));
+        }
         let preview = crate::ddl::build_index_constraint_ddl(session.profile.engine, &action)?;
         let sql = preview.statement.sql;
         let statement = StatementPlan {
@@ -1879,6 +1899,12 @@ impl Studio {
         action: TableObjectAction,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if !session.info.capabilities.ddl_editing {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Structured DDL editing is not supported for this database engine",
+            ));
+        }
         let preview = crate::ddl::build_table_object_ddl(session.profile.engine, &action)?;
         let mut statements = Vec::with_capacity(preview.statements.len());
         let mut bytes = 0usize;
@@ -1921,7 +1947,9 @@ impl Studio {
         if !matches!(
             session.profile.engine,
             EngineKind::Postgres | EngineKind::Mysql
-        ) {
+        ) || !session.info.capabilities.ddl_editing
+            || !session.info.capabilities.schema_diff
+        {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
                 "Schema migration execution is available for PostgreSQL and MySQL/MariaDB",
@@ -2089,7 +2117,14 @@ impl Studio {
         self.session(session_id)?.driver.processes().await
     }
     pub async fn lock_waits(&self, session_id: &str) -> AppResult<LockWaitSnapshot> {
-        self.session(session_id)?.driver.lock_waits().await
+        let session = self.session(session_id)?;
+        if !session.info.capabilities.lock_inspection {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Lock inspection is unavailable for this engine",
+            ));
+        }
+        session.driver.lock_waits().await
     }
 
     pub async fn browse(
@@ -4028,6 +4063,12 @@ mod browse_classification_tests {
                         table_filtering: true,
                         processes: true,
                         object_explorer: true,
+                        schema_diagram: false,
+                        schema_diff: false,
+                        ddl_editing: false,
+                        lock_inspection: false,
+                        explain_analyze: false,
+                        oauth_browser: false,
                     },
                 },
                 profile: saved,
@@ -4171,5 +4212,103 @@ mod browse_classification_tests {
             .await
             .expect_err("disconnected session should fail");
         assert_eq!(err.code, ErrorCode::ConnectionClosed);
+    }
+
+    #[tokio::test]
+    async fn granular_engine_capabilities_gate_unsupported_operations() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let saved = studio
+            .save_profile(profile(EngineKind::Postgres, SafeMode::Silent), None)
+            .unwrap();
+        let recorder = Arc::new(RecordingDriver {
+            calls: Mutex::new(Vec::new()),
+        });
+        let session_id = "cap-test-session".to_string();
+        studio.sessions.lock().insert(
+            session_id.clone(),
+            Arc::new(Session {
+                info: SessionInfo {
+                    id: session_id.clone(),
+                    connection_id: saved.id.clone(),
+                    engine: EngineKind::Postgres,
+                    server_version: "17.0".into(),
+                    latency_ms: 1,
+                    encrypted: false,
+                    capabilities: EngineCapabilities {
+                        sql: true,
+                        actual_plan: None,
+                        transactions: true,
+                        cancellation: true,
+                        table_browsing: false,
+                        table_editing: false,
+                        table_filtering: false,
+                        processes: false,
+                        object_explorer: false,
+                        schema_diagram: false,
+                        schema_diff: false,
+                        ddl_editing: false,
+                        lock_inspection: false,
+                        explain_analyze: false,
+                        oauth_browser: false,
+                    },
+                },
+                profile: saved,
+                driver: recorder,
+                lane: tokio::sync::Mutex::new(()),
+                cancellation_gate: tokio::sync::Mutex::new(()),
+                active_run: Mutex::new(None),
+                closed: AtomicBool::new(false),
+                tunnel: None,
+                completion: Mutex::new(None),
+            }),
+        );
+
+        let diag_err = studio
+            .schema_diagram(&session_id, "public")
+            .await
+            .expect_err(
+                "schema_diagram should be rejected when schema_diagram capability is false",
+            );
+        assert_eq!(diag_err.code, ErrorCode::Unsupported);
+
+        let snap_err = studio
+            .schema_snapshot(&session_id, "public")
+            .await
+            .expect_err("schema_snapshot should be rejected when schema_diff capability is false");
+        assert_eq!(snap_err.code, ErrorCode::Unsupported);
+
+        let ddl_err = studio
+            .prepare_table_object_ddl(
+                &session_id,
+                TableObjectAction::DropObject {
+                    object: DatabaseObjectRef {
+                        schema: "public".into(),
+                        name: "items".into(),
+                        kind: DatabaseObjectKind::Table,
+                        identity: None,
+                    },
+                    cascade: false,
+                },
+            )
+            .expect_err(
+                "prepare_table_object_ddl should be rejected when ddl_editing capability is false",
+            );
+        assert_eq!(ddl_err.code, ErrorCode::Unsupported);
+
+        let lock_err = studio
+            .lock_waits(&session_id)
+            .await
+            .expect_err("lock_waits should be rejected when lock_inspection capability is false");
+        assert_eq!(lock_err.code, ErrorCode::Unsupported);
+
+        let analyze_err = studio
+            .prepare_explain(&session_id, "SELECT 1", true)
+            .expect_err("prepare_explain(analyze=true) should be rejected when explain_analyze capability is false");
+        assert_eq!(analyze_err.code, ErrorCode::Unsupported);
     }
 }

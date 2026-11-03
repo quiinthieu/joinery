@@ -393,4 +393,57 @@ describe("StructureView, DdlPanel, and ObjectInspectorView", () => {
       ),
     ).toBeTruthy();
   });
+
+  it("hides DDL editing controls when session capabilities.ddlEditing is false", () => {
+    useStudio.setState({
+      sessions: {
+        "conn-1": {
+          ...makeSession(true),
+          capabilities: {
+            ...makeSession(true).capabilities,
+            ddlEditing: false,
+          },
+        },
+      },
+    });
+    const schema: TableSchema = {
+      table: { schema: "public", name: "orders" },
+      columns: [
+        {
+          id: "id",
+          name: "id",
+          databaseType: "bigint",
+          kind: "integer",
+          nullable: false,
+          primaryKey: true,
+          foreignKey: false,
+          editable: true,
+          insertable: true,
+          hasDefault: true,
+        },
+      ],
+      primaryKey: ["id"],
+      foreignKeys: [],
+      editable: true,
+    };
+    const details: ObjectDetails = {
+      object: { schema: "public", name: "orders", kind: "table", identity: null },
+      ownerTable: null,
+      comment: null,
+      ddl: { status: "available", ddl: 'CREATE TABLE "public"."orders" ();', truncated: false },
+      constraints: [],
+      indexes: [],
+      triggers: [],
+      routine: null,
+      sequence: null,
+      uses: [],
+      usedBy: [],
+    };
+
+    render(<StructureView schema={schema} details={details} connectionId="conn-1" />);
+    expect(screen.queryByRole("button", { name: /Add column/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Drop table/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add constraint/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Create index/i })).toBeNull();
+  });
 });
