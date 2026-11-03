@@ -15,6 +15,7 @@ pub mod persistence;
 mod query_plan;
 pub mod results;
 pub mod safety;
+pub mod schema_diff;
 pub mod secrets;
 pub mod sql_text;
 pub mod ssh;
@@ -119,6 +120,8 @@ pub fn run() {
             commands::table_schema,
             commands::referencing_foreign_keys,
             commands::schema_diagram,
+            commands::schema_snapshot,
+            commands::compare_schemas,
             commands::prepare_browse_table,
             commands::browse_table,
             commands::result_range,

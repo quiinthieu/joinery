@@ -222,6 +222,18 @@ async fn rpc(
                     )
                     .await?
             ),
+            "schema_snapshot" => json!(
+                studio
+                    .schema_snapshot(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg::<String>(&args, "schema")?
+                    )
+                    .await?
+            ),
+            "compare_schemas" => json!(studio.compare_schemas(
+                arg(&args, "left")?,
+                arg(&args, "right")?
+            )?),
             "prepare_browse_table" => json!(
                 studio
                     .prepare_browse(

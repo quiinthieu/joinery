@@ -781,6 +781,9 @@ impl Driver for Mysql {
     async fn schema_diagram(&self, schema: &str) -> AppResult<SchemaDiagram> {
         self.relationship_diagram(schema).await
     }
+    async fn schema_snapshot(&self, schema: &str) -> AppResult<SchemaSnapshot> {
+        self.explorer_schema_snapshot(schema).await
+    }
     async fn browse(
         &self,
         schema: &TableSchema,

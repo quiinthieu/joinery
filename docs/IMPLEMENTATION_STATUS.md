@@ -2728,4 +2728,21 @@ PostgreSQL reads `pg_class.reltuples`, `pg_table_size`, `pg_indexes_size`, `pg_t
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | Physical bloat sampling (`pgstattuple`), partition-child rollups, Snowflake/Redis storage metrics. Next slice: R7.2 (`D02` schema snapshots and deterministic schema diff) |
 
-Branch `feat/storage-statistics` from `origin/main` `80de7aa`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/storage-statistics` from `origin/main` `80de7aa`; merged in PR #63 (`130e192`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R7 slice 2: schema snapshots and deterministic schema diff (3 November 2026)
+
+`schema_snapshot(sessionId, schema)` returns a bounded, canonical `SchemaSnapshot` for one PostgreSQL schema or MySQL/MariaDB database: server version, database, schema, effective role, relations (`Table`, `PartitionedTable`, `View`, `MaterializedView`) with ordered columns (`data_type`, `nullable`, `default_expression`, `identity`, `generated`, `ordinal_position`), constraints, indexes, triggers, overloaded routines (`identity_arguments`, `arguments`, `return_type`, `language`, `volatility`, `security_definer`, `definition`), sequences, and disclosed unsupported schema objects (`UnsupportedSchemaObject`: custom PostgreSQL enum/domain/range/composite types, foreign tables, non-view rewrite rules; MySQL/MariaDB scheduled `EVENTS`). Bounds are 500 relations, 20,000 columns, 10,000 constraints, 10,000 indexes, 5,000 triggers, 5,000 routines, 5,000 sequences, and 1,000 unsupported objects, with `truncated` and `restricted` flags. Snowflake and Redis return `Unsupported`.
+
+`compare_schemas(left, right)` canonicalizes both snapshots so catalog row-order differences produce zero false diffs, enforces matching engines (`ErrorCode::InvalidInput` on cross-engine comparison), quotes object and member identifiers per engine (`"` on PostgreSQL, `` ` `` on MySQL/MariaDB), and returns `SchemaDiffReport` with `OnlyLeft`, `OnlyRight` and `Modified` object and member diffs (`Column`, `Constraint`, `Index`, `Trigger`, `Definition`, `Property`). `SchemaDiffView` opens from the sidebar schema action (**Compare schema**) or the command palette (**Compare schema: \<schema\>**), compares live connected schemas or up to 16 in-memory captured snapshots, filters by diff kind and search text, discloses unsupported objects and privilege/truncation notices, and links live objects to `ObjectInspectorView`. It never prepares or executes SQL/DDL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | Two Rust unit tests in `schema_diff.rs` cover canonicalization invariance under shuffled table/column/constraint/index/trigger/routine/sequence order and quoted-identifier member diffs plus unsupported-object disclosures. `SchemaDiffView.test.tsx` (2) covers initial comparison load, privilege/unsupported disclosures, diff-kind and member search filtering, snapshot capture and object inspection |
+| Fixtures | `schema_snapshots_and_diffs_capture_live_schemas_and_unsupported_objects` (PostgreSQL 18: quoted table/column names, constraints, indexes, views, routines, sequences and disclosed custom `ENUM` type) and `schema_snapshots_and_diffs_capture_live_databases_and_events` (MySQL 8.4 and MariaDB 11.4: cross-database comparison of quoted tables/columns, indexes, views and routines) pass on Compose project `joinery-r7` |
+| Browser | `schema-diff.spec.ts`: compares two live PostgreSQL schemas end-to-end, verifies modified member diffs on quoted identifiers, filters `Only in left` / `Only in right`, verifies custom `ENUM` unsupported-object disclosure, and captures an in-memory snapshot |
+| Validate | `pnpm validate`: 488 frontend tests / 45 files, 162 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Cross-engine schema diff, persisted snapshot files. Next slice: R7.3 (`D03` accurate Rust DDL generator for tables, columns, indexes, constraints and views) |
+
+Branch `feat/schema-diff` from `origin/main` `130e192`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

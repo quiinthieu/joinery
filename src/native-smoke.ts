@@ -86,6 +86,13 @@ export async function runNativeSmoke() {
         },
       ],
       [
+        "schema_snapshot",
+        {
+          sessionId: "missing-native-fixture",
+          schema: "public",
+        },
+      ],
+      [
         "lock_waits",
         {
           sessionId: "missing-native-fixture",
@@ -252,6 +259,39 @@ export async function runNativeSmoke() {
               },
               keyColumns: [],
               ignoreColumnCase: false,
+            },
+          }),
+      ],
+      [
+        "compare_schemas",
+        "invalidInput",
+        () =>
+          client.call("compare_schemas", {
+            left: {
+              engine: "postgres",
+              serverVersion: "18.0",
+              database: "joinery",
+              schema: "public",
+              role: "postgres",
+              tables: [],
+              routines: [],
+              sequences: [],
+              unsupportedObjects: [],
+              truncated: false,
+              restricted: false,
+            },
+            right: {
+              engine: "mysql",
+              serverVersion: "8.4",
+              database: "joinery",
+              schema: "joinery",
+              role: "root@localhost",
+              tables: [],
+              routines: [],
+              sequences: [],
+              unsupportedObjects: [],
+              truncated: false,
+              restricted: false,
             },
           }),
       ],

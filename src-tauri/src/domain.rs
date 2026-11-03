@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use crate::schema_diff::{
+    MAX_SNAPSHOT_COLUMNS, MAX_SNAPSHOT_CONSTRAINTS, MAX_SNAPSHOT_INDEXES, MAX_SNAPSHOT_RELATIONS,
+    MAX_SNAPSHOT_ROUTINES, MAX_SNAPSHOT_SEQUENCES, MAX_SNAPSHOT_TRIGGERS, MAX_SNAPSHOT_UNSUPPORTED,
+    SchemaDiffKind, SchemaDiffReport, SchemaMemberCategory, SchemaMemberDiff, SchemaObjectDiff,
+    SchemaSnapshot, SnapshotColumn, SnapshotIndex, SnapshotRoutine, SnapshotSequence,
+    SnapshotTable, UnsupportedSchemaObject,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum EngineKind {

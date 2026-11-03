@@ -41,6 +41,8 @@
     "allow-table-schema",
     "allow-referencing-foreign-keys",
     "allow-schema-diagram",
+    "allow-schema-snapshot",
+    "allow-compare-schemas",
     "allow-prepare-browse-table",
     "allow-browse-table",
     "allow-result-range",

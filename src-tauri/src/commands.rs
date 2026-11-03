@@ -236,6 +236,24 @@ pub async fn schema_diagram(
 }
 
 #[tauri::command]
+pub async fn schema_snapshot(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    schema: String,
+) -> AppResult<SchemaSnapshot> {
+    studio.schema_snapshot(&session_id, &schema).await
+}
+
+#[tauri::command]
+pub fn compare_schemas(
+    studio: State<'_, Arc<Studio>>,
+    left: SchemaSnapshot,
+    right: SchemaSnapshot,
+) -> AppResult<SchemaDiffReport> {
+    studio.compare_schemas(left, right)
+}
+
+#[tauri::command]
 pub async fn prepare_browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
