@@ -77,6 +77,8 @@ fn main() {
         TableChanges::decl(),
         ChangePreview::decl(),
         ProcessInfo::decl(),
+        LockWait::decl(),
+        LockWaitSnapshot::decl(),
         HistoryEntry::decl(),
         AuditEntry::decl(),
         SavedQuery::decl(),

@@ -652,6 +652,13 @@ relations, readable columns and outbound foreign keys in one bounded metadata ca
 on PostgreSQL and MySQL/MariaDB. It never prepares or executes editor SQL. See
 [evidence](IMPLEMENTATION_STATUS.md#r7-slice-1-read-only-er-diagrams-3-november-2026).
 
+### R8 slice 1: lock waits and session monitoring (branch `feat/lock-monitoring`)
+
+`lock_waits` reads current waits and blockers on PostgreSQL, MySQL and MariaDB.
+The Processes view derives root blockers and deadlock cycles locally and adds
+filtering and optional refresh. See
+[evidence](IMPLEMENTATION_STATUS.md#r8-slice-1-lock-waits-and-session-monitoring-3-november-2026).
+
 ## Subsequent phases and blueprint cross-reference
 
 | Phase | Feature IDs / user value | Priority / complexity | Dependencies and exit criteria | Blueprint relationship |

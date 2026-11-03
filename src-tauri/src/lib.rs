@@ -127,6 +127,7 @@ pub fn run() {
             commands::prepare_changes_batch,
             commands::prepare_table_changes,
             commands::processes,
+            commands::lock_waits,
             commands::prepare_process_cancel,
             commands::health,
             commands::history,

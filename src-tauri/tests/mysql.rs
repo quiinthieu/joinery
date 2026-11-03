@@ -1732,6 +1732,143 @@ async fn schema_diagram_groups_composite_keys_on_mysql_and_mariadb() {
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB services"]
+async fn lock_waits_need_process_privilege_and_report_innodb_blockers() {
+    for port in [53306, 53307] {
+        let (_root, studio, owner) = setup(port, SafeMode::Silent).await;
+        completed(
+            &run(
+                &studio,
+                &owner,
+                "DROP TABLE IF EXISTS r8_lock_probe;
+                 CREATE TABLE r8_lock_probe (id INT PRIMARY KEY, v INT NOT NULL) ENGINE=InnoDB;
+                 INSERT INTO r8_lock_probe VALUES (1, 0);",
+            )
+            .await,
+        );
+        let denied = studio.lock_waits(&owner.id).await.unwrap_err();
+        assert_eq!(denied.code, ErrorCode::PermissionDenied, "port {port}");
+        assert!(
+            denied.message.contains("PROCESS"),
+            "port {port}: {denied:?}"
+        );
+
+        let mut admin = profile(port, SafeMode::ReadOnly);
+        admin.name = "Disposable root".into();
+        admin.username = "root".into();
+        let admin = studio.save_profile(admin, None).unwrap();
+        let observer = studio
+            .connect(
+                &admin.id,
+                ConnectionSecrets {
+                    password: Some("joinery-root-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            studio
+                .lock_waits(&observer.id)
+                .await
+                .unwrap()
+                .waits
+                .is_empty()
+        );
+
+        let secrets = || ConnectionSecrets {
+            password: Some("joinery-local-only".into()),
+            ..Default::default()
+        };
+        let holder = studio
+            .connect(&owner.connection_id, secrets())
+            .await
+            .unwrap();
+        let waiter = studio
+            .connect(&owner.connection_id, secrets())
+            .await
+            .unwrap();
+        let own_id = |sessions: Vec<ProcessInfo>| {
+            sessions
+                .into_iter()
+                .find(|p| p.own_session)
+                .map(|p| p.id)
+                .unwrap()
+        };
+        let holder_id = own_id(studio.processes(&holder.id).await.unwrap());
+        let waiter_id = own_id(studio.processes(&waiter.id).await.unwrap());
+        studio
+            .set_transaction_mode(&holder.id, TransactionMode::Manual)
+            .await
+            .unwrap();
+        completed(
+            &run(
+                &studio,
+                &holder,
+                "UPDATE r8_lock_probe SET v = 1 WHERE id = 1",
+            )
+            .await,
+        );
+        let blocked = {
+            let studio = studio.clone();
+            let waiter = waiter.clone();
+            tokio::spawn(async move {
+                run(
+                    &studio,
+                    &waiter,
+                    "UPDATE r8_lock_probe SET v = 2 WHERE id = 1",
+                )
+                .await
+            })
+        };
+        let wait = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let snapshot = studio.lock_waits(&observer.id).await.unwrap();
+                if let Some(wait) = snapshot
+                    .waits
+                    .into_iter()
+                    .find(|w| w.waiting_id == waiter_id)
+                {
+                    break wait;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("port {port}: the waiter never appeared"));
+        assert_eq!(
+            wait.blocking_ids,
+            std::slice::from_ref(&holder_id),
+            "port {port}"
+        );
+        assert_eq!(
+            wait.object,
+            Some(TableRef {
+                schema: "joinery".into(),
+                name: "r8_lock_probe".into(),
+            }),
+            "port {port}"
+        );
+        assert_eq!(wait.lock_type, "RECORD", "port {port}");
+        assert!(
+            wait.lock_mode.starts_with('X'),
+            "port {port}: {}",
+            wait.lock_mode
+        );
+        assert!(wait.query.as_deref().unwrap().contains("SET v = 2"));
+
+        studio.rollback_transaction(&holder.id).await.unwrap();
+        completed(&blocked.await.unwrap());
+        studio
+            .set_transaction_mode(&holder.id, TransactionMode::AutoCommit)
+            .await
+            .unwrap();
+        completed(&run(&studio, &owner, "DROP TABLE r8_lock_probe").await);
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
 async fn table_changes_insert_update_delete_atomically_and_conflict_check_deletes_on_both_engines()
 {
     for port in [53306, 53307] {

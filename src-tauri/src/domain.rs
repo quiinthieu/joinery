@@ -981,6 +981,71 @@ pub struct ProcessInfo {
     pub own_session: bool,
 }
 
+pub const MAX_LOCK_WAITS: usize = 500;
+
+/// One server session waiting on a lock, with the sessions that block it.
+/// Process identifiers match `ProcessInfo::id` for the same engine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LockWait {
+    pub waiting_id: String,
+    pub user: String,
+    pub wait_seconds: f64,
+    pub lock_type: String,
+    pub lock_mode: String,
+    pub object: Option<TableRef>,
+    /// Engine wait classification when reported, e.g. `Lock:transactionid`.
+    pub wait_event: Option<String>,
+    pub query: Option<String>,
+    pub blocking_ids: Vec<String>,
+    pub own_session: bool,
+}
+
+impl LockWait {
+    /// Merges rows that describe the same waiting session, keeping the first
+    /// lock description and every distinct blocker. Longest waits come first.
+    /// Returns whether the list was cut by `MAX_LOCK_WAITS`.
+    pub fn merge(rows: impl IntoIterator<Item = LockWait>) -> (Vec<LockWait>, bool) {
+        let mut merged: Vec<LockWait> = Vec::new();
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for row in rows {
+            match index.get(&row.waiting_id) {
+                Some(&i) => {
+                    for id in row.blocking_ids {
+                        if !merged[i].blocking_ids.contains(&id) {
+                            merged[i].blocking_ids.push(id);
+                        }
+                    }
+                }
+                None => {
+                    index.insert(row.waiting_id.clone(), merged.len());
+                    let mut row = row;
+                    let mut seen = std::collections::HashSet::new();
+                    row.blocking_ids.retain(|id| seen.insert(id.clone()));
+                    merged.push(row);
+                }
+            }
+        }
+        merged.sort_by(|a, b| {
+            b.wait_seconds
+                .total_cmp(&a.wait_seconds)
+                .then_with(|| a.waiting_id.cmp(&b.waiting_id))
+        });
+        let truncated = merged.len() > MAX_LOCK_WAITS;
+        merged.truncate(MAX_LOCK_WAITS);
+        (merged, truncated)
+    }
+}
+
+/// Lock waits observed in one read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LockWaitSnapshot {
+    pub waits: Vec<LockWait>,
+    /// More waiting sessions existed than `MAX_LOCK_WAITS`.
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
@@ -1757,6 +1822,39 @@ mod tests {
             target_column: columns.1.into(),
             expected,
         }
+    }
+
+    #[test]
+    fn lock_waits_merge_blockers_per_waiter_and_sort_by_wait() {
+        let wait = |id: &str, seconds: f64, blockers: &[&str]| LockWait {
+            waiting_id: id.into(),
+            user: "app".into(),
+            wait_seconds: seconds,
+            lock_type: "RECORD".into(),
+            lock_mode: "X".into(),
+            object: None,
+            wait_event: None,
+            query: Some("UPDATE t SET v = 1".into()),
+            blocking_ids: blockers.iter().map(|b| b.to_string()).collect(),
+            own_session: false,
+        };
+        let (merged, truncated) = LockWait::merge([
+            wait("7", 1.0, &["3"]),
+            wait("9", 5.0, &["7", "7"]),
+            wait("7", 1.0, &["4"]),
+            wait("7", 1.0, &["3"]),
+        ]);
+        assert!(!truncated);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].waiting_id, "9");
+        assert_eq!(merged[0].blocking_ids, ["7"]);
+        assert_eq!(merged[1].blocking_ids, ["3", "4"]);
+
+        let (bounded, truncated) =
+            LockWait::merge((0..=MAX_LOCK_WAITS).map(|i| wait(&i.to_string(), i as f64, &["x"])));
+        assert!(truncated);
+        assert_eq!(bounded.len(), MAX_LOCK_WAITS);
+        assert_eq!(bounded[0].waiting_id, MAX_LOCK_WAITS.to_string());
     }
 
     #[test]

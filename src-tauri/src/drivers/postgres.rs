@@ -817,6 +817,55 @@ impl Driver for Postgres {
             })
             .collect())
     }
+    async fn lock_waits(&self) -> AppResult<LockWaitSnapshot> {
+        let rows = self
+            .metadata()
+            .await?
+            .query(
+                "SELECT w.pid, COALESCE(w.usename::pg_catalog.text, ''),
+                        COALESCE(EXTRACT(EPOCH FROM now() - COALESCE(w.state_change, w.query_start))::float8, 0),
+                        COALESCE(l.locktype, ''), COALESCE(l.mode, ''),
+                        rn.nspname::pg_catalog.text, rc.relname::pg_catalog.text,
+                        NULLIF(pg_catalog.concat_ws(':', w.wait_event_type, w.wait_event), ''),
+                        left(w.query, 4096),
+                        pg_catalog.pg_blocking_pids(w.pid)
+                 FROM pg_catalog.pg_stat_activity w
+                 LEFT JOIN LATERAL (
+                     SELECT k.locktype, k.mode, k.relation FROM pg_catalog.pg_locks k
+                     WHERE k.pid = w.pid AND NOT k.granted LIMIT 1
+                 ) l ON true
+                 LEFT JOIN pg_catalog.pg_class rc ON rc.oid = l.relation
+                 LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid = rc.relnamespace
+                 WHERE w.backend_type = 'client backend'
+                   AND pg_catalog.cardinality(pg_catalog.pg_blocking_pids(w.pid)) > 0
+                 ORDER BY 3 DESC, 1
+                 LIMIT 501",
+                &[],
+            )
+            .await
+            .map_err(pg_error)?;
+        let (waits, truncated) = LockWait::merge(rows.iter().map(|r| {
+            let pid: i32 = r.get(0);
+            let schema: Option<String> = r.get(5);
+            let name: Option<String> = r.get(6);
+            let blockers: Vec<i32> = r.get(9);
+            LockWait {
+                waiting_id: pid.to_string(),
+                user: r.get(1),
+                wait_seconds: r.get(2),
+                lock_type: r.get(3),
+                lock_mode: r.get(4),
+                object: schema
+                    .zip(name)
+                    .map(|(schema, name)| TableRef { schema, name }),
+                wait_event: r.get(7),
+                query: r.get(8),
+                blocking_ids: blockers.iter().map(i32::to_string).collect(),
+                own_session: pid == self.own_pid,
+            }
+        }));
+        Ok(LockWaitSnapshot { waits, truncated })
+    }
     async fn cancel_process(&self, id: &str, identity: &str) -> AppResult<()> {
         let pid = id
             .parse::<i32>()
