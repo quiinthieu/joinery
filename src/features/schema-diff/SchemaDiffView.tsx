@@ -6,6 +6,9 @@ import {
   Camera,
   ChevronDown,
   ChevronRight,
+  Code2,
+  Copy,
+  FileCode2,
   RefreshCw,
   Search,
   Trash2,
@@ -14,6 +17,7 @@ import type {
   DatabaseObjectKind,
   DatabaseObjectRef,
   EngineKind,
+  SchemaDdlPlan,
   SchemaDiffKind,
   SchemaDiffReport,
   SchemaMemberCategory,
@@ -86,6 +90,9 @@ type DiffSideTarget =
   { mode: "live"; connectionId: string; schema: string } | { mode: "snapshot"; snapshotId: string };
 
 type DiffKindFilter = "all" | SchemaDiffKind;
+
+export type SchemaDdlMode =
+  "none" | "migrate_left_to_right" | "migrate_right_to_left" | "full_left" | "full_right";
 
 const OBJECT_KIND_LABELS: Record<DatabaseObjectKind, string> = {
   table: "Table",
@@ -173,6 +180,7 @@ export function SchemaDiffView({
   const catalog = useStudio((s) => s.catalog);
   const objects = useStudio((s) => s.objects);
   const notify = useStudio((s) => s.notify);
+  const openQuery = useStudio((s) => s.openQuery);
   const captured = useSyncExternalStore(schemaSnapshots.subscribe, schemaSnapshots.snapshot);
 
   const primaryConnectionId = tab.connectionId ?? "";
@@ -238,6 +246,13 @@ export function SchemaDiffView({
   }));
 
   const [report, setReport] = useState<SchemaDiffReport | null>(null);
+  const [resolvedPair, setResolvedPair] = useState<{
+    left: SchemaSnapshot;
+    right: SchemaSnapshot;
+  } | null>(null);
+  const [ddlMode, setDdlMode] = useState<SchemaDdlMode>("none");
+  const [ddlPlan, setDdlPlan] = useState<SchemaDdlPlan | null>(null);
+  const [ddlLoading, setDdlLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [capturingSide, setCapturingSide] = useState<"left" | "right" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -245,6 +260,7 @@ export function SchemaDiffView({
   const [search, setSearch] = useState("");
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
   const requestSeq = useRef(0);
+  const ddlRequestSeq = useRef(0);
 
   async function resolveSideSnapshot(target: DiffSideTarget): Promise<SchemaSnapshot> {
     if (target.mode === "snapshot") {
@@ -283,6 +299,7 @@ export function SchemaDiffView({
         right: rightSnap,
       });
       if (reqId !== requestSeq.current) return;
+      setResolvedPair({ left: leftSnap, right: rightSnap });
       setReport(nextReport);
       setExpandedKeys(
         new Set(
@@ -292,13 +309,97 @@ export function SchemaDiffView({
             .map(objectDiffKey),
         ),
       );
+      if (ddlMode !== "none") {
+        void loadDdlPreview(ddlMode, { left: leftSnap, right: rightSnap });
+      }
     } catch (failure) {
       if (reqId !== requestSeq.current) return;
       setReport(null);
+      setResolvedPair(null);
+      setDdlPlan(null);
       setError(messageOf(failure));
     } finally {
       if (reqId === requestSeq.current) setLoading(false);
     }
+  }
+
+  async function loadDdlPreview(
+    mode: SchemaDdlMode,
+    pair: { left: SchemaSnapshot; right: SchemaSnapshot } | null = resolvedPair,
+  ) {
+    if (mode === "none" || !pair) {
+      setDdlPlan(null);
+      return;
+    }
+    const reqId = ++ddlRequestSeq.current;
+    setDdlLoading(true);
+    try {
+      let plan: SchemaDdlPlan;
+      if (mode === "migrate_left_to_right") {
+        plan = await client.call<SchemaDdlPlan>("generate_migration_ddl", {
+          left: pair.left,
+          right: pair.right,
+          targetSchema: pair.left.schema,
+        });
+      } else if (mode === "migrate_right_to_left") {
+        plan = await client.call<SchemaDdlPlan>("generate_migration_ddl", {
+          left: pair.right,
+          right: pair.left,
+          targetSchema: pair.right.schema,
+        });
+      } else if (mode === "full_left") {
+        plan = await client.call<SchemaDdlPlan>("generate_schema_ddl", {
+          snapshot: pair.left,
+          targetSchema: pair.left.schema,
+        });
+      } else {
+        plan = await client.call<SchemaDdlPlan>("generate_schema_ddl", {
+          snapshot: pair.right,
+          targetSchema: pair.right.schema,
+        });
+      }
+      if (reqId !== ddlRequestSeq.current) return;
+      setDdlPlan(plan);
+    } catch (failure) {
+      if (reqId !== ddlRequestSeq.current) return;
+      setDdlPlan(null);
+      setError(messageOf(failure));
+    } finally {
+      if (reqId === ddlRequestSeq.current) setDdlLoading(false);
+    }
+  }
+
+  function handleSelectDdlMode(nextMode: SchemaDdlMode) {
+    const toggled = ddlMode === nextMode ? "none" : nextMode;
+    setDdlMode(toggled);
+    void loadDdlPreview(toggled, resolvedPair);
+  }
+
+  async function handleCopyDdl() {
+    if (!ddlPlan?.script) return;
+    try {
+      await navigator.clipboard?.writeText(ddlPlan.script);
+      notify("Copied DDL script to clipboard");
+    } catch {
+      notify("Could not copy DDL to clipboard");
+    }
+  }
+
+  function handleOpenDdlInEditor() {
+    if (!ddlPlan?.script) return;
+    const preferredConnId =
+      (ddlMode === "migrate_right_to_left" || ddlMode === "full_right"
+        ? rightTarget.mode === "live"
+          ? rightTarget.connectionId
+          : null
+        : leftTarget.mode === "live"
+          ? leftTarget.connectionId
+          : null) ??
+      primaryConnectionId ??
+      compatibleConnections[0]?.connectionId ??
+      null;
+    openQuery(preferredConnId, ddlPlan.script);
+    notify(`Opened DDL script for ${ddlPlan.targetSchema} in SQL editor`);
   }
 
   async function handleCaptureSide(side: "left" | "right") {
@@ -556,6 +657,119 @@ export function SchemaDiffView({
                     </li>
                   ))}
                 </ul>
+              </section>
+            )}
+
+            <div className="compare-tabs-row">
+              <div
+                className="explorer-filters compare-filter-tabs"
+                role="group"
+                aria-label="DDL generator mode"
+              >
+                {(
+                  [
+                    {
+                      id: "migrate_left_to_right",
+                      label: "Migrate Left → Right DDL",
+                    },
+                    {
+                      id: "migrate_right_to_left",
+                      label: "Migrate Right → Left DDL",
+                    },
+                    {
+                      id: "full_left",
+                      label: "Full Left Schema DDL",
+                    },
+                    {
+                      id: "full_right",
+                      label: "Full Right Schema DDL",
+                    },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`explorer-filter-chip ${ddlMode === item.id ? "active" : ""}`}
+                    aria-pressed={ddlMode === item.id}
+                    disabled={ddlLoading || loading}
+                    onClick={() => handleSelectDdlMode(item.id)}
+                  >
+                    <Code2 size={12} />
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {ddlMode !== "none" && ddlPlan && (
+              <section
+                className="structure-section schema-ddl-preview"
+                aria-label="Generated DDL preview"
+                data-testid="schema-ddl-preview"
+              >
+                <div className="schema-diff-card-header">
+                  <div className="schema-diff-title-static">
+                    <FileCode2 size={14} />
+                    <strong>DDL Preview · {ddlPlan.targetSchema}</strong>
+                  </div>
+                  <span className="sql-nav-badge">
+                    {ddlPlan.statements.length}{" "}
+                    {ddlPlan.statements.length === 1 ? "statement" : "statements"}
+                  </span>
+                  <span
+                    className={
+                      ddlPlan.destructiveCount > 0
+                        ? "compare-status-badge onlyLeft"
+                        : "compare-status-badge identical"
+                    }
+                  >
+                    {ddlPlan.destructiveCount > 0
+                      ? `${ddlPlan.destructiveCount} destructive`
+                      : "Non-destructive"}
+                  </span>
+                  <div className="diagram-toolbar" style={{ marginLeft: "auto" }}>
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      aria-label="Copy generated DDL"
+                      disabled={!ddlPlan.script}
+                      onClick={() => void handleCopyDdl()}
+                    >
+                      <Copy size={12} />
+                      Copy DDL
+                    </button>
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      aria-label="Open generated DDL in SQL editor"
+                      disabled={!ddlPlan.script}
+                      onClick={handleOpenDdlInEditor}
+                    >
+                      <ArrowUpRight size={12} />
+                      Open in SQL editor
+                    </button>
+                  </div>
+                </div>
+
+                {ddlPlan.warnings.length > 0 && (
+                  <ul className="schema-diff-unsupported-list" aria-label="DDL warnings">
+                    {ddlPlan.warnings.map((warning, idx) => (
+                      <li key={idx}>
+                        <AlertTriangle size={12} /> {warning}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {ddlPlan.statements.length === 0 ? (
+                  <div className="compare-empty-diff">
+                    No DDL statements needed — schemas are structurally identical.
+                  </div>
+                ) : (
+                  <pre className="sql-code-block" data-testid="schema-ddl-script">
+                    <code>{ddlPlan.script}</code>
+                  </pre>
+                )}
               </section>
             )}
 

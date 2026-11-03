@@ -1599,16 +1599,19 @@ async fn schema_snapshot_on(
             None
         };
         let gen_expr = cell(&r, 6).trim().to_owned();
+        let nullable = cell(&r, 3).eq_ignore_ascii_case("YES");
         let default_expression = if generated.is_some() && !gen_expr.is_empty() {
             Some(gen_expr)
         } else {
-            r.get(4).and_then(Clone::clone)
+            r.get(4)
+                .and_then(Clone::clone)
+                .filter(|val| !(nullable && val.trim().eq_ignore_ascii_case("NULL")))
         };
         let ordinal_position = cell(&r, 7).parse::<u32>().unwrap_or(1).max(1);
         tables[t_idx].columns.push(SnapshotColumn {
             name: cell(&r, 1).into(),
             data_type: cell(&r, 2).into(),
-            nullable: cell(&r, 3).eq_ignore_ascii_case("YES"),
+            nullable,
             default_expression,
             identity,
             generated,

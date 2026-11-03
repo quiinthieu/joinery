@@ -37,6 +37,8 @@ fn main() {
             "schema_diagram",
             "schema_snapshot",
             "compare_schemas",
+            "generate_schema_ddl",
+            "generate_migration_ddl",
             "prepare_browse_table",
             "browse_table",
             "result_range",

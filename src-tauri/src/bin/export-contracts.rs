@@ -58,6 +58,8 @@ fn main() {
         SchemaMemberDiff::decl(),
         SchemaObjectDiff::decl(),
         SchemaDiffReport::decl(),
+        DdlStatement::decl(),
+        SchemaDdlPlan::decl(),
         TableSchema::decl(),
         DatabaseObjectKind::decl(),
         DatabaseObjectRef::decl(),

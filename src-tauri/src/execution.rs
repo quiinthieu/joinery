@@ -1789,6 +1789,45 @@ impl Studio {
         }
         Ok(crate::schema_diff::compare_schema_snapshots(left, right))
     }
+    pub fn generate_schema_ddl(
+        &self,
+        snapshot: SchemaSnapshot,
+        target_schema: Option<&str>,
+    ) -> AppResult<SchemaDdlPlan> {
+        if let Some(target) = target_schema
+            && (target.len() > 1024 || target.contains('\0'))
+        {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Choose a valid target schema name",
+            ));
+        }
+        if snapshot.schema.trim().is_empty()
+            && target_schema.map(str::trim).unwrap_or_default().is_empty()
+        {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Choose a schema to generate DDL for",
+            ));
+        }
+        crate::ddl::generate_schema_ddl(&snapshot, target_schema)
+    }
+    pub fn generate_migration_ddl(
+        &self,
+        left: SchemaSnapshot,
+        right: SchemaSnapshot,
+        target_schema: Option<&str>,
+    ) -> AppResult<SchemaDdlPlan> {
+        if let Some(target) = target_schema
+            && (target.len() > 1024 || target.contains('\0'))
+        {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "Choose a valid target schema name",
+            ));
+        }
+        crate::ddl::generate_migration_ddl(&left, &right, target_schema)
+    }
     async fn schema_for_session(
         &self,
         session: &Session,

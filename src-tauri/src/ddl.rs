@@ -1,0 +1,2444 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use crate::domain::{
+    AppError, AppResult, ConstraintInfo, ConstraintKind, DatabaseObjectKind, EngineKind,
+    SchemaSnapshot, SnapshotColumn, SnapshotIndex, SnapshotRoutine, SnapshotSequence,
+    SnapshotTable, TriggerInfo, UnsupportedSchemaObject,
+};
+use crate::schema_diff::{
+    compare_schema_snapshots, format_column_spec, format_constraint_spec, format_index_spec,
+    format_routine_spec, format_sequence_spec, format_trigger_spec, normalize_self_schema_sql,
+    quote_engine_identifier,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DdlStatement {
+    pub sql: String,
+    pub description: String,
+    pub object_kind: DatabaseObjectKind,
+    pub object_name: String,
+    #[serde(default)]
+    pub destructive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaDdlPlan {
+    pub engine: EngineKind,
+    pub target_schema: String,
+    pub statements: Vec<DdlStatement>,
+    pub script: String,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub destructive_count: usize,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub unsupported: Vec<UnsupportedSchemaObject>,
+}
+
+/// Retargets references to `source_schema` within a catalog SQL fragment so the
+/// generated DDL can be executed against `target_schema`.
+pub fn retarget_schema_sql(
+    sql: &str,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+) -> String {
+    let src = source_schema.trim();
+    let dst = target_schema.trim();
+    if src.is_empty() || dst.is_empty() || src == dst {
+        return sql.trim().to_owned();
+    }
+    let src_quoted = format!("{}.", quote_engine_identifier(engine, src));
+    let dst_quoted = format!("{}.", quote_engine_identifier(engine, dst));
+    let src_unquoted = format!("{src}.");
+    let src_single_quoted = format!("'{src}.");
+    let dst_single_quoted = format!("'{}.", dst.replace('\'', "''"));
+    let src_single_quoted_ident = format!(
+        "'{}.",
+        quote_engine_identifier(engine, src).replace('\'', "''")
+    );
+    let dst_single_quoted_ident = format!(
+        "'{}.",
+        quote_engine_identifier(engine, dst).replace('\'', "''")
+    );
+
+    sql.trim()
+        .replace(&src_single_quoted_ident, &dst_single_quoted_ident)
+        .replace(&src_single_quoted, &dst_single_quoted)
+        .replace(&src_quoted, &dst_quoted)
+        .replace(&src_unquoted, &dst_quoted)
+}
+
+fn quote_qualified(engine: EngineKind, schema: &str, name: &str) -> String {
+    if schema.trim().is_empty() {
+        quote_engine_identifier(engine, name)
+    } else {
+        format!(
+            "{}.{}",
+            quote_engine_identifier(engine, schema.trim()),
+            quote_engine_identifier(engine, name)
+        )
+    }
+}
+
+fn quote_sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn ensure_semicolon(sql: &str) -> String {
+    let trimmed = sql.trim().trim_end_matches(';').trim_end();
+    format!("{trimmed};")
+}
+
+fn is_auto_identity_sequence(snapshot: &SchemaSnapshot, seq_name: &str) -> bool {
+    if snapshot.engine != EngineKind::Postgres {
+        return false;
+    }
+    snapshot.tables.iter().any(|t| {
+        t.columns.iter().any(|c| {
+            c.identity.as_ref().is_some_and(|id| !id.trim().is_empty())
+                && seq_name == format!("{}_{}_seq", t.name, c.name)
+        })
+    })
+}
+
+fn is_constraint_backed_index(table: &SnapshotTable, idx: &SnapshotIndex) -> bool {
+    if idx.primary {
+        return true;
+    }
+    table.constraints.iter().any(|c| {
+        matches!(
+            c.kind,
+            ConstraintKind::PrimaryKey | ConstraintKind::Unique | ConstraintKind::Exclusion
+        ) && c.name == idx.name
+    })
+}
+
+fn format_mysql_default_literal(col: &SnapshotColumn, raw_default: &str) -> String {
+    let trimmed = raw_default.trim();
+    if trimmed.is_empty() {
+        return "''".into();
+    }
+    if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
+    {
+        return trimmed.to_owned();
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "NULL"
+            | "TRUE"
+            | "FALSE"
+            | "CURRENT_TIMESTAMP"
+            | "CURRENT_TIMESTAMP()"
+            | "NOW()"
+            | "LOCALTIME"
+            | "LOCALTIME()"
+            | "LOCALTIMESTAMP"
+            | "LOCALTIMESTAMP()"
+            | "CURRENT_DATE"
+            | "CURRENT_DATE()"
+            | "CURRENT_TIME"
+            | "CURRENT_TIME()"
+    ) || upper.starts_with("CURRENT_TIMESTAMP(")
+        || upper.starts_with("NOW(")
+    {
+        return trimmed.to_owned();
+    }
+    let dtype_lower = col.data_type.to_ascii_lowercase();
+    let is_numeric_type = [
+        "int", "decimal", "numeric", "float", "double", "real", "bit", "bool", "serial", "year",
+    ]
+    .iter()
+    .any(|kw| dtype_lower.contains(kw));
+    if is_numeric_type && (trimmed.parse::<i64>().is_ok() || trimmed.parse::<f64>().is_ok()) {
+        return trimmed.to_owned();
+    }
+    quote_sql_literal(trimmed)
+}
+
+fn format_column_ddl(
+    col: &SnapshotColumn,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+) -> String {
+    let col_ident = quote_engine_identifier(engine, &col.name);
+    match engine {
+        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+            let mut parts = vec![col_ident, col.data_type.clone()];
+            if let Some(gen_kind) = &col.generated
+                && !gen_kind.trim().is_empty()
+            {
+                let expr = col
+                    .default_expression
+                    .as_deref()
+                    .map(|e| retarget_schema_sql(e, engine, source_schema, target_schema))
+                    .unwrap_or_else(|| "NULL".into());
+                parts.push(format!("GENERATED ALWAYS AS ({expr}) {}", gen_kind.trim()));
+            } else if let Some(id_mode) = &col.identity
+                && !id_mode.trim().is_empty()
+            {
+                parts.push(format!("GENERATED {} AS IDENTITY", id_mode.trim()));
+            } else if let Some(def) = &col.default_expression
+                && !def.trim().is_empty()
+            {
+                parts.push(format!(
+                    "DEFAULT {}",
+                    retarget_schema_sql(def, engine, source_schema, target_schema)
+                ));
+            }
+            if !col.nullable {
+                parts.push("NOT NULL".into());
+            }
+            parts.join(" ")
+        }
+        EngineKind::Mysql => {
+            let mut parts = vec![col_ident, col.data_type.clone()];
+            if let Some(gen_kind) = &col.generated
+                && !gen_kind.trim().is_empty()
+            {
+                let expr = col
+                    .default_expression
+                    .as_deref()
+                    .map(|e| retarget_schema_sql(e, engine, source_schema, target_schema))
+                    .unwrap_or_else(|| "NULL".into());
+                parts.push(format!("GENERATED ALWAYS AS ({expr}) {}", gen_kind.trim()));
+                if !col.nullable {
+                    parts.push("NOT NULL".into());
+                }
+            } else {
+                parts.push(if col.nullable {
+                    "NULL".into()
+                } else {
+                    "NOT NULL".into()
+                });
+                if col.identity.as_deref() == Some("AUTO_INCREMENT") {
+                    parts.push("AUTO_INCREMENT".into());
+                } else if let Some(def) = &col.default_expression
+                    && !def.trim().is_empty()
+                {
+                    let retargeted = retarget_schema_sql(def, engine, source_schema, target_schema);
+                    parts.push(format!(
+                        "DEFAULT {}",
+                        format_mysql_default_literal(col, &retargeted)
+                    ));
+                }
+            }
+            parts.join(" ")
+        }
+    }
+}
+
+fn format_inline_constraint_ddl(
+    c: &ConstraintInfo,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+) -> Option<String> {
+    if c.kind == ConstraintKind::ForeignKey {
+        return None;
+    }
+    match engine {
+        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+            let def = if !c.definition.trim().is_empty() {
+                retarget_schema_sql(&c.definition, engine, source_schema, target_schema)
+            } else {
+                let cols = c
+                    .columns
+                    .iter()
+                    .map(|col| quote_engine_identifier(engine, col))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                match c.kind {
+                    ConstraintKind::PrimaryKey => format!("PRIMARY KEY ({cols})"),
+                    ConstraintKind::Unique => format!("UNIQUE ({cols})"),
+                    ConstraintKind::Check => "CHECK (true)".into(),
+                    ConstraintKind::Exclusion => format!("EXCLUDE ({cols})"),
+                    ConstraintKind::ForeignKey => return None,
+                }
+            };
+            Some(format!(
+                "CONSTRAINT {} {def}",
+                quote_engine_identifier(engine, &c.name)
+            ))
+        }
+        EngineKind::Mysql => {
+            let cols = c
+                .columns
+                .iter()
+                .map(|col| quote_engine_identifier(engine, col))
+                .collect::<Vec<_>>()
+                .join(", ");
+            match c.kind {
+                ConstraintKind::PrimaryKey => Some(format!("PRIMARY KEY ({cols})")),
+                ConstraintKind::Unique => Some(format!(
+                    "CONSTRAINT {} UNIQUE ({cols})",
+                    quote_engine_identifier(engine, &c.name)
+                )),
+                ConstraintKind::Check => {
+                    let def =
+                        retarget_schema_sql(&c.definition, engine, source_schema, target_schema);
+                    if def.is_empty() || def == "CHECK (...)" {
+                        None
+                    } else {
+                        Some(format!(
+                            "CONSTRAINT {} {def}",
+                            quote_engine_identifier(engine, &c.name)
+                        ))
+                    }
+                }
+                ConstraintKind::Exclusion | ConstraintKind::ForeignKey => None,
+            }
+        }
+    }
+}
+
+fn build_create_sequence_stmt(
+    seq: &SnapshotSequence,
+    engine: EngineKind,
+    target_schema: &str,
+) -> DdlStatement {
+    let qualified = quote_qualified(engine, target_schema, &seq.name);
+    let sql = match engine {
+        EngineKind::Mysql => {
+            let mut parts = vec![format!("CREATE SEQUENCE {qualified}")];
+            if !seq.increment_by.is_empty() {
+                parts.push(format!("INCREMENT BY {}", seq.increment_by));
+            }
+            if !seq.min_value.is_empty() {
+                parts.push(format!("MINVALUE {}", seq.min_value));
+            }
+            if !seq.max_value.is_empty() {
+                parts.push(format!("MAXVALUE {}", seq.max_value));
+            }
+            if !seq.start_value.is_empty() {
+                parts.push(format!("START WITH {}", seq.start_value));
+            }
+            if !seq.cache_size.is_empty() {
+                parts.push(format!("CACHE {}", seq.cache_size));
+            }
+            parts.push(if seq.cycle {
+                "CYCLE".into()
+            } else {
+                "NOCYCLE".into()
+            });
+            format!("{};", parts.join(" "))
+        }
+        _ => {
+            let mut parts = vec![format!("CREATE SEQUENCE {qualified}")];
+            if !seq.data_type.is_empty() {
+                parts.push(format!("AS {}", seq.data_type));
+            }
+            if !seq.increment_by.is_empty() {
+                parts.push(format!("INCREMENT BY {}", seq.increment_by));
+            }
+            if !seq.min_value.is_empty() {
+                parts.push(format!("MINVALUE {}", seq.min_value));
+            }
+            if !seq.max_value.is_empty() {
+                parts.push(format!("MAXVALUE {}", seq.max_value));
+            }
+            if !seq.start_value.is_empty() {
+                parts.push(format!("START WITH {}", seq.start_value));
+            }
+            if !seq.cache_size.is_empty() {
+                parts.push(format!("CACHE {}", seq.cache_size));
+            }
+            parts.push(if seq.cycle {
+                "CYCLE".into()
+            } else {
+                "NO CYCLE".into()
+            });
+            format!("{};", parts.join(" "))
+        }
+    };
+    DdlStatement {
+        sql,
+        description: format!("Create sequence {}", seq.name),
+        object_kind: DatabaseObjectKind::Sequence,
+        object_name: seq.name.clone(),
+        destructive: false,
+    }
+}
+
+fn build_alter_sequence_stmt(
+    seq: &SnapshotSequence,
+    engine: EngineKind,
+    target_schema: &str,
+) -> DdlStatement {
+    let qualified = quote_qualified(engine, target_schema, &seq.name);
+    let sql = match engine {
+        EngineKind::Mysql => {
+            let mut parts = vec![format!("ALTER SEQUENCE {qualified}")];
+            if !seq.increment_by.is_empty() {
+                parts.push(format!("INCREMENT BY {}", seq.increment_by));
+            }
+            if !seq.min_value.is_empty() {
+                parts.push(format!("MINVALUE {}", seq.min_value));
+            }
+            if !seq.max_value.is_empty() {
+                parts.push(format!("MAXVALUE {}", seq.max_value));
+            }
+            if !seq.start_value.is_empty() {
+                parts.push(format!("RESTART WITH {}", seq.start_value));
+            }
+            if !seq.cache_size.is_empty() {
+                parts.push(format!("CACHE {}", seq.cache_size));
+            }
+            parts.push(if seq.cycle {
+                "CYCLE".into()
+            } else {
+                "NOCYCLE".into()
+            });
+            format!("{};", parts.join(" "))
+        }
+        _ => {
+            let mut parts = vec![format!("ALTER SEQUENCE {qualified}")];
+            if !seq.data_type.is_empty() {
+                parts.push(format!("AS {}", seq.data_type));
+            }
+            if !seq.increment_by.is_empty() {
+                parts.push(format!("INCREMENT BY {}", seq.increment_by));
+            }
+            if !seq.min_value.is_empty() {
+                parts.push(format!("MINVALUE {}", seq.min_value));
+            }
+            if !seq.max_value.is_empty() {
+                parts.push(format!("MAXVALUE {}", seq.max_value));
+            }
+            if !seq.start_value.is_empty() {
+                parts.push(format!("RESTART WITH {}", seq.start_value));
+            }
+            if !seq.cache_size.is_empty() {
+                parts.push(format!("CACHE {}", seq.cache_size));
+            }
+            parts.push(if seq.cycle {
+                "CYCLE".into()
+            } else {
+                "NO CYCLE".into()
+            });
+            format!("{};", parts.join(" "))
+        }
+    };
+    DdlStatement {
+        sql,
+        description: format!("Alter sequence {}", seq.name),
+        object_kind: DatabaseObjectKind::Sequence,
+        object_name: seq.name.clone(),
+        destructive: false,
+    }
+}
+
+fn build_create_table_stmts(
+    table: &SnapshotTable,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+) -> Vec<DdlStatement> {
+    let qualified = quote_qualified(engine, target_schema, &table.name);
+    let mut columns = table.columns.clone();
+    columns.sort_by(|a, b| {
+        a.ordinal_position
+            .cmp(&b.ordinal_position)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let mut body_lines: Vec<String> = columns
+        .iter()
+        .map(|col| {
+            format!(
+                "  {}",
+                format_column_ddl(col, engine, source_schema, target_schema)
+            )
+        })
+        .collect();
+
+    for c in &table.constraints {
+        if let Some(inline_sql) =
+            format_inline_constraint_ddl(c, engine, source_schema, target_schema)
+        {
+            body_lines.push(format!("  {inline_sql}"));
+        }
+    }
+
+    let mut suffix = String::new();
+    if let Some(part_key) = &table.partition_key
+        && !part_key.trim().is_empty()
+    {
+        suffix.push_str(&format!(" PARTITION BY {}", part_key.trim()));
+    }
+    if engine == EngineKind::Mysql
+        && let Some(comment) = &table.comment
+        && !comment.is_empty()
+    {
+        suffix.push_str(&format!(" COMMENT = {}", quote_sql_literal(comment)));
+    }
+
+    let create_sql = format!(
+        "CREATE TABLE {qualified} (\n{}\n){suffix};",
+        body_lines.join(",\n")
+    );
+    let mut stmts = vec![DdlStatement {
+        sql: create_sql,
+        description: format!("Create table {}", table.name),
+        object_kind: table.kind,
+        object_name: table.name.clone(),
+        destructive: false,
+    }];
+
+    if engine != EngineKind::Mysql
+        && let Some(comment) = &table.comment
+        && !comment.is_empty()
+    {
+        stmts.push(DdlStatement {
+            sql: format!(
+                "COMMENT ON TABLE {qualified} IS {};",
+                quote_sql_literal(comment)
+            ),
+            description: format!("Set comment on table {}", table.name),
+            object_kind: table.kind,
+            object_name: table.name.clone(),
+            destructive: false,
+        });
+    }
+    stmts
+}
+
+fn build_create_index_stmt(
+    table_name: &str,
+    idx: &SnapshotIndex,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+) -> DdlStatement {
+    let sql = match engine {
+        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+            if let Some(def) = &idx.definition
+                && !def.trim().is_empty()
+            {
+                ensure_semicolon(&retarget_schema_sql(
+                    def,
+                    engine,
+                    source_schema,
+                    target_schema,
+                ))
+            } else {
+                let unique = if idx.unique { "UNIQUE " } else { "" };
+                let method = if idx.method.trim().is_empty() {
+                    "btree"
+                } else {
+                    idx.method.trim()
+                };
+                let pred = idx
+                    .predicate
+                    .as_deref()
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| {
+                        format!(
+                            " WHERE {}",
+                            retarget_schema_sql(p, engine, source_schema, target_schema)
+                        )
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "CREATE {unique}INDEX {} ON {} USING {method} ({}){pred};",
+                    quote_engine_identifier(engine, &idx.name),
+                    quote_qualified(engine, target_schema, table_name),
+                    idx.expressions.join(", ")
+                )
+            }
+        }
+        EngineKind::Mysql => {
+            let prefix = if idx.unique {
+                "CREATE UNIQUE INDEX"
+            } else if idx.method.eq_ignore_ascii_case("fulltext") {
+                "CREATE FULLTEXT INDEX"
+            } else if idx.method.eq_ignore_ascii_case("spatial") {
+                "CREATE SPATIAL INDEX"
+            } else {
+                "CREATE INDEX"
+            };
+            let using_clause = if idx.method.eq_ignore_ascii_case("hash") {
+                " USING HASH"
+            } else {
+                ""
+            };
+            format!(
+                "{prefix} {} ON {} ({}){using_clause};",
+                quote_engine_identifier(engine, &idx.name),
+                quote_qualified(engine, target_schema, table_name),
+                idx.expressions.join(", ")
+            )
+        }
+    };
+
+    DdlStatement {
+        sql,
+        description: format!("Create index {} on {}", idx.name, table_name),
+        object_kind: DatabaseObjectKind::Index,
+        object_name: format!("{table_name}.{}", idx.name),
+        destructive: false,
+    }
+}
+
+fn build_add_constraint_stmt(
+    table_name: &str,
+    c: &ConstraintInfo,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+) -> Option<DdlStatement> {
+    let qualified_table = quote_qualified(engine, target_schema, table_name);
+    let quoted_cname = quote_engine_identifier(engine, &c.name);
+    let sql = match engine {
+        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+            let def = if !c.definition.trim().is_empty() {
+                retarget_schema_sql(&c.definition, engine, source_schema, target_schema)
+            } else if c.kind == ConstraintKind::ForeignKey
+                && let Some(target) = &c.target
+            {
+                let cols = c
+                    .columns
+                    .iter()
+                    .map(|col| quote_engine_identifier(engine, col))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ref_cols = c
+                    .target_columns
+                    .iter()
+                    .map(|col| quote_engine_identifier(engine, col))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ref_schema = if target.schema == source_schema {
+                    target_schema
+                } else {
+                    target.schema.as_str()
+                };
+                format!(
+                    "FOREIGN KEY ({cols}) REFERENCES {} ({ref_cols})",
+                    quote_qualified(engine, ref_schema, &target.name)
+                )
+            } else {
+                format_inline_constraint_ddl(c, engine, source_schema, target_schema)?
+                    .trim_start_matches(&format!("CONSTRAINT {quoted_cname} "))
+                    .to_owned()
+            };
+            format!("ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} {def};")
+        }
+        EngineKind::Mysql => {
+            let cols = c
+                .columns
+                .iter()
+                .map(|col| quote_engine_identifier(engine, col))
+                .collect::<Vec<_>>()
+                .join(", ");
+            match c.kind {
+                ConstraintKind::PrimaryKey => {
+                    format!("ALTER TABLE {qualified_table} ADD PRIMARY KEY ({cols});")
+                }
+                ConstraintKind::Unique => {
+                    format!(
+                        "ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} UNIQUE ({cols});"
+                    )
+                }
+                ConstraintKind::Check => {
+                    let def =
+                        retarget_schema_sql(&c.definition, engine, source_schema, target_schema);
+                    if def.is_empty() || def == "CHECK (...)" {
+                        return None;
+                    }
+                    format!("ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} {def};")
+                }
+                ConstraintKind::ForeignKey => {
+                    let target = c.target.as_ref()?;
+                    let ref_cols = c
+                        .target_columns
+                        .iter()
+                        .map(|col| quote_engine_identifier(engine, col))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ref_schema = if target.schema == source_schema {
+                        target_schema
+                    } else {
+                        target.schema.as_str()
+                    };
+                    format!(
+                        "ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} FOREIGN KEY ({cols}) REFERENCES {} ({ref_cols});",
+                        quote_qualified(engine, ref_schema, &target.name)
+                    )
+                }
+                ConstraintKind::Exclusion => return None,
+            }
+        }
+    };
+
+    Some(DdlStatement {
+        sql,
+        description: format!("Add constraint {} on {}", c.name, table_name),
+        object_kind: DatabaseObjectKind::Table,
+        object_name: format!("{table_name}.{}", c.name),
+        destructive: false,
+    })
+}
+
+fn build_drop_constraint_stmt(
+    table_name: &str,
+    c: &ConstraintInfo,
+    engine: EngineKind,
+    target_schema: &str,
+    destructive: bool,
+) -> DdlStatement {
+    let qualified_table = quote_qualified(engine, target_schema, table_name);
+    let quoted_cname = quote_engine_identifier(engine, &c.name);
+    let sql = match engine {
+        EngineKind::Mysql => match c.kind {
+            ConstraintKind::PrimaryKey => {
+                format!("ALTER TABLE {qualified_table} DROP PRIMARY KEY;")
+            }
+            ConstraintKind::ForeignKey => {
+                format!("ALTER TABLE {qualified_table} DROP FOREIGN KEY {quoted_cname};")
+            }
+            ConstraintKind::Unique => {
+                format!("ALTER TABLE {qualified_table} DROP INDEX {quoted_cname};")
+            }
+            ConstraintKind::Check => {
+                format!("ALTER TABLE {qualified_table} DROP CHECK {quoted_cname};")
+            }
+            ConstraintKind::Exclusion => {
+                format!("ALTER TABLE {qualified_table} DROP CONSTRAINT {quoted_cname};")
+            }
+        },
+        _ => format!("ALTER TABLE {qualified_table} DROP CONSTRAINT {quoted_cname};"),
+    };
+    DdlStatement {
+        sql,
+        description: format!("Drop constraint {} on {}", c.name, table_name),
+        object_kind: DatabaseObjectKind::Table,
+        object_name: format!("{table_name}.{}", c.name),
+        destructive,
+    }
+}
+
+fn order_views_by_dependency<'a>(views: &[&'a SnapshotTable]) -> Vec<&'a SnapshotTable> {
+    let mut remaining: BTreeMap<&str, &'a SnapshotTable> =
+        views.iter().map(|v| (v.name.as_str(), *v)).collect();
+    let all_names: BTreeSet<&str> = remaining.keys().copied().collect();
+    let mut ordered = Vec::with_capacity(views.len());
+
+    while !remaining.is_empty() {
+        let next_name = remaining
+            .iter()
+            .find(|(name, view)| {
+                let def = view.view_definition.as_deref().unwrap_or("");
+                !remaining.keys().any(|other| {
+                    *other != **name && all_names.contains(other) && def.contains(*other)
+                })
+            })
+            .map(|(name, _)| *name)
+            .unwrap_or_else(|| *remaining.keys().next().unwrap());
+        if let Some(view) = remaining.remove(next_name) {
+            ordered.push(view);
+        }
+    }
+    ordered
+}
+
+fn build_create_view_stmts(
+    view: &SnapshotTable,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<DdlStatement> {
+    let Some(raw_def) = view
+        .view_definition
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        warnings.push(format!(
+            "View '{}' definition is unavailable due to privilege restrictions and was skipped.",
+            view.name
+        ));
+        return Vec::new();
+    };
+    let retargeted = retarget_schema_sql(raw_def, engine, source_schema, target_schema);
+    let body = retargeted.trim().trim_end_matches(';').trim_end();
+    let qualified = quote_qualified(engine, target_schema, &view.name);
+    let create_sql = if view.kind == DatabaseObjectKind::MaterializedView {
+        format!("CREATE MATERIALIZED VIEW {qualified} AS {body};")
+    } else {
+        format!("CREATE OR REPLACE VIEW {qualified} AS {body};")
+    };
+
+    let mut stmts = vec![DdlStatement {
+        sql: create_sql,
+        description: format!(
+            "Create {} {}",
+            if view.kind == DatabaseObjectKind::MaterializedView {
+                "materialized view"
+            } else {
+                "view"
+            },
+            view.name
+        ),
+        object_kind: view.kind,
+        object_name: view.name.clone(),
+        destructive: false,
+    }];
+
+    for idx in &view.indexes {
+        if !is_constraint_backed_index(view, idx) {
+            stmts.push(build_create_index_stmt(
+                &view.name,
+                idx,
+                engine,
+                source_schema,
+                target_schema,
+            ));
+        }
+    }
+
+    if engine != EngineKind::Mysql
+        && let Some(comment) = &view.comment
+        && !comment.is_empty()
+    {
+        let kw = if view.kind == DatabaseObjectKind::MaterializedView {
+            "MATERIALIZED VIEW"
+        } else {
+            "VIEW"
+        };
+        stmts.push(DdlStatement {
+            sql: format!(
+                "COMMENT ON {kw} {qualified} IS {};",
+                quote_sql_literal(comment)
+            ),
+            description: format!("Set comment on {} {}", kw.to_ascii_lowercase(), view.name),
+            object_kind: view.kind,
+            object_name: view.name.clone(),
+            destructive: false,
+        });
+    }
+
+    stmts
+}
+
+fn build_create_routine_stmts(
+    r: &SnapshotRoutine,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<DdlStatement> {
+    let Some(raw_def) = r.definition.as_deref().filter(|s| !s.trim().is_empty()) else {
+        warnings.push(format!(
+            "Routine '{}' definition is unavailable due to privilege restrictions and was skipped.",
+            r.name
+        ));
+        return Vec::new();
+    };
+    let retargeted = retarget_schema_sql(raw_def, engine, source_schema, target_schema);
+    let qualified = quote_qualified(engine, target_schema, &r.name);
+    let sql = match engine {
+        EngineKind::Mysql => {
+            if retargeted
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE ")
+            {
+                ensure_semicolon(&retargeted)
+            } else {
+                let kind_kw = if r.kind == DatabaseObjectKind::Procedure {
+                    "PROCEDURE"
+                } else {
+                    "FUNCTION"
+                };
+                let mut header = format!("CREATE {kind_kw} {qualified}({})", r.arguments);
+                if r.kind == DatabaseObjectKind::Function {
+                    header.push_str(&format!(
+                        " RETURNS {}",
+                        r.return_type.as_deref().unwrap_or("INT")
+                    ));
+                }
+                if r.volatility
+                    .as_deref()
+                    .is_some_and(|v| v.eq_ignore_ascii_case("DETERMINISTIC"))
+                {
+                    header.push_str(" DETERMINISTIC");
+                } else {
+                    header.push_str(" NOT DETERMINISTIC");
+                }
+                if !r.security_definer {
+                    header.push_str(" SQL SECURITY INVOKER");
+                }
+                if let Some(comment) = &r.comment
+                    && !comment.is_empty()
+                {
+                    header.push_str(&format!(" COMMENT {}", quote_sql_literal(comment)));
+                }
+                ensure_semicolon(&format!("{header} {retargeted}"))
+            }
+        }
+        _ => {
+            if retargeted
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE ")
+            {
+                ensure_semicolon(&retargeted)
+            } else {
+                let kind_kw = if r.kind == DatabaseObjectKind::Procedure {
+                    "PROCEDURE"
+                } else {
+                    "FUNCTION"
+                };
+                let ret_clause = if r.kind == DatabaseObjectKind::Function {
+                    format!(" RETURNS {}", r.return_type.as_deref().unwrap_or("void"))
+                } else {
+                    String::new()
+                };
+                let vol_clause = r
+                    .volatility
+                    .as_deref()
+                    .filter(|v| !v.is_empty() && r.kind == DatabaseObjectKind::Function)
+                    .map(|v| format!(" {v}"))
+                    .unwrap_or_default();
+                let sec_clause = if r.security_definer {
+                    " SECURITY DEFINER"
+                } else {
+                    ""
+                };
+                format!(
+                    "CREATE OR REPLACE {kind_kw} {qualified}({}){ret_clause} LANGUAGE {}{vol_clause}{sec_clause} AS $function$\n{}\n$function$;",
+                    r.arguments,
+                    if r.language.is_empty() {
+                        "sql"
+                    } else {
+                        &r.language
+                    },
+                    retargeted.trim()
+                )
+            }
+        }
+    };
+
+    let obj_name = if r.identity_arguments.is_empty() {
+        format!("{}()", r.name)
+    } else {
+        format!("{}({})", r.name, r.identity_arguments)
+    };
+    let mut stmts = vec![DdlStatement {
+        sql,
+        description: format!(
+            "Create {} {}",
+            if r.kind == DatabaseObjectKind::Procedure {
+                "procedure"
+            } else {
+                "function"
+            },
+            obj_name
+        ),
+        object_kind: r.kind,
+        object_name: obj_name.clone(),
+        destructive: false,
+    }];
+
+    if engine != EngineKind::Mysql
+        && let Some(comment) = &r.comment
+        && !comment.is_empty()
+    {
+        let kind_kw = if r.kind == DatabaseObjectKind::Procedure {
+            "PROCEDURE"
+        } else {
+            "FUNCTION"
+        };
+        stmts.push(DdlStatement {
+            sql: format!(
+                "COMMENT ON {kind_kw} {qualified}({}) IS {};",
+                r.identity_arguments,
+                quote_sql_literal(comment)
+            ),
+            description: format!(
+                "Set comment on {} {}",
+                kind_kw.to_ascii_lowercase(),
+                obj_name
+            ),
+            object_kind: r.kind,
+            object_name: obj_name,
+            destructive: false,
+        });
+    }
+
+    stmts
+}
+
+fn build_create_trigger_stmts(
+    table_name: &str,
+    trig: &TriggerInfo,
+    engine: EngineKind,
+    source_schema: &str,
+    target_schema: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<DdlStatement> {
+    let Some(raw_def) = trig.definition.as_deref().filter(|s| !s.trim().is_empty()) else {
+        warnings.push(format!(
+            "Trigger '{}.{}' definition is unavailable and was skipped.",
+            table_name, trig.name
+        ));
+        return Vec::new();
+    };
+    let retargeted = retarget_schema_sql(raw_def, engine, source_schema, target_schema);
+    let sql = match engine {
+        EngineKind::Mysql => {
+            if retargeted
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE ")
+            {
+                ensure_semicolon(&retargeted)
+            } else {
+                let events = trig.events.join(" OR ");
+                ensure_semicolon(&format!(
+                    "CREATE TRIGGER {} {} {events} ON {} FOR EACH {} {retargeted}",
+                    quote_qualified(engine, target_schema, &trig.name),
+                    trig.timing,
+                    quote_qualified(engine, target_schema, table_name),
+                    trig.orientation
+                ))
+            }
+        }
+        _ => {
+            if retargeted
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE ")
+            {
+                ensure_semicolon(&retargeted)
+            } else {
+                let events = trig.events.join(" OR ");
+                ensure_semicolon(&format!(
+                    "CREATE TRIGGER {} {} {events} ON {} FOR EACH {} {retargeted}",
+                    quote_engine_identifier(engine, &trig.name),
+                    trig.timing,
+                    quote_qualified(engine, target_schema, table_name),
+                    trig.orientation
+                ))
+            }
+        }
+    };
+
+    let mut stmts = vec![DdlStatement {
+        sql,
+        description: format!("Create trigger {} on {}", trig.name, table_name),
+        object_kind: DatabaseObjectKind::Trigger,
+        object_name: format!("{table_name}.{}", trig.name),
+        destructive: false,
+    }];
+
+    if engine == EngineKind::Postgres && !trig.enabled {
+        stmts.push(DdlStatement {
+            sql: format!(
+                "ALTER TABLE {} DISABLE TRIGGER {};",
+                quote_qualified(engine, target_schema, table_name),
+                quote_engine_identifier(engine, &trig.name)
+            ),
+            description: format!("Disable trigger {} on {}", trig.name, table_name),
+            object_kind: DatabaseObjectKind::Trigger,
+            object_name: format!("{table_name}.{}", trig.name),
+            destructive: false,
+        });
+    }
+
+    stmts
+}
+
+fn finalize_plan(
+    engine: EngineKind,
+    target_schema: String,
+    statements: Vec<DdlStatement>,
+    truncated: bool,
+    restricted: bool,
+    mut warnings: Vec<String>,
+    unsupported: Vec<UnsupportedSchemaObject>,
+) -> SchemaDdlPlan {
+    let destructive_count = statements.iter().filter(|s| s.destructive).count();
+    if truncated {
+        warnings.insert(
+            0,
+            "Catalog inspection limits were reached while capturing the schema snapshot; generated DDL may be incomplete.".into(),
+        );
+    }
+    if restricted {
+        warnings.push(
+            "One or more objects had restricted metadata due to database privileges; verify omitted definitions before applying.".into(),
+        );
+    }
+    if destructive_count > 0 {
+        warnings.push(format!(
+            "{destructive_count} destructive statement(s) (DROP) detected; review carefully before executing."
+        ));
+    }
+    if !unsupported.is_empty() {
+        warnings.push(format!(
+            "{} unsupported schema object(s) were disclosed in the snapshot and are not emitted in DDL.",
+            unsupported.len()
+        ));
+    }
+    let script = statements
+        .iter()
+        .map(|s| s.sql.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    SchemaDdlPlan {
+        engine,
+        target_schema,
+        statements,
+        script,
+        truncated,
+        destructive_count,
+        warnings,
+        unsupported,
+    }
+}
+
+/// Generates a deterministic, dependency-ordered full-schema DDL script from a
+/// `SchemaSnapshot`. Never executes SQL or mutates database state.
+pub fn generate_schema_ddl(
+    snapshot: &SchemaSnapshot,
+    target_schema: Option<&str>,
+) -> AppResult<SchemaDdlPlan> {
+    let mut snap = snapshot.clone();
+    snap.canonicalize();
+
+    let engine = snap.engine;
+    let source_schema = snap.schema.as_str();
+    let dst_schema = target_schema
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(source_schema);
+
+    let mut statements = Vec::new();
+    let mut warnings = Vec::new();
+
+    // 1. Standalone Sequences
+    for seq in &snap.sequences {
+        if !is_auto_identity_sequence(&snap, &seq.name) {
+            statements.push(build_create_sequence_stmt(seq, engine, dst_schema));
+        }
+    }
+
+    let base_tables: Vec<&SnapshotTable> = snap
+        .tables
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.kind,
+                DatabaseObjectKind::Table | DatabaseObjectKind::PartitionedTable
+            )
+        })
+        .collect();
+    let views: Vec<&SnapshotTable> = snap
+        .tables
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.kind,
+                DatabaseObjectKind::View | DatabaseObjectKind::MaterializedView
+            )
+        })
+        .collect();
+
+    // 2. Base Tables (with inline PK/Unique/Check/Exclude constraints & comments)
+    for table in &base_tables {
+        statements.extend(build_create_table_stmts(
+            table,
+            engine,
+            source_schema,
+            dst_schema,
+        ));
+    }
+
+    // 3. Secondary Indexes on Base Tables
+    for table in &base_tables {
+        for idx in &table.indexes {
+            if !is_constraint_backed_index(table, idx) {
+                statements.push(build_create_index_stmt(
+                    &table.name,
+                    idx,
+                    engine,
+                    source_schema,
+                    dst_schema,
+                ));
+            }
+        }
+    }
+
+    // 4. Outbound Foreign Keys on Base Tables
+    for table in &base_tables {
+        for c in &table.constraints {
+            if c.kind == ConstraintKind::ForeignKey
+                && let Some(stmt) =
+                    build_add_constraint_stmt(&table.name, c, engine, source_schema, dst_schema)
+            {
+                statements.push(stmt);
+            }
+        }
+    }
+
+    // 5. Views & Materialized Views in dependency order
+    for view in order_views_by_dependency(&views) {
+        statements.extend(build_create_view_stmts(
+            view,
+            engine,
+            source_schema,
+            dst_schema,
+            &mut warnings,
+        ));
+    }
+
+    // 6. Routines (Functions & Procedures)
+    for routine in &snap.routines {
+        statements.extend(build_create_routine_stmts(
+            routine,
+            engine,
+            source_schema,
+            dst_schema,
+            &mut warnings,
+        ));
+    }
+
+    // 7. Triggers on Base Tables & Views
+    for table in &snap.tables {
+        for trig in &table.triggers {
+            statements.extend(build_create_trigger_stmts(
+                &table.name,
+                trig,
+                engine,
+                source_schema,
+                dst_schema,
+                &mut warnings,
+            ));
+        }
+    }
+
+    Ok(finalize_plan(
+        engine,
+        dst_schema.to_owned(),
+        statements,
+        snap.truncated,
+        snap.restricted,
+        warnings,
+        snap.unsupported_objects,
+    ))
+}
+
+fn order_tables_for_drop<'a>(tables: &[&'a SnapshotTable]) -> Vec<&'a SnapshotTable> {
+    // Drop child tables (that have FKs referencing other tables in `tables`) first.
+    let mut remaining: BTreeMap<&str, &'a SnapshotTable> =
+        tables.iter().map(|t| (t.name.as_str(), *t)).collect();
+    let mut ordered = Vec::with_capacity(tables.len());
+
+    while !remaining.is_empty() {
+        let next_name = remaining
+            .iter()
+            .find(|(name, _)| {
+                // Find a table that is NOT referenced by any OTHER remaining table.
+                !remaining.iter().any(|(other_name, other_tbl)| {
+                    *other_name != **name
+                        && other_tbl.constraints.iter().any(|c| {
+                            c.kind == ConstraintKind::ForeignKey
+                                && c.target
+                                    .as_ref()
+                                    .is_some_and(|target| target.name == **name)
+                        })
+                })
+            })
+            .map(|(name, _)| *name)
+            .unwrap_or_else(|| *remaining.keys().next().unwrap());
+        if let Some(tbl) = remaining.remove(next_name) {
+            ordered.push(tbl);
+        }
+    }
+    ordered
+}
+
+/// Generates a deterministic, dependency-ordered migration DDL plan that
+/// transforms `left` into `right` (targeted at `target_schema`, which defaults
+/// to `left.schema`). Never executes SQL or mutates database state.
+pub fn generate_migration_ddl(
+    left: &SchemaSnapshot,
+    right: &SchemaSnapshot,
+    target_schema: Option<&str>,
+) -> AppResult<SchemaDdlPlan> {
+    if left.engine != right.engine {
+        return Err(AppError::invalid(format!(
+            "Cannot generate migration DDL across different engines ({:?} vs {:?})",
+            left.engine, right.engine
+        )));
+    }
+
+    let mut l_snap = left.clone();
+    let mut r_snap = right.clone();
+    l_snap.canonicalize();
+    r_snap.canonicalize();
+
+    let engine = l_snap.engine;
+    let left_schema = l_snap.schema.as_str();
+    let right_schema = r_snap.schema.as_str();
+    let dst_schema = target_schema
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(left_schema);
+
+    let mut unsupported = l_snap.unsupported_objects.clone();
+    for u in &r_snap.unsupported_objects {
+        if !unsupported
+            .iter()
+            .any(|existing| existing.name == u.name && existing.object_type == u.object_type)
+        {
+            unsupported.push(u.clone());
+        }
+    }
+    unsupported.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.object_type.cmp(&b.object_type))
+    });
+
+    let diff = compare_schema_snapshots(l_snap.clone(), r_snap.clone());
+    if diff.entries.is_empty() {
+        return Ok(finalize_plan(
+            engine,
+            dst_schema.to_owned(),
+            Vec::new(),
+            l_snap.truncated || r_snap.truncated,
+            l_snap.restricted || r_snap.restricted,
+            Vec::new(),
+            unsupported,
+        ));
+    }
+
+    let mut statements = Vec::new();
+    let mut warnings = Vec::new();
+
+    let left_tables: BTreeMap<&str, &SnapshotTable> =
+        l_snap.tables.iter().map(|t| (t.name.as_str(), t)).collect();
+    let right_tables: BTreeMap<&str, &SnapshotTable> =
+        r_snap.tables.iter().map(|t| (t.name.as_str(), t)).collect();
+
+    // Determine views to drop & recreate:
+    // If any view is removed/modified or if any table/view is modified/dropped, dropping and recreating
+    // affected views in topological order avoids PostgreSQL `cannot change name/type of view column` errors.
+    let any_relation_changed = diff.entries.iter().any(|e| {
+        matches!(
+            e.object_kind,
+            DatabaseObjectKind::Table
+                | DatabaseObjectKind::PartitionedTable
+                | DatabaseObjectKind::View
+                | DatabaseObjectKind::MaterializedView
+        )
+    });
+    let left_views: Vec<&SnapshotTable> = l_snap
+        .tables
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.kind,
+                DatabaseObjectKind::View | DatabaseObjectKind::MaterializedView
+            )
+        })
+        .collect();
+    let right_views: Vec<&SnapshotTable> = r_snap
+        .tables
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.kind,
+                DatabaseObjectKind::View | DatabaseObjectKind::MaterializedView
+            )
+        })
+        .collect();
+
+    let mut views_to_drop: Vec<&SnapshotTable> = Vec::new();
+    let mut views_to_create: Vec<&SnapshotTable> = Vec::new();
+    if any_relation_changed {
+        let ordered_left_views = order_views_by_dependency(&left_views);
+        for v in ordered_left_views.into_iter().rev() {
+            views_to_drop.push(v);
+        }
+        views_to_create = order_views_by_dependency(&right_views);
+    }
+
+    // Phase 1a: Drop triggers that are removed or modified on surviving tables
+    for (tbl_name, l_tbl) in &left_tables {
+        let Some(r_tbl) = right_tables.get(tbl_name) else {
+            continue;
+        };
+        if l_tbl.kind != r_tbl.kind {
+            continue;
+        }
+        let r_trigs: BTreeMap<&str, &TriggerInfo> = r_tbl
+            .triggers
+            .iter()
+            .map(|t| (t.name.as_str(), t))
+            .collect();
+        for l_trig in &l_tbl.triggers {
+            let status = match r_trigs.get(l_trig.name.as_str()) {
+                None => Some(true),
+                Some(r_trig)
+                    if format_trigger_spec(l_trig, engine, left_schema)
+                        != format_trigger_spec(r_trig, engine, right_schema) =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            };
+            if let Some(destructive) = status {
+                let sql = match engine {
+                    EngineKind::Mysql => format!(
+                        "DROP TRIGGER {};",
+                        quote_qualified(engine, dst_schema, &l_trig.name)
+                    ),
+                    _ => format!(
+                        "DROP TRIGGER {} ON {};",
+                        quote_engine_identifier(engine, &l_trig.name),
+                        quote_qualified(engine, dst_schema, tbl_name)
+                    ),
+                };
+                statements.push(DdlStatement {
+                    sql,
+                    description: format!("Drop trigger {} on {}", l_trig.name, tbl_name),
+                    object_kind: DatabaseObjectKind::Trigger,
+                    object_name: format!("{tbl_name}.{}", l_trig.name),
+                    destructive,
+                });
+            }
+        }
+    }
+
+    // Phase 1b: Drop views & materialized views (reverse dependency order)
+    for v in &views_to_drop {
+        let is_removed = !right_tables
+            .get(v.name.as_str())
+            .is_some_and(|rv| rv.kind == v.kind);
+        let kw = if v.kind == DatabaseObjectKind::MaterializedView {
+            "MATERIALIZED VIEW"
+        } else {
+            "VIEW"
+        };
+        statements.push(DdlStatement {
+            sql: format!(
+                "DROP {kw} {};",
+                quote_qualified(engine, dst_schema, &v.name)
+            ),
+            description: format!("Drop {} {}", kw.to_ascii_lowercase(), v.name),
+            object_kind: v.kind,
+            object_name: v.name.clone(),
+            destructive: is_removed,
+        });
+    }
+
+    // Phase 1c: Drop removed or modified routines
+    type RoutineKey<'a> = (&'a str, DatabaseObjectKind, &'a str);
+    let left_routines: BTreeMap<RoutineKey<'_>, &SnapshotRoutine> = l_snap
+        .routines
+        .iter()
+        .map(|r| ((r.name.as_str(), r.kind, r.identity_arguments.as_str()), r))
+        .collect();
+    let right_routines: BTreeMap<RoutineKey<'_>, &SnapshotRoutine> = r_snap
+        .routines
+        .iter()
+        .map(|r| ((r.name.as_str(), r.kind, r.identity_arguments.as_str()), r))
+        .collect();
+
+    for (key, l_rt) in &left_routines {
+        let status = match right_routines.get(key) {
+            None => Some(true),
+            Some(r_rt)
+                if format_routine_spec(l_rt, engine, left_schema)
+                    != format_routine_spec(r_rt, engine, right_schema)
+                    || l_rt.comment != r_rt.comment =>
+            {
+                Some(false)
+            }
+            _ => None,
+        };
+        if let Some(destructive) = status {
+            let kind_kw = if l_rt.kind == DatabaseObjectKind::Procedure {
+                "PROCEDURE"
+            } else {
+                "FUNCTION"
+            };
+            let qualified = quote_qualified(engine, dst_schema, &l_rt.name);
+            let sql = match engine {
+                EngineKind::Mysql => format!("DROP {kind_kw} {qualified};"),
+                _ => format!("DROP {kind_kw} {qualified}({});", l_rt.identity_arguments),
+            };
+            let obj_name = if l_rt.identity_arguments.is_empty() {
+                format!("{}()", l_rt.name)
+            } else {
+                format!("{}({})", l_rt.name, l_rt.identity_arguments)
+            };
+            statements.push(DdlStatement {
+                sql,
+                description: format!("Drop {} {}", kind_kw.to_ascii_lowercase(), obj_name),
+                object_kind: l_rt.kind,
+                object_name: obj_name,
+                destructive,
+            });
+        }
+    }
+
+    // Phase 1d: Drop removed or modified Foreign Keys on surviving tables
+    for (tbl_name, l_tbl) in &left_tables {
+        let Some(r_tbl) = right_tables.get(tbl_name) else {
+            continue;
+        };
+        if !matches!(
+            l_tbl.kind,
+            DatabaseObjectKind::Table | DatabaseObjectKind::PartitionedTable
+        ) || l_tbl.kind != r_tbl.kind
+        {
+            continue;
+        }
+        let r_cons: BTreeMap<&str, &ConstraintInfo> = r_tbl
+            .constraints
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        for l_c in &l_tbl.constraints {
+            if l_c.kind != ConstraintKind::ForeignKey {
+                continue;
+            }
+            let status = match r_cons.get(l_c.name.as_str()) {
+                None => Some(true),
+                Some(r_c)
+                    if format_constraint_spec(l_c, engine, left_schema)
+                        != format_constraint_spec(r_c, engine, right_schema) =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            };
+            if let Some(destructive) = status {
+                statements.push(build_drop_constraint_stmt(
+                    tbl_name,
+                    l_c,
+                    engine,
+                    dst_schema,
+                    destructive,
+                ));
+            }
+        }
+    }
+
+    // Phase 1e: Drop removed or modified secondary indexes & non-FK constraints on surviving tables
+    for (tbl_name, l_tbl) in &left_tables {
+        let Some(r_tbl) = right_tables.get(tbl_name) else {
+            continue;
+        };
+        if !matches!(
+            l_tbl.kind,
+            DatabaseObjectKind::Table | DatabaseObjectKind::PartitionedTable
+        ) || l_tbl.kind != r_tbl.kind
+        {
+            continue;
+        }
+        let r_idxs: BTreeMap<&str, &SnapshotIndex> =
+            r_tbl.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
+        for l_idx in &l_tbl.indexes {
+            if is_constraint_backed_index(l_tbl, l_idx) {
+                continue;
+            }
+            let status = match r_idxs.get(l_idx.name.as_str()) {
+                None => Some(true),
+                Some(r_idx)
+                    if is_constraint_backed_index(r_tbl, r_idx)
+                        || format_index_spec(l_idx, engine, left_schema)
+                            != format_index_spec(r_idx, engine, right_schema) =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            };
+            if let Some(destructive) = status {
+                let sql = match engine {
+                    EngineKind::Mysql => format!(
+                        "DROP INDEX {} ON {};",
+                        quote_engine_identifier(engine, &l_idx.name),
+                        quote_qualified(engine, dst_schema, tbl_name)
+                    ),
+                    _ => format!(
+                        "DROP INDEX {};",
+                        quote_qualified(engine, dst_schema, &l_idx.name)
+                    ),
+                };
+                statements.push(DdlStatement {
+                    sql,
+                    description: format!("Drop index {} on {}", l_idx.name, tbl_name),
+                    object_kind: DatabaseObjectKind::Index,
+                    object_name: format!("{tbl_name}.{}", l_idx.name),
+                    destructive,
+                });
+            }
+        }
+
+        let r_cons: BTreeMap<&str, &ConstraintInfo> = r_tbl
+            .constraints
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        for l_c in &l_tbl.constraints {
+            if l_c.kind == ConstraintKind::ForeignKey {
+                continue;
+            }
+            let status = match r_cons.get(l_c.name.as_str()) {
+                None => Some(true),
+                Some(r_c)
+                    if format_constraint_spec(l_c, engine, left_schema)
+                        != format_constraint_spec(r_c, engine, right_schema) =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            };
+            if let Some(destructive) = status {
+                statements.push(build_drop_constraint_stmt(
+                    tbl_name,
+                    l_c,
+                    engine,
+                    dst_schema,
+                    destructive,
+                ));
+            }
+        }
+    }
+
+    // Phase 2: Drop removed tables (ordered child-first) & removed sequences
+    let tables_to_drop: Vec<&SnapshotTable> = l_snap
+        .tables
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.kind,
+                DatabaseObjectKind::Table | DatabaseObjectKind::PartitionedTable
+            ) && !right_tables
+                .get(t.name.as_str())
+                .is_some_and(|rt| rt.kind == t.kind)
+        })
+        .collect();
+    for tbl in order_tables_for_drop(&tables_to_drop) {
+        statements.push(DdlStatement {
+            sql: format!(
+                "DROP TABLE {};",
+                quote_qualified(engine, dst_schema, &tbl.name)
+            ),
+            description: format!("Drop table {}", tbl.name),
+            object_kind: tbl.kind,
+            object_name: tbl.name.clone(),
+            destructive: true,
+        });
+    }
+
+    let left_seqs: BTreeMap<&str, &SnapshotSequence> = l_snap
+        .sequences
+        .iter()
+        .filter(|s| !is_auto_identity_sequence(&l_snap, &s.name))
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+    let right_seqs: BTreeMap<&str, &SnapshotSequence> = r_snap
+        .sequences
+        .iter()
+        .filter(|s| !is_auto_identity_sequence(&r_snap, &s.name))
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+
+    for (seq_name, l_seq) in &left_seqs {
+        if !right_seqs.contains_key(seq_name) {
+            statements.push(DdlStatement {
+                sql: format!(
+                    "DROP SEQUENCE {};",
+                    quote_qualified(engine, dst_schema, &l_seq.name)
+                ),
+                description: format!("Drop sequence {}", l_seq.name),
+                object_kind: DatabaseObjectKind::Sequence,
+                object_name: l_seq.name.clone(),
+                destructive: true,
+            });
+        }
+    }
+
+    // Phase 3: Create new sequences & alter modified sequences
+    for (seq_name, r_seq) in &right_seqs {
+        match left_seqs.get(seq_name) {
+            None => {
+                statements.push(build_create_sequence_stmt(r_seq, engine, dst_schema));
+            }
+            Some(l_seq) if format_sequence_spec(l_seq) != format_sequence_spec(r_seq) => {
+                statements.push(build_alter_sequence_stmt(r_seq, engine, dst_schema));
+            }
+            _ => {}
+        }
+    }
+
+    // Phase 4: Create new tables & alter surviving tables
+    let right_base_tables: Vec<&SnapshotTable> = r_snap
+        .tables
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.kind,
+                DatabaseObjectKind::Table | DatabaseObjectKind::PartitionedTable
+            )
+        })
+        .collect();
+
+    for r_tbl in &right_base_tables {
+        let Some(l_tbl) = left_tables
+            .get(r_tbl.name.as_str())
+            .copied()
+            .filter(|lt| lt.kind == r_tbl.kind)
+        else {
+            statements.extend(build_create_table_stmts(
+                r_tbl,
+                engine,
+                right_schema,
+                dst_schema,
+            ));
+            continue;
+        };
+
+        let qualified_table = quote_qualified(engine, dst_schema, &r_tbl.name);
+        let l_cols: BTreeMap<&str, &SnapshotColumn> =
+            l_tbl.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+        let r_cols: BTreeMap<&str, &SnapshotColumn> =
+            r_tbl.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+
+        // 4a: Drop removed columns
+        for l_col in &l_tbl.columns {
+            if !r_cols.contains_key(l_col.name.as_str()) {
+                statements.push(DdlStatement {
+                    sql: format!(
+                        "ALTER TABLE {qualified_table} DROP COLUMN {};",
+                        quote_engine_identifier(engine, &l_col.name)
+                    ),
+                    description: format!("Drop column {}.{}", r_tbl.name, l_col.name),
+                    object_kind: r_tbl.kind,
+                    object_name: format!("{}.{}", r_tbl.name, l_col.name),
+                    destructive: true,
+                });
+            }
+        }
+
+        // 4b: Add new columns (in ordinal order)
+        let mut sorted_r_cols = r_tbl.columns.clone();
+        sorted_r_cols.sort_by(|a, b| {
+            a.ordinal_position
+                .cmp(&b.ordinal_position)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        for r_col in &sorted_r_cols {
+            if !l_cols.contains_key(r_col.name.as_str()) {
+                statements.push(DdlStatement {
+                    sql: format!(
+                        "ALTER TABLE {qualified_table} ADD COLUMN {};",
+                        format_column_ddl(r_col, engine, right_schema, dst_schema)
+                    ),
+                    description: format!("Add column {}.{}", r_tbl.name, r_col.name),
+                    object_kind: r_tbl.kind,
+                    object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                    destructive: false,
+                });
+            }
+        }
+
+        // 4c: Alter modified columns
+        for r_col in &sorted_r_cols {
+            let Some(l_col) = l_cols.get(r_col.name.as_str()) else {
+                continue;
+            };
+            if format_column_spec(l_col, engine, left_schema)
+                == format_column_spec(r_col, engine, right_schema)
+            {
+                continue;
+            }
+            let quoted_col = quote_engine_identifier(engine, &r_col.name);
+            match engine {
+                EngineKind::Mysql => {
+                    statements.push(DdlStatement {
+                        sql: format!(
+                            "ALTER TABLE {qualified_table} MODIFY COLUMN {};",
+                            format_column_ddl(r_col, engine, right_schema, dst_schema)
+                        ),
+                        description: format!("Modify column {}.{}", r_tbl.name, r_col.name),
+                        object_kind: r_tbl.kind,
+                        object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                        destructive: false,
+                    });
+                }
+                _ => {
+                    if l_col.data_type != r_col.data_type {
+                        statements.push(DdlStatement {
+                            sql: format!(
+                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} TYPE {};",
+                                r_col.data_type
+                            ),
+                            description: format!(
+                                "Change type of {}.{} to {}",
+                                r_tbl.name, r_col.name, r_col.data_type
+                            ),
+                            object_kind: r_tbl.kind,
+                            object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                            destructive: false,
+                        });
+                    }
+                    if l_col.nullable != r_col.nullable {
+                        let clause = if r_col.nullable {
+                            "DROP NOT NULL"
+                        } else {
+                            "SET NOT NULL"
+                        };
+                        statements.push(DdlStatement {
+                            sql: format!(
+                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} {clause};"
+                            ),
+                            description: format!("{} on {}.{}", clause, r_tbl.name, r_col.name),
+                            object_kind: r_tbl.kind,
+                            object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                            destructive: false,
+                        });
+                    }
+                    if l_col.identity != r_col.identity {
+                        let id_sql = match (&l_col.identity, &r_col.identity) {
+                            (Some(_), None) => format!(
+                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} DROP IDENTITY IF EXISTS;"
+                            ),
+                            (None, Some(mode)) => format!(
+                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} ADD GENERATED {} AS IDENTITY;",
+                                mode.trim()
+                            ),
+                            (Some(_), Some(mode)) => format!(
+                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} SET GENERATED {};",
+                                mode.trim()
+                            ),
+                            (None, None) => String::new(),
+                        };
+                        if !id_sql.is_empty() {
+                            statements.push(DdlStatement {
+                                sql: id_sql,
+                                description: format!(
+                                    "Update identity on {}.{}",
+                                    r_tbl.name, r_col.name
+                                ),
+                                object_kind: r_tbl.kind,
+                                object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                                destructive: false,
+                            });
+                        }
+                    }
+                    if r_col.generated.is_none() && r_col.identity.is_none() {
+                        let l_def = l_col
+                            .default_expression
+                            .as_deref()
+                            .map(|d| normalize_self_schema_sql(d, engine, left_schema));
+                        let r_def = r_col
+                            .default_expression
+                            .as_deref()
+                            .map(|d| normalize_self_schema_sql(d, engine, right_schema));
+                        if l_def != r_def {
+                            let def_sql = match &r_col.default_expression {
+                                Some(def) if !def.trim().is_empty() => format!(
+                                    "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} SET DEFAULT {};",
+                                    retarget_schema_sql(def, engine, right_schema, dst_schema)
+                                ),
+                                _ => format!(
+                                    "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} DROP DEFAULT;"
+                                ),
+                            };
+                            statements.push(DdlStatement {
+                                sql: def_sql,
+                                description: format!(
+                                    "Update default on {}.{}",
+                                    r_tbl.name, r_col.name
+                                ),
+                                object_kind: r_tbl.kind,
+                                object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                                destructive: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4d: Update table comment if changed
+        if l_tbl.comment != r_tbl.comment {
+            let sql = match engine {
+                EngineKind::Mysql => format!(
+                    "ALTER TABLE {qualified_table} COMMENT = {};",
+                    quote_sql_literal(r_tbl.comment.as_deref().unwrap_or(""))
+                ),
+                _ => match &r_tbl.comment {
+                    Some(c) if !c.is_empty() => {
+                        format!(
+                            "COMMENT ON TABLE {qualified_table} IS {};",
+                            quote_sql_literal(c)
+                        )
+                    }
+                    _ => format!("COMMENT ON TABLE {qualified_table} IS NULL;"),
+                },
+            };
+            statements.push(DdlStatement {
+                sql,
+                description: format!("Update comment on table {}", r_tbl.name),
+                object_kind: r_tbl.kind,
+                object_name: r_tbl.name.clone(),
+                destructive: false,
+            });
+        }
+    }
+
+    // Phase 5a: Add new/modified non-FK constraints on surviving tables
+    for r_tbl in &right_base_tables {
+        let Some(l_tbl) = left_tables
+            .get(r_tbl.name.as_str())
+            .copied()
+            .filter(|lt| lt.kind == r_tbl.kind)
+        else {
+            continue;
+        };
+        let l_cons: BTreeMap<&str, &ConstraintInfo> = l_tbl
+            .constraints
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        for r_c in &r_tbl.constraints {
+            if r_c.kind == ConstraintKind::ForeignKey {
+                continue;
+            }
+            let needs_add = match l_cons.get(r_c.name.as_str()) {
+                None => true,
+                Some(l_c) => {
+                    format_constraint_spec(l_c, engine, left_schema)
+                        != format_constraint_spec(r_c, engine, right_schema)
+                }
+            };
+            if needs_add
+                && let Some(stmt) =
+                    build_add_constraint_stmt(&r_tbl.name, r_c, engine, right_schema, dst_schema)
+            {
+                statements.push(stmt);
+            }
+        }
+    }
+
+    // Phase 5b: Create new/modified secondary indexes on new and surviving base tables
+    for r_tbl in &right_base_tables {
+        let l_tbl_opt = left_tables
+            .get(r_tbl.name.as_str())
+            .copied()
+            .filter(|lt| lt.kind == r_tbl.kind);
+        let l_idxs: BTreeMap<&str, &SnapshotIndex> = l_tbl_opt
+            .map(|lt| lt.indexes.iter().map(|i| (i.name.as_str(), i)).collect())
+            .unwrap_or_default();
+
+        for r_idx in &r_tbl.indexes {
+            if is_constraint_backed_index(r_tbl, r_idx) {
+                continue;
+            }
+            let needs_create = match (l_tbl_opt, l_idxs.get(r_idx.name.as_str())) {
+                (None, _) | (_, None) => true,
+                (Some(lt), Some(l_idx)) => {
+                    is_constraint_backed_index(lt, l_idx)
+                        || format_index_spec(l_idx, engine, left_schema)
+                            != format_index_spec(r_idx, engine, right_schema)
+                }
+            };
+            if needs_create {
+                statements.push(build_create_index_stmt(
+                    &r_tbl.name,
+                    r_idx,
+                    engine,
+                    right_schema,
+                    dst_schema,
+                ));
+            }
+        }
+    }
+
+    // Phase 5c: Add new/modified Foreign Keys on new and surviving base tables
+    for r_tbl in &right_base_tables {
+        let l_tbl_opt = left_tables
+            .get(r_tbl.name.as_str())
+            .copied()
+            .filter(|lt| lt.kind == r_tbl.kind);
+        let l_cons: BTreeMap<&str, &ConstraintInfo> = l_tbl_opt
+            .map(|lt| {
+                lt.constraints
+                    .iter()
+                    .map(|c| (c.name.as_str(), c))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for r_c in &r_tbl.constraints {
+            if r_c.kind != ConstraintKind::ForeignKey {
+                continue;
+            }
+            let needs_add = match l_cons.get(r_c.name.as_str()) {
+                None => true,
+                Some(l_c) => {
+                    format_constraint_spec(l_c, engine, left_schema)
+                        != format_constraint_spec(r_c, engine, right_schema)
+                }
+            };
+            if needs_add
+                && let Some(stmt) =
+                    build_add_constraint_stmt(&r_tbl.name, r_c, engine, right_schema, dst_schema)
+            {
+                statements.push(stmt);
+            }
+        }
+    }
+
+    // Phase 6: Create/recreate views & materialized views in dependency order
+    for view in &views_to_create {
+        statements.extend(build_create_view_stmts(
+            view,
+            engine,
+            right_schema,
+            dst_schema,
+            &mut warnings,
+        ));
+    }
+
+    // Phase 7a: Create new or modified routines
+    for (key, r_rt) in &right_routines {
+        let needs_create = match left_routines.get(key) {
+            None => true,
+            Some(l_rt) => {
+                format_routine_spec(l_rt, engine, left_schema)
+                    != format_routine_spec(r_rt, engine, right_schema)
+                    || l_rt.comment != r_rt.comment
+            }
+        };
+        if needs_create {
+            statements.extend(build_create_routine_stmts(
+                r_rt,
+                engine,
+                right_schema,
+                dst_schema,
+                &mut warnings,
+            ));
+        }
+    }
+
+    // Phase 7b: Create new or modified triggers
+    for r_tbl in &r_snap.tables {
+        let l_tbl_opt = left_tables
+            .get(r_tbl.name.as_str())
+            .copied()
+            .filter(|lt| lt.kind == r_tbl.kind);
+        let l_trigs: BTreeMap<&str, &TriggerInfo> = l_tbl_opt
+            .map(|lt| lt.triggers.iter().map(|t| (t.name.as_str(), t)).collect())
+            .unwrap_or_default();
+
+        for r_trig in &r_tbl.triggers {
+            let needs_create = match l_trigs.get(r_trig.name.as_str()) {
+                None => true,
+                Some(l_trig) => {
+                    format_trigger_spec(l_trig, engine, left_schema)
+                        != format_trigger_spec(r_trig, engine, right_schema)
+                }
+            };
+            if needs_create {
+                statements.extend(build_create_trigger_stmts(
+                    &r_tbl.name,
+                    r_trig,
+                    engine,
+                    right_schema,
+                    dst_schema,
+                    &mut warnings,
+                ));
+            }
+        }
+    }
+
+    Ok(finalize_plan(
+        engine,
+        dst_schema.to_owned(),
+        statements,
+        l_snap.truncated || r_snap.truncated,
+        l_snap.restricted || r_snap.restricted,
+        warnings,
+        unsupported,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::TableRef;
+
+    fn sample_postgres_snapshot(schema: &str) -> SchemaSnapshot {
+        SchemaSnapshot {
+            engine: EngineKind::Postgres,
+            schema: schema.into(),
+            server_version: "PostgreSQL 18.0".into(),
+            database: "app".into(),
+            role: "postgres".into(),
+            truncated: false,
+            restricted: false,
+            tables: vec![
+                SnapshotTable {
+                    name: "customers".into(),
+                    kind: DatabaseObjectKind::Table,
+                    comment: Some("Customer master".into()),
+                    partition_key: None,
+                    view_definition: None,
+                    columns: vec![
+                        SnapshotColumn {
+                            name: "id".into(),
+                            data_type: "bigint".into(),
+                            nullable: false,
+                            default_expression: None,
+                            identity: Some("BY DEFAULT".into()),
+                            generated: None,
+                            ordinal_position: 1,
+                        },
+                        SnapshotColumn {
+                            name: "email".into(),
+                            data_type: "text".into(),
+                            nullable: false,
+                            default_expression: None,
+                            identity: None,
+                            generated: None,
+                            ordinal_position: 2,
+                        },
+                    ],
+                    constraints: vec![
+                        ConstraintInfo {
+                            name: "customers_pkey".into(),
+                            kind: ConstraintKind::PrimaryKey,
+                            columns: vec!["id".into()],
+                            target: None,
+                            target_columns: Vec::new(),
+                            definition: "PRIMARY KEY (id)".into(),
+                        },
+                        ConstraintInfo {
+                            name: "customers_email_key".into(),
+                            kind: ConstraintKind::Unique,
+                            columns: vec!["email".into()],
+                            target: None,
+                            target_columns: Vec::new(),
+                            definition: "UNIQUE (email)".into(),
+                        },
+                    ],
+                    indexes: vec![
+                        SnapshotIndex {
+                            name: "customers_pkey".into(),
+                            method: "btree".into(),
+                            unique: true,
+                            primary: true,
+                            expressions: vec!["id".into()],
+                            predicate: None,
+                            definition: Some(format!(
+                                "CREATE UNIQUE INDEX customers_pkey ON {schema}.customers USING btree (id)"
+                            )),
+                        },
+                        SnapshotIndex {
+                            name: "customers_email_key".into(),
+                            method: "btree".into(),
+                            unique: true,
+                            primary: false,
+                            expressions: vec!["email".into()],
+                            predicate: None,
+                            definition: Some(format!(
+                                "CREATE UNIQUE INDEX customers_email_key ON {schema}.customers USING btree (email)"
+                            )),
+                        },
+                    ],
+                    triggers: Vec::new(),
+                },
+                SnapshotTable {
+                    name: "orders".into(),
+                    kind: DatabaseObjectKind::Table,
+                    comment: None,
+                    partition_key: None,
+                    view_definition: None,
+                    columns: vec![
+                        SnapshotColumn {
+                            name: "id".into(),
+                            data_type: "bigint".into(),
+                            nullable: false,
+                            default_expression: Some(format!(
+                                "nextval('{schema}.orders_id_seq'::regclass)"
+                            )),
+                            identity: None,
+                            generated: None,
+                            ordinal_position: 1,
+                        },
+                        SnapshotColumn {
+                            name: "customer_id".into(),
+                            data_type: "bigint".into(),
+                            nullable: false,
+                            default_expression: None,
+                            identity: None,
+                            generated: None,
+                            ordinal_position: 2,
+                        },
+                        SnapshotColumn {
+                            name: "total".into(),
+                            data_type: "numeric(10,2)".into(),
+                            nullable: false,
+                            default_expression: Some("0.00".into()),
+                            identity: None,
+                            generated: None,
+                            ordinal_position: 3,
+                        },
+                    ],
+                    constraints: vec![
+                        ConstraintInfo {
+                            name: "orders_pkey".into(),
+                            kind: ConstraintKind::PrimaryKey,
+                            columns: vec!["id".into()],
+                            target: None,
+                            target_columns: Vec::new(),
+                            definition: "PRIMARY KEY (id)".into(),
+                        },
+                        ConstraintInfo {
+                            name: "orders_customer_fk".into(),
+                            kind: ConstraintKind::ForeignKey,
+                            columns: vec!["customer_id".into()],
+                            target: Some(TableRef {
+                                schema: schema.into(),
+                                name: "customers".into(),
+                            }),
+                            target_columns: vec!["id".into()],
+                            definition: format!(
+                                "FOREIGN KEY (customer_id) REFERENCES {schema}.customers(id) ON DELETE CASCADE"
+                            ),
+                        },
+                    ],
+                    indexes: vec![SnapshotIndex {
+                        name: "orders_customer_idx".into(),
+                        method: "btree".into(),
+                        unique: false,
+                        primary: false,
+                        expressions: vec!["customer_id".into()],
+                        predicate: None,
+                        definition: Some(format!(
+                            "CREATE INDEX orders_customer_idx ON {schema}.orders USING btree (customer_id)"
+                        )),
+                    }],
+                    triggers: vec![TriggerInfo {
+                        name: "trg_orders_audit".into(),
+                        table_name: "orders".into(),
+                        timing: "BEFORE".into(),
+                        events: vec!["INSERT".into()],
+                        orientation: "ROW".into(),
+                        enabled: true,
+                        definition: Some(format!(
+                            "CREATE TRIGGER trg_orders_audit BEFORE INSERT ON {schema}.orders FOR EACH ROW EXECUTE FUNCTION {schema}.touch_order()"
+                        )),
+                    }],
+                },
+                SnapshotTable {
+                    name: "v_active_orders".into(),
+                    kind: DatabaseObjectKind::View,
+                    comment: None,
+                    partition_key: None,
+                    view_definition: Some(format!(
+                        "SELECT o.id, o.total FROM {schema}.orders o WHERE o.total > 0"
+                    )),
+                    columns: Vec::new(),
+                    constraints: Vec::new(),
+                    indexes: Vec::new(),
+                    triggers: Vec::new(),
+                },
+            ],
+            routines: vec![SnapshotRoutine {
+                name: "touch_order".into(),
+                kind: DatabaseObjectKind::Function,
+                identity_arguments: String::new(),
+                arguments: String::new(),
+                return_type: Some("trigger".into()),
+                language: "plpgsql".into(),
+                volatility: Some("VOLATILE".into()),
+                security_definer: false,
+                definition: Some(format!(
+                    "CREATE OR REPLACE FUNCTION {schema}.touch_order()\n RETURNS trigger\n LANGUAGE plpgsql\nAS $function$\nBEGIN\n  RETURN NEW;\nEND;\n$function$"
+                )),
+                comment: None,
+            }],
+            sequences: vec![
+                SnapshotSequence {
+                    name: "customers_id_seq".into(),
+                    data_type: "bigint".into(),
+                    start_value: "1".into(),
+                    min_value: "1".into(),
+                    max_value: "9223372036854775807".into(),
+                    increment_by: "1".into(),
+                    cache_size: "1".into(),
+                    cycle: false,
+                },
+                SnapshotSequence {
+                    name: "orders_id_seq".into(),
+                    data_type: "bigint".into(),
+                    start_value: "1".into(),
+                    min_value: "1".into(),
+                    max_value: "9223372036854775807".into(),
+                    increment_by: "1".into(),
+                    cache_size: "1".into(),
+                    cycle: false,
+                },
+            ],
+            unsupported_objects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn postgres_full_schema_ddl_orders_dependencies_and_retargets_schema() {
+        let snap = sample_postgres_snapshot("r7_src");
+        let plan = generate_schema_ddl(&snap, Some("r7_dst")).expect("ddl plan");
+
+        assert_eq!(plan.engine, EngineKind::Postgres);
+        assert_eq!(plan.target_schema, "r7_dst");
+        assert_eq!(plan.destructive_count, 0);
+
+        // Auto-identity sequence `customers_id_seq` is skipped, standalone `orders_id_seq` is emitted first.
+        assert_eq!(plan.statements[0].object_kind, DatabaseObjectKind::Sequence);
+        assert_eq!(plan.statements[0].object_name, "orders_id_seq");
+        assert!(
+            plan.statements[0]
+                .sql
+                .contains("CREATE SEQUENCE \"r7_dst\".\"orders_id_seq\"")
+        );
+
+        // Constraint-backed indexes (`customers_pkey`, `customers_email_key`) are not emitted as separate CREATE INDEX.
+        assert!(
+            !plan
+                .statements
+                .iter()
+                .any(|s| s.object_name.ends_with("customers_email_key"))
+        );
+
+        // Secondary index `orders_customer_idx` and outbound FK `orders_customer_fk` are emitted and retargeted to `"r7_dst"`.
+        assert!(
+            plan.script
+                .contains("nextval('r7_dst.orders_id_seq'::regclass)")
+        );
+        assert!(plan.script.contains(
+            "ALTER TABLE \"r7_dst\".\"orders\" ADD CONSTRAINT \"orders_customer_fk\" FOREIGN KEY (customer_id) REFERENCES \"r7_dst\".customers(id) ON DELETE CASCADE;"
+        ));
+        assert!(
+            plan.script
+                .contains("CREATE OR REPLACE VIEW \"r7_dst\".\"v_active_orders\" AS SELECT o.id, o.total FROM \"r7_dst\".orders o WHERE o.total > 0;")
+        );
+        assert!(
+            plan.script
+                .contains("CREATE OR REPLACE FUNCTION \"r7_dst\".touch_order()")
+        );
+        assert!(plan.script.contains(
+            "CREATE TRIGGER trg_orders_audit BEFORE INSERT ON \"r7_dst\".orders FOR EACH ROW EXECUTE FUNCTION \"r7_dst\".touch_order();"
+        ));
+    }
+
+    #[test]
+    fn migration_ddl_generates_dependency_ordered_alter_and_drop_statements() {
+        let left = sample_postgres_snapshot("r7_left");
+        let mut right = sample_postgres_snapshot("r7_right");
+
+        // Modify customers: add a column `status`, drop unique constraint `customers_email_key`
+        right.tables[0].columns.push(SnapshotColumn {
+            name: "status".into(),
+            data_type: "text".into(),
+            nullable: false,
+            default_expression: Some("'active'::text".into()),
+            identity: None,
+            generated: None,
+            ordinal_position: 3,
+        });
+        right.tables[0]
+            .constraints
+            .retain(|c| c.name != "customers_email_key");
+        right.tables[0]
+            .indexes
+            .retain(|i| i.name != "customers_email_key");
+
+        // Drop trigger on orders
+        right.tables[1].triggers.clear();
+
+        let plan = generate_migration_ddl(&left, &right, None).expect("migration plan");
+        assert_eq!(plan.target_schema, "r7_left");
+        assert!(plan.destructive_count >= 2);
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|w| w.contains("destructive statement"))
+        );
+        assert!(
+            plan.script
+                .contains("DROP TRIGGER \"trg_orders_audit\" ON \"r7_left\".\"orders\";")
+        );
+        assert!(plan.script.contains(
+            "ALTER TABLE \"r7_left\".\"customers\" DROP CONSTRAINT \"customers_email_key\";"
+        ));
+        assert!(plan.script.contains(
+            "ALTER TABLE \"r7_left\".\"customers\" ADD COLUMN \"status\" text DEFAULT 'active'::text NOT NULL;"
+        ));
+    }
+
+    #[test]
+    fn mysql_full_and_migration_ddl_quotes_backticks_and_formats_defaults() {
+        let mut left = sample_postgres_snapshot("r7_mysql_left");
+        left.engine = EngineKind::Mysql;
+        left.tables[0].columns[0].identity = Some("AUTO_INCREMENT".into());
+        left.tables[0].columns[1].data_type = "varchar(120)".into();
+        left.tables[0].columns[1].default_expression = Some("guest@example.com".into());
+        left.tables[1].columns[0].default_expression = None;
+        left.tables[1].columns[0].identity = Some("AUTO_INCREMENT".into());
+        left.tables[1].triggers[0].definition = Some("SET NEW.total = ABS(NEW.total)".into());
+        left.routines[0].kind = DatabaseObjectKind::Function;
+        left.routines[0].arguments = "amount decimal(10,2)".into();
+        left.routines[0].identity_arguments = "decimal(10,2)".into();
+        left.routines[0].return_type = Some("decimal(10,2)".into());
+        left.routines[0].volatility = Some("DETERMINISTIC".into());
+        left.routines[0].security_definer = true;
+        left.routines[0].definition = Some("RETURN ROUND(amount * 0.1, 2)".into());
+        left.sequences.clear();
+
+        let full = generate_schema_ddl(&left, Some("r7_mysql_copy")).expect("mysql full ddl");
+        assert!(
+            full.script
+                .contains("CREATE TABLE `r7_mysql_copy`.`customers`")
+        );
+        assert!(full.script.contains("`id` bigint NOT NULL AUTO_INCREMENT"));
+        assert!(
+            full.script
+                .contains("`email` varchar(120) NOT NULL DEFAULT 'guest@example.com'")
+        );
+        assert!(full
+            .script
+            .contains("CREATE FUNCTION `r7_mysql_copy`.`touch_order`(amount decimal(10,2)) RETURNS decimal(10,2) DETERMINISTIC RETURN ROUND(amount * 0.1, 2);"));
+        assert!(full.script.contains(
+            "CREATE TRIGGER `r7_mysql_copy`.`trg_orders_audit` BEFORE INSERT ON `r7_mysql_copy`.`orders` FOR EACH ROW SET NEW.total = ABS(NEW.total);"
+        ));
+
+        let mut right = left.clone();
+        right.schema = "r7_mysql_right".into();
+        right.tables[0].columns[1].data_type = "varchar(200)".into();
+        let mig = generate_migration_ddl(&left, &right, None).expect("mysql migration ddl");
+        assert!(mig.script.contains(
+            "ALTER TABLE `r7_mysql_left`.`customers` MODIFY COLUMN `email` varchar(200) NOT NULL DEFAULT 'guest@example.com';"
+        ));
+    }
+}

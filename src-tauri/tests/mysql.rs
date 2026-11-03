@@ -3802,3 +3802,132 @@ async fn schema_snapshots_and_diffs_capture_live_databases_and_events() {
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn schema_ddl_round_trip_and_migration_produce_zero_diffs() {
+    for port in [53306, 53307] {
+        let (_root, studio, _owner) = setup(port, SafeMode::Silent).await;
+        let mut admin = profile(port, SafeMode::Silent);
+        admin.name = "Disposable root ddl".into();
+        admin.username = "root".into();
+        let admin = studio.save_profile(admin, None).unwrap();
+        let root_session = studio
+            .connect(
+                &admin.id,
+                ConnectionSecrets {
+                    password: Some("joinery-root-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let cleanup = "DROP DATABASE IF EXISTS r7_ddl_src;
+                       DROP DATABASE IF EXISTS r7_ddl_copy;
+                       DROP DATABASE IF EXISTS r7_ddl_target;";
+        completed(&run(&studio, &root_session, cleanup).await);
+
+        completed(
+            &run(
+                &studio,
+                &root_session,
+                "CREATE DATABASE r7_ddl_src;
+                 CREATE DATABASE r7_ddl_copy;
+                 CREATE DATABASE r7_ddl_target;
+
+                 CREATE TABLE r7_ddl_src.customers (
+                   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                   email VARCHAR(120) NOT NULL,
+                   CONSTRAINT uk_customers_email UNIQUE (email)
+                 ) ENGINE=InnoDB COMMENT='Customer master';
+
+                 CREATE TABLE r7_ddl_src.`Order Items` (
+                   id BIGINT NOT NULL PRIMARY KEY,
+                   customer_id BIGINT NOT NULL,
+                   `Unit Price` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                   status VARCHAR(16) NOT NULL DEFAULT 'open',
+                   CONSTRAINT fk_order_customer FOREIGN KEY (customer_id) REFERENCES r7_ddl_src.customers(id)
+                 ) ENGINE=InnoDB;
+                 CREATE INDEX r7_price_idx ON r7_ddl_src.`Order Items` (`Unit Price`);
+                 CREATE TABLE r7_ddl_src.obsolete_tbl (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+
+                 CREATE VIEW r7_ddl_src.active_v AS
+                   SELECT id, `Unit Price` FROM r7_ddl_src.`Order Items`;
+
+                 CREATE FUNCTION r7_ddl_src.double_val(x INT) RETURNS INT DETERMINISTIC
+                   RETURN x * 2;
+
+                 CREATE TABLE r7_ddl_target.customers (
+                   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                   email VARCHAR(120) NOT NULL,
+                   CONSTRAINT uk_customers_email UNIQUE (email)
+                 ) ENGINE=InnoDB COMMENT='Customer master updated';
+
+                 CREATE TABLE r7_ddl_target.`Order Items` (
+                   id BIGINT NOT NULL PRIMARY KEY,
+                   customer_id BIGINT NOT NULL,
+                   `Unit Price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                   status VARCHAR(16) NOT NULL DEFAULT 'open',
+                   notes VARCHAR(64) NULL,
+                   CONSTRAINT fk_order_customer FOREIGN KEY (customer_id) REFERENCES r7_ddl_target.customers(id)
+                 ) ENGINE=InnoDB;
+                 CREATE UNIQUE INDEX r7_price_idx ON r7_ddl_target.`Order Items` (`Unit Price`);
+                 CREATE TABLE r7_ddl_target.new_audit_tbl (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+
+                 CREATE VIEW r7_ddl_target.active_v AS
+                   SELECT id, `Unit Price`, notes FROM r7_ddl_target.`Order Items`;
+
+                 CREATE FUNCTION r7_ddl_target.double_val(x INT) RETURNS INT DETERMINISTIC
+                   RETURN x * 3;
+                ",
+            )
+            .await,
+        );
+
+        let src_snap = studio
+            .schema_snapshot(&root_session.id, "r7_ddl_src")
+            .await
+            .unwrap();
+        let full_plan = studio
+            .generate_schema_ddl(src_snap.clone(), Some("r7_ddl_copy"))
+            .unwrap();
+        assert_eq!(full_plan.destructive_count, 0, "port {port}");
+        completed(&run(&studio, &root_session, &full_plan.script).await);
+
+        let copy_snap = studio
+            .schema_snapshot(&root_session.id, "r7_ddl_copy")
+            .await
+            .unwrap();
+        let round_trip_diff = studio.compare_schemas(src_snap, copy_snap.clone()).unwrap();
+        assert!(
+            round_trip_diff.entries.is_empty(),
+            "port {port}: expected 0 diffs after full schema DDL round-trip, got: {:?}",
+            round_trip_diff.entries
+        );
+
+        let target_snap = studio
+            .schema_snapshot(&root_session.id, "r7_ddl_target")
+            .await
+            .unwrap();
+        let mig_plan = studio
+            .generate_migration_ddl(copy_snap, target_snap.clone(), Some("r7_ddl_copy"))
+            .unwrap();
+        assert!(mig_plan.destructive_count >= 1, "port {port}");
+        completed(&run(&studio, &root_session, &mig_plan.script).await);
+
+        let migrated_snap = studio
+            .schema_snapshot(&root_session.id, "r7_ddl_copy")
+            .await
+            .unwrap();
+        let migrated_diff = studio.compare_schemas(migrated_snap, target_snap).unwrap();
+        assert!(
+            migrated_diff.entries.is_empty(),
+            "port {port}: expected 0 diffs after migration DDL round-trip, got: {:?}",
+            migrated_diff.entries
+        );
+
+        completed(&run(&studio, &root_session, cleanup).await);
+        studio.shutdown();
+    }
+}
