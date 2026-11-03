@@ -342,6 +342,7 @@ export function isTabProtectedFromBulkClose(
   ];
   return (
     dirtyStore.pendingCountForTab(candidate.id, resultIds) > 0 ||
+    candidate.results.some((r) => dirtyStore.pendingCountForTab(r.id, [r.id]) > 0) ||
     isTabFileDirty(candidate) ||
     ["queued", "running"].includes(candidate.status) ||
     isLastOwnerOfSecondarySession(allTabs, candidate)
@@ -700,7 +701,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
     for (const result of current.results) {
       resultCache.release(result.id);
-      dirtyStore.clear(result.id);
+      dirtyStore.clearTab(result.id, [result.id]);
       void client.call("release_result", { resultId: result.id }).catch(() => {});
     }
     set((state) => {
@@ -763,7 +764,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
     for (const result of current.results) {
       resultCache.release(result.id);
-      dirtyStore.clear(result.id);
+      dirtyStore.clearTab(result.id, [result.id]);
       void client.call("release_result", { resultId: result.id }).catch(() => {});
     }
     get().updateTab(tabId, {
@@ -1734,7 +1735,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       void client.call("cancel_run", { runId: current.runId }).catch(() => {});
     dirtyStore.clearInserts(current.id);
     for (const result of [...current.results, ...current.pages.map((p) => p.result)]) {
-      dirtyStore.clear(result.id);
+      dirtyStore.clearTab(result.id, [result.id]);
       resultCache.release(result.id);
       void client.call("release_result", { resultId: result.id }).catch(() => {});
     }
@@ -2000,7 +2001,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       dirtyStore.clearInserts(tab.id);
       for (const result of [...tab.results, ...tab.pages.map((p) => p.result)]) {
         resultCache.release(result.id);
-        dirtyStore.clear(result.id);
+        dirtyStore.clearTab(result.id, [result.id]);
         void client.call("release_result", { resultId: result.id }).catch(() => {});
       }
       get().updateTab(tab.id, {
@@ -2071,8 +2072,14 @@ export const useStudio = create<StudioState>((set, get) => ({
         }
         if (event.type === "result") {
           const at = next.results.findIndex((r) => r.id === event.result.id);
-          if (at >= 0) next.results[at] = event.result;
-          else next.results.push(event.result);
+          if (at >= 0) {
+            if (event.result.status !== "streaming") {
+              resultCache.release(event.result.id);
+            }
+            next.results[at] = event.result;
+          } else {
+            next.results.push(event.result);
+          }
           if (!next.activeResultId) next.activeResultId = event.result.id;
         }
         if (event.type === "progress")

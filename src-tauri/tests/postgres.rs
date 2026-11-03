@@ -5082,3 +5082,129 @@ async fn table_maintenance_executes_reviewed_analyze_vacuum_and_reindex_and_guar
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn single_table_select_result_provenance_commits_edits_and_rejects_missing_pk() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+
+    // 1. Single-table SELECT with PK + subset of columns is proven Editable
+    let original_status = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT id, status FROM public.orders WHERE id = 2",
+        )
+        .await,
+    );
+    assert_eq!(
+        original_status.editability,
+        Some(ResultEditability::Editable {
+            table: TableRef {
+                schema: "public".into(),
+                name: "orders".into(),
+            },
+            primary_key: vec!["id".into()],
+        })
+    );
+    assert!(original_status.columns[0].primary_key);
+    assert!(original_status.columns[1].editable);
+    let prior_val = studio.results.row(&original_status.id, 0).unwrap()[1].clone();
+
+    let updated_val = format!("rx1_pg_{}", now_ms());
+    let preview = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(original_status.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: original_status.id.clone(),
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: "c1".into(),
+                        value: Some(updated_val.clone()),
+                    }],
+                }],
+                deletes: Vec::new(),
+                inserts: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert!(preview.sql[0].contains("UPDATE \"public\".\"orders\" SET \"status\"="));
+    let approval = studio.authorize(&preview.plan.id, None, None).unwrap();
+    let commit_events = finish(start(&studio, &preview.plan, Some(&approval)).1).await;
+    assert_eq!(status(&commit_events), RunStatus::Completed);
+
+    // Retained result in ResultStore is updated in place AND live DB has the committed value
+    assert_eq!(
+        studio.results.row(&original_status.id, 0).unwrap()[1].as_deref(),
+        Some(updated_val.as_str())
+    );
+    let verify_live = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT status FROM public.orders WHERE id = 2",
+        )
+        .await,
+    );
+    assert_eq!(
+        studio.results.row(&verify_live.id, 0).unwrap()[0].as_deref(),
+        Some(updated_val.as_str())
+    );
+    // And verify_live (which omitted `id`) is marked ReadOnly with the missing PK reason
+    assert_eq!(
+        verify_live.editability,
+        Some(ResultEditability::ReadOnly {
+            reason: "Projection omits primary key column \"id\"".into(),
+        })
+    );
+    assert_eq!(
+        studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(verify_live.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: verify_live.id.clone(),
+                        changes: vec![CellChange {
+                            row: 0,
+                            column: "c0".into(),
+                            value: prior_val.clone(),
+                        }],
+                    }],
+                    deletes: Vec::new(),
+                    inserts: Vec::new(),
+                },
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
+    );
+
+    // Restore original value
+    let restore = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(original_status.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: original_status.id,
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: "c1".into(),
+                        value: prior_val,
+                    }],
+                }],
+                deletes: Vec::new(),
+                inserts: Vec::new(),
+            },
+        )
+        .unwrap();
+    let restore_approval = studio.authorize(&restore.plan.id, None, None).unwrap();
+    assert_eq!(
+        status(&finish(start(&studio, &restore.plan, Some(&restore_approval)).1).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

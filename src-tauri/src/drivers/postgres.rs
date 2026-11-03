@@ -924,6 +924,29 @@ impl Driver for Postgres {
     }
 }
 
+fn row_matches_original(
+    schema: &TableSchema,
+    actual: &[Option<String>],
+    original: &[Option<String>],
+) -> bool {
+    if actual.len() != original.len() || actual.len() != schema.columns.len() {
+        return false;
+    }
+    schema
+        .columns
+        .iter()
+        .enumerate()
+        .all(|(idx, col)| match (&actual[idx], &original[idx]) {
+            (None, None) => true,
+            (Some(act), Some(orig)) if col.database_type.eq_ignore_ascii_case("bytea") => {
+                let norm_orig = orig.strip_prefix("\\x").unwrap_or(orig);
+                act.eq_ignore_ascii_case(norm_orig)
+            }
+            (Some(act), Some(orig)) => act == orig,
+            _ => false,
+        })
+}
+
 impl Postgres {
     async fn apply_on(
         &self,
@@ -956,7 +979,7 @@ impl Postgres {
                     let actual = (0..locked[0].len())
                         .map(|i| locked[0].get::<_, Option<String>>(i))
                         .collect::<TextRow>();
-                    if &actual != original {
+                    if !row_matches_original(schema, &actual, original) {
                         return Err(AppError::new(
                             ErrorCode::Conflict,
                             "A row changed since it was loaded. No edits were committed.",

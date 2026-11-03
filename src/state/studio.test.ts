@@ -1138,3 +1138,35 @@ test("closedTabs stack is bounded to 10 entries and purged when connection is re
   useStudio.getState().removeConnection("profile");
   expect(useStudio.getState().closedTabs).toHaveLength(0);
 });
+
+test("editable query result tracks pending edits in dirtyStore and cleans up when released", () => {
+  vi.mocked(client.call).mockResolvedValue(null);
+  const tabId = useStudio.getState().openQuery("profile");
+  const editableResult = {
+    ...page(schema("status")).result,
+    id: "query-res-1",
+    editability: {
+      status: "editable" as const,
+      table: { schema: "public", name: "orders" },
+      primaryKey: ["id"],
+    },
+  };
+  useStudio.getState().updateTab(tabId, {
+    results: [editableResult],
+    activeResultId: editableResult.id,
+    dataSessionId: session.id,
+  });
+
+  dirtyStore.set({
+    resultId: editableResult.id,
+    row: 0,
+    column: "c0",
+    original: "pending",
+    value: "completed",
+  });
+  dirtyStore.addInsertRow(editableResult.id);
+  expect(dirtyStore.pendingCountForTab(editableResult.id, [editableResult.id])).toBe(2);
+
+  useStudio.getState().closeTab(tabId);
+  expect(dirtyStore.pendingCountForTab(editableResult.id, [editableResult.id])).toBe(0);
+});

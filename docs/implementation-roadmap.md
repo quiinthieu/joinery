@@ -784,6 +784,20 @@ a manual transaction is open. `StorageStatsSection` (`ObjectInspectorView.tsx`,
 `TableMaintenanceDialog.tsx` and routing execution through `ReviewDialog`. See
 [evidence](IMPLEMENTATION_STATUS.md#r8-slice-5-engine-administration-and-table-maintenance-tools-3-november-2026).
 
+### RX slice 1: single-table query result editing with Rust-proven provenance (branch `feat/typed-commands-capabilities`)
+
+`safety::analyze_single_table_select` and `safety::verify_result_provenance`
+(`src-tauri/src/safety.rs`) inspect `SELECT` statements on PostgreSQL and
+MySQL/MariaDB against the live `TableSchema` and driver-reported result columns,
+proving single-base-table and primary-key provenance or recording an explicit
+`ResultEditability::ReadOnly { reason }`. Proven results store a projected
+`TableSchema` in `ResultStore` and expose `ResultEditability::Editable { table,
+primary_key }` on `ResultInfo`, enabling inline cell edits, row inserts, row
+deletes, TSV paste, and reviewed `prepare_table_changes` commits (`SELECT … FOR
+UPDATE` full-row conflict checks + in-place `ResultStore::apply_committed_changes`
+refresh) directly inside SQL query result grids. See
+[evidence](IMPLEMENTATION_STATUS.md#rx-slice-1-single-table-query-result-editing-with-rust-proven-provenance-3-november-2026).
+
 ## Subsequent phases and blueprint cross-reference
 
 | Phase | Feature IDs / user value | Priority / complexity | Dependencies and exit criteria | Blueprint relationship |

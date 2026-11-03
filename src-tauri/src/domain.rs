@@ -656,7 +656,7 @@ impl SchemaDiagram {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSchema {
     pub table: TableRef,
@@ -901,7 +901,23 @@ pub enum RetentionStatus {
     Truncated,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ResultEditability {
+    Editable {
+        table: TableRef,
+        primary_key: Vec<String>,
+    },
+    ReadOnly {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultInfo {
     pub id: String,
@@ -911,6 +927,9 @@ pub struct ResultInfo {
     pub retained_rows: usize,
     pub status: RetentionStatus,
     pub table: Option<TableRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub editability: Option<ResultEditability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

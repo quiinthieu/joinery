@@ -87,6 +87,7 @@ fn main() {
         BrowseQuery::decl(),
         BrowseApproval::decl(),
         RetentionStatus::decl(),
+        ResultEditability::decl(),
         ResultInfo::decl(),
         TablePage::decl(),
         RunStatus::decl(),

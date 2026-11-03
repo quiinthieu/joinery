@@ -287,6 +287,37 @@ fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
     }
 }
 
+fn unchanged_for_apply(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
+    let narrowed = |expected: bool, current: bool| !expected || current;
+    let columns = !expected.columns.is_empty()
+        && expected.columns.iter().all(|e| {
+            current.columns.iter().any(|c| {
+                e.name.eq_ignore_ascii_case(&c.name)
+                    && e.database_type == c.database_type
+                    && e.kind == c.kind
+                    && e.nullable == c.nullable
+                    && e.primary_key == c.primary_key
+                    && e.foreign_key == c.foreign_key
+                    && e.has_default == c.has_default
+                    && narrowed(e.editable, c.editable)
+                    && narrowed(e.insertable, c.insertable)
+            })
+        });
+    if !columns
+        || expected.primary_key != current.primary_key
+        || !narrowed(expected.editable, current.editable)
+        || serde_json::to_string(&expected.foreign_keys).ok()
+            != serde_json::to_string(&current.foreign_keys).ok()
+    {
+        Err(AppError::new(
+            ErrorCode::Conflict,
+            "The table schema changed. Refresh before continuing.",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 async fn referencing_keys_on(
     conn: &mut Conn,
     table: &TableRef,
@@ -703,7 +734,7 @@ async fn apply_on(
         ))
         .await
         .map_err(mysql_error)?;
-        unchanged(schema, &schema_on(conn, &schema.table).await?)?;
+        unchanged_for_apply(schema, &schema_on(conn, &schema.table).await?)?;
         for row in rows {
             if cancel.is_cancelled() {
                 return Err(AppError::new(

@@ -2882,3 +2882,20 @@ Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged
 
 Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
+## RX slice 1: single-table query result editing with Rust-proven provenance (3 November 2026)
+
+`safety::analyze_single_table_select` and `safety::verify_result_provenance` (`src-tauri/src/safety.rs`) analyze `SELECT` queries on PostgreSQL and MySQL/MariaDB and verify them against the session's live `TableSchema` and driver-reported result columns. Queries that select directly from a single editable base table (without `WITH` CTEs, joins, set operations, `DISTINCT`, `GROUP BY`, `HAVING`, window functions, computed expressions, or renaming column aliases) and project every primary-key column without duplicate columns receive a projected `TableSchema` in `ResultStore` and `ResultEditability::Editable { table, primary_key }` on `ResultInfo`. All other `SELECT` results receive `ResultEditability::ReadOnly { reason }` explaining why the result set is read-only.
+
+`DatabaseGrid.tsx`, `Workbench.tsx`, and `App.tsx` render a provenance badge (`Editable result · schema.table (PK: …)` or `Read-only result · reason`) in the query result toolbar and enable inline cell edits, draft row inserts (when all omitted `NOT NULL` columns have defaults), row deletes, TSV paste, and **Review N edits** via `prepare_table_changes` and `ReviewDialog`. Committing a `ChangePreview` on a query result runs the existing `SELECT … FOR UPDATE` full-row conflict check and updates the retained result batches in `ResultStore` via `apply_committed_changes`.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `single_table_select_provenance_accepts_wildcard_subset_and_alias` and `single_table_select_provenance_rejects_ineligible_ast_and_missing_pk` in `safety.rs`. `editable query result tracks pending edits in dirtyStore and cleans up when released` in `studio.test.ts` |
+| Fixtures | `single_table_select_result_provenance_commits_edits_and_rejects_missing_pk` in `src-tauri/tests/postgres.rs` (PostgreSQL 18) and `mysql_and_mariadb_single_table_select_result_provenance_commits_and_rejects_missing_pk` in `src-tauri/tests/mysql.rs` (MySQL 8.4 and MariaDB 11.4) |
+| Browser | `edits a single-table SELECT query result with proven provenance and shows read-only reason when PK is omitted` in `tests/e2e/studio.spec.ts` |
+| Validate | `pnpm validate`: 513 frontend tests / 50 files, 176 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | External release-qualification gates (Apple Developer ID signing/notarization, Windows/Linux packaged host runtime, live production/Snowflake account qualification) |
+
+Branch `feat/typed-commands-capabilities` from `origin/main` `8be971a`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+

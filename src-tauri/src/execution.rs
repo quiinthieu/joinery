@@ -82,10 +82,26 @@ enum Action {
     Changes {
         schema: TableSchema,
         rows: Vec<RowMutation>,
+        anchor_id: Option<String>,
+        updates: Vec<ResultChanges>,
+        deletes: Vec<ResultDeletes>,
+        inserted_rows: Vec<TextRow>,
     },
     CancelProcess {
         id: String,
         identity: String,
+    },
+}
+
+enum StatementProvenance {
+    None,
+    Candidate {
+        candidate: safety::SingleTableSelectCandidate,
+        live_schema: Box<TableSchema>,
+        safe_mode: SafeMode,
+    },
+    ReadOnly {
+        reason: String,
     },
 }
 
@@ -928,7 +944,7 @@ impl Studio {
                 serde_json::to_vec(&(table, query))
                     .map_err(|_| AppError::internal("Could not fingerprint table filter"))?,
             ),
-            Action::Changes { schema, rows } => fingerprint.update(
+            Action::Changes { schema, rows, .. } => fingerprint.update(
                 serde_json::to_vec(&(schema, rows))
                     .map_err(|_| AppError::internal("Could not fingerprint bound changes"))?,
             ),
@@ -1120,11 +1136,13 @@ impl Studio {
                         break;
                     }
                     let clock = Instant::now();
+                    let provenance = self.resolve_statement_provenance(&session, statement).await;
                     let mut sink = Output {
                         studio: &self,
                         session_id: &session.info.id,
                         run_id: &run_id,
                         index,
+                        provenance,
                         current: None,
                         truncated: false,
                         viewer_closed: false,
@@ -1223,21 +1241,44 @@ impl Studio {
                     }
                 }
             }
-            Action::Changes { schema, rows } => {
+            Action::Changes {
+                schema,
+                rows,
+                anchor_id,
+                updates,
+                deletes,
+                inserted_rows,
+            } => {
                 if token.is_cancelled() {
                     status = RunStatus::Cancelled;
-                } else if let Err(error) = session.driver.apply(schema, rows).await {
-                    status = if error.code == ErrorCode::Cancelled {
-                        RunStatus::Cancelled
-                    } else if error.code == ErrorCode::OutcomeUnknown {
-                        RunStatus::OutcomeUnknown
-                    } else {
-                        RunStatus::Failed
-                    };
-                    events(QueryEvent::Error {
-                        error,
-                        statement_index: 0,
-                    });
+                } else {
+                    match session.driver.apply(schema, rows).await {
+                        Ok(()) => {
+                            if let Ok(updated_results) = self.results.apply_committed_changes(
+                                anchor_id.as_deref(),
+                                updates,
+                                deletes,
+                                inserted_rows,
+                            ) {
+                                for result in updated_results {
+                                    events(QueryEvent::Result { result });
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            status = if error.code == ErrorCode::Cancelled {
+                                RunStatus::Cancelled
+                            } else if error.code == ErrorCode::OutcomeUnknown {
+                                RunStatus::OutcomeUnknown
+                            } else {
+                                RunStatus::Failed
+                            };
+                            events(QueryEvent::Error {
+                                error,
+                                statement_index: 0,
+                            });
+                        }
+                    }
                 }
             }
             Action::CancelProcess { id, identity } => {
@@ -1743,6 +1784,59 @@ impl Studio {
     pub async fn schema(&self, session_id: &str, table: &TableRef) -> AppResult<TableSchema> {
         let session = self.session(session_id)?;
         self.schema_for_session(&session, table).await
+    }
+    async fn resolve_statement_provenance(
+        &self,
+        session: &Session,
+        statement: &StatementPlan,
+    ) -> StatementProvenance {
+        if !matches!(
+            session.profile.engine,
+            EngineKind::Postgres | EngineKind::Mysql
+        ) || !session.info.capabilities.table_editing
+        {
+            return StatementProvenance::None;
+        }
+        if statement.kind != StatementKind::Read {
+            return StatementProvenance::ReadOnly {
+                reason: "Statement is not a SELECT query".into(),
+            };
+        }
+        let default_schema = match session.driver.session_state(&session.info.id).await {
+            Ok(state) => state.active_context.or(Some(state.database)),
+            Err(_) => Some(if session.profile.engine == EngineKind::Postgres {
+                "public".into()
+            } else {
+                session.profile.database.clone()
+            }),
+        };
+        let candidate = match safety::analyze_single_table_select(
+            session.profile.engine,
+            &statement.sql,
+            default_schema.as_deref(),
+        ) {
+            Ok(candidate) => candidate,
+            Err(reason) => return StatementProvenance::ReadOnly { reason },
+        };
+        let safe_mode = safety::effective_mode(&session.profile);
+        if safe_mode == SafeMode::ReadOnly {
+            return StatementProvenance::ReadOnly {
+                reason: "Connection is in read-only mode".into(),
+            };
+        }
+        match self.schema_for_session(session, &candidate.table).await {
+            Ok(live_schema) => StatementProvenance::Candidate {
+                candidate,
+                live_schema: Box::new(live_schema),
+                safe_mode,
+            },
+            Err(_) => StatementProvenance::ReadOnly {
+                reason: format!(
+                    "Table \"{}.{}\" is not an editable base table or its schema is unavailable",
+                    candidate.table.schema, candidate.table.name
+                ),
+            },
+        }
     }
     pub async fn referencing_foreign_keys(
         &self,
@@ -2412,6 +2506,9 @@ impl Studio {
             ));
         }
         let schema = self.results.provenance(anchor_id)?;
+        let retained_anchor = Some(anchor_id.to_owned());
+        let retained_updates = changes.updates.clone();
+        let retained_deletes = changes.deletes.clone();
         let update_cells = changes
             .updates
             .iter()
@@ -2636,12 +2733,31 @@ impl Studio {
         plan.requires_approval = true;
         plan.warnings.push("Grid edits use the login role in a separate transaction. SQL-editor transactions and session settings are independent.".into());
         bytes += sql.iter().map(String::len).sum::<usize>();
+        let inserted_rows: Vec<TextRow> = mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                RowMutation::Insert { values } => {
+                    let mut row = vec![None; schema.columns.len()];
+                    for (idx, val) in values {
+                        if *idx < row.len() {
+                            row[*idx] = val.clone();
+                        }
+                    }
+                    Some(row)
+                }
+                _ => None,
+            })
+            .collect();
         let row_count = mutations.len();
         let plan = self.store_plan(
             plan,
             Action::Changes {
                 schema,
                 rows: mutations,
+                anchor_id: retained_anchor,
+                updates: retained_updates,
+                deletes: retained_deletes,
+                inserted_rows,
             },
             bytes,
         )?;
@@ -3343,6 +3459,10 @@ impl Studio {
             Action::Changes {
                 schema,
                 rows: prepared.mutations,
+                anchor_id: None,
+                updates: Vec::new(),
+                deletes: Vec::new(),
+                inserted_rows: Vec::new(),
             },
             total_bytes,
         )?;
@@ -3730,6 +3850,7 @@ struct Output<'a> {
     session_id: &'a str,
     run_id: &'a str,
     index: usize,
+    provenance: StatementProvenance,
     current: Option<String>,
     truncated: bool,
     viewer_closed: bool,
@@ -3763,11 +3884,46 @@ impl QuerySink for Output<'_> {
         if self.viewer_closed {
             return Ok(());
         }
-        let info = match self
-            .studio
-            .results
-            .create(self.run_id, self.index, columns, None)
-        {
+        let (resolved_columns, resolved_schema, resolved_editability) = if columns.is_empty() {
+            (columns, None, None)
+        } else {
+            match &self.provenance {
+                StatementProvenance::None => (columns, None, None),
+                StatementProvenance::ReadOnly { reason } => (
+                    columns,
+                    None,
+                    Some(ResultEditability::ReadOnly {
+                        reason: reason.clone(),
+                    }),
+                ),
+                StatementProvenance::Candidate {
+                    candidate,
+                    live_schema,
+                    safe_mode,
+                } => match safety::verify_result_provenance(
+                    candidate,
+                    live_schema,
+                    &columns,
+                    *safe_mode,
+                ) {
+                    safety::ProvenanceResolution::Editable {
+                        schema,
+                        columns: enriched,
+                        editability,
+                    } => (enriched, Some(*schema), Some(editability)),
+                    safety::ProvenanceResolution::ReadOnly { reason } => {
+                        (columns, None, Some(ResultEditability::ReadOnly { reason }))
+                    }
+                },
+            }
+        };
+        let info = match self.studio.results.create_with_editability(
+            self.run_id,
+            self.index,
+            resolved_columns,
+            resolved_schema,
+            resolved_editability,
+        ) {
             Ok(info) => info,
             Err(error) => {
                 self.limit(&error.message);

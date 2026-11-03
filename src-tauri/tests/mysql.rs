@@ -4549,3 +4549,102 @@ async fn table_maintenance_executes_reviewed_analyze_optimize_and_check_and_reje
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rejects_missing_pk() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+
+        let editable_res = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT id, note FROM sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
+        assert_eq!(
+            editable_res.editability,
+            Some(ResultEditability::Editable {
+                table: TableRef {
+                    schema: "joinery".into(),
+                    name: "sample".into(),
+                },
+                primary_key: vec!["id".into()],
+            }),
+            "port {port}"
+        );
+        let original_note = studio.results.row(&editable_res.id, 0).unwrap()[1].clone();
+        let next_note = format!("rx1_mysql_{port}_{}", now_ms());
+
+        let preview = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(editable_res.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: editable_res.id.clone(),
+                        changes: vec![CellChange {
+                            row: 0,
+                            column: "c1".into(),
+                            value: Some(next_note.clone()),
+                        }],
+                    }],
+                    deletes: Vec::new(),
+                    inserts: Vec::new(),
+                },
+            )
+            .unwrap();
+        completed(&execute(&studio, &preview.plan).await);
+
+        assert_eq!(
+            studio.results.row(&editable_res.id, 0).unwrap()[1].as_deref(),
+            Some(next_note.as_str()),
+            "port {port}"
+        );
+
+        let missing_pk = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT note FROM sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
+        assert_eq!(
+            studio.results.row(&missing_pk.id, 0).unwrap()[0].as_deref(),
+            Some(next_note.as_str()),
+            "port {port}"
+        );
+        assert_eq!(
+            missing_pk.editability,
+            Some(ResultEditability::ReadOnly {
+                reason: "Projection omits primary key column \"id\"".into(),
+            }),
+            "port {port}"
+        );
+
+        // Restore original value
+        let restore = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(editable_res.id.clone()),
+                    updates: vec![ResultChanges {
+                        result_id: editable_res.id,
+                        changes: vec![CellChange {
+                            row: 0,
+                            column: "c1".into(),
+                            value: original_note,
+                        }],
+                    }],
+                    deletes: Vec::new(),
+                    inserts: Vec::new(),
+                },
+            )
+            .unwrap();
+        completed(&execute(&studio, &restore.plan).await);
+        studio.shutdown();
+    }
+}

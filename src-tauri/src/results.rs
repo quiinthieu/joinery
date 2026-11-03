@@ -79,6 +79,39 @@ impl ResultStore {
         columns: Vec<ColumnInfo>,
         provenance: Option<TableSchema>,
     ) -> AppResult<ResultInfo> {
+        let editability = provenance.as_ref().map(|schema| {
+            if schema.editable && !schema.primary_key.is_empty() {
+                ResultEditability::Editable {
+                    table: schema.table.clone(),
+                    primary_key: schema.primary_key.clone(),
+                }
+            } else {
+                ResultEditability::ReadOnly {
+                    reason: if schema.primary_key.is_empty() {
+                        format!(
+                            "Table \"{}.{}\" has no primary key",
+                            schema.table.schema, schema.table.name
+                        )
+                    } else {
+                        format!(
+                            "Table \"{}.{}\" is read-only",
+                            schema.table.schema, schema.table.name
+                        )
+                    },
+                }
+            }
+        });
+        self.create_with_editability(run_id, statement_index, columns, provenance, editability)
+    }
+
+    pub fn create_with_editability(
+        &self,
+        run_id: &str,
+        statement_index: usize,
+        columns: Vec<ColumnInfo>,
+        provenance: Option<TableSchema>,
+        editability: Option<ResultEditability>,
+    ) -> AppResult<ResultInfo> {
         if columns.len() > 1000 {
             return Err(AppError::new(
                 ErrorCode::ResultLimitReached,
@@ -93,6 +126,7 @@ impl ResultStore {
             retained_rows: 0,
             status: RetentionStatus::Streaming,
             table: provenance.as_ref().map(|s| s.table.clone()),
+            editability,
         };
         let mut state = self.state.lock();
         if state.results.len() >= 100 {
@@ -365,6 +399,150 @@ impl ResultStore {
     pub fn usage(&self) -> (usize, usize) {
         let state = self.state.lock();
         (state.bytes, state.results.len())
+    }
+
+    pub fn apply_committed_changes(
+        &self,
+        anchor_id: Option<&str>,
+        updates: &[ResultChanges],
+        deletes: &[ResultDeletes],
+        inserted_rows: &[TextRow],
+    ) -> AppResult<Vec<ResultInfo>> {
+        let mut affected_ids = Vec::new();
+        for u in updates {
+            if !affected_ids.contains(&u.result_id) {
+                affected_ids.push(u.result_id.clone());
+            }
+        }
+        for d in deletes {
+            if !affected_ids.contains(&d.result_id) {
+                affected_ids.push(d.result_id.clone());
+            }
+        }
+        if !inserted_rows.is_empty()
+            && let Some(id) = anchor_id
+            && !affected_ids.iter().any(|existing| existing == id)
+        {
+            affected_ids.push(id.to_owned());
+        }
+
+        let mut state = self.state.lock();
+        let mut updated_infos = Vec::new();
+
+        for id in affected_ids {
+            let Some(entry) = state.results.get(&id) else {
+                continue;
+            };
+            let col_count = entry.info.columns.len();
+            let col_positions: HashMap<String, usize> = entry
+                .info
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(idx, col)| (col.id.clone(), idx))
+                .collect();
+
+            let mut rows = Vec::with_capacity(entry.info.retained_rows + inserted_rows.len());
+            for batch in &entry.batches {
+                let arrays: Vec<&StringArray> = (0..col_count)
+                    .map(|col_idx| {
+                        batch
+                            .column(col_idx)
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .ok_or_else(|| AppError::internal("Invalid result column encoding"))
+                    })
+                    .collect::<AppResult<Vec<_>>>()?;
+                for row_idx in 0..batch.num_rows() {
+                    let mut row = Vec::with_capacity(col_count);
+                    for array in &arrays {
+                        if array.is_null(row_idx) {
+                            row.push(None);
+                        } else {
+                            row.push(Some(array.value(row_idx).to_string()));
+                        }
+                    }
+                    rows.push(row);
+                }
+            }
+
+            for u in updates.iter().filter(|u| u.result_id == id) {
+                for change in &u.changes {
+                    if let Some(&col_idx) = col_positions.get(&change.column)
+                        && let Some(row) = rows.get_mut(change.row)
+                        && col_idx < row.len()
+                    {
+                        row[col_idx] = change.value.clone();
+                    }
+                }
+            }
+
+            let deleted_set: std::collections::HashSet<usize> = deletes
+                .iter()
+                .filter(|d| d.result_id == id)
+                .flat_map(|d| d.rows.iter().copied())
+                .collect();
+            if !deleted_set.is_empty() {
+                let mut idx = 0usize;
+                rows.retain(|_| {
+                    let keep = !deleted_set.contains(&idx);
+                    idx += 1;
+                    keep
+                });
+            }
+
+            if anchor_id == Some(id.as_str()) && !inserted_rows.is_empty() {
+                for inserted in inserted_rows {
+                    if inserted.len() == col_count {
+                        rows.push(inserted.clone());
+                    }
+                }
+            }
+
+            let schema = Arc::new(Schema::new(
+                entry
+                    .info
+                    .columns
+                    .iter()
+                    .map(|c| Field::new(&c.id, DataType::Utf8, true))
+                    .collect::<Vec<_>>(),
+            ));
+            let mut new_batches = Vec::new();
+            let mut new_bytes = 0usize;
+            for chunk in rows.chunks(BATCH_ROWS) {
+                let arrays: Vec<ArrayRef> = (0..col_count)
+                    .map(|i| {
+                        let bytes = chunk
+                            .iter()
+                            .map(|row| row[i].as_ref().map_or(0, String::len))
+                            .sum();
+                        let mut builder = StringBuilder::with_capacity(chunk.len(), bytes);
+                        for row in chunk {
+                            builder.append_option(row[i].as_deref());
+                        }
+                        Arc::new(builder.finish()) as ArrayRef
+                    })
+                    .collect();
+                let batch = RecordBatch::try_new(schema.clone(), arrays)
+                    .map_err(|_| AppError::internal("Could not encode updated result batch"))?;
+                new_bytes += batch.get_array_memory_size();
+                new_batches.push(batch);
+            }
+
+            let old_bytes = entry.bytes;
+            state.bytes = state
+                .bytes
+                .saturating_sub(old_bytes)
+                .saturating_add(new_bytes);
+            if let Some(entry_mut) = state.results.get_mut(&id) {
+                entry_mut.bytes = new_bytes;
+                entry_mut.batches = new_batches;
+                entry_mut.info.retained_rows = rows.len();
+                updated_infos.push(entry_mut.info.clone());
+            }
+        }
+
+        Ok(updated_infos)
     }
 }
 

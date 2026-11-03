@@ -39,12 +39,13 @@ INSERT INTO public.e2e_a06_maint VALUES (1, 'alpha', 'row-1'), (2, 'beta', 'row-
   await page.getByRole("button", { name: "Run all statements", exact: true }).click();
   await expect(page.locator(".result-footer")).toContainText("affected");
 
-  await page.getByRole("button", { name: "Refresh tables" }).click();
-
   try {
+    await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
+    const searchInput = page.getByLabel("Search tables", { exact: true });
+    await searchInput.fill("e2e_a06_maint");
     await page
-      .getByRole("button", { name: /e2e_a06_maint/ })
-      .first()
+      .locator(".schema-tree")
+      .getByRole("button", { name: "e2e_a06_maint", exact: true })
       .click();
     await page.getByRole("button", { name: "Structure", exact: true }).click();
 

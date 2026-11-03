@@ -180,9 +180,25 @@ export function Workbench({
   );
   const running = tab.status === "running" || tab.status === "queued";
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
-  const resultIds = tab.pages.map((page) => page.result.id);
-  const pendingCount = tab.kind === "table" ? dirtyStore.pendingCountForTab(tab.id, resultIds) : 0;
-  const draftInserts = tab.kind === "table" ? dirtyStore.insertsForTab(tab.id) : [];
+  const queryResultEditable =
+    tab.kind === "query" &&
+    !!result &&
+    result.editability?.status === "editable" &&
+    profile?.safeMode !== "readOnly" &&
+    !!session &&
+    tab.dataSessionId === session.id &&
+    (!isQueryPlanResult(result, tab.planSource) || planResultId !== result.id);
+  const insertScopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
+  const resultIds =
+    tab.kind === "table" ? tab.pages.map((page) => page.result.id) : result ? [result.id] : [];
+  const pendingCount =
+    tab.kind === "table"
+      ? dirtyStore.pendingCountForTab(tab.id, resultIds)
+      : result
+        ? dirtyStore.pendingCountForTab(result.id, [result.id])
+        : 0;
+  const draftInserts =
+    tab.kind === "table" || queryResultEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
   const tableColumns = tab.kind === "table" ? (tab.schema?.columns ?? []) : [];
   const tableLayout =
     tab.kind === "table" ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table) : null;
@@ -215,6 +231,15 @@ export function Workbench({
         if (page) selectedExisting.push({ resultId: page.result.id, row: visualRow - page.start });
       }
     }
+  } else if (tab.kind === "query" && result) {
+    for (const visualRow of selectedRows) {
+      if (visualRow >= result.retainedRows) {
+        const draft = draftInserts[visualRow - result.retainedRows];
+        if (draft) selectedDraftIds.push(draft.id);
+      } else if (visualRow >= 0) {
+        selectedExisting.push({ resultId: result.id, row: visualRow });
+      }
+    }
   }
   const onlyDraftsSelected = selectedDraftIds.length > 0 && selectedExisting.length === 0;
   const allExistingDeleted =
@@ -234,8 +259,9 @@ export function Workbench({
         : null;
   function stageInsertRow() {
     try {
-      dirtyStore.addInsertRow(tab.id);
-      const nextRow = tab.loadedRows + dirtyStore.insertsForTab(tab.id).length - 1;
+      const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+      dirtyStore.addInsertRow(insertScopeId);
+      const nextRow = baseRows + dirtyStore.insertsForTab(insertScopeId).length - 1;
       setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
     } catch (error) {
       state.notify(error instanceof Error ? error.message : "Could not stage inserted row");
@@ -244,7 +270,7 @@ export function Workbench({
   function handleDeleteSelection() {
     try {
       if (onlyDraftsSelected) {
-        dirtyStore.removeInsertRows(tab.id, selectedDraftIds);
+        dirtyStore.removeInsertRows(insertScopeId, selectedDraftIds);
         return;
       }
       if (allExistingDeleted) {
@@ -255,7 +281,7 @@ export function Workbench({
         for (const [resultId, rows] of byResult) dirtyStore.setDeleted(resultId, rows, false);
         return;
       }
-      if (selectedDraftIds.length) dirtyStore.removeInsertRows(tab.id, selectedDraftIds);
+      if (selectedDraftIds.length) dirtyStore.removeInsertRows(insertScopeId, selectedDraftIds);
       const byResult = new Map<string, number[]>();
       for (const entry of undeletedExisting) {
         byResult.set(entry.resultId, [...(byResult.get(entry.resultId) ?? []), entry.row]);
@@ -292,6 +318,7 @@ export function Workbench({
           .catch((error) => state.notify(messageOf(error)));
       for (const result of tab.results) {
         resultCache.release(result.id);
+        dirtyStore.clearTab(result.id, [result.id]);
         void client.call("release_result", { resultId: result.id }).catch(() => {});
       }
       state.updateTab(tab.id, {
@@ -928,6 +955,87 @@ export function Workbench({
             )}
           </div>
           <div className="table-view-actions">
+            {result && result.editability && (
+              <span
+                className={`result-provenance-badge ${
+                  result.editability.status === "editable" && profile?.safeMode !== "readOnly"
+                    ? "editable"
+                    : "read-only"
+                }`}
+                data-testid="result-provenance-badge"
+              >
+                {result.editability.status === "editable" && profile?.safeMode !== "readOnly"
+                  ? `Editable result · ${result.editability.table.schema}.${result.editability.table.name} (PK: ${result.editability.primaryKey.join(", ")})`
+                  : `Read-only result · ${
+                      result.editability.status === "editable"
+                        ? "Connection is in read-only mode"
+                        : result.editability.reason
+                    }`}
+              </span>
+            )}
+            {queryResultEditable && (
+              <>
+                {result.columns.some((col) => col.insertable) && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    disabled={mutatingDisabled}
+                    onClick={stageInsertRow}
+                  >
+                    <Plus size={12} />
+                    Insert row
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={
+                    mutatingDisabled ||
+                    (!onlyDraftsSelected && !allExistingDeleted && deleteTargetCount === 0)
+                  }
+                  onClick={handleDeleteSelection}
+                >
+                  {allExistingDeleted ? <RotateCcw size={12} /> : <Trash2 size={12} />}
+                  {onlyDraftsSelected
+                    ? selectedDraftIds.length === 1
+                      ? "Remove insert"
+                      : `Remove ${selectedDraftIds.length} inserts`
+                    : allExistingDeleted
+                      ? selectedExisting.length === 1
+                        ? "Undo delete"
+                        : `Undo ${selectedExisting.length} deletes`
+                      : deleteTargetCount > 1
+                        ? `Delete ${deleteTargetCount} rows`
+                        : "Delete row"}
+                </button>
+              </>
+            )}
+            {tab.kind === "query" && pendingCount > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running}
+                  onClick={() => dirtyStore.clearTab(insertScopeId, resultIds)}
+                >
+                  Discard
+                </button>
+                <button
+                  type="button"
+                  className="button primary small"
+                  disabled={
+                    running ||
+                    !session ||
+                    session.id !== tab.dataSessionId ||
+                    tab.status === "outcomeUnknown"
+                  }
+                  onClick={onReview}
+                >
+                  <Check size={13} />
+                  Review {pendingCount} edit{pendingCount === 1 ? "" : "s"}
+                </button>
+              </>
+            )}
             {result && result.columns.length > 0 && (
               <>
                 {isQueryPlanResult(result, tab.planSource) && (
