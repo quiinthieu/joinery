@@ -185,6 +185,17 @@ export async function runNativeSmoke() {
           },
         },
       ],
+      [
+        "prepare_table_object_ddl",
+        {
+          sessionId: "missing-native-fixture",
+          action: {
+            type: "dropObject",
+            object: { schema: "public", name: "orders", kind: "table", identity: null },
+            cascade: false,
+          },
+        },
+      ],
     ] as const) {
       let denied = false;
       try {
@@ -371,6 +382,19 @@ export async function runNativeSmoke() {
               table: { schema: "public", name: "orders" },
               name: "",
               concurrently: false,
+            },
+          }),
+      ],
+      [
+        "preview_table_object_ddl",
+        "invalidInput",
+        () =>
+          client.call("preview_table_object_ddl", {
+            engine: "postgres",
+            action: {
+              type: "dropObject",
+              object: { schema: "public", name: "", kind: "table", identity: null },
+              cascade: false,
             },
           }),
       ],

@@ -40,6 +40,7 @@ import {
   type ExplorerCategoryId,
   type ExplorerFilterChip,
 } from "./explorer-tree";
+import { TableObjectDialog } from "../studio/TableObjectDialog";
 
 const EMPTY_TABLES: TableInfo[] = [];
 const EMPTY_OBJECTS: DatabaseObjectSummary[] = [];
@@ -142,6 +143,7 @@ export function Sidebar({
     [schemas, setSchemas] = useState(new Set<string>()),
     [collapsedCategories, setCollapsedCategories] = useState(new Set<string>()),
     [collapsedDuringSearch, setCollapsedDuringSearch] = useState(new Set<string>()),
+    [createTableSchema, setCreateTableSchema] = useState<string | null>(null),
     treeRef = useRef<HTMLDivElement>(null);
 
   const selected = state.bootstrap?.profiles.find(
@@ -452,6 +454,21 @@ export function Sidebar({
                         type="button"
                         tabIndex={-1}
                         className="schema-diagram"
+                        aria-label={`Create table in ${group.schema}`}
+                        title={
+                          selected.safeMode === "readOnly"
+                            ? "Connection is in read-only safe mode"
+                            : `Create table in ${group.schema}`
+                        }
+                        disabled={selected.safeMode === "readOnly"}
+                        onClick={() => setCreateTableSchema(group.schema)}
+                      >
+                        <Plus size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        className="schema-diagram"
                         aria-label={`Open schema diagram for ${group.schema}`}
                         title="Open schema diagram"
                         onClick={() => state.openDiagram(selected.id, group.schema)}
@@ -561,6 +578,25 @@ export function Sidebar({
         <Settings2 size={15} />
         Preferences<span>⌘ ,</span>
       </button>
+      {createTableSchema && selected && (
+        <TableObjectDialog
+          connectionId={selected.id}
+          request={{ kind: "createTable", schema: createTableSchema }}
+          onClose={() => setCreateTableSchema(null)}
+          onCompleted={(action) => {
+            if (action.type === "createTable") {
+              void state
+                .openObject(selected.id, {
+                  schema: action.table.schema,
+                  name: action.table.name,
+                  kind: "table",
+                  identity: null,
+                })
+                .catch((error) => state.notify(String(error.message ?? error)));
+            }
+          }}
+        />
+      )}
     </aside>
   );
 }

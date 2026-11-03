@@ -1223,6 +1223,7 @@ export function Workbench({
             connectionId={tab.connectionId}
             highlightedColumn={tab.highlightedColumn}
             onRefresh={() => void state.refreshTable(tab.id)}
+            onDropped={() => state.closeTab(tab.id)}
           />
         ) : tab.kind === "table" && tab.view === "ddl" ? (
           <div className="object-inspector-scroll">

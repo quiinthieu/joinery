@@ -4636,3 +4636,145 @@ async fn index_and_constraint_editor_executes_reviewed_ddl_and_rejects_read_only
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn table_and_object_ddl_editor_executes_reviewed_ddl_and_rejects_read_only() {
+    let (_root, studio, session) = setup(SafeMode::Confirm).await;
+    let cleanup = "DROP SCHEMA IF EXISTS r7_tbl_editor CASCADE;";
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!("{cleanup} CREATE SCHEMA r7_tbl_editor;"),
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let table = TableRef {
+        schema: "r7_tbl_editor".into(),
+        name: "invoices".into(),
+    };
+
+    let run_action = |action: TableObjectAction| {
+        let studio = studio.clone();
+        let session_id = session.id.clone();
+        async move {
+            let preview = studio
+                .preview_table_object_ddl(EngineKind::Postgres, action.clone())
+                .unwrap();
+            assert!(!preview.script.is_empty());
+            let plan = studio
+                .prepare_table_object_ddl(&session_id, action)
+                .unwrap();
+            assert!(plan.requires_approval);
+            let approval = studio
+                .authorize(&plan.id, None, plan.confirmation_text.as_deref())
+                .unwrap();
+            let events = finish(start(&studio, &plan, Some(&approval)).1).await;
+            assert_eq!(status(&events), RunStatus::Completed, "events: {events:?}");
+        }
+    };
+
+    // 1. Create table with identity PK, column, and comment
+    run_action(TableObjectAction::CreateTable {
+        table: table.clone(),
+        columns: vec![
+            TableColumnDraft {
+                name: "id".into(),
+                data_type: "bigint".into(),
+                nullable: false,
+                default_expression: None,
+                auto_increment: true,
+                primary_key: true,
+            },
+            TableColumnDraft {
+                name: "amount_text".into(),
+                data_type: "text".into(),
+                nullable: false,
+                default_expression: Some("'100'".into()),
+                auto_increment: false,
+                primary_key: false,
+            },
+        ],
+        comment: Some("Invoice ledger".into()),
+    })
+    .await;
+
+    // 2. Add column, alter/rename column with USING cast, and drop column
+    run_action(TableObjectAction::AddColumn {
+        table: table.clone(),
+        column: TableColumnDraft {
+            name: "temp_note".into(),
+            data_type: "text".into(),
+            nullable: true,
+            default_expression: None,
+            auto_increment: false,
+            primary_key: false,
+        },
+    })
+    .await;
+
+    run_action(TableObjectAction::AlterColumn {
+        table: table.clone(),
+        column_name: "amount_text".into(),
+        new_name: Some("amount_cents".into()),
+        data_type: "bigint".into(),
+        nullable: false,
+        default_expression: Some("0".into()),
+        using_expression: Some("\"amount_text\"::bigint".into()),
+    })
+    .await;
+
+    run_action(TableObjectAction::DropColumn {
+        table: table.clone(),
+        column_name: "temp_note".into(),
+        cascade: false,
+    })
+    .await;
+
+    let schema = studio.schema(&session.id, &table).await.unwrap();
+    let col_names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(col_names, vec!["id", "amount_cents"]);
+    assert_eq!(schema.columns[1].database_type, "bigint");
+
+    // 3. ReadOnly profile blocks prepare_table_object_ddl
+    let (_ro_root, ro_studio, ro_session) = setup(SafeMode::ReadOnly).await;
+    let blocked = ro_studio
+        .prepare_table_object_ddl(
+            &ro_session.id,
+            TableObjectAction::DropObject {
+                object: DatabaseObjectRef {
+                    schema: "r7_tbl_editor".into(),
+                    name: "invoices".into(),
+                    kind: DatabaseObjectKind::Table,
+                    identity: None,
+                },
+                cascade: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
+    ro_studio.shutdown();
+
+    // 4. Drop table via TableObjectAction::DropObject
+    run_action(TableObjectAction::DropObject {
+        object: DatabaseObjectRef {
+            schema: "r7_tbl_editor".into(),
+            name: "invoices".into(),
+            kind: DatabaseObjectKind::Table,
+            identity: None,
+        },
+        cascade: true,
+    })
+    .await;
+
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}
