@@ -28,6 +28,7 @@ import {
   type IndexConstraintDialogMode,
   isConstraintBackedIndex,
 } from "./IndexConstraintDialog";
+import { TableObjectDialog, type TableObjectDialogRequest } from "./TableObjectDialog";
 import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
@@ -530,6 +531,7 @@ export function StructureView({
   highlightedColumn = null,
   onOpenObject,
   onRefresh,
+  onDropped,
 }: {
   schema: TableSchema | null;
   details?: ObjectDetails | null;
@@ -538,6 +540,7 @@ export function StructureView({
   highlightedColumn?: string | null;
   onOpenObject?: (object: DatabaseObjectRef) => void;
   onRefresh?: () => void;
+  onDropped?: () => void;
 }) {
   const profile = useStudio((s) =>
     connectionId ? (s.bootstrap?.profiles.find((p) => p.id === connectionId) ?? null) : null,
@@ -547,6 +550,9 @@ export function StructureView({
     connectionId ? (s.catalog[connectionId] ?? EMPTY_CATALOG_TABLES) : EMPTY_CATALOG_TABLES,
   );
   const [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null);
+  const [tableObjectRequest, setTableObjectRequest] = useState<TableObjectDialogRequest | null>(
+    null,
+  );
 
   const openObject =
     onOpenObject ??
@@ -562,9 +568,17 @@ export function StructureView({
 
   const isTableLike =
     !details || details.object.kind === "table" || details.object.kind === "partitionedTable";
+  const isViewLike = details?.object.kind === "view" || details?.object.kind === "materializedView";
   const canManageSchema = Boolean(
     details &&
     isTableLike &&
+    profile &&
+    session &&
+    (profile.engine === "postgres" || profile.engine === "mysql"),
+  );
+  const canDropObject = Boolean(
+    details &&
+    (isTableLike || isViewLike) &&
     profile &&
     session &&
     (profile.engine === "postgres" || profile.engine === "mysql"),
@@ -575,6 +589,58 @@ export function StructureView({
     : schema.table;
   return (
     <div className="structure-scroll">
+      {(canManageSchema || canDropObject) && (
+        <div
+          className="structure-section-header"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "10px 14px 6px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <strong style={{ fontSize: 12 }}>Columns</strong>
+            <span className="schema-count">{schema.columns.length}</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {canManageSchema && (
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={isReadOnly}
+                title={isReadOnly ? "Connection is in read-only safe mode" : undefined}
+                onClick={() => setTableObjectRequest({ kind: "addColumn", table: tableRef })}
+              >
+                <Plus size={12} />
+                Add column…
+              </button>
+            )}
+            {canDropObject && details && (
+              <button
+                type="button"
+                className="button ghost small danger-text"
+                disabled={isReadOnly}
+                aria-label={
+                  isViewLike
+                    ? `Drop view ${details.object.name}`
+                    : `Drop table ${details.object.name}`
+                }
+                title={isReadOnly ? "Connection is in read-only safe mode" : undefined}
+                onClick={() =>
+                  setTableObjectRequest({
+                    kind: "dropObject",
+                    object: details.object,
+                  })
+                }
+              >
+                <Trash2 size={12} />
+                {isViewLike ? "Drop view…" : "Drop table…"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <table className="structure-table">
         <thead>
           <tr>
@@ -583,6 +649,7 @@ export function StructureView({
             <th>Nullable</th>
             <th>Key</th>
             <th>References</th>
+            {canManageSchema && <th>Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -628,6 +695,55 @@ export function StructureView({
                   )}
                 </td>
                 <td className="mono">{references.length ? references.join(", ") : "—"}</td>
+                {canManageSchema && (
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        type="button"
+                        className="button ghost small"
+                        disabled={isReadOnly}
+                        aria-label={`Modify column ${column.name}`}
+                        title={
+                          isReadOnly
+                            ? "Connection is in read-only safe mode"
+                            : `Modify column ${column.name}`
+                        }
+                        onClick={() =>
+                          setTableObjectRequest({
+                            kind: "alterColumn",
+                            table: tableRef,
+                            column,
+                          })
+                        }
+                      >
+                        Edit…
+                      </button>
+                      <button
+                        type="button"
+                        className="button ghost small danger-text"
+                        disabled={isReadOnly || schema.columns.length <= 1}
+                        aria-label={`Drop column ${column.name}`}
+                        title={
+                          isReadOnly
+                            ? "Connection is in read-only safe mode"
+                            : schema.columns.length <= 1
+                              ? "Cannot drop the only remaining column of a table"
+                              : `Drop column ${column.name}`
+                        }
+                        onClick={() =>
+                          setTableObjectRequest({
+                            kind: "dropColumn",
+                            table: tableRef,
+                            column,
+                          })
+                        }
+                      >
+                        <Trash2 size={12} />
+                        Drop…
+                      </button>
+                    </div>
+                  </td>
+                )}
               </tr>
             );
           })}
@@ -1018,6 +1134,20 @@ export function StructureView({
             useStudio.getState().notify(msg);
             onRefresh?.();
             if (connectionId) void useStudio.getState().refreshCatalog(connectionId);
+          }}
+        />
+      )}
+      {tableObjectRequest && connectionId && (
+        <TableObjectDialog
+          connectionId={connectionId}
+          request={tableObjectRequest}
+          onClose={() => setTableObjectRequest(null)}
+          onCompleted={(completedAction) => {
+            if (completedAction.type === "dropObject") {
+              onDropped?.();
+            } else {
+              onRefresh?.();
+            }
           }}
         />
       )}

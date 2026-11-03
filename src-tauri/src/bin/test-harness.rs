@@ -251,6 +251,14 @@ async fn rpc(
                 &arg::<String>(&args, "sessionId")?,
                 arg(&args, "action")?
             )?),
+            "preview_table_object_ddl" => json!(studio.preview_table_object_ddl(
+                arg(&args, "engine")?,
+                arg(&args, "action")?
+            )?),
+            "prepare_table_object_ddl" => json!(studio.prepare_table_object_ddl(
+                &arg::<String>(&args, "sessionId")?,
+                arg(&args, "action")?
+            )?),
             "prepare_browse_table" => json!(
                 studio
                     .prepare_browse(

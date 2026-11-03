@@ -41,6 +41,8 @@ fn main() {
             "generate_migration_ddl",
             "preview_index_constraint_ddl",
             "prepare_index_constraint_ddl",
+            "preview_table_object_ddl",
+            "prepare_table_object_ddl",
             "prepare_browse_table",
             "browse_table",
             "result_range",

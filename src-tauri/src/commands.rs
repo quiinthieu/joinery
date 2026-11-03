@@ -291,6 +291,24 @@ pub fn prepare_index_constraint_ddl(
 }
 
 #[tauri::command]
+pub fn preview_table_object_ddl(
+    studio: State<'_, Arc<Studio>>,
+    engine: EngineKind,
+    action: TableObjectAction,
+) -> AppResult<TableObjectPreview> {
+    studio.preview_table_object_ddl(engine, action)
+}
+
+#[tauri::command]
+pub fn prepare_table_object_ddl(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    action: TableObjectAction,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_table_object_ddl(&session_id, action)
+}
+
+#[tauri::command]
 pub async fn prepare_browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

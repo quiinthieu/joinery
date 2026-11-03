@@ -4151,3 +4151,148 @@ async fn index_and_constraint_editor_executes_reviewed_ddl_and_rejects_read_only
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn table_and_object_ddl_editor_executes_reviewed_ddl_and_rejects_read_only() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Confirm).await;
+        let cleanup = "DROP TABLE IF EXISTS joinery.r7_tbl_invoices;";
+        completed(&run(&studio, &session, cleanup).await);
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "r7_tbl_invoices".into(),
+        };
+
+        let run_action = |action: TableObjectAction| {
+            let studio = studio.clone();
+            let session_id = session.id.clone();
+            async move {
+                let preview = studio
+                    .preview_table_object_ddl(EngineKind::Mysql, action.clone())
+                    .unwrap();
+                assert!(!preview.script.is_empty());
+                let plan = studio
+                    .prepare_table_object_ddl(&session_id, action)
+                    .unwrap();
+                assert!(plan.requires_approval);
+                let approval = studio
+                    .authorize(&plan.id, None, plan.confirmation_text.as_deref())
+                    .unwrap();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                studio
+                    .execute(
+                        &plan.id,
+                        Some(&approval),
+                        Arc::new(move |e| tx.send(e).is_ok()),
+                    )
+                    .unwrap();
+                let mut events = Vec::new();
+                while let Some(ev) = rx.recv().await {
+                    let done = matches!(ev, QueryEvent::Finished { .. });
+                    events.push(ev);
+                    if done {
+                        break;
+                    }
+                }
+                completed(&events);
+            }
+        };
+
+        // 1. Create table with AUTO_INCREMENT PK, column, and comment
+        run_action(TableObjectAction::CreateTable {
+            table: table.clone(),
+            columns: vec![
+                TableColumnDraft {
+                    name: "id".into(),
+                    data_type: "bigint".into(),
+                    nullable: false,
+                    default_expression: None,
+                    auto_increment: true,
+                    primary_key: true,
+                },
+                TableColumnDraft {
+                    name: "label".into(),
+                    data_type: "varchar(64)".into(),
+                    nullable: false,
+                    default_expression: Some("'draft'".into()),
+                    auto_increment: false,
+                    primary_key: false,
+                },
+            ],
+            comment: Some("Invoice ledger".into()),
+        })
+        .await;
+
+        // 2. Add column, alter/rename column (`CHANGE COLUMN`), and drop column
+        run_action(TableObjectAction::AddColumn {
+            table: table.clone(),
+            column: TableColumnDraft {
+                name: "temp_note".into(),
+                data_type: "varchar(120)".into(),
+                nullable: true,
+                default_expression: None,
+                auto_increment: false,
+                primary_key: false,
+            },
+        })
+        .await;
+
+        run_action(TableObjectAction::AlterColumn {
+            table: table.clone(),
+            column_name: "label".into(),
+            new_name: Some("status_label".into()),
+            data_type: "varchar(128)".into(),
+            nullable: false,
+            default_expression: Some("'open'".into()),
+            using_expression: None,
+        })
+        .await;
+
+        run_action(TableObjectAction::DropColumn {
+            table: table.clone(),
+            column_name: "temp_note".into(),
+            cascade: false,
+        })
+        .await;
+
+        let schema = studio.schema(&session.id, &table).await.unwrap();
+        let col_names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(col_names, vec!["id", "status_label"], "port {port}");
+
+        // 3. ReadOnly profile blocks prepare_table_object_ddl
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let blocked = ro_studio
+            .prepare_table_object_ddl(
+                &ro_session.id,
+                TableObjectAction::DropObject {
+                    object: DatabaseObjectRef {
+                        schema: "joinery".into(),
+                        name: "r7_tbl_invoices".into(),
+                        kind: DatabaseObjectKind::Table,
+                        identity: None,
+                    },
+                    cascade: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(blocked.code, ErrorCode::PolicyBlocked, "port {port}");
+        ro_studio.shutdown();
+
+        // 4. Drop table via TableObjectAction::DropObject
+        run_action(TableObjectAction::DropObject {
+            object: DatabaseObjectRef {
+                schema: "joinery".into(),
+                name: "r7_tbl_invoices".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+            cascade: false,
+        })
+        .await;
+
+        completed(&run(&studio, &session, cleanup).await);
+        studio.shutdown();
+    }
+}

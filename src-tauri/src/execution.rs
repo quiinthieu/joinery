@@ -1866,6 +1866,51 @@ impl Studio {
             bytes,
         )
     }
+    pub fn preview_table_object_ddl(
+        &self,
+        engine: EngineKind,
+        action: TableObjectAction,
+    ) -> AppResult<TableObjectPreview> {
+        crate::ddl::build_table_object_ddl(engine, &action)
+    }
+    pub fn prepare_table_object_ddl(
+        &self,
+        session_id: &str,
+        action: TableObjectAction,
+    ) -> AppResult<PreparedPlan> {
+        let session = self.session(session_id)?;
+        let preview = crate::ddl::build_table_object_ddl(session.profile.engine, &action)?;
+        let mut statements = Vec::with_capacity(preview.statements.len());
+        let mut bytes = 0usize;
+        for stmt in &preview.statements {
+            bytes = bytes.saturating_add(stmt.sql.len());
+            statements.push(StatementPlan {
+                span: Some(crate::sql_text::span_for_byte_range(
+                    &stmt.sql,
+                    0,
+                    stmt.sql.len(),
+                )),
+                sql: stmt.sql.clone(),
+                kind: StatementKind::Ddl,
+                missing_where: false,
+            });
+        }
+        let mut plan = safety::plan_for_statements(session_id, &session.profile, statements)?;
+        plan.requires_approval = true;
+        for warning in preview.warnings {
+            if !plan.warnings.contains(&warning) {
+                plan.warnings.push(warning);
+            }
+        }
+        self.store_plan(
+            plan,
+            Action::Sql {
+                bound: Vec::new(),
+                error_source: None,
+            },
+            bytes,
+        )
+    }
     async fn schema_for_session(
         &self,
         session: &Session,
