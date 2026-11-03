@@ -1802,18 +1802,11 @@ impl Studio {
                 reason: "Statement is not a SELECT query".into(),
             };
         }
-        let default_schema = match session.driver.session_state(&session.info.id).await {
-            Ok(state) => state.active_context.or(Some(state.database)),
-            Err(_) => Some(if session.profile.engine == EngineKind::Postgres {
-                "public".into()
-            } else {
-                session.profile.database.clone()
-            }),
-        };
-        let candidate = match safety::analyze_single_table_select(
+        const UNQUALIFIED_SENTINEL: &str = "\0joinery_unqualified\0";
+        let mut candidate = match safety::analyze_single_table_select(
             session.profile.engine,
             &statement.sql,
-            default_schema.as_deref(),
+            Some(UNQUALIFIED_SENTINEL),
         ) {
             Ok(candidate) => candidate,
             Err(reason) => return StatementProvenance::ReadOnly { reason },
@@ -1823,6 +1816,23 @@ impl Studio {
             return StatementProvenance::ReadOnly {
                 reason: "Connection is in read-only mode".into(),
             };
+        }
+        if candidate.table.schema == UNQUALIFIED_SENTINEL {
+            let default_schema = match session.driver.session_state(&session.info.id).await {
+                Ok(state) => state.active_context.or(Some(state.database)),
+                Err(_) => Some(if session.profile.engine == EngineKind::Postgres {
+                    "public".into()
+                } else {
+                    session.profile.database.clone()
+                }),
+            }
+            .unwrap_or_default();
+            if default_schema.trim().is_empty() {
+                return StatementProvenance::ReadOnly {
+                    reason: "Table reference is unqualified and no active schema is set".into(),
+                };
+            }
+            candidate.table.schema = default_schema;
         }
         match self.schema_for_session(session, &candidate.table).await {
             Ok(live_schema) => StatementProvenance::Candidate {

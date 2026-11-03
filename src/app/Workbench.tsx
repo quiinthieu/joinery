@@ -752,11 +752,12 @@ export function Workbench({
                 </button>
               )}
               {Boolean(
-                session &&
-                (session.capabilities.explainAnalyze ??
-                  (profile?.engine === "postgres" ||
-                    session.capabilities.actualPlan === "mariaDbJson" ||
-                    session.capabilities.actualPlan === "mysqlTree")),
+                session
+                  ? (session.capabilities.explainAnalyze ??
+                      (profile?.engine === "postgres" ||
+                        session.capabilities.actualPlan === "mariaDbJson" ||
+                        session.capabilities.actualPlan === "mysqlTree"))
+                  : profile?.engine === "postgres",
               ) && (
                 <button
                   className="button ghost small"

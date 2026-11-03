@@ -2073,7 +2073,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         if (event.type === "result") {
           const at = next.results.findIndex((r) => r.id === event.result.id);
           if (at >= 0) {
-            if (event.result.status !== "streaming") {
+            if (next.results[at].status !== "streaming") {
               resultCache.release(event.result.id);
             }
             next.results[at] = event.result;
