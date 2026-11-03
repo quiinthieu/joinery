@@ -148,6 +148,13 @@ pub trait Driver: Send + Sync {
             "Referencing foreign-key discovery is unavailable for this engine",
         ))
     }
+    /// Bounded, read-only relationship graph for one schema.
+    async fn schema_diagram(&self, _schema: &str) -> AppResult<SchemaDiagram> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Schema diagrams are unavailable for this engine",
+        ))
+    }
     async fn browse(
         &self,
         schema: &TableSchema,

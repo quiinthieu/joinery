@@ -616,6 +616,138 @@ kbd {
   color: var(--faint);
   font-size: 9px;
 }
+.schema-heading-row {
+  display: flex;
+  align-items: center;
+}
+.schema-heading-row .schema-heading {
+  flex: 1;
+  min-width: 0;
+}
+.schema-diagram {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--faint);
+  opacity: 0;
+}
+.schema-heading-row:hover .schema-diagram,
+.schema-diagram:focus-visible {
+  opacity: 1;
+}
+.schema-diagram:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+.diagram-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.diagram-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.diagram-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.diagram-filter input {
+  width: 150px;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: 12px;
+}
+.diagram-scale {
+  min-width: 38px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+.diagram-notice {
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.diagram-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.diagram-canvas svg {
+  display: block;
+}
+.diagram-edge {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.4;
+}
+.diagram-edge.related {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.diagram-arrowhead {
+  fill: var(--muted);
+}
+.diagram-node {
+  cursor: pointer;
+  outline: none;
+}
+.diagram-node-box {
+  fill: var(--surface);
+  stroke: var(--border);
+}
+.diagram-node-header {
+  fill: var(--surface-hover);
+}
+.diagram-node.active .diagram-node-box,
+.diagram-node:focus-visible .diagram-node-box {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.diagram-node.external .diagram-node-box {
+  stroke-dasharray: 4 3;
+}
+.diagram-node text {
+  fill: var(--text);
+  font-size: 11px;
+}
+.diagram-node text.required {
+  font-weight: 600;
+}
+.diagram-node-title {
+  font-weight: 600;
+  font-size: 12px !important;
+}
+.diagram-node text.diagram-node-muted {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.diagram-pk {
+  color: var(--accent);
+}
+.diagram-fk {
+  color: var(--muted);
+}
 .table-link {
   display: flex;
   align-items: center;

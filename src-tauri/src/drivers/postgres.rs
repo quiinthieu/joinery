@@ -699,6 +699,10 @@ impl Driver for Postgres {
         referencing_keys_on(self.metadata().await?, table).await
     }
 
+    async fn schema_diagram(&self, schema: &str) -> AppResult<SchemaDiagram> {
+        schema_diagram_on(self.metadata().await?, schema).await
+    }
+
     async fn browse(
         &self,
         schema: &TableSchema,
@@ -1600,6 +1604,112 @@ async fn referencing_keys_on(
                 .is_none_or(|&w| key.columns.len() == w)
         })
         .collect())
+}
+
+/// Reads relations, readable columns and outbound foreign keys for one schema.
+/// Partitions and cloned partition constraints are omitted; constraints with
+/// unreadable columns are withheld rather than shown partially.
+async fn schema_diagram_on(client: &Client, schema: &str) -> AppResult<SchemaDiagram> {
+    let visible = client
+        .query(
+            "SELECT 1 FROM pg_catalog.pg_namespace n
+             WHERE n.nspname = $1 AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')",
+            &[&schema],
+        )
+        .await
+        .map_err(pg_error)?;
+    if visible.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The schema is missing or unavailable",
+        ));
+    }
+    let tables = client
+        .query(
+            "SELECT c.relname, c.relkind::pg_catalog.text
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition
+             ORDER BY c.relname
+             LIMIT 501",
+            &[&schema],
+        )
+        .await
+        .map_err(pg_error)?;
+    let columns = client
+        .query(
+            "SELECT c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod),
+                    NOT a.attnotnull,
+                    EXISTS (SELECT 1 FROM pg_catalog.pg_index i
+                            WHERE i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY (i.indkey))
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+             WHERE n.nspname = $1 AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition
+               AND pg_catalog.has_column_privilege(c.oid, a.attnum, 'SELECT')
+             ORDER BY c.relname, a.attnum
+             LIMIT 20001",
+            &[&schema],
+        )
+        .await
+        .map_err(pg_error)?;
+    let keys = client
+        .query(
+            "SELECT k.conname::pg_catalog.text, c.relname, tn.nspname, t.relname, a.attname, b.attname,
+                    pg_catalog.cardinality(k.conkey)::pg_catalog.int4
+             FROM pg_catalog.pg_constraint k
+             JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_class t ON t.oid = k.confrelid
+             JOIN pg_catalog.pg_namespace tn ON tn.oid = t.relnamespace
+             CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(k.conkey), pg_catalog.unnest(k.confkey)) WITH ORDINALITY AS x(src, dst, ord)
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = x.src AND NOT a.attisdropped
+             JOIN pg_catalog.pg_attribute b ON b.attrelid = k.confrelid AND b.attnum = x.dst AND NOT b.attisdropped
+             WHERE k.contype = 'f' AND k.conparentid = 0
+               AND n.nspname = $1 AND NOT c.relispartition
+               AND pg_catalog.has_schema_privilege(tn.oid, 'USAGE')
+               AND pg_catalog.has_column_privilege(k.conrelid, a.attnum, 'SELECT')
+               AND pg_catalog.has_column_privilege(k.confrelid, b.attnum, 'SELECT')
+             ORDER BY c.relname, k.conname, k.oid, x.ord
+             LIMIT 20001",
+            &[&schema],
+        )
+        .await
+        .map_err(pg_error)?;
+    Ok(SchemaDiagram::assemble(
+        schema,
+        tables.iter().map(|r| (r.get(0), r.get(1))).collect(),
+        columns
+            .iter()
+            .map(|r| {
+                (
+                    r.get(0),
+                    DiagramColumn {
+                        name: r.get(1),
+                        database_type: r.get(2),
+                        nullable: r.get(3),
+                        primary_key: r.get(4),
+                    },
+                )
+            })
+            .collect(),
+        keys.iter()
+            .map(|r| {
+                let expected: i32 = r.get(6);
+                DiagramKeyRow {
+                    name: r.get(0),
+                    source_table: r.get(1),
+                    target: TableRef {
+                        schema: r.get(2),
+                        name: r.get(3),
+                    },
+                    column: r.get(4),
+                    target_column: r.get(5),
+                    expected: Some(expected.max(0) as usize),
+                }
+            })
+            .collect(),
+    ))
 }
 
 fn active_postgres_schema(search_path: &[String]) -> Option<String> {

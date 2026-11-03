@@ -56,7 +56,8 @@ import {
 
 import { planSnapshots, type PlanSource } from "../features/studio/plan-snapshots";
 
-export type TabKind = "query" | "table" | "object" | "benchmark" | "history" | "processes";
+export type TabKind =
+  "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram";
 export type TabStatus =
   "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | "outcomeUnknown";
 export interface TablePageState {
@@ -110,6 +111,8 @@ export interface StudioTab {
   fileName: string | null;
   savedSql: string | null;
   savedQueryId: string | null;
+  /** Schema shown by a diagram tab. */
+  diagramSchema?: string;
 }
 
 export const MAX_RECENT_LOCATIONS = 50;
@@ -205,6 +208,7 @@ interface StudioState {
   openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
+  openDiagram(connectionId: string, schema: string): void;
   openTable(
     connectionId: string,
     table: TableRef,
@@ -1162,6 +1166,17 @@ export const useStudio = create<StudioState>((set, get) => ({
       { history: "Query history", processes: "Processes", benchmark: "Grid benchmark" }[kind],
       get().selectedConnectionId,
     );
+    set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
+  },
+  openDiagram(connectionId, schema) {
+    const existing = get().tabs.find(
+      (t) => t.kind === "diagram" && t.connectionId === connectionId && t.diagramSchema === schema,
+    );
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return;
+    }
+    const next = { ...tab("diagram", `${schema} diagram`, connectionId), diagramSchema: schema };
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
   async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView, highlightedColumn) {

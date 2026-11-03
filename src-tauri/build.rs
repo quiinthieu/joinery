@@ -34,6 +34,7 @@ fn main() {
             "redis_inspect",
             "table_schema",
             "referencing_foreign_keys",
+            "schema_diagram",
             "prepare_browse_table",
             "browse_table",
             "result_range",

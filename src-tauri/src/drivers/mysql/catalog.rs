@@ -156,6 +156,12 @@ impl Mysql {
         self.metadata(move |conn| Box::pin(async move { referencing_keys_on(conn, &table).await }))
             .await
     }
+    pub(super) async fn relationship_diagram(&self, schema: &str) -> AppResult<SchemaDiagram> {
+        identifier(schema)?;
+        let schema = schema.to_owned();
+        self.metadata(move |conn| Box::pin(async move { schema_diagram_on(conn, &schema).await }))
+            .await
+    }
     pub(super) async fn browse_rows(
         &self,
         schema: &TableSchema,
@@ -330,6 +336,92 @@ async fn referencing_keys_on(
             cell(r, 4).into(),
         )
     })))
+}
+
+/// Reads relations, columns and outbound foreign keys for one database.
+/// INFORMATION_SCHEMA already hides tables the account cannot access.
+async fn schema_diagram_on(conn: &mut Conn, schema: &str) -> AppResult<SchemaDiagram> {
+    let param = || vec![bind(Some(schema.to_owned()))];
+    let visible = fetch(
+        conn,
+        "SELECT 1 FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME=?",
+        param(),
+        1,
+        1024,
+    )
+    .await?;
+    if visible.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NotFound,
+            "The database is missing or unavailable",
+        ));
+    }
+    let tables = fetch(
+        conn,
+        "SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_SCHEMA=? AND TABLE_TYPE<>'SEQUENCE'
+         ORDER BY TABLE_NAME LIMIT 501",
+        param(),
+        MAX_DIAGRAM_TABLES + 1,
+        1024 * 1024,
+    )
+    .await?;
+    let columns = fetch(
+        conn,
+        "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY
+         FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=?
+         ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 20001",
+        param(),
+        MAX_DIAGRAM_COLUMNS + 1,
+        8 * 1024 * 1024,
+    )
+    .await?;
+    let keys = fetch(
+        conn,
+        "SELECT CONSTRAINT_NAME, TABLE_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME,
+                COLUMN_NAME, REFERENCED_COLUMN_NAME
+         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA=? AND REFERENCED_TABLE_NAME IS NOT NULL
+         ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION LIMIT 20001",
+        param(),
+        MAX_DIAGRAM_KEY_ROWS + 1,
+        8 * 1024 * 1024,
+    )
+    .await?;
+    Ok(SchemaDiagram::assemble(
+        schema,
+        tables
+            .iter()
+            .map(|r| (cell(r, 0).into(), cell(r, 1).into()))
+            .collect(),
+        columns
+            .iter()
+            .map(|r| {
+                (
+                    cell(r, 0).into(),
+                    DiagramColumn {
+                        name: cell(r, 1).into(),
+                        database_type: cell(r, 2).into(),
+                        nullable: cell(r, 3) == "YES",
+                        primary_key: cell(r, 4) == "PRI",
+                    },
+                )
+            })
+            .collect(),
+        keys.iter()
+            .map(|r| DiagramKeyRow {
+                name: cell(r, 0).into(),
+                source_table: cell(r, 1).into(),
+                target: TableRef {
+                    schema: cell(r, 2).into(),
+                    name: cell(r, 3).into(),
+                },
+                column: cell(r, 4).into(),
+                target_column: cell(r, 5).into(),
+                expected: None,
+            })
+            .collect(),
+    ))
 }
 
 async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> {
