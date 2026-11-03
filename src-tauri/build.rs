@@ -39,6 +39,8 @@ fn main() {
             "compare_schemas",
             "generate_schema_ddl",
             "generate_migration_ddl",
+            "preview_index_constraint_ddl",
+            "prepare_index_constraint_ddl",
             "prepare_browse_table",
             "browse_table",
             "result_range",

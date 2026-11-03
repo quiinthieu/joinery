@@ -11,6 +11,7 @@ import {
   ListTree,
   Lock,
   Table2,
+  Trash2,
   Zap,
 } from "lucide-react";
 import type {
@@ -21,11 +22,13 @@ import type {
   ObjectDdlStatus,
   ObjectDetails,
   SessionInfo,
+  TableInfo,
   TableStorageStats,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
 import { objectTabTitle } from "../connections/explorer-tree";
+import { IndexConstraintDialog, type IndexConstraintDialogMode } from "./IndexConstraintDialog";
 import {
   deadTupleSummary,
   describeIndexUsage,
@@ -239,8 +242,11 @@ export function DependencySection({
   );
 }
 
+const EMPTY_CATALOG_TABLES: readonly TableInfo[] = [];
+
 export function ObjectInspectorView({
   tab,
+  profile,
   session,
   providedDetails,
   onOpenObject,
@@ -257,7 +263,17 @@ export function ObjectInspectorView({
 }) {
   const [loadedDetails, setDetails] = useState<ObjectDetails | null>(null),
     [loading, setLoading] = useState(false),
-    [error, setError] = useState<string | null>(null);
+    [error, setError] = useState<string | null>(null),
+    [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null);
+  const storeProfile = useStudio((s) =>
+    tab.connectionId
+      ? (s.bootstrap?.profiles.find((p) => p.id === tab.connectionId) ?? null)
+      : null,
+  );
+  const activeProfile = profile ?? storeProfile;
+  const catalogTables = useStudio((s) =>
+    tab.connectionId ? (s.catalog[tab.connectionId] ?? EMPTY_CATALOG_TABLES) : EMPTY_CATALOG_TABLES,
+  );
 
   const details = providedDetails ?? loadedDetails;
   const target = tab.object;
@@ -381,6 +397,34 @@ export function ObjectInspectorView({
               <ArrowRight size={11} />
             </button>
           )}
+          {details.object.kind === "index" &&
+            details.ownerTable &&
+            indexMeta &&
+            !indexMeta.primary &&
+            tab.connectionId &&
+            activeProfile &&
+            (activeProfile.engine === "postgres" || activeProfile.engine === "mysql") && (
+              <button
+                type="button"
+                className="button ghost small danger-text"
+                disabled={activeProfile.safeMode === "readOnly"}
+                title={
+                  activeProfile.safeMode === "readOnly"
+                    ? "Connection is in read-only safe mode"
+                    : `Drop index ${indexMeta.name}`
+                }
+                onClick={() =>
+                  setEditorMode({
+                    kind: "dropIndex",
+                    table: details.ownerTable!,
+                    index: indexMeta,
+                  })
+                }
+              >
+                <Trash2 size={12} />
+                Drop index…
+              </button>
+            )}
         </div>
         {details.comment && <p className="object-comment">{details.comment}</p>}
 
@@ -544,6 +588,22 @@ export function ObjectInspectorView({
           openLabel={openLabel}
         />
       </section>
+      {editorMode && activeProfile && session && (
+        <IndexConstraintDialog
+          mode={editorMode}
+          schema={null}
+          details={details}
+          profile={activeProfile}
+          session={session}
+          catalogTables={catalogTables}
+          onClose={() => setEditorMode(null)}
+          onSuccess={(msg) => {
+            useStudio.getState().notify(msg);
+            if (tab.connectionId) void useStudio.getState().refreshCatalog(tab.connectionId);
+            void useStudio.getState().closeTab(tab.id);
+          }}
+        />
+      )}
     </div>
   );
 }

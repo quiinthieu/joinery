@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::domain::{
-    AppError, AppResult, ConstraintInfo, ConstraintKind, DatabaseObjectKind, EngineKind,
+    AppError, AppResult, ConstraintInfo, ConstraintKind, DatabaseObjectKind, EngineKind, ErrorCode,
     SchemaSnapshot, SnapshotColumn, SnapshotIndex, SnapshotRoutine, SnapshotSequence,
-    SnapshotTable, TriggerInfo, UnsupportedSchemaObject,
+    SnapshotTable, TableRef, TriggerInfo, UnsupportedSchemaObject,
 };
 use crate::schema_diff::{
     compare_schema_snapshots, format_column_spec, format_constraint_spec, format_index_spec,
@@ -2083,6 +2083,709 @@ pub fn generate_migration_ddl(
     ))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum IndexConstraintAction {
+    CreateIndex {
+        table: TableRef,
+        name: String,
+        unique: bool,
+        method: String,
+        #[serde(default)]
+        concurrently: bool,
+        expressions: Vec<String>,
+        #[serde(default)]
+        raw_expressions: bool,
+        predicate: Option<String>,
+    },
+    DropIndex {
+        table: TableRef,
+        name: String,
+        #[serde(default)]
+        concurrently: bool,
+    },
+    AddConstraint {
+        table: TableRef,
+        name: String,
+        kind: ConstraintKind,
+        columns: Vec<String>,
+        check_expression: Option<String>,
+        target: Option<TableRef>,
+        #[serde(default)]
+        target_columns: Vec<String>,
+        on_delete: Option<String>,
+        on_update: Option<String>,
+        #[serde(default)]
+        not_valid: bool,
+    },
+    DropConstraint {
+        table: TableRef,
+        name: String,
+        kind: ConstraintKind,
+        #[serde(default)]
+        cascade: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexConstraintPreview {
+    pub statement: DdlStatement,
+    pub warnings: Vec<String>,
+}
+
+const MAX_IDENTIFIER_CHARS: usize = 128;
+const MAX_EXPRESSION_CHARS: usize = 2048;
+const MAX_KEY_COUNT: usize = 32;
+
+const ALLOWED_REFERENTIAL_ACTIONS: &[&str] = &[
+    "NO ACTION",
+    "RESTRICT",
+    "CASCADE",
+    "SET NULL",
+    "SET DEFAULT",
+];
+
+fn validate_identifier<'a>(raw: &'a str, label: &str) -> AppResult<&'a str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("Enter a valid {label}"),
+        ));
+    }
+    if trimmed.chars().count() > MAX_IDENTIFIER_CHARS || trimmed.contains('\0') {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("{label} must be at most {MAX_IDENTIFIER_CHARS} characters without NUL bytes"),
+        ));
+    }
+    Ok(trimmed)
+}
+
+fn validate_table_ref(table: &TableRef, label: &str) -> AppResult<()> {
+    validate_identifier(&table.schema, &format!("{label} schema"))?;
+    validate_identifier(&table.name, &format!("{label} table"))?;
+    Ok(())
+}
+
+fn validate_sql_fragment<'a>(raw: &'a str, label: &str) -> AppResult<&'a str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("Enter a non-empty {label}"),
+        ));
+    }
+    if trimmed.chars().count() > MAX_EXPRESSION_CHARS || trimmed.contains('\0') {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("{label} exceeds the {MAX_EXPRESSION_CHARS}-character limit"),
+        ));
+    }
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[i];
+                i += 1;
+                let mut closed = false;
+                while i < bytes.len() {
+                    if bytes[i] == quote {
+                        if bytes.get(i + 1) == Some(&quote) {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            closed = true;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                if !closed {
+                    return Err(AppError::new(
+                        ErrorCode::InvalidInput,
+                        format!("{label} contains an unterminated quoted string or identifier"),
+                    ));
+                }
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    format!("{label} cannot contain SQL line comments"),
+                ));
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    format!("{label} cannot contain SQL block comments"),
+                ));
+            }
+            b';' => {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    format!("{label} cannot contain a semicolon"),
+                ));
+            }
+            _ => i += 1,
+        }
+    }
+    Ok(trimmed)
+}
+
+fn normalize_referential_action(raw: Option<&str>, label: &str) -> AppResult<Option<String>> {
+    let Some(text) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let upper = text.to_ascii_uppercase();
+    if !ALLOWED_REFERENTIAL_ACTIONS.contains(&upper.as_str()) {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("Unsupported {label} action '{text}'"),
+        ));
+    }
+    Ok(Some(upper))
+}
+
+/// Builds a single engine-aware index or constraint DDL statement with lock
+/// and transaction impact warnings. Never executes SQL.
+pub fn build_index_constraint_ddl(
+    engine: EngineKind,
+    action: &IndexConstraintAction,
+) -> AppResult<IndexConstraintPreview> {
+    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Index and constraint editing is available for PostgreSQL and MySQL/MariaDB",
+        ));
+    }
+
+    match action {
+        IndexConstraintAction::CreateIndex {
+            table,
+            name,
+            unique,
+            method,
+            concurrently,
+            expressions,
+            raw_expressions,
+            predicate,
+        } => {
+            validate_table_ref(table, "Target")?;
+            let index_name = validate_identifier(name, "index name")?;
+            if expressions.is_empty() || expressions.len() > MAX_KEY_COUNT {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    format!("Choose between 1 and {MAX_KEY_COUNT} index columns or expressions"),
+                ));
+            }
+
+            let formatted_keys: Vec<String> = if *raw_expressions {
+                expressions
+                    .iter()
+                    .map(|expr| {
+                        validate_sql_fragment(expr, "index key expression").map(str::to_owned)
+                    })
+                    .collect::<AppResult<Vec<_>>>()?
+            } else {
+                expressions
+                    .iter()
+                    .map(|col| {
+                        let c = validate_identifier(col, "index column")?;
+                        Ok(quote_engine_identifier(engine, c))
+                    })
+                    .collect::<AppResult<Vec<_>>>()?
+            };
+
+            let qualified_table = quote_qualified(engine, table.schema.trim(), table.name.trim());
+            let quoted_index = quote_engine_identifier(engine, index_name);
+            let mut warnings = Vec::new();
+
+            let sql = match engine {
+                EngineKind::Postgres => {
+                    let norm_method = if method.trim().is_empty() {
+                        "btree".to_owned()
+                    } else {
+                        method.trim().to_ascii_lowercase()
+                    };
+                    if !matches!(
+                        norm_method.as_str(),
+                        "btree" | "hash" | "gin" | "gist" | "spgist" | "brin"
+                    ) {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            format!("Unsupported PostgreSQL index method '{norm_method}'"),
+                        ));
+                    }
+                    if *unique && norm_method != "btree" {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            "PostgreSQL UNIQUE indexes only support the btree access method",
+                        ));
+                    }
+                    let pred_clause = if let Some(pred) = predicate
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let valid_pred = validate_sql_fragment(pred, "partial index predicate")?;
+                        format!(" WHERE {valid_pred}")
+                    } else {
+                        String::new()
+                    };
+                    let unique_kw = if *unique { "UNIQUE " } else { "" };
+                    let conc_kw = if *concurrently { "CONCURRENTLY " } else { "" };
+                    if *concurrently {
+                        warnings.push(
+                            "CREATE INDEX CONCURRENTLY avoids blocking writes on the table, but cannot run inside a transaction block and may leave an INVALID index if interrupted."
+                                .into(),
+                        );
+                    } else {
+                        warnings.push(
+                            "CREATE INDEX without CONCURRENTLY acquires a SHARE lock on the table, blocking INSERT, UPDATE, and DELETE until the index build finishes."
+                                .into(),
+                        );
+                    }
+                    format!(
+                        "CREATE {unique_kw}INDEX {conc_kw}{quoted_index} ON {qualified_table} USING {norm_method} ({}){pred_clause};",
+                        formatted_keys.join(", ")
+                    )
+                }
+                EngineKind::Mysql => {
+                    if *concurrently {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "CONCURRENTLY index builds are only supported on PostgreSQL",
+                        ));
+                    }
+                    if predicate.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "Partial index WHERE predicates are only supported on PostgreSQL",
+                        ));
+                    }
+                    let norm_method = if method.trim().is_empty() {
+                        "btree".to_owned()
+                    } else {
+                        method.trim().to_ascii_lowercase()
+                    };
+                    if !matches!(
+                        norm_method.as_str(),
+                        "btree" | "hash" | "fulltext" | "spatial"
+                    ) {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            format!("Unsupported MySQL/MariaDB index method '{norm_method}'"),
+                        ));
+                    }
+                    if *unique && matches!(norm_method.as_str(), "fulltext" | "spatial") {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            "FULLTEXT and SPATIAL indexes cannot be declared UNIQUE",
+                        ));
+                    }
+                    let prefix = if *unique {
+                        "CREATE UNIQUE INDEX"
+                    } else if norm_method == "fulltext" {
+                        "CREATE FULLTEXT INDEX"
+                    } else if norm_method == "spatial" {
+                        "CREATE SPATIAL INDEX"
+                    } else {
+                        "CREATE INDEX"
+                    };
+                    let using_clause = if norm_method == "hash" {
+                        " USING HASH"
+                    } else {
+                        ""
+                    };
+                    warnings.push(
+                        "CREATE INDEX on MySQL/MariaDB causes an implicit commit of any open transaction on this session."
+                            .into(),
+                    );
+                    format!(
+                        "{prefix} {quoted_index} ON {qualified_table} ({}){using_clause};",
+                        formatted_keys.join(", ")
+                    )
+                }
+                _ => unreachable!(),
+            };
+
+            Ok(IndexConstraintPreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!("Create index {index_name} on {}", table.name.trim()),
+                    object_kind: DatabaseObjectKind::Index,
+                    object_name: format!("{}.{index_name}", table.name.trim()),
+                    destructive: false,
+                },
+                warnings,
+            })
+        }
+        IndexConstraintAction::DropIndex {
+            table,
+            name,
+            concurrently,
+        } => {
+            validate_table_ref(table, "Target")?;
+            let index_name = validate_identifier(name, "index name")?;
+            let mut warnings = vec![format!(
+                "Dropping index '{index_name}' permanently removes its access path and may degrade query performance."
+            )];
+            let sql = match engine {
+                EngineKind::Postgres => {
+                    let conc_kw = if *concurrently { "CONCURRENTLY " } else { "" };
+                    if *concurrently {
+                        warnings.push(
+                            "DROP INDEX CONCURRENTLY avoids locking out concurrent reads and writes, but cannot run inside a transaction block."
+                                .into(),
+                        );
+                    }
+                    format!(
+                        "DROP INDEX {conc_kw}{};",
+                        quote_qualified(engine, table.schema.trim(), index_name)
+                    )
+                }
+                EngineKind::Mysql => {
+                    if *concurrently {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "DROP INDEX CONCURRENTLY is only supported on PostgreSQL",
+                        ));
+                    }
+                    warnings.push(
+                        "DROP INDEX on MySQL/MariaDB causes an implicit commit of any open transaction on this session."
+                            .into(),
+                    );
+                    format!(
+                        "DROP INDEX {} ON {};",
+                        quote_engine_identifier(engine, index_name),
+                        quote_qualified(engine, table.schema.trim(), table.name.trim())
+                    )
+                }
+                _ => unreachable!(),
+            };
+
+            Ok(IndexConstraintPreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!("Drop index {index_name} on {}", table.name.trim()),
+                    object_kind: DatabaseObjectKind::Index,
+                    object_name: format!("{}.{index_name}", table.name.trim()),
+                    destructive: true,
+                },
+                warnings,
+            })
+        }
+        IndexConstraintAction::AddConstraint {
+            table,
+            name,
+            kind,
+            columns,
+            check_expression,
+            target,
+            target_columns,
+            on_delete,
+            on_update,
+            not_valid,
+        } => {
+            validate_table_ref(table, "Target")?;
+            let qualified_table = quote_qualified(engine, table.schema.trim(), table.name.trim());
+            let cname = if engine == EngineKind::Mysql
+                && *kind == ConstraintKind::PrimaryKey
+                && name.trim().is_empty()
+            {
+                "PRIMARY"
+            } else {
+                validate_identifier(name, "constraint name")?
+            };
+            let quoted_cname = quote_engine_identifier(engine, cname);
+            if *not_valid && engine != EngineKind::Postgres {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "NOT VALID constraints are only supported on PostgreSQL",
+                ));
+            }
+            if *not_valid && !matches!(kind, ConstraintKind::Check | ConstraintKind::ForeignKey) {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    "NOT VALID is only supported on CHECK and FOREIGN KEY constraints",
+                ));
+            }
+
+            let mut warnings = Vec::new();
+            if engine == EngineKind::Mysql {
+                warnings.push(
+                    "ALTER TABLE on MySQL/MariaDB causes an implicit commit of any open transaction on this session."
+                        .into(),
+                );
+            }
+
+            let sql = match kind {
+                ConstraintKind::PrimaryKey => {
+                    if columns.is_empty() || columns.len() > MAX_KEY_COUNT {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            format!("Choose between 1 and {MAX_KEY_COUNT} columns for PRIMARY KEY"),
+                        ));
+                    }
+                    let quoted_cols = columns
+                        .iter()
+                        .map(|c| {
+                            Ok(quote_engine_identifier(
+                                engine,
+                                validate_identifier(c, "primary key column")?,
+                            ))
+                        })
+                        .collect::<AppResult<Vec<_>>>()?
+                        .join(", ");
+                    warnings.push(
+                        "Adding a PRIMARY KEY scans the table and requires all key columns to be NOT NULL and unique."
+                            .into(),
+                    );
+                    if engine == EngineKind::Mysql {
+                        format!("ALTER TABLE {qualified_table} ADD PRIMARY KEY ({quoted_cols});")
+                    } else {
+                        format!(
+                            "ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} PRIMARY KEY ({quoted_cols});"
+                        )
+                    }
+                }
+                ConstraintKind::Unique => {
+                    if columns.is_empty() || columns.len() > MAX_KEY_COUNT {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            format!(
+                                "Choose between 1 and {MAX_KEY_COUNT} columns for UNIQUE constraint"
+                            ),
+                        ));
+                    }
+                    let quoted_cols = columns
+                        .iter()
+                        .map(|c| {
+                            Ok(quote_engine_identifier(
+                                engine,
+                                validate_identifier(c, "unique constraint column")?,
+                            ))
+                        })
+                        .collect::<AppResult<Vec<_>>>()?
+                        .join(", ");
+                    warnings.push(
+                        "Adding a UNIQUE constraint builds a backing unique index and rejects duplicate non-NULL key tuples."
+                            .into(),
+                    );
+                    format!(
+                        "ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} UNIQUE ({quoted_cols});"
+                    )
+                }
+                ConstraintKind::Check => {
+                    let raw_expr = check_expression.as_deref().unwrap_or("");
+                    let valid_expr = validate_sql_fragment(raw_expr, "CHECK expression")?;
+                    let stripped = if valid_expr
+                        .get(..5)
+                        .is_some_and(|p| p.eq_ignore_ascii_case("CHECK"))
+                    {
+                        valid_expr[5..].trim()
+                    } else {
+                        valid_expr
+                    };
+                    let parenthesized = if stripped.starts_with('(') && stripped.ends_with(')') {
+                        stripped.to_owned()
+                    } else {
+                        format!("({stripped})")
+                    };
+                    let nv = if *not_valid { " NOT VALID" } else { "" };
+                    if *not_valid {
+                        warnings.push(
+                            "NOT VALID skips scanning existing rows and only enforces the CHECK constraint on new or updated rows until VALIDATE CONSTRAINT is run."
+                                .into(),
+                        );
+                    } else {
+                        warnings.push(
+                            "Adding a CHECK constraint scans the table to verify every existing row satisfies the predicate."
+                                .into(),
+                        );
+                    }
+                    format!(
+                        "ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} CHECK {parenthesized}{nv};"
+                    )
+                }
+                ConstraintKind::ForeignKey => {
+                    if columns.is_empty() || columns.len() > MAX_KEY_COUNT {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            format!(
+                                "Choose between 1 and {MAX_KEY_COUNT} source columns for FOREIGN KEY"
+                            ),
+                        ));
+                    }
+                    let Some(target_ref) = target else {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            "Choose a referenced target table for the foreign key",
+                        ));
+                    };
+                    validate_table_ref(target_ref, "Referenced")?;
+                    if target_columns.len() != columns.len() {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            "Foreign key source and referenced column counts must match",
+                        ));
+                    }
+                    let quoted_cols = columns
+                        .iter()
+                        .map(|c| {
+                            Ok(quote_engine_identifier(
+                                engine,
+                                validate_identifier(c, "foreign key column")?,
+                            ))
+                        })
+                        .collect::<AppResult<Vec<_>>>()?
+                        .join(", ");
+                    let quoted_target_cols = target_columns
+                        .iter()
+                        .map(|c| {
+                            Ok(quote_engine_identifier(
+                                engine,
+                                validate_identifier(c, "referenced column")?,
+                            ))
+                        })
+                        .collect::<AppResult<Vec<_>>>()?
+                        .join(", ");
+                    let qualified_target =
+                        quote_qualified(engine, target_ref.schema.trim(), target_ref.name.trim());
+                    let on_del = normalize_referential_action(on_delete.as_deref(), "ON DELETE")?
+                        .map(|a| format!(" ON DELETE {a}"))
+                        .unwrap_or_default();
+                    let on_upd = normalize_referential_action(on_update.as_deref(), "ON UPDATE")?
+                        .map(|a| format!(" ON UPDATE {a}"))
+                        .unwrap_or_default();
+                    let nv = if *not_valid { " NOT VALID" } else { "" };
+                    if *not_valid {
+                        warnings.push(
+                            "NOT VALID skips scanning existing rows and only enforces the foreign key on new or updated rows until VALIDATE CONSTRAINT is run."
+                                .into(),
+                        );
+                    } else {
+                        warnings.push(
+                            "Adding a FOREIGN KEY locks and scans the table to verify all existing rows reference valid target keys."
+                                .into(),
+                        );
+                    }
+                    format!(
+                        "ALTER TABLE {qualified_table} ADD CONSTRAINT {quoted_cname} FOREIGN KEY ({quoted_cols}) REFERENCES {qualified_target} ({quoted_target_cols}){on_del}{on_upd}{nv};"
+                    )
+                }
+                ConstraintKind::Exclusion => {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "PostgreSQL EXCLUDE constraints require custom operator classes; submit them in the SQL editor.",
+                    ));
+                }
+            };
+
+            Ok(IndexConstraintPreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!("Add constraint {cname} on {}", table.name.trim()),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: format!("{}.{cname}", table.name.trim()),
+                    destructive: false,
+                },
+                warnings,
+            })
+        }
+        IndexConstraintAction::DropConstraint {
+            table,
+            name,
+            kind,
+            cascade,
+        } => {
+            validate_table_ref(table, "Target")?;
+            let cname = if engine == EngineKind::Mysql
+                && *kind == ConstraintKind::PrimaryKey
+                && name.trim().is_empty()
+            {
+                "PRIMARY"
+            } else {
+                validate_identifier(name, "constraint name")?
+            };
+            let qualified_table = quote_qualified(engine, table.schema.trim(), table.name.trim());
+            let quoted_cname = quote_engine_identifier(engine, cname);
+            let mut warnings = vec![format!(
+                "Dropping constraint '{cname}' permanently removes its integrity enforcement from {}.",
+                table.name.trim()
+            )];
+
+            let sql = match engine {
+                EngineKind::Postgres => {
+                    let cascade_kw = if *cascade { " CASCADE" } else { "" };
+                    if *cascade {
+                        warnings.push(
+                            "CASCADE will also drop dependent foreign keys, views, or triggers."
+                                .into(),
+                        );
+                    }
+                    format!(
+                        "ALTER TABLE {qualified_table} DROP CONSTRAINT {quoted_cname}{cascade_kw};"
+                    )
+                }
+                EngineKind::Mysql => {
+                    if *cascade {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "MySQL/MariaDB DROP CONSTRAINT does not support CASCADE",
+                        ));
+                    }
+                    warnings.push(
+                        "ALTER TABLE on MySQL/MariaDB causes an implicit commit of any open transaction on this session."
+                            .into(),
+                    );
+                    match kind {
+                        ConstraintKind::PrimaryKey => {
+                            format!("ALTER TABLE {qualified_table} DROP PRIMARY KEY;")
+                        }
+                        ConstraintKind::ForeignKey => {
+                            format!(
+                                "ALTER TABLE {qualified_table} DROP FOREIGN KEY {quoted_cname};"
+                            )
+                        }
+                        ConstraintKind::Unique => {
+                            format!("ALTER TABLE {qualified_table} DROP INDEX {quoted_cname};")
+                        }
+                        ConstraintKind::Check => {
+                            format!("ALTER TABLE {qualified_table} DROP CHECK {quoted_cname};")
+                        }
+                        ConstraintKind::Exclusion => {
+                            return Err(AppError::new(
+                                ErrorCode::Unsupported,
+                                "Exclusion constraints are not supported on MySQL/MariaDB",
+                            ));
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            };
+
+            Ok(IndexConstraintPreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!("Drop constraint {cname} on {}", table.name.trim()),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: format!("{}.{cname}", table.name.trim()),
+                    destructive: true,
+                },
+                warnings,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2440,5 +3143,235 @@ mod tests {
         assert!(mig.script.contains(
             "ALTER TABLE `r7_mysql_left`.`customers` MODIFY COLUMN `email` varchar(200) NOT NULL DEFAULT 'guest@example.com';"
         ));
+    }
+
+    #[test]
+    fn postgres_index_and_constraint_builder_handles_composite_partial_and_not_valid_ddl() {
+        let table = TableRef {
+            schema: "public".into(),
+            name: "Order Items".into(),
+        };
+
+        let create_idx = build_index_constraint_ddl(
+            EngineKind::Postgres,
+            &IndexConstraintAction::CreateIndex {
+                table: table.clone(),
+                name: "order_items_customer_date_idx".into(),
+                unique: true,
+                method: "btree".into(),
+                concurrently: true,
+                expressions: vec!["customer_id".into(), "Order Date".into()],
+                raw_expressions: false,
+                predicate: Some("status = 'open'".into()),
+            },
+        )
+        .expect("pg create index");
+        assert_eq!(
+            create_idx.statement.sql,
+            "CREATE UNIQUE INDEX CONCURRENTLY \"order_items_customer_date_idx\" ON \"public\".\"Order Items\" USING btree (\"customer_id\", \"Order Date\") WHERE status = 'open';"
+        );
+        assert!(!create_idx.statement.destructive);
+        assert!(
+            create_idx
+                .warnings
+                .iter()
+                .any(|w| w.contains("cannot run inside a transaction block"))
+        );
+
+        let drop_idx = build_index_constraint_ddl(
+            EngineKind::Postgres,
+            &IndexConstraintAction::DropIndex {
+                table: table.clone(),
+                name: "order_items_customer_date_idx".into(),
+                concurrently: true,
+            },
+        )
+        .expect("pg drop index");
+        assert_eq!(
+            drop_idx.statement.sql,
+            "DROP INDEX CONCURRENTLY \"public\".\"order_items_customer_date_idx\";"
+        );
+        assert!(drop_idx.statement.destructive);
+
+        let add_fk = build_index_constraint_ddl(
+            EngineKind::Postgres,
+            &IndexConstraintAction::AddConstraint {
+                table: table.clone(),
+                name: "order_items_customer_fkey".into(),
+                kind: ConstraintKind::ForeignKey,
+                columns: vec!["tenant_id".into(), "customer_id".into()],
+                check_expression: None,
+                target: Some(TableRef {
+                    schema: "public".into(),
+                    name: "customers".into(),
+                }),
+                target_columns: vec!["tenant_id".into(), "id".into()],
+                on_delete: Some("CASCADE".into()),
+                on_update: Some("NO ACTION".into()),
+                not_valid: true,
+            },
+        )
+        .expect("pg add fk");
+        assert_eq!(
+            add_fk.statement.sql,
+            "ALTER TABLE \"public\".\"Order Items\" ADD CONSTRAINT \"order_items_customer_fkey\" FOREIGN KEY (\"tenant_id\", \"customer_id\") REFERENCES \"public\".\"customers\" (\"tenant_id\", \"id\") ON DELETE CASCADE ON UPDATE NO ACTION NOT VALID;"
+        );
+        assert!(
+            add_fk
+                .warnings
+                .iter()
+                .any(|w| w.contains("NOT VALID skips scanning existing rows"))
+        );
+
+        let add_check = build_index_constraint_ddl(
+            EngineKind::Postgres,
+            &IndexConstraintAction::AddConstraint {
+                table: table.clone(),
+                name: "order_items_qty_check".into(),
+                kind: ConstraintKind::Check,
+                columns: vec![],
+                check_expression: Some("\"Unit Price\" >= 0".into()),
+                target: None,
+                target_columns: vec![],
+                on_delete: None,
+                on_update: None,
+                not_valid: false,
+            },
+        )
+        .expect("pg add check");
+        assert_eq!(
+            add_check.statement.sql,
+            "ALTER TABLE \"public\".\"Order Items\" ADD CONSTRAINT \"order_items_qty_check\" CHECK (\"Unit Price\" >= 0);"
+        );
+
+        let drop_con = build_index_constraint_ddl(
+            EngineKind::Postgres,
+            &IndexConstraintAction::DropConstraint {
+                table,
+                name: "order_items_qty_check".into(),
+                kind: ConstraintKind::Check,
+                cascade: true,
+            },
+        )
+        .expect("pg drop constraint");
+        assert_eq!(
+            drop_con.statement.sql,
+            "ALTER TABLE \"public\".\"Order Items\" DROP CONSTRAINT \"order_items_qty_check\" CASCADE;"
+        );
+        assert!(drop_con.statement.destructive);
+    }
+
+    #[test]
+    fn mysql_index_and_constraint_builder_uses_engine_specific_drop_and_rejects_unsupported_flags()
+    {
+        let table = TableRef {
+            schema: "shop".into(),
+            name: "Order `Items`".into(),
+        };
+
+        let create_ft = build_index_constraint_ddl(
+            EngineKind::Mysql,
+            &IndexConstraintAction::CreateIndex {
+                table: table.clone(),
+                name: "idx_notes_ft".into(),
+                unique: false,
+                method: "fulltext".into(),
+                concurrently: false,
+                expressions: vec!["notes".into()],
+                raw_expressions: false,
+                predicate: None,
+            },
+        )
+        .expect("mysql fulltext index");
+        assert_eq!(
+            create_ft.statement.sql,
+            "CREATE FULLTEXT INDEX `idx_notes_ft` ON `shop`.`Order ``Items``` (`notes`);"
+        );
+        assert!(
+            create_ft
+                .warnings
+                .iter()
+                .any(|w| w.contains("implicit commit"))
+        );
+
+        let drop_idx = build_index_constraint_ddl(
+            EngineKind::Mysql,
+            &IndexConstraintAction::DropIndex {
+                table: table.clone(),
+                name: "idx_notes_ft".into(),
+                concurrently: false,
+            },
+        )
+        .expect("mysql drop index");
+        assert_eq!(
+            drop_idx.statement.sql,
+            "DROP INDEX `idx_notes_ft` ON `shop`.`Order ``Items```;"
+        );
+
+        for (kind, name, expected_clause) in [
+            (ConstraintKind::PrimaryKey, "PRIMARY", "DROP PRIMARY KEY;"),
+            (
+                ConstraintKind::ForeignKey,
+                "fk_cust",
+                "DROP FOREIGN KEY `fk_cust`;",
+            ),
+            (ConstraintKind::Unique, "uq_code", "DROP INDEX `uq_code`;"),
+            (ConstraintKind::Check, "chk_qty", "DROP CHECK `chk_qty`;"),
+        ] {
+            let dropped = build_index_constraint_ddl(
+                EngineKind::Mysql,
+                &IndexConstraintAction::DropConstraint {
+                    table: table.clone(),
+                    name: name.into(),
+                    kind,
+                    cascade: false,
+                },
+            )
+            .expect("mysql drop constraint");
+            assert!(
+                dropped.statement.sql.ends_with(expected_clause),
+                "unexpected SQL: {}",
+                dropped.statement.sql
+            );
+        }
+
+        // Rejects PostgreSQL-only flags and statement injection attempts
+        assert_eq!(
+            build_index_constraint_ddl(
+                EngineKind::Mysql,
+                &IndexConstraintAction::CreateIndex {
+                    table: table.clone(),
+                    name: "idx_bad".into(),
+                    unique: false,
+                    method: "btree".into(),
+                    concurrently: false,
+                    expressions: vec!["id".into()],
+                    raw_expressions: false,
+                    predicate: Some("id > 0".into()),
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
+
+        assert_eq!(
+            build_index_constraint_ddl(
+                EngineKind::Postgres,
+                &IndexConstraintAction::CreateIndex {
+                    table,
+                    name: "idx_inj".into(),
+                    unique: false,
+                    method: "btree".into(),
+                    concurrently: false,
+                    expressions: vec!["id".into()],
+                    raw_expressions: false,
+                    predicate: Some("id > 0; DROP TABLE users".into()),
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidInput
+        );
     }
 }

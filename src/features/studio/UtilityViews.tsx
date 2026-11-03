@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, History, Lock, RefreshCw, Search, ArrowUpRight } from "lucide-react";
+import {
+  Activity,
+  History,
+  Lock,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  ArrowUpRight,
+} from "lucide-react";
 import type {
   AuditEntry,
   ConstraintKind,
@@ -8,11 +17,17 @@ import type {
   LockWaitSnapshot,
   ObjectDetails,
   ProcessInfo,
+  TableInfo,
   TableSchema,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
 import { Modal, InlineError } from "../../components/ui/Modal";
+import {
+  IndexConstraintDialog,
+  type IndexConstraintDialogMode,
+  isConstraintBackedIndex,
+} from "./IndexConstraintDialog";
 import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
@@ -505,6 +520,8 @@ const CONSTRAINT_KIND_LABELS: Record<ConstraintKind, string> = {
   exclusion: "EXCLUDE",
 };
 
+const EMPTY_CATALOG_TABLES: readonly TableInfo[] = [];
+
 export function StructureView({
   schema,
   details = null,
@@ -512,6 +529,7 @@ export function StructureView({
   connectionId = null,
   highlightedColumn = null,
   onOpenObject,
+  onRefresh,
 }: {
   schema: TableSchema | null;
   details?: ObjectDetails | null;
@@ -519,7 +537,17 @@ export function StructureView({
   connectionId?: string | null;
   highlightedColumn?: string | null;
   onOpenObject?: (object: DatabaseObjectRef) => void;
+  onRefresh?: () => void;
 }) {
+  const profile = useStudio((s) =>
+    connectionId ? (s.bootstrap?.profiles.find((p) => p.id === connectionId) ?? null) : null,
+  );
+  const session = useStudio((s) => (connectionId ? (s.sessions[connectionId] ?? null) : null));
+  const catalogTables = useStudio((s) =>
+    connectionId ? (s.catalog[connectionId] ?? EMPTY_CATALOG_TABLES) : EMPTY_CATALOG_TABLES,
+  );
+  const [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null);
+
   const openObject =
     onOpenObject ??
     (connectionId
@@ -531,6 +559,20 @@ export function StructureView({
         }
       : undefined);
   if (!schema) return <div className="grid-empty">Loading table structure…</div>;
+
+  const isTableLike =
+    !details || details.object.kind === "table" || details.object.kind === "partitionedTable";
+  const canManageSchema = Boolean(
+    details &&
+    isTableLike &&
+    profile &&
+    session &&
+    (profile.engine === "postgres" || profile.engine === "mysql"),
+  );
+  const isReadOnly = profile?.safeMode === "readOnly";
+  const tableRef = details
+    ? { schema: details.object.schema, name: details.object.name }
+    : schema.table;
   return (
     <div className="structure-scroll">
       <table className="structure-table">
@@ -620,137 +662,286 @@ export function StructureView({
           </div>
         </div>
       )}
-      {details && details.constraints.length > 0 && (
-        <table className="structure-table" aria-label="Constraints">
-          <thead>
-            <tr>
-              <th>Constraint</th>
-              <th>Kind</th>
-              <th>Columns</th>
-              <th>References</th>
-              <th>Definition</th>
-            </tr>
-          </thead>
-          <tbody>
-            {details.constraints.map((constraint) => (
-              <tr key={`${constraint.kind}:${constraint.name}`}>
-                <td className="mono">{constraint.name}</td>
-                <td>
-                  <span
-                    className={`key-badge ${constraint.kind === "foreignKey" ? "foreign" : ""}`}
-                  >
-                    {CONSTRAINT_KIND_LABELS[constraint.kind]}
-                  </span>
-                </td>
-                <td className="mono">
-                  {constraint.columns.length ? constraint.columns.join(", ") : "—"}
-                </td>
-                <td className="mono">
-                  {constraint.target ? (
-                    openObject ? (
-                      <button
-                        type="button"
-                        className="structure-link-button"
-                        onClick={() => {
-                          if (onOpenObject)
-                            onOpenObject({ ...constraint.target!, kind: "table", identity: null });
-                          else
-                            void useStudio
-                              .getState()
-                              .openTable(connectionId!, constraint.target!, undefined, "structure");
-                        }}
-                      >
-                        {`${constraint.target.schema}.${constraint.target.name}${
-                          constraint.targetColumns.length
-                            ? ` (${constraint.targetColumns.join(", ")})`
-                            : ""
-                        }`}
-                      </button>
-                    ) : (
-                      `${constraint.target.schema}.${constraint.target.name}`
-                    )
-                  ) : (
-                    "—"
-                  )}
-                </td>
-                <td>
-                  <code>{constraint.definition}</code>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {details && details.indexes.length > 0 && (
-        <table className="structure-table" aria-label="Indexes">
-          <thead>
-            <tr>
-              <th>Index</th>
-              <th>Method</th>
-              <th>Uniqueness</th>
-              <th>Keys / Expressions</th>
-              <th>Partial predicate</th>
-              <th>Size</th>
-              <th>Scans / usage</th>
-              <th>Cardinality</th>
-            </tr>
-          </thead>
-          <tbody>
-            {details.indexes.map((index) => {
-              const usage = describeIndexUsage(index);
-              return (
-                <tr key={index.name}>
-                  <td className="mono">
-                    {openObject ? (
-                      <button
-                        type="button"
-                        className="structure-link-button"
-                        onClick={() =>
-                          openObject!({
-                            schema: details.object.schema,
-                            name: index.name,
-                            kind: "index",
-                            identity: details.object.name,
-                          })
-                        }
-                      >
-                        {index.name}
-                      </button>
-                    ) : (
-                      index.name
-                    )}
-                  </td>
-                  <td className="mono">{index.method}</td>
-                  <td>
-                    {index.primary ? (
-                      <span className="key-badge">PRIMARY KEY</span>
-                    ) : index.unique ? (
-                      <span className="key-badge foreign">UNIQUE</span>
-                    ) : (
-                      "Non-unique"
-                    )}
-                  </td>
-                  <td className="mono">
-                    {index.expressions.length ? index.expressions.join(", ") : "—"}
-                  </td>
-                  <td className="mono">{index.predicate ? `WHERE ${index.predicate}` : "—"}</td>
-                  <td className="mono">{formatStorageBytes(index.sizeBytes)}</td>
-                  <td>
-                    {usage.unused ? (
-                      <span className="lock-badge waiting">{usage.label}</span>
-                    ) : (
-                      <span className="mono">
-                        {usage.label}
-                        {usage.detail ? ` · ${usage.detail}` : ""}
-                      </span>
-                    )}
-                  </td>
-                  <td className="mono">{formatStatCount(index.cardinality)}</td>
+      {details && (details.constraints.length > 0 || canManageSchema) && (
+        <section className="structure-section" aria-label="Constraints section">
+          {canManageSchema && (
+            <div
+              className="structure-section-header"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 14px 6px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <strong style={{ fontSize: 12 }}>Constraints</strong>
+                <span className="schema-count">{details.constraints.length}</span>
+              </div>
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={isReadOnly}
+                title={isReadOnly ? "Connection is in read-only safe mode" : undefined}
+                onClick={() => setEditorMode({ kind: "addConstraint", table: tableRef })}
+              >
+                <Plus size={12} />
+                Add constraint…
+              </button>
+            </div>
+          )}
+          {details.constraints.length > 0 ? (
+            <table className="structure-table" aria-label="Constraints">
+              <thead>
+                <tr>
+                  <th>Constraint</th>
+                  <th>Kind</th>
+                  <th>Columns</th>
+                  <th>References</th>
+                  <th>Definition</th>
+                  {canManageSchema && <th>Actions</th>}
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {details.constraints.map((constraint) => {
+                  const canDropConstraint =
+                    canManageSchema &&
+                    !(profile?.engine === "mysql" && constraint.kind === "exclusion");
+                  return (
+                    <tr key={`${constraint.kind}:${constraint.name}`}>
+                      <td className="mono">{constraint.name}</td>
+                      <td>
+                        <span
+                          className={`key-badge ${constraint.kind === "foreignKey" ? "foreign" : ""}`}
+                        >
+                          {CONSTRAINT_KIND_LABELS[constraint.kind]}
+                        </span>
+                      </td>
+                      <td className="mono">
+                        {constraint.columns.length ? constraint.columns.join(", ") : "—"}
+                      </td>
+                      <td className="mono">
+                        {constraint.target ? (
+                          openObject ? (
+                            <button
+                              type="button"
+                              className="structure-link-button"
+                              onClick={() => {
+                                if (onOpenObject)
+                                  onOpenObject({
+                                    ...constraint.target!,
+                                    kind: "table",
+                                    identity: null,
+                                  });
+                                else
+                                  void useStudio
+                                    .getState()
+                                    .openTable(
+                                      connectionId!,
+                                      constraint.target!,
+                                      undefined,
+                                      "structure",
+                                    );
+                              }}
+                            >
+                              {`${constraint.target.schema}.${constraint.target.name}${
+                                constraint.targetColumns.length
+                                  ? ` (${constraint.targetColumns.join(", ")})`
+                                  : ""
+                              }`}
+                            </button>
+                          ) : (
+                            `${constraint.target.schema}.${constraint.target.name}`
+                          )
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td>
+                        <code>{constraint.definition}</code>
+                      </td>
+                      {canManageSchema && (
+                        <td>
+                          {canDropConstraint ? (
+                            <button
+                              type="button"
+                              className="button ghost small danger-text"
+                              disabled={isReadOnly}
+                              aria-label={`Drop constraint ${constraint.name}`}
+                              title={
+                                isReadOnly
+                                  ? "Connection is in read-only safe mode"
+                                  : `Drop constraint ${constraint.name}`
+                              }
+                              onClick={() =>
+                                setEditorMode({
+                                  kind: "dropConstraint",
+                                  table: tableRef,
+                                  constraint,
+                                })
+                              }
+                            >
+                              <Trash2 size={12} />
+                              Drop…
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <p className="form-note" style={{ padding: "4px 14px 10px", margin: 0 }}>
+              No explicit table constraints.
+            </p>
+          )}
+        </section>
+      )}
+      {details && (details.indexes.length > 0 || canManageSchema) && (
+        <section className="structure-section" aria-label="Indexes section">
+          {canManageSchema && (
+            <div
+              className="structure-section-header"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 14px 6px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <strong style={{ fontSize: 12 }}>Indexes</strong>
+                <span className="schema-count">{details.indexes.length}</span>
+              </div>
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={isReadOnly}
+                title={isReadOnly ? "Connection is in read-only safe mode" : undefined}
+                onClick={() => setEditorMode({ kind: "createIndex", table: tableRef })}
+              >
+                <Plus size={12} />
+                Create index…
+              </button>
+            </div>
+          )}
+          {details.indexes.length > 0 ? (
+            <table className="structure-table" aria-label="Indexes">
+              <thead>
+                <tr>
+                  <th>Index</th>
+                  <th>Method</th>
+                  <th>Uniqueness</th>
+                  <th>Keys / Expressions</th>
+                  <th>Partial predicate</th>
+                  <th>Size</th>
+                  <th>Scans / usage</th>
+                  <th>Cardinality</th>
+                  {canManageSchema && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {details.indexes.map((index) => {
+                  const usage = describeIndexUsage(index);
+                  const constraintBacked = isConstraintBackedIndex(index, details.constraints);
+                  return (
+                    <tr key={index.name}>
+                      <td className="mono">
+                        {openObject ? (
+                          <button
+                            type="button"
+                            className="structure-link-button"
+                            onClick={() =>
+                              openObject!({
+                                schema: details.object.schema,
+                                name: index.name,
+                                kind: "index",
+                                identity: details.object.name,
+                              })
+                            }
+                          >
+                            {index.name}
+                          </button>
+                        ) : (
+                          index.name
+                        )}
+                      </td>
+                      <td className="mono">{index.method}</td>
+                      <td>
+                        {index.primary ? (
+                          <span className="key-badge">PRIMARY KEY</span>
+                        ) : index.unique ? (
+                          <span className="key-badge foreign">UNIQUE</span>
+                        ) : (
+                          "Non-unique"
+                        )}
+                      </td>
+                      <td className="mono">
+                        {index.expressions.length ? index.expressions.join(", ") : "—"}
+                      </td>
+                      <td className="mono">{index.predicate ? `WHERE ${index.predicate}` : "—"}</td>
+                      <td className="mono">{formatStorageBytes(index.sizeBytes)}</td>
+                      <td>
+                        {usage.unused ? (
+                          <span className="lock-badge waiting">{usage.label}</span>
+                        ) : (
+                          <span className="mono">
+                            {usage.label}
+                            {usage.detail ? ` · ${usage.detail}` : ""}
+                          </span>
+                        )}
+                      </td>
+                      <td className="mono">{formatStatCount(index.cardinality)}</td>
+                      {canManageSchema && (
+                        <td>
+                          {constraintBacked ? (
+                            <span
+                              className="muted"
+                              style={{ fontSize: 11 }}
+                              title="This index backs a table constraint; drop the constraint instead"
+                            >
+                              Constraint-backed
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="button ghost small danger-text"
+                              disabled={isReadOnly}
+                              aria-label={`Drop index ${index.name}`}
+                              title={
+                                isReadOnly
+                                  ? "Connection is in read-only safe mode"
+                                  : `Drop index ${index.name}`
+                              }
+                              onClick={() =>
+                                setEditorMode({
+                                  kind: "dropIndex",
+                                  table: tableRef,
+                                  index,
+                                })
+                              }
+                            >
+                              <Trash2 size={12} />
+                              Drop…
+                            </button>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <p className="form-note" style={{ padding: "4px 14px 10px", margin: 0 }}>
+              No indexes on this table.
+            </p>
+          )}
+        </section>
       )}
       {details && details.triggers.length > 0 && (
         <table className="structure-table" aria-label="Triggers">
@@ -813,6 +1004,22 @@ export function StructureView({
             onOpenObject={openObject}
           />
         </div>
+      )}
+      {editorMode && profile && session && (
+        <IndexConstraintDialog
+          mode={editorMode}
+          schema={schema}
+          details={details}
+          profile={profile}
+          session={session}
+          catalogTables={catalogTables}
+          onClose={() => setEditorMode(null)}
+          onSuccess={(msg) => {
+            useStudio.getState().notify(msg);
+            onRefresh?.();
+            if (connectionId) void useStudio.getState().refreshCatalog(connectionId);
+          }}
+        />
       )}
     </div>
   );

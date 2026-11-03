@@ -125,6 +125,8 @@ pub fn run() {
             commands::compare_schemas,
             commands::generate_schema_ddl,
             commands::generate_migration_ddl,
+            commands::preview_index_constraint_ddl,
+            commands::prepare_index_constraint_ddl,
             commands::prepare_browse_table,
             commands::browse_table,
             commands::result_range,

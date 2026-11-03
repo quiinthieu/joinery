@@ -3931,3 +3931,223 @@ async fn schema_ddl_round_trip_and_migration_produce_zero_diffs() {
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn index_and_constraint_editor_executes_reviewed_ddl_and_rejects_read_only() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Guard).await;
+        let cleanup = "DROP TABLE IF EXISTS joinery.r7_idx_orders, joinery.r7_idx_customers;";
+        completed(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     CREATE TABLE joinery.r7_idx_customers (
+                       id BIGINT NOT NULL PRIMARY KEY,
+                       email VARCHAR(190) NOT NULL
+                     ) ENGINE=InnoDB;
+                     CREATE TABLE joinery.r7_idx_orders (
+                       id BIGINT NOT NULL PRIMARY KEY,
+                       customer_id BIGINT NOT NULL,
+                       status VARCHAR(32) NOT NULL DEFAULT 'open',
+                       total_cents INT NOT NULL DEFAULT 100
+                     ) ENGINE=InnoDB;"
+                ),
+            )
+            .await,
+        );
+
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: "r7_idx_orders".into(),
+        };
+        let run_action = |action: IndexConstraintAction| {
+            let studio = studio.clone();
+            let session_id = session.id.clone();
+            async move {
+                let preview = studio
+                    .preview_index_constraint_ddl(EngineKind::Mysql, action.clone())
+                    .unwrap();
+                assert!(!preview.statement.sql.is_empty());
+                assert!(
+                    preview
+                        .warnings
+                        .iter()
+                        .any(|w| w.contains("implicit commit")),
+                    "port {port}: expected implicit-commit warning"
+                );
+                let plan = studio
+                    .prepare_index_constraint_ddl(&session_id, action)
+                    .unwrap();
+                assert!(plan.requires_approval);
+                assert_eq!(plan.confirmation_text.as_deref(), Some("Disposable MySQL"));
+                let approval = studio
+                    .authorize(&plan.id, None, plan.confirmation_text.as_deref())
+                    .unwrap();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                studio
+                    .execute(
+                        &plan.id,
+                        Some(&approval),
+                        Arc::new(move |e| tx.send(e).is_ok()),
+                    )
+                    .unwrap();
+                let mut events = Vec::new();
+                while let Some(ev) = rx.recv().await {
+                    let done = matches!(ev, QueryEvent::Finished { .. });
+                    events.push(ev);
+                    if done {
+                        break;
+                    }
+                }
+                completed(&events);
+            }
+        };
+
+        // 1. Create composite index
+        run_action(IndexConstraintAction::CreateIndex {
+            table: table.clone(),
+            name: "r7_idx_orders_cust_status_idx".into(),
+            unique: false,
+            method: "btree".into(),
+            concurrently: false,
+            expressions: vec!["customer_id".into(), "status".into()],
+            raw_expressions: false,
+            predicate: None,
+        })
+        .await;
+
+        // 2. Add FOREIGN KEY and UNIQUE constraints
+        run_action(IndexConstraintAction::AddConstraint {
+            table: table.clone(),
+            name: "r7_idx_orders_customer_fk".into(),
+            kind: ConstraintKind::ForeignKey,
+            columns: vec!["customer_id".into()],
+            check_expression: None,
+            target: Some(TableRef {
+                schema: "joinery".into(),
+                name: "r7_idx_customers".into(),
+            }),
+            target_columns: vec!["id".into()],
+            on_delete: Some("CASCADE".into()),
+            on_update: None,
+            not_valid: false,
+        })
+        .await;
+
+        run_action(IndexConstraintAction::AddConstraint {
+            table: table.clone(),
+            name: "r7_idx_orders_cust_status_uq".into(),
+            kind: ConstraintKind::Unique,
+            columns: vec!["customer_id".into(), "status".into()],
+            check_expression: None,
+            target: None,
+            target_columns: vec![],
+            on_delete: None,
+            on_update: None,
+            not_valid: false,
+        })
+        .await;
+
+        let details = studio
+            .object_details(
+                &session.id,
+                &DatabaseObjectRef {
+                    schema: "joinery".into(),
+                    name: "r7_idx_orders".into(),
+                    kind: DatabaseObjectKind::Table,
+                    identity: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            details
+                .indexes
+                .iter()
+                .any(|i| i.name == "r7_idx_orders_cust_status_idx"),
+            "port {port}: created index present"
+        );
+        assert!(
+            details
+                .constraints
+                .iter()
+                .any(|c| c.name == "r7_idx_orders_customer_fk"),
+            "port {port}: created FK present"
+        );
+
+        // 3. Drop FOREIGN KEY, UNIQUE constraint, and secondary index
+        run_action(IndexConstraintAction::DropConstraint {
+            table: table.clone(),
+            name: "r7_idx_orders_customer_fk".into(),
+            kind: ConstraintKind::ForeignKey,
+            cascade: false,
+        })
+        .await;
+        run_action(IndexConstraintAction::DropConstraint {
+            table: table.clone(),
+            name: "r7_idx_orders_cust_status_uq".into(),
+            kind: ConstraintKind::Unique,
+            cascade: false,
+        })
+        .await;
+        run_action(IndexConstraintAction::DropIndex {
+            table: table.clone(),
+            name: "r7_idx_orders_cust_status_idx".into(),
+            concurrently: false,
+        })
+        .await;
+
+        let after = studio
+            .object_details(
+                &session.id,
+                &DatabaseObjectRef {
+                    schema: "joinery".into(),
+                    name: "r7_idx_orders".into(),
+                    kind: DatabaseObjectKind::Table,
+                    identity: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            !after
+                .indexes
+                .iter()
+                .any(|i| i.name == "r7_idx_orders_cust_status_idx"),
+            "port {port}: dropped index absent"
+        );
+        assert!(
+            !after
+                .constraints
+                .iter()
+                .any(|c| c.name == "r7_idx_orders_customer_fk"),
+            "port {port}: dropped FK absent"
+        );
+
+        // 4. ReadOnly profile blocks prepare_index_constraint_ddl
+        let (_ro_root, ro_studio, ro_session) = setup(port, SafeMode::ReadOnly).await;
+        let blocked = ro_studio
+            .prepare_index_constraint_ddl(
+                &ro_session.id,
+                IndexConstraintAction::CreateIndex {
+                    table,
+                    name: "r7_idx_blocked".into(),
+                    unique: false,
+                    method: "btree".into(),
+                    concurrently: false,
+                    expressions: vec!["status".into()],
+                    raw_expressions: false,
+                    predicate: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(blocked.code, ErrorCode::PolicyBlocked, "port {port}");
+        ro_studio.shutdown();
+
+        completed(&run(&studio, &session, cleanup).await);
+        studio.shutdown();
+    }
+}

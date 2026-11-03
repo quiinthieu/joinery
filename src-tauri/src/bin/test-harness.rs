@@ -243,6 +243,14 @@ async fn rpc(
                 arg(&args, "right")?,
                 arg::<Option<String>>(&args, "targetSchema")?.as_deref()
             )?),
+            "preview_index_constraint_ddl" => json!(studio.preview_index_constraint_ddl(
+                arg(&args, "engine")?,
+                arg(&args, "action")?
+            )?),
+            "prepare_index_constraint_ddl" => json!(studio.prepare_index_constraint_ddl(
+                &arg::<String>(&args, "sessionId")?,
+                arg(&args, "action")?
+            )?),
             "prepare_browse_table" => json!(
                 studio
                     .prepare_browse(

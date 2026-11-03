@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use crate::ddl::{DdlStatement, SchemaDdlPlan};
+pub use crate::ddl::{DdlStatement, IndexConstraintAction, IndexConstraintPreview, SchemaDdlPlan};
 pub use crate::schema_diff::{
     MAX_SNAPSHOT_COLUMNS, MAX_SNAPSHOT_CONSTRAINTS, MAX_SNAPSHOT_INDEXES, MAX_SNAPSHOT_RELATIONS,
     MAX_SNAPSHOT_ROUTINES, MAX_SNAPSHOT_SEQUENCES, MAX_SNAPSHOT_TRIGGERS, MAX_SNAPSHOT_UNSUPPORTED,

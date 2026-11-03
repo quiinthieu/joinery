@@ -4442,3 +4442,197 @@ async fn schema_ddl_round_trip_and_migration_produce_zero_diffs() {
     );
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn index_and_constraint_editor_executes_reviewed_ddl_and_rejects_read_only() {
+    let (_root, studio, session) = setup(SafeMode::Guard).await;
+    let cleanup = "DROP SCHEMA IF EXISTS r7_idx_editor CASCADE;";
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     CREATE SCHEMA r7_idx_editor;
+                     CREATE TABLE r7_idx_editor.customers (
+                       id BIGINT PRIMARY KEY,
+                       email TEXT NOT NULL
+                     );
+                     CREATE TABLE r7_idx_editor.orders (
+                       id BIGINT PRIMARY KEY,
+                       customer_id BIGINT NOT NULL,
+                       status TEXT NOT NULL DEFAULT 'open',
+                       total_cents INT NOT NULL DEFAULT 100
+                     );"
+                )
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let table = TableRef {
+        schema: "r7_idx_editor".into(),
+        name: "orders".into(),
+    };
+    let run_action = |action: IndexConstraintAction| {
+        let studio = studio.clone();
+        let session_id = session.id.clone();
+        async move {
+            let preview = studio
+                .preview_index_constraint_ddl(EngineKind::Postgres, action.clone())
+                .unwrap();
+            assert!(!preview.statement.sql.is_empty());
+            let plan = studio
+                .prepare_index_constraint_ddl(&session_id, action)
+                .unwrap();
+            assert!(plan.requires_approval);
+            assert_eq!(plan.confirmation_text.as_deref(), Some("Integration"));
+            let approval = studio
+                .authorize(&plan.id, None, plan.confirmation_text.as_deref())
+                .unwrap();
+            let events = finish(start(&studio, &plan, Some(&approval)).1).await;
+            assert_eq!(status(&events), RunStatus::Completed, "events: {events:?}");
+        }
+    };
+
+    // 1. Create composite partial index with CONCURRENTLY
+    run_action(IndexConstraintAction::CreateIndex {
+        table: table.clone(),
+        name: "orders_customer_open_idx".into(),
+        unique: false,
+        method: "btree".into(),
+        concurrently: true,
+        expressions: vec!["customer_id".into(), "status".into()],
+        raw_expressions: false,
+        predicate: Some("status = 'open'".into()),
+    })
+    .await;
+
+    // 2. Add FOREIGN KEY with NOT VALID and CHECK constraint
+    run_action(IndexConstraintAction::AddConstraint {
+        table: table.clone(),
+        name: "orders_customer_fk".into(),
+        kind: ConstraintKind::ForeignKey,
+        columns: vec!["customer_id".into()],
+        check_expression: None,
+        target: Some(TableRef {
+            schema: "r7_idx_editor".into(),
+            name: "customers".into(),
+        }),
+        target_columns: vec!["id".into()],
+        on_delete: Some("CASCADE".into()),
+        on_update: None,
+        not_valid: true,
+    })
+    .await;
+
+    run_action(IndexConstraintAction::AddConstraint {
+        table: table.clone(),
+        name: "orders_total_positive_chk".into(),
+        kind: ConstraintKind::Check,
+        columns: vec![],
+        check_expression: Some("total_cents >= 0".into()),
+        target: None,
+        target_columns: vec![],
+        on_delete: None,
+        on_update: None,
+        not_valid: false,
+    })
+    .await;
+
+    let details = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "r7_idx_editor".into(),
+                name: "orders".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        details
+            .indexes
+            .iter()
+            .any(|i| i.name == "orders_customer_open_idx")
+    );
+    assert!(
+        details
+            .constraints
+            .iter()
+            .any(|c| c.name == "orders_customer_fk")
+    );
+    assert!(
+        details
+            .constraints
+            .iter()
+            .any(|c| c.name == "orders_total_positive_chk")
+    );
+
+    // 3. Drop index CONCURRENTLY and drop constraint
+    run_action(IndexConstraintAction::DropIndex {
+        table: table.clone(),
+        name: "orders_customer_open_idx".into(),
+        concurrently: true,
+    })
+    .await;
+    run_action(IndexConstraintAction::DropConstraint {
+        table: table.clone(),
+        name: "orders_total_positive_chk".into(),
+        kind: ConstraintKind::Check,
+        cascade: false,
+    })
+    .await;
+
+    let after = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "r7_idx_editor".into(),
+                name: "orders".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        !after
+            .indexes
+            .iter()
+            .any(|i| i.name == "orders_customer_open_idx")
+    );
+    assert!(
+        !after
+            .constraints
+            .iter()
+            .any(|c| c.name == "orders_total_positive_chk")
+    );
+
+    // 4. ReadOnly profile blocks prepare_index_constraint_ddl
+    let (_ro_root, ro_studio, ro_session) = setup(SafeMode::ReadOnly).await;
+    let blocked = ro_studio
+        .prepare_index_constraint_ddl(
+            &ro_session.id,
+            IndexConstraintAction::DropConstraint {
+                table,
+                name: "orders_customer_fk".into(),
+                kind: ConstraintKind::ForeignKey,
+                cascade: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
+    ro_studio.shutdown();
+
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}
