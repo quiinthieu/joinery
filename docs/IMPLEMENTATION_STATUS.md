@@ -2645,9 +2645,22 @@ A top-level UNION, INTERSECT, or EXCEPT of flat SELECT arms uses the same width 
 | Unit | `sql-inspections.test.ts` covers UNION, INTERSECT, EXCEPT, a trailing ORDER BY, a CTE reference, and a star whose width matches. A parenthesized arm, a different column count, and a width mismatch still withhold |
 | Validate | `pnpm validate` passed: 466 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
 | Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
-| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star beside other items, a partial column list, and other template expressions remain open |
+| Open / next | See the parenthesized set arm section below |
 
 Fetched `origin/main` is `fee37a7`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+
+## R5 follow-up: parenthesized set arm (3 November 2026)
+
+One pair of parentheses may wrap a flat SELECT arm of a CTE or derived-table set operation. The width check and offered names stay the same. A second pair still withholds. A schema-qualified star beside columns, a partial column list, and other template expressions still withhold. Inspection does not prepare or execute SQL.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `sql-inspections.test.ts` covers a derived table, INTERSECT, EXCEPT ALL, an ORDER BY inside the parentheses, a star, a CTE, a recursive arm, and MySQL. A second pair, an expression, and a width mismatch still withhold |
+| Validate | `pnpm validate` passed: 468 frontend tests, 156 standard Rust tests, production build, fmt, check and strict Clippy. Ignored fixture tests were not run |
+| Not executed | The browser suite was not run for this slice. The owner-private Site was not updated |
+| Open / next | Remaining R5/R6/R7/R8. A schema-qualified star beside other items, a partial column list, and other template expressions remain open |
+
+Fetched `origin/main` is `6158948`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
 
 ## R5 follow-up: template case expressions (3 November 2026)
 

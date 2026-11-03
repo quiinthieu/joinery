@@ -60,9 +60,11 @@ const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name])
  * anchor relation's columns, plus the anchor arm's extra names.
  * The outer statement may be that same set operation. A reference inside an
  * arm resolves to that arm's tables, and there is no combined output name.
+ * One pair of parentheses may wrap a flat arm of a CTE or derived-table set
+ * operation. A second pair still withholds.
  * shortcut: a schema-qualified star beside other items, a different extra
- * count on the same relation, more arms than the relation limit, a
- * parenthesized arm, and an arm that is not a flat SELECT withhold. A
+ * count on the same relation, more arms than the relation limit, a second
+ * pair of parentheses, and an arm that is not a flat SELECT withhold. A
  * trailing ORDER BY or LIMIT stays in the last arm. A repeated output name,
  * or a name owned by more than one relation, withholds the inspection.
  * upgrade for those shapes.
@@ -357,19 +359,19 @@ export function prepareColumnInspection(
         absorb(nested, outputs);
         return { outputs };
       }
-      // shortcut: a parenthesized arm withholds.
       if (
         arms.length < 2 ||
         arms.length > columnInspectionLimits.relations ||
         arms.some((arm) => arm.length === 0)
       )
         throw unsupported();
-      const anchorNested = analyze(arms[0], depth + 1, ctes);
-      const anchorArm = armOutput(arms[0], anchorNested.bindings);
+      const opened = arms.map(openArm);
+      const anchorNested = analyze(opened[0], depth + 1, ctes);
+      const anchorArm = armOutput(opened[0], anchorNested.bindings);
       if (anchorArm.kind === "bare") {
         absorb(anchorNested, anchorArm.extras);
         const shapes = [shapeOf(anchorArm)];
-        for (const arm of arms.slice(1)) {
+        for (const arm of opened.slice(1)) {
           const nested = analyze(arm, depth + 1, ctes);
           const later = armOutput(arm, nested.bindings);
           acceptLater(shapes[0], shapeOf(later));
@@ -385,7 +387,7 @@ export function prepareColumnInspection(
       }
       absorb(anchorNested, anchorArm.outputs);
       const shapes = [shapeOf(anchorArm)];
-      for (const arm of arms.slice(1)) {
+      for (const arm of opened.slice(1)) {
         const nested = analyze(arm, depth + 1, ctes);
         const later = armOutput(arm, nested.bindings);
         acceptLater(shapes[0], shapeOf(later));
@@ -399,7 +401,11 @@ export function prepareColumnInspection(
       if (tokens[next]?.children) {
         const bodyToken = tokens[next];
         const body = clean(bodyToken.children ?? []);
-        if (!bodyToken.text.endsWith(")") || word(body[0]) !== "SELECT") throw unsupported();
+        if (
+          !bodyToken.text.endsWith(")") ||
+          (word(body[0]) !== "SELECT" && !(body[0]?.children && body[0].text.endsWith(")")))
+        )
+          throw unsupported();
         next++;
         const explicitAlias = word(tokens[next]) === "AS";
         if (explicitAlias) next++;
@@ -792,7 +798,12 @@ export function prepareColumnInspection(
       while (word(list[index]) === "NOT" || word(list[index]) === "MATERIALIZED") index++;
       const bodyToken = list[index++];
       const body = bodyToken?.children && clean(bodyToken.children);
-      if (!body || !bodyToken.text.endsWith(")") || word(body[0]) !== "SELECT") throw unsupported();
+      if (
+        !body ||
+        !bodyToken.text.endsWith(")") ||
+        (word(body[0]) !== "SELECT" && !(body[0].children && body[0].text.endsWith(")")))
+      )
+        throw unsupported();
       defs.push({ name, body, columns });
       if (list[index]?.text !== ",") break;
       index++;
@@ -817,6 +828,13 @@ export function prepareColumnInspection(
     if (!found) return null;
     arms.push(body.slice(start));
     return arms;
+  }
+  // One pair around a flat SELECT. A second pair stays parenthesized and withholds.
+  function openArm(arm: readonly SqlToken[]): readonly SqlToken[] {
+    if (arm.length !== 1 || !arm[0].children || !arm[0].text.endsWith(")")) return arm;
+    const body = clean(arm[0].children);
+    if (word(body[0]) !== "SELECT") return arm;
+    return body;
   }
   const leading = peel(tokens);
   const recursiveWith = leading?.recursive ?? false;
@@ -986,8 +1004,9 @@ export function prepareColumnInspection(
         arms.some((arm) => arm.length === 0)
       )
         throw unsupported();
-      const anchorAnalyzed = analyze(arms[0], 0, ctes);
-      const anchorArm = armOutput(arms[0], anchorAnalyzed.bindings);
+      const opened = arms.map(openArm);
+      const anchorAnalyzed = analyze(opened[0], 0, ctes);
+      const anchorArm = armOutput(opened[0], anchorAnalyzed.bindings);
       if (anchorArm.kind === "bare") {
         recordCte(anchorAnalyzed, anchorArm.extras);
         columnList = def.columns ?? anchorArm.columnList;
@@ -1003,7 +1022,7 @@ export function prepareColumnInspection(
             ...(columnList ? { columnList } : {}),
           });
         const shapes = [shapeOf(anchorArm)];
-        for (const arm of arms.slice(1)) {
+        for (const arm of opened.slice(1)) {
           const nested = analyze(arm, 0, scope);
           const later = armOutput(arm, nested.bindings);
           acceptLater(shapes[0], shapeOf(later));
@@ -1026,7 +1045,7 @@ export function prepareColumnInspection(
             outputs: anchor,
           });
         const shapes = [shapeOf(anchorArm)];
-        for (const arm of arms.slice(1)) {
+        for (const arm of opened.slice(1)) {
           const nested = analyze(arm, 0, scope);
           const later = armOutput(arm, nested.bindings);
           acceptLater(shapes[0], shapeOf(later));
