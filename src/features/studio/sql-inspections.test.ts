@@ -86,9 +86,13 @@ describe("bounded qualified-column inspections", () => {
   });
   test.each([
     "SELECT a.bad FROM orders a WHERE EXISTS (SELECT 1 FROM orders)",
-    "SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a",
-    "SELECT a.bad FROM orders a INTERSECT SELECT a.id FROM orders a",
-    "SELECT a.bad FROM orders a EXCEPT SELECT a.id FROM orders a",
+    "(SELECT a.bad FROM orders a) UNION (SELECT a.id FROM orders a)",
+    "SELECT a.bad FROM orders a UNION (SELECT a.id FROM orders a)",
+    "SELECT a.id FROM orders a UNION SELECT a.id, a.customer_id FROM orders a",
+    "SELECT a.id FROM orders a UNION",
+    "SELECT a.id FROM orders a UNION SELECT b.id FROM orders b ORDER BY a.id",
+    "SELECT *, id AS extra FROM orders UNION ALL SELECT * FROM orders",
+    "SELECT a.id FROM orders a UNION SELECT a.id + 1 FROM orders a",
     "SELECT a.bad FROM orders(a)",
     "SELECT a.bad FROM orders a(id)",
     "UPDATE orders a SET id = a.bad",
@@ -915,6 +919,88 @@ describe("bounded qualified-column inspections", () => {
         /direct-table SELECT/,
       );
     }
+  });
+  test("inspects a top-level set operation from each arm", () => {
+    const names = schema.columns.map((column) => column.name);
+    const union = inspect("SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a").result;
+    expect(union.tables).toEqual([table]);
+    expect(union.checked).toBe(2);
+    expect(union.issues.map((issue) => [issue.name, issue.outputOf])).toEqual([["bad", undefined]]);
+    expect(union.columnsFor(union.issues[0])).toEqual(names);
+    for (const op of ["INTERSECT", "EXCEPT", "UNION ALL"]) {
+      const result = inspect(`SELECT a.bad FROM orders a ${op} SELECT a.id FROM orders a`).result;
+      expect(result.issues.map((issue) => issue.name)).toEqual(["bad"]);
+      expect(result.columnsFor(result.issues[0])).toEqual(names);
+    }
+    const ordered = inspect(
+      "SELECT a.id FROM orders a UNION SELECT a.bad FROM orders a ORDER BY a.typo",
+    ).result;
+    expect(ordered.issues.map((issue) => issue.name)).toEqual(["bad", "typo"]);
+    expect(ordered.columnsFor(ordered.issues[1])).toEqual(names);
+    const limited = inspect(
+      "SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a LIMIT 1",
+    ).result;
+    expect(limited.issues.map((issue) => issue.name)).toEqual(["bad"]);
+    const star = inspect(
+      "SELECT * FROM orders a WHERE a.typo = 1 UNION ALL SELECT * FROM orders",
+    ).result;
+    expect(star.tables).toEqual([table]);
+    expect(star.columnsFor(star.issues[0])).toEqual(names);
+    const fromCte = inspect(
+      "WITH c AS (SELECT id AS order_id FROM orders) SELECT a.bad FROM c a UNION SELECT a.order_id FROM c a",
+    ).result;
+    expect(fromCte.issues.map((issue) => [issue.name, issue.outputOf])).toEqual([["bad", "a"]]);
+    expect(fromCte.columnsFor(fromCte.issues[0])).toEqual(["order_id"]);
+    const three = inspect(
+      "SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a EXCEPT SELECT a.customer_id FROM orders a",
+    ).result;
+    expect(three.checked).toBe(3);
+    expect(three.issues.map((issue) => issue.name)).toEqual(["bad"]);
+    expect(
+      inspect(
+        "SELECT a.bad FROM orders a UNION SELECT a.id FROM orders a",
+        "mysql",
+      ).result.issues.map((issue) => issue.name),
+    ).toEqual(["bad"]);
+    const bare = stateOf("SELECT * FROM orders UNION SELECT * FROM orders");
+    expect(() => prepareColumnInspection(bare, 7, context())).toThrow(
+      /No supported qualified columns/,
+    );
+    const mixed = stateOf("SELECT a.id FROM orders a UNION SELECT * FROM orders");
+    const mixedPlan = prepareColumnInspection(mixed, 7, context());
+    expect(mixedPlan.tables).toEqual([table]);
+    expect(() => mixedPlan.finish(mixed, [schema])).toThrow(/direct-table SELECT/);
+
+    const customers = { schema: "public", name: "customers" };
+    const customerContext = {
+      ...context(),
+      tables: [
+        ...context().tables,
+        { table: customers, kind: "table" as const, estimatedRows: null, totalBytes: null },
+      ],
+      unqualifiedTables: [table, customers],
+    };
+    const customerSchema = (count: number): TableSchema => ({
+      ...schema,
+      table: customers,
+      columns: schema.columns.slice(0, count),
+    });
+    const other = stateOf(
+      "SELECT * FROM orders a WHERE a.typo = 1 UNION ALL SELECT * FROM customers",
+    );
+    const matched = prepareColumnInspection(other, 7, customerContext).finish(other, [
+      schema,
+      customerSchema(6),
+    ]);
+    expect(matched.tables).toEqual([table, customers]);
+    expect(matched.issues.map((issue) => issue.name)).toEqual(["typo"]);
+    expect(matched.columnsFor(matched.issues[0])).toEqual(names);
+    const short = stateOf(
+      "SELECT * FROM orders a WHERE a.typo = 1 UNION ALL SELECT * FROM customers",
+    );
+    expect(() =>
+      prepareColumnInspection(short, 7, customerContext).finish(short, [schema, customerSchema(2)]),
+    ).toThrow(/direct-table SELECT/);
   });
   test("keeps base-table corrections for references inside the query body", () => {
     const { result } = inspect(
