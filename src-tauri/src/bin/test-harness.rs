@@ -259,6 +259,15 @@ async fn rpc(
                 &arg::<String>(&args, "sessionId")?,
                 arg(&args, "action")?
             )?),
+            "prepare_migration_ddl" => json!(
+                studio
+                    .prepare_migration_ddl(
+                        &arg::<String>(&args, "sessionId")?,
+                        arg(&args, "expectedSnapshot")?,
+                        arg(&args, "statements")?,
+                    )
+                    .await?
+            ),
             "prepare_browse_table" => json!(
                 studio
                     .prepare_browse(

@@ -129,6 +129,7 @@ pub fn run() {
             commands::prepare_index_constraint_ddl,
             commands::preview_table_object_ddl,
             commands::prepare_table_object_ddl,
+            commands::prepare_migration_ddl,
             commands::prepare_browse_table,
             commands::browse_table,
             commands::result_range,

@@ -2811,4 +2811,23 @@ Branch `feat/index-constraint-editor` from `origin/main` `b67e65b`; merged in PR
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | Reviewed schema synchronization workflow (`D04`) and contextual command palette / custom shortcuts / persisted layouts (`P05` + `P06`). Next slice: R7.6 (`D04` migration review & schema synchronization workflow) |
 
-Branch `feat/table-object-editor` from `origin/main` `792aa99`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/table-object-editor` from `origin/main` `792aa99`; merged in PR #67 (`c855c04`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R7 slice 6: migration review and schema synchronization workflow (3 November 2026)
+
+`prepare_migration_ddl(sessionId, expectedSnapshot, statements)` and the `SchemaDiffView` migration checklist complete the reviewed schema synchronization workflow (`D04`) on PostgreSQL and MySQL/MariaDB.
+
+`prepare_migration_ddl` validates `1..=500` non-empty `DdlStatement`s, verifies engine compatibility with `expectedSnapshot`, classifies the selected statements as `StatementKind::Ddl` via `safety::plan_for_statements` (rejecting `SafeMode::ReadOnly` with `ErrorCode::PolicyBlocked`, enforcing `SafeMode::Guard` confirmation text and `SafeMode::PasswordGated` passphrases, and setting `requires_approval = true`), and captures a fresh live `SchemaSnapshot` of `expectedSnapshot.schema` on the target session. If `compare_schema_snapshots(live, expectedSnapshot)` reports any structural diff or changed `truncated`/`restricted` flags, `prepare_migration_ddl` aborts with `ErrorCode::Conflict` instructing the user to re-compare schemas before applying DDL. Engine-specific warnings (MySQL/MariaDB implicit commit; PostgreSQL `ACCESS EXCLUSIVE` locks) and the selected destructive `DROP` count are attached to the plan.
+
+`SchemaDiffView` adds `Select all`, `Select non-destructive`, and per-statement checkboxes in **Migrate Left → Right DDL** (mutating the Left live schema to match Right) and **Migrate Right → Left DDL** (mutating the Right live schema to match Left), dynamically updating the previewed/copied/editor script in phase order and routing **Review & apply migration…** through `ReviewDialog`, then refreshing the catalog and re-running the schema comparison upon completion.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `prepare_migration_ddl_rejects_disconnected_session` in `execution.rs`. `SchemaDiffView.test.tsx` (3) covers `Select non-destructive` statement filtering and `Review & apply migration…` execution through `ReviewDialog` |
+| Fixtures | `migration_sync_executes_reviewed_ddl_detects_drift_and_rejects_read_only` in `src-tauri/tests/postgres.rs` (PostgreSQL 18) and `src-tauri/tests/mysql.rs` (MySQL 8.4 and MariaDB 11.4) verify `SafeMode::ReadOnly` rejection (`ErrorCode::PolicyBlocked`), live target schema drift detection (`ErrorCode::Conflict`), and reviewed migration convergence (`compare_schemas == 0` differences) |
+| Browser | `schema-diff.spec.ts`: compares two live PostgreSQL schemas, filters statements with `Select non-destructive` and `Select all`, and applies the migration through `ReviewDialog` until zero differences remain |
+| Validate | `pnpm validate`: 495 frontend tests / 47 files, 170 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Contextual command palette, custom shortcuts and persisted layouts (`P05` + `P06`), closed typed command map & granular capabilities (`I03` + `M07`), engine maintenance tools (`A06`), and single-table result editing (`G14`). Next slice: R8.3 (`P05` + `P06` contextual command palette, custom shortcuts & persisted layouts) |
+
+Branch `feat/migration-sync` from `origin/main` `c855c04`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.

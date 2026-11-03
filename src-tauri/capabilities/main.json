@@ -49,6 +49,7 @@
     "allow-prepare-index-constraint-ddl",
     "allow-preview-table-object-ddl",
     "allow-prepare-table-object-ddl",
+    "allow-prepare-migration-ddl",
     "allow-prepare-browse-table",
     "allow-browse-table",
     "allow-result-range",

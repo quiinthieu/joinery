@@ -309,6 +309,18 @@ pub fn prepare_table_object_ddl(
 }
 
 #[tauri::command]
+pub async fn prepare_migration_ddl(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    expected_snapshot: SchemaSnapshot,
+    statements: Vec<DdlStatement>,
+) -> AppResult<PreparedPlan> {
+    studio
+        .prepare_migration_ddl(&session_id, expected_snapshot, statements)
+        .await
+}
+
+#[tauri::command]
 pub async fn prepare_browse_table(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

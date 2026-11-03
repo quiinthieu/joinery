@@ -6,7 +6,7 @@ import { useStudio, type StudioTab } from "../../state/studio";
 import { SchemaDiffView, filterSchemaDiffEntries, schemaSnapshots } from "./SchemaDiffView";
 
 vi.mock("../../ipc/client", () => ({
-  client: { call: vi.fn() },
+  client: { call: vi.fn(), execute: vi.fn() },
   messageOf: (e: unknown) => String(e instanceof Error ? e.message : e),
 }));
 
@@ -339,4 +339,168 @@ it("filters diff entries by kind and member values accurately", () => {
   expect(
     filterSchemaDiffEntries(sampleReport.entries, "all", "numeric(12,2)").map((e) => e.name),
   ).toEqual(["Order Items"]);
+});
+
+it("filters migration statements with Select non-destructive and applies reviewed migration via ReviewDialog", async () => {
+  const refreshCatalog = vi.fn().mockResolvedValue(undefined);
+  const notify = vi.fn();
+  useStudio.setState({
+    bootstrap: {
+      profiles: [
+        {
+          id: "profile-pg",
+          name: "Local PG",
+          groupId: "local",
+          engine: "postgres",
+          host: "127.0.0.1",
+          port: 55432,
+          database: "joinery",
+          username: "joinery",
+          environment: "local",
+          safeMode: "guard",
+          tlsMode: "disable",
+          caCertPath: null,
+          ssh: null,
+          rememberPassword: false,
+          storeQueryText: false,
+          storeDrafts: false,
+          snowflake: null,
+        },
+      ],
+      groups: [],
+      supportedEngines: ["postgres", "mysql", "redis", "snowflake"],
+      hasPassphrase: false,
+      keychainAvailable: true,
+    } as never,
+    refreshCatalog,
+    notify,
+  });
+
+  let compareCount = 0;
+  vi.mocked(client.call).mockImplementation(async (command, payload) => {
+    if (command === "schema_snapshot") {
+      const req = payload as { schema: string };
+      return req.schema === "staging" ? rightSnapshot : leftSnapshot;
+    }
+    if (command === "compare_schemas") {
+      compareCount += 1;
+      return compareCount > 1
+        ? {
+            ...sampleReport,
+            entries: [],
+            onlyLeftCount: 0,
+            onlyRightCount: 0,
+            modifiedCount: 0,
+          }
+        : sampleReport;
+    }
+    if (command === "generate_migration_ddl") {
+      return {
+        engine: "postgres",
+        targetSchema: "public",
+        statements: [
+          {
+            sql: 'DROP TABLE "public"."legacy_audit";',
+            description: "Drop table legacy_audit",
+            objectKind: "table",
+            objectName: "legacy_audit",
+            destructive: true,
+          },
+          {
+            sql: 'ALTER TABLE "public"."Order Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
+            description: "Change type of Order Items.Unit Price",
+            objectKind: "table",
+            objectName: "Order Items.Unit Price",
+            destructive: false,
+          },
+        ],
+        script:
+          'DROP TABLE "public"."legacy_audit";\n\nALTER TABLE "public"."Order Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
+        truncated: false,
+        destructiveCount: 1,
+        warnings: [
+          "1 destructive statement(s) (DROP) detected; review carefully before executing.",
+        ],
+        unsupported: [],
+      };
+    }
+    if (command === "prepare_migration_ddl") {
+      const req = payload as { statements: Array<{ sql: string }> };
+      return {
+        id: "plan-mig-1",
+        sessionId: "session-pg-1",
+        environment: "local",
+        safeMode: "guard",
+        requiresApproval: true,
+        requiresPassphrase: false,
+        confirmationText: "Local PG",
+        warnings: ["This batch changes database structure. Some DDL cannot be rolled back."],
+        statements: req.statements.map((s) => ({
+          sql: s.sql,
+          kind: "ddl",
+          missingWhere: false,
+          span: null,
+        })),
+        boundParameters: [],
+      };
+    }
+    if (command === "authorize_plan") {
+      return "approval-token-mig-1";
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+
+  vi.mocked(client.execute).mockImplementation(async (_planId, _approval, onEvent) => {
+    onEvent({
+      type: "finished",
+      runId: "run-mig-1",
+      status: "completed",
+      elapsedMs: 5,
+    });
+    return "run-mig-1";
+  });
+
+  render(<SchemaDiffView tab={diffTab} />);
+  await screen.findByText(/Identical: 3/);
+
+  fireEvent.click(screen.getByRole("button", { name: "Migrate Left → Right DDL" }));
+  await screen.findByTestId("migration-statement-list");
+
+  // Click Select non-destructive -> deselects DROP TABLE statement
+  fireEvent.click(
+    screen.getByRole("button", { name: "Select non-destructive migration statements" }),
+  );
+  expect(screen.getByTestId("schema-ddl-script").textContent).not.toContain(
+    'DROP TABLE "public"."legacy_audit";',
+  );
+  expect(screen.getByTestId("schema-ddl-script").textContent).toContain(
+    'ALTER TABLE "public"."Order Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
+  );
+
+  // Open ReviewDialog with only the selected non-destructive statement
+  fireEvent.click(screen.getByRole("button", { name: "Review and apply migration" }));
+  await screen.findByRole("dialog", { name: "Review this operation" });
+
+  expect(client.call).toHaveBeenCalledWith(
+    "prepare_migration_ddl",
+    expect.objectContaining({
+      sessionId: "session-pg-1",
+      expectedSnapshot: leftSnapshot,
+      statements: [
+        expect.objectContaining({
+          sql: 'ALTER TABLE "public"."Order Items" ALTER COLUMN "Unit Price" TYPE numeric(12,2);',
+          destructive: false,
+        }),
+      ],
+    }),
+  );
+
+  fireEvent.change(screen.getByLabelText(/Type Local PG to confirm/), {
+    target: { value: "Local PG" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Authorize and run" }));
+
+  await waitFor(() => expect(refreshCatalog).toHaveBeenCalledWith("profile-pg"));
+  await waitFor(() => expect(compareCount).toBeGreaterThanOrEqual(2));
+  expect(notify).toHaveBeenCalledWith("Applied 1 migration statement to public");
 });

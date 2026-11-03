@@ -724,8 +724,21 @@ VIEW` / `DROP MATERIALIZED VIEW` (with optional PostgreSQL `CASCADE`).
 `Sidebar.tsx` (`Create table in <schema>`) and `StructureView` (`Add column…`,
 `Drop table…` / `Drop view…`, per-column `Edit…` and `Drop…`) open
 `TableObjectDialog` with live Rust DDL previews, lock/implicit-commit/destructive
-warnings, and mandatory `ReviewDialog` approval. See
+warnings, and mandatory `ReviewDialog` approval. Merged in PR #67 (`c855c04`). See
 [evidence](IMPLEMENTATION_STATUS.md#r7-slice-5-table-and-column-ddl-editor-3-november-2026).
+
+### R7 slice 6: migration review and schema synchronization workflow (branch `feat/migration-sync`)
+
+`prepare_migration_ddl(sessionId, expectedSnapshot, statements)` verifies that
+the live target schema has not drifted from `expectedSnapshot` (returning
+`ErrorCode::Conflict` on any structural difference or truncation/privilege
+change), classifies selected `DdlStatement`s as `StatementKind::Ddl` via
+`safety::plan_for_statements` (`SafeMode` + one-use approval + production
+passphrase), and attaches destructive, implicit-commit and lock warnings.
+`SchemaDiffView` adds per-statement checkboxes (`Select all`, `Select
+non-destructive`), **Review & apply migration…**, and `ReviewDialog` integration,
+refreshing the catalog and schema comparison upon completion. See
+[evidence](IMPLEMENTATION_STATUS.md#r7-slice-6-migration-review-and-schema-synchronization-workflow-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 
