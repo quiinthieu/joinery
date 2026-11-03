@@ -98,7 +98,10 @@ test("custom shortcuts, pinned tabs, close other/reopen tab, and layout state pe
   // Open three query tabs, pin the first one, and close others from the third
   await page.getByRole("button", { name: "New query tab", exact: true }).click();
   await page.getByRole("textbox", { name: "SQL editor" }).fill("SELECT 'pinned_tab';");
-  await page.getByRole("button", { name: "Pin Query 1", exact: true }).click();
+  await page
+    .getByRole("button", { name: /^Pin Query / })
+    .first()
+    .click();
 
   await page.getByRole("button", { name: "New query tab", exact: true }).click();
   await page.getByRole("textbox", { name: "SQL editor" }).fill("SELECT 'ephemeral_tab';");
@@ -129,9 +132,15 @@ test("custom shortcuts, pinned tabs, close other/reopen tab, and layout state pe
   await page.getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.locator(".command-trigger kbd")).toHaveText("⌘ J");
 
-  // Collapse sidebar and open inspector, then wait for workspace persistence
-  await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
-  await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
+  // Collapse sidebar and ensure inspector is visible, then wait for workspace persistence
+  const inspectorToggle = page.getByRole("button", { name: "Toggle inspector", exact: true });
+  if ((await inspectorToggle.getAttribute("aria-expanded")) !== "true") {
+    await inspectorToggle.click();
+  }
+  const sidebarToggle = page.getByRole("button", { name: "Toggle sidebar", exact: true });
+  if ((await sidebarToggle.getAttribute("aria-expanded")) !== "false") {
+    await sidebarToggle.click();
+  }
   await expect(page.locator(".app-shell")).toHaveClass(/sidebar-hidden/);
 
   await expect
@@ -147,17 +156,12 @@ test("custom shortcuts, pinned tabs, close other/reopen tab, and layout state pe
     })
     .toBe(true);
 
-  await page.getByRole("button", { name, exact: true }).hover();
-  await page
-    .locator(".app-header")
-    .getByRole("button", { name: "Toggle sidebar", exact: true })
-    .click();
+  await sidebarToggle.click();
+  await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-hidden/);
   await page.getByRole("button", { name, exact: true }).hover();
   await page.getByRole("button", { name: `Disconnect ${name}`, exact: true }).click();
-  await page
-    .locator(".app-header")
-    .getByRole("button", { name: "Toggle sidebar", exact: true })
-    .click();
+  await sidebarToggle.click();
+  await expect(page.locator(".app-shell")).toHaveClass(/sidebar-hidden/);
   await expect
     .poll(async () => {
       const workspace = await saved();
@@ -169,5 +173,17 @@ test("custom shortcuts, pinned tabs, close other/reopen tab, and layout state pe
   await expect(page.locator(".app-shell")).toHaveClass(/sidebar-hidden/);
   await expect(page.getByLabel("Selected cell inspector")).toBeVisible();
   await expect(page.locator(".command-trigger kbd")).toHaveText("⌘ J");
-  await expect(page.getByRole("button", { name: "Unpin Query 1" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /^Unpin Query / })).toHaveCount(1);
+
+  // Restore sidebar and clean up drafts/shortcuts for subsequent tests
+  await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
+  await page.getByRole("button", { name: /^Preferences/ }).click();
+  await page.getByRole("button", { name: "Reset all shortcuts", exact: true }).click();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name, exact: true }).hover();
+  await page.getByRole("button", { name: `Edit ${name}`, exact: true }).click();
+  await page.getByLabel(/Restore open query drafts after restart/).uncheck();
+  await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
+  await page.getByRole("button", { name: "Save and connect", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
