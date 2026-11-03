@@ -51,6 +51,7 @@ fn main() {
         DatabaseObjectRef::decl(),
         DatabaseObjectSummary::decl(),
         IndexInfo::decl(),
+        TableStorageStats::decl(),
         ConstraintKind::decl(),
         ConstraintInfo::decl(),
         TriggerInfo::decl(),

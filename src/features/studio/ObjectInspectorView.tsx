@@ -21,10 +21,17 @@ import type {
   ObjectDdlStatus,
   ObjectDetails,
   SessionInfo,
+  TableStorageStats,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
 import { objectTabTitle } from "../connections/explorer-tree";
+import {
+  deadTupleSummary,
+  describeIndexUsage,
+  formatStatCount,
+  formatStorageBytes,
+} from "./storage-stats";
 
 const KIND_LABELS: Record<DatabaseObjectKind, string> = {
   table: "Table",
@@ -466,29 +473,58 @@ export function ObjectInspectorView({
           </dl>
         )}
 
-        {indexMeta && (
-          <dl className="object-meta-grid" aria-label="Index properties">
-            <div>
-              <dt>Method</dt>
-              <dd className="mono">{indexMeta.method}</dd>
-            </div>
-            <div>
-              <dt>Uniqueness</dt>
-              <dd>
-                {indexMeta.primary ? "PRIMARY KEY" : indexMeta.unique ? "UNIQUE" : "Non-unique"}
-              </dd>
-            </div>
-            <div>
-              <dt>Keys / Expressions</dt>
-              <dd className="mono">{indexMeta.expressions.join(", ") || "—"}</dd>
-            </div>
-            <div>
-              <dt>Partial predicate</dt>
-              <dd className="mono">{indexMeta.predicate ? `WHERE ${indexMeta.predicate}` : "—"}</dd>
-            </div>
-          </dl>
-        )}
+        {indexMeta &&
+          (() => {
+            const usage = describeIndexUsage(indexMeta);
+            return (
+              <dl className="object-meta-grid" aria-label="Index properties">
+                <div>
+                  <dt>Method</dt>
+                  <dd className="mono">{indexMeta.method}</dd>
+                </div>
+                <div>
+                  <dt>Uniqueness</dt>
+                  <dd>
+                    {indexMeta.primary ? "PRIMARY KEY" : indexMeta.unique ? "UNIQUE" : "Non-unique"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Keys / Expressions</dt>
+                  <dd className="mono">{indexMeta.expressions.join(", ") || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Partial predicate</dt>
+                  <dd className="mono">
+                    {indexMeta.predicate ? `WHERE ${indexMeta.predicate}` : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Size</dt>
+                  <dd className="mono">{formatStorageBytes(indexMeta.sizeBytes)}</dd>
+                </div>
+                <div>
+                  <dt>Scans / usage</dt>
+                  <dd>
+                    {usage.unused ? (
+                      <span className="lock-badge waiting">{usage.label}</span>
+                    ) : (
+                      <span className="mono">
+                        {usage.label}
+                        {usage.detail ? ` · ${usage.detail}` : ""}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Estimated cardinality</dt>
+                  <dd className="mono">{formatStatCount(indexMeta.cardinality)}</dd>
+                </div>
+              </dl>
+            );
+          })()}
       </div>
+
+      {details.storage && <StorageStatsSection storage={details.storage} />}
 
       <DependencySection
         connectionId={tab.connectionId}
@@ -509,5 +545,113 @@ export function ObjectInspectorView({
         />
       </section>
     </div>
+  );
+}
+
+export function StorageStatsSection({ storage }: { storage: TableStorageStats }) {
+  const hasMetrics =
+    storage.totalBytes !== null ||
+    storage.tableBytes !== null ||
+    storage.indexBytes !== null ||
+    storage.estimatedRows !== null ||
+    storage.liveTuples !== null ||
+    storage.sequentialScans !== null;
+  const tuples = deadTupleSummary(storage);
+  const indexShare =
+    storage.totalBytes &&
+    storage.totalBytes > 0 &&
+    storage.indexBytes !== null &&
+    storage.indexBytes !== undefined
+      ? ` (${Math.round((storage.indexBytes / storage.totalBytes) * 100)}%)`
+      : "";
+  return (
+    <section className="object-section storage-stats-section" aria-label="Storage and activity">
+      <div className="storage-stats-head">
+        <div>
+          <h3 className="object-section-title">Storage &amp; activity</h3>
+          <p className="storage-stats-note">
+            Planner and collector estimates only — Joinery never runs automatic COUNT(*) or ANALYZE.
+          </p>
+        </div>
+        {storage.statsStale && (
+          <span className="lock-badge waiting" data-testid="storage-stats-stale">
+            Stale / unanalyzed estimate
+          </span>
+        )}
+      </div>
+      {hasMetrics && (
+        <dl className="object-meta-grid" aria-label="Storage breakdown">
+          <div>
+            <dt>Total footprint</dt>
+            <dd className="mono">{formatStorageBytes(storage.totalBytes)}</dd>
+          </div>
+          <div>
+            <dt>Table / heap</dt>
+            <dd className="mono">{formatStorageBytes(storage.tableBytes)}</dd>
+          </div>
+          <div>
+            <dt>Indexes</dt>
+            <dd className="mono">{`${formatStorageBytes(storage.indexBytes)}${indexShare}`}</dd>
+          </div>
+          <div>
+            <dt>Estimated rows</dt>
+            <dd className="mono">
+              {storage.estimatedRows !== null
+                ? formatStatCount(storage.estimatedRows)
+                : "Unanalyzed (no estimate)"}
+            </dd>
+          </div>
+          {storage.freeBytes !== null && storage.freeBytes !== undefined && (
+            <div>
+              <dt>Free / reclaimable</dt>
+              <dd className="mono">{formatStorageBytes(storage.freeBytes)}</dd>
+            </div>
+          )}
+          {tuples && (
+            <div>
+              <dt>Live / dead tuples</dt>
+              <dd className="mono">
+                {tuples.label}
+                {tuples.bloated && (
+                  <>
+                    {" "}
+                    <span className="lock-badge blocker">High dead tuples</span>
+                  </>
+                )}
+              </dd>
+            </div>
+          )}
+          {(storage.sequentialScans !== null || storage.indexScans !== null) && (
+            <div>
+              <dt>Table vs. index scans</dt>
+              <dd className="mono">
+                {`${formatStatCount(storage.sequentialScans)} seq · ${formatStatCount(storage.indexScans)} index`}
+              </dd>
+            </div>
+          )}
+          {(storage.lastAnalyze !== null || storage.statsStale || storage.liveTuples !== null) && (
+            <div>
+              <dt>Last analyze / update</dt>
+              <dd className="mono">{storage.lastAnalyze ?? "Never analyzed"}</dd>
+            </div>
+          )}
+          {(storage.lastVacuum !== null || storage.liveTuples !== null) && (
+            <div>
+              <dt>Last vacuum</dt>
+              <dd className="mono">{storage.lastVacuum ?? "Never vacuumed"}</dd>
+            </div>
+          )}
+        </dl>
+      )}
+      {storage.restrictedReason && (
+        <div className="ddl-unavailable storage-stats-restricted" role="note">
+          <Lock size={15} />
+          <div>
+            <strong>Statistics restricted or unavailable</strong>
+            <p>{storage.restrictedReason}</p>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

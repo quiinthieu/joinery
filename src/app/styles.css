@@ -3855,3 +3855,18 @@ kbd {
   margin: 0;
   min-width: 0;
 }
+.storage-stats-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.storage-stats-note {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.storage-stats-restricted {
+  margin-top: 10px;
+}

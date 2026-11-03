@@ -656,8 +656,21 @@ on PostgreSQL and MySQL/MariaDB. It never prepares or executes editor SQL. See
 
 `lock_waits` reads current waits and blockers on PostgreSQL, MySQL and MariaDB.
 The Processes view derives root blockers and deadlock cycles locally and adds
-filtering and optional refresh. See
+filtering and optional refresh. Merged in PR #62 (`80de7aa`). See
 [evidence](IMPLEMENTATION_STATUS.md#r8-slice-1-lock-waits-and-session-monitoring-3-november-2026).
+
+### R8 slice 2: relation storage and index usage statistics (branch `feat/storage-statistics`)
+
+`object_details` populates `TableStorageStats` (`estimated_rows`, `table_bytes`,
+`index_bytes`, `free_bytes`, `total_bytes`, `live_tuples`, `dead_tuples`,
+`sequential_scans`, `index_scans`, `last_analyze`, `last_vacuum`, `stats_stale`,
+`restricted_reason`) and per-index `size_bytes`, `scans`, `tuples_read`,
+`tuples_fetched` and `cardinality` on PostgreSQL and MySQL/MariaDB. It never
+issues automatic `COUNT(*)` or `ANALYZE`, withholds PostgreSQL relation storage
+and index counters when the session lacks `SELECT` privilege on the relation,
+and degrades cleanly on MySQL/MariaDB when `mysql.innodb_index_stats` or
+`performance_schema` is unreadable or disabled. See
+[evidence](IMPLEMENTATION_STATUS.md#r8-slice-2-relation-storage-and-index-usage-statistics-3-november-2026).
 
 ## Subsequent phases and blueprint cross-reference
 

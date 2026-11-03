@@ -274,7 +274,9 @@ async fn relation_details(
         .query(
             "SELECT c.oid,
                     c.relkind::pg_catalog.text,
-                    pg_catalog.obj_description(c.oid, 'pg_class')::pg_catalog.text
+                    pg_catalog.obj_description(c.oid, 'pg_class')::pg_catalog.text,
+                    (pg_catalog.has_table_privilege(c.oid, 'SELECT')
+                     OR pg_catalog.has_any_column_privilege(c.oid, 'SELECT'))
              FROM pg_catalog.pg_class c
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = $1
@@ -294,6 +296,7 @@ async fn relation_details(
     let oid: u32 = row.get(0);
     let relkind: String = row.get(1);
     let comment: Option<String> = row.get(2);
+    let readable: bool = row.get(3);
     let kind = relkind_to_kind(&relkind).unwrap_or(requested.kind);
     let object = DatabaseObjectRef {
         schema: requested.schema.clone(),
@@ -302,9 +305,10 @@ async fn relation_details(
         identity: None,
     };
 
-    let (indexes, standalone_index_defs) = fetch_relation_indexes(client, oid).await?;
+    let (indexes, standalone_index_defs) = fetch_relation_indexes(client, oid, readable).await?;
     let constraints = fetch_relation_constraints(client, oid).await?;
     let triggers = fetch_relation_triggers(client, oid).await?;
+    let storage = fetch_relation_storage(client, oid, &relkind, readable).await?;
     let trigger_defs = triggers
         .iter()
         .filter_map(|t| t.definition.clone())
@@ -435,14 +439,83 @@ async fn relation_details(
         triggers,
         routine: None,
         sequence: None,
+        storage,
         uses,
         used_by,
     })
 }
 
+async fn fetch_relation_storage(
+    client: &Client,
+    rel_oid: u32,
+    relkind: &str,
+    readable: bool,
+) -> AppResult<Option<TableStorageStats>> {
+    if relkind == "v" {
+        return Ok(None);
+    }
+    if !readable {
+        return Ok(Some(TableStorageStats {
+            restricted_reason: Some(
+                "Storage and index usage statistics require SELECT privilege on this relation."
+                    .into(),
+            ),
+            ..Default::default()
+        }));
+    }
+    let row = client
+        .query_opt(
+            "SELECT c.reltuples::pg_catalog.float8,
+                    pg_catalog.pg_table_size(c.oid)::pg_catalog.float8,
+                    pg_catalog.pg_indexes_size(c.oid)::pg_catalog.float8,
+                    pg_catalog.pg_total_relation_size(c.oid)::pg_catalog.float8,
+                    s.n_live_tup::pg_catalog.float8,
+                    s.n_dead_tup::pg_catalog.float8,
+                    s.seq_scan::pg_catalog.float8,
+                    s.idx_scan::pg_catalog.float8,
+                    pg_catalog.to_char(
+                      GREATEST(s.last_analyze, s.last_autoanalyze) AT TIME ZONE 'UTC',
+                      'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'
+                    )::pg_catalog.text,
+                    pg_catalog.to_char(
+                      GREATEST(s.last_vacuum, s.last_autovacuum) AT TIME ZONE 'UTC',
+                      'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'
+                    )::pg_catalog.text
+             FROM pg_catalog.pg_class c
+             LEFT JOIN pg_catalog.pg_stat_all_tables s ON s.relid = c.oid
+             WHERE c.oid = $1::pg_catalog.oid",
+            &[&rel_oid],
+        )
+        .await
+        .map_err(pg_error)?;
+    let Some(r) = row else {
+        return Ok(None);
+    };
+    let reltuples: f64 = r.get(0);
+    let last_analyze: Option<String> = r.get(8);
+    let last_vacuum: Option<String> = r.get(9);
+    let stats_stale = reltuples < 0.0 || (relkind == "r" && last_analyze.is_none());
+    Ok(Some(TableStorageStats {
+        estimated_rows: (reltuples >= 0.0).then_some(reltuples),
+        table_bytes: r.get(1),
+        index_bytes: r.get(2),
+        free_bytes: None,
+        total_bytes: r.get(3),
+        live_tuples: r.get(4),
+        dead_tuples: r.get(5),
+        sequential_scans: r.get(6),
+        index_scans: r.get(7),
+        last_analyze,
+        last_vacuum,
+        stats_stale,
+        restricted_reason: None,
+    }))
+}
+
 async fn fetch_relation_indexes(
     client: &Client,
     rel_oid: u32,
+    readable: bool,
 ) -> AppResult<(Vec<IndexInfo>, Vec<String>)> {
     let rows = client
         .query(
@@ -464,13 +537,19 @@ async fn fetch_relation_indexes(
                     EXISTS (
                       SELECT 1 FROM pg_catalog.pg_constraint kc
                       WHERE kc.conrelid = i.indrelid AND kc.conindid = i.indexrelid
-                    )
+                    ),
+                    CASE WHEN $2::pg_catalog.bool THEN pg_catalog.pg_relation_size(i.indexrelid)::pg_catalog.float8 ELSE NULL::pg_catalog.float8 END,
+                    CASE WHEN $2::pg_catalog.bool THEN COALESCE(si.idx_scan, 0)::pg_catalog.float8 ELSE NULL::pg_catalog.float8 END,
+                    CASE WHEN $2::pg_catalog.bool THEN COALESCE(si.idx_tup_read, 0)::pg_catalog.float8 ELSE NULL::pg_catalog.float8 END,
+                    CASE WHEN $2::pg_catalog.bool THEN COALESCE(si.idx_tup_fetch, 0)::pg_catalog.float8 ELSE NULL::pg_catalog.float8 END,
+                    CASE WHEN $2::pg_catalog.bool AND idx.reltuples >= 0 THEN idx.reltuples::pg_catalog.float8 ELSE NULL::pg_catalog.float8 END
              FROM pg_catalog.pg_index i
              JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
              JOIN pg_catalog.pg_am am ON am.oid = idx.relam
+             LEFT JOIN pg_catalog.pg_stat_all_indexes si ON si.indexrelid = i.indexrelid
              WHERE i.indrelid = $1::pg_catalog.oid
              ORDER BY i.indisprimary DESC, idx.relname",
-            &[&rel_oid],
+            &[&rel_oid, &readable],
         )
         .await
         .map_err(pg_error)?;
@@ -491,6 +570,11 @@ async fn fetch_relation_indexes(
             expressions: r.get(4),
             predicate: r.get(5),
             definition,
+            size_bytes: r.get(8),
+            scans: r.get(9),
+            tuples_read: r.get(10),
+            tuples_fetched: r.get(11),
+            cardinality: r.get(12),
         });
     }
     Ok((indexes, standalone))
@@ -720,6 +804,7 @@ async fn routine_details(
             security_definer,
         }),
         sequence: None,
+        storage: None,
         uses,
         used_by,
     })
@@ -805,6 +890,7 @@ async fn sequence_details(
         triggers: Vec::new(),
         routine: None,
         sequence: Some(sequence),
+        storage: None,
         uses,
         used_by,
     })
@@ -935,6 +1021,7 @@ async fn trigger_details(
         triggers: vec![trigger_info],
         routine: None,
         sequence: None,
+        storage: None,
     })
 }
 
@@ -958,12 +1045,46 @@ async fn index_details(client: &Client, requested: &DatabaseObjectRef) -> AppRes
                       ELSE NULL::pg_catalog.text
                     END,
                     pg_catalog.pg_get_indexdef(i.indexrelid)::pg_catalog.text,
-                    pg_catalog.obj_description(idx.oid, 'pg_class')::pg_catalog.text
+                    pg_catalog.obj_description(idx.oid, 'pg_class')::pg_catalog.text,
+                    (pg_catalog.has_table_privilege(tbl.oid, 'SELECT')
+                     OR pg_catalog.has_any_column_privilege(tbl.oid, 'SELECT')),
+                    CASE
+                      WHEN (pg_catalog.has_table_privilege(tbl.oid, 'SELECT')
+                            OR pg_catalog.has_any_column_privilege(tbl.oid, 'SELECT'))
+                      THEN pg_catalog.pg_relation_size(idx.oid)::pg_catalog.float8
+                      ELSE NULL::pg_catalog.float8
+                    END,
+                    CASE
+                      WHEN (pg_catalog.has_table_privilege(tbl.oid, 'SELECT')
+                            OR pg_catalog.has_any_column_privilege(tbl.oid, 'SELECT'))
+                      THEN COALESCE(si.idx_scan, 0)::pg_catalog.float8
+                      ELSE NULL::pg_catalog.float8
+                    END,
+                    CASE
+                      WHEN (pg_catalog.has_table_privilege(tbl.oid, 'SELECT')
+                            OR pg_catalog.has_any_column_privilege(tbl.oid, 'SELECT'))
+                      THEN COALESCE(si.idx_tup_read, 0)::pg_catalog.float8
+                      ELSE NULL::pg_catalog.float8
+                    END,
+                    CASE
+                      WHEN (pg_catalog.has_table_privilege(tbl.oid, 'SELECT')
+                            OR pg_catalog.has_any_column_privilege(tbl.oid, 'SELECT'))
+                      THEN COALESCE(si.idx_tup_fetch, 0)::pg_catalog.float8
+                      ELSE NULL::pg_catalog.float8
+                    END,
+                    CASE
+                      WHEN (pg_catalog.has_table_privilege(tbl.oid, 'SELECT')
+                            OR pg_catalog.has_any_column_privilege(tbl.oid, 'SELECT'))
+                        AND idx.reltuples >= 0
+                      THEN idx.reltuples::pg_catalog.float8
+                      ELSE NULL::pg_catalog.float8
+                    END
              FROM pg_catalog.pg_index i
              JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
              JOIN pg_catalog.pg_class tbl ON tbl.oid = i.indrelid
              JOIN pg_catalog.pg_namespace n ON n.oid = idx.relnamespace
              JOIN pg_catalog.pg_am am ON am.oid = idx.relam
+             LEFT JOIN pg_catalog.pg_stat_all_indexes si ON si.indexrelid = i.indexrelid
              WHERE n.nspname = $1
                AND idx.relname = $2
                AND ($3::pg_catalog.text IS NULL OR tbl.relname = $3)
@@ -986,6 +1107,7 @@ async fn index_details(client: &Client, requested: &DatabaseObjectRef) -> AppRes
     let tbl_relkind: String = row.get(2);
     let definition: Option<String> = row.get(8);
     let comment: Option<String> = row.get(9);
+    let readable: bool = row.get(10);
 
     let object = DatabaseObjectRef {
         schema: requested.schema.clone(),
@@ -1012,7 +1134,19 @@ async fn index_details(client: &Client, requested: &DatabaseObjectRef) -> AppRes
         expressions: row.get(6),
         predicate: row.get(7),
         definition,
+        size_bytes: r_opt(row, 11),
+        scans: r_opt(row, 12),
+        tuples_read: r_opt(row, 13),
+        tuples_fetched: r_opt(row, 14),
+        cardinality: r_opt(row, 15),
     };
+
+    let storage = (!readable).then(|| TableStorageStats {
+        restricted_reason: Some(
+            "Index size and scan statistics require SELECT privilege on the indexed table.".into(),
+        ),
+        ..Default::default()
+    });
 
     let (mut uses, used_by) = relation_dependencies(client, idx_oid, &object).await?;
     let mut combined_uses = vec![DependencyEdge {
@@ -1041,7 +1175,12 @@ async fn index_details(client: &Client, requested: &DatabaseObjectRef) -> AppRes
         triggers: Vec::new(),
         routine: None,
         sequence: None,
+        storage,
     })
+}
+
+fn r_opt(row: &tokio_postgres::Row, idx: usize) -> Option<f64> {
+    row.get(idx)
 }
 
 async fn relation_dependencies(

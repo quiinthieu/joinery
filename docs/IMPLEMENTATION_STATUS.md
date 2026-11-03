@@ -2709,4 +2709,23 @@ Reproduced engine behaviour: MariaDB 11.4 returned `INNODB_LOCKS.lock_type` as `
 | Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
 | Open / next | MySQL metadata-lock waits, lock history, server metrics. Next slice: A03 index and storage statistics |
 
-Branch `feat/lock-monitoring`, stacked on `feat/er-diagram`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
+Branch `feat/lock-monitoring`, stacked on `feat/er-diagram`; merged in PR #62 (`80de7aa`). Unreleased and not installed. Preview.15 remains the last verified release.
+
+## R8 slice 2: relation storage and index usage statistics (3 November 2026)
+
+`object_details(sessionId, object)` now populates `TableStorageStats` on tables and materialized views (`estimated_rows`, `table_bytes`, `index_bytes`, `free_bytes`, `total_bytes`, `live_tuples`, `dead_tuples`, `sequential_scans`, `index_scans`, `last_analyze`, `last_vacuum`, `stats_stale`, `restricted_reason`) and per-index `size_bytes`, `scans`, `tuples_read`, `tuples_fetched` and `cardinality` on `IndexInfo`.
+
+PostgreSQL reads `pg_class.reltuples`, `pg_table_size`, `pg_indexes_size`, `pg_total_relation_size`, `pg_stat_all_tables`, `pg_relation_size` and `pg_stat_all_indexes` only when `pg_catalog.has_table_privilege(c.oid, 'SELECT') OR pg_catalog.has_any_column_privilege(c.oid, 'SELECT')` holds; without `SELECT` privilege on the relation, sizes and scan/tuple counters are withheld and `restricted_reason` explains that `SELECT` privilege is required. MySQL 8.4 and MariaDB 11.4 read `INFORMATION_SCHEMA.TABLES` (`TABLE_ROWS`, `DATA_LENGTH`, `INDEX_LENGTH`, `DATA_FREE`, `UPDATE_TIME`) and `INFORMATION_SCHEMA.STATISTICS` (`CARDINALITY`), plus privilege-checked `mysql.innodb_index_stats` (`stat_name = 'size' * @@innodb_page_size`) and `performance_schema.table_io_waits_summary_by_index_usage` (`COUNT_READ`) when `@@performance_schema = 1`. When `mysql.innodb_index_stats` or `performance_schema` is denied by grants or `@@performance_schema` is disabled (as on MariaDB 11.4 by default), `restricted_reason` names the unavailable source rather than falsely reporting `0` scans. No automatic `COUNT(*)` or `ANALYZE` is ever executed.
+
+`StructureView` and `ObjectInspectorView` render a **Storage & activity** summary card (total footprint, table/heap size, index size, reclaimable space, estimated rows, live/dead tuple ratio, sequential vs index scans, last `ANALYZE`/`VACUUM`, stale-stats badge and restricted-stats notice) and per-index **Size**, **Scans / usage** (distinguishing `Unused (0 scans)` on non-unique indexes from `0 scans · enforces constraint` on primary/unique indexes) and **Cardinality** columns.
+
+| State | Evidence for this source |
+|---|---|
+| Unit | `storage-stats.test.ts` (3): byte/count formatting, unused vs constraint-enforcing index usage labels, and dead-tuple ratio formatting. `ObjectInspectorView.test.tsx`: storage summary card, index usage badges and restricted-reason notice |
+| Fixtures | `storage_and_index_statistics_report_estimates_scans_and_respect_select_privileges` (PostgreSQL 18: stale before `ANALYZE`, index scan counters after `pg_stat_force_next_flush()`, and withheld storage/index counters for a role lacking `SELECT` privilege) and `storage_and_index_statistics_report_estimates_and_degrade_without_admin_grants` (MySQL 8.4 and MariaDB 11.4: non-admin degradation vs `root` `innodb_index_stats` sizes and MySQL `performance_schema` read scans vs MariaDB disabled-`performance_schema` disclosure) pass on Compose project `joinery-r7` |
+| Browser | `explorer.spec.ts`: two flows pass against PostgreSQL and MySQL, verifying **Storage & activity** (`Total footprint`, `Planner and collector estimates only`, MySQL `mysql.innodb_index_stats` notice) and per-index size and `0 scans · enforces constraint` / `Unused (0 scans)` badges |
+| Validate | `pnpm validate`: 486 frontend tests / 44 files, 160 standard Rust tests, production build, fmt, check and strict Clippy |
+| Not executed | The full browser suite, the full ignored fixture suite and native/bundle builds were not rerun. The owner-private Site was not updated |
+| Open / next | Physical bloat sampling (`pgstattuple`), partition-child rollups, Snowflake/Redis storage metrics. Next slice: R7.2 (`D02` schema snapshots and deterministic schema diff) |
+
+Branch `feat/storage-statistics` from `origin/main` `80de7aa`. Unmerged, unreleased and not installed. Preview.15 remains the last verified release.
