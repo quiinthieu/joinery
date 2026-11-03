@@ -13,8 +13,9 @@ import type {
 import { client, messageOf } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
 import { Modal, InlineError } from "../../components/ui/Modal";
-import { DependencySection } from "./ObjectInspectorView";
+import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
+import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]),
@@ -689,47 +690,65 @@ export function StructureView({
               <th>Uniqueness</th>
               <th>Keys / Expressions</th>
               <th>Partial predicate</th>
+              <th>Size</th>
+              <th>Scans / usage</th>
+              <th>Cardinality</th>
             </tr>
           </thead>
           <tbody>
-            {details.indexes.map((index) => (
-              <tr key={index.name}>
-                <td className="mono">
-                  {openObject ? (
-                    <button
-                      type="button"
-                      className="structure-link-button"
-                      onClick={() =>
-                        openObject!({
-                          schema: details.object.schema,
-                          name: index.name,
-                          kind: "index",
-                          identity: details.object.name,
-                        })
-                      }
-                    >
-                      {index.name}
-                    </button>
-                  ) : (
-                    index.name
-                  )}
-                </td>
-                <td className="mono">{index.method}</td>
-                <td>
-                  {index.primary ? (
-                    <span className="key-badge">PRIMARY KEY</span>
-                  ) : index.unique ? (
-                    <span className="key-badge foreign">UNIQUE</span>
-                  ) : (
-                    "Non-unique"
-                  )}
-                </td>
-                <td className="mono">
-                  {index.expressions.length ? index.expressions.join(", ") : "—"}
-                </td>
-                <td className="mono">{index.predicate ? `WHERE ${index.predicate}` : "—"}</td>
-              </tr>
-            ))}
+            {details.indexes.map((index) => {
+              const usage = describeIndexUsage(index);
+              return (
+                <tr key={index.name}>
+                  <td className="mono">
+                    {openObject ? (
+                      <button
+                        type="button"
+                        className="structure-link-button"
+                        onClick={() =>
+                          openObject!({
+                            schema: details.object.schema,
+                            name: index.name,
+                            kind: "index",
+                            identity: details.object.name,
+                          })
+                        }
+                      >
+                        {index.name}
+                      </button>
+                    ) : (
+                      index.name
+                    )}
+                  </td>
+                  <td className="mono">{index.method}</td>
+                  <td>
+                    {index.primary ? (
+                      <span className="key-badge">PRIMARY KEY</span>
+                    ) : index.unique ? (
+                      <span className="key-badge foreign">UNIQUE</span>
+                    ) : (
+                      "Non-unique"
+                    )}
+                  </td>
+                  <td className="mono">
+                    {index.expressions.length ? index.expressions.join(", ") : "—"}
+                  </td>
+                  <td className="mono">{index.predicate ? `WHERE ${index.predicate}` : "—"}</td>
+                  <td className="mono">{formatStorageBytes(index.sizeBytes)}</td>
+                  <td>
+                    {usage.unused ? (
+                      <span className="lock-badge waiting">{usage.label}</span>
+                    ) : (
+                      <span className="mono">
+                        {usage.label}
+                        {usage.detail ? ` · ${usage.detail}` : ""}
+                      </span>
+                    )}
+                  </td>
+                  <td className="mono">{formatStatCount(index.cardinality)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -779,6 +798,11 @@ export function StructureView({
             ))}
           </tbody>
         </table>
+      )}
+      {details?.storage && (
+        <div className="structure-dependencies">
+          <StorageStatsSection storage={details.storage} />
+        </div>
       )}
       {details && (
         <div className="structure-dependencies">

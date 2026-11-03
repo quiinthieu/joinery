@@ -3959,3 +3959,192 @@ async fn typed_parameters_preserve_analysis_review_and_generated_error_origins()
     assert_eq!(span.line, 2);
     studio.shutdown();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL service"]
+async fn storage_and_index_statistics_report_estimates_scans_and_respect_select_privileges() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let cleanup = "DROP TABLE IF EXISTS public.r8_stats_probe CASCADE;";
+    assert_eq!(
+        status(&run(&studio, &session, cleanup).await),
+        RunStatus::Completed
+    );
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "CREATE TABLE public.r8_stats_probe (
+                    id integer PRIMARY KEY,
+                    code text NOT NULL,
+                    legacy text NOT NULL
+                 );
+                 CREATE INDEX r8_stats_code_idx ON public.r8_stats_probe (code);
+                 CREATE INDEX r8_stats_unused_idx ON public.r8_stats_probe (legacy);
+                 INSERT INTO public.r8_stats_probe VALUES
+                   (1, 'alpha', 'x'),
+                   (2, 'beta', 'y'),
+                   (3, 'gamma', 'z');",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let unanalyzed = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r8_stats_probe".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    let before = unanalyzed.storage.as_ref().expect("table storage present");
+    assert!(before.stats_stale, "freshly created table is unanalyzed");
+    assert_eq!(
+        before.estimated_rows, None,
+        "never runs automatic COUNT(*) when reltuples is -1"
+    );
+    assert!(before.table_bytes.is_some_and(|b| b > 0.0));
+    assert!(before.index_bytes.is_some_and(|b| b > 0.0));
+    assert!(before.total_bytes.is_some_and(|b| b > 0.0));
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "ANALYZE public.r8_stats_probe;
+                 BEGIN;
+                 SET LOCAL enable_seqscan = off;
+                 SELECT id FROM public.r8_stats_probe WHERE code = 'alpha';
+                 COMMIT;
+                 SELECT pg_catalog.pg_stat_force_next_flush();",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let analyzed = studio
+        .object_details(
+            &session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r8_stats_probe".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    let after = analyzed.storage.as_ref().expect("table storage present");
+    assert!(!after.stats_stale);
+    assert_eq!(after.estimated_rows, Some(3.0));
+    assert!(after.last_analyze.is_some());
+    assert_eq!(after.restricted_reason, None);
+
+    let used_idx = analyzed
+        .indexes
+        .iter()
+        .find(|i| i.name == "r8_stats_code_idx")
+        .expect("used index present");
+    assert!(used_idx.size_bytes.is_some_and(|b| b > 0.0));
+    assert!(used_idx.scans.is_some_and(|s| s >= 1.0));
+    assert_eq!(used_idx.cardinality, Some(3.0));
+
+    let unused_idx = analyzed
+        .indexes
+        .iter()
+        .find(|i| i.name == "r8_stats_unused_idx")
+        .expect("unused index present");
+    assert!(unused_idx.size_bytes.is_some_and(|b| b > 0.0));
+    assert_eq!(unused_idx.scans, Some(0.0));
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP ROLE IF EXISTS joinery_r8_stats_limited;
+                 CREATE ROLE joinery_r8_stats_limited LOGIN PASSWORD 'joinery-r8-limited';
+                 GRANT CONNECT ON DATABASE joinery TO joinery_r8_stats_limited;
+                 GRANT USAGE ON SCHEMA public TO joinery_r8_stats_limited;",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    let mut limited_profile = studio.bootstrap().unwrap().profiles[0].clone();
+    limited_profile.id = new_id();
+    limited_profile.name = "R8 limited".into();
+    limited_profile.username = "joinery_r8_stats_limited".into();
+    limited_profile.safe_mode = SafeMode::ReadOnly;
+    let saved = studio.save_profile(limited_profile, None).unwrap();
+    let limited_session = studio
+        .connect(
+            &saved.id,
+            ConnectionSecrets {
+                password: Some("joinery-r8-limited".into()),
+                ssh_password: None,
+                key_passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let restricted = studio
+        .object_details(
+            &limited_session.id,
+            &DatabaseObjectRef {
+                schema: "public".into(),
+                name: "r8_stats_probe".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    let restricted_storage = restricted
+        .storage
+        .as_ref()
+        .expect("restricted storage entry present");
+    assert_eq!(restricted_storage.total_bytes, None);
+    assert_eq!(restricted_storage.estimated_rows, None);
+    assert!(
+        restricted_storage
+            .restricted_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("SELECT privilege"))
+    );
+    assert!(
+        restricted
+            .indexes
+            .iter()
+            .all(|i| i.size_bytes.is_none() && i.scans.is_none())
+    );
+
+    studio.disconnect(&limited_session.id);
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!(
+                    "{cleanup}
+                     REVOKE USAGE ON SCHEMA public FROM joinery_r8_stats_limited;
+                     REVOKE CONNECT ON DATABASE joinery FROM joinery_r8_stats_limited;
+                     DROP ROLE joinery_r8_stats_limited;"
+                ),
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    studio.shutdown();
+}

@@ -290,4 +290,107 @@ describe("StructureView, DdlPanel, and ObjectInspectorView", () => {
     expect(screen.getByText("amount integer")).toBeTruthy();
     expect(screen.getByText("IMMUTABLE")).toBeTruthy();
   });
+
+  it("renders relation storage breakdown, unused index badges, stale estimate warnings, and permission notes", () => {
+    const schema: TableSchema = {
+      table: { schema: "public", name: "orders" },
+      columns: [
+        {
+          id: "id",
+          name: "id",
+          databaseType: "bigint",
+          kind: "integer",
+          nullable: false,
+          primaryKey: true,
+          foreignKey: false,
+          editable: true,
+          insertable: true,
+          hasDefault: true,
+        },
+      ],
+      primaryKey: ["id"],
+      foreignKeys: [],
+      editable: true,
+    };
+
+    const details: ObjectDetails = {
+      object: { schema: "public", name: "orders", kind: "table", identity: null },
+      ownerTable: null,
+      comment: null,
+      ddl: { status: "available", ddl: 'CREATE TABLE "public"."orders" ();', truncated: false },
+      constraints: [],
+      indexes: [
+        {
+          name: "orders_pkey",
+          method: "btree",
+          unique: true,
+          primary: true,
+          expressions: ["id"],
+          predicate: null,
+          definition: "CREATE UNIQUE INDEX orders_pkey ON public.orders (id)",
+          sizeBytes: 16384,
+          scans: 15,
+          tuplesRead: 40,
+          tuplesFetched: 40,
+          cardinality: 1200,
+        },
+        {
+          name: "orders_unused_idx",
+          method: "btree",
+          unique: false,
+          primary: false,
+          expressions: ["legacy_code"],
+          predicate: null,
+          definition: "CREATE INDEX orders_unused_idx ON public.orders (legacy_code)",
+          sizeBytes: 8192,
+          scans: 0,
+          tuplesRead: 0,
+          tuplesFetched: 0,
+          cardinality: 1200,
+        },
+      ],
+      triggers: [],
+      routine: null,
+      sequence: null,
+      storage: {
+        estimatedRows: null,
+        tableBytes: 65536,
+        indexBytes: 24576,
+        freeBytes: 4096,
+        totalBytes: 90112,
+        liveTuples: 300,
+        deadTuples: 200,
+        sequentialScans: 4,
+        indexScans: 15,
+        lastAnalyze: null,
+        lastVacuum: "2026-11-03T04:00:00Z",
+        statsStale: true,
+        restrictedReason:
+          "Unavailable with current server configuration or privileges: per-index byte sizes.",
+      },
+      uses: [],
+      usedBy: [],
+    };
+
+    render(<StructureView schema={schema} details={details} connectionId="conn-1" />);
+
+    expect(screen.getByRole("region", { name: "Storage and activity" })).toBeTruthy();
+    expect(screen.getByTestId("storage-stats-stale").textContent).toContain(
+      "Stale / unanalyzed estimate",
+    );
+    expect(screen.getByText("88.0 KiB")).toBeTruthy();
+    expect(screen.getByText("64.0 KiB")).toBeTruthy();
+    expect(screen.getByText("24.0 KiB (27%)")).toBeTruthy();
+    expect(screen.getByText("Unanalyzed (no estimate)")).toBeTruthy();
+    expect(screen.getByText("300 live · 200 dead (40.0% dead)")).toBeTruthy();
+    expect(screen.getByText("High dead tuples")).toBeTruthy();
+    expect(screen.getByText("15 scans · 40 read")).toBeTruthy();
+    expect(screen.getByText("Unused (0 scans)")).toBeTruthy();
+    expect(screen.getByText("Statistics restricted or unavailable")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Unavailable with current server configuration or privileges: per-index byte sizes.",
+      ),
+    ).toBeTruthy();
+  });
 });

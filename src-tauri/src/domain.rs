@@ -669,7 +669,7 @@ pub struct DatabaseObjectSummary {
     pub total_bytes: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexInfo {
     pub name: String,
@@ -679,6 +679,45 @@ pub struct IndexInfo {
     pub expressions: Vec<String>,
     pub predicate: Option<String>,
     pub definition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub size_bytes: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scans: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tuples_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tuples_fetched: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cardinality: Option<f64>,
+}
+
+/// Read-only storage and planner/collector activity estimates for a relation.
+/// Row and tuple counts come from catalog/statistics views only — Joinery never
+/// runs automatic `COUNT(*)` or `ANALYZE`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TableStorageStats {
+    pub estimated_rows: Option<f64>,
+    pub table_bytes: Option<f64>,
+    pub index_bytes: Option<f64>,
+    pub free_bytes: Option<f64>,
+    pub total_bytes: Option<f64>,
+    pub live_tuples: Option<f64>,
+    pub dead_tuples: Option<f64>,
+    pub sequential_scans: Option<f64>,
+    pub index_scans: Option<f64>,
+    pub last_analyze: Option<String>,
+    pub last_vacuum: Option<String>,
+    #[serde(default)]
+    pub stats_stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub restricted_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -768,6 +807,9 @@ pub struct ObjectDetails {
     pub triggers: Vec<TriggerInfo>,
     pub routine: Option<RoutineInfo>,
     pub sequence: Option<SequenceInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub storage: Option<TableStorageStats>,
     pub uses: Vec<DependencyEdge>,
     pub used_by: Vec<DependencyEdge>,
 }

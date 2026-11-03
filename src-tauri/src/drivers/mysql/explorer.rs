@@ -319,7 +319,13 @@ async fn relation_details_on(
 ) -> AppResult<ObjectDetails> {
     let meta = fetch(
         conn,
-        "SELECT TABLE_TYPE, COALESCE(TABLE_COMMENT, '')
+        "SELECT TABLE_TYPE,
+                COALESCE(TABLE_COMMENT, ''),
+                TABLE_ROWS,
+                DATA_LENGTH,
+                INDEX_LENGTH,
+                DATA_FREE,
+                COALESCE(DATE_FORMAT(UPDATE_TIME, '%Y-%m-%dT%H:%i:%sZ'), '')
          FROM INFORMATION_SCHEMA.TABLES
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
         vec![
@@ -341,6 +347,11 @@ async fn relation_details_on(
         return sequence_details_on(conn, requested, maria).await;
     }
     let comment = Some(cell(row, 1).to_owned()).filter(|c| !c.is_empty());
+    let estimated_rows = non_negative_f64(row, 2);
+    let table_bytes = non_negative_f64(row, 3);
+    let index_bytes = non_negative_f64(row, 4);
+    let free_bytes = non_negative_f64(row, 5);
+    let update_time = Some(cell(row, 6).to_owned()).filter(|s| !s.is_empty());
     let kind = if table_type.contains("VIEW") {
         DatabaseObjectKind::View
     } else {
@@ -352,10 +363,6 @@ async fn relation_details_on(
         kind,
         identity: None,
     };
-
-    let indexes = fetch_mysql_indexes(conn, &object.schema, &object.name, maria).await?;
-    let constraints = fetch_mysql_constraints(conn, &object.schema, &object.name, maria).await?;
-    let triggers = fetch_mysql_triggers(conn, &object.schema, Some(&object.name)).await?;
 
     let show_sql = if kind == DatabaseObjectKind::View {
         format!(
@@ -372,6 +379,35 @@ async fn relation_details_on(
     };
     let ddl = show_create_ddl(conn, &show_sql, 1).await;
 
+    let (indexes, idx_meta) =
+        fetch_mysql_indexes(conn, &object.schema, &object.name, maria).await?;
+    let constraints = fetch_mysql_constraints(conn, &object.schema, &object.name, maria).await?;
+    let triggers = fetch_mysql_triggers(conn, &object.schema, Some(&object.name)).await?;
+
+    let storage = (kind == DatabaseObjectKind::Table).then(|| {
+        let total_bytes = match (table_bytes, index_bytes) {
+            (Some(d), Some(i)) => Some(d + i),
+            (Some(d), None) => Some(d),
+            (None, Some(i)) => Some(i),
+            (None, None) => None,
+        };
+        TableStorageStats {
+            estimated_rows,
+            table_bytes,
+            index_bytes,
+            free_bytes,
+            total_bytes,
+            live_tuples: None,
+            dead_tuples: None,
+            sequential_scans: idx_meta.sequential_scans,
+            index_scans: idx_meta.index_scans,
+            last_analyze: update_time,
+            last_vacuum: None,
+            stats_stale: estimated_rows.is_none(),
+            restricted_reason: idx_meta.restricted_reason,
+        }
+    });
+
     let (uses, used_by) =
         relation_dependencies_on(conn, &object, &indexes, &constraints, &triggers, maria).await?;
 
@@ -385,9 +421,24 @@ async fn relation_details_on(
         triggers,
         routine: None,
         sequence: None,
+        storage,
         uses,
         used_by,
     })
+}
+
+#[derive(Default)]
+struct MysqlIndexStatsMeta {
+    sequential_scans: Option<f64>,
+    index_scans: Option<f64>,
+    restricted_reason: Option<String>,
+}
+
+fn non_negative_f64(row: &[Option<String>], index: usize) -> Option<f64> {
+    row.get(index)
+        .and_then(|v| v.as_deref())
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
 }
 
 async fn fetch_mysql_indexes(
@@ -395,15 +446,15 @@ async fn fetch_mysql_indexes(
     schema: &str,
     table: &str,
     maria: bool,
-) -> AppResult<Vec<IndexInfo>> {
+) -> AppResult<(Vec<IndexInfo>, MysqlIndexStatsMeta)> {
     let sql = if maria {
-        "SELECT INDEX_NAME, INDEX_TYPE, NON_UNIQUE, COLUMN_NAME, SUB_PART, NULL
+        "SELECT INDEX_NAME, INDEX_TYPE, NON_UNIQUE, COLUMN_NAME, SUB_PART, NULL, CARDINALITY
          FROM INFORMATION_SCHEMA.STATISTICS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
          ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX
          LIMIT 2000"
     } else {
-        "SELECT INDEX_NAME, INDEX_TYPE, NON_UNIQUE, COLUMN_NAME, SUB_PART, EXPRESSION
+        "SELECT INDEX_NAME, INDEX_TYPE, NON_UNIQUE, COLUMN_NAME, SUB_PART, EXPRESSION, CARDINALITY
          FROM INFORMATION_SCHEMA.STATISTICS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
          ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX
@@ -427,6 +478,7 @@ async fn fetch_mysql_indexes(
         let col_name = cell(&r, 3);
         let sub_part = cell(&r, 4);
         let expr_text = cell(&r, 5);
+        let cardinality = non_negative_f64(&r, 6);
         let key_expr = if !col_name.is_empty() {
             if !sub_part.is_empty() {
                 format!("{}({sub_part})", quote(col_name))
@@ -442,6 +494,9 @@ async fn fetch_mysql_indexes(
         match indexes.last_mut() {
             Some(last) if last.name == name => {
                 last.expressions.push(key_expr);
+                if let Some(card) = cardinality {
+                    last.cardinality = Some(last.cardinality.map_or(card, |prev| prev.max(card)));
+                }
             }
             _ => {
                 indexes.push(IndexInfo {
@@ -452,15 +507,113 @@ async fn fetch_mysql_indexes(
                     expressions: vec![key_expr],
                     predicate: None,
                     definition: None,
+                    size_bytes: None,
+                    scans: None,
+                    tuples_read: None,
+                    tuples_fetched: None,
+                    cardinality,
                 });
             }
         }
     }
 
+    let mut meta = MysqlIndexStatsMeta::default();
+    let mut restricted_parts = Vec::new();
+
+    if !indexes.is_empty() {
+        match fetch(
+            conn,
+            "SELECT index_name, stat_value * @@innodb_page_size
+             FROM mysql.innodb_index_stats
+             WHERE database_name = ? AND table_name = ? AND stat_name = 'size'
+             LIMIT 500",
+            vec![bind(Some(schema.into())), bind(Some(table.into()))],
+            500,
+            256 * 1024,
+        )
+        .await
+        {
+            Ok(size_rows) => {
+                let mut sizes: HashMap<String, f64> = HashMap::new();
+                for r in size_rows {
+                    if let Some(bytes) = non_negative_f64(&r, 1) {
+                        sizes.insert(cell(&r, 0).to_owned(), bytes);
+                    }
+                }
+                for idx in &mut indexes {
+                    idx.size_bytes = sizes.get(&idx.name).copied();
+                }
+            }
+            Err(err) if err.code == ErrorCode::PermissionDenied => {
+                restricted_parts.push("per-index byte sizes (SELECT on mysql.innodb_index_stats)");
+            }
+            Err(_) => {}
+        }
+
+        let perf_on = fetch(conn, "SELECT @@performance_schema", vec![], 1, 1024)
+            .await
+            .ok()
+            .and_then(|rows| rows.first().map(|r| cell(r, 0).to_owned()))
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("ON"));
+
+        if perf_on {
+            match fetch(
+                conn,
+                "SELECT COALESCE(INDEX_NAME, ''), COUNT_READ
+                 FROM performance_schema.table_io_waits_summary_by_index_usage
+                 WHERE OBJECT_SCHEMA = ? AND OBJECT_NAME = ?
+                 LIMIT 500",
+                vec![bind(Some(schema.into())), bind(Some(table.into()))],
+                500,
+                256 * 1024,
+            )
+            .await
+            {
+                Ok(usage_rows) => {
+                    let mut reads_by_index: HashMap<String, f64> = HashMap::new();
+                    let mut seq_reads = 0.0;
+                    for r in usage_rows {
+                        let idx_name = cell(&r, 0);
+                        let reads = non_negative_f64(&r, 1).unwrap_or(0.0);
+                        if idx_name.is_empty() {
+                            seq_reads += reads;
+                        } else {
+                            *reads_by_index.entry(idx_name.to_owned()).or_insert(0.0) += reads;
+                        }
+                    }
+                    let mut total_idx_reads = 0.0;
+                    for idx in &mut indexes {
+                        let reads = reads_by_index.get(&idx.name).copied().unwrap_or(0.0);
+                        idx.scans = Some(reads);
+                        idx.tuples_read = Some(reads);
+                        total_idx_reads += reads;
+                    }
+                    meta.sequential_scans = Some(seq_reads);
+                    meta.index_scans = Some(total_idx_reads);
+                }
+                Err(err) if err.code == ErrorCode::PermissionDenied => {
+                    restricted_parts.push(
+                        "index scan counters (SELECT on performance_schema.table_io_waits_summary_by_index_usage)",
+                    );
+                }
+                Err(_) => {}
+            }
+        } else {
+            restricted_parts.push("index scan counters (performance_schema is disabled)");
+        }
+    }
+
+    if !restricted_parts.is_empty() {
+        meta.restricted_reason = Some(format!(
+            "Unavailable with current server configuration or privileges: {}.",
+            restricted_parts.join("; ")
+        ));
+    }
+
     for idx in &mut indexes {
         idx.definition = Some(format_mysql_index_ddl(schema, table, idx));
     }
-    Ok(indexes)
+    Ok((indexes, meta))
 }
 
 async fn fetch_mysql_constraints(
@@ -1008,6 +1161,7 @@ async fn routine_details_on(
             security_definer,
         }),
         sequence: None,
+        storage: None,
         uses: Vec::new(),
         used_by: Vec::new(),
     })
@@ -1098,6 +1252,7 @@ async fn sequence_details_on(
         triggers: Vec::new(),
         routine: None,
         sequence,
+        storage: None,
         uses: Vec::new(),
         used_by: Vec::new(),
     })
@@ -1195,6 +1350,7 @@ async fn trigger_details_on(
         triggers: vec![trigger_info],
         routine: None,
         sequence: None,
+        storage: None,
         uses,
         used_by: Vec::new(),
     })
@@ -1232,7 +1388,8 @@ async fn index_details_on(
         cell(r, 0).to_owned()
     };
 
-    let all_indexes = fetch_mysql_indexes(conn, &requested.schema, &table_name, maria).await?;
+    let (all_indexes, idx_meta) =
+        fetch_mysql_indexes(conn, &requested.schema, &table_name, maria).await?;
     let index_info = all_indexes
         .into_iter()
         .find(|idx| idx.name == requested.name)
@@ -1271,6 +1428,11 @@ async fn index_details_on(
         MAX_DEPENDENCY_EDGES,
     );
 
+    let storage = idx_meta.restricted_reason.map(|reason| TableStorageStats {
+        restricted_reason: Some(reason),
+        ..Default::default()
+    });
+
     Ok(ObjectDetails {
         object,
         owner_table: Some(TableRef {
@@ -1284,6 +1446,7 @@ async fn index_details_on(
         triggers: Vec::new(),
         routine: None,
         sequence: None,
+        storage,
         uses,
         used_by: Vec::new(),
     })
@@ -1303,6 +1466,11 @@ mod tests {
             expressions: vec!["`id`".into()],
             predicate: None,
             definition: None,
+            size_bytes: None,
+            scans: None,
+            tuples_read: None,
+            tuples_fetched: None,
+            cardinality: None,
         };
         assert_eq!(
             format_mysql_index_ddl("joinery", "orders", &primary),
@@ -1317,6 +1485,11 @@ mod tests {
             expressions: vec!["(lower(`email`))".into()],
             predicate: None,
             definition: None,
+            size_bytes: None,
+            scans: None,
+            tuples_read: None,
+            tuples_fetched: None,
+            cardinality: None,
         };
         assert_eq!(
             format_mysql_index_ddl("joinery", "cust`omers", &functional),

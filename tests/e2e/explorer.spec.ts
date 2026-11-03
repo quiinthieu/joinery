@@ -107,6 +107,8 @@ test("PostgreSQL explorer categorizes objects, navigates by keyboard, and inspec
     CREATE INDEX e2e_r3_lower_note_idx
       ON public.e2e_r3_items (lower(note))
       WHERE amount > 0;
+    CREATE INDEX e2e_r3_unused_note_idx
+      ON public.e2e_r3_items (note);
     CREATE FUNCTION public.e2e_r3_touch_fn() RETURNS trigger
       LANGUAGE plpgsql AS $$
       BEGIN
@@ -206,8 +208,12 @@ test("PostgreSQL explorer categorizes objects, navigates by keyboard, and inspec
     await expect(viewDeps).toContainText("public.e2e_r3_summary_mv");
     await viewDeps.getByRole("button", { name: /public\.e2e_r3_items/ }).click();
 
-    // Inspect table Structure: Constraints, expression + partial Index, Triggers
+    // Inspect table Structure: Storage & activity, Constraints, expression + partial Index, Triggers
     await expect(page.locator(".query-context")).toContainText("public.e2e_r3_items");
+    const pgStorage = page.getByLabel("Storage and activity");
+    await expect(pgStorage).toBeVisible();
+    await expect(pgStorage).toContainText("Total footprint");
+    await expect(pgStorage).toContainText("Planner and collector estimates only");
     await expect(page.getByRole("table", { name: "Constraints" })).toContainText(
       "e2e_r3_amount_positive",
     );
@@ -215,6 +221,9 @@ test("PostgreSQL explorer categorizes objects, navigates by keyboard, and inspec
     await expect(indexesTable).toContainText("e2e_r3_lower_note_idx");
     await expect(indexesTable).toContainText("lower(note)");
     await expect(indexesTable).toContainText("WHERE amount > 0");
+    await expect(indexesTable).toContainText("8.0 KiB");
+    await expect(indexesTable).toContainText("0 scans · enforces constraint");
+    await expect(indexesTable).toContainText("Unused (0 scans)");
     const triggersTable = page.getByRole("table", { name: "Triggers" });
     await expect(triggersTable).toContainText("e2e_r3_touch_trg");
     await expect(triggersTable).toContainText("FOR EACH ROW");
@@ -328,6 +337,10 @@ test("Search Everywhere jumps across simultaneous PostgreSQL and MySQL connectio
 
     // Inspect MySQL Structure & DDL on joinery.sample
     await page.getByRole("button", { name: "Structure", exact: true }).click();
+    const mysqlStorage = page.getByLabel("Storage and activity");
+    await expect(mysqlStorage).toBeVisible();
+    await expect(mysqlStorage).toContainText("Total footprint");
+    await expect(mysqlStorage).toContainText("mysql.innodb_index_stats");
     await expect(page.getByRole("table", { name: "Indexes" })).toContainText("PRIMARY");
     await page.getByRole("button", { name: "DDL", exact: true }).click();
     await expect(page.getByLabel("Object DDL")).toContainText("CREATE TABLE `sample`");

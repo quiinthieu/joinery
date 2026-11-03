@@ -3552,3 +3552,139 @@ async fn typed_parameters_preserve_mysql_and_mariadb_analysis_review() {
         studio.shutdown();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn storage_and_index_statistics_report_estimates_and_degrade_without_admin_grants() {
+    for port in [53306, 53307] {
+        let (_root, studio, owner) = setup(port, SafeMode::Silent).await;
+        completed(
+            &run(
+                &studio,
+                &owner,
+                "DROP TABLE IF EXISTS r8_stats_probe;
+                 CREATE TABLE r8_stats_probe (
+                   id INT PRIMARY KEY,
+                   sku VARCHAR(64) NOT NULL,
+                   note VARCHAR(128) NOT NULL,
+                   INDEX r8_stats_sku_idx (sku),
+                   INDEX r8_stats_unused_idx (note)
+                 ) ENGINE=InnoDB;
+                 INSERT INTO r8_stats_probe (id, sku, note) VALUES
+                   (1, 'sku-1', 'note-1'),
+                   (2, 'sku-2', 'note-2'),
+                   (3, 'sku-3', 'note-3'),
+                   (4, 'sku-4', 'note-4');
+                 ANALYZE TABLE r8_stats_probe;
+                 SELECT id FROM r8_stats_probe FORCE INDEX (r8_stats_sku_idx) WHERE sku = 'sku-2';",
+            )
+            .await,
+        );
+
+        let table_node = DatabaseObjectRef {
+            schema: "joinery".into(),
+            name: "r8_stats_probe".into(),
+            kind: DatabaseObjectKind::Table,
+            identity: None,
+        };
+
+        // Non-admin user lacks SELECT on mysql.innodb_index_stats and performance_schema:
+        // table storage still reports INFORMATION_SCHEMA estimates with a restricted_reason notice.
+        let unpriv = studio.object_details(&owner.id, &table_node).await.unwrap();
+        let unpriv_storage = unpriv.storage.as_ref().expect("table storage stats");
+        assert!(
+            unpriv_storage.table_bytes.unwrap_or(0.0) > 0.0,
+            "port {port}"
+        );
+        assert!(
+            unpriv_storage.total_bytes.unwrap_or(0.0) > 0.0,
+            "port {port}"
+        );
+        assert!(
+            unpriv_storage
+                .restricted_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("mysql.innodb_index_stats"),
+            "port {port}: {:?}",
+            unpriv_storage.restricted_reason
+        );
+        let unpriv_sku = unpriv
+            .indexes
+            .iter()
+            .find(|idx| idx.name == "r8_stats_sku_idx")
+            .expect("sku index");
+        assert!(unpriv_sku.cardinality.is_some(), "port {port}");
+        assert_eq!(unpriv_sku.size_bytes, None, "port {port}");
+        assert_eq!(unpriv_sku.scans, None, "port {port}");
+
+        // Admin user can read mysql.innodb_index_stats on both engines and performance_schema on MySQL 8.4.
+        let mut admin = profile(port, SafeMode::ReadOnly);
+        admin.name = "Disposable root".into();
+        admin.username = "root".into();
+        let admin = studio.save_profile(admin, None).unwrap();
+        let root_session = studio
+            .connect(
+                &admin.id,
+                ConnectionSecrets {
+                    password: Some("joinery-root-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let priv_details = studio
+            .object_details(&root_session.id, &table_node)
+            .await
+            .unwrap();
+        let priv_storage = priv_details.storage.as_ref().expect("admin table storage");
+        let priv_sku = priv_details
+            .indexes
+            .iter()
+            .find(|idx| idx.name == "r8_stats_sku_idx")
+            .expect("admin sku index");
+        let priv_unused = priv_details
+            .indexes
+            .iter()
+            .find(|idx| idx.name == "r8_stats_unused_idx")
+            .expect("admin unused index");
+        assert!(
+            priv_sku.size_bytes.unwrap_or(0.0) > 0.0,
+            "port {port}: {:?}",
+            priv_sku
+        );
+        assert!(
+            priv_unused.size_bytes.unwrap_or(0.0) > 0.0,
+            "port {port}: {:?}",
+            priv_unused
+        );
+        if port == 53306 {
+            assert_eq!(priv_storage.restricted_reason, None, "port {port}");
+            assert!(
+                priv_sku.scans.unwrap_or(0.0) >= 1.0,
+                "port {port}: {:?}",
+                priv_sku
+            );
+            assert_eq!(
+                priv_unused.scans,
+                Some(0.0),
+                "port {port}: {:?}",
+                priv_unused
+            );
+        } else {
+            assert_eq!(priv_sku.scans, None, "port {port}");
+            assert!(
+                priv_storage
+                    .restricted_reason
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("performance_schema"),
+                "port {port}: {:?}",
+                priv_storage.restricted_reason
+            );
+        }
+
+        completed(&run(&studio, &owner, "DROP TABLE r8_stats_probe").await);
+        studio.shutdown();
+    }
+}
