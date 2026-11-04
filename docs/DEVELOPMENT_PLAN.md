@@ -224,24 +224,9 @@ Separate **execution status** from **result retention status**: a statement can 
 
 # Implementation blueprint
 
-The [DataGrip feature matrix](datagrip-feature-matrix.md) records the current
-source/test comparison, including verified gaps and intentional restrictions.
-The [implementation roadmap](implementation-roadmap.md) adds a dependency-ordered
-delivery sequence without replacing these milestones or the private project
-hub's shipping status. Its first batch repairs SQL completion scope, quoting and
-stale responses; that bounded repair shipped in preview.12 (see the matrix
-evidence). The PostgreSQL live role/search-path slice shipped in preview.13; see
-[live completion context](live-completion-context.md). The subsequent
-[MySQL/MariaDB live slice](mysql-live-completion-context.md) shipped in
-preview.14. PR #23 qualifies case mode 1 on disposable MySQL and MariaDB;
-mode 2 remains open. The bounded [Snowflake request-context slice](snowflake-completion-context.md)
-shipped in preview.15 with synthetic verification; live qualification and full
-search-path inference remain open. The [isolated query-session slice](isolated-query-sessions.md)
-is locally verified on PostgreSQL/MySQL/MariaDB: 26 browser workflows, desktop
-build/bundle and three native runs pass after host resources recovered. It is
-unreleased. Grouped foreign-key metadata and JOIN generation follow.
-The measured warm lookup target passes, while visible completion latency and
-representative native performance remain open qualification work.
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) is the canonical ledger for
+the 78-capability DataGrip replacement matrix, milestone delivery evidence,
+published releases, and open external qualification gates.
 
 ## SQL Studio and session management
 

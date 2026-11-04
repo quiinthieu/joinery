@@ -2,19 +2,18 @@
 
 A desktop database studio built with Tauri v2, Rust, React, CodeMirror, and a Canvas data grid.
 
-The private [Joinery project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)
-is the canonical plan and shipping-status destination. Update the Site after
-implementation, verification, merge, and release milestones. The detailed
-engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
+[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) is the canonical
+plan and shipping-status ledger. Update it after implementation, verification,
+merge, and release milestones. The detailed engineering blueprint is recorded in
+[docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
 The [latest macOS preview](https://github.com/quiinthieu/joinery/releases)
-includes PostgreSQL, MySQL/MariaDB, standalone Redis and the read-only
-Snowflake SQL/catalog pilot. See the Site for the exact published version
-and verification state.
-Shipped features, remaining work, and connection-test results are tracked on the
-Site. Keep connection secrets in the ignored local `.env`; `.env.example`
-provides blank inventory fields. Transfer these manually into the app; the
-frontend does not load or automatically import them.
+(`v0.1.0-preview.16`) includes PostgreSQL, MySQL/MariaDB, standalone Redis, and
+the read-only Snowflake SQL/catalog pilot. See
+[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for the exact
+published version and verification state. Keep connection secrets in the ignored
+local `.env`; `.env.example` provides blank inventory fields. Transfer these
+manually into the app; the frontend does not load or automatically import them.
 
 In New connection, choose Snowflake and enter the account hostname, username,
 database, uppercase role, warehouse, and schema. Joinery opens the system browser
@@ -132,8 +131,8 @@ credentials or keys outside local tests. Stop just these services with
 
 The `mysql-folded` profile adds separately initialized case-mode-1 MySQL and
 MariaDB fixtures on ports 53406 and 53407. Include it when running the full
-ignored MySQL suite; the targeted command and cleanup are documented in
-[the completion contract](docs/mysql-live-completion-context.md).
+ignored MySQL suite; see
+[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 
 Browser tests use an explicitly enabled, authenticated loopback harness compiled with the `test-harness` feature. The desktop release does not include that HTTP server. PostgreSQL, MySQL, MariaDB, and Redis browser tests exercise the actual Rust service and disposable databases. The Snowflake browser workflow intercepts that API boundary with synthetic responses and Arrow data; separate Rust tests exercise the Snowflake adapter against a loopback HTTP fixture. Neither Snowflake test path signs in or queries a production account.
 
@@ -169,56 +168,14 @@ before retrying. Read-only ACL grants remain the authorization boundary. TLS
 uses the original hostname, including through SSH; custom ACL usernames are
 authenticated explicitly and never fall back to the default user.
 
-## Current stage (2 November 2026)
+## Current stage (4 November 2026)
 
-The last verified published preview is `v0.1.0-preview.15`. R1–R4 are merged on
-`main` (through PR #30, `a0ba1a6`) but unreleased. The local
-`feat/estimated-query-plans` branch now integrates six R5 editor
-slices—FK JOIN suggestions, structured backend Unicode diagnostics, typed
-query parameters, inline error/statement navigation, SQL definitions/usages/
-quick documentation, and selection formatting/settings/snippets—with R6
-[estimated/actual plans and bounded snapshot comparison](docs/query-plans.md).
-These changes are verified locally, unmerged, unreleased and not installed.
-Formatting preferences persist globally and per SQL dialect; custom snippets
-can be scoped per SQL engine. [Live templates](docs/sql-live-templates.md) now
-support observed database/schema identifiers and literal selected SQL, with an
-Insert template chooser, tab stops and single-step undo. Named CTE/derived-table
-outputs now have local
-definition jumps, usages and source documentation when a unique direct column
-source is proven. Wildcards, expressions and unsupported shapes remain withheld.
-The prior combined candidate passed 66 ignored SQL/Redis/SSH fixtures and a
-normal ad-hoc macOS bundle build. Remaining semantic
-editor gaps and release/platform/external qualification are next.
-Symbol navigation remains partial: ambiguous names and routine overloads are
-not guessed. Object/column jumps now open read-only Structure/DDL inspectors
-bound to the originating console session and observed context, including isolated
-consoles. Context changes, source closure and reconnect require navigating again;
-inspector dependency, owner, index and trigger links preserve that origin.
-**Append DDL to source console** explicitly appends to the still-bound console,
-preserving its SQL and session without executing anything. Stale, closed or
-rebound sources are rejected; running consoles cannot receive DDL.
-
-**Rename alias / CTE** (Shift-F6) previews declaration, relation and qualified-reference
-edits in supported SELECT statements. Explicit Apply preserves comments, other
-statements and nested shadowing; one undo restores the original SQL. Collisions,
-capture, stale documents/contexts and unsupported shapes are rejected. This is
-local text refactoring; database-object renaming remains unavailable. JOIN
-conditions now follow their actual operands: earlier ON clauses retain correlated
-outer references, comma groups stay separate, and nested JOIN association is
-preserved. Later local aliases keep their own references. See
-[ordered JOIN evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).
-Nonrecursive CTE rename follows ordered WITH entries and implicit qualifiers
-while preserving explicit aliases and physical tables. PostgreSQL nested WITH
-shadowing is covered; nested WITH under an outer CTE scope is withheld in the
-shared MySQL/MariaDB dialect after fixture probes exposed different visibility.
-Recursive and other unsupported forms stay withheld. See
-[CTE rename evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
-
-Recorded R5 commit `bb77b0f` remains readable; its former worktree/branch are
-absent and its former uncommitted documentation was not recovered. Full
-DataGrip replacement still needs the remaining
-query analysis, design, productivity and release/qualification gates in the
-[roadmap](docs/implementation-roadmap.md).
+Milestones R1–R8 and RX.1 (all 78 DataGrip replacement matrix capabilities) are
+merged on `main` and published in `v0.1.0-preview.16`, with the Snowflake
+`CURRENT_SCHEMAS()` completion context fix installed in `/Applications/Joinery.app`.
+See [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for the
+complete capability matrix, milestone ledger, verification counts, and remaining
+external qualification gates.
 
 ## Current implementation
 
@@ -322,4 +279,4 @@ openable metadata store; if startup rejects the store, keep it and use a
 compatible app with a consistent backup for manual recovery. Broader historical
 migrations and packaged-platform qualification remain pending. A forced-process
 test covers interruption during restore on this host. Exact shipped
-versions are tracked on the Site.
+versions are tracked in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).

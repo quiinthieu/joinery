@@ -22,10 +22,9 @@ do not depend on machine-specific agent files or tools being installed.
   Report pre-existing failures and blocked checks accurately; do not bypass hooks.
 - Use disposable local database fixtures. Production queries and external engine
   qualification need explicit scope. Keep secrets out of source, logs, and commits.
-- The private Joinery project hub linked in README is the canonical plan/status.
-  Update it after product implementation, merge, and release milestones when Sites access
-  is available; report unavailable access. Distinguish tested, merged, published,
-  installed, and externally qualified states. Keep the Site owner-private.
+- `docs/IMPLEMENTATION_STATUS.md` is the canonical plan and shipping status ledger.
+  Update it after product implementation, merge, and release milestones. Distinguish
+  tested, merged, published, installed, and externally qualified states.
 - Ship only when authorized. Verify CI, release assets and the installed version
   before claiming delivery. Signing/notarization and external qualification gates
   remain open until demonstrated; see `docs/IMPLEMENTATION_STATUS.md`.
