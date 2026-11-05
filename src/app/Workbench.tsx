@@ -60,6 +60,13 @@ import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
 import { CopyAsMenu } from "../features/grid/CopyAsMenu";
+import { GridPaginationBar } from "../features/grid/GridPaginationBar";
+import {
+  computeGridPagination,
+  DEFAULT_GRID_PAGE_SIZE,
+  pageIndexForRow,
+  type GridPageSize,
+} from "../features/grid/pagination";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
@@ -140,6 +147,9 @@ export function Workbench({
     [planResultId, setPlanResultId] = useState<string | null>(null),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
+    [pageSize, setPageSize] = useState<GridPageSize>(DEFAULT_GRID_PAGE_SIZE),
+    [pageIndexByKey, setPageIndexByKey] = useState<Record<string, number>>({}),
+    [tablePagedByKey, setTablePagedByKey] = useState<Record<string, boolean>>({}),
     [tableDetailsState, setTableDetailsState] = useState<{
       key: string;
       data: ObjectDetails;
@@ -257,11 +267,102 @@ export function Workbench({
       : pendingCount
         ? "Review or discard pending edits to change sort or filters"
         : null;
+  const paginationKey =
+    tab.kind === "query"
+      ? `query:${tab.id}:${result?.id ?? "none"}`
+      : tab.kind === "table"
+        ? `table:${tab.id}:${tab.revision}`
+        : `other:${tab.id}`;
+  const totalLoadedRows =
+    tab.kind === "table"
+      ? tab.loadedRows + draftInserts.length
+      : tab.kind === "query"
+        ? (result?.retainedRows ?? 0) + draftInserts.length
+        : 0;
+  const hasMoreRows =
+    tab.kind === "table"
+      ? tab.hasMore
+      : tab.kind === "query"
+        ? result?.status === "truncated"
+        : false;
+  const pagination = computeGridPagination({
+    totalLoadedRows,
+    pageSize,
+    pageIndex: pageIndexByKey[paginationKey] ?? 0,
+    hasMore: hasMoreRows,
+    loadingMore: tab.loadingPage || running,
+  });
+  const tablePaged = tab.kind === "table" && Boolean(tablePagedByKey[paginationKey]);
+  const gridPageOffset =
+    tab.kind === "query" || (tab.kind === "table" && tablePaged) ? pagination.pageOffset : 0;
+  const gridPageRowLimit =
+    tab.kind === "query" || (tab.kind === "table" && tablePaged) ? pagination.pageRowLimit : null;
+  function handleFirstPage() {
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: pageSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: 0 }));
+  }
+  function handlePreviousPage() {
+    if (!pagination.canPrevious) return;
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: pageSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({
+      ...prev,
+      [paginationKey]: Math.max(0, pagination.pageIndex - 1),
+    }));
+  }
+  function handleNextPage() {
+    if (!pagination.canNext || pageSize === "all") return;
+    const nextIndex = pagination.pageIndex + 1;
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: true }));
+      if (nextIndex * pageSize >= totalLoadedRows && tab.hasMore) {
+        void state.loadNextPage(tab.id).then(() => {
+          setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: nextIndex }));
+        });
+        return;
+      }
+    }
+    setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: nextIndex }));
+  }
+  function handleLastPage() {
+    if (!pagination.canLast) return;
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: pageSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({
+      ...prev,
+      [paginationKey]: Math.max(0, pagination.loadedPages - 1),
+    }));
+  }
+  function handlePageSizeChange(nextSize: GridPageSize) {
+    setPageSize(nextSize);
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: nextSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: 0 }));
+  }
+  function handleVisibleRowChange(topAbsoluteRow: number) {
+    if (tab.kind !== "table" || tablePaged || pageSize === "all") return;
+    const nextPage = pageIndexForRow(topAbsoluteRow, pageSize);
+    setPageIndexByKey((prev) => {
+      const current = prev[paginationKey] ?? 0;
+      return current === nextPage ? prev : { ...prev, [paginationKey]: nextPage };
+    });
+  }
   function stageInsertRow() {
     try {
       const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
       dirtyStore.addInsertRow(insertScopeId);
       const nextRow = baseRows + dirtyStore.insertsForTab(insertScopeId).length - 1;
+      if (tab.kind === "query" || (tab.kind === "table" && tablePaged)) {
+        const targetPage = pageIndexForRow(nextRow, pageSize);
+        setPageIndexByKey((prev) =>
+          prev[paginationKey] === targetPage ? prev : { ...prev, [paginationKey]: targetPage },
+        );
+      }
       setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
     } catch (error) {
       state.notify(error instanceof Error ? error.message : "Could not stage inserted row");
@@ -1040,6 +1141,15 @@ export function Workbench({
             )}
             {result && result.columns.length > 0 && (
               <>
+                <GridPaginationBar
+                  pagination={pagination}
+                  disabled={running}
+                  onFirstPage={handleFirstPage}
+                  onPreviousPage={handlePreviousPage}
+                  onNextPage={handleNextPage}
+                  onLastPage={handleLastPage}
+                  onPageSizeChange={handlePageSizeChange}
+                />
                 {isQueryPlanResult(result, tab.planSource) && (
                   <button
                     className="button ghost small"
@@ -1157,6 +1267,15 @@ export function Workbench({
             )}
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
+                <GridPaginationBar
+                  pagination={pagination}
+                  disabled={running}
+                  onFirstPage={handleFirstPage}
+                  onPreviousPage={handlePreviousPage}
+                  onNextPage={handleNextPage}
+                  onLastPage={handleLastPage}
+                  onPageSizeChange={handlePageSizeChange}
+                />
                 <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
                 {tableImportable ? (
                   <button
@@ -1380,6 +1499,9 @@ export function Workbench({
               tab={tab}
               result={result}
               theme={state.theme}
+              pageOffset={gridPageOffset}
+              pageRowLimit={gridPageRowLimit}
+              onVisibleRowChange={handleVisibleRowChange}
               onSelect={onSelect}
               onOpenValue={onOpenValue}
               onSelectedRowsChange={setSelectedRows}

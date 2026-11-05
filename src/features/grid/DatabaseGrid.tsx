@@ -85,6 +85,9 @@ interface Props {
   tab: StudioTab;
   result?: ResultInfo;
   theme: string;
+  pageOffset?: number;
+  pageRowLimit?: number | null;
+  onVisibleRowChange?(topAbsoluteRow: number): void;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
   onSelectedRowsChange?(rows: number[]): void;
@@ -153,6 +156,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     tab,
     result,
     theme: themeName,
+    pageOffset = 0,
+    pageRowLimit = null,
+    onVisibleRowChange,
     onSelect,
     onOpenValue,
     onSelectedRowsChange,
@@ -171,6 +177,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     rows: CompactSelection.empty(),
     columns: CompactSelection.empty(),
   });
+  const effectivePageOffset = tab.kind === "benchmark" ? 0 : Math.max(0, pageOffset ?? 0);
+  const pageOffsetRef = useRef(effectivePageOffset);
+  pageOffsetRef.current = effectivePageOffset;
+  const pageRowLimitRef = useRef(pageRowLimit);
+  pageRowLimitRef.current = pageRowLimit;
+  const onVisibleRowChangeRef = useRef(onVisibleRowChange);
+  onVisibleRowChangeRef.current = onVisibleRowChange;
   const connected = useStudio((state) => {
     if (!tab.connectionId) return false;
     const activeSession =
@@ -243,14 +256,19 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     [visibleColumns, resolvedLayout.widths, tab.kind, widths, sortQuery],
   );
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
-  const rowCount =
+  const fullRowCount =
     tab.kind === "benchmark"
       ? 1_000_000
       : tab.kind === "table"
         ? draftInserts.length > 0
           ? tab.loadedRows + draftInserts.length
-          : tab.loadedRows + (tab.hasMore ? 1 : 0)
+          : tab.loadedRows + (tab.hasMore && pageRowLimit == null ? 1 : 0)
         : (result?.retainedRows ?? 0) + draftInserts.length;
+  const remainingRows = Math.max(0, fullRowCount - effectivePageOffset);
+  const rowCount =
+    tab.kind === "benchmark" || pageRowLimit == null || pageRowLimit <= 0
+      ? remainingRows
+      : Math.min(pageRowLimit, remainingRows);
   const theme = useMemo<Partial<Theme>>(() => {
     const style = getComputedStyle(document.documentElement),
       color = (key: string) => style.getPropertyValue(key).trim();
@@ -309,10 +327,22 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     onSelectedRowsChange?.([]);
     onSelect(null);
     redraw();
-  }, [tab.id, tab.revision, result?.id, visibleOrderKey, redraw]);
+  }, [
+    tab.id,
+    tab.revision,
+    result?.id,
+    visibleOrderKey,
+    effectivePageOffset,
+    pageRowLimit,
+    redraw,
+  ]);
+  useEffect(() => {
+    grid.current?.scrollTo?.(0, 0);
+  }, [effectivePageOffset, pageRowLimit]);
 
-  const locate = useCallback((row: number) => {
+  const locate = useCallback((visualRow: number) => {
     const { tab, result } = model.current;
+    const row = visualRow + pageOffsetRef.current;
     if (tab.kind === "table") {
       const page = tab.pages.find((p) => row >= p.start && row < p.start + p.result.retainedRows);
       return page ? { result: page.result, row: row - page.start } : null;
@@ -320,8 +350,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     return result ? { result, row } : null;
   }, []);
 
-  const locateDraft = useCallback((row: number) => {
+  const locateDraft = useCallback((visualRow: number) => {
     const { tab, result } = model.current;
+    const row = visualRow + pageOffsetRef.current;
     const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
     const scopeId = tab.kind === "table" ? tab.id : result?.id;
     if (!scopeId || (tab.kind !== "table" && tab.kind !== "query") || row < loaded) {
@@ -379,18 +410,22 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   );
 
   const pendingCanvasFocus = useRef(false);
+  const handledFocusSeqRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     if (!focusRowRequest || !columns.length) return;
-    const targetRow = focusRowRequest.row;
+    if (handledFocusSeqRef.current === focusRowRequest.seq) return;
+    const absTargetRow = focusRowRequest.row;
+    const targetRow = absTargetRow - pageOffsetRef.current;
     if (targetRow < 0 || targetRow >= rowCount) return;
+    handledFocusSeqRef.current = focusRowRequest.seq;
     const loaded =
       model.current.tab.kind === "table"
         ? model.current.tab.loadedRows
         : (model.current.result?.retainedRows ?? 0);
     const isDraft =
       (model.current.tab.kind === "table" || model.current.tab.kind === "query") &&
-      targetRow >= loaded;
+      absTargetRow >= loaded;
     const targetCol = isDraft
       ? Math.max(
           0,
@@ -409,9 +444,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     selectionRef.current = nextSelection;
     pendingCanvasFocus.current = true;
     setSelection(nextSelection);
-    onSelectedRowsChange?.([targetRow]);
+    onSelectedRowsChange?.([absTargetRow]);
     onSelect(targetAt([targetCol, targetRow], true));
-  }, [focusRowRequest?.seq]);
+  }, [focusRowRequest?.seq, effectivePageOffset, rowCount]);
 
   useLayoutEffect(() => {
     if (!pendingCanvasFocus.current) return;
@@ -495,8 +530,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       }
       const source = locate(row);
       if (!source) {
-        if (tab.kind === "table" && row < tab.loadedRows)
-          void useStudio.getState().ensureTablePage(tab.id, row);
+        const absRow = row + pageOffsetRef.current;
+        if (tab.kind === "table" && absRow < tab.loadedRows)
+          void useStudio.getState().ensureTablePage(tab.id, absRow);
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
       const cached = resultCache.read(source.result.id, column.id, source.row);
@@ -680,11 +716,16 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         visibleColumns,
         tableEditable,
         resolveRow: (visualRow) => {
+          const absRow = visualRow + pageOffsetRef.current;
           if ((currentTab.kind !== "table" && currentTab.kind !== "query") || visualRow < 0)
             return { kind: "outOfBounds" };
-          if (visualRow >= loaded) {
+          const pageLimit = pageRowLimitRef.current;
+          if (pageLimit != null && pageLimit > 0 && visualRow >= pageLimit) {
+            return { kind: "outOfBounds" };
+          }
+          if (absRow >= loaded) {
             if (inserts.length > 0) {
-              const draft = inserts[visualRow - loaded];
+              const draft = inserts[absRow - loaded];
               return draft
                 ? { kind: "draftInsert", tabId: scopeId, insertId: draft.id }
                 : { kind: "outOfBounds" };
@@ -693,7 +734,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
               currentTab.kind === "table"
                 ? currentTab.loadedRows + (currentTab.hasMore ? 1 : 0)
                 : loaded;
-            return visualRow < totalRows ? { kind: "unloaded" } : { kind: "outOfBounds" };
+            return absRow < totalRows ? { kind: "unloaded" } : { kind: "outOfBounds" };
           }
           const source = locate(visualRow);
           if (!source) return { kind: "unloaded" };
@@ -736,13 +777,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         currentTab.kind === "table" || currentTab.kind === "query"
           ? dirtyStore.insertsForTab(scopeId).length
           : 0;
-      const maxCopyableRows =
+      const totalCopyableRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
           : currentTab.kind === "table"
             ? currentTab.loadedRows + draftCount
             : (currentResult?.retainedRows ?? 0) + draftCount;
-      const loadedDefaultRows =
+      const totalDefaultRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
           : currentTab.kind === "table"
@@ -752,6 +793,16 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
             : (currentResult?.retainedRows ?? 0) > 0
               ? (currentResult?.retainedRows ?? 0)
               : draftCount;
+      const offset = currentTab.kind === "benchmark" ? 0 : pageOffsetRef.current;
+      const limit = currentTab.kind === "benchmark" ? null : pageRowLimitRef.current;
+      const remainingCopyable = Math.max(0, totalCopyableRows - offset);
+      const maxCopyableRows =
+        limit == null || limit <= 0 ? remainingCopyable : Math.min(limit, remainingCopyable);
+      const remainingDefault = Math.max(0, totalDefaultRows - offset);
+      const loadedDefaultRows =
+        limit == null || limit <= 0
+          ? remainingDefault
+          : Math.min(limit, remainingDefault > 0 ? remainingDefault : remainingCopyable);
 
       const sel = selectionRef.current;
       const rowList = sel.rows.toArray().filter((r) => r >= 0 && r < maxCopyableRows);
@@ -847,22 +898,23 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       try {
         const rows: CopyCell[][] = [];
         for (const row of rowIndices) {
+          const absRow = row + pageOffsetRef.current;
           if (model.current.tab.id !== tabId || model.current.tab.revision !== revision) {
             return false;
           }
           if (model.current.tab.kind === "benchmark") {
-            rows.push(colIndices.map((col) => benchmarkValue(col, row)));
+            rows.push(colIndices.map((col) => benchmarkValue(col, absRow)));
             continue;
           }
           if (
             model.current.tab.kind === "table" &&
-            row < model.current.tab.loadedRows &&
+            absRow < model.current.tab.loadedRows &&
             !locate(row)
           ) {
-            await useStudio.getState().ensureTablePage(tabId, row);
+            await useStudio.getState().ensureTablePage(tabId, absRow);
           }
           const source =
-            model.current.tab.kind !== "table" || row < model.current.tab.loadedRows
+            model.current.tab.kind !== "table" || absRow < model.current.tab.loadedRows
               ? locate(row)
               : null;
           if (source) {
@@ -960,7 +1012,14 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           columns={columns}
           rows={rowCount}
           getCellContent={getCellContent}
-          rowMarkers="number"
+          rowMarkers={
+            effectivePageOffset > 0
+              ? {
+                  kind: "number",
+                  startIndex: effectivePageOffset + 1,
+                }
+              : "number"
+          }
           rowHeight={density === "compact" ? 28 : 36}
           headerHeight={37}
           smoothScrollX
@@ -1036,7 +1095,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           onGridSelectionChange={(nextSelection) => {
             selectionRef.current = nextSelection;
             setSelection(nextSelection);
-            onSelectedRowsChange?.(selectedVisualRows(nextSelection));
+            onSelectedRowsChange?.(
+              selectedVisualRows(nextSelection).map((row) => row + pageOffsetRef.current),
+            );
             onSelect(nextSelection.current ? targetAt(nextSelection.current.cell, true) : null);
           }}
           onCellActivated={(cell) => {
@@ -1045,12 +1106,14 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           }}
           onVisibleRegionChanged={(range) => {
             visible.current = range;
+            const offset = pageOffsetRef.current;
+            onVisibleRowChangeRef.current?.(offset + range.y);
             const current = model.current.tab;
             if (
               current.kind === "table" &&
               current.hasMore &&
               dirtyStore.insertsForTab(current.id).length === 0 &&
-              range.y + range.height >= current.loadedRows - 40
+              offset + range.y + range.height >= current.loadedRows - 40
             )
               void useStudio.getState().loadNextPage(current.id);
           }}
@@ -1066,6 +1129,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                 let bytes = 0;
                 const cells: GridCell[][] = [];
                 for (let row = rectangle.y; row < rectangle.y + rectangle.height; row++) {
+                  const absRow = row + pageOffsetRef.current;
                   if (
                     signal.aborted ||
                     model.current.tab.id !== tabId ||
@@ -1074,11 +1138,11 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                     return [];
                   if (
                     model.current.tab.kind === "table" &&
-                    row < model.current.tab.loadedRows &&
+                    absRow < model.current.tab.loadedRows &&
                     !locate(row)
                   )
-                    await useStudio.getState().ensureTablePage(tabId, row);
-                  const source = row < model.current.tab.loadedRows ? locate(row) : null;
+                    await useStudio.getState().ensureTablePage(tabId, absRow);
+                  const source = absRow < model.current.tab.loadedRows ? locate(row) : null;
                   if (source)
                     await resultCache.ensure(
                       source.result.id,

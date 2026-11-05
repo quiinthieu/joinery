@@ -17,6 +17,7 @@ use super::snowflake_auth::{self, Tokens};
 
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PARTITIONS: usize = 64;
+const MAX_EAGER_PARTITION_ROWS: u64 = 5_000;
 
 mod catalog;
 #[cfg(test)]
@@ -689,6 +690,10 @@ impl Snowflake {
                         sink.complete(count)?;
                         return Ok(count);
                     }
+                }
+                if count >= MAX_EAGER_PARTITION_ROWS && index + 1 < partitions {
+                    sink.limit("Result retention limit reached");
+                    break;
                 }
             }
             sink.complete(count)?;

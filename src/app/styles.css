@@ -1268,6 +1268,60 @@ kbd {
   font-size: 10px;
   padding: 0 8px;
 }
+.grid-pagination-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+.grid-page-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--muted);
+}
+.grid-page-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.grid-page-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.grid-pagination-range {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.grid-page-size-select {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+}
+.grid-page-size-select:hover:not(:disabled) {
+  color: var(--text);
+}
+.grid-page-size-select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .grid-host {
   flex: 1;
   min-height: 0;

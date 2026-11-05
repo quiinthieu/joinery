@@ -154,6 +154,8 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
   await page.getByRole("button", { name: /^PUBLIC/ }).click();
   await page.getByRole("button", { name: "ORDERS", exact: true }).click();
   await expect(page.locator("canvas").first()).toBeVisible();
+  await expect(page.getByTestId("grid-pagination-range")).toHaveText("1–2 of 2");
+  await expect(page.getByLabel("Page size")).toHaveValue("500");
   await expect(page.locator(".result-caption")).toContainText("Read-only preview");
   await expect(page.locator(".result-footer")).toContainText("unordered preview");
   await expect(page.locator(".result-footer")).toContainText("Preview limit reached");
