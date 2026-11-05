@@ -509,8 +509,9 @@ export function App() {
   useEffect(watchWorkspace, []);
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = state.theme;
+    document.documentElement.dataset.palette = state.palette;
     document.documentElement.dataset.density = state.density;
-  }, [state.theme, state.density]);
+  }, [state.theme, state.palette, state.density]);
   useEffect(() => {
     const hasPendingWork = () => {
       const snap = useStudio.getState();

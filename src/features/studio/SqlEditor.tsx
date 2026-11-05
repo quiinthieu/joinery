@@ -205,43 +205,51 @@ function editorTheme(theme: string) {
         height: "100%",
         fontSize: "13px",
         backgroundColor: "transparent",
-        color: dark ? "#d8e1d7" : "#29372a",
+        color: "var(--text)",
       },
       ".cm-content": {
-        fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
-        padding: "20px 0",
-        caretColor: dark ? "#c1dcb4" : "#397344",
+        fontFamily:
+          "var(--font-mono, 'JetBrains Mono', 'SF Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace)",
+        padding: "18px 0",
+        caretColor: "var(--accent)",
       },
-      ".cm-line": { padding: "0 20px 0 12px", lineHeight: "1.9" },
+      ".cm-line": { padding: "0 20px 0 12px", lineHeight: "1.8" },
       ".cm-gutters": {
         backgroundColor: "transparent",
-        color: dark ? "#69796d" : "#69796b",
+        color: "var(--faint)",
         border: "none",
         minWidth: "48px",
         fontSize: "11px",
+        fontVariantNumeric: "tabular-nums",
       },
       ".cm-activeLineGutter": {
         backgroundColor: "transparent",
-        color: dark ? "#afbea9" : "#526a52",
+        color: "var(--muted)",
+        fontWeight: "600",
       },
-      ".cm-activeLine": { backgroundColor: dark ? "#ffffff03" : "#00000003" },
+      ".cm-activeLine": { backgroundColor: dark ? "#ffffff06" : "#00000005" },
       ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-        backgroundColor: dark ? "#a6c59725" : "#4b8e4330",
+        backgroundColor: "var(--selection-strong, var(--selection))",
       },
-      ".cm-cursor": { borderLeftColor: dark ? "#b6d7a8" : "#397344" },
+      ".cm-cursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
+      ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
+        backgroundColor: "var(--selection)",
+        outline: "1px solid var(--accent)",
+        borderRadius: "2px",
+      },
       ".cm-scroller": { overflow: "auto" },
       ".cm-tooltip": {
-        backgroundColor: dark ? "#252d27" : "#ffffff",
-        color: dark ? "#d8e1d7" : "#243425",
+        backgroundColor: "var(--raised)",
+        color: "var(--text)",
         border: "1px solid var(--border)",
         borderRadius: "8px",
-        boxShadow: "0 12px 30px #0003",
+        boxShadow: "var(--shadow-lg, 0 14px 34px #0004)",
       },
       ".cm-sql-error-mark": {
         textDecoration: "underline wavy var(--danger)",
         textDecorationSkipInk: "none",
         textUnderlineOffset: "3px",
-        backgroundColor: dark ? "#d9776c1f" : "#c2413618",
+        backgroundColor: dark ? "#ef444422" : "#dc262618",
         borderRadius: "2px",
       },
       ".cm-sql-error-gutter-col": {
@@ -270,15 +278,50 @@ function editorTheme(theme: string) {
     { dark },
   );
 }
-function highlighting(theme: string) {
+function highlighting(theme: string, palette = "slate") {
   const dark = theme !== "light";
+  const keywordColor = dark
+    ? palette === "obsidian"
+      ? "#a78bfa"
+      : palette === "graphite"
+        ? "#fbbf24"
+        : palette === "sage"
+          ? "#86efac"
+          : "#60a5fa"
+    : palette === "obsidian"
+      ? "#5b21b6"
+      : palette === "graphite"
+        ? "#b45309"
+        : palette === "sage"
+          ? "#166534"
+          : "#1d4ed8";
+  const typeColor = dark ? "#38bdf8" : "#0369a1";
+  const fnColor = dark ? "#c084fc" : "#7e22ce";
+  const stringColor = dark ? "#34d399" : "#15803d";
+  const numberColor = dark ? "#fb923c" : "#c2410c";
+  const propColor = dark ? "#93c5fd" : "#1e40af";
+  const commentColor = dark ? "#64748b" : "#64748b";
+  const operatorColor = dark ? "#94a3b8" : "#475569";
   return syntaxHighlighting(
     HighlightStyle.define([
-      { tag: tags.keyword, color: dark ? "#c9b1df" : "#754d94" },
-      { tag: tags.string, color: dark ? "#b6d29f" : "#44713b" },
-      { tag: [tags.number, tags.bool, tags.null], color: dark ? "#dfc68e" : "#936722" },
-      { tag: tags.comment, color: dark ? "#87988a" : "#718271", fontStyle: "italic" },
-      { tag: tags.operator, color: dark ? "#b5c3b6" : "#4c6750" },
+      {
+        tag: [tags.keyword, tags.operatorKeyword, tags.controlKeyword, tags.definitionKeyword],
+        color: keywordColor,
+        fontWeight: "600",
+      },
+      {
+        tag: [tags.typeName, tags.standard(tags.name)],
+        color: typeColor,
+      },
+      {
+        tag: [tags.function(tags.variableName), tags.function(tags.propertyName)],
+        color: fnColor,
+      },
+      { tag: [tags.string, tags.special(tags.string)], color: stringColor },
+      { tag: [tags.number, tags.bool, tags.null], color: numberColor },
+      { tag: [tags.propertyName, tags.attributeName], color: propColor },
+      { tag: tags.comment, color: commentColor, fontStyle: "italic" },
+      { tag: [tags.operator, tags.punctuation], color: operatorColor },
     ]),
   );
 }
@@ -326,6 +369,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
   );
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
+  const palette = useStudio((s) => s.palette);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
   const liveRef = useRef<CompletionCatalog | null>(null);
@@ -883,7 +927,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         languageCompartment.of(editorLanguage(latest.current.engine)),
         themeCompartment.of([
           editorTheme(latest.current.theme),
-          highlighting(latest.current.theme),
+          highlighting(latest.current.theme, useStudio.getState().palette),
         ]),
         autocompletion({
           override: [(context) => session.request(context)],
@@ -1030,9 +1074,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   }, [props.engine, props.error, props.errorOrigin, props.value]);
   useEffect(() => {
     view.current?.dispatch({
-      effects: themeCompartment.reconfigure([editorTheme(props.theme), highlighting(props.theme)]),
+      effects: themeCompartment.reconfigure([
+        editorTheme(props.theme),
+        highlighting(props.theme, palette),
+      ]),
     });
-  }, [props.theme]);
+  }, [props.theme, palette]);
   useEffect(() => {
     view.current?.dispatch({
       effects: languageCompartment.reconfigure(editorLanguage(props.engine)),

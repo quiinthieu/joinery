@@ -172,6 +172,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   const [size, setSize] = useState({ width: 800, height: 400 });
   const [widths, setWidths] = useState<Record<string, number>>({});
   const density = useStudio((state) => state.density);
+  const palette = useStudio((state) => state.palette);
   const dirtyVersion = useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const [selection, setSelection] = useState<GridSelection>({
     rows: CompactSelection.empty(),
@@ -288,12 +289,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       horizontalBorderColor: color("--row-border"),
       headerBottomBorderColor: color("--border"),
       baseFontStyle: "12px",
-      headerFontStyle: "500 11px",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      headerFontStyle: "600 11px",
+      fontFamily:
+        "'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif",
       cellHorizontalPadding: 16,
       editorFontSize: "13px",
     };
-  }, [themeName]);
+  }, [themeName, palette]);
 
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) =>

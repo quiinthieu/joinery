@@ -26,6 +26,7 @@ import { useStudio } from "../../state/studio";
 import { sqlFormatStyle, updateSqlFormatStyle, type SqlFormatScope } from "../../data/sql-format";
 import { GroupManager } from "../connections/GroupManager";
 import { MetadataRecovery } from "./MetadataRecovery";
+import { THEME_PALETTES } from "./theme";
 import {
   SHORTCUT_DEFINITIONS,
   effectiveShortcutBadge,
@@ -206,16 +207,17 @@ export function Preferences({ onClose }: { onClose(): void }) {
     >
       <div className="modal-body preferences">
         <h3>Appearance</h3>
-        <div className="theme-options">
+        <div className="theme-options" role="group" aria-label="Appearance mode">
           {(
             [
-              { id: "dark", label: "Forest dark", icon: Moon },
+              { id: "dark", label: "Studio dark", icon: Moon },
               { id: "light", label: "Paper light", icon: Sun },
               { id: "contrast", label: "High contrast", icon: Monitor },
             ] as const
           ).map(({ id, label, icon: Icon }) => (
             <button
               key={id}
+              type="button"
               className={`theme-option ${state.theme === id ? "selected" : ""}`}
               aria-pressed={state.theme === id}
               onClick={() => state.setTheme(id)}
@@ -225,6 +227,36 @@ export function Preferences({ onClose }: { onClose(): void }) {
               {state.theme === id && <Check size={13} />}
             </button>
           ))}
+        </div>
+        <h3>Color palette</h3>
+        <div className="palette-options" role="group" aria-label="Color palette">
+          {THEME_PALETTES.map((preset) => {
+            const selected = state.palette === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                className={`palette-option ${selected ? "selected" : ""}`}
+                aria-pressed={selected}
+                aria-label={preset.label}
+                onClick={() => state.setPalette(preset.id)}
+              >
+                <div className="palette-swatches" aria-hidden="true">
+                  <span style={{ background: preset.swatches.bg }} />
+                  <span style={{ background: preset.swatches.surface }} />
+                  <span style={{ background: preset.swatches.accent }} />
+                  <span style={{ background: preset.swatches.secondary }} />
+                </div>
+                <div className="palette-meta">
+                  <strong>
+                    {preset.label}
+                    {selected && <Check size={12} />}
+                  </strong>
+                  <span>{preset.description}</span>
+                </div>
+              </button>
+            );
+          })}
         </div>
         <label>
           Display density

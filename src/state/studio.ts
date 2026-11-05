@@ -31,6 +31,7 @@ import type {
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
 import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
+import { normalizeThemePalette, type ThemePalette } from "../features/studio/theme";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
 import {
@@ -198,6 +199,7 @@ interface StudioState {
   recentLocations: RecentLocation[];
   shortcuts: Record<string, string>;
   theme: "dark" | "light" | "contrast";
+  palette: ThemePalette;
   density: "comfortable" | "compact";
   sidebarVisible: boolean;
   sidebarCollapsed: boolean;
@@ -206,6 +208,7 @@ interface StudioState {
   initialize(): Promise<void>;
   notify(message: string): void;
   setTheme(theme: StudioState["theme"]): void;
+  setPalette(palette: ThemePalette): void;
   toggleSidebar(): void;
   toggleInspector(): void;
   setShortcut(actionId: ShortcutActionId, binding: string | null): ShortcutValidationResult;
@@ -509,6 +512,7 @@ function purgeSessionRuntimeMaps(
   return { sessionStates, sessionContexts, sessionContextRevision };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
+const storedPalette = normalizeThemePalette(localStorage.getItem("joinery.palette"));
 
 function requestIsCurrent(id: string, revision: number, connectionId: string, sessionId: string) {
   const state = useStudio.getState();
@@ -551,6 +555,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   recentLocations: [],
   shortcuts: {},
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
+  palette: storedPalette,
   density: "comfortable",
   sidebarVisible: true,
   sidebarCollapsed: false,
@@ -631,6 +636,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     localStorage.setItem("joinery.theme", theme);
     document.documentElement.dataset.theme = theme;
     set({ theme });
+  },
+  setPalette(palette) {
+    const normalized = normalizeThemePalette(palette);
+    localStorage.setItem("joinery.palette", normalized);
+    document.documentElement.dataset.palette = normalized;
+    set({ palette: normalized });
   },
   toggleSidebar() {
     set((state) => {

@@ -248,3 +248,29 @@ test("edits keyboard shortcuts, flags conflicts and reserved chords, and resets 
   expect(useStudio.getState().shortcuts).toEqual({});
   expect(screen.getByLabelText("Current badge for Open command palette").textContent).toBe("⌘ K");
 });
+
+test("Preferences switches appearance mode and color palette presets", () => {
+  vi.mocked(client.call).mockResolvedValue([]);
+  useStudio.setState({ theme: "dark", palette: "slate" });
+  render(<Preferences onClose={vi.fn()} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Paper light" }));
+  expect(useStudio.getState().theme).toBe("light");
+  expect(document.documentElement.dataset.theme).toBe("light");
+
+  fireEvent.click(screen.getByRole("button", { name: /Obsidian & Indigo/i }));
+  expect(useStudio.getState().palette).toBe("obsidian");
+  expect(document.documentElement.dataset.palette).toBe("obsidian");
+
+  fireEvent.click(screen.getByRole("button", { name: /Graphite & Amber/i }));
+  expect(useStudio.getState().palette).toBe("graphite");
+  expect(document.documentElement.dataset.palette).toBe("graphite");
+
+  fireEvent.click(screen.getByRole("button", { name: /Forest & Sage/i }));
+  expect(useStudio.getState().palette).toBe("sage");
+  expect(document.documentElement.dataset.palette).toBe("sage");
+
+  fireEvent.click(screen.getByRole("button", { name: /Slate & Electric Blue/i }));
+  expect(useStudio.getState().palette).toBe("slate");
+  expect(document.documentElement.dataset.palette).toBe("slate");
+});
