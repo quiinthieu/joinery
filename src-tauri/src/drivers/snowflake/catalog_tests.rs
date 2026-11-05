@@ -427,3 +427,40 @@ async fn schema_context_switch_is_stateless_and_verifies_resolution() {
     assert_eq!(requests[2].1["schema"], "ANALYTICS");
     assert_eq!(requests[2].1["statement"], "SELECT CURRENT_SCHEMA()");
 }
+
+#[tokio::test]
+async fn completion_catalog_handles_null_table_types_and_falls_back_to_active_schema_on_oversized_databases()
+ {
+    let (driver, server) = fixture(vec![
+        completion_context(json!(["DB.PUBLIC"])),
+        quoted_case("false"),
+        // Database-wide INFORMATION_SCHEMA query exceeds 10,000 rows:
+        json!({"resultSetMetaData":{"numRows":10001},"data":[]}),
+        // Active-schema fallback returns tables including a Dynamic Table with null TABLE_TYPE:
+        json!({"resultSetMetaData":{"numRows":1},"data":[
+            ["PUBLIC","FACT_PO_TRACKER_7",null,"42","1024"]
+        ]}),
+    ])
+    .await;
+    let identity = driver.completion_identity().await.unwrap();
+    let catalog = driver.completion_catalog(&identity).await.unwrap();
+    assert_eq!(catalog.tables.len(), 1);
+    assert_eq!(catalog.tables[0].table.schema, "PUBLIC");
+    assert_eq!(catalog.tables[0].table.name, "FACT_PO_TRACKER_7");
+    assert_eq!(catalog.tables[0].kind, "BASE TABLE");
+    assert_eq!(
+        catalog.unqualified_tables,
+        vec![TableRef {
+            schema: "PUBLIC".into(),
+            name: "FACT_PO_TRACKER_7".into(),
+        }]
+    );
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[3].1["statement"]
+            .as_str()
+            .unwrap()
+            .contains("WHERE TABLE_SCHEMA = 'PUBLIC'")
+    );
+}

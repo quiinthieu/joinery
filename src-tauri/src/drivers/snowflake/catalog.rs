@@ -141,12 +141,7 @@ impl Snowflake {
             .collect())
     }
 
-    pub(super) async fn catalog_tables(&self) -> AppResult<Vec<TableInfo>> {
-        let sql = format!(
-            "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ROW_COUNT,BYTES FROM {}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001",
-            identifier(&self.database)?
-        );
-        let rows = self.query_rows(&sql, 10_000).await?;
+    fn parse_table_rows(rows: Vec<TextRow>) -> AppResult<Vec<TableInfo>> {
         rows.into_iter()
             .map(|row| {
                 if row.len() != 5 {
@@ -174,12 +169,43 @@ impl Snowflake {
                         schema: required(0)?,
                         name: required(1)?,
                     },
-                    kind: required(2)?,
+                    kind: row[2]
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "BASE TABLE".into()),
                     estimated_rows: estimate(3),
                     total_bytes: estimate(4),
                 })
             })
             .collect()
+    }
+
+    pub(super) async fn catalog_tables_in_schema(&self, schema: &str) -> AppResult<Vec<TableInfo>> {
+        if !simple_identifier(schema) {
+            return Err(AppError::invalid("Invalid Snowflake schema identifier"));
+        }
+        let sql = format!(
+            "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ROW_COUNT,BYTES FROM {}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{}' ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001",
+            identifier(&self.database)?,
+            schema
+        );
+        let rows = self.query_rows(&sql, 10_000).await?;
+        Self::parse_table_rows(rows)
+    }
+
+    pub(super) async fn catalog_tables(&self) -> AppResult<Vec<TableInfo>> {
+        let sql = format!(
+            "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ROW_COUNT,BYTES FROM {}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001",
+            identifier(&self.database)?
+        );
+        match self.query_rows(&sql, 10_000).await {
+            Ok(rows) => Self::parse_table_rows(rows),
+            Err(err) if err.message.to_ascii_lowercase().contains("too much data") => {
+                let schema = self.current_schema();
+                self.catalog_tables_in_schema(&schema).await
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub(super) async fn table_schema(&self, table: &TableRef) -> AppResult<TableSchema> {

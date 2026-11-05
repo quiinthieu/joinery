@@ -8,7 +8,7 @@ impl Mysql {
             let was_in_trans = observe_status_flags(&mut conn)
                 .await?
                 .contains(StatusFlags::SERVER_STATUS_IN_TRANS);
-            let rows = fetch_text(&mut conn,"SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,IF(@@lower_case_table_names=0,BINARY TABLE_SCHEMA=BINARY DATABASE(),LOWER(TABLE_SCHEMA)=LOWER(DATABASE())) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN ('mysql','performance_schema','sys') ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001", 10000, 2*1024*1024).await;
+            let rows = fetch_text(&mut conn,"SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,IF(@@lower_case_table_names=0,BINARY TABLE_SCHEMA=BINARY DATABASE(),LOWER(TABLE_SCHEMA)=LOWER(DATABASE())) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sys') ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001", 10000, 8*1024*1024).await;
             Self::close_phantom_transaction(&mut conn, was_in_trans).await;
             let rows = rows?;
             let tables:Vec<TableInfo> = rows.iter().map(|r| TableInfo {

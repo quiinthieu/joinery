@@ -95,19 +95,28 @@ impl Snowflake {
         &self,
         identity: &CompletionIdentity,
     ) -> AppResult<CompletionRelations> {
-        let tables = self.catalog_tables().await?;
+        let tables = match self.catalog_tables().await {
+            Ok(tables) => tables,
+            Err(_) => {
+                let schema = self.current_schema();
+                self.catalog_tables_in_schema(&schema).await?
+            }
+        };
         // Catalog visibility cannot prove the absence of an inaccessible table
         // in an earlier schema. Bind known names in the first resolved schema
         // only; later schemas and cross-database paths retain qualified names.
-        let prefix = format!("{}.", identity.database);
         let first_schema = identity
             .search_path
             .first()
-            .and_then(|p| p.strip_prefix(&prefix))
+            .and_then(|p| {
+                let (db, schema) = p.split_once('.')?;
+                db.eq_ignore_ascii_case(&identity.database)
+                    .then_some(schema)
+            })
             .filter(|s| simple_identifier(s));
         let unqualified_tables = tables
             .iter()
-            .filter(|t| Some(t.table.schema.as_str()) == first_schema)
+            .filter(|t| first_schema.is_some_and(|s| t.table.schema.eq_ignore_ascii_case(s)))
             .map(|t| t.table.clone())
             .collect();
         Ok(CompletionRelations {

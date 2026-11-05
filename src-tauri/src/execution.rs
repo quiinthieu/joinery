@@ -1602,7 +1602,7 @@ impl Studio {
                 "The session is busy; retry after execution finishes",
             ));
         }
-        let _lane = tokio::time::timeout(Duration::from_millis(1500), session.lane.lock())
+        let _lane = tokio::time::timeout(Duration::from_secs(15), session.lane.lock())
             .await
             .map_err(|_| {
                 AppError::new(
@@ -1642,7 +1642,7 @@ impl Studio {
         if serde_json::to_vec(&snapshot)
             .map_err(|_| AppError::internal("Cannot encode completion metadata"))?
             .len()
-            > 2 * 1024 * 1024
+            > 8 * 1024 * 1024
         {
             return Err(AppError::new(
                 ErrorCode::ResultLimitReached,
@@ -1690,7 +1690,7 @@ impl Studio {
                 "The session is busy; retry after execution finishes",
             ));
         }
-        let _lane = tokio::time::timeout(Duration::from_millis(1500), session.lane.lock())
+        let _lane = tokio::time::timeout(Duration::from_secs(15), session.lane.lock())
             .await
             .map_err(|_| {
                 AppError::new(

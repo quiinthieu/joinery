@@ -80,7 +80,11 @@ export function tableLookup(
   for (const { table } of tables) {
     add([table.name], table);
     add([table.schema, table.name], table);
-    if (database) add([database, table.schema, table.name], table);
+    if (database) {
+      add([database, table.schema, table.name], table);
+      const normalizedDb = identifierValue({ value: database, quoted: false }, engine);
+      if (normalizedDb !== database) add([normalizedDb, table.schema, table.name], table);
+    }
   }
   return {
     engine,
@@ -391,14 +395,23 @@ export function completionTarget(state: EditorState, position: number): Completi
   if (i < 0) return { from: position, to: position, parts: [{ value: "", quoted: false }] };
   const current = leaves[i];
   if (isComment(current) || current.kind.includes("String")) return null;
-  if (!isName(current) && current.kind !== "Keyword" && current.kind !== ".") return null;
+  const isWordToken = (t?: Token) =>
+    isName(t) ||
+    ((t?.kind === "Keyword" || t?.kind === "Type" || t?.kind === "Builtin") &&
+      /^[A-Za-z_][A-Za-z0-9_$]*$/.test(t.text));
+  if (!isWordToken(current) && current.kind !== ".") return null;
   const parts: Identifier[] =
     current.kind === "."
       ? [{ value: "", quoted: false }]
       : [readIdentifier(state.sliceDoc(current.from, position), position === current.to)];
   let from = current.from;
   if (current.kind !== ".") i--;
-  while (i >= 1 && leaves[i].kind === "." && isName(leaves[i - 1]) && parts.length < 4) {
+  while (
+    i >= 1 &&
+    leaves[i].kind === "." &&
+    isRelationOrAliasToken(leaves[i - 1]) &&
+    parts.length < 4
+  ) {
     parts.unshift(readIdentifier(leaves[i - 1].text));
     from = leaves[i - 1].from;
     i -= 2;

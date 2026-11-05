@@ -329,6 +329,8 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
   const liveRef = useRef<CompletionCatalog | null>(null);
+  const contextErrorRef = useRef<string | null>(null);
+  contextErrorRef.current = contextError;
   const liveObjectsRef = useRef<DatabaseObjectSummary[]>([]);
   const schemaCacheRef = useRef<Map<string, TableSchema>>(new Map());
   const navRequestSeq = useRef(0);
@@ -353,13 +355,14 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const configure = () => {
     const config = latest.current;
     const snapshot = liveRef.current;
+    const failed = Boolean(contextErrorRef.current);
     if (config.engine === "redis") return config;
     return {
       ...config,
-      tables: snapshot?.tables ?? [],
+      tables: snapshot?.tables ?? (failed ? [] : config.tables),
       snippets: snippetsRef.current,
       sessionId: snapshot ? config.sessionId : null,
-      database: snapshot?.identity.database,
+      database: snapshot?.identity.database ?? (failed ? undefined : config.database),
       searchPath: snapshot?.identity.searchPath,
       unqualifiedTables: snapshot?.unqualifiedTables,
       caseSensitiveTableNames: snapshot?.identity.caseSensitiveTableNames ?? undefined,
@@ -403,9 +406,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const buildSymbolContext = (): SqlSymbolContext => {
     const config = latest.current;
     const snapshot = liveRef.current;
+    const failed = Boolean(contextErrorRef.current);
     return {
       engine: config.engine,
-      tables: snapshot?.tables ?? [],
+      tables: snapshot?.tables ?? (failed ? [] : config.tables),
       databaseObjects: liveObjectsRef.current,
       schemas: schemaCacheRef.current,
       database: snapshot?.identity.database ?? config.database,
@@ -883,6 +887,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         ]),
         autocompletion({
           override: [(context) => session.request(context)],
+          activateOnCompletion: (c) => c.type === "namespace",
         }),
         keymap.of([
           {
@@ -1048,12 +1053,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     props.database,
     props.defaultSchema,
     live,
+    contextError,
     sqlSnippets,
   ]);
+  const prevTablesRef = useRef(props.tables);
+  useEffect(() => {
+    const previous = prevTablesRef.current;
+    prevTablesRef.current = props.tables;
+    if (previous.length > 0 && previous !== props.tables) {
+      setRefresh((value) => value + 1);
+    }
+  }, [props.tables]);
   useEffect(() => {
     let cancelled = false;
     clearNavigation();
     liveRef.current = null;
+    contextErrorRef.current = null;
     liveObjectsRef.current = [];
     schemaCacheRef.current = new Map();
     contextLoadRef.current = null;
@@ -1063,9 +1078,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     completion.current?.configure(configure());
     if (view.current) closeCompletion(view.current);
     if (props.sessionId) {
-      void useStudio.getState().refreshSessionContexts(props.sessionId);
-      contextLoadRef.current = client
-        .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
+      const sessionId = props.sessionId;
+      void useStudio.getState().refreshSessionContexts(sessionId);
+      const loadCatalog = async (): Promise<CompletionCatalog> => {
+        try {
+          return await client.call<CompletionCatalog>("completion_catalog", { sessionId });
+        } catch (error) {
+          if (!cancelled && messageOf(error).includes("The session is busy")) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            if (!cancelled) {
+              return await client.call<CompletionCatalog>("completion_catalog", { sessionId });
+            }
+          }
+          throw error;
+        }
+      };
+      contextLoadRef.current = loadCatalog()
         .then(async (snapshot) => {
           if (!cancelled) {
             liveRef.current = snapshot;
@@ -1073,7 +1101,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             if (props.objectExplorerSupported) {
               try {
                 const objects = await client.call<DatabaseObjectSummary[]>("database_objects", {
-                  sessionId: props.sessionId,
+                  sessionId,
                 });
                 if (!cancelled) liveObjectsRef.current = objects;
               } catch {
@@ -1083,20 +1111,17 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           }
         })
         .catch((error) => {
-          if (!cancelled) setContextError(messageOf(error));
+          if (!cancelled) {
+            const msg = messageOf(error);
+            contextErrorRef.current = msg;
+            setContextError(msg);
+          }
         });
     }
     return () => {
       cancelled = true;
     };
-  }, [
-    props.engine,
-    props.sessionId,
-    props.tables,
-    props.contextEpoch,
-    props.objectExplorerSupported,
-    refresh,
-  ]);
+  }, [props.engine, props.sessionId, props.contextEpoch, props.objectExplorerSupported, refresh]);
   useEffect(() => {
     if (props.engine === "redis" || !props.value.trim()) {
       setParamSlots([]);

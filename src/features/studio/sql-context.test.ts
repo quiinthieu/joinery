@@ -633,3 +633,32 @@ test("recognizes unreserved PostgreSQL lexer keywords such as ln as table aliase
     "order_lines ol ON ln.note_order = ol.order_id AND ln.note_line = ol.line_no",
   ]);
 });
+
+test("resolves 3-part Snowflake tables and dotted completion targets with keyword, builtin, and type tokens", () => {
+  const sfTables = [info("FACT_PO_TRACKER_7", "PROD")];
+  const sfLookup = tableLookup(sfTables, "snowflake", "dwh", "PROD", ["DWH.PROD"]);
+  const sfState = query("SELECT | FROM dwh.prod.fact_po_tracker_7", "snowflake");
+  const sfScope = referencedTables(sfState, sfLookup, sfState.selection.main.head);
+  expect(sfScope.references.map((r) => r.table)).toEqual([
+    { schema: "PROD", name: "FACT_PO_TRACKER_7" },
+  ]);
+  expect(sfScope.allowBare).toBe(true);
+
+  const lnDot = query("SELECT ln.| FROM public.line_notes ln", "postgres");
+  expect(completionTarget(lnDot, lnDot.selection.main.head)?.parts).toEqual([
+    { value: "ln", quoted: false },
+    { value: "", quoted: false },
+  ]);
+
+  const pubDot = query("SELECT * FROM public.|", "postgres");
+  expect(completionTarget(pubDot, pubDot.selection.main.head)?.parts).toEqual([
+    { value: "public", quoted: false },
+    { value: "", quoted: false },
+  ]);
+
+  const typeCol = query("SELECT o.date| FROM orders o", "postgres");
+  expect(completionTarget(typeCol, typeCol.selection.main.head)?.parts).toEqual([
+    { value: "o", quoted: false },
+    { value: "date", quoted: false },
+  ]);
+});

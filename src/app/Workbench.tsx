@@ -875,9 +875,10 @@ export function Workbench({
                 sessionId={session?.id ?? null}
                 tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}
                 objectExplorerSupported={objectExplorerSupported}
-                database={profile?.engine === "snowflake" ? profile.database : undefined}
+                database={profile?.engine === "mysql" ? undefined : profile?.database}
                 defaultSchema={
-                  profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined
+                  (session && state.sessionStates[session.id]?.activeContext) ??
+                  (profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined)
                 }
                 contextEpoch={JSON.stringify([
                   session ? (state.sessionContextRevision[session.id] ?? 0) : 0,

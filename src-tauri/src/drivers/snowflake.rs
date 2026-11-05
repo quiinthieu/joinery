@@ -414,7 +414,7 @@ impl Snowflake {
                 track_query,
             )
             .await?;
-        for _ in 0..120 {
+        for attempt in 0..150 {
             if let Some(handle) = value.get("statementHandle").and_then(Value::as_str) {
                 let handle = uuid::Uuid::parse_str(handle)
                     .map_err(|_| {
@@ -438,11 +438,18 @@ impl Snowflake {
                     return Err(Self::cancelled());
                 }
                 if status == StatusCode::ACCEPTED {
+                    let delay_ms = match attempt {
+                        0 => 60,
+                        1 => 120,
+                        2 => 200,
+                        3 => 350,
+                        _ => 500,
+                    };
                     tokio::select! {
                         biased;
                         _ = self.cancel_requested.cancelled(), if track_query => return Err(Self::cancelled()),
                         _ = self.closed.cancelled() => return Err(Self::sign_in_expired()),
-                        _ = tokio::time::sleep(Duration::from_millis(500)) => (),
+                        _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => (),
                     }
                     (status, value) = self
                         .query_request(
