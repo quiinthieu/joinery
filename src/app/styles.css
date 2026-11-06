@@ -81,6 +81,11 @@
   --surface-hover: #212c3f;
   --raised: #1c2535;
   --bg-elevated: var(--raised);
+  --surface-elevated: var(--raised);
+  --surface-overlay: color-mix(in srgb, var(--surface) 85%, transparent);
+  --border-subtle: var(--row-border);
+  --text-muted: var(--muted);
+  --accent-contrast: var(--accent-text);
   --text: #e6edf7;
   --muted: #8b9bb4;
   --faint: #596982;
@@ -96,6 +101,8 @@
   --success: #34d399;
   --warning: #fbbf24;
   --shadow-lg: 0 20px 60px #02060ecc;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238b9bb4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23e6edf7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
   background: var(--bg);
   color: var(--text);
   font-synthesis: none;
@@ -121,6 +128,8 @@
   --selection-strong: #8b7cff38;
   --danger: #fb7185;
   --danger-bg: #f43f5e1f;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239394a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23ececf3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-palette="graphite"] {
   --bg: #161514;
@@ -141,6 +150,8 @@
   --selection-strong: #f0a44c36;
   --danger: #f87171;
   --danger-bg: #ef44441f;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a39a90' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23efeae4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-palette="sage"] {
   --bg: #121714;
@@ -161,6 +172,8 @@
   --selection-strong: #8fd4a436;
   --danger: #f08c80;
   --danger-bg: #e05d4e20;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238fa193' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23e2ebe4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="light"],
 :root[data-theme="light"][data-palette="slate"] {
@@ -186,6 +199,8 @@
   --success: #059669;
   --warning: #d97706;
   --shadow-lg: 0 20px 50px #0f172a1f;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%234b5563' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23111827' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="light"][data-palette="obsidian"] {
   --bg: #f6f6fa;
@@ -204,6 +219,8 @@
   --accent-text: #ffffff;
   --selection: #5848e81a;
   --selection-strong: #5848e82e;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2352536a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23141424' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="light"][data-palette="graphite"] {
   --bg: #f9f7f4;
@@ -222,6 +239,8 @@
   --accent-text: #ffffff;
   --selection: #b862141a;
   --selection-strong: #b862142e;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235f564e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%231f1b18' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="light"][data-palette="sage"] {
   --bg: #f6f9f6;
@@ -240,6 +259,8 @@
   --accent-text: #ffffff;
   --selection: #2f6e491a;
   --selection-strong: #2f6e492e;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23526456' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%231b281f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="contrast"],
 :root[data-theme="contrast"][data-palette="slate"] {
@@ -247,6 +268,7 @@
   --bg: #05080d;
   --sidebar: #030508;
   --surface: #080d14;
+  --surface-overlay: var(--surface);
   --header: #0d1420;
   --surface-hover: #18253a;
   --raised: #101928;
@@ -261,6 +283,8 @@
   --selection: #73b4ff30;
   --selection-strong: #73b4ff48;
   --danger: #ff9494;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23c2d1e8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23f8fbff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="contrast"][data-palette="obsidian"] {
   --bg: #060609;
@@ -279,6 +303,8 @@
   --accent-text: #060414;
   --selection: #a89cff30;
   --selection-strong: #a89cff48;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23cbc9e4' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23fbfaff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="contrast"][data-palette="graphite"] {
   --bg: #090807;
@@ -297,6 +323,8 @@
   --accent-text: #140b02;
   --selection: #ffbc6e30;
   --selection-strong: #ffbc6e48;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23dccfc2' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23fffcf8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 :root[data-theme="contrast"][data-palette="sage"] {
   --bg: #060a07;
@@ -315,6 +343,8 @@
   --accent-text: #041408;
   --selection: #a6f0ba30;
   --selection-strong: #a6f0ba48;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23c2d8c6' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  --select-chevron-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23f3fff5' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
 }
 * {
   box-sizing: border-box;
@@ -329,8 +359,7 @@ body,
 }
 button,
 input,
-textarea,
-select {
+textarea {
   font: inherit;
 }
 button {
@@ -345,7 +374,6 @@ button:disabled {
 }
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
@@ -353,6 +381,105 @@ textarea:focus-visible {
 [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background-color: var(--bg);
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 28px 0 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  outline: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+select:hover:not(:disabled) {
+  border-color: var(--muted);
+  background-image: var(--select-chevron-hover);
+}
+
+select:active:not(:disabled) {
+  border-color: var(--accent);
+  background-image: var(--select-chevron-hover);
+}
+
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+select option {
+  background-color: var(--surface);
+  color: var(--text);
+  padding: 4px 8px;
+}
+
+select option:disabled {
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+select optgroup {
+  background-color: var(--surface);
+  color: var(--muted);
+  font-weight: 600;
+}
+
+input[list] {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+input[list]:hover:not(:disabled) {
+  background-image: var(--select-chevron-hover);
+  border-color: var(--border-hover, var(--border));
+}
+
+input[list]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+input[list]::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  width: 24px;
+  height: 100%;
+  cursor: pointer;
 }
 .result-panel {
   display: flex;
@@ -1223,14 +1350,22 @@ kbd {
   color: var(--faint);
 }
 .query-context > select {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background-color: var(--bg);
+  background-position: right 7px center;
+  background-size: 13px 13px;
+  color: var(--text);
   min-width: 0;
   max-width: 180px;
-  border: none;
-  border-left: 1px solid var(--border);
-  padding: 2px 8px;
-  background: var(--bg);
-  font-size: 10px;
-  color: var(--muted);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.query-context > select:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .query-actions {
   display: flex;
@@ -1299,15 +1434,18 @@ kbd {
 }
 .context-switcher {
   height: 24px;
-  margin-left: 10px;
-  padding: 0 7px;
-  max-width: 170px;
+  font-size: 11px;
+  padding: 0 24px 0 8px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
+  border-radius: 5px;
+  background-color: var(--bg);
+  background-position: right 7px center;
+  background-size: 13px 13px;
   color: var(--text);
-  font-size: 10.5px;
+  margin-left: 10px;
+  max-width: 170px;
   flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 .bookmark-button.active {
   color: var(--accent);
@@ -1516,22 +1654,24 @@ kbd {
 }
 .grid-page-size-select {
   height: 20px;
-  padding: 0 6px;
-  font-size: 10px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  background: transparent;
-  border: 0;
-  border-left: 1px solid var(--border);
-  border-radius: 0;
+  color: var(--text);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 20px 0 6px;
+  background-position: right 5px center;
+  background-size: 12px 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
   cursor: pointer;
 }
 .grid-page-size-select:hover:not(:disabled) {
-  color: var(--text);
+  border-color: var(--muted);
 }
 .grid-page-size-select:disabled {
-  opacity: 0.5;
-  cursor: default;
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .grid-host {
   flex: 1;
@@ -1669,6 +1809,17 @@ kbd {
   height: 24px;
   font-size: 11px;
 }
+.filter-form select {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background-color: var(--bg);
+  background-position: right 7px center;
+  background-size: 13px 13px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
 .filter-form input {
   width: 170px;
 }
@@ -1725,8 +1876,12 @@ kbd {
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 14px 40px #0006;
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.12);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2359,13 +2514,16 @@ kbd {
   gap: 4px;
 }
 .variant-cast-select {
-  font-size: 10px;
   height: 20px;
-  padding: 0 4px;
-  background: var(--bg);
+  font-size: 10.5px;
+  padding: 0 20px 0 6px;
+  background-color: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
+  background-position: right 5px center;
+  background-size: 12px 12px;
   color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .variant-path-row {
   display: flex;
@@ -2618,13 +2776,17 @@ kbd {
   gap: 4px;
 }
 .datetime-tz-select {
-  font-size: 9.5px;
-  height: 18px;
-  background: var(--bg);
+  height: 20px;
+  font-size: 10.5px;
+  padding: 0 20px 0 6px;
+  background-color: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
+  background-position: right 5px center;
+  background-size: 12px 12px;
   color: var(--text);
-  max-width: 140px;
+  max-width: 160px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .datetime-card-value {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3038,20 +3200,36 @@ kbd {
 .modal textarea {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg);
+  border-radius: 6px;
+  background-color: var(--bg);
   padding: 9px 10px;
   color: var(--text);
   outline-offset: 1px;
 }
 .modal select {
-  height: 35px;
-  padding: 0 9px;
+  height: 32px;
+  font-size: 12px;
+  padding: 0 28px 0 10px;
+  border-radius: 6px;
+  background-position: right 8px center;
+  background-size: 14px 14px;
+}
+.modal input[list] {
+  height: 32px;
+  font-size: 12px;
+  padding: 0 28px 0 10px;
+  border-radius: 6px;
+  background-position: right 8px center;
+  background-size: 14px 14px;
 }
 .modal input:focus-visible,
-.modal select:focus-visible,
 .modal textarea:focus-visible {
   outline-width: 1px;
+}
+.modal select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
 }
 .form-grid {
   display: grid;
@@ -3449,6 +3627,12 @@ kbd {
 }
 .passphrase-form > .button {
   align-self: flex-start;
+}
+.search-everywhere {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 .palette-search {
   display: flex;
@@ -3875,14 +4059,24 @@ kbd {
   width: 100px;
 }
 .redis-controls input,
-.redis-controls textarea,
-.redis-controls select {
+.redis-controls textarea {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 6px 8px;
   font: inherit;
+}
+.redis-controls select {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background-color: var(--surface);
+  background-position: right 7px center;
+  background-size: 13px 13px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 .redis-hint {
   color: var(--muted);
@@ -4660,7 +4854,16 @@ kbd {
   margin-top: 12px;
 }
 .plan-snapshot-toolbar select {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background-color: var(--bg);
+  background-position: right 7px center;
+  background-size: 13px 13px;
   max-width: 100%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 .plan-comparison {
   display: grid;
@@ -5117,9 +5320,28 @@ kbd {
   font-size: 11px;
   color: var(--muted);
 }
-.schema-diff-field select,
 .schema-diff-field input {
   width: 100%;
+}
+.schema-diff-field select {
+  width: 100%;
+  height: 24px;
+  font-size: 11px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background-color: var(--bg);
+  background-position: right 7px center;
+  background-size: 13px 13px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.schema-diff-field input[list] {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 24px 0 8px;
+  border-radius: 5px;
+  background-position: right 7px center;
+  background-size: 13px 13px;
 }
 .schema-diff-snapshots-strip {
   display: flex;
@@ -5542,4 +5764,203 @@ kbd {
   color: var(--text);
   background: var(--hover);
   border-color: var(--text);
+}
+
+/* ==========================================================================
+   CodeMirror Autocomplete Dropdown & Tooltip Styling (macOS Native Menu HIG)
+   ========================================================================== */
+
+/* 1. Autocomplete Tooltip Container */
+.cm-editor .cm-tooltip-autocomplete,
+.cm-tooltip.cm-tooltip-autocomplete,
+.cm-tooltip-autocomplete {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+  backdrop-filter: blur(20px) saturate(190%);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.28),
+    0 2px 8px rgba(0, 0, 0, 0.12);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text);
+  box-sizing: border-box;
+  overflow: hidden;
+  z-index: 500;
+}
+
+/* Contrast Mode Container Override */
+:root[data-theme="contrast"] .cm-editor .cm-tooltip-autocomplete,
+:root[data-theme="contrast"] .cm-tooltip.cm-tooltip-autocomplete,
+:root[data-theme="contrast"] .cm-tooltip-autocomplete {
+  background: var(--surface);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 1px solid var(--accent);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.5),
+    0 0 0 1px var(--border);
+}
+
+/* 2. Autocomplete List Container */
+.cm-editor .cm-tooltip-autocomplete > ul,
+.cm-tooltip-autocomplete > ul {
+  font-family: var(--font-sans);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 260px;
+  max-width: min(520px, 95vw);
+  max-height: min(280px, 45vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: nowrap;
+}
+
+/* Custom Scrollbar */
+.cm-tooltip-autocomplete > ul::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.cm-tooltip-autocomplete > ul::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+/* 3. Autocomplete Suggestion Items */
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li,
+.cm-tooltip.cm-tooltip-autocomplete > ul > li,
+.cm-editor .cm-tooltip-autocomplete ul li,
+.cm-tooltip-autocomplete ul li,
+.cm-tooltip-autocomplete ul li[role="option"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 4px 8px !important;
+  border-radius: 4px !important;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  box-sizing: border-box;
+  cursor: pointer;
+  user-select: none;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  transition:
+    background 60ms ease,
+    color 60ms ease;
+}
+
+/* Unselected Hover State */
+.cm-tooltip-autocomplete ul li:hover:not([aria-selected="true"]):not([aria-selected]) {
+  background: var(--surface-hover);
+}
+
+/* 4. Selection State (Pill Highlight) */
+.cm-editor .cm-tooltip-autocomplete ul li[aria-selected="true"],
+.cm-tooltip-autocomplete ul li[aria-selected="true"],
+.cm-tooltip-autocomplete ul li[aria-selected] {
+  background: var(--accent) !important;
+  color: var(--accent-contrast, var(--accent-text, #ffffff)) !important;
+}
+
+/* 5. Completion Icon */
+.cm-tooltip-autocomplete .cm-completionIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  font-size: 11px;
+  opacity: 0.7;
+  flex-shrink: 0;
+  box-sizing: content-box;
+  vertical-align: middle;
+}
+
+/* Selection State for Icon */
+.cm-tooltip-autocomplete ul li[aria-selected="true"] .cm-completionIcon,
+.cm-tooltip-autocomplete ul li[aria-selected] .cm-completionIcon {
+  opacity: 0.95;
+  color: inherit;
+}
+
+/* 6. Completion Label */
+.cm-tooltip-autocomplete .cm-completionLabel {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 7. Matched Text */
+.cm-tooltip-autocomplete .cm-completionMatchedText {
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* Selection State for Matched Text */
+.cm-tooltip-autocomplete ul li[aria-selected="true"] .cm-completionMatchedText,
+.cm-tooltip-autocomplete ul li[aria-selected] .cm-completionMatchedText {
+  color: inherit !important;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* 8. Completion Detail */
+.cm-tooltip-autocomplete .cm-completionDetail {
+  margin-left: auto;
+  padding-left: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted, var(--muted));
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Selection State for Completion Detail */
+.cm-tooltip-autocomplete ul li[aria-selected="true"] .cm-completionDetail,
+.cm-tooltip-autocomplete ul li[aria-selected] .cm-completionDetail {
+  color: inherit !important;
+  opacity: 0.85;
+}
+
+/* 9. Completion Section Header */
+.cm-tooltip-autocomplete completion-section {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted, var(--muted));
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle, var(--row-border));
+  opacity: 0.8;
+}
+
+/* 10. Secondary Info Documentation Tooltip (.cm-completionInfo) */
+.cm-editor .cm-tooltip.cm-completionInfo,
+.cm-tooltip.cm-completionInfo {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--surface-overlay, color-mix(in srgb, var(--surface) 90%, transparent));
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.12);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text);
+  max-width: 420px;
+  box-sizing: border-box;
 }

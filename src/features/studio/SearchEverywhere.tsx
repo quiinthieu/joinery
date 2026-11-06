@@ -212,149 +212,153 @@ export function SearchEverywhere({
 
   return (
     <Modal title="Command palette" onClose={onClose}>
-      <div className="palette-search">
-        <Search size={17} />
-        <input
-          ref={inputRef}
-          autoFocus
-          aria-label="Search commands"
-          placeholder={
-            scope === "objects"
-              ? "Search tables, views, routines, triggers, indexes…"
-              : scope === "saved"
-                ? "Search saved queries in your library…"
-                : scope === "history"
-                  ? "Search executed SQL or connection names…"
-                  : "What would you like to do?"
-          }
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setActiveIndex(0);
-          }}
-          onKeyDown={(event) => {
-            if (
-              matchesKeyboardEvent(
-                event.nativeEvent,
-                effectiveShortcutBinding("searchObjects", state.shortcuts),
-              ) ||
-              ((event.metaKey || event.ctrlKey) &&
-                event.shiftKey &&
-                event.key.toLowerCase() === "o")
-            ) {
-              event.preventDefault();
-              setScope("objects");
+      <div className="search-everywhere">
+        <div className="palette-search">
+          <Search size={17} />
+          <input
+            ref={inputRef}
+            autoFocus
+            aria-label="Search commands"
+            placeholder={
+              scope === "objects"
+                ? "Search tables, views, routines, triggers, indexes…"
+                : scope === "saved"
+                  ? "Search saved queries in your library…"
+                  : scope === "history"
+                    ? "Search executed SQL or connection names…"
+                    : "What would you like to do?"
+            }
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
               setActiveIndex(0);
-              return;
-            }
-            if (
-              matchesKeyboardEvent(
-                event.nativeEvent,
-                effectiveShortcutBinding("openPalette", state.shortcuts),
-              ) ||
-              ((event.metaKey || event.ctrlKey) &&
-                !event.shiftKey &&
-                event.key.toLowerCase() === "k")
-            ) {
-              event.preventDefault();
-              setScope("all");
-              setActiveIndex(0);
-              return;
-            }
-            if (event.key === "ArrowDown" && items.length > 0) {
-              event.preventDefault();
-              moveActive((clampedIndex + 1) % items.length);
-              return;
-            }
-            if (event.key === "ArrowUp" && items.length > 0) {
-              event.preventDefault();
-              moveActive((clampedIndex - 1 + items.length) % items.length);
-              return;
-            }
-            if (event.key === "Enter" && items[clampedIndex]) {
-              event.preventDefault();
-              event.stopPropagation();
-              triggerItem(items[clampedIndex]);
-            }
-          }}
-        />
-      </div>
-      <div className="palette-scopes-bar">
-        <div
-          className="palette-scopes"
-          role="tablist"
-          aria-label="Search scope"
-          onKeyDown={tabNavigation}
-        >
-          {SEARCH_SCOPES.map((tab) => {
-            const selected = scope === tab.id;
+            }}
+            onKeyDown={(event) => {
+              if (
+                matchesKeyboardEvent(
+                  event.nativeEvent,
+                  effectiveShortcutBinding("searchObjects", state.shortcuts),
+                ) ||
+                ((event.metaKey || event.ctrlKey) &&
+                  event.shiftKey &&
+                  event.key.toLowerCase() === "o")
+              ) {
+                event.preventDefault();
+                setScope("objects");
+                setActiveIndex(0);
+                return;
+              }
+              if (
+                matchesKeyboardEvent(
+                  event.nativeEvent,
+                  effectiveShortcutBinding("openPalette", state.shortcuts),
+                ) ||
+                ((event.metaKey || event.ctrlKey) &&
+                  !event.shiftKey &&
+                  event.key.toLowerCase() === "k")
+              ) {
+                event.preventDefault();
+                setScope("all");
+                setActiveIndex(0);
+                return;
+              }
+              if (event.key === "ArrowDown" && items.length > 0) {
+                event.preventDefault();
+                moveActive((clampedIndex + 1) % items.length);
+                return;
+              }
+              if (event.key === "ArrowUp" && items.length > 0) {
+                event.preventDefault();
+                moveActive((clampedIndex - 1 + items.length) % items.length);
+                return;
+              }
+              if (event.key === "Enter" && items[clampedIndex]) {
+                event.preventDefault();
+                event.stopPropagation();
+                triggerItem(items[clampedIndex]);
+              }
+            }}
+          />
+        </div>
+        <div className="palette-scopes-bar">
+          <div
+            className="palette-scopes"
+            role="tablist"
+            aria-label="Search scope"
+            onKeyDown={tabNavigation}
+          >
+            {SEARCH_SCOPES.map((tab) => {
+              const selected = scope === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  tabIndex={selected ? 0 : -1}
+                  className={selected ? "active" : ""}
+                  onClick={(event) => {
+                    setScope(tab.id);
+                    setActiveIndex(0);
+                    if (event.detail > 0) inputRef.current?.focus();
+                  }}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+          {(scope === "objects" || scope === "all") && output.offlineConnectionCount > 0 && (
+            <span className="palette-offline-note">
+              {output.connectedConnectionCount > 0
+                ? `${output.connectedConnectionCount} connected · ${output.offlineConnectionCount} offline`
+                : `${output.offlineConnectionCount} offline`}
+            </span>
+          )}
+        </div>
+        <div className="palette-commands" ref={listRef}>
+          {items.map((item, idx) => {
+            const selected = idx === clampedIndex;
+            const isDisabled = item.kind === "command" && Boolean(item.disabledReason);
             return (
               <button
-                key={tab.id}
+                key={item.id}
                 type="button"
-                role="tab"
-                aria-selected={selected}
-                tabIndex={selected ? 0 : -1}
-                className={selected ? "active" : ""}
-                onClick={(event) => {
-                  setScope(tab.id);
-                  setActiveIndex(0);
-                  if (event.detail > 0) inputRef.current?.focus();
-                }}
+                data-palette-index={idx}
+                aria-disabled={isDisabled || undefined}
+                className={`${selected ? "selected" : ""} ${isDisabled ? "disabled" : ""}`.trim()}
+                onMouseEnter={() => setActiveIndex(idx)}
+                onClick={() => triggerItem(item)}
               >
-                {tab.label}
+                {item.kind === "command" ? (
+                  <item.icon size={16} />
+                ) : item.kind === "tab" ? (
+                  <TabKindGlyph kind={item.tabKind} />
+                ) : item.kind === "object" ? (
+                  <ObjectKindGlyph kind={item.object.kind} size={15} />
+                ) : item.kind === "savedQuery" ? (
+                  <Bookmark size={15} />
+                ) : (
+                  <History size={15} />
+                )}
+                <span className="palette-item-text">
+                  <span className="palette-item-label">{item.label}</span>
+                  {item.subtitle && (
+                    <small className="palette-item-subtitle">{item.subtitle}</small>
+                  )}
+                </span>
+                {item.kind === "command" && item.contextBadge && (
+                  <em className="palette-context-badge">{item.contextBadge}</em>
+                )}
+                {item.kind === "object" && item.environment && (
+                  <em className={`environment ${item.environment}`}>{item.environment}</em>
+                )}
+                <kbd>{item.shortcut}</kbd>
               </button>
             );
           })}
+          {!items.length && <div className="grid-empty">{emptyMessage}</div>}
         </div>
-        {(scope === "objects" || scope === "all") && output.offlineConnectionCount > 0 && (
-          <span className="palette-offline-note">
-            {output.connectedConnectionCount > 0
-              ? `${output.connectedConnectionCount} connected · ${output.offlineConnectionCount} offline`
-              : `${output.offlineConnectionCount} offline`}
-          </span>
-        )}
-      </div>
-      <div className="palette-commands" ref={listRef}>
-        {items.map((item, idx) => {
-          const selected = idx === clampedIndex;
-          const isDisabled = item.kind === "command" && Boolean(item.disabledReason);
-          return (
-            <button
-              key={item.id}
-              type="button"
-              data-palette-index={idx}
-              aria-disabled={isDisabled || undefined}
-              className={`${selected ? "selected" : ""} ${isDisabled ? "disabled" : ""}`.trim()}
-              onMouseEnter={() => setActiveIndex(idx)}
-              onClick={() => triggerItem(item)}
-            >
-              {item.kind === "command" ? (
-                <item.icon size={16} />
-              ) : item.kind === "tab" ? (
-                <TabKindGlyph kind={item.tabKind} />
-              ) : item.kind === "object" ? (
-                <ObjectKindGlyph kind={item.object.kind} size={15} />
-              ) : item.kind === "savedQuery" ? (
-                <Bookmark size={15} />
-              ) : (
-                <History size={15} />
-              )}
-              <span className="palette-item-text">
-                <span className="palette-item-label">{item.label}</span>
-                {item.subtitle && <small className="palette-item-subtitle">{item.subtitle}</small>}
-              </span>
-              {item.kind === "command" && item.contextBadge && (
-                <em className="palette-context-badge">{item.contextBadge}</em>
-              )}
-              {item.kind === "object" && item.environment && (
-                <em className={`environment ${item.environment}`}>{item.environment}</em>
-              )}
-              <kbd>{item.shortcut}</kbd>
-            </button>
-          );
-        })}
-        {!items.length && <div className="grid-empty">{emptyMessage}</div>}
       </div>
     </Modal>
   );

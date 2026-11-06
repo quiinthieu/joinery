@@ -239,11 +239,13 @@ function editorTheme(theme: string) {
       },
       ".cm-scroller": { overflow: "auto" },
       ".cm-tooltip": {
-        backgroundColor: "var(--raised)",
+        backgroundColor: "color-mix(in srgb, var(--surface) 85%, transparent)",
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
         color: "var(--text)",
         border: "1px solid var(--border)",
         borderRadius: "8px",
-        boxShadow: "var(--shadow-lg, 0 14px 34px #0004)",
+        boxShadow: "0 10px 30px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12)",
       },
       ".cm-sql-error-mark": {
         textDecoration: "underline wavy var(--danger)",
@@ -935,6 +937,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         autocompletion({
           override: [(context) => session.request(context)],
           activateOnCompletion: (c) => c.type === "namespace",
+          interactionDelay: 0,
         }),
         keymap.of([
           {
