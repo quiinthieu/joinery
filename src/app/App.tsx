@@ -534,10 +534,8 @@ export function App() {
           (tab) =>
             pendingCountFor(tab) > 0 ||
             isTabFileDirty(tab) ||
-            ["queued", "running"].includes(tab.status) ||
-            (tab.querySession && !tab.querySessionClosed),
+            ["queued", "running"].includes(tab.status),
         ) ||
-        Object.values(snap.sessionPool).some((entries) => entries.length > 0) ||
         Object.values(snap.sessionStates).some(
           (st) => st.transactionState === "inTransaction" || st.transactionState === "failed",
         )
@@ -555,7 +553,11 @@ export function App() {
     }
     const windowHandle = getCurrentWindow();
     const closeSafely = async () => {
-      await flushWorkspace();
+      try {
+        await flushWorkspace();
+      } catch {
+        // Proceed with closing even if workspace persistence fails.
+      }
       await windowHandle.destroy();
     };
     const unsubscribe = windowHandle.onCloseRequested((event) => {
