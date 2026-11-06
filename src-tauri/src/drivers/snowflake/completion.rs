@@ -42,10 +42,10 @@ impl Snowflake {
             .as_deref()
             .filter(|v| !v.is_empty())
             .ok_or_else(invalid)?;
-        if !same(&row[1], &self.role)
-            || !same(&row[2], &self.database)
+        if !same(&row[1], &self.current_role())
+            || !same(&row[2], &self.current_database())
             || !same(&row[3], &expected_schema)
-            || !same(&row[4], &self.warehouse)
+            || !same(&row[4], &self.current_warehouse())
         {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,

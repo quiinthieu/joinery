@@ -14,10 +14,27 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::snowflake_auth::{self, Tokens};
+use sqlparser::dialect::SnowflakeDialect;
+use sqlparser::tokenizer::{Token, Tokenizer, Word};
+
+pub(crate) use catalog::browse_sql;
 
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_PARTITIONS: usize = 64;
-const MAX_EAGER_PARTITION_ROWS: u64 = 5_000;
+const MAX_PARTITIONS: usize = 1024;
+
+pub(crate) fn snowflake_browse_bindings_json(binds: &[Option<String>]) -> Value {
+    let mut map = serde_json::Map::with_capacity(binds.len());
+    for (index, bind) in binds.iter().enumerate() {
+        map.insert(
+            (index + 1).to_string(),
+            json!({
+                "type": "TEXT",
+                "value": bind,
+            }),
+        );
+    }
+    Value::Object(map)
+}
 
 mod catalog;
 #[cfg(test)]
@@ -27,6 +44,7 @@ mod completion;
 mod compression_tests;
 #[cfg(test)]
 mod lifecycle_tests;
+pub mod values;
 
 struct AuthState {
     tokens: Tokens,
@@ -36,12 +54,15 @@ struct AuthState {
 pub struct Snowflake {
     client: Client,
     base: Url,
-    database: String,
+    database: Mutex<String>,
     schema: Mutex<String>,
-    role: String,
-    warehouse: String,
+    role: Mutex<String>,
+    warehouse: Mutex<String>,
     query_tag: String,
     auth: AsyncMutex<AuthState>,
+    auth_method: SnowflakeAuthMethod,
+    key_pair: Option<Arc<ring::signature::RsaKeyPair>>,
+    username: String,
     metadata_lane: AsyncMutex<()>,
     active_handle: Mutex<Option<String>>,
     // Cancellation retires the Studio session, so neither signal is reset.
@@ -99,13 +120,29 @@ impl Snowflake {
         if profile.port != 443
             || profile.tls_mode != TlsMode::VerifyFull
             || profile.ssh.is_some()
-            || profile.remember_password
-            || profile.safe_mode != SafeMode::ReadOnly
             || profile.ca_cert_path.is_some()
         {
             return Err(AppError::invalid(
-                "Snowflake requires read-only mode and direct verified HTTPS on port 443 without a stored password",
+                "Snowflake requires direct verified HTTPS on port 443",
             ));
+        }
+        if profile.remember_password && config.auth_method != SnowflakeAuthMethod::Password {
+            return Err(AppError::invalid(
+                "Snowflake key pair and OAuth connections do not use a stored password",
+            ));
+        }
+        if config.auth_method == SnowflakeAuthMethod::KeyPair {
+            if let Some(path) = &config.private_key_path {
+                if path.trim().is_empty() {
+                    return Err(AppError::invalid(
+                        "Snowflake key pair authentication requires a private key file path",
+                    ));
+                }
+            } else {
+                return Err(AppError::invalid(
+                    "Snowflake key pair authentication requires a private key file path",
+                ));
+            }
         }
         account_url(&profile.host)?;
         Ok(())
@@ -114,6 +151,8 @@ impl Snowflake {
     pub async fn open(
         profile: &ConnectionProfile,
         session_id: &str,
+        password: Option<&str>,
+        key_passphrase: Option<&str>,
     ) -> AppResult<(Arc<Self>, SessionInfo)> {
         let started = Instant::now();
         Self::validate_profile(profile)?;
@@ -128,17 +167,68 @@ impl Snowflake {
             .timeout(Duration::from_secs(70))
             .build()
             .map_err(|_| AppError::internal("Could not initialize Snowflake HTTPS"))?;
-        let tokens = snowflake_auth::sign_in(&client, &base, &config.role).await?;
+
+        let (tokens, key_pair) = match config.auth_method {
+            SnowflakeAuthMethod::OAuthBrowser => {
+                let tokens = snowflake_auth::sign_in(&client, &base, &config.role).await?;
+                (tokens, None)
+            }
+            SnowflakeAuthMethod::KeyPair => {
+                let key_path = config.private_key_path.as_deref().ok_or_else(|| {
+                    AppError::invalid(
+                        "Snowflake key pair authentication requires a private key file path",
+                    )
+                })?;
+                let pem_bytes = std::fs::read_to_string(key_path).map_err(|e| {
+                    AppError::new(
+                        ErrorCode::InvalidInput,
+                        format!("Failed to read Snowflake private key: {e}"),
+                    )
+                })?;
+                let rsa_key = snowflake_auth::parse_pkcs8_pem(&pem_bytes, key_passphrase)?;
+                let key_pair = Arc::new(rsa_key);
+                let account = snowflake_auth::extract_account_identifier(&profile.host);
+                let jwt = snowflake_auth::generate_jwt(&key_pair, &account, &profile.username)?;
+                let tokens = Tokens {
+                    access: jwt,
+                    refresh: None,
+                    expires_in: 3500,
+                };
+                (tokens, Some(key_pair))
+            }
+            SnowflakeAuthMethod::Password => {
+                let pass = password.ok_or_else(|| {
+                    AppError::invalid(
+                        "Password required for Snowflake username/password authentication",
+                    )
+                })?;
+                let account = snowflake_auth::extract_account_identifier(&profile.host);
+                let tokens = snowflake_auth::login_with_password(
+                    &client,
+                    &base,
+                    &account,
+                    &profile.username,
+                    pass,
+                    None,
+                )
+                .await?;
+                (tokens, None)
+            }
+        };
+
         let expires_at = Instant::now() + Duration::from_secs(tokens.expires_in);
         let driver = Arc::new(Self {
             client,
             base,
-            database: profile.database.clone(),
+            database: Mutex::new(profile.database.clone()),
             schema: Mutex::new(config.schema.clone()),
-            role: config.role.clone(),
-            warehouse: config.warehouse.clone(),
+            role: Mutex::new(config.role.clone()),
+            warehouse: Mutex::new(config.warehouse.clone()),
             query_tag: format!("Joinery/{session_id}"),
             auth: AsyncMutex::new(AuthState { tokens, expires_at }),
+            auth_method: config.auth_method,
+            key_pair,
+            username: profile.username.clone(),
             metadata_lane: AsyncMutex::new(()),
             active_handle: Mutex::new(None),
             cancel_requested: CancellationToken::new(),
@@ -175,16 +265,16 @@ impl Snowflake {
                 transactions: false,
                 cancellation: true,
                 table_browsing: true,
-                table_editing: false,
-                table_filtering: false,
+                table_editing: true,
+                table_filtering: true,
                 processes: false,
-                object_explorer: false,
+                object_explorer: true,
                 schema_diagram: false,
                 schema_diff: false,
                 ddl_editing: false,
                 lock_inspection: false,
                 explain_analyze: false,
-                oauth_browser: true,
+                oauth_browser: config.auth_method == SnowflakeAuthMethod::OAuthBrowser,
                 actual_plan: None,
             },
         };
@@ -195,6 +285,17 @@ impl Snowflake {
         let mut auth = self.auth.lock().await;
         let margin = Duration::from_secs((auth.tokens.expires_in / 10).min(30));
         if auth.expires_at <= Instant::now() + margin {
+            if self.auth_method == SnowflakeAuthMethod::KeyPair {
+                if let Some(key_pair) = &self.key_pair {
+                    let account = snowflake_auth::extract_account_identifier(
+                        self.base.host_str().unwrap_or(""),
+                    );
+                    let jwt = snowflake_auth::generate_jwt(key_pair, &account, &self.username)?;
+                    auth.tokens.access = jwt;
+                    auth.expires_at = Instant::now() + Duration::from_secs(3500);
+                    return Ok(Zeroizing::new(auth.tokens.access.to_string()));
+                }
+            }
             let Some(refresh) = auth.tokens.refresh.as_ref() else {
                 if auth.expires_at > Instant::now() {
                     return Ok(Zeroizing::new(auth.tokens.access.to_string()));
@@ -277,11 +378,16 @@ impl Snowflake {
         if query_submission && self.cancel_requested.is_cancelled() {
             return Err(Self::cancelled());
         }
+        let token_type = match self.auth_method {
+            SnowflakeAuthMethod::KeyPair => "KEYPAIR_JWT",
+            SnowflakeAuthMethod::Password => "SESSION",
+            SnowflakeAuthMethod::OAuthBrowser => "OAUTH",
+        };
         let mut request = self
             .client
             .request(method, url)
             .bearer_auth(token.as_str())
-            .header("X-Snowflake-Authorization-Token-Type", "OAUTH")
+            .header("X-Snowflake-Authorization-Token-Type", token_type)
             .header("Accept", "application/json")
             .header("User-Agent", "Joinery/0.1");
         if let Some(body) = body {
@@ -376,6 +482,18 @@ impl Snowflake {
         self.schema.lock().clone()
     }
 
+    pub(super) fn current_database(&self) -> String {
+        self.database.lock().clone()
+    }
+
+    pub(super) fn current_role(&self) -> String {
+        self.role.lock().clone()
+    }
+
+    pub(super) fn current_warehouse(&self) -> String {
+        self.warehouse.lock().clone()
+    }
+
     async fn submit(&self, sql: &str, track_query: bool) -> AppResult<Value> {
         let schema = self.current_schema();
         self.submit_with_schema_and_bindings(sql, &schema, None, track_query)
@@ -399,9 +517,21 @@ impl Snowflake {
         bindings: Option<Value>,
         track_query: bool,
     ) -> AppResult<Value> {
-        let mut body = json!({"statement": sql, "timeout": 60, "database": self.database,
-            "schema": schema, "warehouse": self.warehouse, "role": self.role,
-            "parameters": {"QUERY_TAG": self.query_tag}});
+        let database = self.current_database();
+        let warehouse = self.current_warehouse();
+        let role = self.current_role();
+        let mut body = json!({
+            "statement": sql,
+            "timeout": 60,
+            "database": database,
+            "schema": schema,
+            "warehouse": warehouse,
+            "role": role,
+            "parameters": {
+                "QUERY_TAG": self.query_tag,
+                "MULTI_STATEMENT_COUNT": 0
+            }
+        });
         if let Some(bindings) = bindings
             && let Some(obj) = body.as_object_mut()
         {
@@ -623,21 +753,187 @@ fn columns(value: &Value) -> AppResult<Vec<ColumnInfo>> {
         .collect()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SnowflakeUseTarget {
+    Role(String),
+    Warehouse(String),
+    Database(String),
+    Schema {
+        database: Option<String>,
+        schema: String,
+    },
+    DatabaseAndSchema {
+        database: String,
+        schema: String,
+    },
+    Unsupported,
+}
+
+fn format_snowflake_ident(word: &Word) -> String {
+    if word.quote_style.is_some() {
+        // Quoted identifier: preserve exact case and characters (spaces, special symbols)
+        word.value.clone()
+    } else {
+        // Unquoted identifier: normalize to uppercase per Snowflake SQL rules
+        word.value.to_ascii_uppercase()
+    }
+}
+
+fn is_reserved_use_keyword(s: &str) -> bool {
+    s.eq_ignore_ascii_case("ROLE")
+        || s.eq_ignore_ascii_case("WAREHOUSE")
+        || s.eq_ignore_ascii_case("DATABASE")
+        || s.eq_ignore_ascii_case("SCHEMA")
+        || s.eq_ignore_ascii_case("SECONDARY")
+}
+
+fn parse_single_use_statement(tokens: &[Token]) -> Option<SnowflakeUseTarget> {
+    if tokens.is_empty() {
+        return None;
+    }
+
+    match &tokens[0] {
+        Token::Word(w) if w.value.eq_ignore_ascii_case("USE") => {}
+        _ => return None,
+    }
+
+    let rest = &tokens[1..];
+    match rest {
+        // 1. USE ROLE <target>
+        [Token::Word(kind), Token::Word(target), ..] if kind.value.eq_ignore_ascii_case("ROLE") => {
+            Some(SnowflakeUseTarget::Role(format_snowflake_ident(target)))
+        }
+
+        // 2. USE WAREHOUSE <target>
+        [Token::Word(kind), Token::Word(target), ..]
+            if kind.value.eq_ignore_ascii_case("WAREHOUSE") =>
+        {
+            Some(SnowflakeUseTarget::Warehouse(format_snowflake_ident(
+                target,
+            )))
+        }
+
+        // 3. USE DATABASE <target>
+        [Token::Word(kind), Token::Word(target), ..]
+            if kind.value.eq_ignore_ascii_case("DATABASE") =>
+        {
+            Some(SnowflakeUseTarget::Database(format_snowflake_ident(target)))
+        }
+
+        // 4a. USE SCHEMA <db> . <schema>
+        [
+            Token::Word(kind),
+            Token::Word(db),
+            Token::Period,
+            Token::Word(schema),
+            ..,
+        ] if kind.value.eq_ignore_ascii_case("SCHEMA") => Some(SnowflakeUseTarget::Schema {
+            database: Some(format_snowflake_ident(db)),
+            schema: format_snowflake_ident(schema),
+        }),
+
+        // 4b. USE SCHEMA <schema> (ensure not followed by period)
+        [Token::Word(kind), Token::Word(schema), next, ..]
+            if kind.value.eq_ignore_ascii_case("SCHEMA") && !matches!(next, Token::Period) =>
+        {
+            Some(SnowflakeUseTarget::Schema {
+                database: None,
+                schema: format_snowflake_ident(schema),
+            })
+        }
+        [Token::Word(kind), Token::Word(schema)] if kind.value.eq_ignore_ascii_case("SCHEMA") => {
+            Some(SnowflakeUseTarget::Schema {
+                database: None,
+                schema: format_snowflake_ident(schema),
+            })
+        }
+
+        // 5. USE SECONDARY ROLES ...
+        [Token::Word(kind), ..] if kind.value.eq_ignore_ascii_case("SECONDARY") => {
+            Some(SnowflakeUseTarget::Unsupported)
+        }
+
+        // 6a. USE <db> . <schema>
+        [Token::Word(db), Token::Period, Token::Word(schema), ..] => {
+            Some(SnowflakeUseTarget::DatabaseAndSchema {
+                database: format_snowflake_ident(db),
+                schema: format_snowflake_ident(schema),
+            })
+        }
+
+        // 6b. USE <db>
+        [Token::Word(db), next, ..]
+            if !matches!(next, Token::Period)
+                && (db.quote_style.is_some() || !is_reserved_use_keyword(&db.value)) =>
+        {
+            Some(SnowflakeUseTarget::Database(format_snowflake_ident(db)))
+        }
+        [Token::Word(db)] if db.quote_style.is_some() || !is_reserved_use_keyword(&db.value) => {
+            Some(SnowflakeUseTarget::Database(format_snowflake_ident(db)))
+        }
+
+        _ => None,
+    }
+}
+
+pub(crate) fn parse_snowflake_use_statements(sql: &str) -> Vec<SnowflakeUseTarget> {
+    let dialect = SnowflakeDialect {};
+    let tokens = match Tokenizer::new(&dialect, sql).tokenize() {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+
+    let tokens: Vec<Token> = tokens
+        .into_iter()
+        .filter(|t| !matches!(t, Token::Whitespace(_) | Token::EOF))
+        .collect();
+
+    let mut results = Vec::new();
+    for statement_tokens in tokens.split(|t| matches!(t, Token::SemiColon)) {
+        if let Some(target) = parse_single_use_statement(statement_tokens) {
+            results.push(target);
+        }
+    }
+    results
+}
+
+pub(crate) fn parse_and_sync_snowflake_use(sf: &Snowflake, sql: &str) {
+    let targets = parse_snowflake_use_statements(sql);
+    for target in targets {
+        match target {
+            SnowflakeUseTarget::Role(role) => {
+                *sf.role.lock() = role;
+            }
+            SnowflakeUseTarget::Warehouse(wh) => {
+                *sf.warehouse.lock() = wh;
+            }
+            SnowflakeUseTarget::Database(db) => {
+                *sf.database.lock() = db;
+            }
+            SnowflakeUseTarget::Schema { database, schema } => {
+                if let Some(db) = database {
+                    *sf.database.lock() = db;
+                }
+                *sf.schema.lock() = schema;
+            }
+            SnowflakeUseTarget::DatabaseAndSchema { database, schema } => {
+                *sf.database.lock() = database;
+                *sf.schema.lock() = schema;
+            }
+            SnowflakeUseTarget::Unsupported => {}
+        }
+    }
+}
+
 impl Snowflake {
     async fn execute_statement(
         &self,
         original_sql: &str,
         wire_sql: &str,
         bound: Option<&crate::params::BoundStatement>,
-        kind: StatementKind,
+        _kind: StatementKind,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
-        if kind != StatementKind::Read {
-            return Err(AppError::new(
-                ErrorCode::PolicyBlocked,
-                "Snowflake connections currently run read-only queries only",
-            ));
-        }
         if self.cancel_requested.is_cancelled() {
             return Err(Self::cancelled());
         }
@@ -655,6 +951,10 @@ impl Snowflake {
                         bound.map(|b| &b.rewrite_map),
                     )
                 })?;
+            parse_and_sync_snowflake_use(self, wire_sql);
+            if let Some(handle) = first.get("statementHandle").and_then(Value::as_str) {
+                sink.query_id(handle);
+            }
             let columns = columns(&first)?;
             sink.describe(columns)?;
             let mut count = 0u64;
@@ -690,10 +990,6 @@ impl Snowflake {
                         sink.complete(count)?;
                         return Ok(count);
                     }
-                }
-                if count >= MAX_EAGER_PARTITION_ROWS && index + 1 < partitions {
-                    sink.limit("Result retention limit reached");
-                    break;
                 }
             }
             sink.complete(count)?;
@@ -752,8 +1048,17 @@ impl Driver for Snowflake {
         }
         Ok(())
     }
+    fn active_query_handle(&self) -> Option<String> {
+        self.active_handle.lock().clone()
+    }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         self.catalog_tables().await
+    }
+    async fn database_objects(&self) -> AppResult<Vec<DatabaseObjectSummary>> {
+        self.catalog_objects().await
+    }
+    async fn object_details(&self, object: &DatabaseObjectRef) -> AppResult<ObjectDetails> {
+        self.get_object_details(object).await
     }
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         self.live_completion_identity().await
@@ -763,20 +1068,50 @@ impl Driver for Snowflake {
             return Err(Self::sign_in_expired());
         }
         let schema = self.current_schema();
-        let qualified_schema = format!("{}.{schema}", self.database);
+        let database = self.current_database();
+        let role = self.current_role();
+        let warehouse = self.current_warehouse();
+        let qualified_schema = format!("{database}.{schema}");
         Ok(SessionRuntimeState {
             session_id: session_id.to_owned(),
             transaction_mode: TransactionMode::AutoCommit,
             transaction_state: TransactionState::Idle,
             context_kind: SessionContextKind::Schema,
             active_context: Some(schema),
-            database: self.database.clone(),
-            role: self.role.clone(),
+            database,
+            role,
+            warehouse: Some(warehouse),
             search_path: vec![qualified_schema],
         })
     }
     async fn list_contexts(&self) -> AppResult<Vec<String>> {
         self.list_schemas().await
+    }
+    async fn list_context_dimensions(&self) -> AppResult<Vec<ContextDimension>> {
+        let (warehouses, roles, databases, schemas) = tokio::join!(
+            self.list_warehouses(),
+            self.list_roles(),
+            self.list_databases(),
+            self.list_schemas(),
+        );
+        Ok(vec![
+            ContextDimension {
+                kind: "warehouse".into(),
+                values: warehouses.unwrap_or_default(),
+            },
+            ContextDimension {
+                kind: "role".into(),
+                values: roles.unwrap_or_default(),
+            },
+            ContextDimension {
+                kind: "database".into(),
+                values: databases.unwrap_or_default(),
+            },
+            ContextDimension {
+                kind: "schema".into(),
+                values: schemas.unwrap_or_default(),
+            },
+        ])
     }
     async fn switch_context(&self, target: &str) -> AppResult<()> {
         if !simple_identifier(target) {
@@ -802,6 +1137,91 @@ impl Driver for Snowflake {
         *self.schema.lock() = target.to_owned();
         Ok(())
     }
+    async fn switch_session_context(
+        &self,
+        target: Option<&str>,
+        warehouse: Option<&str>,
+        role: Option<&str>,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> AppResult<SessionContextOptions> {
+        {
+            let _lane = self.metadata_lane.lock().await;
+            if let Some(wh) = warehouse {
+                if !wh.is_empty() {
+                    self.submit_with_schema(
+                        &format!("USE WAREHOUSE \"{}\"", wh.replace('"', "\"\"")),
+                        &self.current_schema(),
+                        false,
+                    )
+                    .await?;
+                    *self.warehouse.lock() = wh.to_string();
+                }
+            }
+            if let Some(r) = role {
+                if !r.is_empty() {
+                    self.submit_with_schema(
+                        &format!("USE ROLE \"{}\"", r.replace('"', "\"\"")),
+                        &self.current_schema(),
+                        false,
+                    )
+                    .await?;
+                    *self.role.lock() = r.to_string();
+                }
+            }
+            if let Some(db) = database {
+                if !db.is_empty() {
+                    self.submit_with_schema(
+                        &format!("USE DATABASE \"{}\"", db.replace('"', "\"\"")),
+                        &self.current_schema(),
+                        false,
+                    )
+                    .await?;
+                    *self.database.lock() = db.to_string();
+                }
+            }
+            if let Some(sc) = schema.or(target) {
+                if !sc.is_empty() {
+                    self.submit_with_schema(
+                        &format!("USE SCHEMA \"{}\"", sc.replace('"', "\"\"")),
+                        sc,
+                        false,
+                    )
+                    .await?;
+                    *self.schema.lock() = sc.to_string();
+                }
+            }
+        }
+        let dims = self.list_context_dimensions().await.unwrap_or_default();
+        let cur_wh = self.current_warehouse();
+        let cur_role = self.current_role();
+        let cur_db = self.current_database();
+        let cur_sc = self.current_schema();
+        let state = SessionRuntimeState {
+            session_id: String::new(),
+            transaction_mode: TransactionMode::AutoCommit,
+            transaction_state: TransactionState::Idle,
+            context_kind: SessionContextKind::Schema,
+            active_context: Some(cur_sc.clone()),
+            database: cur_db.clone(),
+            role: cur_role.clone(),
+            warehouse: Some(cur_wh.clone()),
+            search_path: vec![format!("{cur_db}.{cur_sc}")],
+        };
+        Ok(SessionContextOptions {
+            state,
+            available: dims
+                .iter()
+                .find(|d| d.kind == "schema")
+                .map(|d| d.values.clone())
+                .unwrap_or_default(),
+            active_warehouse: Some(cur_wh),
+            active_role: Some(cur_role),
+            active_database: Some(cur_db),
+            active_schema: Some(cur_sc),
+            contexts: Some(dims),
+        })
+    }
     async fn completion_catalog(
         &self,
         identity: &CompletionIdentity,
@@ -821,11 +1241,182 @@ impl Driver for Snowflake {
     ) -> AppResult<BrowseRows> {
         self.table_preview(schema, after).await
     }
-    async fn apply(&self, _: &TableSchema, _: &[RowMutation]) -> AppResult<()> {
-        Err(AppError::new(
-            ErrorCode::PolicyBlocked,
-            "Snowflake editing is disabled",
-        ))
+    async fn browse_query(
+        &self,
+        schema: &TableSchema,
+        query: &BrowseQuery,
+        after: Option<Vec<Option<String>>>,
+    ) -> AppResult<BrowseRows> {
+        self.table_browse_query(schema, query, after).await
+    }
+    async fn apply(&self, schema: &TableSchema, rows: &[RowMutation]) -> AppResult<()> {
+        if !schema.editable {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "This table cannot be edited safely",
+            ));
+        }
+        if rows.is_empty() {
+            return Err(AppError::invalid("No changes to apply"));
+        }
+        if self.cancel_requested.is_cancelled() {
+            return Err(Self::cancelled());
+        }
+
+        let mut statements = Vec::with_capacity(rows.len());
+        let qualified = self.qualified(&schema.table)?;
+
+        for row in rows {
+            match row {
+                RowMutation::Update { original, changes } => {
+                    let mut sets = Vec::new();
+                    for (idx, val) in changes {
+                        let col = &schema.columns[*idx];
+                        let lit = values::format_snowflake_literal(col, val.as_deref());
+                        sets.push(format!("{} = {lit}", catalog::identifier(&col.name)?));
+                    }
+                    let mut where_parts = Vec::new();
+                    for pk in &schema.primary_key {
+                        if let Some(idx) = schema.columns.iter().position(|c| &c.name == pk) {
+                            let col = &schema.columns[idx];
+                            let lit = values::format_snowflake_literal(
+                                col,
+                                original.get(idx).cloned().flatten().as_deref(),
+                            );
+                            where_parts
+                                .push(format!("{} = {lit}", catalog::identifier(&col.name)?));
+                        }
+                    }
+                    for (idx, col) in schema.columns.iter().enumerate() {
+                        if schema.primary_key.contains(&col.name)
+                            || matches!(
+                                col.kind,
+                                ColumnKind::Json | ColumnKind::Binary | ColumnKind::Unknown
+                            )
+                        {
+                            continue;
+                        }
+                        let lit = values::format_snowflake_literal(
+                            col,
+                            original.get(idx).cloned().flatten().as_deref(),
+                        );
+                        where_parts.push(format!(
+                            "EQUAL_NULL({}, {lit})",
+                            catalog::identifier(&col.name)?
+                        ));
+                    }
+                    statements.push(format!(
+                        "UPDATE {qualified} SET {} WHERE {};\nIF (SQLROWCOUNT != 1) THEN RAISE conflict_err; END IF;",
+                        sets.join(", "),
+                        where_parts.join(" AND ")
+                    ));
+                }
+                RowMutation::Delete { original } => {
+                    let mut where_parts = Vec::new();
+                    for pk in &schema.primary_key {
+                        if let Some(idx) = schema.columns.iter().position(|c| &c.name == pk) {
+                            let col = &schema.columns[idx];
+                            let lit = values::format_snowflake_literal(
+                                col,
+                                original.get(idx).cloned().flatten().as_deref(),
+                            );
+                            where_parts
+                                .push(format!("{} = {lit}", catalog::identifier(&col.name)?));
+                        }
+                    }
+                    for (idx, col) in schema.columns.iter().enumerate() {
+                        if schema.primary_key.contains(&col.name)
+                            || matches!(
+                                col.kind,
+                                ColumnKind::Json | ColumnKind::Binary | ColumnKind::Unknown
+                            )
+                        {
+                            continue;
+                        }
+                        let lit = values::format_snowflake_literal(
+                            col,
+                            original.get(idx).cloned().flatten().as_deref(),
+                        );
+                        where_parts.push(format!(
+                            "EQUAL_NULL({}, {lit})",
+                            catalog::identifier(&col.name)?
+                        ));
+                    }
+                    statements.push(format!(
+                        "DELETE FROM {qualified} WHERE {};\nIF (SQLROWCOUNT != 1) THEN RAISE conflict_err; END IF;",
+                        where_parts.join(" AND ")
+                    ));
+                }
+                RowMutation::Insert {
+                    values: insert_vals,
+                } => {
+                    if insert_vals.is_empty() {
+                        statements.push(format!(
+                            "INSERT INTO {qualified} DEFAULT VALUES;\nIF (SQLROWCOUNT != 1) THEN RAISE conflict_err; END IF;"
+                        ));
+                    } else {
+                        let mut cols = Vec::new();
+                        let mut lits = Vec::new();
+                        for (idx, val) in insert_vals {
+                            let col = &schema.columns[*idx];
+                            cols.push(catalog::identifier(&col.name)?);
+                            lits.push(values::format_snowflake_literal(col, val.as_deref()));
+                        }
+                        statements.push(format!(
+                            "INSERT INTO {qualified} ({}) VALUES ({});\nIF (SQLROWCOUNT != 1) THEN RAISE conflict_err; END IF;",
+                            cols.join(", "),
+                            lits.join(", ")
+                        ));
+                    }
+                }
+            }
+        }
+
+        let body = statements.join("\n");
+        let mut tag = "_JOINERY_MUTATION_BLOCK_".to_string();
+        let mut delimiter = format!("${tag}$");
+        let mut counter = 0;
+        while body.contains(&delimiter) {
+            counter += 1;
+            tag = format!("_JOINERY_MUTATION_BLOCK_{counter}_");
+            delimiter = format!("${tag}$");
+        }
+
+        let script = format!(
+            "EXECUTE IMMEDIATE {delimiter}\nDECLARE\n    conflict_err EXCEPTION (-20001, 'A table change did not affect exactly one row. No edits were committed.');\nBEGIN\n    BEGIN TRANSACTION;\n{body}\n    COMMIT;\nEXCEPTION\n    WHEN OTHER THEN\n        ROLLBACK;\n        RAISE;\nEND;\n{delimiter};"
+        );
+
+        let active_schema = self.current_schema();
+        let outcome = self.submit_with_schema(&script, &active_schema, true).await;
+        match outcome {
+            Ok(value) => {
+                if let Some(msg) = value.get("message").and_then(Value::as_str) {
+                    if msg.contains("A table change did not affect exactly one row")
+                        || msg.contains("conflict_err")
+                        || msg.contains("CONFLICT_ERR")
+                    {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "A table change did not affect exactly one row. No edits were committed.",
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            Err(err)
+                if err
+                    .message
+                    .contains("A table change did not affect exactly one row")
+                    || err.message.contains("conflict_err")
+                    || err.message.contains("CONFLICT_ERR") =>
+            {
+                Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "A table change did not affect exactly one row. No edits were committed.",
+                ))
+            }
+            Err(err) => Err(err),
+        }
     }
     async fn processes(&self) -> AppResult<Vec<ProcessInfo>> {
         Ok(Vec::new())
@@ -947,10 +1538,10 @@ mod tests {
                 .build()
                 .unwrap(),
             base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
-            database: "DB".into(),
+            database: Mutex::new("DB".into()),
             schema: Mutex::new("PUBLIC".into()),
-            role: "READ_ONLY".into(),
-            warehouse: "WH".into(),
+            role: Mutex::new("READ_ONLY".into()),
+            warehouse: Mutex::new("WH".into()),
             query_tag: "Joinery/test".into(),
             auth: AsyncMutex::new(AuthState {
                 tokens: Tokens {
@@ -960,6 +1551,9 @@ mod tests {
                 },
                 expires_at: Instant::now() + Duration::from_secs(600),
             }),
+            auth_method: SnowflakeAuthMethod::OAuthBrowser,
+            key_pair: None,
+            username: "ANALYST".into(),
             metadata_lane: AsyncMutex::new(()),
             active_handle: Mutex::new(None),
             cancel_requested: CancellationToken::new(),
@@ -1107,10 +1701,10 @@ mod tests {
                 .build()
                 .unwrap(),
             base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
-            database: "DB".into(),
+            database: Mutex::new("DB".into()),
             schema: Mutex::new("PUBLIC".into()),
-            role: "READ_ONLY".into(),
-            warehouse: "WH".into(),
+            role: Mutex::new("READ_ONLY".into()),
+            warehouse: Mutex::new("WH".into()),
             query_tag: "Joinery/test".into(),
             auth: AsyncMutex::new(AuthState {
                 tokens: Tokens {
@@ -1120,6 +1714,9 @@ mod tests {
                 },
                 expires_at: Instant::now() + Duration::from_secs(600),
             }),
+            auth_method: SnowflakeAuthMethod::OAuthBrowser,
+            key_pair: None,
+            username: "ANALYST".into(),
             metadata_lane: AsyncMutex::new(()),
             active_handle: Mutex::new(None),
             cancel_requested: CancellationToken::new(),

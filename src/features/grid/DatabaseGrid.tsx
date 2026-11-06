@@ -24,8 +24,9 @@ import DataEditor, {
 import "@glideapps/glide-data-grid/dist/index.css";
 import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
-import { dirtyStore } from "../../data/dirty-store";
+import { dirtyStore, type DraftInsertRow } from "../../data/dirty-store";
 import { useStudio, querySessionForTab, type StudioTab } from "../../state/studio";
+import { RotateCcw, Maximize2, Slash, Copy } from "lucide-react";
 import {
   copyFormatLabel,
   formatGridCells,
@@ -108,6 +109,112 @@ function selectedVisualRows(selection: GridSelection): number[] {
   return [...rows].sort((a, b) => a - b);
 }
 
+const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+
+function isCellInSelection(cell: Item, sel: GridSelection): boolean {
+  const [col, row] = cell;
+  if (sel.columns.hasIndex(col) || sel.rows.hasIndex(row)) return true;
+  if (sel.current) {
+    const { range, rangeStack } = sel.current;
+    for (const r of [range, ...rangeStack]) {
+      if (col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+interface SelectedModifications {
+  dirtyCells: { resultId: string; row: number; column: string }[];
+  deletedRows: { resultId: string; row: number }[];
+  insertCells: { tabId: string; insertId: string; column: string }[];
+}
+
+function getSelectedModifications(
+  sel: GridSelection,
+  visibleColumns: ColumnInfo[],
+  rowCount: number,
+  locate: (visualRow: number) => { result: ResultInfo; row: number } | null,
+  locateDraft: (
+    visualRow: number,
+  ) => { tabId: string; draft: DraftInsertRow; index: number } | null,
+): SelectedModifications {
+  const dirtyCells: { resultId: string; row: number; column: string }[] = [];
+  const deletedRows: { resultId: string; row: number }[] = [];
+  const insertCells: { tabId: string; insertId: string; column: string }[] = [];
+  const seenCellKeys = new Set<string>();
+  const seenRowKeys = new Set<string>();
+
+  const rects = sel.current ? [sel.current.range, ...sel.current.rangeStack] : [];
+  const rowList = sel.rows.toArray();
+  const colList = sel.columns.toArray();
+
+  const selectionCols = new Set<number>(colList);
+  const selectionRows = new Set<number>(rowList);
+  for (const rect of rects) {
+    for (let x = rect.x; x < rect.x + rect.width; x++) {
+      if (x >= 0 && x < visibleColumns.length) selectionCols.add(x);
+    }
+    for (let y = rect.y; y < rect.y + rect.height; y++) {
+      if (y >= 0 && y < rowCount) selectionRows.add(y);
+    }
+  }
+  if (selectionCols.size === 0 && selectionRows.size > 0) {
+    for (let c = 0; c < visibleColumns.length; c++) selectionCols.add(c);
+  }
+  if (selectionRows.size === 0 && selectionCols.size > 0) {
+    for (let r = 0; r < rowCount; r++) selectionRows.add(r);
+  }
+
+  for (const visualRow of selectionRows) {
+    const draft = locateDraft(visualRow);
+    const source = locate(visualRow);
+
+    if (source) {
+      const rowKey = `${source.result.id}:${source.row}`;
+      if (dirtyStore.isDeleted(source.result.id, source.row) && !seenRowKeys.has(rowKey)) {
+        seenRowKeys.add(rowKey);
+        deletedRows.push({ resultId: source.result.id, row: source.row });
+      }
+    }
+
+    for (const colIdx of selectionCols) {
+      const col = visibleColumns[colIdx];
+      if (!col) continue;
+
+      if (draft) {
+        if (col.id in draft.draft.values) {
+          const insertKey = `${draft.draft.id}:${col.id}`;
+          if (!seenCellKeys.has(insertKey)) {
+            seenCellKeys.add(insertKey);
+            insertCells.push({
+              tabId: draft.tabId,
+              insertId: draft.draft.id,
+              column: col.id,
+            });
+          }
+        }
+      } else if (source) {
+        const cellKey = `${source.result.id}:${source.row}:${col.id}`;
+        if (
+          dirtyStore.hasCell(source.result.id, source.row, col.id) &&
+          !seenCellKeys.has(cellKey)
+        ) {
+          seenCellKeys.add(cellKey);
+          dirtyCells.push({
+            resultId: source.result.id,
+            row: source.row,
+            column: col.id,
+          });
+        }
+      }
+    }
+  }
+
+  return { dirtyCells, deletedRows, insertCells };
+}
+
 const benchmarkColumns: ColumnInfo[] = [
   ["id", "bigint", "integer"],
   ["workspace", "text", "text"],
@@ -178,6 +285,43 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     rows: CompactSelection.empty(),
     columns: CompactSelection.empty(),
   });
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    cell: Item;
+    target: CellTarget;
+  } | null>(null);
+  const lastPointerCoord = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const onPointer = (e: MouseEvent) => {
+      lastPointerCoord.current = { x: e.clientX, y: e.clientY };
+    };
+    window.addEventListener("contextmenu", onPointer, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      window.removeEventListener("contextmenu", onPointer, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement)?.closest(".cell-context-menu")) {
+        setContextMenu(null);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [contextMenu]);
   const effectivePageOffset = tab.kind === "benchmark" ? 0 : Math.max(0, pageOffset ?? 0);
   const pageOffsetRef = useRef(effectivePageOffset);
   pageOffsetRef.current = effectivePageOffset;
@@ -1004,6 +1148,50 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     return () => window.removeEventListener("paste", onWindowPaste, true);
   }, []);
 
+  const handleRevertSelected = useCallback(() => {
+    if (!isGridEditable) return;
+    const sel = selectionRef.current;
+    const { dirtyCells, deletedRows, insertCells } = getSelectedModifications(
+      sel,
+      visibleColumns,
+      rowCount,
+      locate,
+      locateDraft,
+    );
+    const total = dirtyCells.length + deletedRows.length + insertCells.length;
+    if (total === 0) return;
+
+    if (dirtyCells.length > 0) dirtyStore.revertBatch(dirtyCells);
+    for (const item of deletedRows) dirtyStore.revertRow(item.resultId, item.row);
+    for (const item of insertCells) {
+      dirtyStore.setInsertCell(item.tabId, item.insertId, item.column, undefined);
+    }
+    useStudio.getState().notify(`Reverted ${total} change${total === 1 ? "" : "s"}`);
+    const active = sel.current?.cell;
+    if (active) onSelect(targetAt(active, true));
+  }, [isGridEditable, visibleColumns, rowCount, locate, locateDraft, targetAt, onSelect]);
+
+  useLayoutEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!host.current?.contains(document.activeElement)) return;
+      if (
+        document.activeElement instanceof HTMLInputElement ||
+        document.activeElement instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      const isMod = isMac ? event.metaKey : event.ctrlKey;
+      if (isMod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        event.stopPropagation();
+        handleRevertSelected();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [handleRevertSelected]);
+
   return (
     <div className="grid-host" ref={host}>
       {columns.length ? (
@@ -1106,6 +1294,30 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
             const target = targetAt(cell, true);
             if (target && (target.large || opensInValueDialog(target.column))) onOpenValue(target);
           }}
+          onCellContextMenu={(cell, event) => {
+            event.preventDefault();
+            const target = targetAt(cell, true);
+            if (!target) return;
+            const inSel = isCellInSelection(cell, selectionRef.current);
+            if (!inSel) {
+              const nextSelection: GridSelection = {
+                rows: CompactSelection.empty(),
+                columns: CompactSelection.empty(),
+                current: {
+                  cell,
+                  range: { x: cell[0], y: cell[1], width: 1, height: 1 },
+                  rangeStack: [],
+                },
+              };
+              selectionRef.current = nextSelection;
+              setSelection(nextSelection);
+              onSelect(target);
+            }
+            const pointer = lastPointerCoord.current;
+            const x = Math.max(10, Math.min(pointer.x, window.innerWidth - 220));
+            const y = Math.max(10, Math.min(pointer.y, window.innerHeight - 200));
+            setContextMenu({ x, y, cell, target });
+          }}
           onVisibleRegionChanged={(range) => {
             visible.current = range;
             const offset = pageOffsetRef.current;
@@ -1193,6 +1405,147 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
             : "No rows to display"}
         </div>
       )}
+      {contextMenu &&
+        (() => {
+          const selMods = getSelectedModifications(
+            selectionRef.current,
+            visibleColumns,
+            rowCount,
+            locate,
+            locateDraft,
+          );
+          const totalSelectedChanges =
+            selMods.dirtyCells.length + selMods.deletedRows.length + selMods.insertCells.length;
+          const canRevert = isGridEditable && totalSelectedChanges > 0;
+          const revertLabel =
+            totalSelectedChanges > 1 ? `Revert ${totalSelectedChanges} Changes` : "Revert Changes";
+          const isRowModified =
+            dirtyStore.isDeleted(contextMenu.target.resultId, contextMenu.target.row) ||
+            contextMenu.target.insert !== undefined ||
+            visibleColumns.some((col) =>
+              dirtyStore.hasCell(contextMenu.target.resultId, contextMenu.target.row, col.id),
+            );
+          const canRevertRow = isGridEditable && isRowModified;
+          const canSetNull =
+            isGridEditable &&
+            contextMenu.target.column.editable &&
+            contextMenu.target.column.nullable &&
+            !contextMenu.target.deleted &&
+            contextMenu.target.value !== null;
+
+          return (
+            <div
+              className="cell-context-menu"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              role="menu"
+              aria-label="Cell actions"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                disabled={!canRevert}
+                onClick={() => {
+                  setContextMenu(null);
+                  handleRevertSelected();
+                }}
+              >
+                <span>
+                  <RotateCcw size={12} />
+                  {revertLabel}
+                </span>
+                <kbd>{isMac ? "⌘Z" : "Ctrl+Z"}</kbd>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                disabled={!canRevertRow}
+                onClick={() => {
+                  setContextMenu(null);
+                  dirtyStore.revertRow(contextMenu.target.resultId, contextMenu.target.row);
+                  useStudio.getState().notify("Reverted row changes");
+                  onSelect(targetAt(contextMenu.cell, true));
+                }}
+              >
+                <span>
+                  <RotateCcw size={12} />
+                  Revert Entire Row
+                </span>
+              </button>
+              <div className="cell-context-menu-separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  onOpenValue(contextMenu.target);
+                }}
+              >
+                <span>
+                  <Maximize2 size={12} />
+                  Inspect Value…
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                disabled={!canSetNull}
+                onClick={() => {
+                  setContextMenu(null);
+                  if (contextMenu.target.insert) {
+                    dirtyStore.setInsertCell(
+                      contextMenu.target.insert.tabId,
+                      contextMenu.target.insert.insertId,
+                      contextMenu.target.column.id,
+                      null,
+                    );
+                  } else {
+                    dirtyStore.set({
+                      resultId: contextMenu.target.resultId,
+                      row: contextMenu.target.row,
+                      column: contextMenu.target.column.id,
+                      original:
+                        resultCache.read(
+                          contextMenu.target.resultId,
+                          contextMenu.target.column.id,
+                          contextMenu.target.row,
+                          true,
+                        )?.value ?? null,
+                      value: null,
+                    });
+                  }
+                  onSelect(targetAt(contextMenu.cell, true));
+                }}
+              >
+                <span>
+                  <Slash size={12} />
+                  Set NULL
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  const text = contextMenu.target.insert?.usingDefault
+                    ? "<default>"
+                    : (contextMenu.target.value ?? "NULL");
+                  void writeClipboardText(text);
+                  useStudio.getState().notify("Copied cell value");
+                }}
+              >
+                <span>
+                  <Copy size={12} />
+                  Copy Value
+                </span>
+              </button>
+            </div>
+          );
+        })()}
     </div>
   );
 });

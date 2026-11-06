@@ -15,6 +15,11 @@ const OBJECT_KIND_BADGES: Record<DatabaseObjectKind, string> = {
   sequence: "SEQUENCE",
   trigger: "TRIGGER",
   index: "INDEX",
+  stage: "STAGE",
+  task: "TASK",
+  stream: "STREAM",
+  pipe: "PIPE",
+  fileFormat: "FILE FORMAT",
 };
 
 interface Props {

@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import {
+  AlertCircle,
   ArrowLeftRight,
   ArrowRight,
   BookmarkPlus,
@@ -17,6 +18,7 @@ import {
   Clock3,
   Code2,
   Columns3,
+  Copy,
   Download,
   FileCode2,
   FolderOpen,
@@ -281,7 +283,7 @@ export function Workbench({
         : 0;
   const hasMoreRows =
     tab.kind === "table"
-      ? tab.hasMore
+      ? tab.hasMore && tab.nextKey !== null
       : tab.kind === "query"
         ? result?.status === "truncated"
         : false;
@@ -822,9 +824,12 @@ export function Workbench({
                 <button
                   className="button cancel-query"
                   onClick={() =>
-                    tab.runId &&
+                    (tab.runId || tab.activeQueryId) &&
                     void client
-                      .call("cancel_run", { runId: tab.runId })
+                      .call("cancel_query", {
+                        runId: tab.runId ?? undefined,
+                        queryId: tab.activeQueryId ?? undefined,
+                      })
                       .catch((error) => state.notify(messageOf(error)))
                   }
                 >
@@ -878,6 +883,22 @@ export function Workbench({
                 onClick={() => onRun(tab.sql, 0)}
               >
                 <ChevronDown size={13} />
+              </button>
+              <button
+                className={`button ghost small policy-toggle ${state.batchErrorPolicy === "continueOnError" ? "active" : ""}`}
+                title={`Batch error policy: ${state.batchErrorPolicy === "continueOnError" ? "Continue on error" : "Stop on error"}`}
+                aria-label={`Batch error policy: ${state.batchErrorPolicy}`}
+                onClick={() =>
+                  state.setBatchErrorPolicy(
+                    state.batchErrorPolicy === "continueOnError"
+                      ? "stopOnError"
+                      : "continueOnError",
+                  )
+                }
+              >
+                {state.batchErrorPolicy === "continueOnError"
+                  ? "Continue on error"
+                  : "Stop on error"}
               </button>
             </>
           )}
@@ -1033,31 +1054,97 @@ export function Workbench({
             aria-label="Query results"
             onKeyDown={tabNavigation}
           >
-            {tab.results.length ? (
-              tab.results.map((result, i) => (
-                <button
-                  role="tab"
-                  id={`result-tab-${result.id}`}
-                  aria-controls={`result-panel-${tab.id}`}
-                  aria-selected={result.id === (tab.activeResultId ?? tab.results[0]?.id)}
-                  tabIndex={result.id === (tab.activeResultId ?? tab.results[0]?.id) ? 0 : -1}
-                  className={result.id === tab.activeResultId ? "active" : ""}
-                  key={result.id}
-                  onClick={() => state.updateTab(tab.id, { activeResultId: result.id })}
-                >
-                  <Table2 size={12} />
-                  Query {result.statementIndex + 1}
-                  {tab.results.filter((r) => r.statementIndex === result.statementIndex).length > 1
-                    ? ` · ${i + 1}`
-                    : ""}
-                  <span>{result.retainedRows.toLocaleString()}</span>
-                </button>
-              ))
+            {tab.results.length || Object.keys(tab.statementErrors ?? {}).length ? (
+              <>
+                {tab.results.map((r, i) => {
+                  const metric = tab.metrics[r.statementIndex];
+                  const timing =
+                    metric?.elapsedMs !== undefined
+                      ? metric.elapsedMs >= 1000
+                        ? `${(metric.elapsedMs / 1000).toFixed(1)}s`
+                        : `${metric.elapsedMs}ms`
+                      : undefined;
+                  const isSelected = r.id === (tab.activeResultId ?? tab.results[0]?.id);
+                  return (
+                    <button
+                      role="tab"
+                      id={`result-tab-${r.id}`}
+                      aria-controls={`result-panel-${tab.id}`}
+                      aria-selected={isSelected}
+                      tabIndex={isSelected ? 0 : -1}
+                      className={r.id === tab.activeResultId ? "active" : ""}
+                      key={r.id}
+                      onClick={() => state.updateTab(tab.id, { activeResultId: r.id })}
+                    >
+                      <Table2 size={12} />
+                      Query {r.statementIndex + 1}
+                      {tab.results.filter((x) => x.statementIndex === r.statementIndex).length > 1
+                        ? ` · ${i + 1}`
+                        : ""}
+                      <span className="badge row-count">{r.retainedRows.toLocaleString()}</span>
+                      {timing && <span className="badge timing">{timing}</span>}
+                    </button>
+                  );
+                })}
+                {Object.entries(tab.statementErrors ?? {}).map(([stmtIdxStr, stmtErr]) => {
+                  const stmtIdx = Number(stmtIdxStr);
+                  const metric = tab.metrics[stmtIdx];
+                  const timing =
+                    metric?.elapsedMs !== undefined
+                      ? metric.elapsedMs >= 1000
+                        ? `${(metric.elapsedMs / 1000).toFixed(1)}s`
+                        : `${metric.elapsedMs}ms`
+                      : undefined;
+                  const isErrActive = tab.activeResultId === `err-${stmtIdx}`;
+                  return (
+                    <button
+                      role="tab"
+                      id={`result-tab-err-${stmtIdx}`}
+                      aria-controls={`result-panel-${tab.id}`}
+                      aria-selected={isErrActive}
+                      tabIndex={isErrActive ? 0 : -1}
+                      className={`error-tab ${isErrActive ? "active" : ""}`}
+                      key={`err-${stmtIdx}`}
+                      onClick={() =>
+                        state.updateTab(tab.id, {
+                          activeResultId: `err-${stmtIdx}`,
+                          error: stmtErr,
+                        })
+                      }
+                    >
+                      <AlertCircle size={12} className="error-icon" />
+                      Query {stmtIdx + 1}
+                      <span className="badge error-badge">Error</span>
+                      {timing && <span className="badge timing">{timing}</span>}
+                    </button>
+                  );
+                })}
+              </>
             ) : (
               <span className="result-placeholder">Results</span>
             )}
           </div>
           <div className="table-view-actions">
+            {(tab.activeQueryId || result?.queryId) && (
+              <span className="query-handle-badge" title="Snowflake Query ID">
+                Query ID: <code>{tab.activeQueryId || result?.queryId}</code>
+                <button
+                  type="button"
+                  className="icon-button small copy-handle"
+                  title="Copy Query ID"
+                  aria-label="Copy Query ID"
+                  onClick={() => {
+                    const qid = tab.activeQueryId || result?.queryId;
+                    if (qid) {
+                      void navigator.clipboard.writeText(qid);
+                      state.notify(`Copied Query ID ${qid}`);
+                    }
+                  }}
+                >
+                  <Copy size={11} />
+                </button>
+              </span>
+            )}
             {result && result.editability && (
               <span
                 className={`result-provenance-badge ${

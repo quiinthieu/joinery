@@ -133,6 +133,13 @@ pub(super) async fn object_details_on(
         DatabaseObjectKind::Sequence => sequence_details(client, requested).await,
         DatabaseObjectKind::Trigger => trigger_details(client, requested).await,
         DatabaseObjectKind::Index => index_details(client, requested).await,
+        _ => Err(AppError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "PostgreSQL does not support object kind {:?}",
+                requested.kind
+            ),
+        )),
     }
 }
 

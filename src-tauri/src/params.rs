@@ -68,7 +68,7 @@ fn scan_raw_tokens(engine: EngineKind, sql: &str) -> AppResult<Vec<RawToken>> {
     let mut question_counter = 0usize;
     let allow_backslash_escape = matches!(engine, EngineKind::Mysql | EngineKind::Snowflake);
     let allow_dollar_quote = matches!(engine, EngineKind::Postgres | EngineKind::Snowflake);
-    let allow_dollar_params = matches!(engine, EngineKind::Postgres | EngineKind::Snowflake);
+    let allow_dollar_params = engine != EngineKind::Redis;
     let allow_question_params = matches!(engine, EngineKind::Mysql | EngineKind::Snowflake);
 
     while i < len {
@@ -235,6 +235,30 @@ fn scan_raw_tokens(engine: EngineKind, sql: &str) -> AppResult<Vec<RawToken>> {
                         end,
                         key: format!("${index}"),
                         positional: true,
+                    });
+                    i = end;
+                    continue;
+                }
+                if allow_dollar_params
+                    && !prev_blocks_placeholder(bytes, i)
+                    && bytes.get(i + 1).is_some_and(|c| is_ident_start(*c))
+                {
+                    let start = i;
+                    let mut end = i + 2;
+                    while end < len && is_ident_continue(bytes[end]) {
+                        end += 1;
+                    }
+                    let name = &sql[start..end];
+                    if name.len() > 65 {
+                        return Err(AppError::invalid(
+                            "Parameter names must be 64 characters or fewer",
+                        ));
+                    }
+                    tokens.push(RawToken {
+                        start,
+                        end,
+                        key: name.to_owned(),
+                        positional: false,
                     });
                     i = end;
                     continue;
@@ -1304,5 +1328,29 @@ mod tests {
             String::from_utf16(&units[span.start_utf16..span.end_utf16]).unwrap(),
             "bad_col"
         );
+    }
+
+    #[test]
+    fn scans_named_dollar_parameters_across_dialects_and_preserves_dollar_quotes() {
+        for engine in [
+            EngineKind::Postgres,
+            EngineKind::Snowflake,
+            EngineKind::Mysql,
+        ] {
+            let sql = "SELECT * FROM orders WHERE customer_id = $cust_id AND region = $region AND total > $cust_id";
+            let slots = extract_query_params(engine, sql).unwrap();
+            assert_eq!(slots.len(), 2);
+            assert_eq!(slots[0].key, "$cust_id");
+            assert_eq!(slots[0].occurrences, 2);
+            assert!(!slots[0].positional);
+            assert_eq!(slots[1].key, "$region");
+            assert_eq!(slots[1].occurrences, 1);
+            assert!(!slots[1].positional);
+        }
+
+        let quote_sql = "SELECT $$ $ignored_in_quote $$, $real_param FROM dual";
+        let slots = extract_query_params(EngineKind::Snowflake, quote_sql).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].key, "$real_param");
     }
 }

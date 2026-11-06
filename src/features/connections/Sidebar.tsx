@@ -1,13 +1,18 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   Activity,
+  Archive,
   ArrowLeftRight,
   Bookmark,
   Braces,
   ChevronDown,
   ChevronRight,
+  Clock,
   Database,
   Eye,
+  FileCode,
+  FileText,
+  GitPullRequest,
   Hash,
   History,
   Layers,
@@ -15,11 +20,13 @@ import {
   Network,
   Pencil,
   Plus,
+  Radio,
   Search,
   Settings2,
   SquareTerminal,
   Star,
   Table2,
+  Trash2,
   Unplug,
   Zap,
 } from "lucide-react";
@@ -30,6 +37,7 @@ import type {
   DatabaseObjectKind,
   DatabaseObjectSummary,
   TableInfo,
+  TableRef,
 } from "../../ipc/generated";
 import { orderedGroups } from "./GroupManager";
 import {
@@ -39,8 +47,12 @@ import {
   resolveTreeKeyAction,
   type ExplorerCategoryId,
   type ExplorerFilterChip,
+  type ExplorerItem,
+  type ExplorerSchemaGroup,
 } from "./explorer-tree";
-import { TableObjectDialog } from "../studio/TableObjectDialog";
+import { TableObjectDialog, type TableObjectDialogRequest } from "../studio/TableObjectDialog";
+import { TableMaintenanceDialog } from "../studio/TableMaintenanceDialog";
+import { ObjectContextMenu } from "./ObjectContextMenu";
 
 const EMPTY_TABLES: TableInfo[] = [];
 const EMPTY_OBJECTS: DatabaseObjectSummary[] = [];
@@ -63,6 +75,16 @@ function ObjectKindIcon({ kind }: { kind: DatabaseObjectKind }) {
       return <Zap size={13} />;
     case "index":
       return <ListTree size={13} />;
+    case "stage":
+      return <Archive size={13} />;
+    case "task":
+      return <Clock size={13} />;
+    case "stream":
+      return <Radio size={13} />;
+    case "pipe":
+      return <GitPullRequest size={13} />;
+    case "fileFormat":
+      return <FileCode size={13} />;
   }
 }
 
@@ -82,6 +104,16 @@ function CategoryIcon({ category }: { category: ExplorerCategoryId }) {
       return <Zap size={12} />;
     case "indexes":
       return <ListTree size={12} />;
+    case "stages":
+      return <Archive size={12} />;
+    case "tasks":
+      return <Clock size={12} />;
+    case "streams":
+      return <Radio size={12} />;
+    case "pipes":
+      return <GitPullRequest size={12} />;
+    case "fileFormats":
+      return <FileCode size={12} />;
   }
 }
 
@@ -118,6 +150,17 @@ export function Sidebar({
           openObject,
           openDiagram,
           openSchemaDiff,
+          tabs,
+          activeTabId,
+          openConsole,
+          scratchpads,
+          openScratchpad,
+          createScratchpad,
+          renameScratchpad,
+          deleteScratchpad,
+          sessionStates,
+          session4dContexts,
+          switchSessionContext,
         }) => ({
           bootstrap,
           sessions,
@@ -134,6 +177,17 @@ export function Sidebar({
           openObject,
           openDiagram,
           openSchemaDiff,
+          tabs,
+          activeTabId,
+          openConsole,
+          scratchpads,
+          openScratchpad,
+          createScratchpad,
+          renameScratchpad,
+          deleteScratchpad,
+          sessionStates,
+          session4dContexts,
+          switchSessionContext,
         }),
       ),
     ),
@@ -143,6 +197,12 @@ export function Sidebar({
     [schemas, setSchemas] = useState(new Set<string>()),
     [collapsedCategories, setCollapsedCategories] = useState(new Set<string>()),
     [collapsedDuringSearch, setCollapsedDuringSearch] = useState(new Set<string>()),
+    [collapsedDatabases, setCollapsedDatabases] = useState(new Set<string>()),
+    [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: ExplorerItem } | null>(
+      null,
+    ),
+    [tableDialogRequest, setTableDialogRequest] = useState<TableObjectDialogRequest | null>(null),
+    [maintenanceTable, setMaintenanceTable] = useState<TableRef | null>(null),
     [createTableSchema, setCreateTableSchema] = useState<string | null>(null),
     treeRef = useRef<HTMLDivElement>(null);
 
@@ -150,6 +210,18 @@ export function Sidebar({
     (profile) => profile.id === state.selectedConnectionId,
   );
   const selectedSession = selected ? state.sessions[selected.id] : undefined;
+  const isSnowflake = selected?.engine === "snowflake";
+  const sfDatabases = useMemo(() => {
+    if (!isSnowflake || !selected) return [];
+    const dims = selectedSession ? state.session4dContexts?.[selectedSession.id] : undefined;
+    const fromDims = dims?.find((d) => d.kind === "database")?.values ?? [];
+    const activeDb = selectedSession
+      ? (state.sessionStates?.[selectedSession.id]?.database ?? selected.database)
+      : selected.database;
+    const list = activeDb && !fromDims.includes(activeDb) ? [activeDb, ...fromDims] : fromDims;
+    return list.length > 0 ? list : activeDb ? [activeDb] : [];
+  }, [isSnowflake, selected, selectedSession, state.session4dContexts, state.sessionStates]);
+
   const ordered = useMemo(
     () => orderedGroups(state.bootstrap?.groups ?? []),
     [state.bootstrap?.groups],
@@ -172,6 +244,130 @@ export function Sidebar({
     isSearching ? !collapsedDuringSearch.has(`schema:${name}`) : schemas.has(name);
   const isCategoryExpanded = (catKey: string) =>
     isSearching ? !collapsedDuringSearch.has(`cat:${catKey}`) : !collapsedCategories.has(catKey);
+
+  const renderSchemaGroups = (groups: readonly ExplorerSchemaGroup[]) =>
+    groups.map((group) => {
+      const schemaOpen = isSchemaExpanded(group.schema);
+      return (
+        <div className="schema-group" key={group.schema}>
+          <div className="schema-heading-row">
+            <button
+              type="button"
+              data-tree-node={`schema:${group.schema}`}
+              className="schema-heading"
+              aria-expanded={schemaOpen}
+              onClick={() => setSchemaOpen(group.schema, !schemaOpen)}
+            >
+              {schemaOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <Database size={13} />
+              <span>{group.schema}</span>
+              <span className="schema-count">{group.totalCount}</span>
+            </button>
+            {(selectedSession?.capabilities.ddlEditing ??
+              (selected?.engine === "postgres" || selected?.engine === "mysql")) && (
+              <button
+                type="button"
+                tabIndex={-1}
+                className="schema-diagram"
+                aria-label={`Create table in ${group.schema}`}
+                title={
+                  selected?.safeMode === "readOnly"
+                    ? "Connection is in read-only safe mode"
+                    : `Create table in ${group.schema}`
+                }
+                disabled={selected?.safeMode === "readOnly"}
+                onClick={() => setCreateTableSchema(group.schema)}
+              >
+                <Plus size={12} />
+              </button>
+            )}
+            {(selectedSession?.capabilities.schemaDiagram ??
+              (selected?.engine === "postgres" || selected?.engine === "mysql")) &&
+              selected && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  className="schema-diagram"
+                  aria-label={`Open schema diagram for ${group.schema}`}
+                  title="Open schema diagram"
+                  onClick={() => state.openDiagram(selected.id, group.schema)}
+                >
+                  <Network size={12} />
+                </button>
+              )}
+            {(selectedSession?.capabilities.schemaDiff ??
+              (selected?.engine === "postgres" || selected?.engine === "mysql")) &&
+              selected && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  className="schema-diagram"
+                  aria-label={`Compare schema ${group.schema}`}
+                  title="Compare schema"
+                  onClick={() => state.openSchemaDiff(selected.id, group.schema)}
+                >
+                  <ArrowLeftRight size={12} />
+                </button>
+              )}
+          </div>
+          {schemaOpen &&
+            group.categories.map((cat) => {
+              const catOpen = isCategoryExpanded(cat.key);
+              return (
+                <div className="explorer-category" key={cat.key}>
+                  <button
+                    type="button"
+                    data-tree-node={`cat:${cat.key}`}
+                    className="explorer-category-heading"
+                    aria-expanded={catOpen}
+                    aria-label={`${cat.label} (${cat.items.length})`}
+                    onClick={() => setCategoryOpen(cat.key, !catOpen)}
+                  >
+                    {catOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                    <CategoryIcon category={cat.id} />
+                    <span>{cat.label}</span>
+                    <span className="schema-count">{cat.items.length}</span>
+                  </button>
+                  {catOpen &&
+                    cat.items.slice(0, 200).map((item) => (
+                      <button
+                        type="button"
+                        key={item.key}
+                        data-tree-node={`item:${item.key}`}
+                        className="table-link"
+                        title={item.tooltip}
+                        onClick={() => {
+                          if (!selected) return;
+                          void state
+                            .openObject(selected.id, item.object)
+                            .catch((error) => state.notify(String(error.message ?? error)));
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setContextMenu({ x: e.clientX, y: e.clientY, item });
+                        }}
+                      >
+                        <ObjectKindIcon kind={item.object.kind} />
+                        <span>{item.primaryLabel}</span>
+                        {item.secondaryLabel && (
+                          <em className="explorer-item-badge" aria-hidden="true">
+                            {item.secondaryLabel}
+                          </em>
+                        )}
+                      </button>
+                    ))}
+                  {catOpen && cat.items.length > 200 && (
+                    <div className="tree-limit">
+                      Search to narrow {cat.items.length} {cat.label.toLowerCase()}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+      );
+    });
 
   const visibleNodes = useMemo(
     () =>
@@ -336,6 +532,16 @@ export function Sidebar({
                           />
                         </button>
                         <div className="connection-actions">
+                          <button
+                            className="icon-button"
+                            aria-label={`Open console for ${profile.name}`}
+                            title="Open persistent console"
+                            onClick={() => {
+                              void state.openConsole(profile.id);
+                            }}
+                          >
+                            <SquareTerminal size={12} />
+                          </button>
                           {state.sessions[profile.id] && (
                             <button
                               className="icon-button"
@@ -362,6 +568,68 @@ export function Sidebar({
               )}
             </div>
           ))}
+      </div>
+      <div className="sidebar-divider" />
+      <div className="sidebar-section-title">
+        <span>SCRATCHPADS</span>
+        <button
+          className="icon-button"
+          aria-label="New scratchpad"
+          title="New scratchpad"
+          onClick={() => void state.createScratchpad()}
+        >
+          <Plus size={16} />
+        </button>
+      </div>
+      <div className="scratchpads-list">
+        {state.scratchpads.map((sp) => {
+          const isActive = state.tabs.some(
+            (t) => t.scratchpadId === sp.id && t.id === state.activeTabId,
+          );
+          return (
+            <div
+              className={`connection-row scratchpad-row ${isActive ? "selected" : ""}`}
+              key={sp.id}
+            >
+              <button
+                className="connection-select"
+                title={sp.name}
+                onClick={() => void state.openScratchpad(sp.id)}
+              >
+                <FileText size={14} />
+                <span>{sp.name}</span>
+              </button>
+              <div className="connection-actions">
+                <button
+                  className="icon-button"
+                  aria-label={`Rename ${sp.name}`}
+                  title="Rename scratchpad"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const newName = prompt("Rename scratchpad:", sp.name);
+                    if (newName && newName.trim()) {
+                      void state.renameScratchpad(sp.id, newName.trim());
+                    }
+                  }}
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label={`Delete ${sp.name}`}
+                  title="Delete scratchpad"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void state.deleteScratchpad(sp.id);
+                  }}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {state.scratchpads.length === 0 && <span className="empty-group">No scratchpads</span>}
       </div>
       <div className="sidebar-divider" />
       <div className="sidebar-section-title">
@@ -430,120 +698,66 @@ export function Sidebar({
                   : "No readable schema objects found."}
             </span>
           </div>
-        ) : (
-          schemaGroups.map((group) => {
-            const schemaOpen = isSchemaExpanded(group.schema);
+        ) : isSnowflake && sfDatabases.length > 0 ? (
+          sfDatabases.map((dbName) => {
+            const currentDb = selectedSession
+              ? (state.sessionStates?.[selectedSession.id]?.database ?? selected.database)
+              : selected.database;
+            const isCurrent = dbName.toUpperCase() === (currentDb ?? "").toUpperCase();
+            const isExpanded = !collapsedDatabases.has(dbName);
             return (
-              <div className="schema-group" key={group.schema}>
-                <div className="schema-heading-row">
+              <div className="database-group" key={dbName}>
+                <div className="database-heading-row">
                   <button
                     type="button"
-                    data-tree-node={`schema:${group.schema}`}
-                    className="schema-heading"
-                    aria-expanded={schemaOpen}
-                    onClick={() => setSchemaOpen(group.schema, !schemaOpen)}
+                    data-tree-node={`db:${dbName}`}
+                    className="database-heading"
+                    aria-expanded={isExpanded}
+                    onClick={() => {
+                      setCollapsedDatabases((old) => {
+                        const next = new Set(old);
+                        if (next.has(dbName)) next.delete(dbName);
+                        else next.add(dbName);
+                        return next;
+                      });
+                    }}
                   >
-                    {schemaOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     <Database size={13} />
-                    <span>{group.schema}</span>
-                    <span className="schema-count">{group.totalCount}</span>
+                    <span>{dbName}</span>
+                    {isCurrent && <span className="active-db-tag">CURRENT</span>}
+                    <span className="schema-count">
+                      {isCurrent ? schemaGroups.reduce((acc, g) => acc + g.totalCount, 0) : ""}
+                    </span>
                   </button>
-                  {(selectedSession?.capabilities.ddlEditing ??
-                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      className="schema-diagram"
-                      aria-label={`Create table in ${group.schema}`}
-                      title={
-                        selected.safeMode === "readOnly"
-                          ? "Connection is in read-only safe mode"
-                          : `Create table in ${group.schema}`
-                      }
-                      disabled={selected.safeMode === "readOnly"}
-                      onClick={() => setCreateTableSchema(group.schema)}
-                    >
-                      <Plus size={12} />
-                    </button>
-                  )}
-                  {(selectedSession?.capabilities.schemaDiagram ??
-                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      className="schema-diagram"
-                      aria-label={`Open schema diagram for ${group.schema}`}
-                      title="Open schema diagram"
-                      onClick={() => state.openDiagram(selected.id, group.schema)}
-                    >
-                      <Network size={12} />
-                    </button>
-                  )}
-                  {(selectedSession?.capabilities.schemaDiff ??
-                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      className="schema-diagram"
-                      aria-label={`Compare schema ${group.schema}`}
-                      title="Compare schema"
-                      onClick={() => state.openSchemaDiff(selected.id, group.schema)}
-                    >
-                      <ArrowLeftRight size={12} />
-                    </button>
-                  )}
                 </div>
-                {schemaOpen &&
-                  group.categories.map((cat) => {
-                    const catOpen = isCategoryExpanded(cat.key);
-                    return (
-                      <div className="explorer-category" key={cat.key}>
+                {isExpanded && (
+                  <div className="database-schemas">
+                    {isCurrent ? (
+                      renderSchemaGroups(schemaGroups)
+                    ) : (
+                      <div className="inactive-db-hint">
                         <button
                           type="button"
-                          data-tree-node={`cat:${cat.key}`}
-                          className="explorer-category-heading"
-                          aria-expanded={catOpen}
-                          onClick={() => setCategoryOpen(cat.key, !catOpen)}
+                          className="switch-db-btn"
+                          onClick={() => {
+                            if (!selectedSession) return;
+                            void state
+                              .switchSessionContext(selectedSession.id, { database: dbName })
+                              .then(() => state.refreshCatalog(selected.id));
+                          }}
                         >
-                          {catOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                          <CategoryIcon category={cat.id} />
-                          <span>{cat.label}</span>
-                          <span className="schema-count">{cat.items.length}</span>
+                          Switch to {dbName} to browse
                         </button>
-                        {catOpen &&
-                          cat.items.slice(0, 200).map((item) => (
-                            <button
-                              type="button"
-                              key={item.key}
-                              data-tree-node={`item:${item.key}`}
-                              className="table-link"
-                              title={item.tooltip}
-                              onClick={() =>
-                                void state
-                                  .openObject(selected.id, item.object)
-                                  .catch((error) => state.notify(String(error.message ?? error)))
-                              }
-                            >
-                              <ObjectKindIcon kind={item.object.kind} />
-                              <span>{item.primaryLabel}</span>
-                              {item.secondaryLabel && (
-                                <em className="explorer-item-badge" aria-hidden="true">
-                                  {item.secondaryLabel}
-                                </em>
-                              )}
-                            </button>
-                          ))}
-                        {catOpen && cat.items.length > 200 && (
-                          <div className="tree-limit">
-                            Search to narrow {cat.items.length} {cat.label.toLowerCase()}
-                          </div>
-                        )}
                       </div>
-                    );
-                  })}
+                    )}
+                  </div>
+                )}
               </div>
             );
           })
+        ) : (
+          renderSchemaGroups(schemaGroups)
         )}
       </div>
       <nav className="sidebar-tools">
@@ -596,11 +810,14 @@ export function Sidebar({
         <Settings2 size={15} />
         Preferences<span>⌘ ,</span>
       </button>
-      {createTableSchema && selected && (
+      {(createTableSchema || tableDialogRequest) && selected && (
         <TableObjectDialog
           connectionId={selected.id}
-          request={{ kind: "createTable", schema: createTableSchema }}
-          onClose={() => setCreateTableSchema(null)}
+          request={tableDialogRequest ?? { kind: "createTable", schema: createTableSchema! }}
+          onClose={() => {
+            setCreateTableSchema(null);
+            setTableDialogRequest(null);
+          }}
           onCompleted={(action) => {
             if (action.type === "createTable") {
               void state
@@ -613,6 +830,35 @@ export function Sidebar({
                 .catch((error) => state.notify(String(error.message ?? error)));
             }
           }}
+        />
+      )}
+      {maintenanceTable && selected && (
+        <TableMaintenanceDialog
+          connectionId={selected.id}
+          table={maintenanceTable}
+          columns={[]}
+          onClose={() => setMaintenanceTable(null)}
+          onCompleted={() => {
+            setMaintenanceTable(null);
+            void state.refreshCatalog(selected.id);
+          }}
+        />
+      )}
+      {contextMenu && selected && (
+        <ObjectContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          item={contextMenu.item}
+          profile={selected}
+          session={selectedSession}
+          onClose={() => setContextMenu(null)}
+          onRequestTableDialog={(req) => setTableDialogRequest(req)}
+          onRequestMaintenance={() =>
+            setMaintenanceTable({
+              schema: contextMenu.item.object.schema,
+              name: contextMenu.item.object.name,
+            })
+          }
         />
       )}
     </aside>

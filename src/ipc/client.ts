@@ -196,6 +196,23 @@ class PreviewClient implements StudioClient {
     if (command === "delete_sql_snippet") return null as T;
     if (command === "resource_usage")
       return { retainedBytes: 0, resultCount: 0, sessionCount: 0, activeRuns: 0 } as T;
+    if (command === "list_scratchpads") return [] as T;
+    if (command === "save_scratchpad") {
+      const argsObj = (args ?? {}) as {
+        id?: string;
+        name?: string;
+        content?: string;
+        connectionId?: string;
+      };
+      return {
+        id: argsObj.id ?? crypto.randomUUID(),
+        name: argsObj.name ?? "Scratchpad",
+        content: argsObj.content ?? "",
+        connectionId: argsObj.connectionId,
+        updatedAt: Date.now(),
+      } as T;
+    }
+    if (command === "delete_scratchpad") return undefined as T;
     if (command === "history" || command === "audit_log" || command === "extract_query_params")
       return [] as T;
     throw new Error(

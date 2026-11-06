@@ -28,7 +28,7 @@ export const SEARCH_SCOPES: readonly { id: SearchScope; label: string }[] = [
 
 export const MAX_SEARCH_RESULTS = 80;
 
-const OBJECT_KIND_LABELS: Record<DatabaseObjectKind, string> = {
+export const OBJECT_KIND_LABELS: Record<DatabaseObjectKind, string> = {
   table: "Table",
   partitionedTable: "Partitioned table",
   view: "View",
@@ -38,6 +38,11 @@ const OBJECT_KIND_LABELS: Record<DatabaseObjectKind, string> = {
   sequence: "Sequence",
   trigger: "Trigger",
   index: "Index",
+  stage: "Stage",
+  task: "Task",
+  stream: "Stream",
+  pipe: "Pipe",
+  fileFormat: "File format",
 };
 
 const OBJECT_KIND_PRIORITY: Record<DatabaseObjectKind, number> = {
@@ -50,6 +55,11 @@ const OBJECT_KIND_PRIORITY: Record<DatabaseObjectKind, number> = {
   sequence: 5,
   trigger: 4,
   index: 3,
+  stage: 6,
+  task: 6,
+  stream: 6,
+  pipe: 6,
+  fileFormat: 5,
 };
 
 export interface SearchCommandInput<TIcon = unknown> {

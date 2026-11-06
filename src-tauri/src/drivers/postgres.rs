@@ -529,6 +529,7 @@ impl Driver for Postgres {
             database: identity.database,
             role: identity.role,
             search_path: identity.search_path,
+            warehouse: None,
         })
     }
 

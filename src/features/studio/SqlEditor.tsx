@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { EditorState, Compartment, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
@@ -367,6 +367,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   );
   const availableContexts = useStudio((s) =>
     props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
+  );
+  const dimensions4d = useStudio((s) =>
+    props.sessionId ? s.session4dContexts[props.sessionId] : undefined,
   );
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
   const palette = useStudio((s) => s.palette);
@@ -1200,11 +1203,41 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         ? [currentContext, ...availableContexts]
         : availableContexts
       : [];
+  const isSnowflake = props.engine === "snowflake";
+  const sfRoleOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "role")?.values ?? [];
+    const current = runtimeState?.role;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, runtimeState?.role]);
+
+  const sfWarehouseOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "warehouse")?.values ?? [];
+    const current = runtimeState?.warehouse;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, runtimeState?.warehouse]);
+
+  const sfDatabaseOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "database")?.values ?? [];
+    const current = runtimeState?.database;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, runtimeState?.database]);
+
+  const sfSchemaOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "schema")?.values ?? availableContexts ?? [];
+    const current = runtimeState?.activeContext;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, availableContexts, runtimeState?.activeContext]);
+
   const showContextSwitcher =
     Boolean(props.sessionId) &&
-    contextOptions.length > 0 &&
-    runtimeState !== undefined &&
-    runtimeState.contextKind !== "none";
+    (isSnowflake ||
+      (contextOptions.length > 0 &&
+        runtimeState !== undefined &&
+        runtimeState.contextKind !== "none"));
   return (
     <div
       className="sql-editor"
@@ -1213,30 +1246,128 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       {props.engine !== "redis" &&
         (props.sessionId || paramSlots.length > 0 || props.value.trim()) && (
           <div className="editor-context-row">
-            {showContextSwitcher && (
-              <select
-                className="context-switcher"
-                aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
-                value={currentContext}
-                disabled={switchingContext}
-                onChange={(event) => {
-                  const target = event.target.value;
-                  if (!target || !props.sessionId || target === currentContext) return;
-                  setSwitchingContext(true);
-                  void useStudio
-                    .getState()
-                    .switchSessionContext(props.sessionId, target)
-                    .catch((error) => useStudio.getState().notify(messageOf(error)))
-                    .finally(() => setSwitchingContext(false));
-                }}
-              >
-                {!currentContext && <option value="">No active context</option>}
-                {contextOptions.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
+            {isSnowflake ? (
+              <>
+                <select
+                  className="context-switcher"
+                  aria-label="Active role"
+                  value={runtimeState?.role ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.role) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { role: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.role && <option value="">No active role</option>}
+                  {sfRoleOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active warehouse"
+                  value={runtimeState?.warehouse ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.warehouse) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { warehouse: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.warehouse && <option value="">No active warehouse</option>}
+                  {sfWarehouseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active database"
+                  value={runtimeState?.database ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.database) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { database: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.database && <option value="">No active database</option>}
+                  {sfDatabaseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active schema"
+                  value={runtimeState?.activeContext ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.activeContext)
+                      return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { schema: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.activeContext && <option value="">No active schema</option>}
+                  {sfSchemaOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              showContextSwitcher && (
+                <select
+                  className="context-switcher"
+                  aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
+                  value={currentContext}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === currentContext) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, target)
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentContext && <option value="">No active context</option>}
+                  {contextOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              )
             )}
             <div
               aria-live="polite"
@@ -1267,7 +1398,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                     ? `Completion unavailable: ${contextError}`
                     : live
                       ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                      : "Loading completion context…"}
+                      : runtimeState
+                        ? `${runtimeState.database || "No database"} · ${runtimeState.role || ""}${props.engine !== "mysql" && runtimeState.searchPath.length > 0 ? ` · ${runtimeState.searchPath.join(", ")}` : ""}`
+                        : "Loading completion context…"}
               </span>
               {paramSlots.length > 0 && props.onOpenParameters && (
                 <button

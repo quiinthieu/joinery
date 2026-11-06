@@ -2,14 +2,21 @@ import { useState, type FormEvent } from "react";
 import { Database, Loader2, ShieldCheck } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
-import type { ConnectionProfile, SafeMode, SessionInfo } from "../../ipc/generated";
+import type {
+  ConnectionProfile,
+  SafeMode,
+  SessionInfo,
+  SnowflakeAuthMethod,
+} from "../../ipc/generated";
 import { useStudio } from "../../state/studio";
 import { useSshTrust } from "./SshHostTrust";
 import { orderedGroups } from "./GroupManager";
 
 function completeConnection(profile: ConnectionProfile, session: SessionInfo, onClose: () => void) {
   const state = useStudio.getState();
-  state.setSession(session);
+  const normalizedSession =
+    session.connectionId !== profile.id ? { ...session, connectionId: profile.id } : session;
+  state.setSession(normalizedSession);
   state.notify(`Connected to ${profile.name}`);
   onClose();
   void state.refreshCatalog(profile.id).catch((error) => {
@@ -17,6 +24,7 @@ function completeConnection(profile: ConnectionProfile, session: SessionInfo, on
     if (latest.sessions[profile.id]?.id === session.id)
       latest.notify(`Connected to ${profile.name}. Could not load tables: ${messageOf(error)}`);
   });
+  void state.openConsole(profile.id);
 }
 
 export function ConnectionDialog({
@@ -201,13 +209,22 @@ export function ConnectionDialog({
                   database: engine === "redis" ? "0" : engine === "postgres" ? "postgres" : "",
                   username:
                     engine === "redis" ? "default" : engine === "postgres" ? "postgres" : "",
-                  safeMode: engine === "snowflake" ? "readOnly" : current.safeMode,
+                  safeMode: current.safeMode,
                   tlsMode: "verifyFull",
                   caCertPath: null,
                   ssh: null,
                   rememberPassword: false,
                   snowflake:
-                    engine === "snowflake" ? { role: "", warehouse: "", schema: "" } : null,
+                    engine === "snowflake"
+                      ? {
+                          role: "",
+                          warehouse: "",
+                          schema: "",
+                          authMethod: "keyPair",
+                          privateKeyPath: null,
+                          clientId: null,
+                        }
+                      : null,
                 }));
               }}
             >
@@ -236,13 +253,11 @@ export function ConnectionDialog({
                   groupId: e.target.value,
                   environment: group?.environment ?? "local",
                   safeMode:
-                    draft.engine === "snowflake"
-                      ? "readOnly"
-                      : group?.environment === "production"
-                        ? "passwordGated"
-                        : group?.environment === "staging"
-                          ? "confirm"
-                          : "silent",
+                    group?.environment === "production"
+                      ? "passwordGated"
+                      : group?.environment === "staging"
+                        ? "confirm"
+                        : "silent",
                   tlsMode: group?.environment === "production" ? "verifyFull" : draft.tlsMode,
                 }));
               }}
@@ -268,6 +283,51 @@ export function ConnectionDialog({
           </label>
           {draft.engine === "snowflake" && draft.snowflake && (
             <>
+              <label className="span-2">
+                Authentication method
+                <select
+                  aria-label="Authentication method"
+                  value={draft.snowflake.authMethod ?? "keyPair"}
+                  onChange={(e) =>
+                    change("snowflake", {
+                      ...draft.snowflake!,
+                      authMethod: e.target.value as SnowflakeAuthMethod,
+                    })
+                  }
+                >
+                  <option value="keyPair">Key-pair (RSA JWT)</option>
+                  <option value="oAuthBrowser">External browser (OAuth SSO)</option>
+                  <option value="password">Username / password</option>
+                </select>
+              </label>
+              {draft.snowflake.authMethod === "keyPair" && (
+                <>
+                  <label className="span-2">
+                    Private key path
+                    <input
+                      value={draft.snowflake.privateKeyPath ?? ""}
+                      onChange={(e) =>
+                        change("snowflake", {
+                          ...draft.snowflake!,
+                          privateKeyPath: e.target.value || null,
+                        })
+                      }
+                      spellCheck={false}
+                      placeholder="/Users/you/.snowflake/rsa_key.p8"
+                    />
+                  </label>
+                  <label className="span-2">
+                    Key passphrase <span className="optional">if encrypted</span>
+                    <input
+                      type="password"
+                      value={keyPassphrase}
+                      onChange={(e) => setKeyPassphrase(e.target.value)}
+                      autoComplete="off"
+                      placeholder="Leave empty if private key is unencrypted"
+                    />
+                  </label>
+                </>
+              )}
               <label>
                 Role
                 <input
@@ -303,8 +363,11 @@ export function ConnectionDialog({
                 />
               </label>
               <p className="form-note span-2">
-                Joinery opens your system browser for Snowflake sign-in. Read-only SQL and bounded
-                table previews need the account’s local-application OAuth integration.
+                {draft.snowflake.authMethod === "keyPair"
+                  ? "Joinery authenticates using a 2048+ bit RSA key pair and signed JWTs."
+                  : draft.snowflake.authMethod === "password"
+                    ? "Joinery signs in directly using your Snowflake account credentials."
+                    : "Joinery opens your system browser for Snowflake sign-in. Local-application OAuth integration is required."}
               </p>
             </>
           )}
@@ -338,7 +401,7 @@ export function ConnectionDialog({
               spellCheck={false}
             />
           </label>
-          {draft.engine !== "snowflake" && (
+          {(draft.engine !== "snowflake" || draft.snowflake?.authMethod === "password") && (
             <label className="span-2">
               Password
               <input
@@ -350,7 +413,7 @@ export function ConnectionDialog({
               />
             </label>
           )}
-          {draft.engine !== "snowflake" && (
+          {(draft.engine !== "snowflake" || draft.snowflake?.authMethod === "password") && (
             <label className="checkbox-label span-2">
               <input
                 type="checkbox"
@@ -517,19 +580,16 @@ export function ConnectionDialog({
             <select
               aria-label="Safe Mode"
               value={draft.safeMode}
-              disabled={draft.engine === "snowflake"}
               onChange={(e) => change("safeMode", e.target.value as SafeMode)}
             >
-              {!production && draft.engine !== "snowflake" && (
+              {!production && (
                 <>
                   <option value="silent">Silent · run without confirmations</option>
                   <option value="confirm">Confirm · review writes</option>
                   <option value="guard">Guard · stronger checks for unrestricted writes</option>
                 </>
               )}
-              {draft.engine !== "snowflake" && (
-                <option value="passwordGated">Password gated · authorize each write batch</option>
-              )}
+              <option value="passwordGated">Password gated · authorize each write batch</option>
               <option value="readOnly">Read only · block writes</option>
             </select>
           </label>
@@ -656,7 +716,7 @@ export function ConnectDialog({
     >
       <form onSubmit={(e) => void connect(e)}>
         <div className="modal-body">
-          {profile.engine !== "snowflake" ? (
+          {profile.engine !== "snowflake" || profile.snowflake?.authMethod === "password" ? (
             <label>
               Password
               <input
@@ -670,6 +730,17 @@ export function ConnectDialog({
                     ? "Leave blank to use the saved password"
                     : "Enter for this session"
                 }
+              />
+            </label>
+          ) : profile.snowflake?.authMethod === "keyPair" ? (
+            <label>
+              Key passphrase <span className="optional">if encrypted</span>
+              <input
+                autoFocus
+                type="password"
+                value={keyPassphrase}
+                onChange={(e) => setKeyPassphrase(e.target.value)}
+                placeholder="Leave blank if not encrypted"
               />
             </label>
           ) : (

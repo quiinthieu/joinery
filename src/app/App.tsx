@@ -47,11 +47,17 @@ import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
 import { SchemaDiffView } from "../features/schema-diff/SchemaDiffView";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
+import {
+  buildMutationDiffs,
+  filterTableChanges,
+  type RowDiff,
+} from "../features/safety/mutation-diff";
 import { ExportDialog } from "../features/grid/ExportDialog";
 import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
 import { DataCompareDialog } from "../features/grid/DataCompareDialog";
 import { TableColumnsDialog } from "../features/grid/TableColumnsDialog";
 import { ValueDialog } from "../features/grid/ValueDialog";
+import { ValueInspectorPanel } from "../features/inspector/ValueInspectorPanel";
 import { Modal, InlineError } from "../components/ui/Modal";
 import { tabNavigation } from "../components/ui/tabs";
 import { appErrorOf, client, messageOf } from "../ipc/client";
@@ -66,6 +72,7 @@ import type {
   ConnectionProfile,
   ForeignKey,
   InboundForeignKey,
+  ParameterHistoryEntry,
   PreparedPlan,
   ProcessInfo,
   QueryParamInput,
@@ -113,6 +120,8 @@ import {
   pruneTabParamDrafts,
   getTabParamDrafts,
   setTabParamDrafts,
+  buildQueryParamInputs,
+  type QueryParamDraft,
 } from "../features/studio/ParameterDialog";
 import { SearchEverywhere } from "../features/studio/SearchEverywhere";
 import type { SearchScope } from "../features/studio/search-everywhere";
@@ -134,6 +143,10 @@ type Dialog =
       preview?: ChangePreview;
       tabId: string;
       profile?: ConnectionProfile;
+      diffRows?: RowDiff[];
+      onRecomputePlan?(
+        selectedIds: Set<string>,
+      ): Promise<{ plan: PreparedPlan; preview: ChangePreview }>;
       onSuccess?(): void;
       onApprove?(approval: string): Promise<void>;
     }
@@ -152,6 +165,7 @@ type Dialog =
       sql: string;
       slots: QueryParamSlot[];
       profile?: ConnectionProfile;
+      initialDrafts?: Record<string, QueryParamDraft>;
       allowSaveOnly?: boolean;
       explain?: "estimate" | "analyze";
     }
@@ -638,6 +652,8 @@ export function App() {
     state.updateTab(tabId, {
       status: "queued",
       error: null,
+      statementErrors: {},
+      activeQueryId: null,
       errorOrigin: origin,
       elapsedMs: 0,
       metrics: {},
@@ -663,7 +679,7 @@ export function App() {
       });
       const latest = useStudio.getState().tabs.find((tab) => tab.id === tabId);
       if (!latest || latest.revision !== revision)
-        void client.call("cancel_run", { runId }).catch(() => {});
+        void client.call("cancel_query", { runId }).catch(() => {});
       else if (latest.status === "queued") state.updateTab(tabId, { runId });
     } catch (error) {
       if (useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision === revision)
@@ -695,6 +711,7 @@ export function App() {
           sql: targetSql,
           ...(params ? { params } : {}),
           ...(explain ? { analyze: explain === "analyze" } : {}),
+          errorPolicy: useStudio.getState().batchErrorPolicy,
         },
       );
       if (plan.requiresApproval) {
@@ -742,6 +759,34 @@ export function App() {
           sql: targetSql,
         });
         if (slots.length > 0) {
+          const profileId = target?.id ?? "";
+          let historyEntries: ParameterHistoryEntry[] = [];
+          if (profileId) {
+            try {
+              historyEntries = await client.call<ParameterHistoryEntry[]>("get_parameter_history", {
+                profileId,
+              });
+            } catch {
+              // fallback if offline/mocked
+            }
+          }
+          const tabDrafts = getTabParamDrafts(active.id);
+          const initialDrafts: Record<string, QueryParamDraft> = {};
+          for (const slot of slots) {
+            if (tabDrafts[slot.key]) {
+              initialDrafts[slot.key] = tabDrafts[slot.key];
+            } else {
+              const hist = historyEntries.find((h) => h.paramKey === slot.key);
+              if (hist) {
+                initialDrafts[slot.key] = {
+                  kind: hist.kind,
+                  value: hist.value ?? "",
+                  isNull: hist.isNull,
+                };
+              }
+            }
+          }
+
           setDialog({
             kind: "parameters",
             origin,
@@ -750,6 +795,7 @@ export function App() {
             sql: targetSql,
             slots,
             profile: target,
+            initialDrafts,
             allowSaveOnly: false,
             explain,
           });
@@ -856,30 +902,71 @@ export function App() {
         sessionId: session.id,
         changes,
       });
+      const diffRows = buildMutationDiffs(active, dirtyStore, resultCache);
+      let currentSelectedIds = new Set(diffRows.map((r) => r.id));
+
+      const onRecomputePlan = async (selectedIds: Set<string>) => {
+        currentSelectedIds = selectedIds;
+        const filtered = filterTableChanges(changes, selectedIds, diffRows);
+        const updatedPreview = await client.call<ChangePreview>("prepare_table_changes", {
+          sessionId: session.id,
+          changes: filtered,
+        });
+        return { plan: updatedPreview.plan, preview: updatedPreview };
+      };
+
       setDialog({
         kind: "review",
         plan: preview.plan,
         preview,
         profile,
         tabId: active.id,
+        diffRows,
+        onRecomputePlan,
         onSuccess: () => {
           const latestTab = useStudio.getState().tabs.find((t) => t.id === active.id);
+          const committedDiffs = diffRows.filter((r) => currentSelectedIds.has(r.id));
+          const uncommittedCount = diffRows.length - committedDiffs.length;
+
+          const committedUpdates: { resultId: string; row: number; column: string }[] = [];
+          for (const diff of committedDiffs) {
+            if (diff.ref.kind === "update") {
+              const u = diff.ref;
+              for (const c of diff.cells) {
+                if (c.changed)
+                  committedUpdates.push({
+                    resultId: u.resultId,
+                    row: u.row,
+                    column: c.columnId,
+                  });
+              }
+            } else if (diff.ref.kind === "delete") {
+              dirtyStore.setDeleted(diff.ref.resultId, [diff.ref.row], false);
+            } else if (diff.ref.kind === "insert") {
+              dirtyStore.removeInsertRows(diff.ref.tabId, [diff.ref.insertId]);
+            }
+          }
+          if (committedUpdates.length > 0) {
+            dirtyStore.revertBatch(committedUpdates);
+          }
+
           if (active.kind === "query" && activeQueryResult) {
-            dirtyStore.clearTab(activeQueryResult.id, [activeQueryResult.id]);
             resultCache.release(activeQueryResult.id);
             setSelectedCell(null);
-            state.notify("Changes committed");
-            return;
+          } else {
+            setSelectedCell(null);
+            if (latestTab && hasRawClauses(latestTab.query))
+              void applyTableQuery(active.id, latestTab.query, { force: true });
+            else void state.refreshTable(active.id);
           }
-          dirtyStore.clearTab(
-            active.id,
-            (latestTab ?? active).pages.map((page) => page.result.id),
-          );
-          setSelectedCell(null);
-          if (latestTab && hasRawClauses(latestTab.query))
-            void applyTableQuery(active.id, latestTab.query, { force: true });
-          else void state.refreshTable(active.id);
-          state.notify("Changes committed");
+
+          if (uncommittedCount > 0) {
+            state.notify(
+              `Committed ${committedDiffs.length} change${committedDiffs.length === 1 ? "" : "s"}; ${uncommittedCount} unstaged change${uncommittedCount === 1 ? "" : "s"} preserved.`,
+            );
+          } else {
+            state.notify("Changes committed");
+          }
         },
       });
     } catch (error) {
@@ -1381,88 +1468,15 @@ export function App() {
             )}
           </section>
           {state.inspectorVisible && (
-            <aside
-              className="inspector"
-              aria-label="Selected cell inspector"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              <div className="inspector-title">
-                INSPECTOR
-                <button
-                  className="icon-button"
-                  aria-label="Close inspector"
-                  onClick={() => useStudio.setState({ inspectorVisible: false })}
-                >
-                  <X size={13} />
-                </button>
-              </div>
-              {selectedCell ? (
-                <>
-                  <h3>{selectedCell.column.name}</h3>
-                  <dl>
-                    <dt>Type</dt>
-                    <dd>{selectedCell.column.databaseType}</dd>
-                    <dt>Nullable</dt>
-                    <dd>{selectedCell.column.nullable ? "Yes" : "No"}</dd>
-                    <dt>Key</dt>
-                    <dd>
-                      {selectedCell.column.primaryKey
-                        ? "Primary key"
-                        : selectedCell.column.foreignKey
-                          ? "Foreign key"
-                          : "—"}
-                    </dd>
-                    {selectedCell.deleted && (
-                      <>
-                        <dt>Row</dt>
-                        <dd>Marked for deletion</dd>
-                      </>
-                    )}
-                    {selectedCell.insert && (
-                      <>
-                        <dt>Row</dt>
-                        <dd>Staged insert</dd>
-                      </>
-                    )}
-                  </dl>
-                  <div className="inspector-value">
-                    {selectedCell.insert?.usingDefault ? (
-                      <em>&lt;default&gt;</em>
-                    ) : selectedCell.insert?.unfilledRequired ? (
-                      <em>&lt;required&gt;</em>
-                    ) : selectedCell.value === null ? (
-                      <em>NULL</em>
-                    ) : (
-                      <pre>{selectedCell.value.slice(0, 4000)}</pre>
-                    )}
-                  </div>
-                  <button
-                    className="button ghost small"
-                    onClick={() => setDialog({ kind: "value", target: selectedCell })}
-                  >
-                    {selectedCell.column.editable ? "Edit value" : "View full value"}
-                  </button>
-                  {selectedKeys.length > 0 && (
-                    <button className="button ghost small" onClick={goToReferenced}>
-                      <ArrowUpRight size={12} />
-                      Go to referenced row
-                    </button>
-                  )}
-                  {tableColumn && (
-                    <button className="button ghost small" onClick={() => void goToReferencing()}>
-                      <ArrowDownLeft size={12} />
-                      Go to referencing rows
-                    </button>
-                  )}
-                </>
-              ) : (
-                <div className="inspector-empty">
-                  <Database size={23} />
-                  <p>Select a cell to see its value and type.</p>
-                </div>
-              )}
-            </aside>
+            <ValueInspectorPanel
+              target={selectedCell}
+              onClose={() => useStudio.setState({ inspectorVisible: false })}
+              onOpenValue={(target) => setDialog({ kind: "value", target })}
+              onGoToReferenced={selectedKeys.length > 0 ? goToReferenced : undefined}
+              onGoToReferencing={tableColumn ? () => void goToReferencing() : undefined}
+              hasReferencedKeys={selectedKeys.length > 0}
+              hasReferencingKeys={Boolean(tableColumn)}
+            />
           )}
         </div>
         <footer className="status-bar">
@@ -1549,14 +1563,36 @@ export function App() {
       {dialog?.kind === "parameters" && (
         <ParameterDialog
           slots={dialog.slots}
-          initialDrafts={getTabParamDrafts(dialog.tabId)}
+          initialDrafts={dialog.initialDrafts ?? getTabParamDrafts(dialog.tabId)}
           profile={dialog.profile}
           canRun={Boolean(dialog.sessionId)}
           allowSaveOnly={Boolean(dialog.allowSaveOnly)}
-          onSaveDrafts={(drafts) => setTabParamDrafts(dialog.tabId, drafts)}
+          onSaveDrafts={(drafts) => {
+            setTabParamDrafts(dialog.tabId, drafts);
+            if (dialog.profile?.id) {
+              const built = buildQueryParamInputs(dialog.slots, drafts);
+              if (built.inputs) {
+                void client
+                  .call("save_parameter_history", {
+                    profileId: dialog.profile.id,
+                    entries: built.inputs,
+                  })
+                  .catch(() => {});
+              }
+            }
+          }}
           onRun={
             dialog.sessionId
-              ? async (inputs) => {
+              ? async (inputs, drafts) => {
+                  setTabParamDrafts(dialog.tabId, drafts);
+                  if (dialog.profile?.id) {
+                    void client
+                      .call("save_parameter_history", {
+                        profileId: dialog.profile.id,
+                        entries: inputs,
+                      })
+                      .catch(() => {});
+                  }
                   await prepareAndExecuteSql(
                     dialog.tabId,
                     dialog.sessionId!,
@@ -1577,6 +1613,8 @@ export function App() {
           plan={dialog.plan}
           preview={dialog.preview}
           profile={dialog.profile}
+          diffRows={dialog.diffRows}
+          onRecomputePlan={dialog.onRecomputePlan}
           onExecute={async (approval) => {
             if (dialog.onApprove) await dialog.onApprove(approval);
             else

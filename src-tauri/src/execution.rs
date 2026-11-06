@@ -112,6 +112,7 @@ struct StoredPlan {
     approval: Option<String>,
     digest: String,
     bytes: usize,
+    error_policy: BatchErrorPolicy,
 }
 
 struct Job {
@@ -174,6 +175,7 @@ pub struct Studio {
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
+    query_jobs: Mutex<HashMap<String, String>>,
     pub results: ResultStore,
     connect_gate: tokio::sync::Mutex<()>,
     configuration_gate: Mutex<()>,
@@ -206,6 +208,7 @@ impl Studio {
             jobs: Mutex::new(HashMap::new()),
             exports: Mutex::new(HashMap::new()),
             result_sessions: Mutex::new(HashMap::new()),
+            query_jobs: Mutex::new(HashMap::new()),
             results: ResultStore::default(),
             connect_gate: tokio::sync::Mutex::new(()),
             configuration_gate: Mutex::new(()),
@@ -235,6 +238,7 @@ impl Studio {
             bookmarks: self.persistence.bookmarks()?,
             sql_format_settings: self.persistence.sql_format_settings()?,
             sql_snippets: self.persistence.sql_snippets()?,
+            scratchpads: self.persistence.scratchpads().unwrap_or_default(),
         })
     }
 
@@ -274,6 +278,50 @@ impl Studio {
     pub fn delete_bookmark(&self, id: &str) -> AppResult<()> {
         let _configuration = self.configuration_gate.lock();
         self.persistence.delete_bookmark(id)
+    }
+
+    pub fn persistence(&self) -> &Persistence {
+        &self.persistence
+    }
+
+    pub fn get_console(&self, profile_id: &str) -> AppResult<PersistentConsole> {
+        self.persistence.get_console(profile_id)
+    }
+
+    pub fn save_console(
+        &self,
+        profile_id: &str,
+        content: &str,
+        name: Option<&str>,
+    ) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_console(profile_id, content, name)
+    }
+
+    pub fn scratchpads(&self) -> AppResult<Vec<Scratchpad>> {
+        self.persistence.scratchpads()
+    }
+
+    pub fn save_scratchpad(
+        &self,
+        id: Option<String>,
+        name: Option<String>,
+        content: String,
+        connection_id: Option<String>,
+    ) -> AppResult<Scratchpad> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence
+            .save_scratchpad_fields(id, name, content, connection_id)
+    }
+
+    pub fn save_scratchpad_struct(&self, sp: Scratchpad) -> AppResult<Scratchpad> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.save_scratchpad(&sp)
+    }
+
+    pub fn delete_scratchpad(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.delete_scratchpad(id)
     }
 
     pub fn metadata_backups(&self) -> AppResult<Vec<MetadataBackup>> {
@@ -553,7 +601,7 @@ impl Studio {
                         &profile,
                         self.persistence.setting(&host_setting(ssh))?,
                         secrets.ssh_password.map(Zeroizing::new),
-                        secrets.key_passphrase.map(Zeroizing::new),
+                        secrets.key_passphrase.as_ref().cloned().map(Zeroizing::new),
                     )
                     .await?,
             )
@@ -592,12 +640,20 @@ impl Studio {
                 (d, i)
             }
             EngineKind::Snowflake => {
-                if password.is_some() {
+                let sf_config = profile.snowflake.as_ref();
+                let auth_method = sf_config.map(|c| c.auth_method).unwrap_or_default();
+                if auth_method == SnowflakeAuthMethod::OAuthBrowser && password.is_some() {
                     return Err(AppError::invalid(
                         "Snowflake browser sign-in does not use a password",
                     ));
                 }
-                let (d, i) = Snowflake::open(&profile, &session_id).await?;
+                let (d, i) = Snowflake::open(
+                    &profile,
+                    &session_id,
+                    password.as_deref().map(String::as_str),
+                    secrets.key_passphrase.as_deref(),
+                )
+                .await?;
                 (d, i)
             }
         };
@@ -783,7 +839,22 @@ impl Studio {
         sql: &str,
         params: Option<Vec<QueryParamInput>>,
     ) -> AppResult<PreparedPlan> {
-        self.prepare_execution_inner(session_id, sql, params, None)
+        self.prepare_execution_with_params_and_policy(
+            session_id,
+            sql,
+            params,
+            BatchErrorPolicy::default(),
+        )
+    }
+
+    pub fn prepare_execution_with_params_and_policy(
+        &self,
+        session_id: &str,
+        sql: &str,
+        params: Option<Vec<QueryParamInput>>,
+        error_policy: BatchErrorPolicy,
+    ) -> AppResult<PreparedPlan> {
+        self.prepare_execution_inner(session_id, sql, params, None, error_policy)
     }
 
     fn prepare_execution_inner(
@@ -792,6 +863,7 @@ impl Studio {
         sql: &str,
         params: Option<Vec<QueryParamInput>>,
         error_source: Option<ExplainSource>,
+        error_policy: BatchErrorPolicy,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
         let source_bytes = error_source
@@ -808,6 +880,7 @@ impl Studio {
                     error_source,
                 },
                 sql.len() + source_bytes,
+                error_policy,
             );
         }
         let (bound_parameters, validated) =
@@ -845,6 +918,7 @@ impl Studio {
                 error_source,
             },
             (crate::params::MAX_BOUND_PLAN_BYTES - remaining_bytes).saturating_add(param_bytes),
+            error_policy,
         )
     }
 
@@ -900,6 +974,7 @@ impl Studio {
             &format!("{}{}", source.prefix, sql),
             params,
             Some(source),
+            BatchErrorPolicy::default(),
         )
         .map_err(|mut error| {
             ExplainSource {
@@ -916,6 +991,7 @@ impl Studio {
         plan: PreparedPlan,
         action: Action,
         bytes: usize,
+        error_policy: BatchErrorPolicy,
     ) -> AppResult<PreparedPlan> {
         let mut plans = self.plans.lock();
         plans.retain(|_, p| p.deadline > Instant::now());
@@ -967,6 +1043,7 @@ impl Studio {
                 approval: None,
                 digest,
                 bytes,
+                error_policy,
             },
         );
         Ok(plan)
@@ -1123,6 +1200,7 @@ impl Studio {
                 bound,
                 error_source,
             } => {
+                let mut encountered_error = false;
                 for (index, statement) in stored.plan.statements.iter().enumerate() {
                     if token.is_cancelled() || session.closed.load(Ordering::Acquire) {
                         status = RunStatus::Cancelled;
@@ -1172,6 +1250,7 @@ impl Studio {
                         }
                         Err(mut error) => {
                             sink.fail();
+                            encountered_error = true;
                             if matches!(
                                 error.code,
                                 ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
@@ -1229,16 +1308,27 @@ impl Studio {
                                     source.map_error(&mut error);
                                 }
                                 events(QueryEvent::Error {
-                                    error,
+                                    error: error.clone(),
                                     statement_index: index,
                                 });
                             }
-                            break;
+                            let should_halt = error.code == ErrorCode::Cancelled
+                                || matches!(
+                                    error.code,
+                                    ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
+                                )
+                                || stored.error_policy == BatchErrorPolicy::StopOnError;
+                            if should_halt {
+                                break;
+                            }
                         }
                     }
                     if sink.truncated && statement.kind == StatementKind::Read {
                         break;
                     }
+                }
+                if encountered_error && status == RunStatus::Completed {
+                    status = RunStatus::Failed;
                 }
             }
             Action::Changes {
@@ -1389,6 +1479,7 @@ impl Studio {
             });
         }
         self.jobs.lock().remove(&run_id);
+        self.query_jobs.lock().retain(|_, r| r != &run_id);
         events(QueryEvent::Finished {
             run_id,
             status,
@@ -1414,6 +1505,32 @@ impl Studio {
         session.driver.cancel().await
     }
 
+    pub async fn cancel_by_query_id(&self, query_id: &str) -> AppResult<()> {
+        if self.cancel(query_id).await.is_ok() {
+            return Ok(());
+        }
+        let target_run_id = self.query_jobs.lock().get(query_id).cloned();
+        if let Some(run_id) = target_run_id {
+            return self.cancel(&run_id).await;
+        }
+        let target_session = {
+            let sessions = self.sessions.lock();
+            sessions
+                .values()
+                .find(|s| s.driver.active_query_handle().as_deref() == Some(query_id))
+                .cloned()
+        };
+        if let Some(session) = target_session {
+            let active_run = session.active_run.lock().clone();
+            if let Some(run_id) = active_run {
+                return self.cancel(&run_id).await;
+            }
+            let _gate = session.cancellation_gate.lock().await;
+            return session.driver.cancel().await;
+        }
+        Ok(())
+    }
+
     pub async fn session_contexts(&self, session_id: &str) -> AppResult<SessionContextOptions> {
         let session = self.session(session_id)?;
         if session.active_run.lock().is_some() {
@@ -1434,10 +1551,28 @@ impl Studio {
         self.build_session_contexts(&session).await
     }
 
+    pub async fn list_contexts(&self, session_id: &str) -> AppResult<Vec<ContextDimension>> {
+        let session = self.session(session_id)?;
+        session.driver.list_context_dimensions().await
+    }
+
     pub async fn switch_session_context(
         &self,
         session_id: &str,
         target: &str,
+    ) -> AppResult<SessionContextOptions> {
+        self.switch_session_context_4d(session_id, Some(target), None, None, None, None)
+            .await
+    }
+
+    pub async fn switch_session_context_4d(
+        &self,
+        session_id: &str,
+        target: Option<&str>,
+        warehouse: Option<&str>,
+        role: Option<&str>,
+        database: Option<&str>,
+        schema: Option<&str>,
     ) -> AppResult<SessionContextOptions> {
         let session = self.session(session_id)?;
         if session.active_run.lock().is_some() {
@@ -1455,15 +1590,31 @@ impl Studio {
                 "This database session is disconnected",
             ));
         }
-        session.driver.switch_context(target).await?;
+        let result = session
+            .driver
+            .switch_session_context(target, warehouse, role, database, schema)
+            .await?;
         *session.completion.lock() = None;
         self.plans
             .lock()
             .retain(|_, p| p.plan.session_id != session.info.id);
-        let _ = self
-            .persistence
-            .audit(&session.profile.id, "switch-context", target, "completed");
-        self.build_session_contexts(&session).await
+        let audit_target = target
+            .or(schema)
+            .or(database)
+            .or(role)
+            .or(warehouse)
+            .unwrap_or("");
+        let _ = self.persistence.audit(
+            &session.profile.id,
+            "switch-context",
+            audit_target,
+            "completed",
+        );
+        if session.profile.engine == EngineKind::Snowflake {
+            Ok(result)
+        } else {
+            self.build_session_contexts(&session).await
+        }
     }
 
     pub async fn set_transaction_mode(
@@ -1590,7 +1741,16 @@ impl Studio {
         {
             available.insert(0, active.clone());
         }
-        Ok(SessionContextOptions { state, available })
+        let dims = session.driver.list_context_dimensions().await.ok();
+        Ok(SessionContextOptions {
+            state: state.clone(),
+            available,
+            active_warehouse: state.warehouse,
+            active_role: Some(state.role),
+            active_database: Some(state.database),
+            active_schema: state.active_context,
+            contexts: dims,
+        })
     }
 
     /// Read a bounded context snapshot on the existing editor execution lane.
@@ -1988,6 +2148,7 @@ impl Studio {
                 error_source: None,
             },
             bytes,
+            BatchErrorPolicy::default(),
         )
     }
     pub fn preview_table_object_ddl(
@@ -2039,6 +2200,7 @@ impl Studio {
                 error_source: None,
             },
             bytes,
+            BatchErrorPolicy::default(),
         )
     }
     pub fn preview_table_maintenance(
@@ -2077,6 +2239,7 @@ impl Studio {
                 error_source: None,
             },
             bytes,
+            BatchErrorPolicy::default(),
         )
     }
     pub async fn prepare_migration_ddl(
@@ -2195,6 +2358,7 @@ impl Studio {
                 error_source: None,
             },
             bytes,
+            BatchErrorPolicy::default(),
         )
     }
     async fn schema_for_session(
@@ -2310,6 +2474,7 @@ impl Studio {
                 query,
             },
             bytes,
+            BatchErrorPolicy::default(),
         )?;
         Ok(Some(stored))
     }
@@ -2717,6 +2882,8 @@ impl Studio {
             .map(|m| {
                 if session.profile.engine == EngineKind::Mysql {
                     crate::drivers::mysql::mutation_sql(&schema, m)
+                } else if session.profile.engine == EngineKind::Snowflake {
+                    crate::drivers::snowflake::values::mutation_sql(&schema, m)
                 } else {
                     mutation_sql(&schema, m)
                 }
@@ -2770,6 +2937,7 @@ impl Studio {
                 inserted_rows,
             },
             bytes,
+            BatchErrorPolicy::default(),
         )?;
         Ok(ChangePreview {
             plan,
@@ -2798,6 +2966,7 @@ impl Studio {
                 identity: identity.into(),
             },
             id.len() + identity.len(),
+            BatchErrorPolicy::default(),
         )
     }
 
@@ -3475,6 +3644,7 @@ impl Studio {
                 inserted_rows: Vec::new(),
             },
             total_bytes,
+            BatchErrorPolicy::default(),
         )?;
         Ok(ChangePreview {
             plan,
@@ -3819,7 +3989,10 @@ fn browse_sql_for_engine(
         EngineKind::Mysql => {
             crate::drivers::mysql::browse_sql(schema, query, after).map(|(sql, _)| sql)
         }
-        EngineKind::Snowflake | EngineKind::Redis => Err(AppError::new(
+        EngineKind::Snowflake => {
+            crate::drivers::snowflake::browse_sql(schema, query, after).map(|(sql, _)| sql)
+        }
+        EngineKind::Redis => Err(AppError::new(
             ErrorCode::Unsupported,
             "Sorting and filtering table data is unavailable for this engine",
         )),
@@ -4001,6 +4174,17 @@ impl QuerySink for Output<'_> {
         let result = self.studio.results.finish(&id, self.truncated)?;
         (self.events)(QueryEvent::Result { result });
         Ok(())
+    }
+    fn query_id(&mut self, id: &str) {
+        self.studio
+            .query_jobs
+            .lock()
+            .insert(id.to_string(), self.run_id.into());
+        (self.events)(QueryEvent::QueryHandle {
+            run_id: self.run_id.into(),
+            statement_index: self.index,
+            query_id: id.into(),
+        });
     }
 }
 

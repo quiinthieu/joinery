@@ -110,12 +110,27 @@ pub struct ConnectionProfile {
     pub snowflake: Option<SnowflakeConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeAuthMethod {
+    #[default]
+    KeyPair,
+    OAuthBrowser,
+    Password,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SnowflakeConfig {
     pub role: String,
     pub warehouse: String,
     pub schema: String,
+    #[serde(default)]
+    pub auth_method: SnowflakeAuthMethod,
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 // Secret inputs deliberately do not implement Debug and are never persisted with profiles.
@@ -681,6 +696,11 @@ pub enum DatabaseObjectKind {
     Sequence,
     Trigger,
     Index,
+    Stage,
+    Task,
+    Stream,
+    Pipe,
+    FileFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
@@ -930,6 +950,17 @@ pub struct ResultInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub editability: Option<ResultEditability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub query_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum BatchErrorPolicy {
+    #[default]
+    StopOnError,
+    ContinueOnError,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -973,6 +1004,11 @@ pub enum QueryEvent {
     StatementStarted {
         run_id: String,
         index: usize,
+    },
+    QueryHandle {
+        run_id: String,
+        statement_index: usize,
+        query_id: String,
     },
     Result {
         result: ResultInfo,
@@ -1341,6 +1377,47 @@ pub struct Bootstrap {
     pub sql_format_settings: SqlFormatSettings,
     #[serde(default)]
     pub sql_snippets: Vec<SqlSnippet>,
+    #[serde(default)]
+    pub scratchpads: Vec<Scratchpad>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentConsole {
+    pub profile_id: String,
+    pub name: String,
+    pub content: String,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveConsoleResult {
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Scratchpad {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub connection_id: Option<String>,
+    #[ts(type = "number")]
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ParameterHistoryEntry {
+    pub profile_id: String,
+    pub param_key: String,
+    pub kind: QueryParamKind,
+    pub value: Option<String>,
+    pub is_null: bool,
+    pub used_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1542,7 +1619,7 @@ pub enum SessionContextKind {
     Database,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRuntimeState {
     pub session_id: String,
@@ -1553,13 +1630,48 @@ pub struct SessionRuntimeState {
     pub database: String,
     pub role: String,
     pub search_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warehouse: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct ContextDimension {
+    pub kind: String,
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionContextOptions {
     pub state: SessionRuntimeState,
     pub available: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_warehouse: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_database: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contexts: Option<Vec<ContextDimension>>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchContextRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub warehouse: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub database: Option<String>,
+    #[serde(default)]
+    pub schema: Option<String>,
 }
 
 fn default_true() -> bool {

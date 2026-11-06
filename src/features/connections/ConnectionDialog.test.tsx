@@ -190,6 +190,7 @@ test("a newly saved production profile can authorize changed settings after a fa
         linesBetweenQueries: 1,
       },
       sqlSnippets: [],
+      scratchpads: [],
       workspace: null,
     },
   });

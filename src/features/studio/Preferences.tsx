@@ -271,6 +271,19 @@ export function Preferences({ onClose }: { onClose(): void }) {
             <option value="compact">Compact</option>
           </select>
         </label>
+        <label>
+          Batch error policy
+          <select
+            aria-label="Batch error policy"
+            value={state.batchErrorPolicy}
+            onChange={(event) =>
+              state.setBatchErrorPolicy(event.target.value as "stopOnError" | "continueOnError")
+            }
+          >
+            <option value="stopOnError">Stop on error</option>
+            <option value="continueOnError">Continue on error</option>
+          </select>
+        </label>
         <div className="preference-divider" />
         <section className="shortcut-settings" aria-label="Keyboard shortcuts">
           <div className="shortcut-settings-header">

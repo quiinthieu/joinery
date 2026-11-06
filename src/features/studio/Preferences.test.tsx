@@ -29,6 +29,7 @@ beforeEach(() => {
       bookmarks: [],
       sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
       sqlSnippets: [],
+      scratchpads: [],
     },
     sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
     sqlSnippets: [],

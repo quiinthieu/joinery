@@ -185,6 +185,11 @@ fn kind_rank(kind: DatabaseObjectKind) -> u8 {
         DatabaseObjectKind::Sequence => 7,
         DatabaseObjectKind::Trigger => 8,
         DatabaseObjectKind::Index => 9,
+        DatabaseObjectKind::Stage => 10,
+        DatabaseObjectKind::Task => 11,
+        DatabaseObjectKind::Stream => 12,
+        DatabaseObjectKind::Pipe => 13,
+        DatabaseObjectKind::FileFormat => 14,
     }
 }
 

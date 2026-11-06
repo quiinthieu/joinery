@@ -57,6 +57,95 @@ export class DirtyStore {
   get(resultId: string, row: number, column: string) {
     return this.cells.get(this.key(resultId, row, column));
   }
+  hasCell(resultId: string, row: number, column: string): boolean {
+    if (resultId.startsWith("insert:")) {
+      const insertId = resultId.slice(7);
+      for (const rows of this.inserts.values()) {
+        const targetRow = rows.find((r) => r.id === insertId);
+        if (targetRow) return column in targetRow.values;
+      }
+      return false;
+    }
+    return this.cells.has(this.key(resultId, row, column));
+  }
+  getOriginal(resultId: string, row: number, column: string): string | null | undefined {
+    if (resultId.startsWith("insert:")) {
+      return undefined;
+    }
+    return this.cells.get(this.key(resultId, row, column))?.original;
+  }
+  revertCell(resultId: string, row: number, column: string): void {
+    this.revertBatch([{ resultId, row, column }]);
+  }
+  revertRow(resultId: string, row: number): void {
+    let mutated = false;
+    if (resultId.startsWith("insert:")) {
+      const insertId = resultId.slice(7);
+      for (const [tabId, rows] of this.inserts) {
+        if (rows.some((r) => r.id === insertId)) {
+          this.removeInsertRows(tabId, [insertId]);
+          return;
+        }
+      }
+      return;
+    }
+    const deleteSet = this.deletes.get(resultId);
+    if (deleteSet && deleteSet.has(row)) {
+      deleteSet.delete(row);
+      this.bytes -= DELETE_ENTRY_BYTES;
+      if (deleteSet.size === 0) {
+        this.deletes.delete(resultId);
+      }
+      mutated = true;
+    }
+    const removedKeys: string[] = [];
+    for (const [key, cell] of this.cells) {
+      if (cell.resultId === resultId && cell.row === row) {
+        this.bytes -= this.size(cell);
+        removedKeys.push(key);
+      }
+    }
+    for (const key of removedKeys) {
+      this.cells.delete(key);
+      mutated = true;
+    }
+    if (mutated) {
+      this.changed();
+    }
+  }
+  revertBatch(cells: { resultId: string; row: number; column: string }[]): void {
+    if (!cells.length) return;
+    let mutated = false;
+    let delta = 0;
+    for (const item of cells) {
+      if (item.resultId.startsWith("insert:")) {
+        const insertId = item.resultId.slice(7);
+        for (const rows of this.inserts.values()) {
+          const targetRow = rows.find((r) => r.id === insertId);
+          if (targetRow && item.column in targetRow.values) {
+            const before = this.insertRowSize(targetRow);
+            delete targetRow.values[item.column];
+            const after = this.insertRowSize(targetRow);
+            delta += after - before;
+            mutated = true;
+            break;
+          }
+        }
+        continue;
+      }
+      const key = this.key(item.resultId, item.row, item.column);
+      const existing = this.cells.get(key);
+      if (existing) {
+        delta -= this.size(existing);
+        this.cells.delete(key);
+        mutated = true;
+      }
+    }
+    if (mutated) {
+      this.bytes += delta;
+      this.changed();
+    }
+  }
   isDeleted(resultId: string, row: number) {
     return this.deletes.get(resultId)?.has(row) ?? false;
   }

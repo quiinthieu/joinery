@@ -142,6 +142,7 @@ describe("TableMaintenanceDialog and StorageStatsSection", () => {
           linesBetweenQueries: 1,
         },
         sqlSnippets: [],
+        scratchpads: [],
       },
       tabs: [],
       activeTabId: null,

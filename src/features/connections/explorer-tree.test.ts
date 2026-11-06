@@ -261,4 +261,89 @@ describe("explorer-tree", () => {
       schema: "public",
     });
   });
+
+  test("Milestone 5: classifies Snowflake extended object kinds into dedicated categories with badges and filter chips", () => {
+    const snowflakeObjects: DatabaseObjectSummary[] = [
+      {
+        object: { schema: "RAW", name: "S3_LANDING", kind: "stage", identity: null },
+        ownerTable: null,
+        signature: null,
+        estimatedRows: null,
+        totalBytes: 5242880,
+      },
+      {
+        object: { schema: "RAW", name: "HOURLY_SYNC", kind: "task", identity: null },
+        ownerTable: null,
+        signature: "CRON 0 * * * *",
+        estimatedRows: null,
+        totalBytes: null,
+      },
+      {
+        object: { schema: "RAW", name: "CHANGES_STREAM", kind: "stream", identity: "EVENTS" },
+        ownerTable: "EVENTS",
+        signature: "ON TABLE EVENTS",
+        estimatedRows: null,
+        totalBytes: null,
+      },
+      {
+        object: { schema: "RAW", name: "AUTO_INGEST_PIPE", kind: "pipe", identity: null },
+        ownerTable: null,
+        signature: null,
+        estimatedRows: null,
+        totalBytes: null,
+      },
+      {
+        object: { schema: "RAW", name: "CSV_GZIP", kind: "fileFormat", identity: null },
+        ownerTable: null,
+        signature: "TYPE = CSV COMPRESSION = GZIP",
+        estimatedRows: null,
+        totalBytes: null,
+      },
+    ];
+
+    const groups = buildExplorerSchemas([], snowflakeObjects, "all", "");
+    expect(groups).toHaveLength(1);
+    const rawSchema = groups[0];
+    expect(rawSchema.schema).toBe("RAW");
+    expect(rawSchema.totalCount).toBe(5);
+
+    const categoryIds = rawSchema.categories.map((c) => c.id);
+    expect(categoryIds).toEqual(["stages", "tasks", "streams", "pipes", "fileFormats"]);
+
+    // Check item primary and secondary labels
+    const stageCat = rawSchema.categories.find((c) => c.id === "stages")!;
+    expect(stageCat.items[0].primaryLabel).toBe("S3_LANDING");
+    expect(stageCat.items[0].secondaryLabel).toBe("stage");
+
+    const taskCat = rawSchema.categories.find((c) => c.id === "tasks")!;
+    expect(taskCat.items[0].primaryLabel).toBe("HOURLY_SYNC");
+    expect(taskCat.items[0].secondaryLabel).toBe("task");
+
+    const streamCat = rawSchema.categories.find((c) => c.id === "streams")!;
+    expect(streamCat.items[0].secondaryLabel).toBe("stream");
+
+    const pipeCat = rawSchema.categories.find((c) => c.id === "pipes")!;
+    expect(pipeCat.items[0].primaryLabel).toBe("AUTO_INGEST_PIPE");
+    expect(pipeCat.items[0].secondaryLabel).toBe("pipe");
+
+    const formatCat = rawSchema.categories.find((c) => c.id === "fileFormats")!;
+    expect(formatCat.items[0].primaryLabel).toBe("CSV_GZIP");
+    expect(formatCat.items[0].secondaryLabel).toBe("format");
+
+    // Filter chips
+    const stageFiltered = buildExplorerSchemas([], snowflakeObjects, "stages", "");
+    expect(stageFiltered[0].categories.map((c) => c.id)).toEqual(["stages"]);
+
+    const taskFiltered = buildExplorerSchemas([], snowflakeObjects, "tasks", "");
+    expect(taskFiltered[0].categories.map((c) => c.id)).toEqual(["tasks"]);
+
+    const streamFiltered = buildExplorerSchemas([], snowflakeObjects, "streams", "");
+    expect(streamFiltered[0].categories.map((c) => c.id)).toEqual(["streams"]);
+
+    const pipeFiltered = buildExplorerSchemas([], snowflakeObjects, "pipes", "");
+    expect(pipeFiltered[0].categories.map((c) => c.id)).toEqual(["pipes"]);
+
+    const formatFiltered = buildExplorerSchemas([], snowflakeObjects, "other", "");
+    expect(formatFiltered[0].categories.map((c) => c.id)).toEqual(["fileFormats"]);
+  });
 });

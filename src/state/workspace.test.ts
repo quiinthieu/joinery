@@ -90,6 +90,7 @@ test("workspaceSnapshot includes pinned draft state, sidebarCollapsed, and custo
         linesBetweenQueries: 1,
       },
       sqlSnippets: [],
+      scratchpads: [],
     },
     tabs: [],
     activeTabId: null,

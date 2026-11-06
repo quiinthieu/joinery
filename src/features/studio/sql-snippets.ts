@@ -86,20 +86,128 @@ const WRITE_TEMPLATES: readonly Omit<EffectiveSqlSnippet, "isCustom">[] = [
   },
 ];
 
+const SNOWFLAKE_TEMPLATES: readonly Omit<EffectiveSqlSnippet, "isCustom">[] = [
+  {
+    trigger: "merge",
+    title: "Merge source rows into target table",
+    body: "MERGE INTO ${1:target} ${2:t}\nUSING ${3:source} ${4:s}\nON ${2:t}.${5:id} = ${4:s}.${5:id}\nWHEN MATCHED THEN UPDATE SET ${6:t.amount = s.amount}\nWHEN NOT MATCHED THEN INSERT (${7:id, amount}) VALUES (${8:s.id, s.amount});",
+    engine: "snowflake",
+  },
+  {
+    trigger: "sf:merge",
+    title: "Merge source rows into target table",
+    body: "MERGE INTO ${1:target} ${2:t}\nUSING ${3:source} ${4:s}\nON ${2:t}.${5:id} = ${4:s}.${5:id}\nWHEN MATCHED THEN UPDATE SET ${6:t.amount = s.amount}\nWHEN NOT MATCHED THEN INSERT (${7:id, amount}) VALUES (${8:s.id, s.amount});",
+    engine: "snowflake",
+  },
+  {
+    trigger: "stage",
+    title: "Create or replace external/internal stage",
+    body: "CREATE OR REPLACE STAGE ${1:my_stage}\nURL = '${2:s3://bucket/path/}'\nCREDENTIALS = (AWS_KEY_ID = '${3:key}' AWS_SECRET_KEY = '${4:secret}');",
+    engine: "snowflake",
+  },
+  {
+    trigger: "sf:stage",
+    title: "Create or replace external/internal stage",
+    body: "CREATE OR REPLACE STAGE ${1:my_stage}\nURL = '${2:s3://bucket/path/}'\nCREDENTIALS = (AWS_KEY_ID = '${3:key}' AWS_SECRET_KEY = '${4:secret}');",
+    engine: "snowflake",
+  },
+  {
+    trigger: "task",
+    title: "Create or replace scheduled task",
+    body: "CREATE OR REPLACE TASK ${1:my_task}\nWAREHOUSE = ${2:my_wh}\nSCHEDULE = '${3:USING CRON 0 0 * * * UTC}'\nAS\n${4:SELECT 1};",
+    engine: "snowflake",
+  },
+  {
+    trigger: "sf:task",
+    title: "Create or replace scheduled task",
+    body: "CREATE OR REPLACE TASK ${1:my_task}\nWAREHOUSE = ${2:my_wh}\nSCHEDULE = '${3:USING CRON 0 0 * * * UTC}'\nAS\n${4:SELECT 1};",
+    engine: "snowflake",
+  },
+  {
+    trigger: "stream",
+    title: "Create or replace table stream for CDC",
+    body: "CREATE OR REPLACE STREAM ${1:my_stream} ON TABLE ${2:my_table};",
+    engine: "snowflake",
+  },
+  {
+    trigger: "sf:stream",
+    title: "Create or replace table stream for CDC",
+    body: "CREATE OR REPLACE STREAM ${1:my_stream} ON TABLE ${2:my_table};",
+    engine: "snowflake",
+  },
+  {
+    trigger: "pipe",
+    title: "Create or replace snowpipe for auto-ingest",
+    body: "CREATE OR REPLACE PIPE ${1:my_pipe}\nAUTO_INGEST = TRUE\nAS\nCOPY INTO ${2:my_table} FROM @${3:my_stage};",
+    engine: "snowflake",
+  },
+  {
+    trigger: "sf:pipe",
+    title: "Create or replace snowpipe for auto-ingest",
+    body: "CREATE OR REPLACE PIPE ${1:my_pipe}\nAUTO_INGEST = TRUE\nAS\nCOPY INTO ${2:my_table} FROM @${3:my_stage};",
+    engine: "snowflake",
+  },
+  {
+    trigger: "copy",
+    title: "Copy staged files into table",
+    body: "COPY INTO ${1:my_table}\nFROM @${2:my_stage}\nFILE_FORMAT = (TYPE = ${3:CSV} SKIP_HEADER = 1);",
+    engine: "snowflake",
+  },
+  {
+    trigger: "sf:copy",
+    title: "Copy staged files into table",
+    body: "COPY INTO ${1:my_table}\nFROM @${2:my_stage}\nFILE_FORMAT = (TYPE = ${3:CSV} SKIP_HEADER = 1);",
+    engine: "snowflake",
+  },
+  {
+    trigger: "ctas",
+    title: "Create table as select (CTAS)",
+    body: "CREATE TABLE ${1:table_name} AS\nSELECT ${2:*}\nFROM ${3:source_table};",
+    engine: "snowflake",
+  },
+  {
+    trigger: "cproc",
+    title: "Create stored procedure",
+    body: "CREATE OR REPLACE PROCEDURE ${1:proc_name}(${2:param_name} ${3:VARCHAR})\nRETURNS ${4:VARCHAR}\nLANGUAGE SQL\nAS\n$$\nBEGIN\n\tRETURN ${2:param_name};\nEND;\n$$;",
+    engine: "snowflake",
+  },
+  {
+    trigger: "flatten",
+    title: "Lateral flatten semi-structured array/object",
+    body: ", LATERAL FLATTEN(INPUT => ${1:variant_column}) ${2:f}",
+    engine: "snowflake",
+  },
+  {
+    trigger: "block",
+    title: "Execute immediate procedural scripting block",
+    body: "EXECUTE IMMEDIATE $$\nBEGIN\n\t${0}\nEND;\n$$;",
+    engine: "snowflake",
+  },
+  {
+    trigger: "sf:block",
+    title: "Execute immediate procedural scripting block",
+    body: "EXECUTE IMMEDIATE $$\nBEGIN\n\t${0}\nEND;\n$$;",
+    engine: "snowflake",
+  },
+];
+
 export function builtInSqlSnippets(engine: EngineKind): EffectiveSqlSnippet[] {
   if (engine === "redis") return [];
   const items: EffectiveSqlSnippet[] = READ_TEMPLATES.map((t) => ({ ...t, isCustom: false }));
-  if (engine !== "snowflake") {
-    for (const writeTemplate of WRITE_TEMPLATES) {
-      items.push({ ...writeTemplate, isCustom: false });
+  for (const writeTemplate of WRITE_TEMPLATES) {
+    items.push({ ...writeTemplate, isCustom: false });
+  }
+  items.push({
+    trigger: "txn",
+    title: "Transaction block",
+    body: engine === "mysql" ? "START TRANSACTION;\n${0}\nCOMMIT;" : "BEGIN;\n${0}\nCOMMIT;",
+    engine,
+    isCustom: false,
+  });
+  if (engine === "snowflake") {
+    for (const sfTemplate of SNOWFLAKE_TEMPLATES) {
+      items.push({ ...sfTemplate, isCustom: false });
     }
-    items.push({
-      trigger: "txn",
-      title: "Transaction block",
-      body: engine === "mysql" ? "START TRANSACTION;\n${0}\nCOMMIT;" : "BEGIN;\n${0}\nCOMMIT;",
-      engine,
-      isCustom: false,
-    });
   }
   return items;
 }
@@ -154,7 +262,32 @@ export interface SqlTemplateSite {
   afterFrom: boolean;
 }
 
-const STATEMENT_TEMPLATES = new Set(["ctxsel", "sel", "cnt", "cte", "ins", "upd", "del", "txn"]);
+const STATEMENT_TEMPLATES = new Set([
+  "ctxsel",
+  "sel",
+  "cnt",
+  "cte",
+  "ins",
+  "upd",
+  "del",
+  "txn",
+  "merge",
+  "sf:merge",
+  "stage",
+  "sf:stage",
+  "task",
+  "sf:task",
+  "stream",
+  "sf:stream",
+  "pipe",
+  "sf:pipe",
+  "copy",
+  "sf:copy",
+  "ctas",
+  "cproc",
+  "block",
+  "sf:block",
+]);
 const CLAUSE_END = new Set([
   "WHERE",
   "GROUP",
@@ -294,7 +427,7 @@ export function sqlTemplateSite(state: EditorState, from: number): SqlTemplateSi
 function templatePlace(trigger: string) {
   const key = trigger.toLowerCase();
   if (STATEMENT_TEMPLATES.has(key)) return "statement";
-  if (key === "join" || key === "ljoin") return "from";
+  if (key === "join" || key === "ljoin" || key === "flatten") return "from";
   if (key === "lim") return "query";
   return "any";
 }

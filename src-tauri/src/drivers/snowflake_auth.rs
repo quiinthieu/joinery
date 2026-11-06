@@ -1,6 +1,10 @@
 use crate::domain::{AppError, AppResult, ErrorCode};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use rand_core::{OsRng, RngCore};
+use ring::signature::{KeyPair, RsaKeyPair};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -15,6 +19,194 @@ pub struct Tokens {
     pub access: Zeroizing<String>,
     pub refresh: Option<Zeroizing<String>>,
     pub expires_in: u64,
+}
+
+pub fn extract_account_identifier(host: &str) -> String {
+    let clean = host.trim().to_ascii_uppercase();
+    let stripped = clean
+        .strip_prefix("HTTPS://")
+        .or_else(|| clean.strip_prefix("HTTP://"))
+        .unwrap_or(&clean);
+    let hostname = stripped.split('/').next().unwrap_or(stripped);
+    let domain = hostname
+        .strip_suffix(".SNOWFLAKECOMPUTING.COM")
+        .unwrap_or(hostname);
+    domain.split('.').next().unwrap_or(domain).to_string()
+}
+
+pub fn parse_pkcs8_pem(pem_str: &str, _passphrase: Option<&str>) -> AppResult<RsaKeyPair> {
+    let mut reader = std::io::Cursor::new(pem_str.as_bytes());
+    let mut der = None;
+    while let Ok(Some(item)) = rustls_pemfile::read_one(&mut reader) {
+        match item {
+            rustls_pemfile::Item::Pkcs8Key(key) => {
+                der = Some(key.secret_pkcs8_der().to_vec());
+                break;
+            }
+            rustls_pemfile::Item::Pkcs1Key(key) => {
+                der = Some(key.secret_pkcs1_der().to_vec());
+                break;
+            }
+            _ => continue,
+        }
+    }
+    let der_bytes = if let Some(bytes) = der {
+        bytes
+    } else {
+        let lines: Vec<&str> = pem_str
+            .lines()
+            .filter(|line| !line.starts_with("---"))
+            .collect();
+        let b64 = lines.concat();
+        STANDARD
+            .decode(b64.trim())
+            .map_err(|_| AppError::invalid("Invalid RSA private key PEM file"))?
+    };
+    RsaKeyPair::from_pkcs8(&der_bytes)
+        .or_else(|_| RsaKeyPair::from_der(&der_bytes))
+        .map_err(|_| AppError::invalid("Failed to construct RSA key pair from PKCS#8/PKCS#1 key"))
+}
+
+pub fn generate_jwt(
+    key_pair: &RsaKeyPair,
+    account: &str,
+    username: &str,
+) -> AppResult<Zeroizing<String>> {
+    let spki_der = key_pair.public_key().as_ref();
+    let digest = Sha256::digest(spki_der);
+    let fp_base64 = STANDARD.encode(digest);
+    let fingerprint = format!("SHA256:{fp_base64}");
+
+    let account_id = extract_account_identifier(account);
+    let user_upper = username.trim().to_ascii_uppercase();
+    let iss = format!("{account_id}.{user_upper}.{fingerprint}");
+    let sub = format!("{account_id}.{user_upper}");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| AppError::internal("System time is before Unix epoch"))?
+        .as_secs();
+    let exp = now + 3540;
+
+    let header = serde_json::json!({
+        "typ": "JWT",
+        "alg": "RS256"
+    });
+    let claims = serde_json::json!({
+        "iss": iss,
+        "sub": sub,
+        "iat": now,
+        "exp": exp
+    });
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&header)
+            .map_err(|_| AppError::internal("Could not serialize JWT header"))?,
+    );
+    let claims_b64 = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&claims)
+            .map_err(|_| AppError::internal("Could not serialize JWT claims"))?,
+    );
+    let signing_input = format!("{header_b64}.{claims_b64}");
+
+    let mut signature = vec![0u8; key_pair.public().modulus_len()];
+    key_pair
+        .sign(
+            &ring::signature::RSA_PKCS1_SHA256,
+            &ring::rand::SystemRandom::new(),
+            signing_input.as_bytes(),
+            &mut signature,
+        )
+        .map_err(|_| AppError::internal("Could not sign Snowflake JWT with private key"))?;
+
+    let sig_b64 = URL_SAFE_NO_PAD.encode(&signature);
+    Ok(Zeroizing::new(format!("{signing_input}.{sig_b64}")))
+}
+
+pub async fn login_with_password(
+    client: &reqwest::Client,
+    base: &Url,
+    account: &str,
+    username: &str,
+    password: &str,
+    passcode: Option<&str>,
+) -> AppResult<Tokens> {
+    let account_id = extract_account_identifier(account);
+    let url = base
+        .join("session/v1/login-request")
+        .map_err(|_| AppError::invalid("Invalid Snowflake account URL"))?;
+    let mut data = serde_json::json!({
+        "CLIENT_APP_ID": "Joinery",
+        "CLIENT_APP_VERSION": "0.1",
+        "ACCOUNT_NAME": account_id,
+        "LOGIN_NAME": username,
+        "PASSWORD": password,
+        "AUTHENTICATOR": "SNOWFLAKE"
+    });
+    if let Some(code) = passcode {
+        data.as_object_mut().unwrap().insert(
+            "PASSCODE".into(),
+            serde_json::Value::String(code.to_string()),
+        );
+    }
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({ "data": data }))
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|_| {
+            AppError::new(
+                ErrorCode::ConnectionFailed,
+                "Snowflake login request failed",
+            )
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::new(
+            ErrorCode::PermissionDenied,
+            "Snowflake login was rejected. Check your username, password, or account.",
+        ));
+    }
+    let body: serde_json::Value = response.json().await.map_err(|_| {
+        AppError::new(
+            ErrorCode::ConnectionFailed,
+            "Snowflake returned an invalid login response",
+        )
+    })?;
+
+    let success = body
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !success {
+        let msg = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Snowflake login failed");
+        return Err(AppError::new(ErrorCode::PermissionDenied, msg));
+    }
+    let token = body
+        .pointer("/data/token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorCode::ConnectionFailed,
+                "Missing session token in Snowflake response",
+            )
+        })?;
+    let master_token = body.pointer("/data/masterToken").and_then(|v| v.as_str());
+    let validity = body
+        .pointer("/data/validityInSeconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(14400);
+
+    Ok(Tokens {
+        access: Zeroizing::new(token.to_string()),
+        refresh: master_token.map(|s| Zeroizing::new(s.to_string())),
+        expires_in: validity.min(14400),
+    })
 }
 
 #[derive(Deserialize)]
