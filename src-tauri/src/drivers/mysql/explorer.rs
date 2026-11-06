@@ -264,6 +264,13 @@ async fn object_details_on(
         DatabaseObjectKind::Sequence => sequence_details_on(conn, requested, maria).await,
         DatabaseObjectKind::Trigger => trigger_details_on(conn, requested).await,
         DatabaseObjectKind::Index => index_details_on(conn, requested, maria).await,
+        _ => Err(AppError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "MySQL/MariaDB does not support object kind {:?}",
+                requested.kind
+            ),
+        )),
     }
 }
 

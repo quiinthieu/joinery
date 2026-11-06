@@ -6,9 +6,21 @@ import type {
 } from "../../ipc/generated";
 
 export type ExplorerCategoryId =
-  "tables" | "views" | "materializedViews" | "routines" | "sequences" | "triggers" | "indexes";
+  | "tables"
+  | "views"
+  | "materializedViews"
+  | "stages"
+  | "tasks"
+  | "streams"
+  | "pipes"
+  | "fileFormats"
+  | "routines"
+  | "sequences"
+  | "triggers"
+  | "indexes";
 
-export type ExplorerFilterChip = "all" | "tables" | "views" | "routines" | "other";
+export type ExplorerFilterChip =
+  "all" | "tables" | "views" | "stages" | "tasks" | "streams" | "pipes" | "routines" | "other";
 
 export const EXPLORER_FILTER_CHIPS: readonly {
   id: ExplorerFilterChip;
@@ -17,6 +29,10 @@ export const EXPLORER_FILTER_CHIPS: readonly {
   { id: "all", label: "All" },
   { id: "tables", label: "Tables" },
   { id: "views", label: "Views" },
+  { id: "stages", label: "Stages" },
+  { id: "tasks", label: "Tasks" },
+  { id: "streams", label: "Streams" },
+  { id: "pipes", label: "Pipes" },
   { id: "routines", label: "Routines" },
   { id: "other", label: "Other" },
 ];
@@ -25,6 +41,11 @@ export const EXPLORER_CATEGORY_ORDER: readonly ExplorerCategoryId[] = [
   "tables",
   "views",
   "materializedViews",
+  "stages",
+  "tasks",
+  "streams",
+  "pipes",
+  "fileFormats",
   "routines",
   "sequences",
   "triggers",
@@ -35,6 +56,11 @@ const CATEGORY_LABELS: Record<ExplorerCategoryId, string> = {
   tables: "Tables",
   views: "Views",
   materializedViews: "Materialized views",
+  stages: "Stages",
+  tasks: "Tasks",
+  streams: "Streams",
+  pipes: "Pipes",
+  fileFormats: "File formats",
   routines: "Routines",
   sequences: "Sequences",
   triggers: "Triggers",
@@ -168,6 +194,16 @@ export function objectKindCategory(kind: DatabaseObjectKind): ExplorerCategoryId
       return "triggers";
     case "index":
       return "indexes";
+    case "stage":
+      return "stages";
+    case "task":
+      return "tasks";
+    case "stream":
+      return "streams";
+    case "pipe":
+      return "pipes";
+    case "fileFormat":
+      return "fileFormats";
   }
 }
 
@@ -182,10 +218,23 @@ export function categoryMatchesFilter(
       return category === "tables";
     case "views":
       return category === "views" || category === "materializedViews";
+    case "stages":
+      return category === "stages";
+    case "tasks":
+      return category === "tasks";
+    case "streams":
+      return category === "streams";
+    case "pipes":
+      return category === "pipes";
     case "routines":
       return category === "routines";
     case "other":
-      return category === "sequences" || category === "triggers" || category === "indexes";
+      return (
+        category === "sequences" ||
+        category === "triggers" ||
+        category === "indexes" ||
+        category === "fileFormats"
+      );
   }
 }
 
@@ -289,6 +338,16 @@ export function buildExplorerSchemas(
       secondaryLabel = raw.object.kind === "procedure" ? "proc" : null;
     } else if (raw.object.kind === "partitionedTable") {
       secondaryLabel = "part";
+    } else if (raw.object.kind === "stage") {
+      secondaryLabel = "stage";
+    } else if (raw.object.kind === "task") {
+      secondaryLabel = "task";
+    } else if (raw.object.kind === "stream") {
+      secondaryLabel = "stream";
+    } else if (raw.object.kind === "pipe") {
+      secondaryLabel = "pipe";
+    } else if (raw.object.kind === "fileFormat") {
+      secondaryLabel = "format";
     } else if (raw.category === "triggers" || raw.category === "indexes") {
       const bucket = `${raw.object.schema}\0${raw.category}\0${raw.object.name}`;
       const duplicated = (nameCounts.get(bucket) ?? 0) > 1;

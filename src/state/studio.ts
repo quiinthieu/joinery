@@ -2,14 +2,17 @@ import type { SqlExecutionOrigin } from "../features/studio/sql-navigation";
 import { create } from "zustand";
 import type {
   AppError,
+  BatchErrorPolicy,
   BookmarkTarget,
   Bootstrap,
   BrowseApproval,
   BrowseQuery,
   ConnectionProfile,
+  ContextDimension,
   DatabaseObjectRef,
   DatabaseObjectSummary,
   OpenedSqlFile,
+  PersistentConsole,
   PreparedPlan,
   QueryEvent,
   ResultInfo,
@@ -18,6 +21,7 @@ import type {
   SavedQueryInput,
   SavedSqlFile,
   SavedTableLayout,
+  Scratchpad,
   SessionContextOptions,
   SessionInfo,
   SessionRuntimeState,
@@ -31,6 +35,7 @@ import type {
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
 import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
+import { normalizeThemePalette, type ThemePalette } from "../features/studio/theme";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
 import {
@@ -122,6 +127,10 @@ export interface StudioTab {
   pinned?: boolean;
   /** Schema shown by a diagram tab. */
   diagramSchema?: string;
+  statementErrors?: Record<number, AppError>;
+  activeQueryId?: string | null;
+  consoleProfileId?: string | null;
+  scratchpadId?: string | null;
 }
 
 export const MAX_RECENT_LOCATIONS = 50;
@@ -183,6 +192,7 @@ interface StudioState {
   sessionPool: Record<string, NamedSession[]>;
   sessionStates: Record<string, SessionRuntimeState>;
   sessionContexts: Record<string, string[]>;
+  session4dContexts: Record<string, ContextDimension[]>;
   sessionContextRevision: Record<string, number>;
   catalog: Record<string, TableInfo[]>;
   objects: Record<string, DatabaseObjectSummary[]>;
@@ -198,6 +208,7 @@ interface StudioState {
   recentLocations: RecentLocation[];
   shortcuts: Record<string, string>;
   theme: "dark" | "light" | "contrast";
+  palette: ThemePalette;
   density: "comfortable" | "compact";
   sidebarVisible: boolean;
   sidebarCollapsed: boolean;
@@ -206,6 +217,7 @@ interface StudioState {
   initialize(): Promise<void>;
   notify(message: string): void;
   setTheme(theme: StudioState["theme"]): void;
+  setPalette(palette: ThemePalette): void;
   toggleSidebar(): void;
   toggleInspector(): void;
   setShortcut(actionId: ShortcutActionId, binding: string | null): ShortcutValidationResult;
@@ -219,7 +231,18 @@ interface StudioState {
   disconnectQuerySession(sessionId: string): Promise<void>;
   updateSessionLatency(sessionId: string, latencyMs: number): void;
   refreshSessionContexts(sessionId: string): Promise<void>;
-  switchSessionContext(sessionId: string, target: string): Promise<void>;
+  switchSessionContext(
+    sessionId: string,
+    target:
+      | string
+      | {
+          target?: string;
+          warehouse?: string;
+          role?: string;
+          database?: string;
+          schema?: string;
+        },
+  ): Promise<void>;
   setTransactionMode(sessionId: string, mode: TransactionMode): Promise<void>;
   commitTransaction(sessionId: string): Promise<void>;
   rollbackTransaction(sessionId: string): Promise<void>;
@@ -286,9 +309,19 @@ interface StudioState {
   disconnected(connectionId: string): void;
   resetConnectionResults(connectionId: string): void;
   applyEvents(tabId: string, events: QueryEvent[], revision: number): void;
+  batchErrorPolicy: BatchErrorPolicy;
+  setBatchErrorPolicy(policy: BatchErrorPolicy): void;
+  scratchpads: Scratchpad[];
+  openConsole(profileId: string): Promise<string>;
+  openScratchpad(id: string): Promise<string>;
+  createScratchpad(name?: string, initialSql?: string): Promise<Scratchpad>;
+  renameScratchpad(id: string, name: string): Promise<void>;
+  deleteScratchpad(id: string): Promise<void>;
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+const consoleDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const scratchpadDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function tab(kind: TabKind, title: string, connectionId: string | null): StudioTab {
   return {
     id: crypto.randomUUID(),
@@ -327,6 +360,10 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     savedSql: null,
     savedQueryId: null,
     pinned: false,
+    statementErrors: {},
+    activeQueryId: null,
+    consoleProfileId: null,
+    scratchpadId: null,
   };
 }
 export function isTabFileDirty(tab: StudioTab): boolean {
@@ -509,6 +546,7 @@ function purgeSessionRuntimeMaps(
   return { sessionStates, sessionContexts, sessionContextRevision };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
+const storedPalette = normalizeThemePalette(localStorage.getItem("joinery.palette"));
 
 function requestIsCurrent(id: string, revision: number, connectionId: string, sessionId: string) {
   const state = useStudio.getState();
@@ -536,6 +574,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   sessionPool: {},
   sessionStates: {},
   sessionContexts: {},
+  session4dContexts: {},
   sessionContextRevision: {},
   catalog: {},
   objects: {},
@@ -550,7 +589,13 @@ export const useStudio = create<StudioState>((set, get) => ({
   sqlSnippets: [],
   recentLocations: [],
   shortcuts: {},
+  batchErrorPolicy: "stopOnError",
+  setBatchErrorPolicy(policy) {
+    set({ batchErrorPolicy: policy });
+  },
+  scratchpads: [],
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
+  palette: storedPalette,
   density: "comfortable",
   sidebarVisible: true,
   sidebarCollapsed: false,
@@ -597,6 +642,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         bookmarks: bootstrap.bookmarks ?? [],
         sqlFormatSettings: bootstrap.sqlFormatSettings ?? DEFAULT_SQL_FORMAT_SETTINGS,
         sqlSnippets: bootstrap.sqlSnippets ?? [],
+        scratchpads: bootstrap.scratchpads ?? [],
         error: null,
         ...(workspace
           ? {
@@ -631,6 +677,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     localStorage.setItem("joinery.theme", theme);
     document.documentElement.dataset.theme = theme;
     set({ theme });
+  },
+  setPalette(palette) {
+    const normalized = normalizeThemePalette(palette);
+    localStorage.setItem("joinery.palette", normalized);
+    document.documentElement.dataset.palette = normalized;
+    set({ palette: normalized });
   },
   toggleSidebar() {
     set((state) => {
@@ -827,30 +879,62 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   async refreshSessionContexts(sessionId) {
-    const options = await client
-      .call<SessionContextOptions | null>("session_contexts", {
-        sessionId,
-      })
-      .catch(() => null);
-    if (!options?.state) return;
+    const session = get().sessions[sessionId];
+    const isSnowflake = session?.engine === "snowflake";
+    const [options, contexts4d] = await Promise.all([
+      client
+        .call<SessionContextOptions | null>("session_contexts", {
+          sessionId,
+        })
+        .catch(() => null),
+      isSnowflake
+        ? client
+            .call<ContextDimension[] | null>("list_contexts", {
+              sessionId,
+            })
+            .catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    if (!options?.state && !contexts4d) return;
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
+      const nextContexts4d =
+        contexts4d ?? options?.contexts ?? state.session4dContexts[sessionId] ?? [];
       return {
-        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
-        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+        sessionStates: options?.state
+          ? { ...state.sessionStates, [sessionId]: options.state }
+          : state.sessionStates,
+        sessionContexts: options?.available
+          ? { ...state.sessionContexts, [sessionId]: options.available }
+          : state.sessionContexts,
+        session4dContexts: {
+          ...state.session4dContexts,
+          [sessionId]: nextContexts4d,
+        },
       };
     });
   },
   async switchSessionContext(sessionId, target) {
-    const options = await client.call<SessionContextOptions>("switch_session_context", {
-      sessionId,
-      target,
-    });
+    const payload = typeof target === "string" ? { sessionId, target } : { sessionId, ...target };
+    const options = await client.call<SessionContextOptions>("switch_session_context", payload);
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
+      const current = state.sessionStates[sessionId];
+      const nextState: SessionRuntimeState = options?.state ?? {
+        ...current,
+        ...(options?.activeWarehouse ? { warehouse: options.activeWarehouse } : {}),
+        ...(options?.activeRole ? { role: options.activeRole } : {}),
+        ...(options?.activeDatabase ? { database: options.activeDatabase } : {}),
+        ...(options?.activeSchema ? { activeContext: options.activeSchema } : {}),
+      };
       return {
-        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
-        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+        sessionStates: { ...state.sessionStates, [sessionId]: nextState },
+        sessionContexts: options?.available
+          ? { ...state.sessionContexts, [sessionId]: options.available }
+          : state.sessionContexts,
+        session4dContexts: options?.contexts
+          ? { ...state.session4dContexts, [sessionId]: options.contexts }
+          : state.session4dContexts,
         sessionContextRevision: {
           ...state.sessionContextRevision,
           [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
@@ -957,13 +1041,21 @@ export const useStudio = create<StudioState>((set, get) => ({
   async refreshCatalog(id) {
     const session = get().sessions[id];
     if (!session) return;
-    const catalog = await client.call<TableInfo[]>("catalog", { sessionId: session.id });
+    const rawCatalog = await client.call<unknown>("catalog", { sessionId: session.id });
+    const catalog: TableInfo[] = Array.isArray(rawCatalog)
+      ? rawCatalog
+      : Array.isArray((rawCatalog as { tables?: unknown[] })?.tables)
+        ? ((rawCatalog as { tables: TableInfo[] }).tables ?? [])
+        : [];
     const objects = session.capabilities.objectExplorer
       ? await client
           .call<DatabaseObjectSummary[]>("database_objects", { sessionId: session.id })
+          .catch(() =>
+            client.call<DatabaseObjectSummary[]>("catalog_objects", { sessionId: session.id }),
+          )
           .catch((error) => {
             if ((error as Partial<AppError> | null)?.code === "unsupported") return [];
-            throw error;
+            return [];
           })
       : [];
     if (get().sessions[id]?.id === session.id)
@@ -1581,6 +1673,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       current.dataSessionId !== session.id ||
       current.loadingPage ||
       !current.hasMore ||
+      (current.pages.length > 0 && current.nextKey === null) ||
       current.error
     )
       return;
@@ -1693,6 +1786,55 @@ export const useStudio = create<StudioState>((set, get) => ({
         if (t.id !== id) return t;
         const patch = typeof update === "function" ? update(t) : update;
         const changedSql = patch.sql !== undefined && patch.sql !== t.sql;
+        if (changedSql && patch.sql !== undefined) {
+          if (t.consoleProfileId) {
+            const profileId = t.consoleProfileId;
+            const content = patch.sql;
+            const name = t.title || "console.sql";
+            const timer = consoleDebounceTimers.get(profileId);
+            if (timer) clearTimeout(timer);
+            consoleDebounceTimers.set(
+              profileId,
+              setTimeout(() => {
+                consoleDebounceTimers.delete(profileId);
+                void client.call("save_console", { profileId, content, name }).catch(() => {});
+              }, 400),
+            );
+          } else if (t.scratchpadId) {
+            const scratchpadId = t.scratchpadId;
+            const content = patch.sql;
+            const current = get().scratchpads.find((s) => s.id === scratchpadId);
+            const name = current?.name ?? t.title;
+            const connectionId = current?.connectionId ?? t.connectionId ?? undefined;
+            const timer = scratchpadDebounceTimers.get(scratchpadId);
+            if (timer) clearTimeout(timer);
+            scratchpadDebounceTimers.set(
+              scratchpadId,
+              setTimeout(() => {
+                scratchpadDebounceTimers.delete(scratchpadId);
+                void client
+                  .call("save_scratchpad", {
+                    id: scratchpadId,
+                    name,
+                    content,
+                    connectionId,
+                  })
+                  .then((updated) => {
+                    set((state) => ({
+                      scratchpads: state.scratchpads.map((s) =>
+                        s.id === scratchpadId
+                          ? { ...s, content: updated.content, updatedAt: updated.updatedAt }
+                          : s,
+                      ),
+                    }));
+                  })
+                  .catch((err) => {
+                    console.error("Failed to auto-save scratchpad", err);
+                  });
+              }, 400),
+            );
+          }
+        }
         return {
           ...t,
           ...patch,
@@ -2015,6 +2157,8 @@ export const useStudio = create<StudioState>((set, get) => ({
         nextKey: null,
         loadingPage: false,
         runId: null,
+        activeQueryId: null,
+        statementErrors: {},
         activeResultId: null,
         status: "idle",
         error: null,
@@ -2064,11 +2208,21 @@ export const useStudio = create<StudioState>((set, get) => ({
             void client.call("release_result", { resultId: event.result.id }).catch(() => {});
         return {};
       }
-      const next = { ...current, results: [...current.results] };
+      const next = {
+        ...current,
+        results: [...current.results],
+        statementErrors: { ...current.statementErrors },
+      };
       for (const event of events) {
         if (event.type === "started") {
           next.runId = event.runId;
           next.status = "running";
+          next.error = null;
+          next.statementErrors = {};
+          next.activeQueryId = null;
+        }
+        if (event.type === "queryHandle") {
+          next.activeQueryId = event.queryId;
         }
         if (event.type === "result") {
           const at = next.results.findIndex((r) => r.id === event.result.id);
@@ -2086,7 +2240,13 @@ export const useStudio = create<StudioState>((set, get) => ({
           next.results = next.results.map((r) =>
             r.id === event.resultId ? { ...r, retainedRows: event.retainedRows } : r,
           );
-        if (event.type === "error") next.error = event.error;
+        if (event.type === "error") {
+          next.error = event.error;
+          next.statementErrors = {
+            ...next.statementErrors,
+            [event.statementIndex]: event.error,
+          };
+        }
         if (event.type === "statementCompleted") {
           next.elapsedMs += event.elapsedMs;
           next.metrics = {
@@ -2101,10 +2261,111 @@ export const useStudio = create<StudioState>((set, get) => ({
           next.status = event.status;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;
+          next.activeQueryId = null;
+          if (!next.error && Object.keys(next.statementErrors).length > 0) {
+            const firstIdx = Object.keys(next.statementErrors)
+              .map(Number)
+              .sort((a, b) => a - b)[0];
+            next.error = next.statementErrors[firstIdx];
+          }
         }
       }
       return { tabs: state.tabs.map((t) => (t.id === tabId ? next : t)) };
     });
+  },
+  async openConsole(profileId) {
+    const existing = get().tabs.find((t) => t.kind === "query" && t.consoleProfileId === profileId);
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return existing.id;
+    }
+    let consoleData: PersistentConsole;
+    try {
+      consoleData = await client.call<PersistentConsole>("get_console", { profileId });
+    } catch {
+      const profile = get().bootstrap?.profiles.find((p) => p.id === profileId);
+      const defaultSql =
+        profile?.engine === "snowflake"
+          ? "-- Persistent database console\nSELECT CURRENT_USER();\n"
+          : profile?.engine === "redis"
+            ? "PING\n"
+            : "-- Persistent database console\nSELECT 1;\n";
+      consoleData = {
+        profileId,
+        name: "console.sql",
+        content: defaultSql,
+        updatedAt: BigInt(Date.now()),
+      };
+    }
+    const next = tab("query", consoleData.name || "console.sql", profileId);
+    next.sql = consoleData.content;
+    next.savedSql = consoleData.content;
+    next.consoleProfileId = profileId;
+    set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
+    return next.id;
+  },
+  async openScratchpad(id) {
+    const existing = get().tabs.find((t) => t.kind === "query" && t.scratchpadId === id);
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return existing.id;
+    }
+    let scratchpad = get().scratchpads.find((s) => s.id === id);
+    if (!scratchpad) {
+      try {
+        const list = await client.call<Scratchpad[]>("list_scratchpads");
+        set({ scratchpads: list });
+        scratchpad = list.find((s) => s.id === id);
+      } catch {
+        // fallback
+      }
+    }
+    if (!scratchpad) throw new Error("Scratchpad not found");
+    const next = tab(
+      "query",
+      scratchpad.name,
+      scratchpad.connectionId ?? get().selectedConnectionId,
+    );
+    next.sql = scratchpad.content;
+    next.savedSql = scratchpad.content;
+    next.scratchpadId = scratchpad.id;
+    set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
+    return next.id;
+  },
+  async createScratchpad(name, initialSql) {
+    const count = get().scratchpads.length + 1;
+    const scratchpadName = name || `Scratchpad ${count}`;
+    const next = await client.call("save_scratchpad", {
+      name: scratchpadName,
+      content: initialSql ?? "-- Scratchpad\n",
+      connectionId: get().selectedConnectionId ?? undefined,
+    });
+    set((state) => ({
+      scratchpads: [...state.scratchpads.filter((s) => s.id !== next.id), next],
+    }));
+    await get().openScratchpad(next.id);
+    return next;
+  },
+  async renameScratchpad(id, name) {
+    const current = get().scratchpads.find((s) => s.id === id);
+    if (!current) return;
+    const updated = await client.call("save_scratchpad", {
+      id,
+      name,
+      content: current.content,
+      connectionId: current.connectionId ?? undefined,
+    });
+    set((state) => ({
+      scratchpads: state.scratchpads.map((s) => (s.id === id ? updated : s)),
+      tabs: state.tabs.map((t) => (t.scratchpadId === id ? { ...t, title: name } : t)),
+    }));
+  },
+  async deleteScratchpad(id) {
+    await client.call("delete_scratchpad", { id });
+    set((state) => ({
+      scratchpads: state.scratchpads.filter((s) => s.id !== id),
+      tabs: state.tabs.filter((t) => t.scratchpadId !== id),
+    }));
   },
 }));
 

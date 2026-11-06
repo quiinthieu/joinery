@@ -662,6 +662,7 @@ impl Driver for Mysql {
                 database,
                 role,
                 search_path,
+                warehouse: None,
             })
         })
         .await

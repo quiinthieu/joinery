@@ -70,10 +70,10 @@ async fn query_with_partition(body: Vec<u8>) -> (AppResult<u64>, super::tests::S
             .build()
             .unwrap(),
         base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
-        database: "DB".into(),
+        database: Mutex::new("DB".into()),
         schema: Mutex::new("PUBLIC".into()),
-        role: "READ_ONLY".into(),
-        warehouse: "WH".into(),
+        role: Mutex::new("READ_ONLY".into()),
+        warehouse: Mutex::new("WH".into()),
         query_tag: "Joinery/compression-test".into(),
         auth: AsyncMutex::new(AuthState {
             tokens: Tokens {
@@ -83,6 +83,9 @@ async fn query_with_partition(body: Vec<u8>) -> (AppResult<u64>, super::tests::S
             },
             expires_at: Instant::now() + Duration::from_secs(600),
         }),
+        auth_method: SnowflakeAuthMethod::OAuthBrowser,
+        key_pair: None,
+        username: "TEST_USER".into(),
         metadata_lane: AsyncMutex::new(()),
         active_handle: Mutex::new(None),
         cancel_requested: CancellationToken::new(),

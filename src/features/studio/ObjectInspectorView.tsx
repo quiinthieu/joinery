@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
 import {
+  Archive,
   ArrowRight,
   Braces,
+  Clock,
   Copy,
   Database,
   Eye,
+  FileCode,
   FileCode2,
+  GitPullRequest,
   Hash,
   Layers,
   ListTree,
   Lock,
+  Radio,
   Table2,
   Trash2,
   Wrench,
@@ -49,6 +54,11 @@ const KIND_LABELS: Record<DatabaseObjectKind, string> = {
   sequence: "Sequence",
   trigger: "Trigger",
   index: "Index",
+  stage: "Stage",
+  task: "Task",
+  stream: "Stream",
+  pipe: "Pipe",
+  fileFormat: "File format",
 };
 
 export function ObjectKindGlyph({ kind, size = 13 }: { kind: DatabaseObjectKind; size?: number }) {
@@ -69,6 +79,16 @@ export function ObjectKindGlyph({ kind, size = 13 }: { kind: DatabaseObjectKind;
       return <Zap size={size} />;
     case "index":
       return <ListTree size={size} />;
+    case "stage":
+      return <Archive size={size} />;
+    case "task":
+      return <Clock size={size} />;
+    case "stream":
+      return <Radio size={size} />;
+    case "pipe":
+      return <GitPullRequest size={size} />;
+    case "fileFormat":
+      return <FileCode size={size} />;
   }
 }
 

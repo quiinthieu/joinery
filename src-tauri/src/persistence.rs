@@ -102,6 +102,15 @@ impl Persistence {
         };
         tx.execute("DELETE FROM profiles WHERE id=?1", [id])
             .map_err(db_error)?;
+        tx.execute("DELETE FROM consoles WHERE profile_id=?1", [id])
+            .map_err(db_error)?;
+        tx.execute(
+            "UPDATE scratchpads SET connection_id=NULL WHERE connection_id=?1",
+            [id],
+        )
+        .map_err(db_error)?;
+        tx.execute("DELETE FROM parameters WHERE profile_id=?1", [id])
+            .map_err(db_error)?;
         workspace::purge_connection(&tx, id)?;
         library::purge_connection(&tx, id, purge_bound_queries)?;
         tx.commit().map_err(db_error)
@@ -220,6 +229,236 @@ impl Persistence {
             .map_err(db_error)?;
         Ok(())
     }
+
+    pub fn get_console(&self, profile_id: &str) -> AppResult<PersistentConsole> {
+        let conn = self.connection.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT profile_id, name, content, updated_at FROM consoles WHERE profile_id=?1",
+            )
+            .map_err(db_error)?;
+        let existing = stmt
+            .query_row([profile_id], |r| {
+                Ok(PersistentConsole {
+                    profile_id: r.get(0)?,
+                    name: r.get(1)?,
+                    content: r.get(2)?,
+                    updated_at: r.get::<_, i64>(3)? as u64,
+                })
+            })
+            .optional()
+            .map_err(db_error)?;
+
+        Ok(existing.unwrap_or_else(|| PersistentConsole {
+            profile_id: profile_id.to_string(),
+            name: "console.sql".to_string(),
+            content: "-- Persistent database console\nSELECT CURRENT_USER();\n".to_string(),
+            updated_at: now_ms(),
+        }))
+    }
+
+    pub fn save_console(
+        &self,
+        profile_id: &str,
+        content: &str,
+        name: Option<&str>,
+    ) -> AppResult<()> {
+        let conn = self.connection.lock();
+        let name = name.unwrap_or("console.sql");
+        let updated_at = now_ms() as i64;
+        conn.execute(
+            "INSERT INTO consoles(profile_id, name, content, updated_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(profile_id) DO UPDATE SET name=excluded.name, content=excluded.content, updated_at=excluded.updated_at",
+            params![profile_id, name, content, updated_at],
+        ).map_err(db_error)?;
+        Ok(())
+    }
+
+    pub fn scratchpads(&self) -> AppResult<Vec<Scratchpad>> {
+        let conn = self.connection.lock();
+        let mut stmt = conn
+            .prepare("SELECT id, name, content, connection_id, updated_at FROM scratchpads ORDER BY updated_at DESC")
+            .map_err(db_error)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Scratchpad {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    content: r.get(2)?,
+                    connection_id: r.get(3)?,
+                    updated_at: r.get::<_, i64>(4)? as u64,
+                })
+            })
+            .map_err(db_error)?;
+        rows.map(|r| r.map_err(db_error)).collect()
+    }
+
+    pub fn save_scratchpad_fields(
+        &self,
+        id: Option<String>,
+        name: Option<String>,
+        content: String,
+        connection_id: Option<String>,
+    ) -> AppResult<Scratchpad> {
+        let conn = self.connection.lock();
+        let now = now_ms();
+        let updated_at = now as i64;
+
+        let clean_id = id.filter(|s| !s.trim().is_empty()).unwrap_or_else(new_id);
+
+        let existing: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT name, connection_id FROM scratchpads WHERE id = ?1",
+                [&clean_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(db_error)?;
+
+        let (final_name, final_conn_id) = match existing {
+            Some((existing_name, existing_conn)) => {
+                let n = name.unwrap_or(existing_name);
+                let c = connection_id.or(existing_conn);
+                (n, c)
+            }
+            None => {
+                let n = name.unwrap_or_else(|| "Scratchpad".to_string());
+                (n, connection_id)
+            }
+        };
+
+        conn.execute(
+            "INSERT INTO scratchpads(id, name, content, connection_id, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = excluded.name,
+                 content = excluded.content,
+                 connection_id = excluded.connection_id,
+                 updated_at = excluded.updated_at",
+            params![clean_id, final_name, content, final_conn_id, updated_at],
+        )
+        .map_err(db_error)?;
+
+        Ok(Scratchpad {
+            id: clean_id,
+            name: final_name,
+            content,
+            connection_id: final_conn_id,
+            updated_at: now,
+        })
+    }
+
+    pub fn save_scratchpad(&self, sp: &Scratchpad) -> AppResult<Scratchpad> {
+        self.save_scratchpad_fields(
+            Some(sp.id.clone()),
+            Some(sp.name.clone()),
+            sp.content.clone(),
+            sp.connection_id.clone(),
+        )
+    }
+
+    pub fn delete_scratchpad(&self, id: &str) -> AppResult<()> {
+        let conn = self.connection.lock();
+        conn.execute("DELETE FROM scratchpads WHERE id=?1", [id])
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    pub fn parameter_history(&self, profile_id: &str) -> AppResult<Vec<ParameterHistoryEntry>> {
+        let conn = self.connection.lock();
+        let mut statement = conn
+            .prepare(
+                "SELECT profile_id, param_key, kind, value, is_null, used_at
+                 FROM parameters
+                 WHERE profile_id = ?1
+                 ORDER BY used_at DESC
+                 LIMIT 500",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([profile_id], |row| {
+                let kind_str: String = row.get(2)?;
+                let kind = match kind_str.as_str() {
+                    "integer" => QueryParamKind::Integer,
+                    "decimal" => QueryParamKind::Decimal,
+                    "boolean" => QueryParamKind::Boolean,
+                    "uuid" => QueryParamKind::Uuid,
+                    "date" => QueryParamKind::Date,
+                    "timestamp" => QueryParamKind::Timestamp,
+                    "json" => QueryParamKind::Json,
+                    _ => QueryParamKind::Text,
+                };
+                Ok(ParameterHistoryEntry {
+                    profile_id: row.get(0)?,
+                    param_key: row.get(1)?,
+                    kind,
+                    value: row.get(3)?,
+                    is_null: row.get::<_, i64>(4)? != 0,
+                    used_at: row.get::<_, i64>(5)? as u64,
+                })
+            })
+            .map_err(db_error)?;
+        rows.map(|r| r.map_err(db_error)).collect()
+    }
+
+    pub fn save_parameter_history(
+        &self,
+        profile_id: &str,
+        entries: &[QueryParamInput],
+    ) -> AppResult<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let now = now_ms() as i64;
+        let mut conn = self.connection.lock();
+        let tx = conn.transaction().map_err(db_error)?;
+        for entry in entries {
+            let kind_str = match entry.kind {
+                QueryParamKind::Text => "text",
+                QueryParamKind::Integer => "integer",
+                QueryParamKind::Decimal => "decimal",
+                QueryParamKind::Boolean => "boolean",
+                QueryParamKind::Uuid => "uuid",
+                QueryParamKind::Date => "date",
+                QueryParamKind::Timestamp => "timestamp",
+                QueryParamKind::Json => "json",
+            };
+            let is_null = if entry.value.is_none() { 1 } else { 0 };
+            tx.execute(
+                "INSERT INTO parameters (profile_id, param_key, kind, value, is_null, used_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(profile_id, param_key) DO UPDATE SET
+                     kind = excluded.kind,
+                     value = excluded.value,
+                     is_null = excluded.is_null,
+                     used_at = excluded.used_at",
+                params![profile_id, entry.key, kind_str, entry.value, is_null, now],
+            )
+            .map_err(db_error)?;
+        }
+        tx.execute(
+            "DELETE FROM parameters
+             WHERE profile_id = ?1
+               AND param_key IN (
+                   SELECT param_key
+                   FROM parameters
+                   WHERE profile_id = ?1
+                   ORDER BY used_at DESC, param_key ASC
+                   LIMIT -1 OFFSET 1000
+               )",
+            [profile_id],
+        )
+        .map_err(db_error)?;
+        tx.commit().map_err(db_error)
+    }
+
+    pub fn purge_parameters(&self, profile_id: &str) -> AppResult<()> {
+        self.connection
+            .lock()
+            .execute("DELETE FROM parameters WHERE profile_id = ?1", [profile_id])
+            .map_err(db_error)?;
+        Ok(())
+    }
 }
 
 const SCHEMA_VERSION: i64 = 1;
@@ -251,8 +490,13 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
              CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY, json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, connection_id TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, outcome TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS consoles(profile_id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS scratchpads(id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, connection_id TEXT, updated_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS parameters(profile_id TEXT NOT NULL, param_key TEXT NOT NULL, kind TEXT NOT NULL, value TEXT, is_null INTEGER NOT NULL, used_at INTEGER NOT NULL, PRIMARY KEY(profile_id, param_key));"
         ).map_err(db_error)?;
+    } else if version == 1 {
+        ensure_extended_v1_tables(&transaction)?;
     }
     validate_schema(&transaction)?;
     for (id, name, environment) in [
@@ -283,44 +527,95 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
     transaction.commit().map_err(db_error)
 }
 
+type ColumnSpec = (&'static str, &'static str, bool, bool);
+
+const CORE_TABLES: &[(&str, &[ColumnSpec])] = &[
+    (
+        "profiles",
+        &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
+    ),
+    (
+        "groups",
+        &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
+    ),
+    (
+        "history",
+        &[
+            ("id", "TEXT", false, true),
+            ("started_at", "INTEGER", true, false),
+            ("json", "TEXT", true, false),
+        ],
+    ),
+    (
+        "audit",
+        &[
+            ("id", "TEXT", false, true),
+            ("occurred_at", "INTEGER", true, false),
+            ("connection_id", "TEXT", true, false),
+            ("action", "TEXT", true, false),
+            ("digest", "TEXT", true, false),
+            ("outcome", "TEXT", true, false),
+        ],
+    ),
+    (
+        "settings",
+        &[("key", "TEXT", false, true), ("value", "TEXT", true, false)],
+    ),
+];
+
+const EXTENDED_TABLES: &[(&str, &[ColumnSpec])] = &[
+    (
+        "consoles",
+        &[
+            ("profile_id", "TEXT", false, true),
+            ("name", "TEXT", true, false),
+            ("content", "TEXT", true, false),
+            ("updated_at", "INTEGER", true, false),
+        ],
+    ),
+    (
+        "scratchpads",
+        &[
+            ("id", "TEXT", false, true),
+            ("name", "TEXT", true, false),
+            ("content", "TEXT", true, false),
+            ("connection_id", "TEXT", false, false),
+            ("updated_at", "INTEGER", true, false),
+        ],
+    ),
+    (
+        "parameters",
+        &[
+            ("profile_id", "TEXT", true, true),
+            ("param_key", "TEXT", true, true),
+            ("kind", "TEXT", true, false),
+            ("value", "TEXT", false, false),
+            ("is_null", "INTEGER", true, false),
+            ("used_at", "INTEGER", true, false),
+        ],
+    ),
+];
+
+pub(super) fn ensure_extended_v1_tables(connection: &Connection) -> AppResult<()> {
+    validate_tables(connection, CORE_TABLES)?;
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS consoles(profile_id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS scratchpads(id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, connection_id TEXT, updated_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS parameters(profile_id TEXT NOT NULL, param_key TEXT NOT NULL, kind TEXT NOT NULL, value TEXT, is_null INTEGER NOT NULL, used_at INTEGER NOT NULL, PRIMARY KEY(profile_id, param_key));",
+        )
+        .map_err(db_error)
+}
+
 fn validate_schema(connection: &Connection) -> AppResult<()> {
+    validate_tables(connection, CORE_TABLES)?;
+    validate_tables(connection, EXTENDED_TABLES)
+}
+
+fn validate_tables(connection: &Connection, tables: &[(&str, &[ColumnSpec])]) -> AppResult<()> {
     // Names alone are insufficient: the unique keys and null constraints are
     // required by INSERT OR IGNORE, profile replacement and metadata retention.
-    type Column = (&'static str, &'static str, bool, bool);
-    const TABLES: &[(&str, &[Column])] = &[
-        (
-            "profiles",
-            &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
-        ),
-        (
-            "groups",
-            &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
-        ),
-        (
-            "history",
-            &[
-                ("id", "TEXT", false, true),
-                ("started_at", "INTEGER", true, false),
-                ("json", "TEXT", true, false),
-            ],
-        ),
-        (
-            "audit",
-            &[
-                ("id", "TEXT", false, true),
-                ("occurred_at", "INTEGER", true, false),
-                ("connection_id", "TEXT", true, false),
-                ("action", "TEXT", true, false),
-                ("digest", "TEXT", true, false),
-                ("outcome", "TEXT", true, false),
-            ],
-        ),
-        (
-            "settings",
-            &[("key", "TEXT", false, true), ("value", "TEXT", true, false)],
-        ),
-    ];
-    for (table, expected) in TABLES {
+    for (table, expected) in tables {
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(db_error)?;
@@ -550,5 +845,65 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn existing_v1_metadata_without_extended_tables_or_snowflake_auth_method_upgrades_cleanly() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let profile_id = new_id();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE profiles(id TEXT PRIMARY KEY, json TEXT NOT NULL);
+                 CREATE TABLE groups(id TEXT PRIMARY KEY, json TEXT NOT NULL);
+                 CREATE TABLE history(id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, json TEXT NOT NULL);
+                 CREATE TABLE audit(id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, connection_id TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, outcome TEXT NOT NULL);
+                 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 PRAGMA user_version=1;",
+            )
+            .unwrap();
+        let legacy_profile = serde_json::json!({
+            "id": profile_id,
+            "name": "Snowflake Prod",
+            "groupId": "production",
+            "engine": "snowflake",
+            "host": "org-account.snowflakecomputing.com",
+            "port": 443,
+            "database": "DWH",
+            "username": "ANALYST",
+            "environment": "production",
+            "safeMode": "passwordGated",
+            "tlsMode": "verifyFull",
+            "caCertPath": null,
+            "ssh": null,
+            "rememberPassword": false,
+            "storeQueryText": true,
+            "storeDrafts": true,
+            "snowflake": {
+                "role": "ANALYST_ROLE",
+                "warehouse": "COMPUTE_WH",
+                "schema": "PROD"
+            }
+        });
+        connection
+            .execute(
+                "INSERT INTO profiles(id, json) VALUES(?1, ?2)",
+                params![profile_id, legacy_profile.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let db = Persistence::open(root.path()).unwrap();
+        let profiles = db.profiles().unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].snowflake.as_ref().unwrap().auth_method,
+            SnowflakeAuthMethod::OAuthBrowser
+        );
+        crate::drivers::snowflake::Snowflake::validate_profile(&profiles[0]).unwrap();
+        assert_eq!(db.get_console(&profile_id).unwrap().name, "console.sql");
+        assert!(db.scratchpads().unwrap().is_empty());
+        assert!(db.parameter_history(&profile_id).unwrap().is_empty());
     }
 }

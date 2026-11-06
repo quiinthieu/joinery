@@ -266,78 +266,152 @@ fn prepare_inner(
                 return Err(AppError::invalid("The query contains only comments"));
             }
             if ranges.len() != ast.len() {
-                return Err(AppError::new(
-                    ErrorCode::Unsupported,
-                    "This procedural batch cannot be split safely. Execute supported statements separately.",
-                ));
+                if profile.engine == EngineKind::Snowflake {
+                    ranges
+                        .into_iter()
+                        .map(|(rew_start, rew_end)| {
+                            let (orig_start, orig_end) = if let Some(rew) = rewritten {
+                                (
+                                    rew.to_original_byte(original_sql.len(), rew_start),
+                                    rew.to_original_end_byte(original_sql.len(), rew_end),
+                                )
+                            } else {
+                                (rew_start, rew_end)
+                            };
+                            let stmt_str = &parse_sql[rew_start..rew_end];
+                            let kind = if let Ok(sub_ast) =
+                                Parser::parse_sql(dialect.as_ref(), stmt_str)
+                                && sub_ast.len() == 1
+                            {
+                                let mut classification = Classification {
+                                    engine: Some(profile.engine),
+                                    ..Default::default()
+                                };
+                                let _ = sub_ast[0].visit(&mut classification);
+                                classification
+                                    .kind
+                                    .unwrap_or_else(|| classify_snowflake_statement(stmt_str))
+                            } else {
+                                classify_snowflake_statement(stmt_str)
+                            };
+                            StatementPlan {
+                                sql: original_sql[orig_start..orig_end].to_string(),
+                                kind,
+                                missing_where: false,
+                                span: Some(crate::sql_text::span_for_byte_range(
+                                    original_sql,
+                                    orig_start,
+                                    orig_end,
+                                )),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "This procedural batch cannot be split safely. Execute supported statements separately.",
+                    ));
+                }
+            } else {
+                ast.iter()
+                    .zip(ranges)
+                    .map(|(statement, (rew_start, rew_end))| {
+                        let (orig_start, orig_end) = if let Some(rew) = rewritten {
+                            (
+                                rew.to_original_byte(original_sql.len(), rew_start),
+                                rew.to_original_end_byte(original_sql.len(), rew_end),
+                            )
+                        } else {
+                            (rew_start, rew_end)
+                        };
+                        let mut classification = Classification {
+                            engine: Some(profile.engine),
+                            ..Default::default()
+                        };
+                        let _ = statement.visit(&mut classification);
+                        executes_analysis |= classification.executes_analysis;
+                        StatementPlan {
+                            sql: original_sql[orig_start..orig_end].to_string(),
+                            kind: classification.kind.unwrap_or(StatementKind::Unknown),
+                            missing_where: classification.missing_where,
+                            span: Some(crate::sql_text::span_for_byte_range(
+                                original_sql,
+                                orig_start,
+                                orig_end,
+                            )),
+                        }
+                    })
+                    .collect::<Vec<_>>()
             }
-            ast.iter()
-                .zip(ranges)
-                .map(|(statement, (rew_start, rew_end))| {
-                    let (orig_start, orig_end) = if let Some(rew) = rewritten {
-                        (
-                            rew.to_original_byte(original_sql.len(), rew_start),
-                            rew.to_original_end_byte(original_sql.len(), rew_end),
-                        )
-                    } else {
-                        (rew_start, rew_end)
-                    };
-                    let mut classification = Classification {
-                        engine: Some(profile.engine),
-                        ..Default::default()
-                    };
-                    let _ = statement.visit(&mut classification);
-                    executes_analysis |= classification.executes_analysis;
-                    StatementPlan {
-                        sql: original_sql[orig_start..orig_end].to_string(),
-                        kind: classification.kind.unwrap_or(StatementKind::Unknown),
-                        missing_where: classification.missing_where,
-                        span: Some(crate::sql_text::span_for_byte_range(
-                            original_sql,
-                            orig_start,
-                            orig_end,
-                        )),
-                    }
-                })
-                .collect::<Vec<_>>()
         }
         Err(err) => {
-            let err_text = err.to_string();
-            let mapped_span = if let Some(rew) = rewritten {
-                crate::sql_text::span_from_sqlparser_error(parse_sql, &err_text).map(|s| {
-                    let b = byte_offset(
-                        parse_sql,
-                        Location {
-                            line: u64::from(s.line),
-                            column: u64::from(s.column),
-                        },
-                    );
-                    rew.map.span_at_rewritten_byte(original_sql, b)
-                })
+            if profile.engine == EngineKind::Snowflake
+                && let Ok(ranges) = split_sql_byte_ranges(dialect.as_ref(), parse_sql)
+                && !ranges.is_empty()
+            {
+                ranges
+                    .into_iter()
+                    .map(|(rew_start, rew_end)| {
+                        let (orig_start, orig_end) = if let Some(rew) = rewritten {
+                            (
+                                rew.to_original_byte(original_sql.len(), rew_start),
+                                rew.to_original_end_byte(original_sql.len(), rew_end),
+                            )
+                        } else {
+                            (rew_start, rew_end)
+                        };
+                        let stmt_str = &parse_sql[rew_start..rew_end];
+                        let kind = classify_snowflake_statement(stmt_str);
+                        StatementPlan {
+                            sql: original_sql[orig_start..orig_end].to_string(),
+                            kind,
+                            missing_where: false,
+                            span: Some(crate::sql_text::span_for_byte_range(
+                                original_sql,
+                                orig_start,
+                                orig_end,
+                            )),
+                        }
+                    })
+                    .collect::<Vec<_>>()
             } else {
-                crate::sql_text::span_from_sqlparser_error(original_sql, &err_text)
-            };
-            if let Some(span) = mapped_span {
-                parser_error_location = Some(ErrorLocation {
-                    span,
-                    statement_index: Some(0),
-                    sql_state: None,
-                    detail: Some(err_text),
-                    hint: None,
-                });
+                let err_text = err.to_string();
+                let mapped_span = if let Some(rew) = rewritten {
+                    crate::sql_text::span_from_sqlparser_error(parse_sql, &err_text).map(|s| {
+                        let b = byte_offset(
+                            parse_sql,
+                            Location {
+                                line: u64::from(s.line),
+                                column: u64::from(s.column),
+                            },
+                        );
+                        rew.map.span_at_rewritten_byte(original_sql, b)
+                    })
+                } else {
+                    crate::sql_text::span_from_sqlparser_error(original_sql, &err_text)
+                };
+                if let Some(span) = mapped_span {
+                    parser_error_location = Some(ErrorLocation {
+                        span,
+                        statement_index: Some(0),
+                        sql_state: None,
+                        detail: Some(err_text),
+                        hint: None,
+                    });
+                }
+                vec![StatementPlan {
+                    sql: original_sql.to_string(),
+                    kind: StatementKind::Unknown,
+                    missing_where: false,
+                    // Parser fallback submits the complete original buffer, including
+                    // leading whitespace. Its span must share that same origin.
+                    span: Some(crate::sql_text::span_for_byte_range(
+                        original_sql,
+                        0,
+                        original_sql.len(),
+                    )),
+                }]
             }
-            vec![StatementPlan {
-                sql: original_sql.to_string(),
-                kind: StatementKind::Unknown,
-                missing_where: false,
-                // Parser fallback submits the complete original buffer, including
-                // leading whitespace. Its span must share that same origin.
-                span: Some(crate::sql_text::span_for_byte_range(
-                    original_sql,
-                    0,
-                    original_sql.len(),
-                )),
-            }]
         }
     };
     if statements.len() > 100 {
@@ -401,6 +475,36 @@ fn mysql_analysis_tokens(tokens: &[Token]) -> bool {
         }
     }
     false
+}
+
+fn classify_snowflake_statement(sql: &str) -> StatementKind {
+    let trimmed = sql.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    let first = upper.split_whitespace().next().unwrap_or("");
+    if first == "USE" {
+        return StatementKind::Read;
+    }
+    if ["CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE"].contains(&first) {
+        return StatementKind::Ddl;
+    }
+    if ["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC"].contains(&first) {
+        return StatementKind::Read;
+    }
+    if [
+        "INSERT", "UPDATE", "DELETE", "MERGE", "CALL", "BEGIN", "DECLARE", "EXECUTE",
+    ]
+    .contains(&first)
+    {
+        if upper.contains("CREATE ")
+            || upper.contains("DROP ")
+            || upper.contains("ALTER ")
+            || upper.contains("TRUNCATE ")
+        {
+            return StatementKind::Ddl;
+        }
+        return StatementKind::Write;
+    }
+    StatementKind::Unknown
 }
 
 pub(crate) fn plan_for_statements(
@@ -515,19 +619,163 @@ fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usi
     let mut parts = Vec::new();
     let mut start = 0;
     let mut content = false;
-    for token in tokens {
-        match token.token {
-            Token::SemiColon => {
-                let end = byte_offset(sql, token.span.start);
-                if content && let Some(range) = trimmed_range(sql, start, end) {
-                    parts.push(range);
+    let mut begin_depth: usize = 0;
+    let mut case_depth: usize = 0;
+    let mut in_declare = false;
+
+    let len = tokens.len();
+    let mut i = 0;
+    while i < len {
+        let token = &tokens[i];
+        match &token.token {
+            Token::Word(w) if w.quote_style.is_none() => {
+                let val = w.value.to_ascii_uppercase();
+                match val.as_str() {
+                    "CASE" => {
+                        case_depth += 1;
+                    }
+                    "DECLARE" if begin_depth == 0 => {
+                        in_declare = true;
+                    }
+                    "BEGIN" => {
+                        let mut next_is_tx = false;
+                        for next_tok in tokens.iter().take(len).skip(i + 1) {
+                            match &next_tok.token {
+                                Token::Whitespace(_) => continue,
+                                Token::SemiColon => {
+                                    next_is_tx = true;
+                                    break;
+                                }
+                                Token::Word(nw) if nw.quote_style.is_none() => {
+                                    let nval = nw.value.to_ascii_uppercase();
+                                    if nval == "TRANSACTION"
+                                        || nval == "WORK"
+                                        || nval == "DEFERRED"
+                                        || nval == "IMMEDIATE"
+                                        || nval == "EXCLUSIVE"
+                                    {
+                                        next_is_tx = true;
+                                    }
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
+                        if !next_is_tx {
+                            begin_depth += 1;
+                            in_declare = false;
+                        }
+                    }
+                    "END" => {
+                        let next_tok_idx = tokens
+                            .iter()
+                            .enumerate()
+                            .take(len)
+                            .skip(i + 1)
+                            .find_map(|(j, tok)| {
+                                (!matches!(&tok.token, Token::Whitespace(_))).then_some(j)
+                            });
+
+                        if let Some(next_idx) = next_tok_idx {
+                            match &tokens[next_idx].token {
+                                Token::Word(nw) if nw.quote_style.is_none() => {
+                                    let next_val = nw.value.to_ascii_uppercase();
+                                    match next_val.as_str() {
+                                        "IF" | "LOOP" | "WHILE" | "REPEAT" => {
+                                            // Closes compound control structure (END IF, END LOOP, etc.).
+                                            // Neither begin_depth nor case_depth decrements.
+                                            i = next_idx;
+                                        }
+                                        "FOR" => {
+                                            let mut is_for_update = false;
+                                            for tok in tokens.iter().take(len).skip(next_idx + 1) {
+                                                match &tok.token {
+                                                    Token::Whitespace(_) => continue,
+                                                    Token::Word(w2) if w2.quote_style.is_none() => {
+                                                        let v2 = w2.value.to_ascii_uppercase();
+                                                        if matches!(
+                                                            v2.as_str(),
+                                                            "UPDATE" | "SHARE" | "KEY" | "NO"
+                                                        ) {
+                                                            is_for_update = true;
+                                                        }
+                                                        break;
+                                                    }
+                                                    _ => break,
+                                                }
+                                            }
+                                            if is_for_update {
+                                                case_depth = case_depth.saturating_sub(1);
+                                            } else {
+                                                i = next_idx;
+                                            }
+                                        }
+                                        "CASE" => {
+                                            // Closes CASE statement: END CASE;
+                                            case_depth = case_depth.saturating_sub(1);
+                                            i = next_idx;
+                                        }
+                                        _ => {
+                                            if case_depth > 0 {
+                                                case_depth -= 1;
+                                            } else if begin_depth > 0 {
+                                                begin_depth -= 1;
+                                                // Check for block label followed by semicolon: END label;
+                                                for tok in
+                                                    tokens.iter().take(len).skip(next_idx + 1)
+                                                {
+                                                    match &tok.token {
+                                                        Token::Whitespace(_) => continue,
+                                                        Token::SemiColon => {
+                                                            i = next_idx;
+                                                            break;
+                                                        }
+                                                        _ => break,
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Token::SemiColon => {
+                                    if case_depth > 0 {
+                                        case_depth -= 1;
+                                    } else {
+                                        begin_depth = begin_depth.saturating_sub(1);
+                                    }
+                                }
+                                _ => {
+                                    if case_depth > 0 {
+                                        case_depth -= 1;
+                                    } else {
+                                        begin_depth = begin_depth.saturating_sub(1);
+                                    }
+                                }
+                            }
+                        } else if case_depth > 0 {
+                            case_depth -= 1;
+                        } else {
+                            begin_depth = begin_depth.saturating_sub(1);
+                        }
+                    }
+                    _ => {}
                 }
-                start = end + 1;
-                content = false;
+                content = true;
+            }
+            Token::SemiColon => {
+                if begin_depth == 0 && case_depth == 0 && !in_declare {
+                    let end = byte_offset(sql, token.span.start);
+                    if content && let Some(range) = trimmed_range(sql, start, end) {
+                        parts.push(range);
+                    }
+                    start = end + 1;
+                    content = false;
+                }
             }
             Token::Whitespace(_) | Token::EOF => {}
             _ => content = true,
         }
+        i += 1;
     }
     if content && let Some(range) = trimmed_range(sql, start, sql.len()) {
         parts.push(range);
@@ -621,7 +869,8 @@ impl Visitor for Classification {
             | Statement::ShowSchemas { .. }
             | Statement::ShowDatabases { .. }
             | Statement::ShowCreate { .. }
-            | Statement::ShowProcessList { .. } => self.raise(StatementKind::Read),
+            | Statement::ShowProcessList { .. }
+            | Statement::Use { .. } => self.raise(StatementKind::Read),
             Statement::Explain {
                 analyze, options, ..
             } => {
@@ -649,15 +898,15 @@ impl Visitor for Classification {
                     .next()
                     .unwrap_or("")
                     .to_ascii_uppercase();
-                self.raise(
-                    if ["CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE"]
-                        .contains(&first.as_str())
-                    {
-                        StatementKind::Ddl
-                    } else {
-                        StatementKind::Unknown
-                    },
-                );
+                self.raise(if first == "USE" {
+                    StatementKind::Read
+                } else if ["CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE"]
+                    .contains(&first.as_str())
+                {
+                    StatementKind::Ddl
+                } else {
+                    StatementKind::Unknown
+                });
             }
         }
         ControlFlow::Continue(())

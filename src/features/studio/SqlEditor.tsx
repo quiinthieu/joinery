@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { EditorState, Compartment, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
@@ -205,43 +205,53 @@ function editorTheme(theme: string) {
         height: "100%",
         fontSize: "13px",
         backgroundColor: "transparent",
-        color: dark ? "#d8e1d7" : "#29372a",
+        color: "var(--text)",
       },
       ".cm-content": {
-        fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
-        padding: "20px 0",
-        caretColor: dark ? "#c1dcb4" : "#397344",
+        fontFamily:
+          "var(--font-mono, 'JetBrains Mono', 'SF Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace)",
+        padding: "18px 0",
+        caretColor: "var(--accent)",
       },
-      ".cm-line": { padding: "0 20px 0 12px", lineHeight: "1.9" },
+      ".cm-line": { padding: "0 20px 0 12px", lineHeight: "1.8" },
       ".cm-gutters": {
         backgroundColor: "transparent",
-        color: dark ? "#69796d" : "#69796b",
+        color: "var(--faint)",
         border: "none",
         minWidth: "48px",
         fontSize: "11px",
+        fontVariantNumeric: "tabular-nums",
       },
       ".cm-activeLineGutter": {
         backgroundColor: "transparent",
-        color: dark ? "#afbea9" : "#526a52",
+        color: "var(--muted)",
+        fontWeight: "600",
       },
-      ".cm-activeLine": { backgroundColor: dark ? "#ffffff03" : "#00000003" },
+      ".cm-activeLine": { backgroundColor: dark ? "#ffffff06" : "#00000005" },
       ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-        backgroundColor: dark ? "#a6c59725" : "#4b8e4330",
+        backgroundColor: "var(--selection-strong, var(--selection))",
       },
-      ".cm-cursor": { borderLeftColor: dark ? "#b6d7a8" : "#397344" },
+      ".cm-cursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
+      ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
+        backgroundColor: "var(--selection)",
+        outline: "1px solid var(--accent)",
+        borderRadius: "2px",
+      },
       ".cm-scroller": { overflow: "auto" },
       ".cm-tooltip": {
-        backgroundColor: dark ? "#252d27" : "#ffffff",
-        color: dark ? "#d8e1d7" : "#243425",
+        backgroundColor: "color-mix(in srgb, var(--surface) 85%, transparent)",
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
+        color: "var(--text)",
         border: "1px solid var(--border)",
         borderRadius: "8px",
-        boxShadow: "0 12px 30px #0003",
+        boxShadow: "0 10px 30px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12)",
       },
       ".cm-sql-error-mark": {
         textDecoration: "underline wavy var(--danger)",
         textDecorationSkipInk: "none",
         textUnderlineOffset: "3px",
-        backgroundColor: dark ? "#d9776c1f" : "#c2413618",
+        backgroundColor: dark ? "#ef444422" : "#dc262618",
         borderRadius: "2px",
       },
       ".cm-sql-error-gutter-col": {
@@ -270,15 +280,50 @@ function editorTheme(theme: string) {
     { dark },
   );
 }
-function highlighting(theme: string) {
+function highlighting(theme: string, palette = "slate") {
   const dark = theme !== "light";
+  const keywordColor = dark
+    ? palette === "obsidian"
+      ? "#a78bfa"
+      : palette === "graphite"
+        ? "#fbbf24"
+        : palette === "sage"
+          ? "#86efac"
+          : "#60a5fa"
+    : palette === "obsidian"
+      ? "#5b21b6"
+      : palette === "graphite"
+        ? "#b45309"
+        : palette === "sage"
+          ? "#166534"
+          : "#1d4ed8";
+  const typeColor = dark ? "#38bdf8" : "#0369a1";
+  const fnColor = dark ? "#c084fc" : "#7e22ce";
+  const stringColor = dark ? "#34d399" : "#15803d";
+  const numberColor = dark ? "#fb923c" : "#c2410c";
+  const propColor = dark ? "#93c5fd" : "#1e40af";
+  const commentColor = dark ? "#64748b" : "#64748b";
+  const operatorColor = dark ? "#94a3b8" : "#475569";
   return syntaxHighlighting(
     HighlightStyle.define([
-      { tag: tags.keyword, color: dark ? "#c9b1df" : "#754d94" },
-      { tag: tags.string, color: dark ? "#b6d29f" : "#44713b" },
-      { tag: [tags.number, tags.bool, tags.null], color: dark ? "#dfc68e" : "#936722" },
-      { tag: tags.comment, color: dark ? "#87988a" : "#718271", fontStyle: "italic" },
-      { tag: tags.operator, color: dark ? "#b5c3b6" : "#4c6750" },
+      {
+        tag: [tags.keyword, tags.operatorKeyword, tags.controlKeyword, tags.definitionKeyword],
+        color: keywordColor,
+        fontWeight: "600",
+      },
+      {
+        tag: [tags.typeName, tags.standard(tags.name)],
+        color: typeColor,
+      },
+      {
+        tag: [tags.function(tags.variableName), tags.function(tags.propertyName)],
+        color: fnColor,
+      },
+      { tag: [tags.string, tags.special(tags.string)], color: stringColor },
+      { tag: [tags.number, tags.bool, tags.null], color: numberColor },
+      { tag: [tags.propertyName, tags.attributeName], color: propColor },
+      { tag: tags.comment, color: commentColor, fontStyle: "italic" },
+      { tag: [tags.operator, tags.punctuation], color: operatorColor },
     ]),
   );
 }
@@ -325,10 +370,16 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const availableContexts = useStudio((s) =>
     props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
   );
+  const dimensions4d = useStudio((s) =>
+    props.sessionId ? s.session4dContexts[props.sessionId] : undefined,
+  );
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
+  const palette = useStudio((s) => s.palette);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
   const liveRef = useRef<CompletionCatalog | null>(null);
+  const contextErrorRef = useRef<string | null>(null);
+  contextErrorRef.current = contextError;
   const liveObjectsRef = useRef<DatabaseObjectSummary[]>([]);
   const schemaCacheRef = useRef<Map<string, TableSchema>>(new Map());
   const navRequestSeq = useRef(0);
@@ -353,13 +404,14 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const configure = () => {
     const config = latest.current;
     const snapshot = liveRef.current;
+    const failed = Boolean(contextErrorRef.current);
     if (config.engine === "redis") return config;
     return {
       ...config,
-      tables: snapshot?.tables ?? [],
+      tables: snapshot?.tables ?? (failed ? [] : config.tables),
       snippets: snippetsRef.current,
       sessionId: snapshot ? config.sessionId : null,
-      database: snapshot?.identity.database,
+      database: snapshot?.identity.database ?? (failed ? undefined : config.database),
       searchPath: snapshot?.identity.searchPath,
       unqualifiedTables: snapshot?.unqualifiedTables,
       caseSensitiveTableNames: snapshot?.identity.caseSensitiveTableNames ?? undefined,
@@ -403,9 +455,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const buildSymbolContext = (): SqlSymbolContext => {
     const config = latest.current;
     const snapshot = liveRef.current;
+    const failed = Boolean(contextErrorRef.current);
     return {
       engine: config.engine,
-      tables: snapshot?.tables ?? [],
+      tables: snapshot?.tables ?? (failed ? [] : config.tables),
       databaseObjects: liveObjectsRef.current,
       schemas: schemaCacheRef.current,
       database: snapshot?.identity.database ?? config.database,
@@ -879,10 +932,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         languageCompartment.of(editorLanguage(latest.current.engine)),
         themeCompartment.of([
           editorTheme(latest.current.theme),
-          highlighting(latest.current.theme),
+          highlighting(latest.current.theme, useStudio.getState().palette),
         ]),
         autocompletion({
           override: [(context) => session.request(context)],
+          activateOnCompletion: (c) => c.type === "namespace",
+          interactionDelay: 0,
         }),
         keymap.of([
           {
@@ -1025,9 +1080,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   }, [props.engine, props.error, props.errorOrigin, props.value]);
   useEffect(() => {
     view.current?.dispatch({
-      effects: themeCompartment.reconfigure([editorTheme(props.theme), highlighting(props.theme)]),
+      effects: themeCompartment.reconfigure([
+        editorTheme(props.theme),
+        highlighting(props.theme, palette),
+      ]),
     });
-  }, [props.theme]);
+  }, [props.theme, palette]);
   useEffect(() => {
     view.current?.dispatch({
       effects: languageCompartment.reconfigure(editorLanguage(props.engine)),
@@ -1048,12 +1106,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     props.database,
     props.defaultSchema,
     live,
+    contextError,
     sqlSnippets,
   ]);
+  const prevTablesRef = useRef(props.tables);
+  useEffect(() => {
+    const previous = prevTablesRef.current;
+    prevTablesRef.current = props.tables;
+    if (previous.length > 0 && previous !== props.tables) {
+      setRefresh((value) => value + 1);
+    }
+  }, [props.tables]);
   useEffect(() => {
     let cancelled = false;
     clearNavigation();
     liveRef.current = null;
+    contextErrorRef.current = null;
     liveObjectsRef.current = [];
     schemaCacheRef.current = new Map();
     contextLoadRef.current = null;
@@ -1063,9 +1131,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     completion.current?.configure(configure());
     if (view.current) closeCompletion(view.current);
     if (props.sessionId) {
-      void useStudio.getState().refreshSessionContexts(props.sessionId);
-      contextLoadRef.current = client
-        .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
+      const sessionId = props.sessionId;
+      void useStudio.getState().refreshSessionContexts(sessionId);
+      const loadCatalog = async (): Promise<CompletionCatalog> => {
+        try {
+          return await client.call<CompletionCatalog>("completion_catalog", { sessionId });
+        } catch (error) {
+          if (!cancelled && messageOf(error).includes("The session is busy")) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            if (!cancelled) {
+              return await client.call<CompletionCatalog>("completion_catalog", { sessionId });
+            }
+          }
+          throw error;
+        }
+      };
+      contextLoadRef.current = loadCatalog()
         .then(async (snapshot) => {
           if (!cancelled) {
             liveRef.current = snapshot;
@@ -1073,7 +1154,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             if (props.objectExplorerSupported) {
               try {
                 const objects = await client.call<DatabaseObjectSummary[]>("database_objects", {
-                  sessionId: props.sessionId,
+                  sessionId,
                 });
                 if (!cancelled) liveObjectsRef.current = objects;
               } catch {
@@ -1083,20 +1164,17 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           }
         })
         .catch((error) => {
-          if (!cancelled) setContextError(messageOf(error));
+          if (!cancelled) {
+            const msg = messageOf(error);
+            contextErrorRef.current = msg;
+            setContextError(msg);
+          }
         });
     }
     return () => {
       cancelled = true;
     };
-  }, [
-    props.engine,
-    props.sessionId,
-    props.tables,
-    props.contextEpoch,
-    props.objectExplorerSupported,
-    refresh,
-  ]);
+  }, [props.engine, props.sessionId, props.contextEpoch, props.objectExplorerSupported, refresh]);
   useEffect(() => {
     if (props.engine === "redis" || !props.value.trim()) {
       setParamSlots([]);
@@ -1128,11 +1206,41 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         ? [currentContext, ...availableContexts]
         : availableContexts
       : [];
+  const isSnowflake = props.engine === "snowflake";
+  const sfRoleOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "role")?.values ?? [];
+    const current = runtimeState?.role;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, runtimeState?.role]);
+
+  const sfWarehouseOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "warehouse")?.values ?? [];
+    const current = runtimeState?.warehouse;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, runtimeState?.warehouse]);
+
+  const sfDatabaseOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "database")?.values ?? [];
+    const current = runtimeState?.database;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, runtimeState?.database]);
+
+  const sfSchemaOptions = useMemo(() => {
+    if (!isSnowflake) return [];
+    const vals = dimensions4d?.find((d) => d.kind === "schema")?.values ?? availableContexts ?? [];
+    const current = runtimeState?.activeContext;
+    return current && !vals.includes(current) ? [current, ...vals] : vals;
+  }, [isSnowflake, dimensions4d, availableContexts, runtimeState?.activeContext]);
+
   const showContextSwitcher =
     Boolean(props.sessionId) &&
-    contextOptions.length > 0 &&
-    runtimeState !== undefined &&
-    runtimeState.contextKind !== "none";
+    (isSnowflake ||
+      (contextOptions.length > 0 &&
+        runtimeState !== undefined &&
+        runtimeState.contextKind !== "none"));
   return (
     <div
       className="sql-editor"
@@ -1141,30 +1249,128 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       {props.engine !== "redis" &&
         (props.sessionId || paramSlots.length > 0 || props.value.trim()) && (
           <div className="editor-context-row">
-            {showContextSwitcher && (
-              <select
-                className="context-switcher"
-                aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
-                value={currentContext}
-                disabled={switchingContext}
-                onChange={(event) => {
-                  const target = event.target.value;
-                  if (!target || !props.sessionId || target === currentContext) return;
-                  setSwitchingContext(true);
-                  void useStudio
-                    .getState()
-                    .switchSessionContext(props.sessionId, target)
-                    .catch((error) => useStudio.getState().notify(messageOf(error)))
-                    .finally(() => setSwitchingContext(false));
-                }}
-              >
-                {!currentContext && <option value="">No active context</option>}
-                {contextOptions.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
+            {isSnowflake ? (
+              <>
+                <select
+                  className="context-switcher"
+                  aria-label="Active role"
+                  value={runtimeState?.role ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.role) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { role: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.role && <option value="">No active role</option>}
+                  {sfRoleOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active warehouse"
+                  value={runtimeState?.warehouse ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.warehouse) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { warehouse: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.warehouse && <option value="">No active warehouse</option>}
+                  {sfWarehouseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active database"
+                  value={runtimeState?.database ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.database) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { database: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.database && <option value="">No active database</option>}
+                  {sfDatabaseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active schema"
+                  value={runtimeState?.activeContext ?? ""}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === runtimeState?.activeContext)
+                      return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, { schema: target })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!runtimeState?.activeContext && <option value="">No active schema</option>}
+                  {sfSchemaOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              showContextSwitcher && (
+                <select
+                  className="context-switcher"
+                  aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
+                  value={currentContext}
+                  disabled={switchingContext}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    if (!target || !props.sessionId || target === currentContext) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSessionContext(props.sessionId, target)
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentContext && <option value="">No active context</option>}
+                  {contextOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              )
             )}
             <div
               aria-live="polite"
@@ -1195,7 +1401,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                     ? `Completion unavailable: ${contextError}`
                     : live
                       ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                      : "Loading completion context…"}
+                      : runtimeState
+                        ? `${runtimeState.database || "No database"} · ${runtimeState.role || ""}${props.engine !== "mysql" && runtimeState.searchPath.length > 0 ? ` · ${runtimeState.searchPath.join(", ")}` : ""}`
+                        : "Loading completion context…"}
               </span>
               {paramSlots.length > 0 && props.onOpenParameters && (
                 <button

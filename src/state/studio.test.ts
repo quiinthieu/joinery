@@ -370,6 +370,7 @@ test("a new tab opened during startup cannot overwrite recoverable drafts", asyn
       linesBetweenQueries: 1,
     },
     sqlSnippets: [],
+    scratchpads: [],
     workspace: {
       theme: "contrast",
       density: "compact",

@@ -127,6 +127,7 @@ impl ResultStore {
             status: RetentionStatus::Streaming,
             table: provenance.as_ref().map(|s| s.table.clone()),
             editability,
+            query_id: None,
         };
         let mut state = self.state.lock();
         if state.results.len() >= 100 {

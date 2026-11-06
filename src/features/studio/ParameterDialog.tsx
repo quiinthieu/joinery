@@ -53,6 +53,80 @@ export const PARAM_KINDS: ReadonlyArray<{
 const MIN_I64 = -9223372036854775808n;
 const MAX_I64 = 9223372036854775807n;
 
+export function inferParamKind(key: string): QueryParamKind {
+  const trimmed = key.replace(/^[:$?]+/, "");
+  const clean = trimmed.toLowerCase();
+  if (clean.includes("uuid") || clean.includes("guid")) {
+    return "uuid";
+  }
+  if (
+    clean === "id" ||
+    clean.endsWith("_id") ||
+    trimmed.endsWith("Id") ||
+    clean === "limit" ||
+    clean === "offset" ||
+    clean === "count" ||
+    clean === "age" ||
+    clean === "num" ||
+    clean.endsWith("_count") ||
+    clean.endsWith("_num")
+  ) {
+    return "integer";
+  }
+  if (
+    clean.includes("amount") ||
+    clean.includes("price") ||
+    clean.includes("cost") ||
+    clean.includes("total") ||
+    clean.includes("rate") ||
+    clean.includes("score") ||
+    clean.includes("balance") ||
+    clean.includes("percent")
+  ) {
+    return "decimal";
+  }
+  if (
+    clean.startsWith("is_") ||
+    clean.startsWith("has_") ||
+    clean.startsWith("can_") ||
+    clean.startsWith("should_") ||
+    clean === "active" ||
+    clean === "enabled" ||
+    clean === "flag"
+  ) {
+    return "boolean";
+  }
+  if (
+    clean === "date" ||
+    clean.endsWith("_date") ||
+    clean.startsWith("date_") ||
+    clean === "day" ||
+    clean === "birthdate"
+  ) {
+    return "date";
+  }
+  if (
+    clean.includes("time") ||
+    clean.includes("timestamp") ||
+    clean.endsWith("_at") ||
+    clean.startsWith("created") ||
+    clean.startsWith("updated")
+  ) {
+    return "timestamp";
+  }
+  if (
+    clean === "json" ||
+    clean.endsWith("_json") ||
+    clean.includes("payload") ||
+    clean.includes("metadata") ||
+    clean.includes("attributes") ||
+    clean.includes("config")
+  ) {
+    return "json";
+  }
+  return "text";
+}
+
 export function formatParamDisplayKey(key: string): string {
   return key.startsWith("$") || key.startsWith("?") ? key : `:${key}`;
 }
@@ -166,7 +240,7 @@ export function ParameterDialog({
     );
     for (const slot of slots) {
       if (!Object.hasOwn(next, slot.key)) {
-        next[slot.key] = { kind: "text", value: "", isNull: false };
+        next[slot.key] = { kind: inferParamKind(slot.key), value: "", isNull: false };
       }
     }
     return next;

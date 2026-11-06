@@ -85,6 +85,8 @@ pub fn run() {
                 window
                     .state::<std::sync::Arc<execution::Studio>>()
                     .shutdown();
+                #[cfg(not(feature = "native-smoke"))]
+                window.app_handle().exit(0);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -110,6 +112,14 @@ pub fn run() {
             commands::authorize_plan,
             commands::execute_plan,
             commands::cancel_run,
+            commands::cancel_query,
+            commands::get_console,
+            commands::save_console,
+            commands::list_scratchpads,
+            commands::save_scratchpad,
+            commands::delete_scratchpad,
+            commands::get_parameter_history,
+            commands::save_parameter_history,
             commands::completion_catalog,
             commands::completion_schema,
             commands::inspection_schema,
@@ -156,6 +166,7 @@ pub fn run() {
             commands::prepare_csv_import_batch,
             commands::compare_data,
             commands::session_contexts,
+            commands::list_contexts,
             commands::switch_session_context,
             commands::set_transaction_mode,
             commands::commit_transaction,
@@ -183,6 +194,9 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
                 if let Some(window) = app.get_webview_window("main") {
                     api.prevent_exit();
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
                     let state = app.state::<commands::WindowGuard>();
                     let generation = state.requested.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     let _ = window.emit("joinery:quit-requested", generation);

@@ -94,10 +94,10 @@ async fn fixture(refresh: bool, expired: bool) -> (Arc<Snowflake>, Server) {
             .build()
             .unwrap(),
         base: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
-        database: "DB".into(),
+        database: Mutex::new("DB".into()),
         schema: Mutex::new("PUBLIC".into()),
-        role: "READ_ONLY".into(),
-        warehouse: "WH".into(),
+        role: Mutex::new("READ_ONLY".into()),
+        warehouse: Mutex::new("WH".into()),
         query_tag: "Joinery/lifecycle-test".into(),
         auth: AsyncMutex::new(AuthState {
             tokens: Tokens {
@@ -107,6 +107,9 @@ async fn fixture(refresh: bool, expired: bool) -> (Arc<Snowflake>, Server) {
             },
             expires_at: Instant::now() + Duration::from_secs(if expired { 0 } else { 600 }),
         }),
+        auth_method: SnowflakeAuthMethod::OAuthBrowser,
+        key_pair: None,
+        username: "TEST_USER".into(),
         metadata_lane: AsyncMutex::new(()),
         active_handle: Mutex::new(None),
         cancel_requested: CancellationToken::new(),
@@ -444,4 +447,324 @@ async fn cancellation_interrupts_partition_wait_and_targets_the_owned_handle() {
     assert_eq!(finished(task).await.unwrap_err().code, ErrorCode::Cancelled);
     drop(held_partition);
     assert!(server.requests.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_switch_session_context_no_deadlock() {
+    let (driver, mut server) = fixture(false, false).await;
+    let handle = uuid::Uuid::new_v4().to_string();
+
+    tokio::spawn(async move {
+        // 1. Respond to USE WAREHOUSE statement
+        let req1 = server.next().await;
+        req1.respond(
+            200,
+            json!({
+                "statementHandle": handle,
+                "resultSetMetaData": {
+                    "rowType": [{"name": "status", "type": "TEXT"}],
+                    "partitionInfo": [{}]
+                },
+                "data": [["Statement executed successfully."]]
+            }),
+        );
+
+        // 2. Respond to list_context_dimensions (SHOW WAREHOUSES, SHOW ROLES, SHOW DATABASES, SHOW SCHEMAS)
+        for _ in 0..4 {
+            let req = server.next().await;
+            req.respond(
+                200,
+                json!({
+                    "statementHandle": uuid::Uuid::new_v4().to_string(),
+                    "resultSetMetaData": {
+                        "rowType": [{"name": "name", "type": "TEXT"}],
+                        "partitionInfo": [{}]
+                    },
+                    "data": [["ITEM_1"], ["ITEM_2"]]
+                }),
+            );
+        }
+    });
+
+    let res = tokio::time::timeout(
+        Duration::from_secs(3),
+        driver.switch_session_context(None, Some("WH_NEW"), None, None, None),
+    )
+    .await
+    .expect("Deadlock detected: switch_session_context timed out!")
+    .expect("switch_session_context failed");
+
+    assert_eq!(res.active_warehouse, Some("WH_NEW".into()));
+    assert_eq!(driver.current_warehouse(), "WH_NEW");
+    assert!(res.contexts.is_some());
+}
+
+#[tokio::test]
+async fn test_parse_and_sync_snowflake_use_edge_cases() {
+    let (driver, _server) = fixture(false, false).await;
+
+    // 1. Quoted identifier with spaces
+    parse_and_sync_snowflake_use(&driver, "USE ROLE \"MY ROLE\";");
+    assert_eq!(driver.current_role(), "MY ROLE");
+
+    // 2. Unquoted identifier normalized to uppercase
+    parse_and_sync_snowflake_use(&driver, "USE ROLE analyst;");
+    assert_eq!(driver.current_role(), "ANALYST");
+
+    // 3. Quoted identifier preserving lowercase
+    parse_and_sync_snowflake_use(&driver, "USE ROLE \"analyst\";");
+    assert_eq!(driver.current_role(), "analyst");
+
+    // 4. Quoted identifier with escaped quotes
+    parse_and_sync_snowflake_use(&driver, "USE ROLE \"ANALYST\"\"S ROLE\";");
+    assert_eq!(driver.current_role(), "ANALYST\"S ROLE");
+
+    // 5. Quoted warehouse with spaces
+    parse_and_sync_snowflake_use(&driver, "USE WAREHOUSE \"ETL WH\";");
+    assert_eq!(driver.current_warehouse(), "ETL WH");
+
+    // 6. Dot notation with double quotes
+    parse_and_sync_snowflake_use(&driver, "USE \"PROD_DB\".\"FINANCE\";");
+    assert_eq!(driver.current_database(), "PROD_DB");
+    assert_eq!(driver.current_schema(), "FINANCE");
+
+    // 7. Dot notation with USE SCHEMA and quotes
+    parse_and_sync_snowflake_use(&driver, "USE SCHEMA \"ANALYTICS_DB\".\"STAGING\";");
+    assert_eq!(driver.current_database(), "ANALYTICS_DB");
+    assert_eq!(driver.current_schema(), "STAGING");
+
+    // 8. USE SCHEMA single identifier without altering database
+    parse_and_sync_snowflake_use(&driver, "USE SCHEMA \"PUBLIC\";");
+    assert_eq!(driver.current_database(), "ANALYTICS_DB"); // preserved
+    assert_eq!(driver.current_schema(), "PUBLIC");
+
+    // 9. Preceding SQL single-line and multi-line comments
+    parse_and_sync_snowflake_use(&driver, "-- switch role\nUSE ROLE SECURITYADMIN;");
+    assert_eq!(driver.current_role(), "SECURITYADMIN");
+
+    parse_and_sync_snowflake_use(&driver, "/* multi-line comment */ USE ROLE ACCOUNTADMIN;");
+    assert_eq!(driver.current_role(), "ACCOUNTADMIN");
+
+    // 10. Chained multi-statement batch
+    parse_and_sync_snowflake_use(
+        &driver,
+        "USE ROLE \"DEV\"; USE WAREHOUSE \"WH_FAST\"; USE DATABASE \"RAW\";",
+    );
+    assert_eq!(driver.current_role(), "DEV");
+    assert_eq!(driver.current_warehouse(), "WH_FAST");
+    assert_eq!(driver.current_database(), "RAW");
+
+    // 11. Multi-statement batch containing preceding and succeeding queries
+    parse_and_sync_snowflake_use(&driver, "SELECT 1; USE ROLE \"BATCH_ROLE\"; SELECT 2;");
+    assert_eq!(driver.current_role(), "BATCH_ROLE");
+
+    // 12. Identifiers with dots inside quotes
+    parse_and_sync_snowflake_use(&driver, "USE \"DB.WITH.DOTS\".\"SCHEMA.WITH.DOTS\";");
+    assert_eq!(driver.current_database(), "DB.WITH.DOTS");
+    assert_eq!(driver.current_schema(), "SCHEMA.WITH.DOTS");
+
+    // 13. Unrelated statements containing word USE
+    let prev_role = driver.current_role();
+    parse_and_sync_snowflake_use(&driver, "SELECT use_count FROM table;");
+    assert_eq!(driver.current_role(), prev_role);
+}
+
+#[tokio::test]
+async fn test_switch_session_context_concurrent_stress() {
+    let (driver, mut server) = fixture(false, false).await;
+
+    // Server loop responding to any incoming requests with dummy 200 OK
+    let server_task = tokio::spawn(async move {
+        while let Some(req) = server.requests.recv().await {
+            req.respond(
+                200,
+                json!({
+                    "statementHandle": uuid::Uuid::new_v4().to_string(),
+                    "resultSetMetaData": {
+                        "rowType": [{"name": "name", "type": "TEXT"}],
+                        "partitionInfo": [{}]
+                    },
+                    "data": [["PUBLIC"], ["ACCOUNTADMIN"], ["COMPUTE_WH"], ["DEMO_DB"]]
+                }),
+            );
+        }
+    });
+
+    // Launch 10 concurrent tasks calling switch_session_context
+    let mut handles = Vec::new();
+    for i in 0..10 {
+        let d = driver.clone();
+        handles.push(tokio::spawn(async move {
+            let wh = format!("WH_{i}");
+            let role = format!("ROLE_{i}");
+            let db = format!("DB_{i}");
+            let sc = format!("SCHEMA_{i}");
+            d.switch_session_context(None, Some(&wh), Some(&role), Some(&db), Some(&sc))
+                .await
+        }));
+    }
+
+    // Also run concurrent list_context_dimensions calls
+    for _ in 0..5 {
+        let d = driver.clone();
+        handles.push(tokio::spawn(async move {
+            let dims = d.list_context_dimensions().await?;
+            assert_eq!(dims.len(), 4);
+            Ok(SessionContextOptions {
+                state: SessionRuntimeState {
+                    session_id: String::new(),
+                    transaction_mode: TransactionMode::AutoCommit,
+                    transaction_state: TransactionState::Idle,
+                    context_kind: SessionContextKind::Schema,
+                    active_context: None,
+                    database: String::new(),
+                    role: String::new(),
+                    warehouse: None,
+                    search_path: vec![],
+                },
+                available: vec![],
+                active_warehouse: None,
+                active_role: None,
+                active_database: None,
+                active_schema: None,
+                contexts: Some(dims),
+            })
+        }));
+    }
+
+    // Wait with timeout
+    let results = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut res = Vec::new();
+        for h in handles {
+            res.push(h.await.unwrap());
+        }
+        res
+    })
+    .await
+    .expect("Deadlock detected under concurrent switch_session_context execution!");
+
+    for r in results {
+        assert!(r.is_ok(), "Concurrent context switch failed: {:?}", r.err());
+    }
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_parse_and_sync_snowflake_use_adversarial_stress() {
+    let (driver, _server) = fixture(false, false).await;
+
+    // A. Empty, whitespace, semicolon storms
+    parse_and_sync_snowflake_use(&driver, "");
+    parse_and_sync_snowflake_use(&driver, "   \n\t  ");
+    parse_and_sync_snowflake_use(&driver, ";;;;;");
+    parse_and_sync_snowflake_use(&driver, "-- just a comment");
+    parse_and_sync_snowflake_use(&driver, "/* block comment */");
+
+    // B. Lowercase and mixed case keywords
+    parse_and_sync_snowflake_use(&driver, "use warehouse \"my_wh\";");
+    assert_eq!(driver.current_warehouse(), "my_wh");
+    parse_and_sync_snowflake_use(&driver, "Use Role \"my_role\";");
+    assert_eq!(driver.current_role(), "my_role");
+    parse_and_sync_snowflake_use(&driver, "uSe DaTaBaSe \"my_db\";");
+    assert_eq!(driver.current_database(), "my_db");
+    parse_and_sync_snowflake_use(&driver, "USE schema \"my_sc\";");
+    assert_eq!(driver.current_schema(), "my_sc");
+
+    // C. Tabs and newlines between tokens
+    parse_and_sync_snowflake_use(&driver, "\n\tUSE\n\tROLE\n\t\"TAB_ROLE\"\n;");
+    assert_eq!(driver.current_role(), "TAB_ROLE");
+
+    // D. Interleaved comments between keywords
+    parse_and_sync_snowflake_use(
+        &driver,
+        "USE /* comment 1 */ ROLE /* comment 2 */ \"INTERLEAVED_ROLE\";",
+    );
+    assert_eq!(driver.current_role(), "INTERLEAVED_ROLE");
+
+    // E. Special characters and emojis in quoted identifiers
+    parse_and_sync_snowflake_use(&driver, "USE ROLE \"!@#$%^&*()_+-=\";");
+    assert_eq!(driver.current_role(), "!@#$%^&*()_+-=");
+
+    parse_and_sync_snowflake_use(&driver, "USE ROLE \"🚀_ROLE_データ\";");
+    assert_eq!(driver.current_role(), "🚀_ROLE_データ");
+
+    // F. Unquoted identifiers with lowercase normalized to uppercase
+    parse_and_sync_snowflake_use(&driver, "USE ROLE dev_analyst;");
+    assert_eq!(driver.current_role(), "DEV_ANALYST");
+
+    // G. Unquoted dot notation
+    parse_and_sync_snowflake_use(&driver, "USE analytics_db.staging_schema;");
+    assert_eq!(driver.current_database(), "ANALYTICS_DB");
+    assert_eq!(driver.current_schema(), "STAGING_SCHEMA");
+
+    // H. Mixed unquoted and quoted dot notation
+    parse_and_sync_snowflake_use(&driver, "USE \"prod_db\".finance_schema;");
+    assert_eq!(driver.current_database(), "prod_db");
+    assert_eq!(driver.current_schema(), "FINANCE_SCHEMA");
+
+    // I. USE SCHEMA with unquoted and mixed dot notation
+    parse_and_sync_snowflake_use(&driver, "USE SCHEMA reporting_db.summary_schema;");
+    assert_eq!(driver.current_database(), "REPORTING_DB");
+    assert_eq!(driver.current_schema(), "SUMMARY_SCHEMA");
+
+    parse_and_sync_snowflake_use(&driver, "USE SCHEMA \"custom_db\".raw_schema;");
+    assert_eq!(driver.current_database(), "custom_db");
+    assert_eq!(driver.current_schema(), "RAW_SCHEMA");
+
+    // J. USE SECONDARY ROLES (must not corrupt active primary role)
+    let saved_role = driver.current_role();
+    parse_and_sync_snowflake_use(&driver, "USE SECONDARY ROLES ALL;");
+    assert_eq!(driver.current_role(), saved_role);
+    parse_and_sync_snowflake_use(&driver, "USE SECONDARY ROLES NONE;");
+    assert_eq!(driver.current_role(), saved_role);
+
+    // K. Malformed USE queries (must not panic, must not corrupt valid state)
+    parse_and_sync_snowflake_use(&driver, "USE;");
+    parse_and_sync_snowflake_use(&driver, "USE ROLE;");
+    parse_and_sync_snowflake_use(&driver, "USE WAREHOUSE;");
+    parse_and_sync_snowflake_use(&driver, "USE DATABASE;");
+    parse_and_sync_snowflake_use(&driver, "USE SCHEMA;");
+    parse_and_sync_snowflake_use(&driver, "USE SOMETHING UNKNOWN;");
+    assert_eq!(driver.current_role(), saved_role);
+
+    // L. Queries containing USE in identifiers, literals, or CTEs
+    parse_and_sync_snowflake_use(&driver, "SELECT 'USE ROLE HACK' AS query_text FROM users;");
+    assert_eq!(driver.current_role(), saved_role);
+
+    parse_and_sync_snowflake_use(
+        &driver,
+        "WITH use_data AS (SELECT 1) SELECT * FROM use_data;",
+    );
+    assert_eq!(driver.current_role(), saved_role);
+
+    // M. 4-way multi-statement batch updating all dimensions atomically in one go
+    parse_and_sync_snowflake_use(
+        &driver,
+        "USE ROLE \"R_FINAL\"; USE WAREHOUSE \"W_FINAL\"; USE DATABASE \"D_FINAL\"; USE SCHEMA \"S_FINAL\";",
+    );
+    assert_eq!(driver.current_role(), "R_FINAL");
+    assert_eq!(driver.current_warehouse(), "W_FINAL");
+    assert_eq!(driver.current_database(), "D_FINAL");
+    assert_eq!(driver.current_schema(), "S_FINAL");
+
+    // N. Escaped quotes with triple quote formatting
+    parse_and_sync_snowflake_use(&driver, "USE ROLE \"\"\"ROLE_WITH_QUOTES\"\"\";");
+    assert_eq!(driver.current_role(), "\"ROLE_WITH_QUOTES\"");
+
+    // O. Concurrent execution of parse_and_sync_snowflake_use across threads
+    let mut thread_handles = Vec::new();
+    for i in 0..20 {
+        let d = driver.clone();
+        thread_handles.push(tokio::spawn(async move {
+            let sql = format!("USE ROLE \"ROLE_{i}\"; USE WAREHOUSE \"WH_{i}\";");
+            parse_and_sync_snowflake_use(&d, &sql);
+        }));
+    }
+    for h in thread_handles {
+        h.await.unwrap();
+    }
+    // Verify driver has a valid role and warehouse without corruption
+    assert!(driver.current_role().starts_with("ROLE_"));
+    assert!(driver.current_warehouse().starts_with("WH_"));
 }

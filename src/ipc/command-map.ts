@@ -1,5 +1,6 @@
 import type {
   AuditEntry,
+  BatchErrorPolicy,
   BookmarkTarget,
   Bootstrap,
   BrowseApproval,
@@ -11,6 +12,7 @@ import type {
   ConnectionGroup,
   ConnectionProfile,
   ConnectionSecrets,
+  ContextDimension,
   CsvColumnMapping,
   CsvImportOptions,
   CsvImportPreview,
@@ -30,6 +32,8 @@ import type {
   MetadataBackup,
   ObjectDetails,
   OpenedSqlFile,
+  ParameterHistoryEntry,
+  PersistentConsole,
   PreparedPlan,
   ProcessInfo,
   QueryParamInput,
@@ -44,6 +48,7 @@ import type {
   SavedQueryInput,
   SavedSqlFile,
   SavedWorkspace,
+  Scratchpad,
   SchemaDdlPlan,
   SchemaDiagram,
   SchemaDiffReport,
@@ -158,6 +163,18 @@ export interface JoineryCommandMap {
       sessionId: string;
       sql: string;
       params?: QueryParamInput[] | null;
+      boundParameters?: QueryParamInput[] | null;
+      errorPolicy?: BatchErrorPolicy | null;
+    };
+    result: PreparedPlan;
+  };
+  prepare_plan: {
+    args: {
+      sessionId: string;
+      sql: string;
+      params?: QueryParamInput[] | null;
+      boundParameters?: QueryParamInput[] | null;
+      errorPolicy?: BatchErrorPolicy | null;
     };
     result: PreparedPlan;
   };
@@ -191,11 +208,57 @@ export interface JoineryCommandMap {
     args: { runId: string };
     result: void;
   };
+  cancel_query: {
+    args: { queryId?: string; runId?: string };
+    result: { success: boolean } | void;
+  };
+  get_console: {
+    args: { profileId: string; name?: string };
+    result: PersistentConsole;
+  };
+  load_console: {
+    args: { profileId: string; name?: string };
+    result: PersistentConsole;
+  };
+  save_console: {
+    args: { profileId: string; content: string; name?: string };
+    result: { success: boolean };
+  };
+  list_scratchpads: {
+    args?: Record<string, unknown>;
+    result: Scratchpad[];
+  };
+  save_scratchpad: {
+    args: {
+      id?: string;
+      name?: string;
+      content: string;
+      connectionId?: string;
+      scratchpad?: Scratchpad;
+    };
+    result: Scratchpad;
+  };
+  delete_scratchpad: {
+    args: { id: string };
+    result: void;
+  };
+  get_parameter_history: {
+    args: { profileId: string };
+    result: ParameterHistoryEntry[];
+  };
+  save_parameter_history: {
+    args: { profileId: string; entries: QueryParamInput[] };
+    result: void;
+  };
   catalog: {
     args: { sessionId: string };
     result: TableInfo[];
   };
   database_objects: {
+    args: { sessionId: string };
+    result: DatabaseObjectSummary[];
+  };
+  catalog_objects: {
     args: { sessionId: string };
     result: DatabaseObjectSummary[];
   };
@@ -403,8 +466,19 @@ export interface JoineryCommandMap {
     args: { sessionId: string };
     result: SessionContextOptions;
   };
+  list_contexts: {
+    args: { sessionId: string };
+    result: ContextDimension[];
+  };
   switch_session_context: {
-    args: { sessionId: string; target: string };
+    args: {
+      sessionId: string;
+      target?: string;
+      warehouse?: string;
+      role?: string;
+      database?: string;
+      schema?: string;
+    };
     result: SessionContextOptions;
   };
   set_transaction_mode: {

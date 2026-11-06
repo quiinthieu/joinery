@@ -138,6 +138,7 @@ describe("TableObjectDialog and StructureView table/column DDL editor", () => {
           linesBetweenQueries: 1,
         },
         sqlSnippets: [],
+        scratchpads: [],
       },
       tabs: [],
       activeTabId: null,
@@ -381,6 +382,7 @@ describe("TableObjectDialog and StructureView table/column DDL editor", () => {
           linesBetweenQueries: 1,
         },
         sqlSnippets: [],
+        scratchpads: [],
       },
     });
 

@@ -39,6 +39,7 @@ interface SchemaEntry {
   promise: Promise<TableSchema | null>;
   finish(value: TableSchema | null): void;
   running: boolean;
+  settled?: TableSchema | null;
 }
 
 /** Only current references are retained; at most eight IPC reads run at once. */
@@ -54,17 +55,24 @@ export class CompletionSchemas {
     }
   }
 
+  peek(key: string): TableSchema | null | undefined {
+    return this.entries.get(key)?.settled;
+  }
+
   get(key: string, start: () => Promise<TableSchema>, onError: (error: unknown) => void) {
     const cached = this.entries.get(key);
     if (cached) return cached.promise;
     if (this.entries.size >= 8) return Promise.resolve(null);
-    let finish!: SchemaEntry["finish"];
+    let resolvePromise!: (value: TableSchema | null) => void;
     const promise = new Promise<TableSchema | null>((resolve) => {
-      finish = resolve;
+      resolvePromise = resolve;
     });
     const entry: SchemaEntry = {
       promise,
-      finish,
+      finish: (value) => {
+        entry.settled = value;
+        resolvePromise(value);
+      },
       running: false,
       start: async () => {
         try {
@@ -223,9 +231,18 @@ export class CompletionSession {
     this.scope = scope;
     this.loadedSchemas = [];
     const current = ++this.context;
-    this.replace("columns", []);
     this.schemas.retain(scope.references.map((ref) => JSON.stringify(ref.table)));
-    if (!config.sessionId || !scope.references.length) return;
+    if (!config.sessionId || !scope.references.length) {
+      this.replace("columns", []);
+      return;
+    }
+    const settled = scope.references.map(({ table }) => this.schemas.peek(JSON.stringify(table)));
+    if (settled.every((s) => s !== undefined)) {
+      this.loadedSchemas = settled as (TableSchema | null)[];
+      this.replace("columns", columnCompletions(scope, this.loadedSchemas, config.engine));
+      return;
+    }
+    this.replace("columns", []);
     this.loading = true;
     this.timer = setTimeout(() => {
       this.timer = undefined;
@@ -267,7 +284,7 @@ export class CompletionSession {
     const id = ++this.sequence;
     const stamp = { document: this.document, context: this.context, position: context.pos };
     return new Promise((resolve) => {
-      const timer = setTimeout(() => finish(null), 2000);
+      const timer = setTimeout(() => finish(null), 8000);
       const finish = (result: CompletionResult | null) => {
         clearTimeout(timer);
         this.pending.delete(id);

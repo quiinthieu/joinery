@@ -149,7 +149,10 @@ test("built-in and custom snippets respect dialect safety and override precedenc
 
   expect(pgBuiltins.find((s) => s.trigger === "txn")?.body).toContain("BEGIN;");
   expect(mysqlBuiltins.find((s) => s.trigger === "txn")?.body).toContain("START TRANSACTION;");
-  expect(snowBuiltins.some((s) => ["ins", "upd", "del", "txn"].includes(s.trigger))).toBe(false);
+  expect(snowBuiltins.some((s) => ["ins", "upd", "del", "txn"].includes(s.trigger))).toBe(true);
+  expect(snowBuiltins.some((s) => s.trigger === "merge")).toBe(true);
+  expect(snowBuiltins.some((s) => s.trigger === "sf:stage")).toBe(true);
+  expect(snowBuiltins.some((s) => s.trigger === "flatten")).toBe(true);
   expect(snowBuiltins.some((s) => s.trigger === "sel")).toBe(true);
 
   const userSnippets: SqlSnippet[] = [

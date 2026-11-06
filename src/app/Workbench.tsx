@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import {
+  AlertCircle,
   ArrowLeftRight,
   ArrowRight,
   BookmarkPlus,
@@ -17,6 +18,7 @@ import {
   Clock3,
   Code2,
   Columns3,
+  Copy,
   Download,
   FileCode2,
   FolderOpen,
@@ -60,6 +62,13 @@ import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
 import { CopyAsMenu } from "../features/grid/CopyAsMenu";
+import { GridPaginationBar } from "../features/grid/GridPaginationBar";
+import {
+  computeGridPagination,
+  DEFAULT_GRID_PAGE_SIZE,
+  pageIndexForRow,
+  type GridPageSize,
+} from "../features/grid/pagination";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
 import { cycleSort, hasRawClauses } from "../features/grid/table-query";
@@ -140,6 +149,9 @@ export function Workbench({
     [planResultId, setPlanResultId] = useState<string | null>(null),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
+    [pageSize, setPageSize] = useState<GridPageSize>(DEFAULT_GRID_PAGE_SIZE),
+    [pageIndexByKey, setPageIndexByKey] = useState<Record<string, number>>({}),
+    [tablePagedByKey, setTablePagedByKey] = useState<Record<string, boolean>>({}),
     [tableDetailsState, setTableDetailsState] = useState<{
       key: string;
       data: ObjectDetails;
@@ -257,11 +269,102 @@ export function Workbench({
       : pendingCount
         ? "Review or discard pending edits to change sort or filters"
         : null;
+  const paginationKey =
+    tab.kind === "query"
+      ? `query:${tab.id}:${result?.id ?? "none"}`
+      : tab.kind === "table"
+        ? `table:${tab.id}:${tab.revision}`
+        : `other:${tab.id}`;
+  const totalLoadedRows =
+    tab.kind === "table"
+      ? tab.loadedRows + draftInserts.length
+      : tab.kind === "query"
+        ? (result?.retainedRows ?? 0) + draftInserts.length
+        : 0;
+  const hasMoreRows =
+    tab.kind === "table"
+      ? tab.hasMore && tab.nextKey !== null
+      : tab.kind === "query"
+        ? result?.status === "truncated"
+        : false;
+  const pagination = computeGridPagination({
+    totalLoadedRows,
+    pageSize,
+    pageIndex: pageIndexByKey[paginationKey] ?? 0,
+    hasMore: hasMoreRows,
+    loadingMore: tab.loadingPage || running,
+  });
+  const tablePaged = tab.kind === "table" && Boolean(tablePagedByKey[paginationKey]);
+  const gridPageOffset =
+    tab.kind === "query" || (tab.kind === "table" && tablePaged) ? pagination.pageOffset : 0;
+  const gridPageRowLimit =
+    tab.kind === "query" || (tab.kind === "table" && tablePaged) ? pagination.pageRowLimit : null;
+  function handleFirstPage() {
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: pageSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: 0 }));
+  }
+  function handlePreviousPage() {
+    if (!pagination.canPrevious) return;
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: pageSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({
+      ...prev,
+      [paginationKey]: Math.max(0, pagination.pageIndex - 1),
+    }));
+  }
+  function handleNextPage() {
+    if (!pagination.canNext || pageSize === "all") return;
+    const nextIndex = pagination.pageIndex + 1;
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: true }));
+      if (nextIndex * pageSize >= totalLoadedRows && tab.hasMore) {
+        void state.loadNextPage(tab.id).then(() => {
+          setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: nextIndex }));
+        });
+        return;
+      }
+    }
+    setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: nextIndex }));
+  }
+  function handleLastPage() {
+    if (!pagination.canLast) return;
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: pageSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({
+      ...prev,
+      [paginationKey]: Math.max(0, pagination.loadedPages - 1),
+    }));
+  }
+  function handlePageSizeChange(nextSize: GridPageSize) {
+    setPageSize(nextSize);
+    if (tab.kind === "table") {
+      setTablePagedByKey((prev) => ({ ...prev, [paginationKey]: nextSize !== "all" }));
+    }
+    setPageIndexByKey((prev) => ({ ...prev, [paginationKey]: 0 }));
+  }
+  function handleVisibleRowChange(topAbsoluteRow: number) {
+    if (tab.kind !== "table" || tablePaged || pageSize === "all") return;
+    const nextPage = pageIndexForRow(topAbsoluteRow, pageSize);
+    setPageIndexByKey((prev) => {
+      const current = prev[paginationKey] ?? 0;
+      return current === nextPage ? prev : { ...prev, [paginationKey]: nextPage };
+    });
+  }
   function stageInsertRow() {
     try {
       const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
       dirtyStore.addInsertRow(insertScopeId);
       const nextRow = baseRows + dirtyStore.insertsForTab(insertScopeId).length - 1;
+      if (tab.kind === "query" || (tab.kind === "table" && tablePaged)) {
+        const targetPage = pageIndexForRow(nextRow, pageSize);
+        setPageIndexByKey((prev) =>
+          prev[paginationKey] === targetPage ? prev : { ...prev, [paginationKey]: targetPage },
+        );
+      }
       setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
     } catch (error) {
       state.notify(error instanceof Error ? error.message : "Could not stage inserted row");
@@ -721,9 +824,12 @@ export function Workbench({
                 <button
                   className="button cancel-query"
                   onClick={() =>
-                    tab.runId &&
+                    (tab.runId || tab.activeQueryId) &&
                     void client
-                      .call("cancel_run", { runId: tab.runId })
+                      .call("cancel_query", {
+                        runId: tab.runId ?? undefined,
+                        queryId: tab.activeQueryId ?? undefined,
+                      })
                       .catch((error) => state.notify(messageOf(error)))
                   }
                 >
@@ -777,6 +883,22 @@ export function Workbench({
                 onClick={() => onRun(tab.sql, 0)}
               >
                 <ChevronDown size={13} />
+              </button>
+              <button
+                className={`button ghost small policy-toggle ${state.batchErrorPolicy === "continueOnError" ? "active" : ""}`}
+                title={`Batch error policy: ${state.batchErrorPolicy === "continueOnError" ? "Continue on error" : "Stop on error"}`}
+                aria-label={`Batch error policy: ${state.batchErrorPolicy}`}
+                onClick={() =>
+                  state.setBatchErrorPolicy(
+                    state.batchErrorPolicy === "continueOnError"
+                      ? "stopOnError"
+                      : "continueOnError",
+                  )
+                }
+              >
+                {state.batchErrorPolicy === "continueOnError"
+                  ? "Continue on error"
+                  : "Stop on error"}
               </button>
             </>
           )}
@@ -875,9 +997,10 @@ export function Workbench({
                 sessionId={session?.id ?? null}
                 tables={profile ? (state.catalog[profile.id] ?? EMPTY_TABLES) : EMPTY_TABLES}
                 objectExplorerSupported={objectExplorerSupported}
-                database={profile?.engine === "snowflake" ? profile.database : undefined}
+                database={profile?.engine === "mysql" ? undefined : profile?.database}
                 defaultSchema={
-                  profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined
+                  (session && state.sessionStates[session.id]?.activeContext) ??
+                  (profile?.engine === "snowflake" ? profile.snowflake?.schema : undefined)
                 }
                 contextEpoch={JSON.stringify([
                   session ? (state.sessionContextRevision[session.id] ?? 0) : 0,
@@ -931,31 +1054,97 @@ export function Workbench({
             aria-label="Query results"
             onKeyDown={tabNavigation}
           >
-            {tab.results.length ? (
-              tab.results.map((result, i) => (
-                <button
-                  role="tab"
-                  id={`result-tab-${result.id}`}
-                  aria-controls={`result-panel-${tab.id}`}
-                  aria-selected={result.id === (tab.activeResultId ?? tab.results[0]?.id)}
-                  tabIndex={result.id === (tab.activeResultId ?? tab.results[0]?.id) ? 0 : -1}
-                  className={result.id === tab.activeResultId ? "active" : ""}
-                  key={result.id}
-                  onClick={() => state.updateTab(tab.id, { activeResultId: result.id })}
-                >
-                  <Table2 size={12} />
-                  Query {result.statementIndex + 1}
-                  {tab.results.filter((r) => r.statementIndex === result.statementIndex).length > 1
-                    ? ` · ${i + 1}`
-                    : ""}
-                  <span>{result.retainedRows.toLocaleString()}</span>
-                </button>
-              ))
+            {tab.results.length || Object.keys(tab.statementErrors ?? {}).length ? (
+              <>
+                {tab.results.map((r, i) => {
+                  const metric = tab.metrics[r.statementIndex];
+                  const timing =
+                    metric?.elapsedMs !== undefined
+                      ? metric.elapsedMs >= 1000
+                        ? `${(metric.elapsedMs / 1000).toFixed(1)}s`
+                        : `${metric.elapsedMs}ms`
+                      : undefined;
+                  const isSelected = r.id === (tab.activeResultId ?? tab.results[0]?.id);
+                  return (
+                    <button
+                      role="tab"
+                      id={`result-tab-${r.id}`}
+                      aria-controls={`result-panel-${tab.id}`}
+                      aria-selected={isSelected}
+                      tabIndex={isSelected ? 0 : -1}
+                      className={r.id === tab.activeResultId ? "active" : ""}
+                      key={r.id}
+                      onClick={() => state.updateTab(tab.id, { activeResultId: r.id })}
+                    >
+                      <Table2 size={12} />
+                      Query {r.statementIndex + 1}
+                      {tab.results.filter((x) => x.statementIndex === r.statementIndex).length > 1
+                        ? ` · ${i + 1}`
+                        : ""}
+                      <span className="badge row-count">{r.retainedRows.toLocaleString()}</span>
+                      {timing && <span className="badge timing">{timing}</span>}
+                    </button>
+                  );
+                })}
+                {Object.entries(tab.statementErrors ?? {}).map(([stmtIdxStr, stmtErr]) => {
+                  const stmtIdx = Number(stmtIdxStr);
+                  const metric = tab.metrics[stmtIdx];
+                  const timing =
+                    metric?.elapsedMs !== undefined
+                      ? metric.elapsedMs >= 1000
+                        ? `${(metric.elapsedMs / 1000).toFixed(1)}s`
+                        : `${metric.elapsedMs}ms`
+                      : undefined;
+                  const isErrActive = tab.activeResultId === `err-${stmtIdx}`;
+                  return (
+                    <button
+                      role="tab"
+                      id={`result-tab-err-${stmtIdx}`}
+                      aria-controls={`result-panel-${tab.id}`}
+                      aria-selected={isErrActive}
+                      tabIndex={isErrActive ? 0 : -1}
+                      className={`error-tab ${isErrActive ? "active" : ""}`}
+                      key={`err-${stmtIdx}`}
+                      onClick={() =>
+                        state.updateTab(tab.id, {
+                          activeResultId: `err-${stmtIdx}`,
+                          error: stmtErr,
+                        })
+                      }
+                    >
+                      <AlertCircle size={12} className="error-icon" />
+                      Query {stmtIdx + 1}
+                      <span className="badge error-badge">Error</span>
+                      {timing && <span className="badge timing">{timing}</span>}
+                    </button>
+                  );
+                })}
+              </>
             ) : (
               <span className="result-placeholder">Results</span>
             )}
           </div>
           <div className="table-view-actions">
+            {(tab.activeQueryId || result?.queryId) && (
+              <span className="query-handle-badge" title="Snowflake Query ID">
+                Query ID: <code>{tab.activeQueryId || result?.queryId}</code>
+                <button
+                  type="button"
+                  className="icon-button small copy-handle"
+                  title="Copy Query ID"
+                  aria-label="Copy Query ID"
+                  onClick={() => {
+                    const qid = tab.activeQueryId || result?.queryId;
+                    if (qid) {
+                      void navigator.clipboard.writeText(qid);
+                      state.notify(`Copied Query ID ${qid}`);
+                    }
+                  }}
+                >
+                  <Copy size={11} />
+                </button>
+              </span>
+            )}
             {result && result.editability && (
               <span
                 className={`result-provenance-badge ${
@@ -1039,6 +1228,15 @@ export function Workbench({
             )}
             {result && result.columns.length > 0 && (
               <>
+                <GridPaginationBar
+                  pagination={pagination}
+                  disabled={running}
+                  onFirstPage={handleFirstPage}
+                  onPreviousPage={handlePreviousPage}
+                  onNextPage={handleNextPage}
+                  onLastPage={handleLastPage}
+                  onPageSizeChange={handlePageSizeChange}
+                />
                 {isQueryPlanResult(result, tab.planSource) && (
                   <button
                     className="button ghost small"
@@ -1156,6 +1354,15 @@ export function Workbench({
             )}
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
+                <GridPaginationBar
+                  pagination={pagination}
+                  disabled={running}
+                  onFirstPage={handleFirstPage}
+                  onPreviousPage={handlePreviousPage}
+                  onNextPage={handleNextPage}
+                  onLastPage={handleLastPage}
+                  onPageSizeChange={handlePageSizeChange}
+                />
                 <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
                 {tableImportable ? (
                   <button
@@ -1379,6 +1586,9 @@ export function Workbench({
               tab={tab}
               result={result}
               theme={state.theme}
+              pageOffset={gridPageOffset}
+              pageRowLimit={gridPageRowLimit}
+              onVisibleRowChange={handleVisibleRowChange}
               onSelect={onSelect}
               onOpenValue={onOpenValue}
               onSelectedRowsChange={setSelectedRows}

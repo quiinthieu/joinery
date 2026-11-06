@@ -130,11 +130,18 @@ async fn rpc(
                 arg::<Option<bool>>(&args, "analyze")?.unwrap_or(false),
                 arg::<Option<Vec<QueryParamInput>>>(&args, "params")?
             )?),
-            "prepare_execution" => json!(studio.prepare_execution_with_params(
-                &arg::<String>(&args, "sessionId")?,
-                &arg::<String>(&args, "sql")?,
-                arg::<Option<Vec<QueryParamInput>>>(&args, "params")?
-            )?),
+            "prepare_execution" | "prepare_plan" => {
+                let params = arg::<Option<Vec<QueryParamInput>>>(&args, "params")?
+                    .or_else(|| arg::<Option<Vec<QueryParamInput>>>(&args, "boundParameters").ok().flatten());
+                let error_policy = arg::<Option<BatchErrorPolicy>>(&args, "errorPolicy")?
+                    .unwrap_or_default();
+                json!(studio.prepare_execution_with_params_and_policy(
+                    &arg::<String>(&args, "sessionId")?,
+                    &arg::<String>(&args, "sql")?,
+                    params,
+                    error_policy,
+                )?)
+            }
             "authorize_plan" => json!(studio.authorize(
                 &arg::<String>(&args, "planId")?,
                 arg::<Option<String>>(&args, "passphrase")?.as_deref(),
@@ -180,8 +187,56 @@ async fn rpc(
                     })
                 )?)
             }
-            "cancel_run" => {
-                studio.cancel(&arg::<String>(&args, "runId")?).await?;
+            "cancel_run" | "cancel_query" => {
+                let run_id = arg::<Option<String>>(&args, "runId")?;
+                let query_id = arg::<Option<String>>(&args, "queryId")?;
+                if let Some(r) = run_id {
+                    studio.cancel(&r).await?;
+                } else if let Some(q) = query_id {
+                    studio.cancel_by_query_id(&q).await?;
+                }
+                json!({ "success": true })
+            }
+            "get_console" | "load_console" => json!(studio.get_console(&arg::<String>(&args, "profileId")?)?),
+            "save_console" => {
+                studio.save_console(
+                    &arg::<String>(&args, "profileId")?,
+                    &arg::<String>(&args, "content")?,
+                    arg::<Option<String>>(&args, "name")?.as_deref(),
+                )?;
+                json!({ "success": true })
+            }
+            "list_scratchpads" => json!(studio.scratchpads()?),
+            "save_scratchpad" => {
+                let (id, name, content, connection_id) = if let Some(sp) = args.get("scratchpad") {
+                    (
+                        arg::<Option<String>>(sp, "id")?,
+                        arg::<Option<String>>(sp, "name")?,
+                        arg::<String>(sp, "content")?,
+                        arg::<Option<String>>(sp, "connectionId")?,
+                    )
+                } else {
+                    (
+                        arg::<Option<String>>(&args, "id")?,
+                        arg::<Option<String>>(&args, "name")?,
+                        arg::<String>(&args, "content")?,
+                        arg::<Option<String>>(&args, "connectionId")?,
+                    )
+                };
+                json!(studio.save_scratchpad(id, name, content, connection_id)?)
+            }
+            "delete_scratchpad" => {
+                studio.delete_scratchpad(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "get_parameter_history" => json!(studio.persistence().parameter_history(
+                &arg::<String>(&args, "profileId")?
+            )?),
+            "save_parameter_history" => {
+                studio.persistence().save_parameter_history(
+                    &arg::<String>(&args, "profileId")?,
+                    &arg::<Vec<QueryParamInput>>(&args, "entries")?,
+                )?;
                 Value::Null
             }
             "redis_scan" => json!(studio.redis_scan(&arg::<String>(&args,"sessionId")?, &arg::<String>(&args,"pattern")?, arg::<Option<String>>(&args,"cursor")?.as_deref()).await?),
@@ -190,7 +245,7 @@ async fn rpc(
             "completion_schema" => json!(studio.completion_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
             "inspection_schema" => json!(studio.inspection_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
-            "database_objects" => {
+            "database_objects" | "catalog_objects" => {
                 json!(studio.database_objects(&arg::<String>(&args, "sessionId")?).await?)
             }
             "object_details" => json!(
@@ -420,11 +475,20 @@ async fn rpc(
                     .session_contexts(&arg::<String>(&args, "sessionId")?)
                     .await?
             ),
+            "list_contexts" => json!(
+                studio
+                    .list_contexts(&arg::<String>(&args, "sessionId")?)
+                    .await?
+            ),
             "switch_session_context" => json!(
                 studio
-                    .switch_session_context(
+                    .switch_session_context_4d(
                         &arg::<String>(&args, "sessionId")?,
-                        &arg::<String>(&args, "target")?
+                        arg::<Option<String>>(&args, "target")?.as_deref(),
+                        arg::<Option<String>>(&args, "warehouse")?.as_deref(),
+                        arg::<Option<String>>(&args, "role")?.as_deref(),
+                        arg::<Option<String>>(&args, "database")?.as_deref(),
+                        arg::<Option<String>>(&args, "schema")?.as_deref(),
                     )
                     .await?
             ),

@@ -90,4 +90,78 @@ describe("dirty cell tracking", () => {
     expect(store.pendingCountForTab("tab-1", ["p1"])).toBe(0);
     expect(store.count).toBe(0);
   });
+
+  it("reverts single cells and batches atomically while updating byte budget and original lookups", () => {
+    const store = new DirtyStore();
+    let notifications = 0;
+    store.subscribe(() => {
+      notifications++;
+    });
+
+    store.set({ resultId: "res1", row: 0, column: "name", original: "Alice", value: "Alicia" });
+    store.set({
+      resultId: "res1",
+      row: 0,
+      column: "email",
+      original: "a@test.com",
+      value: "a2@test.com",
+    });
+    store.set({ resultId: "res1", row: 1, column: "name", original: "Bob", value: "Bobby" });
+    expect(notifications).toBe(3);
+    expect(store.hasCell("res1", 0, "name")).toBe(true);
+    expect(store.hasCell("res1", 0, "nonexistent")).toBe(false);
+    expect(store.getOriginal("res1", 0, "name")).toBe("Alice");
+    expect(store.getOriginal("res1", 0, "nonexistent")).toBeUndefined();
+
+    // Revert single cell
+    store.revertCell("res1", 0, "name");
+    expect(notifications).toBe(4);
+    expect(store.hasCell("res1", 0, "name")).toBe(false);
+    expect(store.getOriginal("res1", 0, "name")).toBeUndefined();
+    expect(store.hasCell("res1", 0, "email")).toBe(true);
+    expect(store.count).toBe(2);
+
+    // Revert batch
+    store.revertBatch([
+      { resultId: "res1", row: 0, column: "email" },
+      { resultId: "res1", row: 1, column: "name" },
+    ]);
+    expect(notifications).toBe(5);
+    expect(store.count).toBe(0);
+    expect(store.hasCell("res1", 0, "email")).toBe(false);
+    expect(store.hasCell("res1", 1, "name")).toBe(false);
+  });
+
+  it("reverts entire rows including cell edits and staged deletions", () => {
+    const store = new DirtyStore();
+    let notifications = 0;
+    store.subscribe(() => {
+      notifications++;
+    });
+
+    store.set({ resultId: "res1", row: 3, column: "colA", original: "oldA", value: "newA" });
+    store.set({ resultId: "res1", row: 3, column: "colB", original: "oldB", value: "newB" });
+    store.set({ resultId: "res1", row: 4, column: "colA", original: "old4", value: "new4" });
+    store.setDeleted("res1", [3, 5], true);
+
+    expect(store.isDeleted("res1", 3)).toBe(true);
+    expect(store.isDeleted("res1", 5)).toBe(true);
+    // Row 3 had cell edits removed when deleted, but let's test reverting row 3
+    store.revertRow("res1", 3);
+    expect(store.isDeleted("res1", 3)).toBe(false);
+    expect(store.isDeleted("res1", 5)).toBe(true);
+
+    // Revert row 4 (has cell edit)
+    expect(store.hasCell("res1", 4, "colA")).toBe(true);
+    store.revertRow("res1", 4);
+    expect(store.hasCell("res1", 4, "colA")).toBe(false);
+    expect(store.count).toBe(1); // row 5 delete remains
+
+    // Revert draft insert row
+    const draft = store.addInsertRow("tab-1");
+    store.setInsertCell("tab-1", draft.id, "colX", "valX");
+    expect(store.hasCell(`insert:${draft.id}`, 0, "colX")).toBe(true);
+    store.revertRow(`insert:${draft.id}`, 0);
+    expect(store.insertsForTab("tab-1").length).toBe(0);
+  });
 });

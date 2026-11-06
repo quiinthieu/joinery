@@ -129,8 +129,14 @@ pub async fn prepare_execution(
     session_id: String,
     sql: String,
     params: Option<Vec<QueryParamInput>>,
+    error_policy: Option<BatchErrorPolicy>,
 ) -> AppResult<PreparedPlan> {
-    studio.prepare_execution_with_params(&session_id, &sql, params)
+    studio.prepare_execution_with_params_and_policy(
+        &session_id,
+        &sql,
+        params,
+        error_policy.unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -181,6 +187,87 @@ pub async fn execute_plan(
 #[tauri::command]
 pub async fn cancel_run(studio: State<'_, Arc<Studio>>, run_id: String) -> AppResult<()> {
     studio.cancel(&run_id).await
+}
+
+#[tauri::command]
+pub async fn cancel_query(
+    studio: State<'_, Arc<Studio>>,
+    query_id: Option<String>,
+    run_id: Option<String>,
+) -> AppResult<()> {
+    if let Some(r) = run_id {
+        studio.cancel(&r).await
+    } else if let Some(q) = query_id {
+        studio.cancel_by_query_id(&q).await
+    } else {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn get_console(
+    studio: State<'_, Arc<Studio>>,
+    profile_id: String,
+) -> AppResult<PersistentConsole> {
+    studio.get_console(&profile_id)
+}
+
+#[tauri::command]
+pub async fn save_console(
+    studio: State<'_, Arc<Studio>>,
+    profile_id: String,
+    content: String,
+    name: Option<String>,
+) -> AppResult<SaveConsoleResult> {
+    studio.save_console(&profile_id, &content, name.as_deref())?;
+    Ok(SaveConsoleResult { success: true })
+}
+
+#[tauri::command]
+pub async fn list_scratchpads(studio: State<'_, Arc<Studio>>) -> AppResult<Vec<Scratchpad>> {
+    studio.scratchpads()
+}
+
+#[tauri::command]
+pub async fn save_scratchpad(
+    studio: State<'_, Arc<Studio>>,
+    id: Option<String>,
+    name: Option<String>,
+    content: Option<String>,
+    connection_id: Option<String>,
+    scratchpad: Option<Scratchpad>,
+) -> AppResult<Scratchpad> {
+    let (id, name, content, connection_id) = if let Some(sp) = scratchpad {
+        (Some(sp.id), Some(sp.name), sp.content, sp.connection_id)
+    } else {
+        let content = content.unwrap_or_default();
+        (id, name, content, connection_id)
+    };
+    studio.save_scratchpad(id, name, content, connection_id)
+}
+
+#[tauri::command]
+pub async fn delete_scratchpad(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
+    studio.delete_scratchpad(&id)
+}
+
+#[tauri::command]
+pub async fn get_parameter_history(
+    studio: State<'_, Arc<Studio>>,
+    profile_id: String,
+) -> AppResult<Vec<ParameterHistoryEntry>> {
+    studio.persistence().parameter_history(&profile_id)
+}
+
+#[tauri::command]
+pub async fn save_parameter_history(
+    studio: State<'_, Arc<Studio>>,
+    profile_id: String,
+    entries: Vec<QueryParamInput>,
+) -> AppResult<()> {
+    studio
+        .persistence()
+        .save_parameter_history(&profile_id, &entries)
 }
 
 #[tauri::command]
@@ -722,12 +809,33 @@ pub async fn session_contexts(
 }
 
 #[tauri::command]
+pub async fn list_contexts(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<Vec<ContextDimension>> {
+    studio.list_contexts(&session_id).await
+}
+
+#[tauri::command]
 pub async fn switch_session_context(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
-    target: String,
+    target: Option<String>,
+    warehouse: Option<String>,
+    role: Option<String>,
+    database: Option<String>,
+    schema: Option<String>,
 ) -> AppResult<SessionContextOptions> {
-    studio.switch_session_context(&session_id, &target).await
+    studio
+        .switch_session_context_4d(
+            &session_id,
+            target.as_deref(),
+            warehouse.as_deref(),
+            role.as_deref(),
+            database.as_deref(),
+            schema.as_deref(),
+        )
+        .await
 }
 
 #[tauri::command]

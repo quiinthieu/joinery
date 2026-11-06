@@ -76,7 +76,7 @@ fn validate(connection: &Connection) -> AppResult<()> {
     super::library::read_bookmarks(connection)?;
     super::library::read_sql_format_settings(connection)?;
     super::library::read_sql_snippets(connection)?;
-    let unexpected: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND (type != 'table' OR name NOT IN ('profiles','groups','history','audit','settings'))", [], |r| r.get(0)).map_err(db_error)?;
+    let unexpected: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND (type != 'table' OR name NOT IN ('profiles','groups','history','audit','settings','consoles','scratchpads','parameters'))", [], |r| r.get(0)).map_err(db_error)?;
     if unexpected != 0 {
         return Err(AppError::invalid(
             "The metadata backup contains unexpected schema objects",
@@ -295,6 +295,9 @@ impl Persistence {
         }
         let mut pinned = Connection::open_in_memory().map_err(db_error)?;
         copy(&source, &mut pinned)?;
+        if schema_version(&pinned)? == SCHEMA_VERSION {
+            super::ensure_extended_v1_tables(&pinned)?;
+        }
         validate(&pinned)?;
         if info(&path, id)?.digest != before.digest {
             return Err(AppError::new(

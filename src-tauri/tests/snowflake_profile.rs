@@ -23,12 +23,15 @@ fn profile() -> ConnectionProfile {
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),
             schema: "PUBLIC".into(),
+            auth_method: SnowflakeAuthMethod::KeyPair,
+            private_key_path: Some("/tmp/fake_key.p8".into()),
+            client_id: None,
         }),
     }
 }
 
 #[test]
-fn studio_accepts_only_read_only_verified_snowflake_profiles() {
+fn studio_accepts_unlocked_safe_mode_and_verified_snowflake_profiles() {
     let root = tempfile::tempdir().unwrap();
     let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
     assert!(
@@ -40,12 +43,18 @@ fn studio_accepts_only_read_only_verified_snowflake_profiles() {
     );
     assert!(studio.save_profile(profile(), None).is_ok());
 
-    let mut unsafe_profile = profile();
-    unsafe_profile.safe_mode = SafeMode::Silent;
-    assert_eq!(
-        studio.save_profile(unsafe_profile, None).unwrap_err().code,
-        ErrorCode::InvalidInput
-    );
+    for mode in [
+        SafeMode::Silent,
+        SafeMode::Confirm,
+        SafeMode::Guard,
+        SafeMode::PasswordGated,
+        SafeMode::ReadOnly,
+    ] {
+        let mut p = profile();
+        p.id = new_id();
+        p.safe_mode = mode;
+        assert!(studio.save_profile(p, None).is_ok());
+    }
 
     let mut unsafe_profile = profile();
     unsafe_profile.host = "org-account.snowflakecomputing.com.attacker.test".into();

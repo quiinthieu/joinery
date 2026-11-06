@@ -24,8 +24,9 @@ import DataEditor, {
 import "@glideapps/glide-data-grid/dist/index.css";
 import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
-import { dirtyStore } from "../../data/dirty-store";
+import { dirtyStore, type DraftInsertRow } from "../../data/dirty-store";
 import { useStudio, querySessionForTab, type StudioTab } from "../../state/studio";
+import { RotateCcw, Maximize2, Slash, Copy } from "lucide-react";
 import {
   copyFormatLabel,
   formatGridCells,
@@ -85,6 +86,9 @@ interface Props {
   tab: StudioTab;
   result?: ResultInfo;
   theme: string;
+  pageOffset?: number;
+  pageRowLimit?: number | null;
+  onVisibleRowChange?(topAbsoluteRow: number): void;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
   onSelectedRowsChange?(rows: number[]): void;
@@ -103,6 +107,112 @@ function selectedVisualRows(selection: GridSelection): number[] {
     }
   }
   return [...rows].sort((a, b) => a - b);
+}
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+
+function isCellInSelection(cell: Item, sel: GridSelection): boolean {
+  const [col, row] = cell;
+  if (sel.columns.hasIndex(col) || sel.rows.hasIndex(row)) return true;
+  if (sel.current) {
+    const { range, rangeStack } = sel.current;
+    for (const r of [range, ...rangeStack]) {
+      if (col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+interface SelectedModifications {
+  dirtyCells: { resultId: string; row: number; column: string }[];
+  deletedRows: { resultId: string; row: number }[];
+  insertCells: { tabId: string; insertId: string; column: string }[];
+}
+
+function getSelectedModifications(
+  sel: GridSelection,
+  visibleColumns: ColumnInfo[],
+  rowCount: number,
+  locate: (visualRow: number) => { result: ResultInfo; row: number } | null,
+  locateDraft: (
+    visualRow: number,
+  ) => { tabId: string; draft: DraftInsertRow; index: number } | null,
+): SelectedModifications {
+  const dirtyCells: { resultId: string; row: number; column: string }[] = [];
+  const deletedRows: { resultId: string; row: number }[] = [];
+  const insertCells: { tabId: string; insertId: string; column: string }[] = [];
+  const seenCellKeys = new Set<string>();
+  const seenRowKeys = new Set<string>();
+
+  const rects = sel.current ? [sel.current.range, ...sel.current.rangeStack] : [];
+  const rowList = sel.rows.toArray();
+  const colList = sel.columns.toArray();
+
+  const selectionCols = new Set<number>(colList);
+  const selectionRows = new Set<number>(rowList);
+  for (const rect of rects) {
+    for (let x = rect.x; x < rect.x + rect.width; x++) {
+      if (x >= 0 && x < visibleColumns.length) selectionCols.add(x);
+    }
+    for (let y = rect.y; y < rect.y + rect.height; y++) {
+      if (y >= 0 && y < rowCount) selectionRows.add(y);
+    }
+  }
+  if (selectionCols.size === 0 && selectionRows.size > 0) {
+    for (let c = 0; c < visibleColumns.length; c++) selectionCols.add(c);
+  }
+  if (selectionRows.size === 0 && selectionCols.size > 0) {
+    for (let r = 0; r < rowCount; r++) selectionRows.add(r);
+  }
+
+  for (const visualRow of selectionRows) {
+    const draft = locateDraft(visualRow);
+    const source = locate(visualRow);
+
+    if (source) {
+      const rowKey = `${source.result.id}:${source.row}`;
+      if (dirtyStore.isDeleted(source.result.id, source.row) && !seenRowKeys.has(rowKey)) {
+        seenRowKeys.add(rowKey);
+        deletedRows.push({ resultId: source.result.id, row: source.row });
+      }
+    }
+
+    for (const colIdx of selectionCols) {
+      const col = visibleColumns[colIdx];
+      if (!col) continue;
+
+      if (draft) {
+        if (col.id in draft.draft.values) {
+          const insertKey = `${draft.draft.id}:${col.id}`;
+          if (!seenCellKeys.has(insertKey)) {
+            seenCellKeys.add(insertKey);
+            insertCells.push({
+              tabId: draft.tabId,
+              insertId: draft.draft.id,
+              column: col.id,
+            });
+          }
+        }
+      } else if (source) {
+        const cellKey = `${source.result.id}:${source.row}:${col.id}`;
+        if (
+          dirtyStore.hasCell(source.result.id, source.row, col.id) &&
+          !seenCellKeys.has(cellKey)
+        ) {
+          seenCellKeys.add(cellKey);
+          dirtyCells.push({
+            resultId: source.result.id,
+            row: source.row,
+            column: col.id,
+          });
+        }
+      }
+    }
+  }
+
+  return { dirtyCells, deletedRows, insertCells };
 }
 
 const benchmarkColumns: ColumnInfo[] = [
@@ -153,6 +263,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     tab,
     result,
     theme: themeName,
+    pageOffset = 0,
+    pageRowLimit = null,
+    onVisibleRowChange,
     onSelect,
     onOpenValue,
     onSelectedRowsChange,
@@ -166,11 +279,56 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   const [size, setSize] = useState({ width: 800, height: 400 });
   const [widths, setWidths] = useState<Record<string, number>>({});
   const density = useStudio((state) => state.density);
+  const palette = useStudio((state) => state.palette);
   const dirtyVersion = useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const [selection, setSelection] = useState<GridSelection>({
     rows: CompactSelection.empty(),
     columns: CompactSelection.empty(),
   });
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    cell: Item;
+    target: CellTarget;
+  } | null>(null);
+  const lastPointerCoord = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const onPointer = (e: MouseEvent) => {
+      lastPointerCoord.current = { x: e.clientX, y: e.clientY };
+    };
+    window.addEventListener("contextmenu", onPointer, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      window.removeEventListener("contextmenu", onPointer, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement)?.closest(".cell-context-menu")) {
+        setContextMenu(null);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [contextMenu]);
+  const effectivePageOffset = tab.kind === "benchmark" ? 0 : Math.max(0, pageOffset ?? 0);
+  const pageOffsetRef = useRef(effectivePageOffset);
+  pageOffsetRef.current = effectivePageOffset;
+  const pageRowLimitRef = useRef(pageRowLimit);
+  pageRowLimitRef.current = pageRowLimit;
+  const onVisibleRowChangeRef = useRef(onVisibleRowChange);
+  onVisibleRowChangeRef.current = onVisibleRowChange;
   const connected = useStudio((state) => {
     if (!tab.connectionId) return false;
     const activeSession =
@@ -243,14 +401,19 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     [visibleColumns, resolvedLayout.widths, tab.kind, widths, sortQuery],
   );
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
-  const rowCount =
+  const fullRowCount =
     tab.kind === "benchmark"
       ? 1_000_000
       : tab.kind === "table"
         ? draftInserts.length > 0
           ? tab.loadedRows + draftInserts.length
-          : tab.loadedRows + (tab.hasMore ? 1 : 0)
+          : tab.loadedRows + (tab.hasMore && pageRowLimit == null ? 1 : 0)
         : (result?.retainedRows ?? 0) + draftInserts.length;
+  const remainingRows = Math.max(0, fullRowCount - effectivePageOffset);
+  const rowCount =
+    tab.kind === "benchmark" || pageRowLimit == null || pageRowLimit <= 0
+      ? remainingRows
+      : Math.min(pageRowLimit, remainingRows);
   const theme = useMemo<Partial<Theme>>(() => {
     const style = getComputedStyle(document.documentElement),
       color = (key: string) => style.getPropertyValue(key).trim();
@@ -270,12 +433,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       horizontalBorderColor: color("--row-border"),
       headerBottomBorderColor: color("--border"),
       baseFontStyle: "12px",
-      headerFontStyle: "500 11px",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      headerFontStyle: "600 11px",
+      fontFamily:
+        "'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif",
       cellHorizontalPadding: 16,
       editorFontSize: "13px",
     };
-  }, [themeName]);
+  }, [themeName, palette]);
 
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) =>
@@ -309,10 +473,22 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     onSelectedRowsChange?.([]);
     onSelect(null);
     redraw();
-  }, [tab.id, tab.revision, result?.id, visibleOrderKey, redraw]);
+  }, [
+    tab.id,
+    tab.revision,
+    result?.id,
+    visibleOrderKey,
+    effectivePageOffset,
+    pageRowLimit,
+    redraw,
+  ]);
+  useEffect(() => {
+    grid.current?.scrollTo?.(0, 0);
+  }, [effectivePageOffset, pageRowLimit]);
 
-  const locate = useCallback((row: number) => {
+  const locate = useCallback((visualRow: number) => {
     const { tab, result } = model.current;
+    const row = visualRow + pageOffsetRef.current;
     if (tab.kind === "table") {
       const page = tab.pages.find((p) => row >= p.start && row < p.start + p.result.retainedRows);
       return page ? { result: page.result, row: row - page.start } : null;
@@ -320,8 +496,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     return result ? { result, row } : null;
   }, []);
 
-  const locateDraft = useCallback((row: number) => {
+  const locateDraft = useCallback((visualRow: number) => {
     const { tab, result } = model.current;
+    const row = visualRow + pageOffsetRef.current;
     const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
     const scopeId = tab.kind === "table" ? tab.id : result?.id;
     if (!scopeId || (tab.kind !== "table" && tab.kind !== "query") || row < loaded) {
@@ -379,18 +556,22 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   );
 
   const pendingCanvasFocus = useRef(false);
+  const handledFocusSeqRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     if (!focusRowRequest || !columns.length) return;
-    const targetRow = focusRowRequest.row;
+    if (handledFocusSeqRef.current === focusRowRequest.seq) return;
+    const absTargetRow = focusRowRequest.row;
+    const targetRow = absTargetRow - pageOffsetRef.current;
     if (targetRow < 0 || targetRow >= rowCount) return;
+    handledFocusSeqRef.current = focusRowRequest.seq;
     const loaded =
       model.current.tab.kind === "table"
         ? model.current.tab.loadedRows
         : (model.current.result?.retainedRows ?? 0);
     const isDraft =
       (model.current.tab.kind === "table" || model.current.tab.kind === "query") &&
-      targetRow >= loaded;
+      absTargetRow >= loaded;
     const targetCol = isDraft
       ? Math.max(
           0,
@@ -409,9 +590,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     selectionRef.current = nextSelection;
     pendingCanvasFocus.current = true;
     setSelection(nextSelection);
-    onSelectedRowsChange?.([targetRow]);
+    onSelectedRowsChange?.([absTargetRow]);
     onSelect(targetAt([targetCol, targetRow], true));
-  }, [focusRowRequest?.seq]);
+  }, [focusRowRequest?.seq, effectivePageOffset, rowCount]);
 
   useLayoutEffect(() => {
     if (!pendingCanvasFocus.current) return;
@@ -495,8 +676,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       }
       const source = locate(row);
       if (!source) {
-        if (tab.kind === "table" && row < tab.loadedRows)
-          void useStudio.getState().ensureTablePage(tab.id, row);
+        const absRow = row + pageOffsetRef.current;
+        if (tab.kind === "table" && absRow < tab.loadedRows)
+          void useStudio.getState().ensureTablePage(tab.id, absRow);
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
       const cached = resultCache.read(source.result.id, column.id, source.row);
@@ -680,11 +862,16 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         visibleColumns,
         tableEditable,
         resolveRow: (visualRow) => {
+          const absRow = visualRow + pageOffsetRef.current;
           if ((currentTab.kind !== "table" && currentTab.kind !== "query") || visualRow < 0)
             return { kind: "outOfBounds" };
-          if (visualRow >= loaded) {
+          const pageLimit = pageRowLimitRef.current;
+          if (pageLimit != null && pageLimit > 0 && visualRow >= pageLimit) {
+            return { kind: "outOfBounds" };
+          }
+          if (absRow >= loaded) {
             if (inserts.length > 0) {
-              const draft = inserts[visualRow - loaded];
+              const draft = inserts[absRow - loaded];
               return draft
                 ? { kind: "draftInsert", tabId: scopeId, insertId: draft.id }
                 : { kind: "outOfBounds" };
@@ -693,7 +880,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
               currentTab.kind === "table"
                 ? currentTab.loadedRows + (currentTab.hasMore ? 1 : 0)
                 : loaded;
-            return visualRow < totalRows ? { kind: "unloaded" } : { kind: "outOfBounds" };
+            return absRow < totalRows ? { kind: "unloaded" } : { kind: "outOfBounds" };
           }
           const source = locate(visualRow);
           if (!source) return { kind: "unloaded" };
@@ -736,13 +923,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         currentTab.kind === "table" || currentTab.kind === "query"
           ? dirtyStore.insertsForTab(scopeId).length
           : 0;
-      const maxCopyableRows =
+      const totalCopyableRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
           : currentTab.kind === "table"
             ? currentTab.loadedRows + draftCount
             : (currentResult?.retainedRows ?? 0) + draftCount;
-      const loadedDefaultRows =
+      const totalDefaultRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
           : currentTab.kind === "table"
@@ -752,6 +939,16 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
             : (currentResult?.retainedRows ?? 0) > 0
               ? (currentResult?.retainedRows ?? 0)
               : draftCount;
+      const offset = currentTab.kind === "benchmark" ? 0 : pageOffsetRef.current;
+      const limit = currentTab.kind === "benchmark" ? null : pageRowLimitRef.current;
+      const remainingCopyable = Math.max(0, totalCopyableRows - offset);
+      const maxCopyableRows =
+        limit == null || limit <= 0 ? remainingCopyable : Math.min(limit, remainingCopyable);
+      const remainingDefault = Math.max(0, totalDefaultRows - offset);
+      const loadedDefaultRows =
+        limit == null || limit <= 0
+          ? remainingDefault
+          : Math.min(limit, remainingDefault > 0 ? remainingDefault : remainingCopyable);
 
       const sel = selectionRef.current;
       const rowList = sel.rows.toArray().filter((r) => r >= 0 && r < maxCopyableRows);
@@ -847,22 +1044,23 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       try {
         const rows: CopyCell[][] = [];
         for (const row of rowIndices) {
+          const absRow = row + pageOffsetRef.current;
           if (model.current.tab.id !== tabId || model.current.tab.revision !== revision) {
             return false;
           }
           if (model.current.tab.kind === "benchmark") {
-            rows.push(colIndices.map((col) => benchmarkValue(col, row)));
+            rows.push(colIndices.map((col) => benchmarkValue(col, absRow)));
             continue;
           }
           if (
             model.current.tab.kind === "table" &&
-            row < model.current.tab.loadedRows &&
+            absRow < model.current.tab.loadedRows &&
             !locate(row)
           ) {
-            await useStudio.getState().ensureTablePage(tabId, row);
+            await useStudio.getState().ensureTablePage(tabId, absRow);
           }
           const source =
-            model.current.tab.kind !== "table" || row < model.current.tab.loadedRows
+            model.current.tab.kind !== "table" || absRow < model.current.tab.loadedRows
               ? locate(row)
               : null;
           if (source) {
@@ -950,6 +1148,50 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     return () => window.removeEventListener("paste", onWindowPaste, true);
   }, []);
 
+  const handleRevertSelected = useCallback(() => {
+    if (!isGridEditable) return;
+    const sel = selectionRef.current;
+    const { dirtyCells, deletedRows, insertCells } = getSelectedModifications(
+      sel,
+      visibleColumns,
+      rowCount,
+      locate,
+      locateDraft,
+    );
+    const total = dirtyCells.length + deletedRows.length + insertCells.length;
+    if (total === 0) return;
+
+    if (dirtyCells.length > 0) dirtyStore.revertBatch(dirtyCells);
+    for (const item of deletedRows) dirtyStore.revertRow(item.resultId, item.row);
+    for (const item of insertCells) {
+      dirtyStore.setInsertCell(item.tabId, item.insertId, item.column, undefined);
+    }
+    useStudio.getState().notify(`Reverted ${total} change${total === 1 ? "" : "s"}`);
+    const active = sel.current?.cell;
+    if (active) onSelect(targetAt(active, true));
+  }, [isGridEditable, visibleColumns, rowCount, locate, locateDraft, targetAt, onSelect]);
+
+  useLayoutEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!host.current?.contains(document.activeElement)) return;
+      if (
+        document.activeElement instanceof HTMLInputElement ||
+        document.activeElement instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      const isMod = isMac ? event.metaKey : event.ctrlKey;
+      if (isMod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        event.stopPropagation();
+        handleRevertSelected();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [handleRevertSelected]);
+
   return (
     <div className="grid-host" ref={host}>
       {columns.length ? (
@@ -960,7 +1202,14 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           columns={columns}
           rows={rowCount}
           getCellContent={getCellContent}
-          rowMarkers="number"
+          rowMarkers={
+            effectivePageOffset > 0
+              ? {
+                  kind: "number",
+                  startIndex: effectivePageOffset + 1,
+                }
+              : "number"
+          }
           rowHeight={density === "compact" ? 28 : 36}
           headerHeight={37}
           smoothScrollX
@@ -1036,21 +1285,49 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           onGridSelectionChange={(nextSelection) => {
             selectionRef.current = nextSelection;
             setSelection(nextSelection);
-            onSelectedRowsChange?.(selectedVisualRows(nextSelection));
+            onSelectedRowsChange?.(
+              selectedVisualRows(nextSelection).map((row) => row + pageOffsetRef.current),
+            );
             onSelect(nextSelection.current ? targetAt(nextSelection.current.cell, true) : null);
           }}
           onCellActivated={(cell) => {
             const target = targetAt(cell, true);
             if (target && (target.large || opensInValueDialog(target.column))) onOpenValue(target);
           }}
+          onCellContextMenu={(cell, event) => {
+            event.preventDefault();
+            const target = targetAt(cell, true);
+            if (!target) return;
+            const inSel = isCellInSelection(cell, selectionRef.current);
+            if (!inSel) {
+              const nextSelection: GridSelection = {
+                rows: CompactSelection.empty(),
+                columns: CompactSelection.empty(),
+                current: {
+                  cell,
+                  range: { x: cell[0], y: cell[1], width: 1, height: 1 },
+                  rangeStack: [],
+                },
+              };
+              selectionRef.current = nextSelection;
+              setSelection(nextSelection);
+              onSelect(target);
+            }
+            const pointer = lastPointerCoord.current;
+            const x = Math.max(10, Math.min(pointer.x, window.innerWidth - 220));
+            const y = Math.max(10, Math.min(pointer.y, window.innerHeight - 200));
+            setContextMenu({ x, y, cell, target });
+          }}
           onVisibleRegionChanged={(range) => {
             visible.current = range;
+            const offset = pageOffsetRef.current;
+            onVisibleRowChangeRef.current?.(offset + range.y);
             const current = model.current.tab;
             if (
               current.kind === "table" &&
               current.hasMore &&
               dirtyStore.insertsForTab(current.id).length === 0 &&
-              range.y + range.height >= current.loadedRows - 40
+              offset + range.y + range.height >= current.loadedRows - 40
             )
               void useStudio.getState().loadNextPage(current.id);
           }}
@@ -1066,6 +1343,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                 let bytes = 0;
                 const cells: GridCell[][] = [];
                 for (let row = rectangle.y; row < rectangle.y + rectangle.height; row++) {
+                  const absRow = row + pageOffsetRef.current;
                   if (
                     signal.aborted ||
                     model.current.tab.id !== tabId ||
@@ -1074,11 +1352,11 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                     return [];
                   if (
                     model.current.tab.kind === "table" &&
-                    row < model.current.tab.loadedRows &&
+                    absRow < model.current.tab.loadedRows &&
                     !locate(row)
                   )
-                    await useStudio.getState().ensureTablePage(tabId, row);
-                  const source = row < model.current.tab.loadedRows ? locate(row) : null;
+                    await useStudio.getState().ensureTablePage(tabId, absRow);
+                  const source = absRow < model.current.tab.loadedRows ? locate(row) : null;
                   if (source)
                     await resultCache.ensure(
                       source.result.id,
@@ -1127,6 +1405,147 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
             : "No rows to display"}
         </div>
       )}
+      {contextMenu &&
+        (() => {
+          const selMods = getSelectedModifications(
+            selectionRef.current,
+            visibleColumns,
+            rowCount,
+            locate,
+            locateDraft,
+          );
+          const totalSelectedChanges =
+            selMods.dirtyCells.length + selMods.deletedRows.length + selMods.insertCells.length;
+          const canRevert = isGridEditable && totalSelectedChanges > 0;
+          const revertLabel =
+            totalSelectedChanges > 1 ? `Revert ${totalSelectedChanges} Changes` : "Revert Changes";
+          const isRowModified =
+            dirtyStore.isDeleted(contextMenu.target.resultId, contextMenu.target.row) ||
+            contextMenu.target.insert !== undefined ||
+            visibleColumns.some((col) =>
+              dirtyStore.hasCell(contextMenu.target.resultId, contextMenu.target.row, col.id),
+            );
+          const canRevertRow = isGridEditable && isRowModified;
+          const canSetNull =
+            isGridEditable &&
+            contextMenu.target.column.editable &&
+            contextMenu.target.column.nullable &&
+            !contextMenu.target.deleted &&
+            contextMenu.target.value !== null;
+
+          return (
+            <div
+              className="cell-context-menu"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              role="menu"
+              aria-label="Cell actions"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                disabled={!canRevert}
+                onClick={() => {
+                  setContextMenu(null);
+                  handleRevertSelected();
+                }}
+              >
+                <span>
+                  <RotateCcw size={12} />
+                  {revertLabel}
+                </span>
+                <kbd>{isMac ? "⌘Z" : "Ctrl+Z"}</kbd>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                disabled={!canRevertRow}
+                onClick={() => {
+                  setContextMenu(null);
+                  dirtyStore.revertRow(contextMenu.target.resultId, contextMenu.target.row);
+                  useStudio.getState().notify("Reverted row changes");
+                  onSelect(targetAt(contextMenu.cell, true));
+                }}
+              >
+                <span>
+                  <RotateCcw size={12} />
+                  Revert Entire Row
+                </span>
+              </button>
+              <div className="cell-context-menu-separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  onOpenValue(contextMenu.target);
+                }}
+              >
+                <span>
+                  <Maximize2 size={12} />
+                  Inspect Value…
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                disabled={!canSetNull}
+                onClick={() => {
+                  setContextMenu(null);
+                  if (contextMenu.target.insert) {
+                    dirtyStore.setInsertCell(
+                      contextMenu.target.insert.tabId,
+                      contextMenu.target.insert.insertId,
+                      contextMenu.target.column.id,
+                      null,
+                    );
+                  } else {
+                    dirtyStore.set({
+                      resultId: contextMenu.target.resultId,
+                      row: contextMenu.target.row,
+                      column: contextMenu.target.column.id,
+                      original:
+                        resultCache.read(
+                          contextMenu.target.resultId,
+                          contextMenu.target.column.id,
+                          contextMenu.target.row,
+                          true,
+                        )?.value ?? null,
+                      value: null,
+                    });
+                  }
+                  onSelect(targetAt(contextMenu.cell, true));
+                }}
+              >
+                <span>
+                  <Slash size={12} />
+                  Set NULL
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="cell-context-menu-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  const text = contextMenu.target.insert?.usingDefault
+                    ? "<default>"
+                    : (contextMenu.target.value ?? "NULL");
+                  void writeClipboardText(text);
+                  useStudio.getState().notify("Copied cell value");
+                }}
+              >
+                <span>
+                  <Copy size={12} />
+                  Copy Value
+                </span>
+              </button>
+            </div>
+          );
+        })()}
     </div>
   );
 });

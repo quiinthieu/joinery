@@ -6,7 +6,7 @@ import type {
   SessionInfo,
   TableInfo,
 } from "../../ipc/generated";
-import { buildSearchEverywhereResults } from "./search-everywhere";
+import { buildSearchEverywhereResults, OBJECT_KIND_LABELS } from "./search-everywhere";
 
 function makeProfile(
   id: string,
@@ -382,5 +382,79 @@ describe("buildSearchEverywhereResults", () => {
       disabledReason: "Load table rows in Data view before exporting.",
       subtitle: "Load table rows in Data view before exporting.",
     });
+  });
+
+  it("Milestone 5: indexes Snowflake extended object kinds (stage, task, stream, pipe, fileFormat) with kind badges", () => {
+    const sfProfile = makeProfile("sf-1", "Snowflake Prod", "snowflake");
+    const sfSession = makeSession("sess-sf", "sf-1", "snowflake");
+    const sfObjects: Record<string, DatabaseObjectSummary[]> = {
+      "sf-1": [
+        {
+          object: { schema: "ANALYTICS", name: "S3_EXPORT_STAGE", kind: "stage", identity: null },
+          ownerTable: null,
+          signature: null,
+          estimatedRows: null,
+          totalBytes: null,
+        },
+        {
+          object: { schema: "ANALYTICS", name: "HOURLY_ROLLUP_TASK", kind: "task", identity: null },
+          ownerTable: null,
+          signature: "CRON 0 * * * *",
+          estimatedRows: null,
+          totalBytes: null,
+        },
+        {
+          object: {
+            schema: "ANALYTICS",
+            name: "ORDERS_CDC_STREAM",
+            kind: "stream",
+            identity: "ORDERS",
+          },
+          ownerTable: "ORDERS",
+          signature: "ON TABLE ORDERS",
+          estimatedRows: null,
+          totalBytes: null,
+        },
+        {
+          object: { schema: "ANALYTICS", name: "SNOWPIPE_RAW", kind: "pipe", identity: null },
+          ownerTable: null,
+          signature: null,
+          estimatedRows: null,
+          totalBytes: null,
+        },
+        {
+          object: {
+            schema: "ANALYTICS",
+            name: "PARQUET_COMPRESSED",
+            kind: "fileFormat",
+            identity: null,
+          },
+          ownerTable: null,
+          signature: "TYPE = PARQUET",
+          estimatedRows: null,
+          totalBytes: null,
+        },
+      ],
+    };
+
+    const res = buildSearchEverywhereResults({
+      query: "ANALYTICS",
+      scope: "objects",
+      commands: [],
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: "sf-1",
+      profiles: [sfProfile],
+      sessions: { "sf-1": sfSession },
+      catalog: { "sf-1": [] },
+      objects: sfObjects,
+      history: [],
+    });
+
+    expect(res.items).toHaveLength(5);
+    const badges = res.items.map((i) =>
+      i.kind === "object" ? OBJECT_KIND_LABELS[i.object.kind] : null,
+    );
+    expect(badges).toEqual(["Stage", "Task", "Stream", "Pipe", "File format"]);
   });
 });

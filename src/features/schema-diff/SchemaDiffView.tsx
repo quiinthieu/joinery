@@ -128,6 +128,11 @@ const OBJECT_KIND_LABELS: Record<DatabaseObjectKind, string> = {
   sequence: "Sequence",
   trigger: "Trigger",
   index: "Index",
+  stage: "Stage",
+  task: "Task",
+  stream: "Stream",
+  pipe: "Pipe",
+  fileFormat: "File format",
 };
 
 const MEMBER_CATEGORY_LABELS: Record<SchemaMemberCategory, string> = {

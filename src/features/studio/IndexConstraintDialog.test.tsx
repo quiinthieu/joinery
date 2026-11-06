@@ -191,6 +191,7 @@ describe("StructureView Index & Constraint Editor", () => {
           linesBetweenQueries: 1,
         },
         sqlSnippets: [],
+        scratchpads: [],
       },
       tabs: [],
       activeTabId: null,
@@ -438,6 +439,7 @@ describe("StructureView Index & Constraint Editor", () => {
           linesBetweenQueries: 1,
         },
         sqlSnippets: [],
+        scratchpads: [],
       },
     });
 

@@ -13,6 +13,7 @@ pub trait QuerySink: Send {
     fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()>;
     fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool>;
     fn complete(&mut self, affected: u64) -> AppResult<()>;
+    fn query_id(&mut self, _query_id: &str) {}
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -65,6 +66,9 @@ pub trait Driver: Send + Sync {
         ))
     }
     async fn cancel(&self) -> AppResult<()>;
+    fn active_query_handle(&self) -> Option<String> {
+        None
+    }
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         Err(AppError::new(
             ErrorCode::Unsupported,
@@ -104,11 +108,31 @@ pub trait Driver: Send + Sync {
             "Database or schema switching is unavailable for this engine",
         ))
     }
+    async fn list_context_dimensions(&self) -> AppResult<Vec<ContextDimension>> {
+        let contexts = self.list_contexts().await?;
+        Ok(vec![ContextDimension {
+            kind: "schema".into(),
+            values: contexts,
+        }])
+    }
     async fn switch_context(&self, _target: &str) -> AppResult<()> {
         Err(AppError::new(
             ErrorCode::Unsupported,
             "Database or schema switching is unavailable for this engine",
         ))
+    }
+    async fn switch_session_context(
+        &self,
+        target: Option<&str>,
+        _warehouse: Option<&str>,
+        _role: Option<&str>,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> AppResult<SessionContextOptions> {
+        if let Some(target) = target.or(schema).or(database) {
+            self.switch_context(target).await?;
+        }
+        Ok(SessionContextOptions::default())
     }
     async fn set_transaction_mode(&self, _mode: TransactionMode) -> AppResult<()> {
         Err(AppError::new(
