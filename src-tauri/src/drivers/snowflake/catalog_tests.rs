@@ -1233,10 +1233,10 @@ async fn test_adversarial_variant_only_table_safely_blocked_without_panic() {
     };
 
     let schema = driver.table_schema(&table_ref).await.unwrap();
-    assert_eq!(schema.editable, false);
+    assert!(!schema.editable);
     assert!(schema.primary_key.is_empty());
-    assert_eq!(schema.columns[0].editable, false);
-    assert_eq!(schema.columns[0].insertable, false);
+    assert!(!schema.columns[0].editable);
+    assert!(!schema.columns[0].insertable);
 
     // Attempting to apply mutations must immediately fail with PolicyBlocked without network call
     let mutation = RowMutation::Update {
@@ -1746,7 +1746,10 @@ fn test_adversarial_parse_snowflake_use_whitespace_comments_and_quotes() {
     let targets8 = parse_snowflake_use_statements(sql8);
     assert_eq!(
         targets8,
-        vec![SnowflakeUseTarget::Unsupported, SnowflakeUseTarget::Unsupported]
+        vec![
+            SnowflakeUseTarget::Unsupported,
+            SnowflakeUseTarget::Unsupported
+        ]
     );
 
     // 9. Multi-statement chained batch with mixed casing & formatting
@@ -1886,17 +1889,12 @@ async fn test_adversarial_switch_session_context_partial_failure_preserves_atomi
             "message": "Role 'FORBIDDEN_ROLE' does not exist or not authorized",
             "sqlState": "42000"
         }),
-    ]).await;
+    ])
+    .await;
 
     let initial_role = driver.current_role();
     let err = driver
-        .switch_session_context(
-            None,
-            Some("WH_NEW"),
-            Some("FORBIDDEN_ROLE"),
-            None,
-            None,
-        )
+        .switch_session_context(None, Some("WH_NEW"), Some("FORBIDDEN_ROLE"), None, None)
         .await
         .unwrap_err();
 
@@ -1928,20 +1926,17 @@ async fn test_adversarial_switch_session_context_quoted_identifiers_escaping() {
 
     let tricky_wh = "WH \"PROD\" 1";
     let res = driver
-        .switch_session_context(
-            None,
-            Some(tricky_wh),
-            None,
-            None,
-            None,
-        )
+        .switch_session_context(None, Some(tricky_wh), None, None, None)
         .await
         .unwrap();
 
     assert_eq!(res.active_warehouse.as_deref(), Some(tricky_wh));
     let requests = server.await.unwrap();
     // Identifier must escape internal double quotes by doubling them
-    assert_eq!(requests[0].1["statement"], "USE WAREHOUSE \"WH \"\"PROD\"\" 1\"");
+    assert_eq!(
+        requests[0].1["statement"],
+        "USE WAREHOUSE \"WH \"\"PROD\"\" 1\""
+    );
 }
 
 #[tokio::test]
@@ -1949,26 +1944,135 @@ async fn test_adversarial_catalog_objects_bounding_at_10000() {
     // Generate 2000 rows for 6 categories (total 12,000 objects > 10,000 bound)
     let make_rows = |prefix: &'static str, count: usize| -> Vec<Vec<Option<&str>>> {
         (0..count)
-            .map(|i| vec![Some("PUBLIC"), Some(Box::leak(format!("{prefix}_{i}").into_boxed_str()) as &str), Some("TEXT"), None])
+            .map(|i| {
+                vec![
+                    Some("PUBLIC"),
+                    Some(Box::leak(format!("{prefix}_{i}").into_boxed_str()) as &str),
+                    Some("TEXT"),
+                    None,
+                ]
+            })
             .collect()
     };
 
-    let stages_resp = make_metadata_response(&["STAGE_SCHEMA", "STAGE_NAME", "STAGE_TYPE", "COMMENT"], make_rows("STAGE", 2000));
-    let tasks_resp = make_metadata_response(&["TASK_SCHEMA", "TASK_NAME", "SCHEDULE", "STATE", "COMMENT"], (0..2000).map(|i| vec![Some("PUBLIC"), Some(Box::leak(format!("TASK_{i}").into_boxed_str()) as &str), Some("USING CRON 0 * * * *"), Some("STARTED"), None]).collect());
-    let streams_resp = make_metadata_response(&["STREAM_SCHEMA", "STREAM_NAME", "TABLE_NAME", "MODE", "COMMENT"], (0..2000).map(|i| vec![Some("PUBLIC"), Some(Box::leak(format!("STREAM_{i}").into_boxed_str()) as &str), Some("T"), Some("DEFAULT"), None]).collect());
-    let pipes_resp = make_metadata_response(&["PIPE_SCHEMA", "PIPE_NAME", "COMMENT"], (0..2000).map(|i| vec![Some("PUBLIC"), Some(Box::leak(format!("PIPE_{i}").into_boxed_str()) as &str), None]).collect());
-    let procs_resp = make_metadata_response(&["PROCEDURE_SCHEMA", "PROCEDURE_NAME", "ARGUMENT_SIGNATURE", "DATA_TYPE", "COMMENT"], (0..2000).map(|i| vec![Some("PUBLIC"), Some(Box::leak(format!("PROC_{i}").into_boxed_str()) as &str), Some("()"), Some("VARCHAR"), None]).collect());
-    let funcs_resp = make_metadata_response(&["FUNCTION_SCHEMA", "FUNCTION_NAME", "ARGUMENT_SIGNATURE", "DATA_TYPE", "COMMENT"], (0..2000).map(|i| vec![Some("PUBLIC"), Some(Box::leak(format!("FUNC_{i}").into_boxed_str()) as &str), Some("()"), Some("VARCHAR"), None]).collect());
-    let seqs_resp = make_metadata_response(&["SEQUENCE_SCHEMA", "SEQUENCE_NAME", "DATA_TYPE", "COMMENT"], vec![]);
-    let formats_resp = make_metadata_response(&["FILE_FORMAT_SCHEMA", "FILE_FORMAT_NAME", "FILE_FORMAT_TYPE", "COMMENT"], vec![]);
+    let stages_resp = make_metadata_response(
+        &["STAGE_SCHEMA", "STAGE_NAME", "STAGE_TYPE", "COMMENT"],
+        make_rows("STAGE", 2000),
+    );
+    let tasks_resp = make_metadata_response(
+        &["TASK_SCHEMA", "TASK_NAME", "SCHEDULE", "STATE", "COMMENT"],
+        (0..2000)
+            .map(|i| {
+                vec![
+                    Some("PUBLIC"),
+                    Some(Box::leak(format!("TASK_{i}").into_boxed_str()) as &str),
+                    Some("USING CRON 0 * * * *"),
+                    Some("STARTED"),
+                    None,
+                ]
+            })
+            .collect(),
+    );
+    let streams_resp = make_metadata_response(
+        &[
+            "STREAM_SCHEMA",
+            "STREAM_NAME",
+            "TABLE_NAME",
+            "MODE",
+            "COMMENT",
+        ],
+        (0..2000)
+            .map(|i| {
+                vec![
+                    Some("PUBLIC"),
+                    Some(Box::leak(format!("STREAM_{i}").into_boxed_str()) as &str),
+                    Some("T"),
+                    Some("DEFAULT"),
+                    None,
+                ]
+            })
+            .collect(),
+    );
+    let pipes_resp = make_metadata_response(
+        &["PIPE_SCHEMA", "PIPE_NAME", "COMMENT"],
+        (0..2000)
+            .map(|i| {
+                vec![
+                    Some("PUBLIC"),
+                    Some(Box::leak(format!("PIPE_{i}").into_boxed_str()) as &str),
+                    None,
+                ]
+            })
+            .collect(),
+    );
+    let procs_resp = make_metadata_response(
+        &[
+            "PROCEDURE_SCHEMA",
+            "PROCEDURE_NAME",
+            "ARGUMENT_SIGNATURE",
+            "DATA_TYPE",
+            "COMMENT",
+        ],
+        (0..2000)
+            .map(|i| {
+                vec![
+                    Some("PUBLIC"),
+                    Some(Box::leak(format!("PROC_{i}").into_boxed_str()) as &str),
+                    Some("()"),
+                    Some("VARCHAR"),
+                    None,
+                ]
+            })
+            .collect(),
+    );
+    let funcs_resp = make_metadata_response(
+        &[
+            "FUNCTION_SCHEMA",
+            "FUNCTION_NAME",
+            "ARGUMENT_SIGNATURE",
+            "DATA_TYPE",
+            "COMMENT",
+        ],
+        (0..2000)
+            .map(|i| {
+                vec![
+                    Some("PUBLIC"),
+                    Some(Box::leak(format!("FUNC_{i}").into_boxed_str()) as &str),
+                    Some("()"),
+                    Some("VARCHAR"),
+                    None,
+                ]
+            })
+            .collect(),
+    );
+    let seqs_resp = make_metadata_response(
+        &["SEQUENCE_SCHEMA", "SEQUENCE_NAME", "DATA_TYPE", "COMMENT"],
+        vec![],
+    );
+    let formats_resp = make_metadata_response(
+        &[
+            "FILE_FORMAT_SCHEMA",
+            "FILE_FORMAT_NAME",
+            "FILE_FORMAT_TYPE",
+            "COMMENT",
+        ],
+        vec![],
+    );
 
     let (driver, server) = fixture(vec![
-        stages_resp, tasks_resp, streams_resp, pipes_resp, procs_resp, funcs_resp, seqs_resp, formats_resp
-    ]).await;
+        stages_resp,
+        tasks_resp,
+        streams_resp,
+        pipes_resp,
+        procs_resp,
+        funcs_resp,
+        seqs_resp,
+        formats_resp,
+    ])
+    .await;
 
     let objects = driver.catalog_objects().await.unwrap();
     // Must be capped at exactly 10,000
     assert_eq!(objects.len(), 10_000);
     assert_eq!(server.await.unwrap().len(), 8);
 }
-

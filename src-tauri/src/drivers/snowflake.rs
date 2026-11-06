@@ -285,16 +285,15 @@ impl Snowflake {
         let mut auth = self.auth.lock().await;
         let margin = Duration::from_secs((auth.tokens.expires_in / 10).min(30));
         if auth.expires_at <= Instant::now() + margin {
-            if self.auth_method == SnowflakeAuthMethod::KeyPair {
-                if let Some(key_pair) = &self.key_pair {
-                    let account = snowflake_auth::extract_account_identifier(
-                        self.base.host_str().unwrap_or(""),
-                    );
-                    let jwt = snowflake_auth::generate_jwt(key_pair, &account, &self.username)?;
-                    auth.tokens.access = jwt;
-                    auth.expires_at = Instant::now() + Duration::from_secs(3500);
-                    return Ok(Zeroizing::new(auth.tokens.access.to_string()));
-                }
+            if self.auth_method == SnowflakeAuthMethod::KeyPair
+                && let Some(key_pair) = &self.key_pair
+            {
+                let account =
+                    snowflake_auth::extract_account_identifier(self.base.host_str().unwrap_or(""));
+                let jwt = snowflake_auth::generate_jwt(key_pair, &account, &self.username)?;
+                auth.tokens.access = jwt;
+                auth.expires_at = Instant::now() + Duration::from_secs(3500);
+                return Ok(Zeroizing::new(auth.tokens.access.to_string()));
             }
             let Some(refresh) = auth.tokens.refresh.as_ref() else {
                 if auth.expires_at > Instant::now() {
@@ -1147,49 +1146,49 @@ impl Driver for Snowflake {
     ) -> AppResult<SessionContextOptions> {
         {
             let _lane = self.metadata_lane.lock().await;
-            if let Some(wh) = warehouse {
-                if !wh.is_empty() {
-                    self.submit_with_schema(
-                        &format!("USE WAREHOUSE \"{}\"", wh.replace('"', "\"\"")),
-                        &self.current_schema(),
-                        false,
-                    )
-                    .await?;
-                    *self.warehouse.lock() = wh.to_string();
-                }
+            if let Some(wh) = warehouse
+                && !wh.is_empty()
+            {
+                self.submit_with_schema(
+                    &format!("USE WAREHOUSE \"{}\"", wh.replace('"', "\"\"")),
+                    &self.current_schema(),
+                    false,
+                )
+                .await?;
+                *self.warehouse.lock() = wh.to_string();
             }
-            if let Some(r) = role {
-                if !r.is_empty() {
-                    self.submit_with_schema(
-                        &format!("USE ROLE \"{}\"", r.replace('"', "\"\"")),
-                        &self.current_schema(),
-                        false,
-                    )
-                    .await?;
-                    *self.role.lock() = r.to_string();
-                }
+            if let Some(r) = role
+                && !r.is_empty()
+            {
+                self.submit_with_schema(
+                    &format!("USE ROLE \"{}\"", r.replace('"', "\"\"")),
+                    &self.current_schema(),
+                    false,
+                )
+                .await?;
+                *self.role.lock() = r.to_string();
             }
-            if let Some(db) = database {
-                if !db.is_empty() {
-                    self.submit_with_schema(
-                        &format!("USE DATABASE \"{}\"", db.replace('"', "\"\"")),
-                        &self.current_schema(),
-                        false,
-                    )
-                    .await?;
-                    *self.database.lock() = db.to_string();
-                }
+            if let Some(db) = database
+                && !db.is_empty()
+            {
+                self.submit_with_schema(
+                    &format!("USE DATABASE \"{}\"", db.replace('"', "\"\"")),
+                    &self.current_schema(),
+                    false,
+                )
+                .await?;
+                *self.database.lock() = db.to_string();
             }
-            if let Some(sc) = schema.or(target) {
-                if !sc.is_empty() {
-                    self.submit_with_schema(
-                        &format!("USE SCHEMA \"{}\"", sc.replace('"', "\"\"")),
-                        sc,
-                        false,
-                    )
-                    .await?;
-                    *self.schema.lock() = sc.to_string();
-                }
+            if let Some(sc) = schema.or(target)
+                && !sc.is_empty()
+            {
+                self.submit_with_schema(
+                    &format!("USE SCHEMA \"{}\"", sc.replace('"', "\"\"")),
+                    sc,
+                    false,
+                )
+                .await?;
+                *self.schema.lock() = sc.to_string();
             }
         }
         let dims = self.list_context_dimensions().await.unwrap_or_default();
@@ -1390,16 +1389,15 @@ impl Driver for Snowflake {
         let outcome = self.submit_with_schema(&script, &active_schema, true).await;
         match outcome {
             Ok(value) => {
-                if let Some(msg) = value.get("message").and_then(Value::as_str) {
-                    if msg.contains("A table change did not affect exactly one row")
+                if let Some(msg) = value.get("message").and_then(Value::as_str)
+                    && (msg.contains("A table change did not affect exactly one row")
                         || msg.contains("conflict_err")
-                        || msg.contains("CONFLICT_ERR")
-                    {
-                        return Err(AppError::new(
-                            ErrorCode::Conflict,
-                            "A table change did not affect exactly one row. No edits were committed.",
-                        ));
-                    }
+                        || msg.contains("CONFLICT_ERR"))
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A table change did not affect exactly one row. No edits were committed.",
+                    ));
                 }
                 Ok(())
             }

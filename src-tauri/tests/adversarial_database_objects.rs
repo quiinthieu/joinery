@@ -235,7 +235,9 @@ fn test_sqlite_parameter_persistence_lru_eviction_and_profile_isolation() {
             value: Some(format!("old_value_{i}")),
         })
         .collect();
-    persistence.save_parameter_history(profile_a, &batch_old).unwrap();
+    persistence
+        .save_parameter_history(profile_a, &batch_old)
+        .unwrap();
 
     std::thread::sleep(std::time::Duration::from_millis(15));
 
@@ -247,7 +249,9 @@ fn test_sqlite_parameter_persistence_lru_eviction_and_profile_isolation() {
             value: Some(format!("value_{i}")),
         })
         .collect();
-    persistence.save_parameter_history(profile_a, &batch_mid).unwrap();
+    persistence
+        .save_parameter_history(profile_a, &batch_mid)
+        .unwrap();
 
     // Verify raw SQLite count is exactly 1000
     let conn = rusqlite::Connection::open(dir.path().join("joinery.sqlite")).unwrap();
@@ -269,7 +273,9 @@ fn test_sqlite_parameter_persistence_lru_eviction_and_profile_isolation() {
             value: Some(format!("{i}")),
         })
         .collect();
-    persistence.save_parameter_history(profile_a, &batch_new).unwrap();
+    persistence
+        .save_parameter_history(profile_a, &batch_new)
+        .unwrap();
 
     // Verify total count is still capped at 1000 (LRU eviction of oldest 50)
     let count_a_after: i64 = conn
@@ -279,7 +285,10 @@ fn test_sqlite_parameter_persistence_lru_eviction_and_profile_isolation() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(count_a_after, 1000, "LRU pruning must cap parameters at 1000");
+    assert_eq!(
+        count_a_after, 1000,
+        "LRU pruning must cap parameters at 1000"
+    );
 
     // The oldest 50 items (old_param_0000..old_param_0049) must be evicted
     for i in 0..50 {
@@ -290,7 +299,10 @@ fn test_sqlite_parameter_persistence_lru_eviction_and_profile_isolation() {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(exists, 0, "Oldest item old_param_{i:04} should have been evicted");
+        assert_eq!(
+            exists, 0,
+            "Oldest item old_param_{i:04} should have been evicted"
+        );
     }
 
     // The newest items (param_1000..param_1049) must be retained
@@ -313,7 +325,9 @@ fn test_sqlite_parameter_persistence_lru_eviction_and_profile_isolation() {
             value: Some(format!("b_val_{i}")),
         })
         .collect();
-    persistence.save_parameter_history(profile_b, &batch_b).unwrap();
+    persistence
+        .save_parameter_history(profile_b, &batch_b)
+        .unwrap();
 
     let count_b: i64 = conn
         .query_row(
@@ -378,19 +392,20 @@ fn test_sqlite_parameter_persistence_lru_eviction_and_profile_isolation() {
 async fn test_scoped_query_cancellation_by_query_id() {
     let dir = tempdir().unwrap();
     let sandbox = SandboxFileDialog::new(&dir.path().join("sandbox-files")).unwrap();
-    let studio = Studio::with_secrets_and_dialog(
-        dir.path(),
-        Arc::new(MemorySecrets::default()),
-        sandbox,
-    )
-    .unwrap();
+    let studio =
+        Studio::with_secrets_and_dialog(dir.path(), Arc::new(MemorySecrets::default()), sandbox)
+            .unwrap();
 
     // 1. Non-existent query ID: cancellation is a safe no-op returning Ok(())
-    let res = studio.cancel_by_query_id("non-existent-snowflake-query-id-12345").await;
-    assert!(res.is_ok(), "Cancelling non-existent query ID must succeed safely as a no-op");
+    let res = studio
+        .cancel_by_query_id("non-existent-snowflake-query-id-12345")
+        .await;
+    assert!(
+        res.is_ok(),
+        "Cancelling non-existent query ID must succeed safely as a no-op"
+    );
 
     // 2. Empty string query ID: also safe no-op
     let res_empty = studio.cancel_by_query_id("").await;
     assert!(res_empty.is_ok());
 }
-

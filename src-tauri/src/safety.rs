@@ -639,8 +639,8 @@ fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usi
                     }
                     "BEGIN" => {
                         let mut next_is_tx = false;
-                        for j in (i + 1)..len {
-                            match &tokens[j].token {
+                        for next_tok in tokens.iter().take(len).skip(i + 1) {
+                            match &next_tok.token {
                                 Token::Whitespace(_) => continue,
                                 Token::SemiColon => {
                                     next_is_tx = true;
@@ -667,13 +667,14 @@ fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usi
                         }
                     }
                     "END" => {
-                        let mut next_tok_idx = None;
-                        for j in (i + 1)..len {
-                            if !matches!(&tokens[j].token, Token::Whitespace(_)) {
-                                next_tok_idx = Some(j);
-                                break;
-                            }
-                        }
+                        let next_tok_idx = tokens
+                            .iter()
+                            .enumerate()
+                            .take(len)
+                            .skip(i + 1)
+                            .find_map(|(j, tok)| {
+                                (!matches!(&tok.token, Token::Whitespace(_))).then_some(j)
+                            });
 
                         if let Some(next_idx) = next_tok_idx {
                             match &tokens[next_idx].token {
@@ -687,8 +688,8 @@ fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usi
                                         }
                                         "FOR" => {
                                             let mut is_for_update = false;
-                                            for k in (next_idx + 1)..len {
-                                                match &tokens[k].token {
+                                            for tok in tokens.iter().take(len).skip(next_idx + 1) {
+                                                match &tok.token {
                                                     Token::Whitespace(_) => continue,
                                                     Token::Word(w2) if w2.quote_style.is_none() => {
                                                         let v2 = w2.value.to_ascii_uppercase();
@@ -704,18 +705,14 @@ fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usi
                                                 }
                                             }
                                             if is_for_update {
-                                                if case_depth > 0 {
-                                                    case_depth -= 1;
-                                                }
+                                                case_depth = case_depth.saturating_sub(1);
                                             } else {
                                                 i = next_idx;
                                             }
                                         }
                                         "CASE" => {
                                             // Closes CASE statement: END CASE;
-                                            if case_depth > 0 {
-                                                case_depth -= 1;
-                                            }
+                                            case_depth = case_depth.saturating_sub(1);
                                             i = next_idx;
                                         }
                                         _ => {
@@ -724,8 +721,10 @@ fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usi
                                             } else if begin_depth > 0 {
                                                 begin_depth -= 1;
                                                 // Check for block label followed by semicolon: END label;
-                                                for k in (next_idx + 1)..len {
-                                                    match &tokens[k].token {
+                                                for tok in
+                                                    tokens.iter().take(len).skip(next_idx + 1)
+                                                {
+                                                    match &tok.token {
                                                         Token::Whitespace(_) => continue,
                                                         Token::SemiColon => {
                                                             i = next_idx;
@@ -741,24 +740,22 @@ fn split_sql_byte_ranges(dialect: &dyn Dialect, sql: &str) -> AppResult<Vec<(usi
                                 Token::SemiColon => {
                                     if case_depth > 0 {
                                         case_depth -= 1;
-                                    } else if begin_depth > 0 {
-                                        begin_depth -= 1;
+                                    } else {
+                                        begin_depth = begin_depth.saturating_sub(1);
                                     }
                                 }
                                 _ => {
                                     if case_depth > 0 {
                                         case_depth -= 1;
-                                    } else if begin_depth > 0 {
-                                        begin_depth -= 1;
+                                    } else {
+                                        begin_depth = begin_depth.saturating_sub(1);
                                     }
                                 }
                             }
+                        } else if case_depth > 0 {
+                            case_depth -= 1;
                         } else {
-                            if case_depth > 0 {
-                                case_depth -= 1;
-                            } else if begin_depth > 0 {
-                                begin_depth -= 1;
-                            }
+                            begin_depth = begin_depth.saturating_sub(1);
                         }
                     }
                     _ => {}

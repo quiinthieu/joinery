@@ -839,7 +839,7 @@ fn pem_parsing_and_jwt_generation_end_to_end() {
         .collect::<String>();
 
     // 1. Parsing PKCS#8 LF
-    let key_lf = parse_pkcs8_pem(&pkcs8_pem_lf, None).expect("parse LF PEM");
+    let key_lf = parse_pkcs8_pem(pkcs8_pem_lf, None).expect("parse LF PEM");
 
     // 2. Parsing PKCS#8 CRLF
     let key_crlf = parse_pkcs8_pem(&pkcs8_pem_crlf, None).expect("parse CRLF PEM");

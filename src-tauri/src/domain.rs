@@ -113,8 +113,8 @@ pub struct ConnectionProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum SnowflakeAuthMethod {
-    #[default]
     KeyPair,
+    #[default]
     OAuthBrowser,
     Password,
 }

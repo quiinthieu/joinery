@@ -495,6 +495,8 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
              CREATE TABLE IF NOT EXISTS scratchpads(id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, connection_id TEXT, updated_at INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS parameters(profile_id TEXT NOT NULL, param_key TEXT NOT NULL, kind TEXT NOT NULL, value TEXT, is_null INTEGER NOT NULL, used_at INTEGER NOT NULL, PRIMARY KEY(profile_id, param_key));"
         ).map_err(db_error)?;
+    } else if version == 1 {
+        ensure_extended_v1_tables(&transaction)?;
     }
     validate_schema(&transaction)?;
     for (id, name, environment) in [
@@ -525,74 +527,95 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
     transaction.commit().map_err(db_error)
 }
 
+type ColumnSpec = (&'static str, &'static str, bool, bool);
+
+const CORE_TABLES: &[(&str, &[ColumnSpec])] = &[
+    (
+        "profiles",
+        &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
+    ),
+    (
+        "groups",
+        &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
+    ),
+    (
+        "history",
+        &[
+            ("id", "TEXT", false, true),
+            ("started_at", "INTEGER", true, false),
+            ("json", "TEXT", true, false),
+        ],
+    ),
+    (
+        "audit",
+        &[
+            ("id", "TEXT", false, true),
+            ("occurred_at", "INTEGER", true, false),
+            ("connection_id", "TEXT", true, false),
+            ("action", "TEXT", true, false),
+            ("digest", "TEXT", true, false),
+            ("outcome", "TEXT", true, false),
+        ],
+    ),
+    (
+        "settings",
+        &[("key", "TEXT", false, true), ("value", "TEXT", true, false)],
+    ),
+];
+
+const EXTENDED_TABLES: &[(&str, &[ColumnSpec])] = &[
+    (
+        "consoles",
+        &[
+            ("profile_id", "TEXT", false, true),
+            ("name", "TEXT", true, false),
+            ("content", "TEXT", true, false),
+            ("updated_at", "INTEGER", true, false),
+        ],
+    ),
+    (
+        "scratchpads",
+        &[
+            ("id", "TEXT", false, true),
+            ("name", "TEXT", true, false),
+            ("content", "TEXT", true, false),
+            ("connection_id", "TEXT", false, false),
+            ("updated_at", "INTEGER", true, false),
+        ],
+    ),
+    (
+        "parameters",
+        &[
+            ("profile_id", "TEXT", true, true),
+            ("param_key", "TEXT", true, true),
+            ("kind", "TEXT", true, false),
+            ("value", "TEXT", false, false),
+            ("is_null", "INTEGER", true, false),
+            ("used_at", "INTEGER", true, false),
+        ],
+    ),
+];
+
+pub(super) fn ensure_extended_v1_tables(connection: &Connection) -> AppResult<()> {
+    validate_tables(connection, CORE_TABLES)?;
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS consoles(profile_id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS scratchpads(id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, connection_id TEXT, updated_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS parameters(profile_id TEXT NOT NULL, param_key TEXT NOT NULL, kind TEXT NOT NULL, value TEXT, is_null INTEGER NOT NULL, used_at INTEGER NOT NULL, PRIMARY KEY(profile_id, param_key));",
+        )
+        .map_err(db_error)
+}
+
 fn validate_schema(connection: &Connection) -> AppResult<()> {
+    validate_tables(connection, CORE_TABLES)?;
+    validate_tables(connection, EXTENDED_TABLES)
+}
+
+fn validate_tables(connection: &Connection, tables: &[(&str, &[ColumnSpec])]) -> AppResult<()> {
     // Names alone are insufficient: the unique keys and null constraints are
     // required by INSERT OR IGNORE, profile replacement and metadata retention.
-    type Column = (&'static str, &'static str, bool, bool);
-    const TABLES: &[(&str, &[Column])] = &[
-        (
-            "profiles",
-            &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
-        ),
-        (
-            "groups",
-            &[("id", "TEXT", false, true), ("json", "TEXT", true, false)],
-        ),
-        (
-            "history",
-            &[
-                ("id", "TEXT", false, true),
-                ("started_at", "INTEGER", true, false),
-                ("json", "TEXT", true, false),
-            ],
-        ),
-        (
-            "audit",
-            &[
-                ("id", "TEXT", false, true),
-                ("occurred_at", "INTEGER", true, false),
-                ("connection_id", "TEXT", true, false),
-                ("action", "TEXT", true, false),
-                ("digest", "TEXT", true, false),
-                ("outcome", "TEXT", true, false),
-            ],
-        ),
-        (
-            "settings",
-            &[("key", "TEXT", false, true), ("value", "TEXT", true, false)],
-        ),
-        (
-            "consoles",
-            &[
-                ("profile_id", "TEXT", false, true),
-                ("name", "TEXT", true, false),
-                ("content", "TEXT", true, false),
-                ("updated_at", "INTEGER", true, false),
-            ],
-        ),
-        (
-            "scratchpads",
-            &[
-                ("id", "TEXT", false, true),
-                ("name", "TEXT", true, false),
-                ("content", "TEXT", true, false),
-                ("connection_id", "TEXT", false, false),
-                ("updated_at", "INTEGER", true, false),
-            ],
-        ),
-        (
-            "parameters",
-            &[
-                ("profile_id", "TEXT", true, true),
-                ("param_key", "TEXT", true, true),
-                ("kind", "TEXT", true, false),
-                ("value", "TEXT", false, false),
-                ("is_null", "INTEGER", true, false),
-                ("used_at", "INTEGER", true, false),
-            ],
-        ),
-    ];
-    for (table, expected) in TABLES {
+    for (table, expected) in tables {
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(db_error)?;
@@ -822,5 +845,65 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn existing_v1_metadata_without_extended_tables_or_snowflake_auth_method_upgrades_cleanly() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let profile_id = new_id();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE profiles(id TEXT PRIMARY KEY, json TEXT NOT NULL);
+                 CREATE TABLE groups(id TEXT PRIMARY KEY, json TEXT NOT NULL);
+                 CREATE TABLE history(id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, json TEXT NOT NULL);
+                 CREATE TABLE audit(id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, connection_id TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, outcome TEXT NOT NULL);
+                 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 PRAGMA user_version=1;",
+            )
+            .unwrap();
+        let legacy_profile = serde_json::json!({
+            "id": profile_id,
+            "name": "Snowflake Prod",
+            "groupId": "production",
+            "engine": "snowflake",
+            "host": "org-account.snowflakecomputing.com",
+            "port": 443,
+            "database": "DWH",
+            "username": "ANALYST",
+            "environment": "production",
+            "safeMode": "passwordGated",
+            "tlsMode": "verifyFull",
+            "caCertPath": null,
+            "ssh": null,
+            "rememberPassword": false,
+            "storeQueryText": true,
+            "storeDrafts": true,
+            "snowflake": {
+                "role": "ANALYST_ROLE",
+                "warehouse": "COMPUTE_WH",
+                "schema": "PROD"
+            }
+        });
+        connection
+            .execute(
+                "INSERT INTO profiles(id, json) VALUES(?1, ?2)",
+                params![profile_id, legacy_profile.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let db = Persistence::open(root.path()).unwrap();
+        let profiles = db.profiles().unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].snowflake.as_ref().unwrap().auth_method,
+            SnowflakeAuthMethod::OAuthBrowser
+        );
+        crate::drivers::snowflake::Snowflake::validate_profile(&profiles[0]).unwrap();
+        assert_eq!(db.get_console(&profile_id).unwrap().name, "console.sql");
+        assert!(db.scratchpads().unwrap().is_empty());
+        assert!(db.parameter_history(&profile_id).unwrap().is_empty());
     }
 }

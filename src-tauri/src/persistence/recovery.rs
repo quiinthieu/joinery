@@ -295,6 +295,9 @@ impl Persistence {
         }
         let mut pinned = Connection::open_in_memory().map_err(db_error)?;
         copy(&source, &mut pinned)?;
+        if schema_version(&pinned)? == SCHEMA_VERSION {
+            super::ensure_extended_v1_tables(&pinned)?;
+        }
         validate(&pinned)?;
         if info(&path, id)?.digest != before.digest {
             return Err(AppError::new(
