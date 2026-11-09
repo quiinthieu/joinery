@@ -1,5 +1,12 @@
 # Joinery
 
+The active DataGrip replacement Goal, required workflow questions, and migration
+walkthrough are in [daily replacement acceptance](docs/replacement-acceptance.md).
+Use the [migration guide](docs/migration-from-datagrip.md) for local setup and
+hands-on evaluation.
+See the [verification ledger](docs/replacement-verification.md) for the current
+local run; historical feature completion does not establish replacement readiness.
+
 A desktop database studio built with Tauri v2, Rust, React, CodeMirror, and a Canvas data grid.
 
 The private [Joinery project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)

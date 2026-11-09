@@ -5,6 +5,17 @@ The active 9 November 2026 replacement Goal is tracked in
 [official DataGrip research](datagrip-official-baseline.md). Historical audit
 results below retain their original dates and do not certify the current build.
 
+Current qualification and safety evidence is in the
+[replacement verification ledger](replacement-verification.md). The 9 November
+review reproduced and repaired temporary-table shadowing in query-result edit
+provenance (`5a1fed7`); PostgreSQL full search-path resolution and MySQL/MariaDB
+qualified/unqualified shadows have focused real-engine regression coverage.
+Post-commit result snapshots now preserve original rows and become explicitly
+stale/read-only until rerun (`a2713bd`), with real defaults/trigger regression
+coverage. Both increments remain local and unmerged; combined browser/native
+qualification is in progress.
+Required engine/authentication pairs and owner acceptance remain unconfirmed.
+
 Audit date: 2026-10-28. Baseline: `bbba42122df2c8303af5a275671144d9337a4454`.
 This is an engineering gap inventory, not a shipping tracker. The owner-private
 [project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site) remains the

@@ -5,6 +5,13 @@ The active 9 November 2026 Goal and next qualification queue are in
 pending owner confirmation; historical slice completion does not establish
 daily replacement acceptance.
 
+The current P0 qualification sequence is: resolve query-result target identity
+(local `5a1fed7`), preserve truthful bounded snapshots after committed edits,
+verify abrupt backend restart, and rerun combined-source validation/database/
+browser/native checks with the pinned toolchains. Follow the
+[verification ledger](replacement-verification.md); source presence and old
+slice test counts do not close these gates.
+
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;
 the owner-private [project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)

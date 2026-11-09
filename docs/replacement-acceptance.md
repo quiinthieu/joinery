@@ -7,6 +7,11 @@ implementation history. The [official baseline](datagrip-official-baseline.md)
 records current DataGrip research. No push, publication, deployment or merge is
 authorized. The private hub is not updated because this task forbids publication.
 
+Fresh commands, outcomes and qualification limits are recorded in the
+[verification ledger](replacement-verification.md).
+The [migration guide](migration-from-datagrip.md) provides build, connection,
+script, transaction and recovery steps for hands-on evaluation.
+
 ## Target definition and open questions
 
 Replacement means the owner's required daily workflows succeed on their target
