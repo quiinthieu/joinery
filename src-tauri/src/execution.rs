@@ -3,7 +3,7 @@ use crate::file_capability::NativeFileDialog;
 use crate::{
     domain::*,
     drivers::{
-        Driver, QuerySink, RowMutation,
+        ColumnOrigin, Driver, EditIdentity, EditTarget, QuerySink, RowMutation,
         mysql::Mysql,
         postgres::{Postgres, mutation_sql},
         redis::Redis,
@@ -81,6 +81,7 @@ enum Action {
     },
     Changes {
         schema: TableSchema,
+        identity: Option<EditIdentity>,
         rows: Vec<RowMutation>,
         anchor_id: Option<String>,
         updates: Vec<ResultChanges>,
@@ -98,11 +99,30 @@ enum StatementProvenance {
     Candidate {
         candidate: safety::SingleTableSelectCandidate,
         live_schema: Box<TableSchema>,
+        identity: Option<EditIdentity>,
         safe_mode: SafeMode,
     },
     ReadOnly {
         reason: String,
     },
+}
+
+fn import_config_digest(
+    table: &TableRef,
+    options: &CsvImportOptions,
+    mappings: &[CsvColumnMapping],
+) -> AppResult<String> {
+    let bytes = serde_json::to_vec(&(table, options, mappings))
+        .map_err(|_| AppError::internal("Could not fingerprint import target"))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+struct ImportTarget {
+    can_prepare: bool,
+    requested_config_digest: String,
+    config_digest: String,
+    target: EditTarget,
+    created: Instant,
 }
 
 struct StoredPlan {
@@ -174,6 +194,7 @@ pub struct Studio {
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
+    import_targets: Mutex<HashMap<(String, String), ImportTarget>>,
     pub results: ResultStore,
     connect_gate: tokio::sync::Mutex<()>,
     configuration_gate: Mutex<()>,
@@ -206,6 +227,7 @@ impl Studio {
             jobs: Mutex::new(HashMap::new()),
             exports: Mutex::new(HashMap::new()),
             result_sessions: Mutex::new(HashMap::new()),
+            import_targets: Mutex::new(HashMap::new()),
             results: ResultStore::default(),
             connect_gate: tokio::sync::Mutex::new(()),
             configuration_gate: Mutex::new(()),
@@ -690,6 +712,9 @@ impl Studio {
             session.driver.close();
         }
         self.plans.lock().retain(|_, p| p.plan.session_id != id);
+        self.import_targets
+            .lock()
+            .retain(|(session_id, _), _| session_id != id);
         for job in self.jobs.lock().values().filter(|j| j.session_id == id) {
             job.token.cancel();
         }
@@ -944,8 +969,13 @@ impl Studio {
                 serde_json::to_vec(&(table, query))
                     .map_err(|_| AppError::internal("Could not fingerprint table filter"))?,
             ),
-            Action::Changes { schema, rows, .. } => fingerprint.update(
-                serde_json::to_vec(&(schema, rows))
+            Action::Changes {
+                schema,
+                identity,
+                rows,
+                ..
+            } => fingerprint.update(
+                serde_json::to_vec(&(schema, identity, rows))
                     .map_err(|_| AppError::internal("Could not fingerprint bound changes"))?,
             ),
             Action::CancelProcess { id, identity } => fingerprint.update(
@@ -1243,6 +1273,7 @@ impl Studio {
             }
             Action::Changes {
                 schema,
+                identity,
                 rows,
                 anchor_id,
                 updates,
@@ -1255,7 +1286,11 @@ impl Studio {
                 {
                     status = RunStatus::Cancelled;
                 } else {
-                    match session.driver.apply(schema, rows).await {
+                    match session
+                        .driver
+                        .apply_target(schema, identity.as_ref(), rows)
+                        .await
+                    {
                         Ok(()) => {
                             for result in self.results.apply_committed_changes(
                                 anchor_id.as_deref(),
@@ -1322,6 +1357,9 @@ impl Studio {
             }
             if let Some(reason) = reason {
                 self.sessions.lock().remove(&session.info.id);
+                self.import_targets
+                    .lock()
+                    .retain(|(session_id, _), _| session_id != &session.info.id);
                 self.plans
                     .lock()
                     .retain(|_, p| p.plan.session_id != session.info.id);
@@ -1882,10 +1920,11 @@ impl Studio {
                 reason: "Query selects a temporary relation or its base-table identity cannot be verified".into(),
             },
         };
-        match self.schema_for_session(session, &candidate.table).await {
-            Ok(live_schema) => StatementProvenance::Candidate {
+        match session.driver.edit_target(&candidate.table).await {
+            Ok(target) => StatementProvenance::Candidate {
                 candidate,
-                live_schema: Box::new(live_schema),
+                live_schema: Box::new(target.schema),
+                identity: target.identity,
                 safe_mode,
             },
             Err(_) => StatementProvenance::ReadOnly {
@@ -2430,20 +2469,30 @@ impl Studio {
                 approved_digest = Some(stored.digest);
             }
         }
-        let mut page = match session.driver.browse_query(&schema, &query, after).await {
-            Ok(page) => {
+        let (mut page, target) = match session.driver.browse_target(&schema, &query, after).await {
+            Ok((page, target)) => {
                 if let Some(digest) = &approved_digest {
                     let _ =
                         self.persistence
                             .audit(&session.profile.id, "browse", digest, "Completed");
                 }
-                page
+                (page, target)
             }
             Err(error) => {
                 if let Some(digest) = &approved_digest {
-                    let _ = self
-                        .persistence
-                        .audit(&session.profile.id, "browse", digest, "Failed");
+                    let _ = self.persistence.audit(
+                        &session.profile.id,
+                        "browse",
+                        digest,
+                        if error.code == ErrorCode::OutcomeUnknown {
+                            "OutcomeUnknown"
+                        } else {
+                            "Failed"
+                        },
+                    );
+                }
+                if session.driver.is_closed() {
+                    self.disconnect(session_id);
                 }
                 return Err(error);
             }
@@ -2455,9 +2504,11 @@ impl Studio {
         let result = self.results.create(
             &format!("table:{session_id}"),
             0,
-            schema.columns.clone(),
-            Some(schema),
+            target.schema.columns.clone(),
+            Some(target.schema),
         )?;
+        self.results
+            .set_edit_identity(&result.id, target.identity)?;
         self.result_sessions
             .lock()
             .insert(result.id.clone(), session_id.into());
@@ -2513,6 +2564,7 @@ impl Studio {
         session_id: &str,
         result_id: &str,
         expected: &TableSchema,
+        identity: Option<&EditIdentity>,
     ) -> AppResult<()> {
         if self
             .result_sessions
@@ -2527,7 +2579,8 @@ impl Studio {
             ));
         }
         let source = self.results.provenance(result_id)?;
-        if source.table != expected.table
+        if self.results.edit_identity(result_id)?.as_ref() != identity
+            || source.table != expected.table
             || serde_json::to_string(&source.columns).ok()
                 != serde_json::to_string(&expected.columns).ok()
         {
@@ -2564,6 +2617,7 @@ impl Studio {
             ));
         }
         let schema = self.results.provenance(anchor_id)?;
+        let identity = self.results.edit_identity(anchor_id)?;
         let retained_anchor = Some(anchor_id.to_owned());
         let retained_updates = changes.updates.clone();
         let retained_deletes = changes.deletes.clone();
@@ -2588,11 +2642,23 @@ impl Studio {
             ));
         }
 
+        if session.profile.engine == EngineKind::Postgres && identity.is_none() {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "The original table identity is unavailable. Read the table again before editing.",
+            ));
+        }
+
         let mut keyed_mutations: Vec<(TextRow, RowMutation)> = Vec::new();
         let mut bytes = 0usize;
 
         for input in changes.deletes {
-            self.verify_result_provenance(session_id, &input.result_id, &schema)?;
+            self.verify_result_provenance(
+                session_id,
+                &input.result_id,
+                &schema,
+                identity.as_ref(),
+            )?;
             let mut seen_rows = std::collections::HashSet::new();
             for row_index in input.rows {
                 if !seen_rows.insert(row_index) {
@@ -2613,7 +2679,12 @@ impl Studio {
         }
 
         for input in changes.updates {
-            self.verify_result_provenance(session_id, &input.result_id, &schema)?;
+            self.verify_result_provenance(
+                session_id,
+                &input.result_id,
+                &schema,
+                identity.as_ref(),
+            )?;
             let mut rows: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
             for change in input.changes {
                 if change.value.as_ref().is_some_and(|v| v.len() > 1024 * 1024) {
@@ -2799,6 +2870,7 @@ impl Studio {
             plan,
             Action::Changes {
                 schema,
+                identity,
                 rows: mutations,
                 anchor_id: retained_anchor,
                 updates: retained_updates,
@@ -3414,7 +3486,11 @@ impl Studio {
         options: CsvImportOptions,
         mappings: Vec<CsvColumnMapping>,
     ) -> AppResult<CsvImportPreview> {
-        let (session, schema) = self.verify_import_target(session_id, table).await?;
+        let (session, _schema) = self.verify_import_target(session_id, table).await?;
+        let target = session.driver.edit_target(table).await?;
+        let schema = target.schema.clone();
+        let requested_config_digest = import_config_digest(table, &options, &mappings)?;
+        let preview_options = options.clone();
         let (path, max_bytes) = self.file_capabilities.resolve_read_grant(source_token)?;
         let file_name = path
             .file_name()
@@ -3422,13 +3498,37 @@ impl Studio {
             .unwrap_or("import.csv")
             .to_owned();
         let engine = session.profile.engine;
-        tokio::task::spawn_blocking(move || {
+        let preview = tokio::task::spawn_blocking(move || {
             crate::import::build_csv_import_preview(
                 &path, max_bytes, file_name, engine, &schema, &options, &mappings,
             )
         })
         .await
-        .map_err(|_| AppError::internal("CSV import preview task could not complete"))?
+        .map_err(|_| AppError::internal("CSV import preview task could not complete"))??;
+        let config_digest = import_config_digest(table, &preview_options, &preview.mappings)?;
+        let mut targets = self.import_targets.lock();
+        targets.retain(|_, entry| entry.created.elapsed() < Duration::from_secs(300));
+        let key = (session_id.to_owned(), source_token.to_owned());
+        targets.remove(&key);
+        if target.identity.is_some() {
+            if targets.len() >= 100 {
+                return Err(AppError::new(
+                    ErrorCode::ResultLimitReached,
+                    "Close an import or wait for its preview to expire before opening another",
+                ));
+            }
+            targets.insert(
+                key,
+                ImportTarget {
+                    can_prepare: preview.can_prepare,
+                    requested_config_digest,
+                    config_digest,
+                    target,
+                    created: Instant::now(),
+                },
+            );
+        }
+        Ok(preview)
     }
 
     pub async fn prepare_csv_import_batch(
@@ -3440,7 +3540,23 @@ impl Studio {
         mappings: Vec<CsvColumnMapping>,
         batch_index: usize,
     ) -> AppResult<ChangePreview> {
-        let (session, schema) = self.verify_import_target(session_id, table).await?;
+        let (session, mut schema) = self.verify_import_target(session_id, table).await?;
+        let identity = if session.profile.engine == EngineKind::Postgres {
+            let config_digest = import_config_digest(table, &options, &mappings)?;
+            let targets = self.import_targets.lock();
+            // Accept the exact preview request or its resolved mapping response. Both
+            // refer to the same original target; unrelated configuration still expires it.
+            let entry = targets.get(&(session_id.to_owned(), source_token.to_owned())).filter(|entry| (entry.config_digest == config_digest || entry.requested_config_digest == config_digest) && entry.created.elapsed() < Duration::from_secs(300)).ok_or_else(|| AppError::new(ErrorCode::Conflict, "The original import target preview expired or changed. Preview and review the import again."))?;
+            if !entry.can_prepare {
+                return Err(AppError::invalid(
+                    "The CSV preview contains invalid values. Correct them and preview again before preparing a batch.",
+                ));
+            }
+            schema = entry.target.schema.clone();
+            entry.target.identity.clone()
+        } else {
+            None
+        };
         let (path, max_bytes) = self.file_capabilities.resolve_read_grant(source_token)?;
         let engine = session.profile.engine;
         let schema_for_parse = schema.clone();
@@ -3504,6 +3620,7 @@ impl Studio {
             plan,
             Action::Changes {
                 schema,
+                identity,
                 rows: prepared.mutations,
                 anchor_id: None,
                 updates: Vec::new(),
@@ -3927,6 +4044,28 @@ impl QuerySink for Output<'_> {
         });
     }
     fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()> {
+        self.describe_actual(columns, None)
+    }
+    fn describe_with_origins(
+        &mut self,
+        columns: Vec<ColumnInfo>,
+        origins: Vec<ColumnOrigin>,
+    ) -> AppResult<()> {
+        self.describe_actual(columns, Some(origins))
+    }
+    fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool> {
+        self.append_rows(rows)
+    }
+    fn complete(&mut self, affected: u64) -> AppResult<()> {
+        self.complete_result(affected)
+    }
+}
+impl Output<'_> {
+    fn describe_actual(
+        &mut self,
+        columns: Vec<ColumnInfo>,
+        origins: Option<Vec<ColumnOrigin>>,
+    ) -> AppResult<()> {
         if self.viewer_closed {
             return Ok(());
         }
@@ -3945,23 +4084,42 @@ impl QuerySink for Output<'_> {
                 StatementProvenance::Candidate {
                     candidate,
                     live_schema,
+                    identity,
                     safe_mode,
-                } => match safety::verify_result_provenance(
-                    candidate,
-                    live_schema,
-                    &columns,
-                    *safe_mode,
-                ) {
-                    safety::ProvenanceResolution::Editable {
-                        schema,
-                        columns: enriched,
-                        editability,
-                    } => (enriched, Some(*schema), Some(editability)),
-                    safety::ProvenanceResolution::ReadOnly { reason } => {
-                        (columns, None, Some(ResultEditability::ReadOnly { reason }))
+                } => {
+                    if identity.as_ref().is_some_and(|identity| {
+                        !origins
+                            .as_ref()
+                            .is_some_and(|origins| identity.matches_projection(&columns, origins))
+                    }) {
+                        (columns, None, Some(ResultEditability::ReadOnly { reason: "The actual result does not match the original table identity. Read the table again before editing.".into() }))
+                    } else {
+                        match safety::verify_result_provenance(
+                            candidate,
+                            live_schema,
+                            &columns,
+                            *safe_mode,
+                        ) {
+                            safety::ProvenanceResolution::Editable {
+                                schema,
+                                columns: enriched,
+                                editability,
+                            } => (enriched, Some(*schema), Some(editability)),
+                            safety::ProvenanceResolution::ReadOnly { reason } => {
+                                (columns, None, Some(ResultEditability::ReadOnly { reason }))
+                            }
+                        }
                     }
-                },
+                }
             }
+        };
+        let identity = if resolved_schema.is_some() {
+            match &self.provenance {
+                StatementProvenance::Candidate { identity, .. } => identity.clone(),
+                _ => None,
+            }
+        } else {
+            None
         };
         let info = match self.studio.results.create_with_editability(
             self.run_id,
@@ -3977,6 +4135,7 @@ impl QuerySink for Output<'_> {
                 return Ok(());
             }
         };
+        self.studio.results.set_edit_identity(&info.id, identity)?;
         self.studio
             .result_sessions
             .lock()
@@ -3988,7 +4147,7 @@ impl QuerySink for Output<'_> {
         }
         Ok(())
     }
-    fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool> {
+    fn append_rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool> {
         if self.viewer_closed {
             return Ok(false);
         }
@@ -4023,7 +4182,7 @@ impl QuerySink for Output<'_> {
         }
         Ok(retained)
     }
-    fn complete(&mut self, _affected: u64) -> AppResult<()> {
+    fn complete_result(&mut self, _affected: u64) -> AppResult<()> {
         if self.viewer_closed {
             return Ok(());
         }

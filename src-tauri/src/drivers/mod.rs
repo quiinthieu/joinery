@@ -2,6 +2,8 @@ use crate::domain::*;
 use async_trait::async_trait;
 
 pub mod browse_query;
+pub mod edit_target;
+pub use edit_target::{ColumnOrigin, EditIdentity, EditTarget};
 pub mod mysql;
 pub mod postgres;
 pub mod redis;
@@ -11,6 +13,13 @@ pub mod snowflake_auth;
 pub trait QuerySink: Send {
     fn limit(&mut self, reason: &str);
     fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()>;
+    fn describe_with_origins(
+        &mut self,
+        columns: Vec<ColumnInfo>,
+        _origins: Vec<ColumnOrigin>,
+    ) -> AppResult<()> {
+        self.describe(columns)
+    }
     fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool>;
     fn complete(&mut self, affected: u64) -> AppResult<()>;
 }
@@ -43,6 +52,40 @@ pub struct CompletionRelations {
 
 #[async_trait]
 pub trait Driver: Send + Sync {
+    async fn edit_target(&self, table: &TableRef) -> AppResult<EditTarget> {
+        Ok(EditTarget {
+            schema: self.schema(table).await?,
+            identity: None,
+        })
+    }
+    async fn browse_target(
+        &self,
+        schema: &TableSchema,
+        query: &BrowseQuery,
+        after: Option<Vec<Option<String>>>,
+    ) -> AppResult<(BrowseRows, EditTarget)> {
+        Ok((
+            self.browse_query(schema, query, after).await?,
+            EditTarget {
+                schema: schema.clone(),
+                identity: None,
+            },
+        ))
+    }
+    async fn apply_target(
+        &self,
+        schema: &TableSchema,
+        identity: Option<&EditIdentity>,
+        rows: &[RowMutation],
+    ) -> AppResult<()> {
+        if identity.is_some() {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "The edit target identity cannot be verified by this driver",
+            ));
+        }
+        self.apply(schema, rows).await
+    }
     async fn execute(
         &self,
         sql: &str,

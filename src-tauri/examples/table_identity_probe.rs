@@ -615,6 +615,20 @@ async fn main() {
         );
         std::process::exit(1);
     }
+    let report = collect_report(engine).await;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("serializable report")
+    );
+    if !report.operational_errors.is_empty() {
+        std::process::exit(1);
+    }
+    if require_safe && !report.safety_passed {
+        std::process::exit(2);
+    }
+}
+
+async fn collect_report(engine: &str) -> Report {
     let mut report = Report {
         safety_passed: false,
         fixtures: vec![],
@@ -704,14 +718,20 @@ async fn main() {
     report.safety_passed = report.operational_errors.is_empty()
         && !report.observations.is_empty()
         && report.observations.iter().all(Observation::safe);
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).expect("serializable report")
-    );
-    if !report.operational_errors.is_empty() {
-        std::process::exit(1);
-    }
-    if require_safe && !report.safety_passed {
-        std::process::exit(2);
+    report
+}
+
+#[cfg(test)]
+mod regression {
+    #[tokio::test]
+    #[ignore = "explicit opt-in: actual disposable PostgreSQL fixture 55432"]
+    async fn postgres_retained_targets_reject_replacement_and_allow_fresh_edits() {
+        let report = super::collect_report("postgres").await;
+        assert!(
+            report.safety_passed,
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap()
+        );
+        assert_eq!(report.observations.len(), 9);
     }
 }

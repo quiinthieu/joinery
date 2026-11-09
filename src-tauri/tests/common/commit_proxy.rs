@@ -25,6 +25,7 @@ pub enum Fault {
 }
 #[derive(Default)]
 struct State {
+    configured: AtomicBool,
     armed: AtomicBool,
     phase: AtomicU8,
     fault: AtomicU8,
@@ -64,7 +65,15 @@ impl CommitProxy {
         });
         Self { port, state, task }
     }
-    pub fn arm(&self, fault: Fault) {
+    pub fn arm(&self, fault: Fault) -> bool {
+        if self
+            .state
+            .configured
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return false;
+        }
         self.state.fault.store(
             match fault {
                 Fault::CommitAcknowledgement => 1,
@@ -74,6 +83,7 @@ impl CommitProxy {
             Ordering::SeqCst,
         );
         self.state.armed.store(true, Ordering::SeqCst);
+        true
     }
     pub fn commits(&self) -> usize {
         self.state.commits.load(Ordering::SeqCst)

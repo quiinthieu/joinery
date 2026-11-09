@@ -44,6 +44,7 @@ struct StoredResult {
     batches: Vec<RecordBatch>,
     bytes: usize,
     provenance: Option<TableSchema>,
+    edit_identity: Option<crate::drivers::EditIdentity>,
 }
 
 #[derive(Default)]
@@ -142,6 +143,7 @@ impl ResultStore {
                 batches: Vec::new(),
                 bytes: 0,
                 provenance,
+                edit_identity: None,
             },
         );
         Ok(info)
@@ -235,6 +237,32 @@ impl ResultStore {
                     "Only table browser rows with verified primary keys can be edited",
                 )
             })
+    }
+
+    pub(crate) fn edit_identity(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<crate::drivers::EditIdentity>> {
+        self.state
+            .lock()
+            .results
+            .get(id)
+            .map(|r| r.edit_identity.clone())
+            .ok_or_else(not_found)
+    }
+
+    pub(crate) fn set_edit_identity(
+        &self,
+        id: &str,
+        identity: Option<crate::drivers::EditIdentity>,
+    ) -> AppResult<()> {
+        self.state
+            .lock()
+            .results
+            .get_mut(id)
+            .ok_or_else(not_found)?
+            .edit_identity = identity;
+        Ok(())
     }
 
     pub fn row(&self, id: &str, index: usize) -> AppResult<TextRow> {

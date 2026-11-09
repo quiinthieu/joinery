@@ -2478,6 +2478,137 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL fixture"]
+async fn csv_import_automatic_preview_mappings_prepare_the_reviewed_target() {
+    use futures_util::FutureExt;
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    let root = tempfile::tempdir().unwrap();
+    let sandbox = SandboxFileDialog::new(&root.path().join("imports")).unwrap();
+    let studio = Studio::with_secrets_and_dialog(
+        root.path(),
+        Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
+    )
+    .unwrap();
+    let profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "Automatic CSV mapping regression".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port: std::env::var("JOINERY_TEST_PORT")
+                    .unwrap_or_else(|_| "55432".into())
+                    .parse()
+                    .unwrap(),
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Confirm,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: false,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+    let session = studio
+        .connect(
+            &profile.id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let table = TableRef {
+        schema: "public".into(),
+        name: format!("csv_auto_{}", new_id().replace('-', "")),
+    };
+    let qualified = format!("public.{}", table.name);
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!("CREATE TABLE {qualified} (id integer PRIMARY KEY, note text NOT NULL)")
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let checked = std::panic::AssertUnwindSafe(async {
+        std::fs::write(sandbox.root().join("automatic.csv"), "id,note\n1,reviewed\n").unwrap();
+        sandbox.queue_open(Some("automatic.csv")).unwrap();
+        let source = studio.pick_import_source().await.unwrap().unwrap();
+        let options = CsvImportOptions::default();
+        let preview = studio
+            .preview_csv_import(&session.id, &source.token, &table, options.clone(), Vec::new())
+            .await
+            .unwrap();
+        assert!(preview.can_prepare, "{:?}", preview.issues);
+        assert_eq!(preview.mappings.len(), 2);
+        assert_eq!(preview.mappings[0].target_column.as_deref(), Some("id"));
+        assert_eq!(preview.mappings[1].target_column.as_deref(), Some("note"));
+
+        // Original automatic requests remain supported, without changing the reviewed target.
+        studio
+            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), Vec::new(), 0)
+            .await
+            .expect("original automatic mapping request must remain valid");
+
+        // The dialog submits the effective mappings returned by the preview.
+        let prepared = studio
+            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0)
+            .await
+            .expect("automatic preview must accept its returned effective mappings");
+        assert_eq!(prepared.row_count, 1);
+        assert!(prepared.plan.requires_approval);
+
+        let mut changed = preview.mappings.clone();
+        changed[1].target_column = None;
+        assert_eq!(
+            studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), changed, 0).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        let changed_options = CsvImportOptions { has_header: false, ..options };
+        assert_eq!(
+            studio.prepare_csv_import_batch(&session.id, &source.token, &table, changed_options, preview.mappings.clone(), 0).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        let token = studio.authorize(&prepared.plan.id, None, prepared.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &prepared.plan, Some(&token)).1).await;
+        assert_eq!(status(&events), RunStatus::Completed, "{events:?}");
+        let observed = result(&run(&studio, &session, &format!("SELECT id::text, note FROM {qualified}")).await);
+        assert_eq!(observed.retained_rows, 1);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("1".into()), Some("reviewed".into())]);
+
+        assert_eq!(status(&run(&studio, &session, &format!("DROP TABLE {qualified}; CREATE TABLE {qualified} (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO {qualified} VALUES (2, 'replacement')")).await), RunStatus::Completed);
+        let stale = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings, 0).await.unwrap();
+        let token = studio.authorize(&stale.plan.id, None, stale.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &stale.plan, Some(&token)).1).await;
+        assert_eq!(status(&events), RunStatus::Failed, "{events:?}");
+        assert!(events.iter().any(|event| matches!(event, QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict)), "{events:?}");
+        let observed = result(&run(&studio, &session, &format!("SELECT id::text, note FROM {qualified}")).await);
+        assert_eq!(observed.retained_rows, 1);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("2".into()), Some("replacement".into())]);
+    }).catch_unwind().await;
+    let cleanup = run(&studio, &session, &format!("DROP TABLE {qualified}")).await;
+    studio.shutdown();
+    assert_eq!(status(&cleanup), RunStatus::Completed, "{cleanup:?}");
+    if let Err(panic) = checked {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
 async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_rolls_back_failed_batches()
  {
     use joinery_core::file_capability::SandboxFileDialog;
@@ -2725,6 +2856,16 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
     std::fs::write(sandbox.root().join("conflict.csv"), conflict_csv.as_bytes()).unwrap();
     sandbox.queue_open(Some("conflict.csv")).unwrap();
     let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+    studio
+        .preview_csv_import(
+            &session.id,
+            &conflict_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped.clone(),
+        )
+        .await
+        .unwrap();
     let conflict_batch = studio
         .prepare_csv_import_batch(
             &session.id,

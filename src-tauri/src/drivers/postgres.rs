@@ -1,3 +1,4 @@
+use super::edit_target::PgAttribute;
 use super::*;
 use crate::{results::BATCH_ROWS, safety::quote_identifier};
 use async_trait::async_trait;
@@ -11,10 +12,22 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::OnceCell;
-use tokio_postgres::{Client, Config, SimpleQueryMessage, types::ToSql};
+use tokio_postgres::{
+    Client, Config, GenericClient, Portal, SimpleQueryMessage, Transaction, types::ToSql,
+};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 mod explorer;
+
+struct Auxiliary {
+    client: Client,
+    task: tokio::task::AbortHandle,
+}
+impl Drop for Auxiliary {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 
 pub struct Postgres {
     client: Client,
@@ -139,6 +152,40 @@ impl Postgres {
         Ok((Arc::new(driver), info))
     }
 
+    async fn auxiliary(&self, label: &str) -> AppResult<Auxiliary> {
+        if self.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "The database session closed",
+            ));
+        }
+        let mut config = self.config.clone();
+        config.application_name(label);
+        let (client, connection) = config.connect(self.tls.clone()).await.map_err(pg_error)?;
+        let task = tokio::spawn(async move {
+            let _ = connection.await;
+        })
+        .abort_handle();
+        self.register_task(&task)?;
+        Ok(Auxiliary { client, task })
+    }
+
+    fn register_task(&self, task: &tokio::task::AbortHandle) -> AppResult<()> {
+        let mut tasks = self.tasks.lock();
+        // Retirement and task registration share this lock. A handshake may
+        // finish after close() drained the prior tasks; never publish that socket.
+        if self.is_closed() {
+            task.abort();
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "The database session closed while connecting",
+            ));
+        }
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task.clone());
+        Ok(())
+    }
+
     fn transaction_connection_error(&self, mut error: AppError) -> AppError {
         if matches!(
             error.code,
@@ -179,7 +226,7 @@ impl Postgres {
                 let task = tokio::spawn(async move {
                     let _ = connection.await;
                 });
-                self.tasks.lock().push(task.abort_handle());
+                self.register_task(&task.abort_handle())?;
                 Ok(client)
             })
             .await
@@ -249,6 +296,14 @@ impl Postgres {
             match message {
                 SimpleQueryMessage::RowDescription(columns) => {
                     retaining = true;
+                    let origins = columns
+                        .iter()
+                        .map(|c| ColumnOrigin {
+                            table_oid: c.table_oid().unwrap_or(0),
+                            column_id: c.column_id().unwrap_or(0),
+                            type_oid: c.type_oid(),
+                        })
+                        .collect();
                     let columns = metadata
                         .clone()
                         .filter(|m| m.len() == columns.len())
@@ -259,7 +314,7 @@ impl Postgres {
                                 .map(|(i, c)| column(i, c.name(), "unknown"))
                                 .collect()
                         });
-                    sink.describe(columns)?;
+                    sink.describe_with_origins(columns, origins)?;
                 }
                 SimpleQueryMessage::Row(row) if retaining => {
                     let bytes = (0..row.len())
@@ -774,6 +829,144 @@ impl Driver for Postgres {
             .collect())
     }
 
+    async fn edit_target(&self, table: &TableRef) -> AppResult<EditTarget> {
+        let mut auxiliary = self.auxiliary("Joinery edit target").await?;
+        let tx = auxiliary.client.transaction().await.map_err(pg_error)?;
+        let sql = format!(
+            "SELECT {}.tableoid FROM {} LIMIT 0",
+            qualified(table),
+            qualified(table)
+        );
+        let portal = tx.bind(sql.as_str(), &[]).await.map_err(pg_error)?;
+        let target = target_on(&tx, table, &portal).await?;
+        drop(portal);
+        tx.commit().await.map_err(pg_error)?;
+        Ok(target)
+    }
+
+    async fn browse_target(
+        &self,
+        schema: &TableSchema,
+        query: &BrowseQuery,
+        after: Option<Vec<Option<String>>>,
+    ) -> AppResult<(BrowseRows, EditTarget)> {
+        if !schema.editable {
+            return Ok((
+                self.browse_query(schema, query, after).await?,
+                EditTarget {
+                    schema: schema.clone(),
+                    identity: None,
+                },
+            ));
+        }
+        let (sql, built) = browse_sql(schema, query, after.as_deref())?;
+        // The direct system attribute's descriptor identifies the logical root,
+        // even for zero rows and partition/inheritance reads; it is never shown.
+        let sql = sql.replacen(
+            "SELECT ",
+            &format!(
+                "SELECT {}.tableoid AS __joinery_origin, ",
+                qualified(&schema.table)
+            ),
+            1,
+        );
+        let parameters = built
+            .binds
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+        let mut auxiliary = self.auxiliary("Joinery table read").await?;
+        let tx = auxiliary.client.transaction().await.map_err(pg_error)?;
+        let portal = match tx.bind(sql.as_str(), &parameters).await {
+            Ok(portal) => portal,
+            Err(error) if error.code().is_some_and(|code| code.code() == "42501") => {
+                // Column-only SELECT grants may permit the user's data but not
+                // tableoid. Bind has executed no expressions, so safely retry
+                // the original projection with all editing disabled.
+                tx.rollback().await.map_err(pg_error)?;
+                let mut readonly = schema.clone();
+                readonly.editable = false;
+                for column in &mut readonly.columns {
+                    column.editable = false;
+                    column.insertable = false;
+                }
+                return Ok((
+                    self.browse_query(&readonly, query, after).await?,
+                    EditTarget {
+                        schema: readonly,
+                        identity: None,
+                    },
+                ));
+            }
+            Err(error) => return Err(pg_error(error)),
+        };
+        let target = target_on(&tx, &schema.table, &portal).await?;
+        if target.schema != *schema {
+            return Err(edit_conflict(
+                "The table schema changed while opening this page. Refresh and review it again.",
+            ));
+        }
+        let mut stream = Box::pin(tx.query_portal_raw(&portal, 0).await.map_err(pg_error)?);
+        let mut rows = Vec::new();
+        let mut bytes = 0;
+        let mut limited = false;
+        while let Some(row) = stream.try_next().await.map_err(pg_error)? {
+            // Drain the bounded (501-row) portal even after the retained page is
+            // full: later expression errors must reach the caller before COMMIT.
+            if limited {
+                continue;
+            }
+            let size = (1..row.len())
+                .map(|i| row.get::<_, Option<&str>>(i).map_or(5, |v| v.len() + 5))
+                .sum::<usize>();
+            if rows.len() == 500 || bytes + size > 2 * 1024 * 1024 {
+                if rows.is_empty() {
+                    return Err(AppError::new(
+                        ErrorCode::ResultLimitReached,
+                        "A table row exceeds the 2 MiB page budget. Use a query with a smaller projection.",
+                    ));
+                }
+                limited = true;
+                continue;
+            }
+            bytes += size;
+            rows.push(
+                (1..row.len())
+                    .map(|i| row.get::<_, Option<String>>(i))
+                    .collect::<TextRow>(),
+            );
+        }
+        let has_more = limited && built.pageable;
+        let next_key = if has_more {
+            rows.last().map(|r| built.cursor(r))
+        } else {
+            None
+        };
+        // Close the actual portal before committing reviewed raw-clause effects.
+        // An early return above instead rolls back this auxiliary transaction.
+        drop(stream);
+        drop(portal);
+        if let Err(error) = tx.commit().await {
+            if pg_connection_lost(&error) {
+                self.close();
+                return Err(AppError::new(
+                    ErrorCode::OutcomeUnknown,
+                    "The table read commit acknowledgement was lost. Reviewed raw expressions may have committed. Check the database before retrying.",
+                ));
+            }
+            return Err(pg_error(error));
+        }
+        Ok((
+            BrowseRows {
+                rows,
+                next_key,
+                has_more,
+                truncated: limited && !has_more,
+            },
+            target,
+        ))
+    }
+
     async fn schema(&self, table: &TableRef) -> AppResult<TableSchema> {
         schema_on(self.metadata().await?, table, false).await
     }
@@ -867,29 +1060,34 @@ impl Driver for Postgres {
         })
     }
 
-    async fn apply(&self, schema: &TableSchema, rows: &[RowMutation]) -> AppResult<()> {
+    async fn apply(&self, _schema: &TableSchema, _rows: &[RowMutation]) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::PolicyBlocked,
+            "The original table identity is required. Read the table or preview the import again.",
+        ))
+    }
+
+    async fn apply_target(
+        &self,
+        schema: &TableSchema,
+        identity: Option<&EditIdentity>,
+        rows: &[RowMutation],
+    ) -> AppResult<()> {
         if !schema.editable {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
                 "This table cannot be edited safely",
             ));
         }
-        // A grid commit must never commit an open transaction in the SQL editor.
-        let mut config = self.config.clone();
-        config.application_name("Joinery grid commit");
-        let (client, connection) = config.connect(self.tls.clone()).await.map_err(pg_error)?;
-        let task = tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        {
-            let mut tasks = self.tasks.lock();
-            tasks.retain(|t| !t.is_finished());
-            tasks.push(task.abort_handle());
-        }
-        *self.edit_cancel.lock() = Some(client.cancel_token());
-        let outcome = self.apply_on(&client, schema, rows).await;
+        let identity = identity.ok_or_else(|| {
+            edit_conflict("The original table identity is unavailable. Read the table again.")
+        })?;
+        let mut auxiliary = self.auxiliary("Joinery grid commit").await?;
+        *self.edit_cancel.lock() = Some(auxiliary.client.cancel_token());
+        let outcome = self
+            .apply_on(&mut auxiliary.client, schema, identity, rows)
+            .await;
         *self.edit_cancel.lock() = None;
-        task.abort();
         outcome
     }
 
@@ -996,6 +1194,43 @@ impl Driver for Postgres {
     }
 }
 
+fn edit_conflict(message: &str) -> AppError {
+    AppError::new(ErrorCode::Conflict, message)
+}
+
+async fn target_on(
+    tx: &Transaction<'_>,
+    table: &TableRef,
+    portal: &Portal,
+) -> AppResult<EditTarget> {
+    let origin = portal
+        .columns()
+        .first()
+        .filter(|column| column.column_id() == Some(-6) && column.type_().oid() == 26)
+        .and_then(|column| column.table_oid())
+        .filter(|oid| *oid != 0)
+        .ok_or_else(|| {
+            edit_conflict("The actual table identity is unavailable. Refresh before editing.")
+        })?;
+    let schema = schema_on_relation(tx, table, false, false, Some(origin)).await?;
+    let rows = tx.query("SELECT a.attname::pg_catalog.text,a.attnum,a.atttypid FROM pg_catalog.pg_attribute a WHERE a.attrelid=$1 AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum", &[&origin]).await.map_err(pg_error)?;
+    let attributes = rows
+        .iter()
+        .map(|row| PgAttribute {
+            name: row.get(0),
+            number: row.get(1),
+            type_oid: row.get(2),
+        })
+        .collect();
+    Ok(EditTarget {
+        schema,
+        identity: Some(EditIdentity::Postgres {
+            relation_oid: origin,
+            attributes,
+        }),
+    })
+}
+
 fn row_matches_original(
     schema: &TableSchema,
     actual: &[Option<String>],
@@ -1022,13 +1257,23 @@ fn row_matches_original(
 impl Postgres {
     async fn apply_on(
         &self,
-        client: &Client,
+        client: &mut Client,
         schema: &TableSchema,
+        identity: &EditIdentity,
         rows: &[RowMutation],
     ) -> AppResult<()> {
-        client.batch_execute("BEGIN").await.map_err(pg_error)?;
+        let tx = client.transaction().await.map_err(pg_error)?;
         let result = async {
             for row in rows {
+                let (sql, values) = mutation_sql(schema, row)?;
+                let sql = format!("{sql} RETURNING {}.tableoid", qualified(&schema.table));
+                let params = values.iter().map(|v| v as &(dyn ToSql + Sync)).collect::<Vec<_>>();
+                let portal = tx.bind(sql.as_str(), &params).await.map_err(pg_error)?;
+                let target = target_on(&tx, &schema.table, &portal).await?;
+                if target.identity.as_ref() != Some(identity) || schema.primary_key != target.schema.primary_key
+                    || schema.columns.iter().any(|expected| !target.schema.columns.iter().any(|actual| actual.name == expected.name && actual.database_type == expected.database_type && actual.primary_key == expected.primary_key && actual.nullable == expected.nullable && actual.editable == expected.editable && (!expected.insertable || actual.insertable) && actual.has_default == expected.has_default)) {
+                    return Err(edit_conflict("The original table or its schema changed. No edits were committed. Read the table or preview the import again."));
+                }
                 if let RowMutation::Update { original, .. } | RowMutation::Delete { original } = row
                 {
                     let (predicate, keys) = key_predicate(schema, original, 1)?;
@@ -1037,18 +1282,22 @@ impl Postgres {
                         .map(|v| v as &(dyn ToSql + Sync))
                         .collect::<Vec<_>>();
                     let sql = format!(
-                        "SELECT {} FROM {} WHERE {predicate} FOR UPDATE",
-                        projection(schema),
+                        "SELECT {}.tableoid,{} FROM {} WHERE {predicate} FOR UPDATE",
+                        qualified(&schema.table), projection(schema),
                         qualified(&schema.table)
                     );
-                    let locked = client.query(&sql, &params).await.map_err(pg_error)?;
+                    let locked_portal = tx.bind(sql.as_str(), &params).await.map_err(pg_error)?;
+                    if target_on(&tx, &schema.table, &locked_portal).await?.identity.as_ref() != Some(identity) {
+                        return Err(edit_conflict("The row-lock query resolved to a changed table. No edits were committed."));
+                    }
+                    let locked = tx.query_portal(&locked_portal, 0).await.map_err(pg_error)?;
                     if locked.len() != 1 {
                         return Err(AppError::new(
                             ErrorCode::Conflict,
                             "A target row was deleted or its key changed. Refresh before applying edits.",
                         ));
                     }
-                    let actual = (0..locked[0].len())
+                    let actual = (1..locked[0].len())
                         .map(|i| locked[0].get::<_, Option<String>>(i))
                         .collect::<TextRow>();
                     if !row_matches_original(schema, &actual, original) {
@@ -1058,12 +1307,8 @@ impl Postgres {
                         ));
                     }
                 }
-                let (sql, values) = mutation_sql(schema, row)?;
-                let params = values
-                    .iter()
-                    .map(|v| v as &(dyn ToSql + Sync))
-                    .collect::<Vec<_>>();
-                if client.execute(&sql, &params).await.map_err(pg_error)? != 1 {
+                // Execute exactly the validated portal. Never reparse or rebind the target.
+                if tx.query_portal(&portal, 0).await.map_err(pg_error)?.len() != 1 {
                     return Err(AppError::new(
                         ErrorCode::Conflict,
                         "A table change did not affect exactly one row. No edits were committed.",
@@ -1074,12 +1319,12 @@ impl Postgres {
         }
         .await;
         if let Err(error) = result {
-            if client.batch_execute("ROLLBACK").await.is_err() {
+            if tx.rollback().await.is_err() {
                 self.close();
             }
             return Err(error);
         }
-        match client.batch_execute("COMMIT").await {
+        match tx.commit().await {
             Ok(()) => Ok(()),
             Err(error) if pg_connection_lost(&error) => {
                 self.close();
@@ -1513,14 +1758,24 @@ async fn schema_on_mode(
     completion: bool,
     require_complete: bool,
 ) -> AppResult<TableSchema> {
+    schema_on_relation(client, table, completion, require_complete, None).await
+}
+
+async fn schema_on_relation<C: GenericClient + Sync>(
+    client: &C,
+    table: &TableRef,
+    completion: bool,
+    require_complete: bool,
+    relation_oid: Option<u32>,
+) -> AppResult<TableSchema> {
     let qualified = qualified(table);
     let rows=client.query(
             "SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),t.typname,a.attnotnull,a.attgenerated::pg_catalog.text,a.attidentity::pg_catalog.text,
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='p' AND a.attnum=ANY(k.conkey)),
               EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid=a.attrelid AND k.contype='f' AND a.attnum=ANY(k.conkey)), c.relkind::pg_catalog.text,
-              a.atthasdef, pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT')
+              a.atthasdef, pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'), pg_catalog.has_table_privilege(c.oid,'SELECT')
              FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
-             WHERE a.attrelid=pg_catalog.to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR $3 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion, &require_complete]).await.map_err(pg_error)?;
+             WHERE a.attrelid=COALESCE($4::pg_catalog.oid,pg_catalog.to_regclass($1)) AND a.attnum>0 AND NOT a.attisdropped AND (NOT $2 OR $3 OR (pg_catalog.has_schema_privilege(c.relnamespace,'USAGE') AND pg_catalog.has_column_privilege(c.oid,a.attnum,'SELECT'))) ORDER BY a.attnum",&[&qualified, &completion, &require_complete, &relation_oid]).await.map_err(pg_error)?;
     if require_complete && rows.iter().any(|row| !row.get::<_, bool>(10)) {
         return Err(AppError::new(
             ErrorCode::PermissionDenied,
@@ -1589,7 +1844,7 @@ async fn schema_on_mode(
              JOIN pg_catalog.pg_attribute a ON a.attrelid=k.conrelid AND a.attnum=x.src
              JOIN pg_catalog.pg_class c ON c.oid=k.confrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
              JOIN pg_catalog.pg_attribute b ON b.attrelid=k.confrelid AND b.attnum=x.dst
-             WHERE k.contype='f' AND k.conrelid=pg_catalog.to_regclass($1) ORDER BY k.conname,k.oid,x.ord",&[&qualified]).await.map_err(pg_error)?;
+             WHERE k.contype='f' AND k.conrelid=COALESCE($2::pg_catalog.oid,pg_catalog.to_regclass($1)) ORDER BY k.conname,k.oid,x.ord",&[&qualified, &relation_oid]).await.map_err(pg_error)?;
     let foreign_keys = ForeignKey::group(foreign.iter().map(|r| {
         (
             r.get(0),
@@ -1601,7 +1856,10 @@ async fn schema_on_mode(
             r.get(4),
         )
     }));
+    // Identity-backed writes require system-column SELECT, which column-only
+    // grants do not confer. Advertise the same read-only schema to the UI.
     let editable = physical
+        && rows[0].get::<_, bool>(11)
         && !primary_key.is_empty()
         && columns
             .iter()
@@ -1623,8 +1881,8 @@ async fn schema_on_mode(
     })
 }
 
-async fn completion_fks_on(
-    client: &Client,
+async fn completion_fks_on<C: GenericClient + Sync>(
+    client: &C,
     qualified: &str,
 ) -> AppResult<(Vec<ForeignKey>, Vec<InboundForeignKey>)> {
     let outbound_rows = client

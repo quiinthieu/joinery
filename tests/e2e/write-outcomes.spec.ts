@@ -3,11 +3,12 @@ import { test, expect, type APIRequestContext, type Page } from "@playwright/tes
 import type { QueryEvent, SavedWorkspace, SessionInfo } from "../../src/ipc/generated";
 
 const bridge = "http://127.0.0.1:1422";
+const headers = { Authorization: "Bearer joinery-disposable-browser-tests-only" };
 const fixturePort = Number(process.env.JOINERY_POSTGRES_PORT ?? 55432);
 
 async function rpc<T>(request: APIRequestContext, command: string, args = {}): Promise<T> {
   const response = await request.post(`${bridge}/rpc/${command}`, {
-    headers: { Authorization: "Bearer joinery-disposable-browser-tests-only" },
+    headers,
     data: args,
   });
   expect(response.ok()).toBe(true);
@@ -195,7 +196,15 @@ for (const writer of ["grid", "CSV"] as const) {
         const review = page.getByRole("dialog", { name: "Review pending changes" });
         await expect(review).toBeVisible();
         await expect(review.locator(".sql-preview")).toContainText(table);
-        await rpc(request, "test_commit_proxy_arm", { id: proxy.id, fault });
+        const beforeWrite = await rpc<{ commits: number }>(request, "test_commit_proxy_arm", {
+          id: proxy.id,
+          fault,
+        });
+        const rearm = await request.post(`${bridge}/rpc/test_commit_proxy_arm`, {
+          headers,
+          data: { id: proxy.id, fault: fault === "fatal" ? "acknowledgement" : "fatal" },
+        });
+        expect((await rearm.json()).error).toMatchObject({ code: "invalidInput" });
         observing = true;
         await review.getByRole("button", { name: "Apply changes", exact: true }).click();
         await expect(review).toHaveCount(0);
@@ -247,8 +256,13 @@ for (const writer of ["grid", "CSV"] as const) {
           `SELECT string_agg(id::text || ':' || note, ',' ORDER BY id) FROM public.${table}`,
         );
         await inspectFirstCell(page, writer === "grid" ? `1:${changed}` : `1:before,2:${changed}`);
-        const status = await rpc(request, "test_commit_proxy_status", { id: proxy.id });
-        expect(status).toMatchObject({ commits: 1, acknowledged: true, triggered: true });
+        const status = await rpc<{ commits: number; acknowledged: boolean; triggered: boolean }>(
+          request,
+          "test_commit_proxy_status",
+          { id: proxy.id },
+        );
+        expect(status).toMatchObject({ acknowledged: true, triggered: true });
+        expect(status.commits - beforeWrite.commits).toBe(1);
       } finally {
         observing = false;
         try {

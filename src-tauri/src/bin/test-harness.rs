@@ -85,15 +85,15 @@ async fn rpc(
                 let proxies = state.commit_proxies.lock().await;
                 let proxy = proxies.get(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown owned commit proxy"))?;
                 if command == "test_commit_proxy_arm" {
-                    if proxy.triggered() || proxy.commits() != 0 {
-                        return Err(AppError::invalid("Commit proxy can only arm before its first COMMIT"));
-                    }
                     let fault: String = arg(&args, "fault")?;
-                    proxy.arm(match fault.as_str() {
+                    let fault = match fault.as_str() {
                         "acknowledgement" => Fault::CommitAcknowledgement,
                         "fatal" => Fault::CommitFatalResponse,
                         _ => return Err(AppError::invalid("Unknown commit proxy fault")),
-                    });
+                    };
+                    if !proxy.arm(fault) {
+                        return Err(AppError::invalid("Commit proxy can only arm once"));
+                    }
                 }
                 json!({ "port": proxy.port, "commits": proxy.commits(), "acknowledged": proxy.acknowledged(), "triggered": proxy.triggered() })
             }

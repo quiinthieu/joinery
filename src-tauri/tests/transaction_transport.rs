@@ -12,6 +12,14 @@ async fn connect(engine: EngineKind, port: u16) -> (tempfile::TempDir, Arc<Studi
     (root, studio, session)
 }
 async fn connect_profile(studio: &Arc<Studio>, engine: EngineKind, port: u16) -> SessionInfo {
+    connect_profile_with_mode(studio, engine, port, SafeMode::Silent).await
+}
+async fn connect_profile_with_mode(
+    studio: &Arc<Studio>,
+    engine: EngineKind,
+    port: u16,
+    mode: SafeMode,
+) -> SessionInfo {
     let profile = studio
         .save_profile(
             ConnectionProfile {
@@ -24,7 +32,7 @@ async fn connect_profile(studio: &Arc<Studio>, engine: EngineKind, port: u16) ->
                 database: "joinery".into(),
                 username: "joinery".into(),
                 environment: Environment::Local,
-                safe_mode: SafeMode::Silent,
+                safe_mode: mode,
                 tls_mode: TlsMode::Disable,
                 ca_cert_path: None,
                 ssh: None,
@@ -223,6 +231,25 @@ async fn reviewed_writer_fault(csv: bool, fault: Fault) {
         sandbox.queue_open(Some("row.csv")).unwrap();
         let grant = studio.pick_import_source().await.unwrap().unwrap();
         studio
+            .preview_csv_import(
+                &session.id,
+                &grant.token,
+                &table,
+                CsvImportOptions::default(),
+                vec![
+                    CsvColumnMapping {
+                        csv_index: 0,
+                        target_column: Some("id".into()),
+                    },
+                    CsvColumnMapping {
+                        csv_index: 1,
+                        target_column: Some("value".into()),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        studio
             .prepare_csv_import_batch(
                 &session.id,
                 &grant.token,
@@ -266,6 +293,7 @@ async fn reviewed_writer_fault(csv: bool, fault: Fault) {
             .unwrap()
     };
     let approval = studio.authorize(&preview.plan.id, None, None).unwrap();
+    let commits_before_write = proxy.commits();
     proxy.arm(fault);
     let (tx, mut rx) = mpsc::unbounded_channel();
     studio
@@ -296,7 +324,11 @@ async fn reviewed_writer_fault(csv: bool, fault: Fault) {
     )
     .await;
     assert!(proxy.acknowledged(), "server did not acknowledge COMMIT");
-    assert_eq!(proxy.commits(), 1, "reviewed writer replayed COMMIT");
+    assert_eq!(
+        proxy.commits() - commits_before_write,
+        1,
+        "reviewed writer replayed COMMIT"
+    );
     assert_eq!(value, "1", "reviewed row did not commit exactly once");
     assert!(
         studio
@@ -432,6 +464,7 @@ async fn postgres_queued_reviewed_writer_cannot_reconnect_after_session_retireme
     )
     .await;
     let before = proxy.connections();
+    let commits_before_write = proxy.commits();
     proxy.arm(Fault::CommitAcknowledgement);
     let (tx, mut first_rx) = mpsc::unbounded_channel();
     studio
@@ -538,7 +571,7 @@ async fn postgres_queued_reviewed_writer_cannot_reconnect_after_session_retireme
         "queued writer reached the database after retirement"
     );
     assert_eq!(
-        proxy.commits(),
+        proxy.commits() - commits_before_write,
         1,
         "queued writer committed after retirement"
     );
@@ -619,4 +652,211 @@ async fn postgres_deferred_commit_failure_invalidates_plans_and_keeps_idle_sessi
         pending_rejected,
         "plan prepared before COMMIT failure survived the context transition"
     );
+}
+
+// Holds a single, explicitly armed fixture TCP handshake before forwarding it.
+// Dropping the accept task also drops its JoinSet, aborting every owned relay.
+struct HandshakeGate {
+    port: u16,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    arrived: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl HandshakeGate {
+    async fn start() -> Self {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (flag, entered, resume) = (armed.clone(), arrived.clone(), release.clone());
+        let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let Ok((mut client, _)) = accepted else { break };
+                        let paused = flag.swap(false, std::sync::atomic::Ordering::SeqCst);
+                        let (entered, resume) = (entered.clone(), resume.clone());
+                        connections.spawn(async move {
+                            if paused {
+                                entered.notify_one();
+                                resume.notified().await;
+                            }
+                            if let Ok(mut server) = tokio::net::TcpStream::connect(("127.0.0.1", 55432)).await {
+                                let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                            }
+                        });
+                    }
+                    _ = connections.join_next(), if !connections.is_empty() => {}
+                }
+            }
+        });
+        Self {
+            port,
+            armed,
+            arrived,
+            release,
+            task,
+        }
+    }
+}
+impl Drop for HandshakeGate {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn postgres_pending_writer_handshake_cannot_escape_session_retirement() {
+    use futures_util::FutureExt;
+    let proxy = HandshakeGate::start().await;
+    let (_observer_root, observer, observer_session) = connect(EngineKind::Postgres, 55432).await;
+    let (_root, studio, session) = connect(EngineKind::Postgres, proxy.port).await;
+    let table = TableRef {
+        schema: "public".into(),
+        name: format!("handshake_retired_{}", new_id().replace('-', "")),
+    };
+    run(&observer, &observer_session, &format!("CREATE TABLE {} (id INTEGER PRIMARY KEY, value INTEGER NOT NULL); INSERT INTO {} VALUES (1,0)", table.name, table.name)).await;
+    let checked = std::panic::AssertUnwindSafe(async {
+        let page = studio.browse(&session.id, &table, None).await.unwrap();
+        let prepared = studio.prepare_table_changes(&session.id, TableChanges {
+            result_id: Some(page.result.id.clone()),
+            updates: vec![ResultChanges {
+                result_id: page.result.id.clone(),
+                changes: vec![CellChange { row: 0, column: page.result.columns[1].id.clone(), value: Some("1".into()) }],
+            }], ..Default::default()
+        }).unwrap();
+        let approval = studio.authorize(&prepared.plan.id, None, None).unwrap();
+        proxy.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        studio.execute(&prepared.plan.id, Some(&approval), Arc::new(move |event| tx.send(event).is_ok())).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), proxy.arrived.notified()).await.expect("auxiliary handshake did not pause");
+        studio.disconnect(&session.id);
+        proxy.release.notify_one();
+        let events = tokio::time::timeout(Duration::from_secs(15), async {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                let finished = matches!(event, QueryEvent::Finished { .. });
+                events.push(event);
+                if finished { break }
+            }
+            events
+        }).await.expect("retired writer did not finish");
+        assert_eq!(committed_value(&observer, &observer_session, &table.name).await, "0", "writer escaped retirement: {events:?}");
+        assert!(events.iter().any(|event| matches!(event, QueryEvent::Error { error, .. } if error.code == ErrorCode::ConnectionClosed)), "{events:?}");
+        assert!(!events.iter().any(|event| matches!(event, QueryEvent::Finished { status: RunStatus::Completed, .. })), "{events:?}");
+        assert!(studio.execute(&prepared.plan.id, Some(&approval), Arc::new(|_| true)).is_err());
+        assert_eq!(studio.usage().session_count, 0);
+    }).catch_unwind().await;
+    studio.shutdown();
+    run(
+        &observer,
+        &observer_session,
+        &format!("DROP TABLE {}", table.name),
+    )
+    .await;
+    observer.shutdown();
+    if let Err(panic) = checked {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn reviewed_browse_commit_fault(fault: Fault) {
+    use futures_util::FutureExt;
+    let proxy = CommitProxy::start(Protocol::Postgres, 55432).await;
+    let (_observer_root, observer, observer_session) = connect(EngineKind::Postgres, 55432).await;
+    let _root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(_root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let session =
+        connect_profile_with_mode(&studio, EngineKind::Postgres, proxy.port, SafeMode::Confirm)
+            .await;
+    let table = TableRef {
+        schema: "public".into(),
+        name: format!("browse_transport_{}", new_id().replace('-', "")),
+    };
+    let marker = format!("{}_marker", table.name);
+    let function = format!("{}_mark", table.name);
+    run(&observer, &observer_session, &format!("CREATE TABLE {} (id INTEGER PRIMARY KEY, value INTEGER NOT NULL); INSERT INTO {} VALUES(1,0); CREATE TABLE {marker}(value INTEGER); CREATE FUNCTION {function}(v INTEGER) RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN INSERT INTO {marker} VALUES(v); RETURN true; END $$",table.name,table.name)).await;
+    let checked = std::panic::AssertUnwindSafe(async {
+        let query = BrowseQuery {
+            where_clause: Some(format!("public.{function}(id)")),
+            ..Default::default()
+        };
+        let plan = studio
+            .prepare_browse(&session.id, &table, &query)
+            .await
+            .unwrap()
+            .unwrap();
+        let approval = BrowseApproval {
+            plan_id: plan.id.clone(),
+            approval: studio.authorize(&plan.id, None, None).unwrap(),
+        };
+        proxy.arm(fault);
+        let error = tokio::time::timeout(
+            Duration::from_secs(15),
+            studio.browse_with_approval(&session.id, &table, None, &query, Some(&approval)),
+        )
+        .await
+        .expect("browse commit deadline")
+        .unwrap_err();
+        let events = run(
+            &observer,
+            &observer_session,
+            &format!("SELECT count(*) FROM {marker}"),
+        )
+        .await;
+        let result = events
+            .iter()
+            .find_map(|event| {
+                if let QueryEvent::Result { result } = event {
+                    Some(result)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            observer.results.row(&result.id, 0).unwrap(),
+            vec![Some("1".into())],
+            "browse did not commit exactly once: {error:?}"
+        );
+        assert!(proxy.acknowledged() && proxy.triggered());
+        assert_eq!(proxy.commits(), 1, "browse was replayed");
+        assert_eq!(error.code, ErrorCode::OutcomeUnknown, "{error:?}");
+        assert_eq!(
+            studio.usage().session_count,
+            0,
+            "uncertain browse retained a closed session"
+        );
+        assert!(
+            studio
+                .browse_with_approval(&session.id, &table, None, &query, Some(&approval))
+                .await
+                .is_err()
+        );
+        assert_eq!(proxy.commits(), 1, "closed browse automatically retried");
+    })
+    .catch_unwind()
+    .await;
+    studio.shutdown();
+    run(&observer,&observer_session,&format!("DROP FUNCTION public.{function}(INTEGER); DROP TABLE public.{marker}; DROP TABLE public.{}",table.name)).await;
+    observer.shutdown();
+    if let Err(panic) = checked {
+        std::panic::resume_unwind(panic);
+    }
+}
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn postgres_browse_lost_commit_acknowledgement_is_unknown_and_retires_session() {
+    reviewed_browse_commit_fault(Fault::CommitAcknowledgement).await;
+}
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn postgres_browse_fatal_commit_response_is_unknown_and_retires_session() {
+    reviewed_browse_commit_fault(Fault::CommitFatalResponse).await;
 }
