@@ -1,10 +1,21 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryStage {
+    Setup,
+    Verify,
+}
+
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SmokeOptions {
     pub cleanup_cycles: u32,
     pub idle_ms: u32,
+    #[serde(default)]
+    pub recovery_stage: Option<RecoveryStage>,
+    #[serde(default)]
+    pub fixture_port: Option<u16>,
 }
 
 impl Default for SmokeOptions {
@@ -12,6 +23,8 @@ impl Default for SmokeOptions {
         Self {
             cleanup_cycles: 10,
             idle_ms: 1000,
+            recovery_stage: None,
+            fixture_port: None,
         }
     }
 }
@@ -23,7 +36,9 @@ impl SmokeOptions {
         }
         let value: Self =
             serde_json::from_slice(bytes).map_err(|_| "Invalid native test options")?;
-        if !(10..=1000).contains(&value.cleanup_cycles) || !(1000..=60_000).contains(&value.idle_ms)
+        if !(10..=1000).contains(&value.cleanup_cycles)
+            || !(1000..=60_000).contains(&value.idle_ms)
+            || value.fixture_port.is_some_and(|port| port < 1024)
         {
             return Err("Native test options exceed supported bounds");
         }
@@ -31,6 +46,9 @@ impl SmokeOptions {
     }
 
     pub fn timeout_seconds(self) -> u64 {
+        if self.recovery_stage.is_some() {
+            return 90;
+        }
         30 + u64::from(self.cleanup_cycles) + 2 * u64::from(self.idle_ms).div_ceil(1000)
     }
 }
@@ -57,5 +75,33 @@ mod tests {
             assert!(SmokeOptions::parse(input.as_bytes()).is_err());
         }
         assert!(SmokeOptions::parse(&[b' '; 1025]).is_err());
+    }
+
+    #[test]
+    fn recovery_options_are_explicit_and_use_only_unprivileged_fixture_ports() {
+        assert!(SmokeOptions::default().recovery_stage.is_none());
+        for stage in ["setup", "verify"] {
+            let options = SmokeOptions::parse(format!(r#"{{"cleanupCycles":10,"idleMs":1000,"recoveryStage":"{stage}","fixturePort":55432}}"#).as_bytes()).unwrap();
+            assert_eq!(options.fixture_port, Some(55432));
+            assert_eq!(options.timeout_seconds(), 90);
+        }
+        let defaults =
+            SmokeOptions::parse(br#"{"cleanupCycles":10,"idleMs":1000,"recoveryStage":"setup"}"#)
+                .unwrap();
+        assert_eq!(defaults.recovery_stage, Some(RecoveryStage::Setup));
+        assert!(defaults.fixture_port.is_none());
+        for extra in [
+            r#""recoveryStage":"other""#,
+            r#""fixturePort":0"#,
+            r#""fixturePort":1023"#,
+            r#""fixturePort":65536"#,
+        ] {
+            assert!(
+                SmokeOptions::parse(
+                    format!(r#"{{"cleanupCycles":10,"idleMs":1000,{extra}}}"#).as_bytes()
+                )
+                .is_err()
+            );
+        }
     }
 }

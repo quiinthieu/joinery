@@ -73,6 +73,8 @@ pub async fn connect(
     id: String,
     secrets: ConnectionSecrets,
 ) -> AppResult<SessionInfo> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_CONNECT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     studio.connect(&id, secrets).await
 }
 
@@ -130,6 +132,8 @@ pub async fn prepare_execution(
     sql: String,
     params: Option<Vec<QueryParamInput>>,
 ) -> AppResult<PreparedPlan> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_PREPARE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     studio.prepare_execution_with_params(&session_id, &sql, params)
 }
 
@@ -171,6 +175,8 @@ pub async fn execute_plan(
     approval: Option<String>,
     on_event: Channel<QueryEvent>,
 ) -> AppResult<String> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_EXECUTE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     studio.inner().execute(
         &plan_id,
         approval.as_deref(),
@@ -479,6 +485,18 @@ pub struct NativeSmokeState {
     pub options: crate::native_smoke_config::SmokeOptions,
 }
 
+// Process-lifetime invocation counts prove restart did not briefly reconnect or
+// replay SQL and then discard its session/results before recovery inspected it.
+#[cfg(feature = "native-smoke")]
+static NATIVE_SMOKE_CONNECT_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "native-smoke")]
+static NATIVE_SMOKE_PREPARE_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "native-smoke")]
+static NATIVE_SMOKE_EXECUTE_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 #[cfg(feature = "native-smoke")]
 #[tauri::command]
 pub async fn native_smoke_fixture(studio: State<'_, Arc<Studio>>) -> AppResult<ResultInfo> {
@@ -531,20 +549,38 @@ pub async fn native_smoke_checkpoint(
 ) -> AppResult<serde_json::Value> {
     if !matches!(
         phase.as_str(),
-        "shell" | "loading" | "loaded" | "cycling" | "released" | "idle"
+        "options" | "shell" | "loading" | "loaded" | "cycling" | "released" | "idle"
     ) {
         return Err(AppError::invalid("Unknown native test phase"));
     }
     if cycle.is_some_and(|cycle| phase != "cycling" || cycle > state.options.cleanup_cycles) {
         return Err(AppError::invalid("Invalid native test cycle"));
     }
-    let checkpoint = serde_json::json!({
+    let mut checkpoint = serde_json::json!({
         "phase": phase,
         "cycle": cycle,
         "options": state.options,
         "nativeElapsedMs": state.started.elapsed().as_millis() as u64,
         "usage": studio.usage(),
+        "invocations": {
+            "connect": NATIVE_SMOKE_CONNECT_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+            "prepareExecution": NATIVE_SMOKE_PREPARE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+            "execute": NATIVE_SMOKE_EXECUTE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        },
     });
+    if state.options.recovery_stage == Some(crate::native_smoke_config::RecoveryStage::Verify) {
+        let path = state.root.join("report-setup.json");
+        let bytes = crate::files::read_bounded(
+            path.to_str()
+                .ok_or_else(|| AppError::invalid("Invalid native recovery path"))?,
+            16 * 1024,
+        )?;
+        checkpoint["recoverySetup"] = serde_json::from_slice(&bytes)
+            .map_err(|_| AppError::invalid("Invalid native recovery setup report"))?;
+    }
+    if phase == "options" {
+        return Ok(checkpoint);
+    }
     std::fs::write(
         state.root.join("checkpoint.json"),
         serde_json::to_vec(&checkpoint)
@@ -573,6 +609,19 @@ pub async fn native_smoke_report(
             .map_err(|_| AppError::internal("Could not encode native test report"))?,
     )
     .map_err(|_| AppError::internal("Could not write native test report"))?;
+    if passed
+        && state.options.recovery_stage == Some(crate::native_smoke_config::RecoveryStage::Setup)
+    {
+        std::fs::write(
+            state.root.join("report-setup.json"),
+            serde_json::to_vec_pretty(&report)
+                .map_err(|_| AppError::internal("Could not encode native recovery setup report"))?,
+        )
+        .map_err(|_| AppError::internal("Could not write native recovery setup report"))?;
+        // Recovery setup must close through App's real close-request handler.
+        // Only failures and the verification stage use the ordinary test exit.
+        return Ok(());
+    }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         app.exit(if passed { 0 } else { 1 });

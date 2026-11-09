@@ -39,6 +39,8 @@ function workerRoundtrip(worker: Worker, payload: unknown) {
   });
 }
 export async function runNativeSmoke() {
+  const { runNativeRecovery } = await import("./native-recovery");
+  if (await runNativeRecovery()) return;
   const started = performance.now();
   const report: Record<string, unknown> = { passed: false, checks: [] };
   try {

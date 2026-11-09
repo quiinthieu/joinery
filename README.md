@@ -295,6 +295,27 @@ These samples do not qualify representative idle RAM, cold visible startup or FP
 
 This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. It also checks ten tab/result cleanup cycles with Arrow requests in flight and records shell/loading/release checkpoints with main-process memory samples. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Build provenance records the source revision, tree, and whether the working tree was dirty. The shell checkpoint is hidden DOM readiness; WebView helper memory, visible paint, and display FPS remain unqualified.
 
+To test actual close/reopen against the disposable PostgreSQL fixture on port
+55432, start that fixture first, then run:
+
+```sh
+pnpm desktop:smoke:build
+pnpm test:native:recovery:runner
+pnpm test:native:recovery
+```
+
+The recovery mode uses the same hidden test executable, isolated workspace and
+in-memory secret store. Each pair of processes creates its own fixture table,
+cancels a close with a pending transaction, then confirms close with a draft save
+still inside its 400 ms debounce window. The second process checks the latest
+draft/preferences, empty session/result state and actual PostgreSQL rollback
+without executing the recovered draft, then drops its table. The runner requires
+observed process exit before that debounce deadline and records local evidence
+in `.cache/native-smoke/recovery-runs.json`. `--runs 1` runs one pair;
+`--fixture-port PORT` selects another loopback synthetic fixture with the same
+fixed test database and credentials. This does not qualify the normal installed
+bundle, the OS credential store, other engines or an owner's live database.
+
 To explicitly qualify the native credential store with one disposable random entry:
 
 ```sh
