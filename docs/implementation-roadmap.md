@@ -5,13 +5,10 @@ The active 9 November 2026 Goal and next qualification queue are in
 pending owner confirmation; historical slice completion does not establish
 daily replacement acceptance.
 
-The current P0 qualification sequence is: resolve query-result target identity
-(local `5a1fed7`), preserve truthful bounded snapshots after committed edits
-(`a2713bd`), verify abrupt backend restart (`c882fc2`), repair manual transaction
-transport/outcome reporting (`19727e7`) and delayed result inspection
-(`66573be`), and requalify combined source with the pinned toolchains. Repaired
-source passes validation (542 frontend / 179 standard Rust tests), 97 real
-fixtures and focused browser repeats.
+The earlier P0 repairs cover query-result provenance, truthful bounded snapshots,
+abrupt backend restart, manual transaction outcomes and delayed result inspection.
+Their historical qualification remains below and in the ledger. The current
+identity-safety increment has separate, narrower evidence and open gates.
 The first pinned run passed validation, 91 fixtures, bundle and native smoke;
 116/118 browser workflows passed and the two failures were reproduced. The
 repaired runtime passed normal macOS packaging/signature, three isolated
@@ -33,15 +30,22 @@ and editor retirement. Real regressions reproduced the defects before repair;
 independent reviews found no material issues. Validation (545 frontend / 180
 standard Rust), 103 real fixtures and four new fault browser workflows pass.
 Combined packaging/signature, two native recovery pairs, ordinary smoke and all
-124 browser workflows pass; local repairs are `71d95b6` and `cd5bee0`. A separate
-diagnostic then reproduced the permanent table drop/recreate identity gap
-in 27 cases across PostgreSQL/MySQL/MariaDB, including deletes, empty-result
-inserts and CSV between batch commits. This remains unrepaired. The [identity investigation](table-identity-safety.md)
-records reproduction and coordinated repair requirements: original-read identity,
-actual writer target, ordinary privileges, CSV batches and namespace/partition
-behavior. Owner applicability, required external workflows and hands-on
-acceptance remain open. No partial identity guard or editing-privilege change
-was introduced.
+124 browser workflows pass for that earlier source. A separate diagnostic on
+`ff59ca6` reproduced 27 drop/recreate identity failures (nine each on PostgreSQL,
+MySQL and MariaDB), including deletes, empty-result inserts and CSV between batch
+commits. The current identity increment addresses that historical result. Its
+PostgreSQL 18.6 strict diagnostic passes all nine expected rejections, and the
+formal example regression passes separately. Validation passes 561 frontend /
+186 Rust tests with strict Clippy; one clean seven-suite fixture command passes
+112 tests. The focused nine-case browser run passes 9/9, including CSV mapping.
+After the test-coordinate fix and UUID fixture isolation, the full browser
+suite passed 129/129 and the focused table-data/raw-browse run passed 11/11. The
+prior 126/127 and 10/11 results are historical test-coordinate and fixture-
+isolation failures. Both raw-browse unknown-outcome UI cases passed. MySQL/MariaDB's
+18 historical cases remain unsafe. The [identity investigation](table-identity-safety.md)
+links the bounded [MySQL/MariaDB design](mysql-table-identity-design.md),
+`ea3ea76` client foundation and scope limits. Native/normal-bundle qualification,
+owner applicability, external workflows and hands-on acceptance remain open.
 
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;

@@ -31,12 +31,47 @@ fixture tests and four new real fault browser workflows pass. Independent review
 found no material issue. Fresh combined qualification passes: normal macOS
 bundle/signature, two native recovery pairs, ordinary smoke and all 124 browser
 workflows (6.2 minutes). Local repairs are `71d95b6` and `cd5bee0`; see the ledger
-for artifact hashes. A separate opt-in diagnostic reproduces permanent table
-drop/recreate identity failure in 27 cases across PostgreSQL/MySQL/MariaDB,
-including CSV. It is not repaired or included in the passing counts. See the [identity investigation](table-identity-safety.md)
-for the reproducible command, design prerequisites and remaining qualification limits.
+for artifact hashes. Those counts qualify that earlier source only. A separate
+opt-in diagnostic reproduced permanent table drop/recreate identity failure in
+27 cases across PostgreSQL/MySQL/MariaDB, including CSV on source `ff59ca6`.
+None of those observations count as passing tests. See the
+[identity investigation](table-identity-safety.md) for scope and status.
 
-These changes are committed locally. All remain unmerged, unpublished and not installed.
+## Current identity-safety increment (qualification incomplete)
+
+`ea3ea76` commits the vendored `tokio-postgres 0.7.18` foundation (MIT/Apache-2.0)
+and three source changes for actual query origins and bound-portal description.
+Six synthetic protocol tests and one ignored nine-case actual client protocol set
+pass; these do not qualify application behavior. Backend repair `4b7e4c3` carries
+actual relation/attribute/type identity from SELECT, browse and CSV preview
+through approvals and batches, then validates and executes the exact DML portal.
+The final PostgreSQL 18.6 `--engine postgres --require-safe` report passes all
+nine cases: each returns `Conflict`, preserves the replacement, consumes
+approval and passes fresh-control and cleanup checks, with no operational
+errors. This is scoped fixture evidence, not whole-application qualification.
+
+A disconnect race was reproduced in the auxiliary write path and fixed by checking
+session registration under the same mutex used by retirement; its targeted rerun returned
+`ConnectionClosed` and left value `0`. Raw browse draining and permission
+fallback are implemented. Four actual permission/RLS/raw tests passed. After
+11 of 16 new state regressions
+failed and five passed, the 80-case state suite passed following fixes. Two actual
+browse unknown-outcome tests pass. Latest validation passed 561 frontend / 186
+Rust tests with strict Clippy. One clean seven-suite fixture command passed 112
+tests (41 MySQL/MariaDB, 43 PostgreSQL, four permission/RLS/raw, one
+client-protocol suite, six Redis, two SSH and 15 transport). The final strict
+PostgreSQL diagnostic and formal example regression passed nine cases separately.
+The focused nine-case browser run passed 9/9, including CSV mapping. After
+coordinate repair and UUID fixture isolation, the full browser suite passed
+129/129 and the focused table-data/raw-browse run passed 11/11. The earlier
+127-case 126-pass attempt and 10/11 focused attempt were historical test
+coordinate and fixture-isolation failures. Both raw-browse unknown-outcome UI
+cases passed. MySQL/MariaDB's 18 historical cases remain open and unsafe; the
+bounded [guard design](mysql-table-identity-design.md) records protocol-only
+evidence, not an application repair. Native/normal-bundle qualification for this increment,
+required engine/auth workflows and owner acceptance remain pending.
+
+PostgreSQL identity implementation is committed locally as `4b7e4c3`; fixture isolation is `80ded6c`, frontend retirement is `08484fc`, and the vendored client foundation is `ea3ea76`. These changes remain unmerged, unpublished and not installed.
 The owner-private hub is not updated because this task forbids publication.
 Required engines/authentication, packaged restart/credential evaluation,
 signing/notarization, other platforms and hands-on acceptance remain open.

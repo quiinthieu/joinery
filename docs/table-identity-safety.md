@@ -1,19 +1,23 @@
 # Retained edits and replacement tables
 
-Investigation date: 9 November 2026. **Incomplete: PostgreSQL, MySQL and MariaDB failures reproduced;
-no repair implemented.** This is a safety qualification within the active
+Investigation date: 9 November 2026. **The strict PostgreSQL 18.6 fixture
+diagnostic passes all nine cases; full application qualification remains open.
+MySQL and MariaDB remain unsafe in the reproduced cases.** This is a safety qualification within the active
 [replacement Goal](replacement-acceptance.md), not a claim about undocumented
 DataGrip behavior. The passing [qualification baseline](replacement-verification.md)
 does not cover this scenario.
 
 ## Reproduced behavior
 
-The durable diagnostic at
+The historical durable diagnostic at
 [`src-tauri/examples/table_identity_probe.rs`](../src-tauri/examples/table_identity_probe.rs)
-now reproduces **27 failures: nine per engine** on PostgreSQL 18.6, MySQL 8.4.13
+reproduced **27 failures: nine per engine** on PostgreSQL 18.6, MySQL 8.4.13
 and MariaDB 11.4.13. Each operation reported `Completed` and changed the replacement.
 All 27 approvals were consumed, fresh-read insert controls succeeded, and owned
 table removal was independently verified. There were no operational errors.
+This report belongs to unchanged application revision `ff59ca6`; it is historical
+evidence, not the current PostgreSQL result. The current partial PostgreSQL repair
+and its qualification limits are recorded below.
 
 | Case (each engine) | Replacement timing | Replacement rows afterward (`id`, `note`) |
 |---|---|---|
@@ -30,7 +34,7 @@ table removal was independently verified. There were no operational errors.
 The final case independently confirms the first batch's 500 rows before replacing
 the table. The original preview then supplies row 502 to the replacement. This
 diagnostic adds no passing regression count: `--require-safe` exits **2**, with
-`safetyPassed: false`. The application remains unchanged from `ff59ca6`.
+`safetyPassed: false`. The application at that report's revision was `ff59ca6`.
 
 ### Initial PostgreSQL investigation
 
@@ -105,18 +109,74 @@ PostgreSQL fixture. Choose a unique suffix; use only the table created here.
 
 The replacement DDL is deliberately destructive **only to the uniquely named
 synthetic probe**. This is not an instruction to test against production data.
-Namespace changes, partition/inheritance behavior, permissions, guard expiry and
-connection loss during a future identity guard remain unqualified. The diagnostic
-tests rejection after replacement completes; a repair that continuously locks the
-original must separately prove bounded DDL blocking and guard cleanup.
+Namespace changes, partition/inheritance behavior, full permission combinations,
+guard expiry and connection loss during an identity guard remain unqualified. The
+diagnostic tests rejection after replacement completes; a repair that continuously
+locks the original must separately prove bounded DDL blocking and guard cleanup.
 
 ## Why a prepare-time check is insufficient
 
-Retained provenance currently carries table name, schema shape and keys.
-PostgreSQL locks and compares original row values; MySQL/MariaDB additionally
-lock and compare table shape during apply. Identical replacement before those
-checks can satisfy them. Capturing a new identity at approval would still miss
-replacement of the table that produced an older result or CSV preview.
+Before the partial PostgreSQL repair, retained provenance carried table name,
+schema shape and keys. PostgreSQL locked and compared original row values;
+MySQL/MariaDB also lock and compare table shape during apply. Identical
+replacement before those checks could satisfy them, as the historical diagnostic
+shows. Capturing a new identity at approval would still miss replacement of the
+table that produced an older result or CSV preview.
+
+## Partial PostgreSQL repair and current qualification
+
+The identity foundation is committed as `ea3ea76`: vendored `tokio-postgres`
+0.7.18 under its MIT/Apache-2.0 licenses, with provenance for three upstream
+source changes. Those changes preserve actual simple-query column origins and
+support describing a bound portal without executing it. Six synthetic protocol
+tests and one ignored set of nine actual client-protocol cases pass. This is
+client-library evidence, not a DataGrip comparison or an application repair by
+itself.
+
+The PostgreSQL identity repair at `4b7e4c3` carries relation OID, attribute number
+and type identity from the actual SELECT, table browse or CSV preview through
+stored results, preparation, approval and every batch. Before writing, it
+describes and executes the exact bound DML portal under the guarded transaction.
+The initial repaired report at
+`.cache/table-identity-probe/postgres-repaired-report.json` predates the final
+review fixes. The final strict `--engine postgres --require-safe` report at
+`.cache/table-identity-probe/postgres-csv-final-report.json` passes all nine
+PostgreSQL 18.6 scenarios: every case rejected with `Conflict`, preserved the
+replacement, consumed approval, passed fresh controls and cleanup, with zero
+operational errors. A separate formal example regression run over the same nine
+cases also passed. This is scoped fixture evidence, not general engine
+qualification.
+
+Review found an auxiliary-connection race where an edit could commit after the
+originating session disconnected. A regression observed value `1` and
+`Completed`; checking session registration under the retirement mutex fixed the path,
+and its targeted rerun observed value `0` and `ConnectionClosed`. Raw browse
+commit/drain handling and a read-only fallback on permission denial are also
+implemented. Four actual permission/RLS/raw tests passed, including column-only
+read-only fallback and late-error cutoff. Sixteen frontend state-behavior cases
+exposed 11 failures while five passed; after repair, the 80-case state test file
+passed. Latest validation passes 561 frontend / 186 Rust tests and strict
+Clippy. One clean seven-suite fixture command passes 112 tests: 41 MySQL/MariaDB,
+43 PostgreSQL, four permission/RLS/raw, one client-protocol suite covering nine
+scenarios, six Redis, two SSH and 15 transaction transport. The final strict
+PostgreSQL diagnostic and formal example regression are additional, separate
+runs. The focused nine-case browser run passes 9/9, including CSV automatic-to-
+explicit mapping compatibility, changed-configuration denial and stale-
+replacement conflict. After the test-coordinate fix and UUID-based fixture
+isolation, the full browser suite passed 129/129; the focused table-data/raw-
+browse run passed 11/11. Both actual raw-browse unknown-outcome UI cases passed.
+Earlier 126/127 and 10/11 attempts were test-coordinate and fixture-isolation
+failures; they are historical, not current product failures. Native recovery or
+normal-bundle qualification has not run for this increment. Earlier 545 frontend /
+180 Rust / 103 fixtures / 124 browser results and normal-bundle hash belong to
+the earlier writer repair only.
+
+Scope remains PostgreSQL 18.6. The implementation requires `SELECT` access to
+system columns for editable provenance; column-only readers fall back to
+read-only, covered by the actual permission tests. OID identity does not
+by itself qualify every rule, trigger, partition effect or OID reuse case.
+Grid writes remain separate from console transactions. MySQL and MariaDB's 18
+historical failures remain open and unsafe; no cross-engine repair is claimed.
 
 Independent Tier 2 reviews checked the driver, result store, provenance,
 preparation and CSV paths, with matching coverage metadata and direct source
@@ -125,26 +185,50 @@ reads. The important touch points are `results.rs::StoredResult`,
 `browse_with_approval`, `prepare_table_changes`, `preview_csv_import`,
 `prepare_csv_import_batch` and each SQL driver's apply path.
 
-## Repair requirements and design options
+## MySQL and MariaDB design boundary
 
-This is a design proposal, not implemented capability:
+The MySQL and MariaDB wire-level result metadata observed in this investigation
+provides names, not a documented table-incarnation identifier that can bind an
+old result to a replacement-safe object. See the bounded [MySQL/MariaDB guard
+design](mysql-table-identity-design.md) for probe evidence and a falsifiable
+next-step proposal. InnoDB dictionary `TABLE_ID` metadata
+is documented, but reading those catalogs requires the `PROCESS` privilege in
+the documented MySQL 8.4 and MariaDB versions. Joinery must not request that
+privilege automatically or treat it as an acceptable default.
 
-- Retain a backend-owned `EditTarget { schema, identity }` from the original
-  read, including empty results, and carry it through every contributing result,
-  prepared plan and approved mutation. Schema-only consumers can keep their
-  existing metadata interface.
-- Verify the actual mutation target under a transaction-held guard before every
-  DML operation, including inserts. Preserve full-row conflicts, atomicity,
-  cancellation, one-use approval and truthful uncertain-COMMIT handling.
-- PostgreSQL's actual wire `RowDescription` includes relation/attribute identity,
-  but installed `tokio-postgres 0.7.18` simple-query columns retain only names.
-  Exposing actual execution origins is a candidate client-library change. The
-  current separate `prepare()` metadata cannot prove which table the subsequent
-  simple-query execution read. A dependency change needs licensing, maintenance
-  and regression review before adoption.
-- Browsing needs schema, identity and rows collected in one protected driver
-  operation. A CSV preview needs an opaque backend capability binding session,
-  source grant, configuration and original target across all reviewed batches.
+One ordinary-role design to falsify on isolated fixtures is a dedicated,
+explicitly bounded guard connection: begin a transaction before the original
+read or CSV preview, access the target so its metadata lock remains held, and
+retain that transaction through review and CSV batches. The writer must acquire
+its own metadata lock and then verify that the original guard is still the same
+live transaction before issuing DML. A ping, automatic reconnect, or new
+transaction cannot prove continuity of the original guard. This is a design
+hypothesis, not an implemented or qualified repair.
+
+The guard can delay migrations. Queued DDL may block a later writer behind the
+original guard, so bounded deadlines/TTL, explicit release, cancel, eviction,
+disconnect and shutdown cleanup all need measured behavior. Run actual isolated
+drop/recreate and queued-DDL experiments, including CSV batch boundaries, before
+choosing this design. Production readiness and the owner's concurrent-migration
+requirement remain unresolved. Official references: [MySQL metadata locking](https://dev.mysql.com/doc/refman/8.4/en/metadata-locking.html),
+[MariaDB metadata locking](https://mariadb.com/docs/server/reference/sql-statements/transactions/metadata-locking),
+and [MySQL InnoDB table metadata](https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-tables-table.html).
+
+## Remaining proof obligations and design risks
+
+The PostgreSQL foundation and scoped backend path are partially implemented as
+described above; this does not qualify every related workflow or the other
+engines. Remaining proof obligations and design risks are:
+
+- The upstream PostgreSQL wire `RowDescription` includes relation/attribute
+  identity, while upstream `tokio-postgres 0.7.18` simple-query columns retain
+  only names. The vendored foundation carries actual execution origins. Keep
+  provenance and licensing records, upstream maintenance review, and regression
+  coverage with that dependency; separate pre-query `prepare()` metadata alone
+  still cannot prove which table a query actually read.
+- Permission denial must remain safely read-only; the current four actual
+  permission/RLS/raw tests cover column-only grants, late read errors and raw
+  browse behavior on the tested fixture versions.
 - Locking a qualified PostgreSQL table name and checking its OID once does not
   establish unrestricted namespace safety when later DML parses the name again.
   Qualify schema rename/recreation and prepared-plan invalidation explicitly;
@@ -156,14 +240,15 @@ This is a design proposal, not implemented capability:
   A privilege-free alternative is an explicit bounded edit connection retaining
   its metadata lock from snapshot through write. That changes resource use and
   can delay migrations; expiry, cancel, disconnect and shutdown must release it.
-- Batch commits release transaction locks. CSV must retain a separately proven
-  guard or reacquire the target and obtain fresh review for the next batch.
-  A lock obtained only at approval does not protect an older preview.
+- Batch commits release transaction locks. CSV must retain the original target
+  through each batch and qualify replacement after preview, after approval and
+  between commits. Current PostgreSQL cases have an initial report; MySQL/MariaDB
+  still demonstrate the unsafe outcome.
 
-Required real-engine regressions include all nine cases above, queued writers, permission
-denial, connection loss, guard expiry and namespace/partition cases. Existing
-manual console transactions must never be committed or rolled back by a hidden
-editing guard. UI workflows must show expiry/rejection and require a fresh read.
+Complete qualification still needs all nine cases on each engine, queued writers,
+permission denial, connection loss, guard expiry and namespace/partition cases.
+Existing manual console transactions must never be committed or rolled back by a
+hidden editing guard. UI workflows must show expiry/rejection and require a fresh read.
 
 ## Replacement decision and current usage
 

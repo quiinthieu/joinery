@@ -33,8 +33,11 @@ Pending owner input (requested at Goal start):
   saved-script, keyboard and accessibility workflows; representative sanitized
   examples and acceptable performance expectations.
 - Whether pending edits/imports must survive concurrent migrations that drop,
-  rename or recreate their target tables. Replacement on all three SQL engines is now a
-  reproduced safety gap; see [investigation and repair design](table-identity-safety.md).
+  rename or recreate their target tables. The `ff59ca6` diagnostic reproduced
+  failures on all three engines. The PostgreSQL 18.6 strict fixture diagnostic
+  now passes all nine cases; broader application qualification remains open.
+  MySQL/MariaDB remain unsafe in 18 cases. See the
+  [investigation and repair design](table-identity-safety.md).
 
 No unanswered feature is silently optional. Existing engine exclusions become
 replacement blockers if the owner requires them. New engines, AI, collaboration,
@@ -55,8 +58,8 @@ fresh outcomes separately.
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
 | Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 103 real fixtures and all 124 browser workflows pass within the ledger scopes; required external combinations remain open |
 | Inspect and move data | Filter/sort/page, copy exact numeric/NULL values, export complete file; cancelled export clearly incomplete | Implemented with bounds; representative dataset sizes unconfirmed |
-| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Provenance/snapshot/inspector repairs have real regressions; queued writes after closure and uncertain CSV reporting repaired. Permanent drop/recreate identity fails 27 actual fixture cases across PostgreSQL/MySQL/MariaDB, including CSV; repair remains incomplete |
-| Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual/reviewed COMMIT uncertainty and closed-session cleanup repaired; 12 real transport tests, toolbar checks and four new grid/CSV fault browser cases pass |
+| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | PostgreSQL 18.6 strict diagnostic passes all nine expected rejections; the formal example regression passes separately. Latest validation is 561 frontend / 186 Rust tests with strict Clippy; one clean fixture command passes 112. Focused identity browser run passes 9/9. After test-coordinate repair and UUID fixture isolation, the full browser suite passed 129/129 and focused table-data/raw-browse tests passed 11/11. Earlier 126/127 and 10/11 attempts were test-coordinate and fixture-isolation failures. Both raw-browse unknown-outcome UI cases pass. MySQL/MariaDB's 18 historical cases remain unsafe; native and normal-bundle qualification remain open |
+| Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual/reviewed COMMIT uncertainty and closed-session cleanup repaired; 15 real transport tests, toolbar checks, four grid/CSV fault browser cases and two raw-browse unknown-outcome UI cases pass |
 | Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Abrupt backend restart and two isolated actual native close/reopen pairs pass, including pending-save flush and real PostgreSQL rollback; normal packaged/credential evaluation remains open |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
 | Change schema | Review generated migration, reject stale target snapshot, demonstrate engine-specific implicit commits and refresh metadata | Implemented SQL workflow; unsupported objects disclosed |
@@ -84,11 +87,19 @@ fresh outcomes separately.
    real browser workflows pass. Combined normal bundle/signature, two native
    recovery pairs, ordinary smoke and all 124 browser workflows pass. Local
    commits are `71d95b6` and `cd5bee0`; see the ledger for source/artifact scope.
-5. Permanent table identity investigation: a durable opt-in diagnostic reproduces
-   27 failures across PostgreSQL/MySQL/MariaDB (nine each), including deletes,
-   empty-result inserts and CSV across batch commits. No repair is claimed. The [design and reproducible steps](table-identity-safety.md)
-   retain original-read, writer-target, privilege and CSV lifecycle requirements.
-   Namespace/partition behavior and future guard lifecycle need separate qualification.
+5. Permanent table identity: the opt-in diagnostic on `ff59ca6` reproduced 27
+   failures across PostgreSQL/MySQL/MariaDB (nine each), including deletes,
+   empty-result inserts and CSV across batch commits. The final PostgreSQL 18.6
+   strict diagnostic passes 9/9 expected rejections; four permission/RLS/raw
+   tests pass. One clean fixture command passes 112; validation passes 561
+   frontend / 186 Rust tests with strict Clippy. The focused identity browser run
+   passes 9/9. Full browser suite passes 129/129 and the focused table-data/raw-
+   browse run passes 11/11. The earlier 127-case 126-pass run and 10/11 focused
+   attempt are historical test-coordinate and fixture-isolation failures. Both
+   raw-browse unknown-outcome UI cases pass. MySQL/MariaDB's 18 cases remain
+   unsafe. Native and normal-bundle qualification remain open.
+   See [design and reproducible steps](table-identity-safety.md), including the
+   bounded [MySQL/MariaDB guard proposal](mysql-table-identity-design.md).
    Confirm the owner's concurrent-migration workflow before declaring applicability.
 6. Pending owner input: confirm required engines/versions, authentication,
    transports, daily workflows, target hosts and performance/accessibility needs.

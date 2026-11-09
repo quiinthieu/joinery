@@ -87,15 +87,21 @@ unsupported results explain why editing is unavailable. After commit, that query
 result remains an explicitly stale, read-only snapshot. Rerun to see actual
 defaults, generated keys or trigger changes and restore editing.
 
-Permanent table replacement is a reproduced PostgreSQL/MySQL/MariaDB safety gap: retained
-edits do not carry a physical object identity. After external DROP/CREATE,
-discard old edits and review plans, then read the table afresh before preparing
-changes. Coordinate
-DDL so the target is not replaced during editing; a fresh read cannot protect
-against replacement afterward. See the [identity investigation](table-identity-safety.md)
-for 27 observed failures, including CSV after preview, approval and between
-batch commits, and unimplemented protection. Discard an old CSV preview after
-external DDL and preview/review it again; coordinate DDL throughout the import.
+The `ff59ca6` diagnostic reproduced permanent table replacement failures across
+PostgreSQL, MySQL and MariaDB, including CSV. The final PostgreSQL 18.6 strict
+fixture diagnostic passes all nine expected rejections, and the formal example
+regression passes separately. Latest validation passes 561 frontend / 186 Rust
+tests with strict Clippy; one clean fixture command passes 112. The focused identity browser run passes 9/9; after test-coordinate repair and
+UUID fixture isolation, the full browser suite passes 129/129 and focused
+table-data/raw-browse tests pass 11/11. Earlier full/focused failures are historical
+test-coordinate and fixture-isolation failures. The 18
+MySQL/MariaDB cases remain unsafe; see the bounded
+[guard design proposal](mysql-table-identity-design.md). Until the relevant
+engine and workflow are qualified, discard pending edits and CSV
+previews after external DDL, read or preview again, and coordinate DDL throughout
+review and submission. This reduces exposure; a fresh read cannot protect
+against a later replacement. See the [identity investigation](table-identity-safety.md)
+for the original 27 cases, partial PostgreSQL repair, and remaining tests.
 
 Use a console's Manual transaction mode to update a fixture row, inspect it in
 that session, then Rollback and verify from another session. Repeat with Commit.

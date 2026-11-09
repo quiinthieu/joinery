@@ -32,6 +32,19 @@ workflows. Combined qualification passes: normal macOS bundle/signature, two
 native recovery pairs, ordinary smoke and all 124 browser workflows. The local
 repairs are `71d95b6` and `cd5bee0`; see the ledger for artifact identity and scope.
 
+A later identity-safety increment is only partially qualified. The final strict
+PostgreSQL 18.6 diagnostic passes all nine expected rejections, and the formal
+example regression passes separately. Latest validation passes 561 frontend /
+186 Rust tests with strict Clippy; a clean seven-suite fixture command passes
+112 tests. The focused nine-case browser run passes 9/9, including the CSV mapping
+repair. After the test-coordinate fix and UUID fixture isolation, the full browser
+suite passes 129/129; the focused table-data/raw-browse run passes 11/11. Earlier
+126/127 and 10/11 attempts were test-coordinate and fixture-isolation failures,
+not current product failures. Both actual raw-browse unknown-outcome UI cases
+passed. The earlier `ff59ca6` diagnostic's 18 MySQL/MariaDB failures remain open
+and unsafe. Native and normal-bundle qualification remain open. See the
+[ledger](replacement-verification.md).
+
 ## Current replacement assessment (9 November 2026)
 
 DataGrip's non-commercial license has the same core IDE feature set as its
@@ -58,9 +71,9 @@ reproduced failures and exact qualification limits.
 | Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; Snowflake browser-OAuth read-only pilot | Required engine/version/authentication pairs unconfirmed. External SSO/IAM/accounts, live Snowflake and native credential lifecycle need explicit qualification. Unsupported required engines/authentication are blockers |
 | Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures | Bounded introspection and permission behavior vary by engine; qualify daily catalogs/roles and required object types |
 | SQL editing, completion, formatting, diagnostics | Bounded dialect-aware completion, formatting, parameters, diagnostics, navigation and refactoring with frontend/real browser coverage | Fresh-result completion synchronization is repaired (`f9abce0`); unsupported semantic forms remain explicit. Required authoring tasks/performance unconfirmed |
-| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks | Twelve real transaction-transport tests cover console/reviewed outcomes and retirement, including queued writes; target external connections remain unqualified |
+| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks | Fifteen real transaction-transport tests cover console/reviewed outcomes, retirement and raw-browse uncertainty, including queued writes; target external connections remain unqualified |
 | Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector cache-arrival race repaired with delayed real Arrow coverage. Representative data sizes/export destinations and accessibility unconfirmed |
-| Editing, transactions, commit/rollback | Reviewed atomic grid changes, conflict checks, result provenance; temporary-target, stale-snapshot, retirement/queued-write and CSV uncertainty repairs have real regressions; four grid/CSV fault browser flows pass | Permanent drop/recreate identity fails 27 actual PostgreSQL/MySQL/MariaDB diagnostic cases, including CSV. Repair remains open. See [identity investigation](table-identity-safety.md). Query snapshots in other tabs are not automatically refreshed; grid writer remains separate from console transaction |
+| Editing, transactions, commit/rollback | Reviewed atomic grid changes, conflict checks, result provenance; temporary-target, stale-snapshot, retirement/queued-write and CSV uncertainty repairs have real regressions; focused identity browser cases pass 9/9 | PostgreSQL 18.6 strict identity diagnostic passes all nine cases; four permission/RLS/raw tests and the 112-test fixture command pass. Full browser suite passes 129/129; focused table-data/raw-browse cases pass 11/11 after UUID fixture isolation. The historical diagnostic's 18 MySQL/MariaDB cases remain unsafe. See [identity investigation](table-identity-safety.md). Query snapshots in other tabs are not automatically refreshed; grid writer remains separate from console transaction |
 | History and saved scripts | Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
 | Plans and performance investigation | Estimated/actual SQL-engine plan workflows, snapshots/comparison, timing and monitoring exercised in local fixtures | Engine-specific bounds remain; Snowflake live plans and representative workload/latency targets unqualified |
 | Schema changes and engine behavior | Reviewed object/column/index/constraint DDL, snapshots/diff and migration workflow; fixture coverage | Unsupported schema objects and engine implicit-commit behavior must match daily tasks; external versions/privileges unconfirmed |

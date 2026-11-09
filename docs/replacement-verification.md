@@ -390,7 +390,7 @@ Transient logs use `/tmp/joinery-writer-*.log`; the final browser log is
 Required external engine/authentication pairs, normal installed-bundle/credential
 behavior, signing/notarization, accessibility and owner acceptance remain open.
 
-### Permanent object identity: source audit and failed fixture probe
+### Permanent object identity: historical failures and partial PostgreSQL repair
 
 Read-only review confirms retained edit provenance stores schema/name, shape and
 keys without a physical relation identity. PostgreSQL compares locked original
@@ -398,24 +398,26 @@ rows; MySQL/MariaDB also lock and compare table shape. Source inspection predict
 an identically dropped/recreated table, reseeded with the same row before those
 locks, can receive an old approved edit. This was initially a source-inferred
 limitation. The initial repository probe reproduced four PostgreSQL failures.
-The durable diagnostic below now reproduces 27 across PostgreSQL/MySQL/MariaDB;
-it is **not repaired**. The passing suites above do not qualify it.
+The durable diagnostic on `ff59ca6` then reproduced 27 across
+PostgreSQL/MySQL/MariaDB. Those results remain the historical baseline; a
+PostgreSQL-only repair and its pending qualification are recorded below. The
+passing suites above predate and do not qualify the current identity work.
 
-Next reproducible fixture sequence: create a UUID table and row; obtain a table
-browse result and separately an eligible SELECT result; prepare/approve an edit;
-use an independent fixture session to drop/recreate identical DDL and reseed the
-row; execute the retained approval; inspect the replacement from a fresh session.
-Repeat replacement before preparation, empty-table inserts and CSV after review.
-Each engine needs its own actual outcome, cleanup and approval-consumption check.
+The original fixture sequence created a UUID table and row, obtained a table
+browse result and separately an eligible SELECT result, then prepared/approved an
+edit. An independent fixture session dropped/recreated identical DDL and reseeded
+the row. The retained approval executed, and a fresh session inspected the replacement.
+That sequence established the original four-case PostgreSQL failure. The later
+opt-in diagnostic expands it to nine cases per engine; see below.
 
-A repair must bind identity to the original read/preview and verify it after a
-transaction-held writer lock, before any DML. Capturing identity only at prepare
-time would miss older retained results. The current PostgreSQL metadata prepare
-and simple-query execution are separate, so a pre-query resolver OID alone does
-not prove identity of the actual read. Engine-specific identity availability,
-ordinary privileges, partition/inheritance behavior and CSV batch lifecycle need
-explicit design and qualification; no timestamp/hash fallback or broader safety
-claim has been introduced.
+The initial source audit showed why identity must come from the original
+read/preview and be verified before DML: capturing it only at prepare time misses
+older retained results, and separate metadata lookup cannot prove which table the
+query actually read. The partial PostgreSQL implementation below carries actual
+query origin and validates the bound write portal. Engine-specific privileges,
+partition/inheritance behavior, MySQL/MariaDB identity and CSV batch lifecycle
+still need qualification; no timestamp/hash fallback or broader safety claim has
+been introduced.
 
 An attempted separate agent runtime investigation was rejected by automatic
 review as a possible cybersecurity risk before any runtime action. It performed
@@ -443,7 +445,8 @@ edits/imports must survive concurrent migrations. That remains an open
 applicability question, not an automatic optional classification.
 
 No application behavior, dependency, global configuration or privilege was
-changed for this investigation. Namespace/partition changes remain unexecuted.
+changed for that historical four-case probe. Namespace/partition changes remain
+unexecuted.
 DataGrip's reviewed official
 documentation does not specify this exact concurrent replacement behavior; no
 comparative DataGrip runtime claim is made.
@@ -487,8 +490,65 @@ are used. The machine report is local ignored evidence at
 `/tmp/joinery-table-identity-probe.log`. Report-only mode may exit 0 despite unsafe
 observations; `--require-safe` and the JSON must be used for qualification.
 
-A separate ignored PostgreSQL client prototype passes six synthetic protocol
-tests. It exposes actual simple-query origins and describes a bound portal before
-execution; it is not integrated or a demonstrated application repair. Real-engine
-qualification, maintenance/licensing review and application-level regressions
-remain required before adoption.
+A separate PostgreSQL client foundation is now committed as `ea3ea76`: vendored
+`tokio-postgres 0.7.18` with MIT/Apache-2.0 licensing and provenance for three
+source changes, preserving simple-query origins and describing bound portals
+without execution. Six synthetic protocol tests and one ignored nine-case actual
+client-protocol set pass. This is not parity evidence or application qualification.
+
+### PostgreSQL identity repair: scoped evidence and browser status
+
+Backend repair `4b7e4c3` carries actual relation OID, attribute number and type
+from the executed SELECT, table browse or CSV preview through retained results,
+plans, approvals and all import batches. The writer describes and executes the
+same bound DML portal under its guard. The first repaired application report at
+`.cache/table-identity-probe/postgres-repaired-report.json` predates the final
+review fixes. The final strict `--engine postgres --require-safe` report at
+`.cache/table-identity-probe/postgres-csv-final-report.json` passes all nine
+PostgreSQL 18.6 scenarios: each rejected with `Conflict`, preserved the
+replacement, consumed approval, passed fresh controls and cleanup, with zero
+operational errors. A separate run of the formal example regression, exercising
+the same nine cases, also passed. These are scoped fixture results, not general
+engine qualification.
+
+After the initial report, an auxiliary disconnect race was reproduced: a queued
+write committed value `1` and returned `Completed` after its originating session
+closed. A registration check under the retirement mutex now rejects that work; the
+targeted rerun observed value `0` and `ConnectionClosed`. Raw browse
+commit/drain behavior and permission-denied read-only fallback are implemented.
+Four actual permission/RLS/raw tests passed, including column-only read-only
+fallback and late-error cutoff. Sixteen new frontend state-behavior cases first
+exposed 11 failures while five passed; after the fix, the 80-case state test file
+passed. The latest `pnpm validate` passed 561 frontend tests / 52 files and 186
+standard Rust tests with strict Clippy. One clean seven-suite fixture command
+passed 112 tests: 41 MySQL/MariaDB, 43 PostgreSQL, four permission/RLS/raw, one
+client-protocol suite covering nine scenarios, six Redis, two SSH and 15
+transaction transport. The formal nine-case application diagnostic and its
+separate example regression are additional runs, not part of 112. Earlier
+transport failures were test-accounting/setup defects: proxy counts included
+identity reads and browse setup consumed its approval with an unrelated prepare.
+Those harness issues were corrected.
+
+The nine-case focused browser run passed 9/9, including the CSV mapping repair.
+After the test-coordinate fix and UUID-based fixture isolation, the full browser
+suite passed 129/129 in 8.9 minutes; the focused table-data/raw-browse run passed
+11/11 in 51.7 seconds. Both actual raw-browse unknown-outcome UI cases passed.
+The earlier 126/127 full attempt and 10/11 focused attempt are retained as
+historical test-coordinate and fixture-isolation failures; they are not current
+product failures. Native recovery and normal-bundle qualification have not run
+for this increment. Current evidence logs are
+`/tmp/joinery-identity-csv-validate.log`,
+`/tmp/joinery-identity-csv-fixtures.log`,
+`/tmp/joinery-identity-csv-example-regression.log` and
+`/tmp/joinery-identity-csv-browser-focused.log`,
+`/tmp/joinery-identity-browser-full-final.log` and
+`/tmp/joinery-identity-isolated-browser-focused.log`.
+
+The application keeps column-only readers read-only; the permission fixture
+verifies this behavior. Scope is PostgreSQL 18.6 only. OID identity alone does not prove every
+trigger, rule, partition effect or OID-reuse case; grid writes remain separate
+from console transactions. MySQL and MariaDB's 18 historical failures on
+`ff59ca6` remain open and unsafe. The earlier 545 frontend / 180 Rust / 103
+fixtures / 124 browser and normal-bundle SHA results belong to the prior writer
+repair, not this identity increment. Native recovery and normal-bundle identity
+qualification are pending.
