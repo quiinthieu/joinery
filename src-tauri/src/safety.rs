@@ -681,7 +681,7 @@ impl Visitor for Classification {
             } else {
                 &name
             };
-            if ![
+            let common_builtin = [
                 "count",
                 "sum",
                 "min",
@@ -719,21 +719,21 @@ impl Visitor for Classification {
                 "current_database",
                 "current_schema",
             ]
-            .contains(&builtin)
-                && !(self.engine == Some(EngineKind::Mysql)
-                    && [
-                        "database",
-                        "current_user",
-                        "connection_id",
-                        "sleep",
-                        "hex",
-                        "json_extract",
-                        "json_unquote",
-                        "date_format",
-                        "utc_timestamp",
-                    ]
-                    .contains(&builtin))
-            {
+            .contains(&builtin);
+            let mysql_builtin = self.engine == Some(EngineKind::Mysql)
+                && [
+                    "database",
+                    "current_user",
+                    "connection_id",
+                    "sleep",
+                    "hex",
+                    "json_extract",
+                    "json_unquote",
+                    "date_format",
+                    "utc_timestamp",
+                ]
+                .contains(&builtin);
+            if !(common_builtin || mysql_builtin) {
                 self.raise(StatementKind::Unknown);
             }
         }

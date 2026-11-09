@@ -1426,9 +1426,9 @@ pub fn generate_migration_ddl(
 
     // Phase 1b: Drop views & materialized views (reverse dependency order)
     for v in &views_to_drop {
-        let is_removed = !right_tables
+        let is_removed = right_tables
             .get(v.name.as_str())
-            .is_some_and(|rv| rv.kind == v.kind);
+            .is_none_or(|rv| rv.kind != v.kind);
         let kw = if v.kind == DatabaseObjectKind::MaterializedView {
             "MATERIALIZED VIEW"
         } else {
@@ -1630,9 +1630,9 @@ pub fn generate_migration_ddl(
             matches!(
                 t.kind,
                 DatabaseObjectKind::Table | DatabaseObjectKind::PartitionedTable
-            ) && !right_tables
+            ) && right_tables
                 .get(t.name.as_str())
-                .is_some_and(|rt| rt.kind == t.kind)
+                .is_none_or(|rt| rt.kind != t.kind)
         })
         .collect();
     for tbl in order_tables_for_drop(&tables_to_drop) {
