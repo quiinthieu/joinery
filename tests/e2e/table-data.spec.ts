@@ -1,4 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { test, expect, type Page } from "@playwright/test";
+import type {
+  Bootstrap,
+  ConnectionProfile,
+  PreparedPlan,
+  QueryEvent,
+  SessionInfo,
+} from "../../src/ipc/generated";
 
 const PG_PORT = process.env.JOINERY_POSTGRES_PORT ?? "55432";
 
@@ -31,9 +39,11 @@ const ROW_MARKERS = 44;
 const HEADER = 37;
 
 async function cellText(page: Page, x: number, row = 0) {
-  const box = (await page.locator(".grid-host").boundingBox())!;
   let text = "";
   await expect(async () => {
+    // Completing a review removes the pending-edits message above the grid.
+    // Re-read its position on each attempt rather than clicking stale coordinates.
+    const box = (await page.locator(".grid-host").boundingBox())!;
     await page.mouse.click(box.x + ROW_MARKERS + x, box.y + HEADER + 18 + row * 36);
     text = (await page.locator(".inspector-value").textContent({ timeout: 500 })) ?? "";
     expect(text.length).toBeGreaterThan(0);
@@ -423,108 +433,173 @@ test("validates and applies multi-cell TSV paste atomically across reordered col
 
 test("stages, reviews, and commits row inserts and deletes in one transaction", async ({
   page,
+  request,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await connect(page, `Row mutations ${Date.now()}`);
-  await openTable(page, "customers");
-  const footer = page.locator(".result-footer");
-  await expect(footer).toContainText("500 rows loaded");
+  const bridge = "http://127.0.0.1:1422";
+  const headers = { Authorization: "Bearer joinery-disposable-browser-tests-only" };
+  async function rpc<T>(command: string, args = {}): Promise<T> {
+    const response = await request.post(`${bridge}/rpc/${command}`, { headers, data: args });
+    expect(response.ok()).toBe(true);
+    const payload = await response.json();
+    expect(payload.error).toBeUndefined();
+    return payload.result;
+  }
+  const connected = page.waitForResponse((response) => response.url().endsWith("/rpc/connect"));
+  await connect(page, `Row mutations ${randomUUID()}`, "confirm");
+  const actor = (await (await connected).json()).result as SessionInfo;
+  const bootstrap = await rpc<Bootstrap>("bootstrap");
+  const actorProfile = bootstrap.profiles.find((profile) => profile.id === actor.connectionId)!;
+  const observerProfile = await rpc<ConnectionProfile>("save_profile", {
+    profile: {
+      ...actorProfile,
+      id: randomUUID(),
+      name: "Owned row-mutation observer",
+      safeMode: "silent",
+    },
+    passphrase: null,
+  });
+  let observer: SessionInfo | undefined;
+  const table = `row_mutations_${randomUUID().replaceAll("-", "")}`;
+  async function observerSQL(sql: string) {
+    const plan = await rpc<PreparedPlan>("prepare_execution", { sessionId: observer!.id, sql });
+    const streamId = randomUUID();
+    await rpc("execute_plan", { planId: plan.id, streamId, approval: null });
+    const events: QueryEvent[] = [];
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${bridge}/events/${streamId}`, { headers });
+        expect(response.ok()).toBe(true);
+        events.push(...(await response.json()));
+        return events.find((event) => event.type === "finished");
+      })
+      .toMatchObject({ status: "completed" });
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    for (const event of events) {
+      if (event.type === "result") await rpc("release_result", { resultId: event.result.id });
+    }
+  }
+  try {
+    observer = await rpc<SessionInfo>("connect", {
+      id: observerProfile.id,
+      secrets: { password: "joinery-local-only", sshPassword: null, keyPassphrase: null },
+    });
+    // Clone columns/defaults/constraints, without reading or changing shared fixture rows.
+    await observerSQL(`CREATE TABLE public.${table} (LIKE public.customers INCLUDING ALL)`);
+    await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
+    const listed = page.getByRole("button", { name: table, exact: true });
+    if (!(await listed.isVisible())) await page.getByRole("button", { name: /^public/ }).click();
+    const browsed = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/rpc/browse_table") &&
+        response.request().postDataJSON().table.name === table,
+    );
+    await listed.click();
+    const initialPage = await (await browsed).json();
+    expect(initialPage.error).toBeUndefined();
+    expect(initialPage.result.result.retainedRows).toBe(0);
+    const footer = page.locator(".result-footer");
+    await expect(footer).toContainText("0 rows loaded");
 
-  // Filter to an empty key range so inserted test rows are isolated from fixture rows 1..1000.
-  const filters = page.getByRole("toolbar", { name: "Table filters" });
-  await filters.getByRole("button", { name: "Add filter" }).click();
-  await filters.getByLabel("Filter column").selectOption("id");
-  await filters.getByLabel("Filter operator").selectOption("gte");
-  await filters.getByLabel("Filter value").fill("9000");
-  await filters.getByRole("button", { name: "Apply" }).click();
-  await expect(footer).toContainText("0 rows loaded");
+    // Stage an insert row on an empty result: required columns show <required>, defaults show <default>.
+    await page.getByRole("button", { name: "Insert row", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Review 1 edit", exact: true })).toBeVisible();
+    await expect(page.locator(".inspector")).toContainText("Staged insert");
+    await expect(page.locator(".inspector-value")).toHaveText("<required>");
+    await expect.poll(() => cellText(page, 640, 0)).toBe("<default>");
 
-  // Stage an insert row on an empty result: required columns show <required>, defaults show <default>.
-  await page.getByRole("button", { name: "Insert row", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Review 1 edit", exact: true })).toBeVisible();
-  await expect(page.locator(".inspector")).toContainText("Staged insert");
-  await expect(page.locator(".inspector-value")).toHaveText("<required>");
-  await expect.poll(() => cellText(page, 640, 0)).toBe("<default>");
+    // Add a second draft row and remove it before review.
+    await page.getByRole("button", { name: "Insert row", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Review 2 edits", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Remove insert", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Review 1 edit", exact: true })).toBeVisible();
 
-  // Add a second draft row and remove it before review.
-  await page.getByRole("button", { name: "Insert row", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Review 2 edits", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Remove insert", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Review 1 edit", exact: true })).toBeVisible();
+    // Review refuses unfilled required columns without defaults.
+    await page.getByRole("button", { name: "Review 1 edit", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText(
+      'Column "id" requires a value (NOT NULL without a default)',
+    );
 
-  // Review refuses unfilled required columns without defaults.
-  await page.getByRole("button", { name: "Review 1 edit", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(
-    'Column "id" requires a value (NOT NULL without a default)',
-  );
+    // Populate draft row 1 via TSV paste while leaving `active` and `created_at` on <default>.
+    await expect.poll(() => cellText(page, 55, 0)).toBe("<required>");
+    await dispatchPaste(page, "9001\tInserted One\tinserted1@example.test");
+    await expect(page.locator(".inspector-value")).toHaveText("9001");
+    await expect.poll(() => cellText(page, 640, 0)).toBe("<default>");
 
-  // Populate draft row 1 via TSV paste while leaving `active` and `created_at` on <default>.
-  await expect.poll(() => cellText(page, 55, 0)).toBe("<required>");
-  await dispatchPaste(page, "9001\tInserted One\tinserted1@example.test");
-  await expect(page.locator(".inspector-value")).toHaveText("9001");
-  await expect.poll(() => cellText(page, 640, 0)).toBe("<default>");
+    // Stage a second draft row and populate it immediately after Insert row focuses the grid.
+    await page.getByRole("button", { name: "Insert row", exact: true }).click();
+    await dispatchPaste(page, "9002\tInserted Two\t\\N");
+    await expect(page.getByRole("button", { name: "Review 2 edits", exact: true })).toBeVisible();
 
-  // Stage a second draft row and populate it immediately after Insert row focuses the grid.
-  await page.getByRole("button", { name: "Insert row", exact: true }).click();
-  await dispatchPaste(page, "9002\tInserted Two\t\\N");
-  await expect(page.getByRole("button", { name: "Review 2 edits", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Review 2 edits", exact: true }).click();
+    const insertReview = page.getByRole("dialog", { name: "Review pending changes" });
+    await expect(insertReview).toContainText("2 rows · one transaction");
+    await expect(insertReview.locator(".sql-preview")).toContainText(
+      `INSERT INTO "public"."${table}" ("id", "name", "email")`,
+    );
+    await insertReview.getByRole("button", { name: "Apply changes", exact: true }).click();
+    await expect(insertReview).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Review 2 edits", exact: true })).toHaveCount(0);
+    await expect(footer).toContainText("2 rows loaded");
+    await expect.poll(() => cellText(page, 640, 0)).toBe("true");
 
-  await page.getByRole("button", { name: "Review 2 edits", exact: true }).click();
-  const insertReview = page.getByRole("dialog", { name: "Review pending changes" });
-  await expect(insertReview).toContainText("2 rows · one transaction");
-  await expect(insertReview.locator(".sql-preview")).toContainText(
-    'INSERT INTO "public"."customers" ("id", "name", "email")',
-  );
-  await insertReview.getByRole("button", { name: "Apply changes", exact: true }).click();
-  await expect(insertReview).toHaveCount(0);
-  await expect(footer).toContainText("2 rows loaded");
-  await expect.poll(() => cellText(page, 640, 0)).toBe("true");
+    // Stage a delete on row 2 (9002), exercise Undo delete, then re-delete alongside an update + insert.
+    await expect.poll(() => cellText(page, 55, 1)).toBe("9002");
+    await page.getByRole("button", { name: "Delete row", exact: true }).click();
+    await expect(page.locator(".inspector")).toContainText("Marked for deletion");
+    await page.getByRole("button", { name: "Undo delete", exact: true }).click();
+    await expect(page.locator(".inspector")).not.toContainText("Marked for deletion");
+    await page.getByRole("button", { name: "Delete row", exact: true }).click();
+    await expect(page.locator(".inspector")).toContainText("Marked for deletion");
 
-  // Stage a delete on row 2 (9002), exercise Undo delete, then re-delete alongside an update + insert.
-  await expect.poll(() => cellText(page, 55, 1)).toBe("9002");
-  await page.getByRole("button", { name: "Delete row", exact: true }).click();
-  await expect(page.locator(".inspector")).toContainText("Marked for deletion");
-  await page.getByRole("button", { name: "Undo delete", exact: true }).click();
-  await expect(page.locator(".inspector")).not.toContainText("Marked for deletion");
-  await page.getByRole("button", { name: "Delete row", exact: true }).click();
-  await expect(page.locator(".inspector")).toContainText("Marked for deletion");
+    await expect.poll(() => cellText(page, 210, 0)).toBe("Inserted One");
+    await dispatchPaste(page, "Updated One");
+    await page.getByRole("button", { name: "Insert row", exact: true }).click();
+    await dispatchPaste(page, "9003\tInserted Three\tinserted3@example.test");
+    await expect(page.getByRole("button", { name: "Review 3 edits", exact: true })).toBeVisible();
 
-  await expect.poll(() => cellText(page, 210, 0)).toBe("Inserted One");
-  await dispatchPaste(page, "Updated One");
-  await page.getByRole("button", { name: "Insert row", exact: true }).click();
-  await dispatchPaste(page, "9003\tInserted Three\tinserted3@example.test");
-  await expect(page.getByRole("button", { name: "Review 3 edits", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Review 3 edits", exact: true }).click();
+    const mixedReview = page.getByRole("dialog", { name: "Review pending changes" });
+    await expect(mixedReview).toContainText("3 rows · one transaction");
+    await expect(mixedReview.locator(".sql-preview")).toContainText(
+      `DELETE FROM "public"."${table}"`,
+    );
+    await expect(mixedReview.locator(".sql-preview")).toContainText(`UPDATE "public"."${table}"`);
+    await expect(mixedReview.locator(".sql-preview")).toContainText(
+      `INSERT INTO "public"."${table}"`,
+    );
+    await mixedReview.getByRole("button", { name: "Apply changes", exact: true }).click();
+    await expect(mixedReview).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Review 3 edits", exact: true })).toHaveCount(0);
+    await expect(footer).toContainText("2 rows loaded");
+    await expect.poll(() => cellText(page, 210, 0)).toBe("Updated One");
+    await expect.poll(() => cellText(page, 55, 1)).toBe("9003");
 
-  await page.getByRole("button", { name: "Review 3 edits", exact: true }).click();
-  const mixedReview = page.getByRole("dialog", { name: "Review pending changes" });
-  await expect(mixedReview).toContainText("3 rows · one transaction");
-  await expect(mixedReview.locator(".sql-preview")).toContainText(
-    'DELETE FROM "public"."customers"',
-  );
-  await expect(mixedReview.locator(".sql-preview")).toContainText('UPDATE "public"."customers"');
-  await expect(mixedReview.locator(".sql-preview")).toContainText(
-    'INSERT INTO "public"."customers"',
-  );
-  await mixedReview.getByRole("button", { name: "Apply changes", exact: true }).click();
-  await expect(mixedReview).toHaveCount(0);
-  await expect(footer).toContainText("2 rows loaded");
-  await expect.poll(() => cellText(page, 210, 0)).toBe("Updated One");
-  await expect.poll(() => cellText(page, 55, 1)).toBe("9003");
-
-  // Clean up both inserted rows with multi-row selection so shared fixture state stays untouched.
-  const box = (await page.locator(".grid-host").boundingBox())!;
-  await page.mouse.click(box.x + ROW_MARKERS + 55, box.y + HEADER + 18);
-  await page.keyboard.down("Shift");
-  await page.mouse.click(box.x + ROW_MARKERS + 55, box.y + HEADER + 18 + 36);
-  await page.keyboard.up("Shift");
-  await page.getByRole("button", { name: "Delete 2 rows", exact: true }).click();
-  await page.getByRole("button", { name: "Review 2 edits", exact: true }).click();
-  const cleanupReview = page.getByRole("dialog", { name: "Review pending changes" });
-  await cleanupReview.getByRole("button", { name: "Apply changes", exact: true }).click();
-  await expect(cleanupReview).toHaveCount(0);
-  await expect(footer).toContainText("0 rows loaded");
-  expect(errors).toEqual([]);
+    // Exercise a reviewed multi-row delete on both owned rows.
+    const box = (await page.locator(".grid-host").boundingBox())!;
+    await page.mouse.click(box.x + ROW_MARKERS + 55, box.y + HEADER + 18);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(box.x + ROW_MARKERS + 55, box.y + HEADER + 18 + 36);
+    await page.keyboard.up("Shift");
+    await page.getByRole("button", { name: "Delete 2 rows", exact: true }).click();
+    await page.getByRole("button", { name: "Review 2 edits", exact: true }).click();
+    const cleanupReview = page.getByRole("dialog", { name: "Review pending changes" });
+    await cleanupReview.getByRole("button", { name: "Apply changes", exact: true }).click();
+    await expect(cleanupReview).toHaveCount(0);
+    await expect(footer).toContainText("0 rows loaded");
+    expect(errors).toEqual([]);
+  } finally {
+    try {
+      if (observer) await observerSQL(`DROP TABLE IF EXISTS public.${table}`);
+    } finally {
+      try {
+        if (observer) await rpc("disconnect", { sessionId: observer.id });
+      } finally {
+        await rpc("delete_profile", { id: observerProfile.id });
+      }
+    }
+  }
 });
 
 test("inspects binary hex/ASCII dumps, indexed PostgreSQL arrays, and formatted JSON values", async ({
