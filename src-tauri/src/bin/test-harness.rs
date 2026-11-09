@@ -641,7 +641,14 @@ async fn main() {
                 ]),
         )
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:1422")
+    let port = std::env::var("JOINERY_TEST_PORT")
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .expect("JOINERY_TEST_PORT must be a port")
+        })
+        .unwrap_or(1422);
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
     axum::serve(listener, router).await.unwrap();
