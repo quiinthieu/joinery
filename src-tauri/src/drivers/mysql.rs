@@ -635,6 +635,53 @@ impl Driver for Mysql {
             })
         }).await
     }
+    async fn resolve_query_edit_table(
+        &self,
+        table: &TableRef,
+        unqualified: bool,
+    ) -> AppResult<TableRef> {
+        values::identifier(&table.name)?;
+        self.bounded(async {
+            let mut conn = self.editor.connection.lock().await;
+            let mut table = table.clone();
+            if unqualified {
+                let rows = fetch_text(&mut conn, "SELECT DATABASE()", 1, 4096).await?;
+                table.schema = rows
+                    .first()
+                    .map(|row| cell(row, 0))
+                    .unwrap_or_default()
+                    .into();
+            }
+            values::identifier(&table.schema)?;
+            let was_in_trans = observe_status_flags(&mut conn)
+                .await?
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS);
+            let rows = fetch_text(
+                &mut conn,
+                &format!("SHOW CREATE TABLE {}", values::qualified(&table)),
+                1,
+                1024 * 1024,
+            )
+            .await;
+            Self::close_phantom_transaction(&mut conn, was_in_trans).await;
+            let rows = rows?;
+            let ddl = rows
+                .first()
+                .map(|row| cell(row, 1))
+                .unwrap_or_default()
+                .trim_start()
+                .to_ascii_uppercase();
+            if !ddl.starts_with("CREATE TABLE ") {
+                return Err(AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    "Query selects a temporary relation or an unverified base table",
+                ));
+            }
+            Ok(table)
+        })
+        .await
+    }
+
     async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
         let session_id = session_id.to_owned();
         self.bounded(async move {

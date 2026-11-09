@@ -71,6 +71,18 @@ pub trait Driver: Send + Sync {
             "Live completion context is unavailable for this engine",
         ))
     }
+    /// Resolve the relation on the SQL editor connection before granting edit
+    /// provenance. Metadata connections cannot see session-local table shadows.
+    async fn resolve_query_edit_table(
+        &self,
+        _table: &TableRef,
+        _unqualified: bool,
+    ) -> AppResult<TableRef> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Query result table identity cannot be verified for this engine",
+        ))
+    }
     async fn completion_catalog(
         &self,
         _identity: &CompletionIdentity,

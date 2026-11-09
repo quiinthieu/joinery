@@ -4552,6 +4552,56 @@ async fn table_maintenance_executes_reviewed_analyze_optimize_and_check_and_reje
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB services"]
+async fn query_result_temporary_shadow_is_read_only() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        completed(&run(&studio, &session, "CREATE TEMPORARY TABLE sample AS SELECT id, note FROM joinery.sample WHERE id = 9007199254740995").await);
+        // MySQL temporary tables shadow even explicitly database-qualified names.
+        for sql in [
+            "SELECT id, note FROM sample",
+            "SELECT id, note FROM joinery.sample",
+        ] {
+            let shadow = result(&run(&studio, &session, sql).await);
+            assert!(
+                matches!(shadow.editability, Some(ResultEditability::ReadOnly { .. })),
+                "temporary shadow was editable on {port}: {:?}",
+                shadow.editability
+            );
+            assert_eq!(
+                studio
+                    .prepare_changes(
+                        &session.id,
+                        &shadow.id,
+                        vec![CellChange {
+                            row: 0,
+                            column: "c1".into(),
+                            value: Some("must_not_write_permanent".into())
+                        }]
+                    )
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PolicyBlocked
+            );
+        }
+        completed(&run(&studio, &session, "DROP TEMPORARY TABLE sample").await);
+        let permanent = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT id, note FROM joinery.sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
+        assert!(matches!(
+            permanent.editability,
+            Some(ResultEditability::Editable { .. })
+        ));
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
 async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rejects_missing_pk() {
     for port in [53306, 53307] {
         let (_root, studio, session) = setup(port, SafeMode::Silent).await;

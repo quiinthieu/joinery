@@ -481,6 +481,40 @@ impl Driver for Postgres {
         token.cancel_query(self.tls.clone()).await.map_err(pg_error)
     }
 
+    async fn resolve_query_edit_table(
+        &self,
+        table: &TableRef,
+        unqualified: bool,
+    ) -> AppResult<TableRef> {
+        let relation = if unqualified {
+            quote_identifier(&table.name)
+        } else {
+            qualified(table)
+        };
+        let row = self
+            .client
+            .query_opt(
+                "SELECT n.nspname::pg_catalog.text,c.relname::pg_catalog.text
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+             WHERE c.oid=pg_catalog.to_regclass($1)
+               AND c.relpersistence<>'t' AND c.relkind IN ('r','p')",
+                &[&relation],
+            )
+            .await
+            .map_err(pg_error)?
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    "Query selects a temporary relation or an unverified base table",
+                )
+            })?;
+        Ok(TableRef {
+            schema: row.get(0),
+            name: row.get(1),
+        })
+    }
+
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         let row = self
             .client

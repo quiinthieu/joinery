@@ -1817,23 +1817,19 @@ impl Studio {
                 reason: "Connection is in read-only mode".into(),
             };
         }
-        if candidate.table.schema == UNQUALIFIED_SENTINEL {
-            let default_schema = match session.driver.session_state(&session.info.id).await {
-                Ok(state) => state.active_context.or(Some(state.database)),
-                Err(_) => Some(if session.profile.engine == EngineKind::Postgres {
-                    "public".into()
-                } else {
-                    session.profile.database.clone()
-                }),
-            }
-            .unwrap_or_default();
-            if default_schema.trim().is_empty() {
-                return StatementProvenance::ReadOnly {
-                    reason: "Table reference is unqualified and no active schema is set".into(),
-                };
-            }
-            candidate.table.schema = default_schema;
-        }
+        // The active schema is not necessarily the relation selected by SQL:
+        // PostgreSQL searches later schemas, and temporary tables can shadow
+        // permanent tables on both engines. Resolve on the editor connection
+        // while its execution lane is held; grid metadata uses another login.
+        candidate.table = match session.driver.resolve_query_edit_table(
+            &candidate.table,
+            candidate.table.schema == UNQUALIFIED_SENTINEL,
+        ).await {
+            Ok(table) => table,
+            Err(_) => return StatementProvenance::ReadOnly {
+                reason: "Query selects a temporary relation or its base-table identity cannot be verified".into(),
+            },
+        };
         match self.schema_for_session(session, &candidate.table).await {
             Ok(live_schema) => StatementProvenance::Candidate {
                 candidate,

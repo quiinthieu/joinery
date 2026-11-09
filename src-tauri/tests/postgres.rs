@@ -5085,6 +5085,105 @@ async fn table_maintenance_executes_reviewed_analyze_vacuum_and_reindex_and_guar
 
 #[tokio::test]
 #[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn query_result_search_path_resolves_later_schema_and_quoted_table() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let suffix = new_id();
+    let first_schema = format!("query edit empty {suffix}");
+    let target_schema = format!("query edit target {suffix}");
+    let setup_sql = format!(
+        "CREATE SCHEMA \"{first_schema}\"; CREATE SCHEMA \"{target_schema}\";
+         CREATE TABLE \"{target_schema}\".\"Mixed Orders\" (id integer PRIMARY KEY, note text);
+         INSERT INTO \"{target_schema}\".\"Mixed Orders\" VALUES (1, 'original');
+         SET search_path TO \"{first_schema}\",\"{target_schema}\",public"
+    );
+    assert_eq!(
+        status(&run(&studio, &session, &setup_sql).await),
+        RunStatus::Completed
+    );
+    let selected_events = run(&studio, &session, "SELECT id, note FROM \"Mixed Orders\"").await;
+    let selected = result(&selected_events);
+    // Clean up owned objects before assertions so a failed regression leaves no fixture state.
+    let cleanup_sql = format!(
+        "SET search_path TO public; DROP SCHEMA \"{first_schema}\"; DROP SCHEMA \"{target_schema}\" CASCADE"
+    );
+    assert_eq!(
+        status(&run(&studio, &session, &cleanup_sql).await),
+        RunStatus::Completed
+    );
+    assert!(selected_events.iter().any(|event| matches!(event,
+        QueryEvent::SessionState { state } if state.transaction_mode == TransactionMode::AutoCommit
+            && state.transaction_state == TransactionState::Idle)));
+    assert_eq!(
+        selected.editability,
+        Some(ResultEditability::Editable {
+            table: TableRef {
+                schema: target_schema,
+                name: "Mixed Orders".into()
+            },
+            primary_key: vec!["id".into()],
+        })
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn query_result_temporary_shadow_is_read_only() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "CREATE TEMP TABLE orders AS SELECT id, status FROM public.orders WHERE id = 2"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    for sql in [
+        "SELECT id, status FROM orders",
+        "SELECT id, status FROM pg_temp.orders",
+    ] {
+        let shadow = result(&run(&studio, &session, sql).await);
+        assert!(
+            matches!(shadow.editability, Some(ResultEditability::ReadOnly { .. })),
+            "temporary shadow was editable: {:?}",
+            shadow.editability
+        );
+        assert_eq!(
+            studio
+                .prepare_changes(
+                    &session.id,
+                    &shadow.id,
+                    vec![CellChange {
+                        row: 0,
+                        column: "c1".into(),
+                        value: Some("must_not_write_public".into())
+                    }]
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
+        );
+    }
+    let permanent = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT id, status FROM public.orders WHERE id = 2",
+        )
+        .await,
+    );
+    assert!(matches!(
+        permanent.editability,
+        Some(ResultEditability::Editable { .. })
+    ));
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
 async fn single_table_select_result_provenance_commits_edits_and_rejects_missing_pk() {
     let (_root, studio, session) = setup(SafeMode::Silent).await;
 
