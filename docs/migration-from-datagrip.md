@@ -23,6 +23,13 @@ this build does not install or replace an application in `/Applications`.
 `pnpm desktop` runs development mode. A browser-only `pnpm dev` preview does not
 provide the normal desktop database service.
 
+The normal bundle uses Joinery's standard application data and OS credential
+store. For fully isolated packaged restart/credential evaluation, use a separate
+disposable macOS test account. `JOINERY_NATIVE_SMOKE_ROOT` applies only to the
+hidden smoke executable; it does not redirect the normal application's data or
+keychain. Automated checks in the ledger used isolated harnesses, not existing
+private application state.
+
 Local ad-hoc signature verification is separate from Apple Developer ID signing
 and notarization. No automatic updater or cross-platform installation qualification
 is established by this guide. For a local update, rebuild and evaluate the new

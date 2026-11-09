@@ -186,7 +186,9 @@ increments received independent review with no unresolved material finding.
 | `pnpm validate`, explicit Node 24.22.2 / Rust 1.99.1 | Passed: 542 frontend tests / 51 files, 179 standard Rust tests, production build, formatting, check and strict Clippy |
 | Expanded disposable fixture suite | Passed: 97 tests (41 MySQL/MariaDB, 42 PostgreSQL, 6 Redis, 2 SSH, 6 transaction transport faults) |
 | Focused browser repeats | FK completion, delayed inspector and committed-edit workflows each passed twice; final toolbar regression passed twice after the closed-session lookup fix |
-| Normal bundle, hidden native runtime, full browser suite | Repaired-source run pending |
+| Normal macOS arm64 bundle | Passed: 27.33 MiB reported by Tauri, strict ad-hoc signature verification; bundle not installed/notarized |
+| Hidden native build/runtime | Passed: three isolated WebView processes, ten cleanup cycles each, zero exit status; synthetic native integration, not native credential or packaged restart qualification |
+| Full quiescent browser suite | Passed: 120/120 workflows (5.7 minutes); real Rust/Arrow and local database fixtures, with Snowflake responses explicitly synthetic |
 
 The expanded fixture command is now also in README:
 
@@ -195,6 +197,23 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
   --test postgres --test ssh --test mysql --test redis \
   --test transaction_transport -- --ignored --test-threads=1
 ```
+
+Runtime qualification built from clean local revision `e481e62`, application
+repair through `19727e7`. No repository edits or source generators ran alongside
+the final browser suite. The normal app remains at
+`src-tauri/target/release/bundle/macos/Joinery.app`; its packaged executable
+SHA-256 is `12bc3c6c89d5206e571c3216d6e06662ab576c75c6cbc47e20bedf675158168f`.
+Bundle identity is `com.quiinthieu.joinery`, version `0.1.0`; these labels alone
+do not identify a published preview. Subsequent changes only update this evidence.
+The separate hidden native build does not replace the normal `.app` bundle.
+Final documentation review confirmed the current queue, licensing distinction
+and qualification claims; both wording findings were resolved.
+
+Native elapsed times were 3719/2961/2984 ms; main-process peak RSS was
+110.73/108.12/108.67 MiB. These are smoke observations, not whole-process-tree
+memory or representative workload performance qualification. The existing
+`rust-objcopy`/`libLLVM.dylib` stripping warning recurred; builds, signature and
+native runtime passed. Vite also reports existing large output chunks.
 
 Transient repaired-source logs use `/tmp/joinery-replacement-repaired-*.log`.
 The final quiescent toolbar log is
@@ -208,12 +227,12 @@ are not evidence of complete SQL semantic coverage. Native credentials,
 signing/notarization, external accounts/engines/platforms and hands-on acceptance
 remain outside the passing local checks.
 
-The first full browser run is contaminated by concurrent generation/builds:
+The first full browser run was contaminated by concurrent generation/builds:
 traces show document reloads resetting workspaces during explorer and MariaDB
 tests. Do not count those timeouts as proved engine defects or a passing suite.
 The first pinned run above was quiescent and exposed two reproducible issues;
-the post-repair run must also keep source generation and builds separate from
-browser execution.
+the passing post-repair run also kept source generation, builds and repository
+edits separate from browser execution.
 
 Open requirements and hands-on acceptance remain pending owner input. Signing,
 notarization, Windows/Linux packaged runtime, external authentication and live

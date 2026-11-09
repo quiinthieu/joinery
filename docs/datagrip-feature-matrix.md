@@ -15,25 +15,28 @@ stale/read-only until rerun (`a2713bd`), with real defaults/trigger regression
 coverage. Both increments remain local and unmerged. Delayed inspector selection
 (`66573be`) and manual transaction outcome/session cleanup (`19727e7`) are also
 repaired; focused real browser regressions and six transaction fault tests pass.
-Combined packaging/native/browser requalification follows.
+Combined packaging/native/browser requalification passed; see the current
+ledger for reproducible commands, source revision and artifact identity.
 Required engine/authentication pairs and owner acceptance remain unconfirmed.
 
 ## Current replacement assessment (9 November 2026)
 
 DataGrip's non-commercial license has the same core IDE feature set as its
 commercial license; the [official baseline](datagrip-official-baseline.md)
-provides the source-linked benchmark for each area. AI provider access is a
-separate entitlement. This current summary sits above the historical feature
-records below so their older verification dates cannot be mistaken for current
+provides the source-linked benchmark for each area. Included product AI features
+must be distinguished from specific models, providers, tiers and usage quotas,
+which may require separate access. This current summary sits above the historical
+feature records below so their older verification dates cannot be mistaken for current
 replacement acceptance.
 
 The first frozen-source qualification through `6e16433` passed standard
 validation, 91 real fixture tests, macOS packaging and hidden native smoke;
 116/118 browser tests passed. Follow-up repairs now pass validation (542 frontend
 and 179 standard Rust tests), 97 real fixtures and focused browser repeats;
-combined runtime qualification remains pending. Each row remains
-a **provisional requirement** until the owner confirms their workflow. Locally
-verified subsets do not imply every DataGrip operation, engine or authentication
+combined runtime qualification also passed: normal macOS bundle/signature,
+three isolated native processes and all 120 browser workflows (5.7 minutes). Each
+row remains a **provisional requirement** until the owner confirms their workflow.
+Locally verified subsets do not imply every DataGrip operation, engine or authentication
 method works. See the [ledger](replacement-verification.md) for commands,
 reproduced failures and exact qualification limits.
 

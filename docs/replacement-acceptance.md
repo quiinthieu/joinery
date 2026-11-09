@@ -50,7 +50,7 @@ fresh outcomes separately.
 | Connect securely | Create profile, connect, inspect identity/context; reject wrong CA/hostname/SSH trust; reconnect after interruption without replay | Implemented in bounded adapters; external auth/version combinations unconfirmed |
 | Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Implemented with bounds; daily catalog/privilege qualification pending |
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
-| Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 97 real fixtures and focused browser repeats pass; full repaired-source browser requalification pending |
+| Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 97 real fixtures and all 120 browser workflows pass within the ledger scopes; required external combinations remain open |
 | Inspect and move data | Filter/sort/page, copy exact numeric/NULL values, export complete file; cancelled export clearly incomplete | Implemented with bounds; representative dataset sizes unconfirmed |
 | Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Reviewed provenance/snapshot repairs have real-engine regressions; delayed inspector race repaired and exercised with real Arrow data |
 | Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual COMMIT uncertainty/known-success reporting and closed-session cleanup repaired; six real fault tests and toolbar repeats pass |
@@ -62,16 +62,21 @@ fresh outcomes separately.
 
 ## Execution queue
 
-1. Establish official non-commercial baseline; confirm owner requirements.
-2. Requalify combined `bcb606f` source: baseline validate, real PostgreSQL,
-   MySQL/MariaDB/Redis/SSH fixtures, full browser suite, normal bundle and hidden
-   native smoke. Record failures before fixing; do not count ignored tests as run.
-3. Review/fix query-result editing correctness, then rerun affected checks and
-   request independent review of substantial changes.
-4. Add missing daily workflow acceptance coverage where it tests real behavior.
-5. Prioritize uncovered required features using owner answers and measured
-   failures. Advance independent safe work while external qualification waits.
-6. Prepare the migration walkthrough below and obtain owner hands-on acceptance.
+1. Completed: official non-commercial baseline, original-source investigation,
+   reproduced failures, reviewed provenance/snapshot/inspector/transaction
+   repairs and focused regression coverage. Historical runs remain in the ledger.
+2. Completed: repaired-source validation (542 frontend / 179 standard Rust),
+   97 real fixture tests, normal macOS bundle/signature, three isolated native
+   runs and 120/120 browser workflows. Runtime source is `e481e62`; subsequent
+   documentation records evidence rather than changing application behavior.
+3. Pending owner input: confirm required engines/versions, authentication,
+   transports, daily workflows, target hosts and performance/accessibility needs.
+4. Use those answers to implement or qualify required gaps with isolated data;
+   obtain explicit scope before external/production access or paid services.
+   Unsupported required capabilities remain blockers, not optional omissions.
+5. Pending owner evaluation: follow the concrete walkthrough below, including
+   packaged native restart and credential behavior. Record acceptance per required
+   workflow and resolve failures before retiring DataGrip.
 
 ## Migration and hands-on walkthrough
 
@@ -84,9 +89,10 @@ profiles manually, initially in ReadOnly mode. Re-enter secrets through the app.
 2. Find a familiar table and inspect DDL/keys. Open a SQL console; complete a
    qualified query, bind a parameter, run selection and a multiple-statement batch.
 3. Filter/sort/page results; copy/export exact NULL, empty text and large numbers.
-4. On disposable rows, review an edit and roll it back in a manual console.
-   Commit a separate edit and verify from a fresh connection. Demonstrate a
-   concurrent conflict leaves no partial change.
+4. Review and apply a disposable grid edit, observing its separate writer.
+   In a Manual console, execute an UPDATE, then Rollback and verify from another
+   connection. Repeat with Commit. Demonstrate a concurrent grid conflict leaves
+   no partial change.
 5. Run/cancel a long read, reconnect and verify context. Explain a query; review
    before actual-plan execution. Never retry an uncertain write automatically.
 6. Save a script; opt into drafts only if desired. Quit and relaunch using test

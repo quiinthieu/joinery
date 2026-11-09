@@ -14,8 +14,9 @@ transaction outcome/session cleanup. Real COMMIT acknowledgement-loss tests
 verify persisted rows using independent observers; abrupt backend restart
 coverage verifies draft recovery without reconnect or SQL replay. Substantial
 repairs received independent review. Repaired source passes 542 frontend tests,
-179 standard Rust tests and 97 real fixture tests. Focused browser repeats pass;
-normal bundle/native/full-browser requalification is pending.
+179 standard Rust tests and 97 real fixture tests. Normal macOS bundle/signature,
+three isolated native processes (30 cleanup cycles) and all 120 browser workflows
+pass on clean runtime source `e481e62`; the ledger identifies the exact bundle.
 
 These changes are committed locally, unmerged, unpublished and not installed.
 The owner-private hub is not updated because this task forbids publication.

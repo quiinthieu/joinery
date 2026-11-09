@@ -9,11 +9,16 @@ The current P0 qualification sequence is: resolve query-result target identity
 (local `5a1fed7`), preserve truthful bounded snapshots after committed edits
 (`a2713bd`), verify abrupt backend restart (`c882fc2`), repair manual transaction
 transport/outcome reporting (`19727e7`) and delayed result inspection
-(`66573be`), then rerun combined-source packaging/browser/native checks with
-the pinned toolchains. Repaired source passes validation (542 frontend / 179
-standard Rust tests), 97 real fixtures and focused browser repeats.
+(`66573be`), and requalify combined source with the pinned toolchains. Repaired
+source passes validation (542 frontend / 179 standard Rust tests), 97 real
+fixtures and focused browser repeats.
 The first pinned run passed validation, 91 fixtures, bundle and native smoke;
-116/118 browser workflows passed and the two failures were reproduced. The repairs have independent reviews; no material finding remains. Follow the
+116/118 browser workflows passed and the two failures were reproduced. The
+repaired runtime passed normal macOS packaging/signature, three isolated
+native processes and 120/120 browser workflows. The repairs have independent
+reviews; no material finding remains. Next: confirm required workflows and
+engine/authentication pairs, qualify authorized external combinations, and
+obtain the owner walkthrough acceptance. Follow the
 [verification ledger](replacement-verification.md); source presence and old
 slice test counts do not close these gates.
 
