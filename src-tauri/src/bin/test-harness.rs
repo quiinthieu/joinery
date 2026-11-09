@@ -1,5 +1,9 @@
 //! Test-only loopback transport for exercising the real core from headless browsers.
 //! This binary is excluded from desktop builds and accepts only disposable fixtures.
+#[allow(dead_code)] // Shared fixture relay also supports modes exercised by Rust integration tests.
+#[path = "../../tests/common/commit_proxy.rs"]
+mod commit_proxy;
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -7,6 +11,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use commit_proxy::{CommitProxy, Fault, Protocol};
 use joinery_core::{
     domain::*, execution::Studio, file_capability::SandboxFileDialog, secrets::MemorySecrets,
 };
@@ -32,6 +37,7 @@ struct Harness {
     token: String,
     streams: Mutex<HashMap<String, Stream>>,
     export_streams: Mutex<HashMap<String, ExportStream>>,
+    commit_proxies: tokio::sync::Mutex<HashMap<String, CommitProxy>>,
 }
 
 fn authorized(headers: &HeaderMap, state: &Harness) -> bool {
@@ -58,6 +64,44 @@ async fn rpc(
     let outcome: AppResult<Value> = async {
         let studio = &state.studio;
         Ok(match command.as_str() {
+            "test_commit_proxy_start" => {
+                let mut proxies = state.commit_proxies.lock().await;
+                if proxies.len() >= 4 {
+                    return Err(AppError::new(ErrorCode::ResultLimitReached, "Too many owned commit proxies"));
+                }
+                let upstream = std::env::var("JOINERY_POSTGRES_PORT")
+                    .ok().and_then(|value| value.parse::<u16>().ok()).unwrap_or(55432);
+                if upstream < 1024 {
+                    return Err(AppError::invalid("Commit proxy requires an unprivileged local fixture port"));
+                }
+                let proxy = CommitProxy::start(Protocol::Postgres, upstream).await;
+                let id = uuid::Uuid::new_v4().to_string();
+                let result = json!({ "id": id, "port": proxy.port });
+                proxies.insert(id, proxy);
+                result
+            }
+            "test_commit_proxy_arm" | "test_commit_proxy_status" => {
+                let id: String = arg(&args, "id")?;
+                let proxies = state.commit_proxies.lock().await;
+                let proxy = proxies.get(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown owned commit proxy"))?;
+                if command == "test_commit_proxy_arm" {
+                    if proxy.triggered() || proxy.commits() != 0 {
+                        return Err(AppError::invalid("Commit proxy can only arm before its first COMMIT"));
+                    }
+                    let fault: String = arg(&args, "fault")?;
+                    proxy.arm(match fault.as_str() {
+                        "acknowledgement" => Fault::CommitAcknowledgement,
+                        "fatal" => Fault::CommitFatalResponse,
+                        _ => return Err(AppError::invalid("Unknown commit proxy fault")),
+                    });
+                }
+                json!({ "port": proxy.port, "commits": proxy.commits(), "acknowledged": proxy.acknowledged(), "triggered": proxy.triggered() })
+            }
+            "test_commit_proxy_stop" => {
+                let id: String = arg(&args, "id")?;
+                state.commit_proxies.lock().await.remove(&id);
+                Value::Null
+            }
             "bootstrap" => json!(studio.bootstrap()?),
             "save_workspace" => json!(studio.save_workspace(arg(&args, "workspace")?)?),
             // Test-only isolation for recovery flows; never enrolled in desktop IPC.
@@ -79,7 +123,8 @@ async fn rpc(
                     .and_then(|v| v.parse::<u16>().ok())
                     .unwrap_or(55432);
                 let allowed_fixture = match (profile.engine, profile.port) {
-                    (EngineKind::Postgres, port) => port == 55432 || port == pg_port,
+                    (EngineKind::Postgres, port) => port == 55432 || port == pg_port
+                        || state.commit_proxies.lock().await.values().any(|proxy| proxy.port == port),
                     (EngineKind::Mysql, 53306 | 53307) => true,
                     (EngineKind::Redis, 56379) => true,
                     _ => false,
@@ -623,6 +668,7 @@ async fn main() {
         token,
         streams: Mutex::new(HashMap::new()),
         export_streams: Mutex::new(HashMap::new()),
+        commit_proxies: tokio::sync::Mutex::new(HashMap::new()),
     });
     let origin = HeaderValue::from_static("http://127.0.0.1:1421");
     let router = Router::new()

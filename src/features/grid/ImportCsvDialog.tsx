@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { InlineError, Modal } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
+import { useStudio } from "../../state/studio";
 import type {
   ChangePreview,
   ConnectionProfile,
@@ -52,7 +53,11 @@ function runApprovedBatch(
     let errorMessage: string | null = null;
     client
       .execute(planId, approval, (event: QueryEvent) => {
-        if (event.type === "error") {
+        if (event.type === "sessionClosed") {
+          const state = useStudio.getState();
+          state.retireSession(event.sessionId);
+          state.notify(event.reason);
+        } else if (event.type === "error") {
           errorMessage = event.error.message;
         } else if (event.type === "finished") {
           resolve({ status: event.status, errorMessage });
@@ -522,9 +527,12 @@ export function ImportCsvDialog({
             </div>
             <p>
               {batchFailure.message}{" "}
+              {batchFailure.status === "outcomeUnknown"
+                ? "This batch may have committed. Verify the table before retrying."
+                : "No rows from this batch were committed."}{" "}
               {committedRows > 0
                 ? `${committedRows.toLocaleString()} rows from earlier batches remain committed.`
-                : "No rows from this batch were committed."}
+                : null}
             </p>
           </div>
         ) : null}
