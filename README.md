@@ -122,7 +122,8 @@ steps below. Rust integration tests marked ignored do not run in `pnpm validate`
 ```sh
 python3 scripts/mysql-tls-fixture.py
 docker compose --profile mysql --profile mysql-folded --profile redis up -d --wait
-cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test redis --test transaction_transport -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test redis --test transaction_transport --test postgres_protocol --test postgres_identity_permissions -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --example table_identity_probe -- --ignored --test-threads=1
 pnpm exec playwright install chromium --only-shell
 pnpm test:e2e
 ```
