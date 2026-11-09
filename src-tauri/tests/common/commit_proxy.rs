@@ -29,6 +29,7 @@ struct State {
     phase: AtomicU8,
     fault: AtomicU8,
     commits: AtomicUsize,
+    connections: AtomicUsize,
     acknowledged: AtomicBool,
     triggered: AtomicBool,
 }
@@ -49,6 +50,7 @@ impl CommitProxy {
                 tokio::select! {
                     accepted = listener.accept() => {
                         let Ok((client, _)) = accepted else { break };
+                        shared.connections.fetch_add(1, Ordering::SeqCst);
                         let state = shared.clone();
                         connections.spawn(async move {
                             if let Ok(server) = TcpStream::connect(("127.0.0.1", upstream_port)).await {
@@ -75,6 +77,9 @@ impl CommitProxy {
     }
     pub fn commits(&self) -> usize {
         self.state.commits.load(Ordering::SeqCst)
+    }
+    pub fn connections(&self) -> usize {
+        self.state.connections.load(Ordering::SeqCst)
     }
     pub fn acknowledged(&self) -> bool {
         self.state.acknowledged.load(Ordering::SeqCst)
@@ -195,6 +200,9 @@ async fn relay(client: TcpStream, server: TcpStream, protocol: Protocol, state: 
                         client_write.write_u32((body.len() + 4) as u32).await?;
                         client_write.write_all(body).await?;
                         state.triggered.store(true, Ordering::SeqCst);
+                        // Keep transport loss separate from the terminal server
+                        // response so callers must classify the FATAL itself.
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         return Ok(());
                     }
                     state.phase.store(2, Ordering::SeqCst);

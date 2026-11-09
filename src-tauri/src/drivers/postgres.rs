@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use parking_lot::Mutex;
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::OnceCell;
@@ -19,6 +22,7 @@ pub struct Postgres {
     config: Config,
     tls: MakeRustlsConnect,
     tasks: Mutex<Vec<tokio::task::AbortHandle>>,
+    closed: AtomicBool,
     edit_cancel: Mutex<Option<tokio_postgres::CancelToken>>,
     tx_mode: Mutex<TransactionMode>,
     cached_identity: Mutex<CompletionIdentity>,
@@ -126,6 +130,7 @@ impl Postgres {
             config,
             tls,
             tasks: Mutex::new(vec![task.abort_handle()]),
+            closed: AtomicBool::new(false),
             edit_cancel: Mutex::new(None),
             tx_mode: Mutex::new(TransactionMode::AutoCommit),
             cached_identity: Mutex::new(initial_identity),
@@ -979,9 +984,12 @@ impl Driver for Postgres {
         Ok(start.elapsed().as_millis() as u32)
     }
     fn is_closed(&self) -> bool {
-        self.client.is_closed()
+        self.closed.load(Ordering::Acquire) || self.client.is_closed()
     }
     fn close(&self) {
+        // Aborting connection tasks is asynchronous. Make retirement visible to
+        // the execution lane before it decides whether to emit SessionClosed.
+        self.closed.store(true, Ordering::Release);
         for task in self.tasks.lock().drain(..) {
             task.abort();
         }
@@ -1073,7 +1081,7 @@ impl Postgres {
         }
         match client.batch_execute("COMMIT").await {
             Ok(()) => Ok(()),
-            Err(error) if error.is_closed() || error.as_db_error().is_none() => {
+            Err(error) if pg_connection_lost(&error) => {
                 self.close();
                 Err(AppError::new(
                     ErrorCode::OutcomeUnknown,

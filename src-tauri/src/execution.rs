@@ -1249,7 +1249,10 @@ impl Studio {
                 deletes,
                 has_inserts,
             } => {
-                if token.is_cancelled() {
+                if token.is_cancelled()
+                    || session.closed.load(Ordering::Acquire)
+                    || session.driver.is_closed()
+                {
                     status = RunStatus::Cancelled;
                 } else {
                     match session.driver.apply(schema, rows).await {
