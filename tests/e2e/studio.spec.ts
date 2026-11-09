@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { tableFromIPC } from "apache-arrow";
 
 test("workspace tabs and editor size are keyboard accessible", async ({ page }) => {
   await page.goto("/");
@@ -293,6 +294,52 @@ test("repaints the frozen primary-key column when pages load after scrolling", a
   await expect.poll(unpainted, { timeout: 5000 }).toBe(0);
 });
 
+test("selected cell inspector follows a delayed real result page without another click", async ({
+  page,
+}) => {
+  await connect(page, "Delayed inspector fixture");
+  await page.getByRole("button", { name: "New query tab" }).click();
+  if (!(await page.locator(".inspector").isVisible()))
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+
+  let releasePage = () => {};
+  const held = new Promise<void>((resolve) => {
+    releasePage = resolve;
+  });
+  let pageReceived = (_value: string) => {};
+  const received = new Promise<string>((resolve) => {
+    pageReceived = resolve;
+  });
+  const pattern = "**/result/*?start=0&*";
+  await page.route(pattern, async (route) => {
+    // Delay the actual Rust/PostgreSQL Arrow page; do not synthesize its contents.
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    const table = tableFromIPC(new Uint8Array(await response.body()));
+    pageReceived(String(table.getChildAt(1)!.get(0)));
+    await held;
+    await route.fulfill({ response });
+  });
+  try {
+    await page
+      .getByRole("textbox", { name: "SQL editor" })
+      .fill("SELECT id, status FROM public.orders WHERE id = 3;");
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    const expected = await received;
+    const grid = page.locator(".grid-host");
+    await expect(grid.locator("canvas").first()).toBeVisible();
+    const box = (await grid.boundingBox())!;
+    await page.mouse.click(box.x + 44 + 110 + 70, box.y + 37 + 18);
+    await expect(page.locator(".inspector h3")).toHaveCount(0);
+    releasePage();
+    await expect(page.locator(".inspector h3")).toHaveText("status");
+    await expect(page.locator(".inspector-value")).toHaveText(expected);
+  } finally {
+    releasePage();
+    await page.unroute(pattern);
+  }
+});
+
 test("edits a single-table SELECT query result with proven provenance and shows read-only reason when PK is omitted", async ({
   page,
 }) => {
@@ -308,9 +355,10 @@ test("edits a single-table SELECT query result with proven provenance and shows 
   );
 
   const grid = page.locator(".grid-host");
-  const box = (await grid.boundingBox())!;
   if (!(await page.locator(".inspector").isVisible()))
     await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+  await expect(grid.locator("canvas").first()).toBeVisible();
+  const box = (await grid.boundingBox())!;
   await page.mouse.click(box.x + 44 + 110 + 70, box.y + 37 + 18);
   await expect(page.locator(".inspector h3")).toHaveText("status");
   const originalStatus = await page.locator(".inspector-value").innerText();
