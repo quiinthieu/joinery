@@ -81,12 +81,12 @@ named IPC now require exact ownership; stale/released-token, malformed IPC and
 fresh-control regressions accompany the repair. Actual verified TLS-over-SSH now
 covers retained guards and approved writers on MySQL and MariaDB. Latest combined
 validation passes 581 frontend / 193 standard Rust tests, 124 actual fixtures,
-27 strict scenarios and all 137 browser workflows. Fresh clean-source
-native/bundle qualification remains pending.
+27 strict scenarios and all 137 browser workflows. Clean-source `6218e60`
+passes two native recovery pairs, the ten-cycle native smoke (including required
+CSV preview-token decoding), and the normal macOS bundle/ad-hoc signature check.
 
 The [ledger](replacement-verification.md) preserves original failures and exact
-source/artifact scope. Clean-source `5762ee5` native recovery/smoke and bundle
-qualification predates this current increment. The [guard design](mysql-table-identity-design.md)
+source/artifact scope, including the older `5762ee5` artifacts. The [guard design](mysql-table-identity-design.md)
 and [identity investigation](table-identity-safety.md) describe bounds and tests.
 Required engine/auth workflows, representative performance/accessibility, normal
 packaged restart/OS credentials, signing/notarization, other platforms and owner

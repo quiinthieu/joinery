@@ -802,3 +802,40 @@ externalbrowser and persistent sessions. Scratch helper/supervisor development
 is separate from the application, with no enabled Snowflake write capability.
 No real Snowflake account/SSO/warehouse was accessed. SDK retries, remote outcomes,
 macOS browser lifecycle, packaging and live correctness remain unqualified.
+
+### Clean-source native and bundle qualification: `6218e60`
+
+All repository edits stayed frozen during these checks. Source revision is
+`6218e603fcd3915360fadbc3846fd8b5820d56b7`, tree
+`7798b0f48cbe3815d00971953306a9fbe447a57e`, dirty flag **false**.
+Pinned Node 24.22.2 / Rust 1.99.1 commands:
+
+```sh
+pnpm desktop:smoke:build
+pnpm test:native:recovery:runner
+pnpm test:native:recovery --runs 2
+pnpm test:native --runs 1 --cycles 10
+pnpm desktop:bundle:mac
+```
+
+The recovery runner passes six tests. Both fresh-process recovery pairs pass:
+pending edits/preferences survive, the actual disposable PostgreSQL transaction
+rolls back on close, and startup restores no session/result/transaction or SQL
+replay. The ten-cycle hidden native smoke passes all 17 checks, including the
+new missing/null CSV preview-token IPC rejection. Its measured native completion
+is 4,289 ms; main-process peak RSS is 99.14 MiB, not total application memory or
+visible cold-start qualification. Local evidence is `.cache/native-smoke/runs.json`
+(SHA-256 `c24301f52c4a5939a148dc2dbea27d286427065e733cd6fc82e71dc3fc0d313d`)
+and `recovery-runs.json`
+(`458043dcef8cf0ff76a5a1d27fa3705829c8dd7ecd8c20da106df217408ffb12`).
+Hidden executable SHA-256:
+`2de206dcdf516e6d3b0e815af6f4a56ed6883e1050b4f6a717dcf3342518185f`.
+
+The normal 27.56 MiB macOS bundle builds and passes strict deep ad-hoc signature
+verification. Executable SHA-256:
+`b99b0b2874ff12d0cdf3a3a5001fb6b4123d08bf7c46f69e03062a87d23ecfd7`.
+Logs are `/tmp/joinery-guard-native-{build,runner,recovery,smoke}.log` and
+`/tmp/joinery-guard-normal-bundle.log`. The existing Vite chunk-size and missing
+`libLLVM.dylib` stripping warnings remain nonfatal. No normal bundle was launched
+or installed; normal packaged restart, OS credentials, Developer ID signing,
+notarization and Snowflake acceptance remain open. Nothing was published.
