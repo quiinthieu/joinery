@@ -349,6 +349,138 @@ test("a page with changed column positions is rejected before it can be edited",
   expect(client.call).toHaveBeenCalledWith("release_result", { resultId: "result" });
 });
 
+for (const operation of [
+  "review",
+  "schema",
+  "next page",
+  "evicted page",
+  "approved browse",
+] as const) {
+  test.each(["connectionClosed", "outcomeUnknown", "conflict"] as const)(
+    `${operation} preserves its %s error and retires only terminal browse sessions without retry`,
+    async (code) => {
+      const id = tableTab();
+      const queryId = useStudio.getState().openQuery("profile", "SELECT 1");
+      const otherId = useStudio.getState().openQuery("profile", "SELECT 2");
+      useStudio.getState().bindQuerySession(otherId, { ...session, id: "unaffected" });
+      const source: PlanSource = {
+        engine: "postgres",
+        serverVersion: "18",
+        connectionId: "profile",
+        sessionId: session.id,
+        context: "known",
+        query: "SELECT 1",
+        executedSql: "EXPLAIN SELECT 1",
+      };
+      useStudio.getState().updateTab(queryId, { planSource: source });
+      planSnapshots.capture(
+        queryId,
+        "browse-related-plan",
+        source,
+        '[{"Plan":{"Node Type":"Result"}}]',
+      );
+      useStudio.setState({
+        sessionStates: { [session.id]: transactionRuntime(session.id) },
+        sessionContexts: { [session.id]: ["public"] },
+      });
+      const tableSchema = schema("label");
+      useStudio.getState().updateTab(id, {
+        schema: tableSchema,
+        dataSessionId: session.id,
+        pageKeys: { 0: null },
+        hasMore: true,
+      });
+      const error = {
+        code,
+        message: "The browse commit may have completed. Verify before retrying.",
+      };
+      const failingCommand =
+        operation === "review"
+          ? "prepare_browse_table"
+          : operation === "schema"
+            ? "table_schema"
+            : "browse_table";
+      vi.mocked(client.call).mockImplementation(((command: string) => {
+        if (command === failingCommand) return Promise.reject(error);
+        return Promise.resolve(command === "table_schema" ? tableSchema : null);
+      }) as typeof client.call);
+      const state = useStudio.getState();
+      const rawQuery = { sort: [], filters: [], whereClause: "owned_mark(id)", orderClause: null };
+      if (operation === "review") await state.setTableQuery(id, rawQuery);
+      else if (operation === "schema") await state.refreshTable(id);
+      else if (operation === "next page") await state.loadNextPage(id);
+      else if (operation === "evicted page") await state.ensureTablePage(id, 0);
+      else
+        await state.setTableQuery(id, rawQuery, {
+          approval: { planId: "approved", approval: "once" },
+        });
+
+      const latest = useStudio.getState();
+      const table = latest.tabs.find((tab) => tab.id === id)!;
+      expect(table.error).toEqual(error);
+      expect(table.loadingPage).toBe(false);
+      expect(
+        vi.mocked(client.call).mock.calls.filter(([command]) => command === failingCommand),
+      ).toHaveLength(1);
+      const terminal = code === "connectionClosed" || code === "outcomeUnknown";
+      expect(
+        querySessionForTab(
+          latest.tabs.find((tab) => tab.id === queryId)!,
+          latest.sessions,
+        )?.id,
+      ).toBe(terminal ? undefined : session.id);
+      expect(
+        querySessionForTab(
+          latest.tabs.find((tab) => tab.id === otherId)!,
+          latest.sessions,
+        )?.id,
+      ).toBe("unaffected");
+      expect(latest.tabs.find((tab) => tab.id === queryId)!.planSource).toEqual(
+        terminal ? undefined : source,
+      );
+      expect(planSnapshots.snapshot()).toHaveLength(terminal ? 0 : 1);
+      expect(latest.sessionStates[session.id]).toEqual(
+        terminal ? undefined : transactionRuntime(session.id),
+      );
+      expect(latest.sessionContexts[session.id]).toEqual(terminal ? undefined : ["public"]);
+      if (terminal) {
+        const calls = vi.mocked(client.call).mock.calls.length;
+        await latest.refreshTable(id);
+        await latest.loadNextPage(id);
+        await latest.ensureTablePage(id, 0);
+        expect(client.call).toHaveBeenCalledTimes(calls);
+      }
+    },
+  );
+}
+
+test("a late terminal page failure cannot retire or overwrite a replacement session", async () => {
+  let reject!: (error: unknown) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise((_, fail) => {
+      reject = fail;
+    }),
+  );
+  const id = tableTab();
+  useStudio
+    .getState()
+    .updateTab(id, { schema: schema("old"), dataSessionId: session.id, hasMore: true });
+  const pending = useStudio.getState().loadNextPage(id);
+  const replacement = { ...session, id: "replacement" };
+  useStudio.setState({ sessions: { profile: replacement } });
+  useStudio
+    .getState()
+    .updateTab(id, { revision: 1, dataSessionId: replacement.id, error: null, loadingPage: false });
+  reject({ code: "outcomeUnknown", message: "Old browse outcome unknown" });
+  await pending;
+  expect(useStudio.getState().sessions.profile).toEqual(replacement);
+  expect(useStudio.getState().tabs.find((tab) => tab.id === id)).toMatchObject({
+    dataSessionId: replacement.id,
+    error: null,
+    loadingPage: false,
+  });
+});
+
 test("a new tab opened during startup cannot overwrite recoverable drafts", async () => {
   useStudio.setState({ bootstrap: null, tabs: [], activeTabId: null, sessions: {} });
   let resolve!: (bootstrap: Bootstrap) => void;

@@ -522,6 +522,10 @@ function asAppError(error: unknown): AppError {
     return error as AppError;
   return { code: "database", message: messageOf(error) };
 }
+function retireAfterBrowseFailure(sessionId: string, error: AppError) {
+  if (error.code === "connectionClosed" || error.code === "outcomeUnknown")
+    useStudio.getState().retireSession(sessionId);
+}
 function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
   if (!schema || JSON.stringify(schema.columns) !== JSON.stringify(result.columns)) {
     void client.call("release_result", { resultId: result.id }).catch(() => {});
@@ -1577,7 +1581,10 @@ export const useStudio = create<StudioState>((set, get) => ({
         });
         if (plan) return { kind: "review", plan, query };
       } catch (error) {
-        get().updateTab(id, { error: asAppError(error) });
+        const failure = asAppError(error);
+        if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
+          get().updateTab(id, { error: failure });
+        retireAfterBrowseFailure(session.id, failure);
         return { kind: "applied" };
       }
     }
@@ -1618,12 +1625,14 @@ export const useStudio = create<StudioState>((set, get) => ({
       get().updateTab(id, { schema, loadingPage: false });
       await get().loadNextPage(id, approval);
     } catch (error) {
+      const failure = asAppError(error);
       if (requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: asAppError(error),
+          error: failure,
           loadingPage: false,
           hasMore: false,
         });
+      retireAfterBrowseFailure(session.id, failure);
     }
   },
   async loadNextPage(id, approval) {
@@ -1677,11 +1686,14 @@ export const useStudio = create<StudioState>((set, get) => ({
         hasMore: page.hasMore,
       });
     } catch (error) {
+      const failure = asAppError(error);
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: asAppError(error),
+          error: failure,
+          loadingPage: false,
           hasMore: false,
         });
+      retireAfterBrowseFailure(session.id, failure);
     } finally {
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, { loadingPage: false });
@@ -1734,8 +1746,10 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       get().updateTab(id, { pages });
     } catch (error) {
+      const failure = asAppError(error);
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
-        get().updateTab(id, { error: { code: "database", message: messageOf(error) } });
+        get().updateTab(id, { error: failure, loadingPage: false, hasMore: false });
+      retireAfterBrowseFailure(session.id, failure);
     } finally {
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, { loadingPage: false });
