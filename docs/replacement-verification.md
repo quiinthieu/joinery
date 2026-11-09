@@ -535,8 +535,8 @@ suite passed 129/129 in 8.9 minutes; the focused table-data/raw-browse run passe
 11/11 in 51.7 seconds. Both actual raw-browse unknown-outcome UI cases passed.
 The earlier 126/127 full attempt and 10/11 focused attempt are retained as
 historical test-coordinate and fixture-isolation failures; they are not current
-product failures. Native recovery and normal-bundle qualification have not run
-for this increment. Current evidence logs are
+product failures. Fresh native recovery and normal-bundle build/signature checks
+also pass, with the exact source and artifact identities recorded below. Current evidence logs are
 `/tmp/joinery-identity-csv-validate.log`,
 `/tmp/joinery-identity-csv-fixtures.log`,
 `/tmp/joinery-identity-csv-example-regression.log` and
@@ -550,5 +550,40 @@ trigger, rule, partition effect or OID-reuse case; grid writes remain separate
 from console transactions. MySQL and MariaDB's 18 historical failures on
 `ff59ca6` remain open and unsafe. The earlier 545 frontend / 180 Rust / 103
 fixtures / 124 browser and normal-bundle SHA results belong to the prior writer
-repair, not this identity increment. Native recovery and normal-bundle identity
-qualification are pending.
+repair, not this identity increment. Normal packaged restart/credential behavior,
+external engines/authentication and owner acceptance remain unqualified.
+
+### Clean-source native and bundle evidence for the PostgreSQL identity repair
+
+Both builds used clean commit `5762ee5aaf41cf3eecf3b86e1d250177db353daa`,
+tree `82174fe9e3620ad78edc2f504fa8fb6c4b08f3ba`. Runtime repair is `4b7e4c3`.
+Other commits in this qualification record isolate the browser fixture, extend
+CI and record research/evidence. The working tree was clean before and after builds.
+
+| Check | Result and boundary |
+|---|---|
+| `pnpm desktop:smoke:build` | Passed, release compilation 4m05s; copied hidden fixture manifest records `sourceDirty: false` |
+| Hidden executable SHA-256 | `b35c755251d61bdbfc98d49dd7a8dae5e15b6617cc84ef3aeef0871e937c0879` |
+| Hidden ad-hoc bundle executable SHA-256 | `e18637be77b78dce76b01f91293ae10a530f48e346b4a99b4969634f6cc6ceda` |
+| `pnpm test:native:recovery:runner` | Six runner acceptance tests passed |
+| `pnpm test:native:recovery --runs 2` | Two pairs / four fresh hidden native processes passed against actual loopback PostgreSQL; pending-close exit times 40.74ms and 29.12ms, below the 400ms debounce |
+| Recovery behavior | Cancel preserved the session and manual transaction. Confirmed close persisted exact latest Unicode draft/preferences and rolled back the real fixture write. Both reopened processes made zero connect/prepare/execute calls before the explicit observer, restored no sessions/results/transactions, and removed their owned tables |
+| `pnpm test:native --runs 1 --cycles 10` | Passed, ten synthetic cleanup cycles; native elapsed 2882ms and main-process peak RSS 107.83MiB. This is smoke evidence, not representative startup/performance qualification |
+| `pnpm desktop:bundle:mac` | Passed, release compilation 3m01s; normal macOS arm64 `Joinery.app` 27.42MiB, version `0.1.0`, identifier `com.quiinthieu.joinery`; strict ad-hoc signature verification passed |
+| Normal bundle executable SHA-256 | `79e59c646962ecd8793ced3c42bf6a9b62d1fa156d86279671ea6f168226c107` |
+
+Native machine evidence is `.cache/native-smoke/build.json`,
+`.cache/native-smoke/recovery-runs.json` and `.cache/native-smoke/runs.json`.
+Recovery roots are `recovery-pdzcul_x` and `recovery-6ju1668l` under that directory.
+Logs are `/tmp/joinery-identity-native-build.log`,
+`/tmp/joinery-identity-native-recovery.log`,
+`/tmp/joinery-identity-native-smoke.log` and
+`/tmp/joinery-identity-normal-bundle.log`. Existing nonfatal Vite chunk-size and
+Rust `rust-objcopy`/`libLLVM` strip warnings remain recorded in build logs.
+
+The normal bundle was built and verified, not launched, installed, notarized,
+published or released. Hidden fixtures use temporary roots and in-memory secrets;
+they do not qualify normal OS credential persistence, installed restart behavior,
+other platforms, accessibility or the owner's actual workflows. MySQL/MariaDB's
+18 application identity failures remain open. No production or private
+application state was accessed.

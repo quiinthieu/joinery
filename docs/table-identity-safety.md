@@ -166,8 +166,9 @@ replacement conflict. After the test-coordinate fix and UUID-based fixture
 isolation, the full browser suite passed 129/129; the focused table-data/raw-
 browse run passed 11/11. Both actual raw-browse unknown-outcome UI cases passed.
 Earlier 126/127 and 10/11 attempts were test-coordinate and fixture-isolation
-failures; they are historical, not current product failures. Native recovery or
-normal-bundle qualification has not run for this increment. Earlier 545 frontend /
+failures; they are historical, not current product failures. Fresh normal macOS
+bundle/signature, two hidden native PostgreSQL recovery pairs and ten-cycle smoke
+pass on clean `5762ee5`; the ledger records hashes and qualification limits. Earlier 545 frontend /
 180 Rust / 103 fixtures / 124 browser results and normal-bundle hash belong to
 the earlier writer repair only.
 
@@ -200,10 +201,12 @@ One ordinary-role design to falsify on isolated fixtures is a dedicated,
 explicitly bounded guard connection: begin a transaction before the original
 read or CSV preview, access the target so its metadata lock remains held, and
 retain that transaction through review and CSV batches. The writer must acquire
-its own metadata lock and then verify that the original guard is still the same
-live transaction before issuing DML. A ping, automatic reconnect, or new
-transaction cannot prove continuity of the original guard. This is a design
-hypothesis, not an implemented or qualified repair.
+its own metadata lock and then verify the original retained guard using a fresh
+non-reconnecting round trip, fresh active-transaction status, generation and
+deadline checks before issuing DML. A ping on a replacement connection, automatic
+reconnect or a new transaction cannot prove continuity of the original guard.
+This protocol premise has passed the bounded standalone probe; application
+integration and lifecycle qualification remain open.
 
 The guard can delay migrations. Queued DDL may block a later writer behind the
 original guard, so bounded deadlines/TTL, explicit release, cancel, eviction,
@@ -242,7 +245,7 @@ engines. Remaining proof obligations and design risks are:
   can delay migrations; expiry, cancel, disconnect and shutdown must release it.
 - Batch commits release transaction locks. CSV must retain the original target
   through each batch and qualify replacement after preview, after approval and
-  between commits. Current PostgreSQL cases have an initial report; MySQL/MariaDB
+  between commits. Current PostgreSQL cases pass the final strict report; MySQL/MariaDB
   still demonstrate the unsafe outcome.
 
 Complete qualification still needs all nine cases on each engine, queued writers,

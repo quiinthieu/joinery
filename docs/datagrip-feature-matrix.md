@@ -42,7 +42,9 @@ suite passes 129/129; the focused table-data/raw-browse run passes 11/11. Earlie
 126/127 and 10/11 attempts were test-coordinate and fixture-isolation failures,
 not current product failures. Both actual raw-browse unknown-outcome UI cases
 passed. The earlier `ff59ca6` diagnostic's 18 MySQL/MariaDB failures remain open
-and unsafe. Native and normal-bundle qualification remain open. See the
+and unsafe. Clean-source `5762ee5` normal macOS bundle/signature, two hidden
+native PostgreSQL recovery pairs and ten-cycle smoke pass; normal packaged
+restart/credentials and owner workflow acceptance remain open. See the
 [ledger](replacement-verification.md).
 
 ## Current replacement assessment (9 November 2026)

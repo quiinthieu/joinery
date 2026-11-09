@@ -68,8 +68,10 @@ coordinate repair and UUID fixture isolation, the full browser suite passed
 coordinate and fixture-isolation failures. Both raw-browse unknown-outcome UI
 cases passed. MySQL/MariaDB's 18 historical cases remain open and unsafe; the
 bounded [guard design](mysql-table-identity-design.md) records protocol-only
-evidence, not an application repair. Native/normal-bundle qualification for this increment,
-required engine/auth workflows and owner acceptance remain pending.
+evidence, not an application repair. Fresh clean-source normal macOS
+bundle/signature, two hidden native PostgreSQL recovery pairs and ten-cycle smoke
+pass on `5762ee5`; the ledger records artifact hashes and scope. Required
+engine/auth workflows, normal packaged restart/credentials and owner acceptance remain pending.
 
 PostgreSQL identity implementation is committed locally as `4b7e4c3`; fixture isolation is `80ded6c`, frontend retirement is `08484fc`, and the vendored client foundation is `ea3ea76`. These changes remain unmerged, unpublished and not installed.
 The owner-private hub is not updated because this task forbids publication.

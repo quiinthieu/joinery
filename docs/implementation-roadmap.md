@@ -44,8 +44,10 @@ prior 126/127 and 10/11 results are historical test-coordinate and fixture-
 isolation failures. Both raw-browse unknown-outcome UI cases passed. MySQL/MariaDB's
 18 historical cases remain unsafe. The [identity investigation](table-identity-safety.md)
 links the bounded [MySQL/MariaDB design](mysql-table-identity-design.md),
-`ea3ea76` client foundation and scope limits. Native/normal-bundle qualification,
-owner applicability, external workflows and hands-on acceptance remain open.
+`ea3ea76` client foundation and scope limits. Fresh normal macOS bundle/signature,
+two hidden native PostgreSQL recovery pairs and ten-cycle smoke pass on clean
+`5762ee5`. Normal packaged restart/credentials, owner applicability, external
+workflows and hands-on acceptance remain open.
 
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;
