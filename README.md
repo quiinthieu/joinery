@@ -256,7 +256,24 @@ query analysis, design, productivity and release/qualification gates in the
 
 Grid browsing and commits use login credentials independently of SQL-editor transactions and session settings. A grid commit never commits an editor transaction. Tables without a supported primary key have a bounded first page and cannot be edited.
 
-Results are never written to disk unless explicitly exported through a native save-dialog capability grant (which writes no row values or file paths to SQLite): Rust retains at most 64 MiB in total and 100,000 rows per query result, the display cache retains at most 32 MiB / 512 pages, and pending edits have an 8 MiB budget. A table page stops at 500 rows or 2 MiB. IPC frames stop at 4 MiB and the frontend adapts page sizes for wide results. SQL history text is opt-in per connection; passwords stay in memory or the operating-system credential store.
+Results stay in memory by default, unless explicitly exported through a native
+save-dialog capability grant. To retain large query results, enable **Preferences
+→ Temporary disk storage for large results** before running the query. New
+results can then spill to private anonymous temporary files after the shared
+64 MiB result-memory budget fills. Limits are 1,000,000 rows per result and 8 GiB
+of temporary storage globally. Reaching a limit marks the retained snapshot as
+truncated; export cannot recover rows that were not retained. The status bar
+shows result memory and temporary storage separately. Closing a result or quitting
+releases its files; results never restore after restart. Disabling the preference
+affects new results, so close existing results to release their temporary data.
+Joinery does not encrypt these files; they use the system's disk protection.
+See the [large-result walkthrough](docs/large-results.md) for bounds and checks.
+
+The display cache retains at most 32 MiB / 512 pages, and pending edits have an
+8 MiB budget. A table page stops at 500 rows or 2 MiB. IPC frames stop at 4 MiB
+and the frontend adapts page sizes for wide results. Exported rows, result rows
+and export paths are not written to SQLite. SQL history text is opt-in per
+connection; passwords stay in memory or the operating-system credential store.
 
 Cancellation discards the affected SQL session after a native PostgreSQL cancel request or MySQL/MariaDB owned-query cancellation to prevent a late request from cancelling a subsequent query. Reconnect before running another query. A lost connection during commit requires checking database state before retrying.
 

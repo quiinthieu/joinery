@@ -155,6 +155,10 @@ export async function runNativeRecovery(): Promise<boolean> {
       "Native App did not initialize",
     );
     if (stage === "setup") {
+      assert(
+        await client.call("set_temporary_result_storage", { enabled: true }),
+        "Native recovery could not persist temporary result storage opt-in",
+      );
       const profile: ConnectionProfile = {
         id: crypto.randomUUID(),
         name: "Disposable native recovery",
@@ -296,6 +300,10 @@ export async function runNativeRecovery(): Promise<boolean> {
     table = evidence.table;
     profileId = evidence.profileId;
     const initial = await client.call<Bootstrap>("bootstrap");
+    assert(
+      initial.temporaryResultStorage === true,
+      "Native restart did not restore the temporary result storage preference",
+    );
     const state = useStudio.getState();
     const persistedProfile = initial.profiles.find((profile) => profile.id === profileId);
     assert(
@@ -346,6 +354,7 @@ export async function runNativeRecovery(): Promise<boolean> {
       checkpoint.usage.resultCount === 0 &&
         beforeConnect.resultCount === 0 &&
         beforeConnect.retainedBytes === 0 &&
+        beforeConnect.temporaryResultBytes === 0 &&
         state.tabs.every((tab) => tab.results.length === 0),
       "Native restart restored result rows",
     );
@@ -375,6 +384,7 @@ export async function runNativeRecovery(): Promise<boolean> {
     report.recovery = {
       recoveredLatestDraft: true,
       preferencesRestored: true,
+      temporaryResultStorageRestored: true,
       noRestoredSessions: true,
       noRestoredResults: true,
       noRestoredTransactions: true,

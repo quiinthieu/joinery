@@ -530,6 +530,9 @@ async fn rpc(
             "save_sql_format_settings" => {
                 json!(studio.save_sql_format_settings(arg(&args, "settings")?)?)
             }
+            "set_temporary_result_storage" => {
+                json!(studio.set_temporary_result_storage(arg(&args, "enabled")?)?)
+            }
             "save_sql_snippet" => json!(studio.save_sql_snippet(arg(&args, "input")?)?),
             "delete_sql_snippet" => {
                 studio.delete_sql_snippet(&arg::<String>(&args, "id")?)?;
@@ -572,6 +575,27 @@ async fn rpc(
                         ));
                     }
                 }
+            }
+            "test_sandbox_file_summary" => {
+                use sha2::{Digest, Sha256};
+                use std::io::Read;
+                let file_name: String = arg(&args, "fileName")?;
+                let path = state.sandbox.resolve_confined(&file_name)?;
+                let mut file = std::fs::File::open(path)
+                    .map_err(|_| AppError::internal("Could not open disposable sandbox file"))?;
+                let mut hash = Sha256::new();
+                let mut buffer = [0_u8; 64 * 1024];
+                let mut bytes = 0_u64;
+                let mut line_breaks = 0_u64;
+                loop {
+                    let count = file.read(&mut buffer)
+                        .map_err(|_| AppError::internal("Could not inspect disposable sandbox file"))?;
+                    if count == 0 { break; }
+                    bytes += count as u64;
+                    line_breaks += buffer[..count].iter().filter(|&&byte| byte == b'\n').count() as u64;
+                    hash.update(&buffer[..count]);
+                }
+                json!({"bytes": bytes, "lineBreaks": line_breaks, "sha256": hex::encode(hash.finalize())})
             }
             _ => return Err(AppError::new(ErrorCode::NotFound, "Unknown test command")),
         })

@@ -36,6 +36,45 @@ beforeEach(() => {
   });
 });
 
+test("temporary result storage requires successful explicit opt-in", async () => {
+  let resolveSave!: (value: boolean) => void;
+  vi.mocked(client.call).mockImplementation((async (command: string) => {
+    if (command === "metadata_backups") return [];
+    if (command === "set_temporary_result_storage") {
+      return new Promise<boolean>((resolve) => {
+        resolveSave = resolve;
+      });
+    }
+    throw new Error(`Unexpected command ${command}`);
+  }) as typeof client.call);
+  render(<Preferences onClose={vi.fn()} />);
+  const checkbox = screen.getByRole("checkbox", {
+    name: "Temporary disk storage for large results",
+  }) as HTMLInputElement;
+  expect(checkbox.checked).toBe(false);
+  fireEvent.click(checkbox);
+  expect(client.call).toHaveBeenCalledWith("set_temporary_result_storage", { enabled: true });
+  expect(checkbox.disabled).toBe(true);
+  expect(checkbox.checked).toBe(false);
+  expect(screen.getByRole("button", { name: "Create metadata backup" }).matches(":disabled")).toBe(
+    true,
+  );
+  expect(
+    (screen.getByRole("button", { name: "Set passphrase" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  resolveSave(true);
+  await waitFor(() => expect(checkbox.checked).toBe(true));
+  expect(checkbox.disabled).toBe(false);
+  expect(screen.getByRole("button", { name: "Create metadata backup" }).matches(":disabled")).toBe(
+    false,
+  );
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Storage preference could not be saved"));
+  fireEvent.click(checkbox);
+  await screen.findByText("Storage preference could not be saved");
+  expect(checkbox.checked).toBe(true);
+  expect(useStudio.getState().bootstrap?.temporaryResultStorage).toBe(true);
+});
+
 test("Preferences updates SQL formatting settings and manages custom SQL snippets", async () => {
   vi.mocked(client.call).mockImplementation((async (
     command: string,

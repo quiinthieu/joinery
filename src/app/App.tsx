@@ -1491,8 +1491,12 @@ export function App() {
           <div>
             <span>
               {usage
-                ? `${(usage.retainedBytes / 1024 / 1024).toFixed(1)} MB results`
-                : "Memory only"}
+                ? `${(usage.retainedBytes / 1024 / 1024).toFixed(1)} MiB result memory${
+                    usage.temporaryResultBytes
+                      ? ` · ${(usage.temporaryResultBytes / 1024 / 1024).toFixed(1)} MiB temporary storage`
+                      : ""
+                  }`
+                : "Result usage unavailable"}
             </span>
             <span className="status-separator">·</span>
             <button onClick={() => setDialog({ kind: "palette" })}>

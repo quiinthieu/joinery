@@ -83,6 +83,7 @@ fn main() {
             "save_bookmark",
             "delete_bookmark",
             "save_sql_format_settings",
+            "set_temporary_result_storage",
             "save_sql_snippet",
             "delete_sql_snippet",
             "native_smoke_fixture",

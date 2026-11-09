@@ -1332,6 +1332,10 @@ pub struct Bootstrap {
     pub supported_engines: Vec<EngineKind>,
     pub result_budget_bytes: usize,
     pub row_limit: usize,
+    /// Opt-in anonymous temporary result storage; applies to new results.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub temporary_result_storage: bool,
     pub workspace: Option<SavedWorkspace>,
     #[serde(default)]
     pub saved_queries: Vec<SavedQuery>,
@@ -1388,6 +1392,9 @@ pub struct SavedWorkspace {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceUsage {
     pub retained_bytes: usize,
+    #[serde(default)]
+    #[ts(optional, as = "Option<usize>")]
+    pub temporary_result_bytes: usize,
     pub result_count: usize,
     pub session_count: usize,
     pub active_runs: usize,

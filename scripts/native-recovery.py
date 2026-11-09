@@ -11,7 +11,7 @@ import time
 
 
 VERIFY_CHECKS = (
-    "recoveredLatestDraft", "preferencesRestored", "noRestoredSessions",
+    "recoveredLatestDraft", "preferencesRestored", "temporaryResultStorageRestored", "noRestoredSessions",
     "noRestoredResults", "noRestoredTransactions", "noSqlReplay",
     "rolledBack", "tableDropped",
 )

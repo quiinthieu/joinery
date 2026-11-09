@@ -2370,7 +2370,9 @@ async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
             .unwrap()
             .unwrap();
         let usage_before = studio.results.usage();
-        assert_eq!(usage_before.0, 0, "port {port}");
+        // Setup statement descriptors now count toward the memory budget.
+        // Export must add neither retained data/metadata nor temporary bytes.
+        let disk_before = studio.results.disk_usage();
         let (tx, rx) = mpsc::unbounded_channel();
         studio
             .start_export(
@@ -2394,6 +2396,7 @@ async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
             .unwrap();
         let events = finish_export(rx).await;
         assert_eq!(studio.results.usage(), usage_before, "port {port}");
+        assert_eq!(studio.results.disk_usage(), disk_before, "port {port}");
         assert!(
             matches!(
                 events.last(),

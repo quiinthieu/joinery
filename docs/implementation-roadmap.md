@@ -14,7 +14,10 @@ one; existing exclusions are blockers, not optional enhancements.
 The owner also requires the **latest stable DataGrip release** and Snowflake
 query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
 released 5 November 2026. Complete million-row paging/export with bounded memory
-is required; current 100,000-row / global 64 MiB retention does not meet it.
+is required. The [opt-in temporary result store](large-results.md) now targets
+one million rows with bounded memory/disk. Actual PostgreSQL paging/export and
+all 138 browser workflows pass; native preference/restart checks follow.
+Actual Snowflake million-row behavior remains unqualified.
 
 Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
 the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
@@ -68,8 +71,9 @@ with a newer preview; the legacy path is removed and named IPC requires the exac
 token. Verified TLS-over-SSH now exercises actual guarded browse and approved
 writes on both MySQL and MariaDB. Final source checks for local code `997680e`
 pass 581 frontend / 193 standard Rust, 124 actual fixtures, all 27 strict scenarios
-and all 137 browser workflows. Fresh clean-source native/bundle artifacts are
-next. Historical `5762ee5` native/bundle
+and all 137 browser workflows. Clean-source `6218e60` hidden native recovery,
+ordinary smoke and normal ad-hoc macOS bundle qualification also pass; see the
+ledger for artifact identities and limits. Historical `5762ee5` native/bundle
 qualification belongs to the earlier PostgreSQL increment. See the
 [identity investigation](table-identity-safety.md) and
 [retained-guard contract](mysql-table-identity-design.md).
@@ -78,8 +82,10 @@ Next after local integration: implement the confirmed Snowflake externalbrowser
 stateful transport and million-row result path; qualify all applicable DataGrip
 2026.3 capabilities, performance and accessibility;
 complete normal packaged restart/credentials and the hands-on walkthrough.
-The Goal remains active until acceptance. No push, installation, publication or
-private application-state access is authorized.
+The Goal remains active until acceptance. No push, installation or publication
+is authorized. The owner authorized reuse of the existing Snowflake connection;
+only its non-secret configuration was inspected. Other private application state
+and all external query/write qualification remain outside that authorization.
 
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;

@@ -14,7 +14,10 @@ one; existing exclusions are blockers, not optional enhancements.
 The owner also requires the **latest stable DataGrip release** and Snowflake
 query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
 released 5 November 2026. Complete million-row paging/export with bounded memory
-is required; current 100,000-row / global 64 MiB retention does not meet it.
+is required. The [opt-in temporary result store](large-results.md) now targets
+one million rows with bounded memory/disk. Actual PostgreSQL paging/export and
+all 138 browser workflows pass; native preference/restart checks follow.
+Actual Snowflake million-row behavior remains unqualified.
 
 Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
 the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
@@ -224,7 +227,7 @@ Grid browsing and commits use the login role independently of SQL-editor transac
 
 ## Resource bounds
 
-- Rust result buffers: **64 MiB globally**, **100,000 rows per query result**, 100 retained result descriptors.
+- Rust retained result data/metadata/indexes: **64 MiB globally**, **1,000,000 rows per result**, 100 result descriptors. Optional private temporary storage is capped at **8 GiB globally** and is disabled by default; see [large results](large-results.md) for qualification and remaining limits.
 - Frontend Arrow buffers: **32 MiB globally**, 512 cached pages, four in-flight requests.
 - Arrow IPC: **4 MiB per frame**, checked before encoding; wide ranges trigger smaller frontend requests.
 - Table pages: **500 rows or 2 MiB**, with keyset continuation from the last retained PK.

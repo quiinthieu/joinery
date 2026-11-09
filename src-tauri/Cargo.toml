@@ -65,6 +65,7 @@ argon2 = "0.5"
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
 parking_lot = "0.12"
+tempfile = "3"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
@@ -86,7 +87,6 @@ dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", 
 
 [dev-dependencies]
 flate2 = "1"
-tempfile = "3"
 rand = "0.10"
 rcgen = "0.14"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

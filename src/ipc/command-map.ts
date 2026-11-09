@@ -72,6 +72,10 @@ import type {
  * command with its exact argument payload and result DTO.
  */
 export interface JoineryCommandMap {
+  set_temporary_result_storage: {
+    args: { enabled: boolean };
+    result: boolean;
+  };
   app_info: {
     args?: Record<string, unknown>;
     result: { name: string; version: string; identifier: string };

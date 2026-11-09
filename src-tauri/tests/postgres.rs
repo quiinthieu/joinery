@@ -512,11 +512,11 @@ async fn explicit_cancel_quarantines_the_connection_and_limits_bound_retention()
     );
     studio.shutdown();
     let (_root, studio, session) = setup(SafeMode::Silent).await;
-    let events = run(&studio, &session, "SELECT generate_series(1,200000) AS n").await;
+    let events = run(&studio, &session, "SELECT generate_series(1,1000512) AS n").await;
     assert_eq!(status(&events), RunStatus::Completed);
     let result = result(&events);
     assert_eq!(result.status, RetentionStatus::Truncated);
-    assert!(result.retained_rows > 0 && result.retained_rows <= 100000);
+    assert!(result.retained_rows > 0 && result.retained_rows <= 1_000_000);
     assert!(studio.usage().retained_bytes <= 64 * 1024 * 1024);
     studio.shutdown();
 }
@@ -2332,7 +2332,8 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
         .unwrap()
         .unwrap();
     let usage_before = studio.results.usage();
-    assert_eq!(usage_before.0, 0);
+    // Setup descriptors are charged; streaming export must not retain more.
+    let disk_before = studio.results.disk_usage();
     let (tx, rx) = mpsc::unbounded_channel();
     studio
         .start_export(
@@ -2356,6 +2357,7 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
         .unwrap();
     let export_events = finish_export(rx).await;
     assert_eq!(studio.results.usage(), usage_before);
+    assert_eq!(studio.results.disk_usage(), disk_before);
     assert!(matches!(
         export_events.last(),
         Some(ExportEvent::Finished {
@@ -3032,7 +3034,6 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
 
     // 1. Multi-page (> 500 rows) LiveTable vs LiveTable without retaining in ResultStore
     let usage_before = studio.usage();
-    assert_eq!(usage_before.retained_bytes, 0);
     let live_report = studio
         .compare_data(CompareRequest {
             left: CompareSide::LiveTable {
@@ -3060,8 +3061,13 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
     assert_eq!(live_report.different_count, 1);
     assert_eq!(live_report.only_left_count, 1);
     assert_eq!(live_report.only_right_count, 1);
-    assert_eq!(studio.usage().retained_bytes, 0);
-    assert_eq!(studio.usage().result_count, usage_before.result_count);
+    let usage_after = studio.usage();
+    assert_eq!(usage_after.retained_bytes, usage_before.retained_bytes);
+    assert_eq!(
+        usage_after.temporary_result_bytes,
+        usage_before.temporary_result_bytes
+    );
+    assert_eq!(usage_after.result_count, usage_before.result_count);
 
     let modified = live_report
         .diffs

@@ -13,6 +13,12 @@ target. The fixture walkthrough below qualifies existing paths only; do not reti
 DataGrip on that basis. Stateful Snowflake authentication/session implementation
 and actual authorized-account qualification are required next.
 
+For the confirmed million-row workload, see the
+[large-result walkthrough](large-results.md). Temporary result storage requires
+explicit opt-in before a query runs, has bounded disk use, and preserves the
+memory-only default. Its common-store PostgreSQL qualification does not establish
+Snowflake connector performance or replacement readiness.
+
 ## Build and run
 
 Follow [README setup](../README.md#development) with Node 24, pnpm 11 and the

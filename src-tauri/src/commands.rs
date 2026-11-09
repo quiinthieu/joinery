@@ -884,6 +884,17 @@ pub async fn delete_bookmark(studio: State<'_, Arc<Studio>>, id: String) -> AppR
 }
 
 #[tauri::command]
+pub async fn set_temporary_result_storage(
+    studio: State<'_, Arc<Studio>>,
+    enabled: bool,
+) -> AppResult<bool> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.set_temporary_result_storage(enabled))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
 pub async fn save_sql_format_settings(
     studio: State<'_, Arc<Studio>>,
     settings: SqlFormatSettings,

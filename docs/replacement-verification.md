@@ -839,3 +839,101 @@ Logs are `/tmp/joinery-guard-native-{build,runner,recovery,smoke}.log` and
 `libLLVM.dylib` stripping warnings remain nonfatal. No normal bundle was launched
 or installed; normal packaged restart, OS credentials, Developer ID signing,
 notarization and Snowflake acceptance remain open. Nothing was published.
+
+### Million-row storage increment: baseline and first pass
+
+The owner requires results up to one million rows. Before implementation, the new
+`large_results` actual PostgreSQL fixture failed with **99,840 retained rows**
+instead of 1,000,000 (`/tmp/joinery-million-row-baseline.log`, 2.28 s). Initial test
+construction errors (an incorrect event variant and a read-only classification
+rejection) were corrected before that meaningful baseline; no product policy was
+weakened. The test uses only synthetic `generate_series` data on the disposable
+PostgreSQL fixture and performs no account or persistent table writes.
+
+An initial opt-in store passes the actual test in **23.08 s**:
+`/tmp/joinery-million-row-first.log`. It retains one million five-column rows with
+exact bigint/decimal text, Unicode, NULL/empty values and 96-byte payloads; checks
+random/boundary/last-row Arrow pages; streams all one million CSV records and
+compares their full hash/count; and releases the temporary bytes. This pass
+predates the final combined metadata accounting, so final qualification follows
+separately. Commands use pinned repository toolchains:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --test large_results -- --ignored --nocapture
+```
+
+Independent review found that restoring a metadata backup did not reapply the
+stored privacy preference to the active result store. The new restore regression
+fails before the fix (`/tmp/joinery-storage-restore-baseline.log`). Restore now
+disables temporary storage immediately after replacement, then enables it only
+when the restored setting explicitly confirms `true`. The reviewer also required
+combined retained metadata/schema/index accounting and conservative disk charging
+when failed write rollback cannot inspect the physical tail. Final review/tests are recorded below. No real Snowflake SSO, queries or mutations were performed.
+
+### Million-row final-source checks
+
+Independent review cleared combined retained metadata/schema/index accounting,
+map-capacity refunds, private anonymous handles, lazy batch reads, prefix
+preservation after append failure, and conservative charging when rollback and
+file metadata both fail. Fourteen focused result-store tests pass. An additional
+UI regression reproduced recovery controls remaining enabled during a pending
+storage-preference save (`/tmp/joinery-storage-preference-lock-baseline.log`);
+recovery/passphrase controls now block that overlap and all five Preferences
+tests pass (`/tmp/joinery-storage-preference-lock-final.log`).
+
+`pnpm validate` passes **582 frontend / 205 standard Rust tests**, contracts,
+types, production frontend build, formatting, native check and strict all-feature
+Clippy (`/tmp/joinery-million-row-validate-combined.log`). The first run reached
+the same passing tests but failed a collapsible-if lint; the equivalent let-chain
+fix passes. This final combined validation includes the revised fixture assertions
+and native preference/restart checks.
+
+The final accounting implementation passes all three `large_results` tests in
+**21.75 s** (`/tmp/joinery-million-row-qualified.log`): actual PostgreSQL one
+million rows with exact values/boundary/random/last pages and full streamed CSV
+hash/count; opt-in persistence without result replay; and restoration of both
+enabled and disabled metadata preferences. No Snowflake account was used.
+
+The first combined fixture attempt found an obsolete zero-byte assumption in
+MySQL export setup: empty statement descriptors now have accounted metadata.
+A PostgreSQL run reproduced the same assumption in export and comparison
+(`41/43` passed). Tests now compare the exact before/after retained bytes and
+descriptor counts, plus temporary bytes, proving those workflows add no result
+storage while allowing setup metadata. Logs:
+`/tmp/joinery-million-row-fixtures.log` and
+`/tmp/joinery-million-row-postgres-accounting-baseline.log`.
+The final combined actual fixture run passes **124/124**
+(`42 MySQL/MariaDB + 11 guards + 43 PostgreSQL + 4 permission + 1 protocol
+fixture + 6 Redis + 2 SSH + 15 transaction transport`):
+`/tmp/joinery-million-row-fixtures-final.log`. These remain local fixture
+results; no actual Snowflake behavior is inferred. Browser outcomes follow; native
+qualification remains underway.
+
+The owner requested reuse of the current Snowflake connection. Only allowlisted
+non-secret default-profile configuration was read and retained in an ignored,
+owner-only local cache. No credential/token state, DataGrip private state,
+Snowflake connection, billable query or external write was accessed.
+
+### Million-row browser qualification
+
+All **138/138 browser workflows pass in 7.7 minutes** with repository edits and
+generators frozen (`/tmp/joinery-million-row-browser-all.log`). The dedicated
+million-row flow also passes independently in **19.7 s**
+(`/tmp/joinery-million-row-browser-focused-qualified.log`). It saves and reloads
+the explicit privacy preference, runs the actual disposable PostgreSQL query,
+reaches row 1,000,000 and 999,999 by keyboard, checks bounded frontend caching,
+disables future spill while retaining the current snapshot, exports the full
+snapshot and closes it to release temporary bytes. No console errors occur.
+
+The CSV has **103,888,906 bytes**, one header and **1,000,000 data records**.
+It uses LF separators without a final LF, preserving existing export behavior.
+The complete independently computed expected/file SHA-256 is
+`958d2140f0d9ac59335d33e2c17b9ed363c4c08ee8cf5e4db5775ae59f89d34e`.
+Early test construction assumed synchronous checkbox acknowledgement and a final
+LF; both assertions were corrected without changing application behavior. Those
+logs are `/tmp/joinery-million-row-browser-focused.log` and
+`/tmp/joinery-million-row-browser-focused-final.log`; artifacts are retained in
+the correspondingly named checkbox/newline baseline directories under `/tmp`.
+Final dedicated TypeScript and Prettier checks pass. Native preference IPC and
+fresh-process restart checks are implemented but await clean-source execution.

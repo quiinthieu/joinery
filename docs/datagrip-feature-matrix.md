@@ -13,8 +13,10 @@ one; existing exclusions are blockers, not optional enhancements.
 
 The owner requires the latest stable DataGrip release and Snowflake results up
 to **1,000,000 rows**. The current benchmark is **DataGrip 2026.3** (official
-release 5 November 2026). Current 100,000-row / global 64 MiB result retention
-does not meet that workload; complete bounded paging/export is a required gap.
+release 5 November 2026). The [opt-in temporary result store](large-results.md)
+passes actual PostgreSQL million-row paging/export and browser acceptance.
+Native preference/restart checks follow. Actual Snowflake behavior remains
+unqualified.
 
 Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
 the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
@@ -68,8 +70,8 @@ reassociation into a replacement table. Preparation now requires the exact previ
 generation at both Rust and named IPC boundaries. Verified TLS-over-SSH guard and
 writer qualification also passes on both MySQL and MariaDB. Final source checks
 pass 581 frontend / 193 standard Rust tests, 124 actual fixture tests, 27 strict
-identity scenarios and all 137 browser workflows. Clean-source native/bundle
-qualification for these latest changes is pending;
+identity scenarios and all 137 browser workflows. Clean-source `6218e60` hidden
+native recovery/smoke and normal ad-hoc macOS bundle qualification also pass;
 see the [ledger](replacement-verification.md). Historical unsafe observations on
 `ff59ca6` remain evidence of the original defect, not the current fixture result.
 
@@ -185,7 +187,7 @@ Complexity is Low/Medium/High. Priority P0–P3 is separate from blueprint miles
 | N | `src/features/connections/{Sidebar.tsx,explorer-tree.ts}`, `src/features/studio/{UtilityViews,ObjectInspectorView,IndexConstraintDialog,TableObjectDialog,SearchEverywhere,LibraryModal}.tsx`, `search-everywhere.ts`; backend `drivers/{postgres,mysql}/explorer.rs`, `drivers/snowflake/catalog.rs` (`object_details`), `ddl.rs`, `domain.rs` (`DatabaseObjectKind`, `DatabaseObjectRef`, `ObjectDetails`, `ObjectDdlStatus`, `DependencyEdge`, `SavedQuery`, `SavedBookmark`, `IndexConstraintAction`, `TableObjectAction`) | Explorer tree, object inspector, index/constraint/table DDL editor, Search Everywhere unit/component tests, PG/MySQL/MariaDB integration tests (`object_explorer_*`, `index_and_constraint_editor_*`, `table_and_object_ddl_editor_*`), and `tests/e2e/{explorer,index-constraint-editor,table-object-editor}.spec.ts`. Categorized object explorer (`Tables`, `Views`, `Materialized views`, `Functions`, `Procedures`, `Sequences`, `Triggers`, `Indexes`) with WAI-ARIA keyboard tree traversal, kind filter chips, Structure constraints/indexes/triggers, bounded 256 KiB read-only DDL (`Copy DDL`, `Open in SQL editor`), bounded 200-edge `Uses`/`Used by` dependencies, cross-connection Search Everywhere (`⌘K` / `⇧⌘O`, merged #29 `2625933`), `Saved` queries scope, bookmarks and recent locations (R4 merged in PR #30 (`a0ba1a6`), unreleased), and reviewed index/constraint (`D05`, merged #66 `792aa99`) and table/column/object DDL editors (`N08`); R6 local estimated-plan views are recorded below |
 | W | `src/state/{studio,workspace}.ts`, `src/app/{App,Workbench}.tsx`, `src/features/studio/LibraryModal.tsx`, `Preferences.tsx`; backend `persistence/{workspace,library}.rs`, `file_capability.rs` (`GrantKind::SqlFile`), `execution.rs` (`session_contexts`, `switch_session_context`, `set_transaction_mode`, `commit_transaction`, `rollback_transaction`, `open_sql_file`, `save_sql_file`) | Workspace/studio/library/file-capability unit tests, PG/MySQL/MariaDB transaction & context integration tests, and `tests/e2e/{sessions,consoles-files}.spec.ts`. Shared primary sessions plus named multi-console session pool (up to 4 per connection), per-session `Auto-commit`/`Manual commit` transaction controls, per-session schema/database switcher, capability-gated `.sql` file Open/Save/Save As (excluded from opt-in workspace drafts), saved queries library, persistent bookmarks (`⌘D`) and in-memory recent locations (`⇧⌘E`) (R4 merged in PR #30 (`a0ba1a6`), unreleased) |
 | L | `src-tauri/src/persistence.rs`, `persistence/{workspace,recovery}.rs`, `commands/recovery.rs`; `MetadataRecovery.tsx` | Persistence/recovery tests and `tests/e2e/recovery.spec.ts`. Version/schema guards, WAL crash recovery, bounded snapshots and undo. Does not restore results, sessions, edits or execute SQL |
-| B | `src-tauri/src/results.rs` (`ResultStore`), `commands.rs` (`result_range`), `src/ipc/{client,command-map,generated}.ts`, Arrow worker, result cache | Result/cache/columnar/`command-map.test.ts` unit tests; native smoke fixture. Rust 64 MiB, frontend 32 MiB/512 pages, dirty edits 8 MiB, result 100,000 rows, pages 500 rows/2 MiB, IPC 4 MiB. Closed compile-time `JoineryCommandMap` pairs every command with its exact argument and result DTOs |
+| B | `src-tauri/src/results.rs` (`ResultStore`), `commands.rs` (`result_range`), `src/ipc/{client,command-map,generated}.ts`, Arrow worker, result cache | Result/cache/columnar/`command-map.test.ts` unit tests; native smoke fixture. Rust retained result structures 64 MiB, optional anonymous disk spill 8 GiB globally, frontend 32 MiB/512 pages, dirty edits 8 MiB, result 1,000,000 rows, pages 500 rows/2 MiB, IPC 4 MiB. Temporary spill is off by default and captured for new results; see `large-results.md` for current qualification. Closed compile-time `JoineryCommandMap` pairs every command with its exact argument and result DTOs |
 | Q | `scripts/{native-smoke.py,runtime_memory.py,verify-macos-bundle.mjs}`, `src/native-smoke.ts`, `.github/workflows/ci.yml`, `docs/IMPLEMENTATION_STATUS.md` | Python attribution tests, hidden WebView fixture, standard three-platform CI compilation. Hidden DOM readiness and synthetic cleanup are not visible startup, total representative idle memory, or FPS qualification |
 
 ## Official DataGrip references

@@ -570,6 +570,24 @@ export async function runNativeSmoke() {
     );
     await useStudio.getState().deleteSqlSnippet(savedSnippet.id);
     await useStudio.getState().saveSqlFormatSettings(originalFormat);
+    const originalStorage = Boolean(reloaded.temporaryResultStorage);
+    try {
+      assert(
+        await client.call("set_temporary_result_storage", { enabled: true }),
+        "Native temporary result storage command failed",
+      );
+      assert(
+        (await client.call("bootstrap")).temporaryResultStorage === true,
+        "Native temporary result storage preference was not persisted",
+      );
+      assert(
+        (await client.call("set_temporary_result_storage", { enabled: false })) === false &&
+          (await client.call("bootstrap")).temporaryResultStorage === false,
+        "Native temporary result storage could not be disabled",
+      );
+    } finally {
+      await client.call("set_temporary_result_storage", { enabled: originalStorage });
+    }
     await client.call("release_sql_file_grant", { token: "missing-native-smoke-sql-grant" });
     report.bootstrapMs = performance.now() - started;
     const shellDeadline = performance.now() + 3000;
@@ -758,6 +776,7 @@ export async function runNativeSmoke() {
       "Unicode",
       "formatter worker",
       "format and snippet persistence",
+      "temporary result storage IPC and persistence",
       "scoped completion worker and quoted acceptance",
       "CodeMirror",
       "Canvas grid",

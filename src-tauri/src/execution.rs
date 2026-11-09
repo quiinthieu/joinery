@@ -231,8 +231,13 @@ impl Studio {
         file_dialog: Arc<dyn FileDialogProvider>,
         mysql_guard_policy: crate::drivers::mysql::guard::GuardPolicy,
     ) -> AppResult<Arc<Self>> {
+        let persistence = Persistence::open(root)?;
+        let results = ResultStore::default();
+        results.set_temporary_disk_enabled(
+            persistence.setting("temporary-result-storage")?.as_deref() == Some("true"),
+        );
         Ok(Arc::new(Self {
-            persistence: Persistence::open(root)?,
+            persistence,
             secrets,
             file_dialog,
             file_capabilities: FileCapabilities::default(),
@@ -243,7 +248,7 @@ impl Studio {
             result_sessions: Mutex::new(HashMap::new()),
             import_targets: Mutex::new(HashMap::new()),
             mysql_guard_policy,
-            results: ResultStore::default(),
+            results,
             connect_gate: tokio::sync::Mutex::new(()),
             configuration_gate: Mutex::new(()),
             tunnels: SshManager::default(),
@@ -267,12 +272,23 @@ impl Studio {
             ],
             result_budget_bytes: RESULT_BUDGET,
             row_limit: ROW_LIMIT,
+            temporary_result_storage: self.results.temporary_disk_enabled(),
             workspace: self.persistence.workspace()?,
             saved_queries: self.persistence.saved_queries()?,
             bookmarks: self.persistence.bookmarks()?,
             sql_format_settings: self.persistence.sql_format_settings()?,
             sql_snippets: self.persistence.sql_snippets()?,
         })
+    }
+
+    pub fn set_temporary_result_storage(&self, enabled: bool) -> AppResult<bool> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.set_setting(
+            "temporary-result-storage",
+            if enabled { "true" } else { "false" },
+        )?;
+        self.results.set_temporary_disk_enabled(enabled);
+        Ok(enabled)
     }
 
     pub fn save_sql_format_settings(
@@ -363,6 +379,15 @@ impl Studio {
         }
         let undo = self.persistence.restore_metadata_backup(id, digest)?;
         self.plans.lock().clear();
+        // Restoration replaces settings without restarting this Studio. Fail
+        // closed if the restored preference cannot be read.
+        self.results.set_temporary_disk_enabled(false);
+        self.results.set_temporary_disk_enabled(
+            self.persistence
+                .setting("temporary-result-storage")?
+                .as_deref()
+                == Some("true"),
+        );
         Ok(undo)
     }
 
@@ -4062,6 +4087,7 @@ impl Studio {
         let (retained_bytes, result_count) = self.results.usage();
         ResourceUsage {
             retained_bytes,
+            temporary_result_bytes: self.results.disk_usage(),
             result_count,
             session_count: self.sessions.lock().len(),
             active_runs: self.jobs.lock().len() + self.exports.lock().len(),
@@ -4300,7 +4326,9 @@ impl Output<'_> {
             Ok(value) => value,
             Err(error) => {
                 self.limit(&error.message);
-                self.discard();
+                // An append is atomic. Keep the valid retained prefix fetchable
+                // and mark it truncated. The driver remains responsible for SQL
+                // cancellation/terminal outcomes; cache retention proves neither.
                 return Ok(false);
             }
         };
@@ -4335,6 +4363,66 @@ impl Output<'_> {
 #[cfg(test)]
 mod browse_classification_tests {
     use super::*;
+
+    #[test]
+    fn result_append_failure_keeps_fetchable_truncated_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let columns = schema(EngineKind::Postgres).columns;
+        let info = studio
+            .results
+            .create("retention-failure", 0, columns, None)
+            .unwrap();
+        let original = vec![Some("1".into()), Some("2".into()), Some("prefix".into())];
+        assert!(
+            studio
+                .results
+                .append(&info.id, vec![original.clone()])
+                .unwrap()
+        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let handler: EventHandler = Arc::new(move |event| {
+            captured.lock().push(event);
+            true
+        });
+        let mut first_row_ms = None;
+        let mut output = Output {
+            studio: &studio,
+            session_id: "fixture",
+            run_id: "retention-failure",
+            index: 0,
+            provenance: StatementProvenance::None,
+            current: Some(info.id.clone()),
+            truncated: false,
+            viewer_closed: false,
+            active_started: Instant::now(),
+            first_row_ms: &mut first_row_ms,
+            events: &handler,
+        };
+        assert!(
+            !output
+                .append_rows(vec![vec![Some("invalid width".into())]])
+                .unwrap()
+        );
+        output.complete_result(0).unwrap();
+        assert_eq!(studio.results.row(&info.id, 0).unwrap(), original);
+        assert_eq!(
+            studio.results.info(&info.id).unwrap().status,
+            RetentionStatus::Truncated
+        );
+        let events = events.lock();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, QueryEvent::Notice { .. }))
+        );
+        assert!(events.iter().any(|event| matches!(event, QueryEvent::Result { result } if result.id == info.id && result.status == RetentionStatus::Truncated)));
+    }
 
     fn profile(engine: EngineKind, safe_mode: SafeMode) -> ConnectionProfile {
         ConnectionProfile {
