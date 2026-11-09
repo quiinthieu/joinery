@@ -16,7 +16,7 @@ query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
 released 5 November 2026. Complete million-row paging/export with bounded memory
 is required. The [opt-in temporary result store](large-results.md) now targets
 one million rows with bounded memory/disk. Actual PostgreSQL paging/export and
-all 138 browser workflows pass; native preference/restart checks follow.
+all 138 browser workflows pass. Native preference/restart checks also pass.
 Actual Snowflake million-row behavior remains unqualified.
 
 Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and

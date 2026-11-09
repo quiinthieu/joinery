@@ -907,8 +907,7 @@ The final combined actual fixture run passes **124/124**
 (`42 MySQL/MariaDB + 11 guards + 43 PostgreSQL + 4 permission + 1 protocol
 fixture + 6 Redis + 2 SSH + 15 transaction transport`):
 `/tmp/joinery-million-row-fixtures-final.log`. These remain local fixture
-results; no actual Snowflake behavior is inferred. Browser outcomes follow; native
-qualification remains underway.
+results; no actual Snowflake behavior is inferred. Browser and native outcomes follow below.
 
 The owner requested reuse of the current Snowflake connection. Only allowlisted
 non-secret default-profile configuration was read and retained in an ignored,
@@ -936,4 +935,55 @@ logs are `/tmp/joinery-million-row-browser-focused.log` and
 `/tmp/joinery-million-row-browser-focused-final.log`; artifacts are retained in
 the correspondingly named checkbox/newline baseline directories under `/tmp`.
 Final dedicated TypeScript and Prettier checks pass. Native preference IPC and
-fresh-process restart checks are implemented but await clean-source execution.
+fresh-process restart outcomes follow below.
+
+### Million-row increment: clean native and bundle checks
+
+The implemented storage increment is `f3f257e`. Native and normal bundle checks
+use clean source `c860a786c6bd7051da00b6da2fe6101017c99140`, tree
+`076f44144c40719402a6a67b96a52af3887c1bdb`, dirty flag **false**. All edits
+and generators remained frozen while the checked artifacts were built and run.
+Pinned Node 24.22.2 / Rust 1.99.1 commands:
+
+```sh
+pnpm desktop:smoke:build
+pnpm test:native:recovery:runner
+pnpm test:native:recovery --runs 2
+pnpm test:native --runs 1 --cycles 10
+pnpm desktop:bundle:mac
+```
+
+The runner passes six tests. Both fresh-process recovery pairs pass, including
+the new `temporaryResultStorageRestored` check. Startup restores no result rows,
+live session or transaction and invokes no SQL; actual disposable PostgreSQL
+confirms rollback of the previous pending transaction. Ordinary hidden native
+smoke passes all **17 checks**, including temporary-storage command permission,
+enable/disable persistence and restoration of the prior setting, over ten
+cleanup cycles. Its measured native completion is 3,082 ms; main-process peak RSS
+is 107.83 MiB. These are synthetic hidden-fixture observations, not total memory,
+visible/cold startup, native million-row performance or Snowflake qualification.
+
+Local evidence under `.cache/native-smoke/`:
+
+| Artifact | SHA-256 |
+|---|---|
+| `joinery-smoke` | `8c785b4f3aba2138ae00786abd86affccf7221fc76c4fc58da0182cd3e685e0f` |
+| `runs.json` | `09737c9da7eabe7b0738b0c4b0c00027441b30f8135be9178df1f8e6601a58a1` |
+| `recovery-runs.json` | `a2c418d957be0aac4a7015d7d13ee74e6e0078045c835f49b0263d9cc7eee09d` |
+
+The normal **29.03 MiB** app bundle passes strict deep ad-hoc signature
+verification. Its executable SHA-256 is
+`f38a8a6eb3e4a79f15a05f33064c94f18f816456bc872546f35f5bdbd4eeeeb8`.
+Logs: `/tmp/joinery-million-row-native-{build,runner,recovery,smoke}.log` and
+`/tmp/joinery-million-row-normal-bundle.log`. The pre-existing Vite chunk-size
+and missing `libLLVM.dylib` stripping warnings remain nonfatal. The normal bundle
+was not launched or installed; normal packaged restart, credential persistence,
+Developer ID signing, notarization and actual Snowflake qualification remain open.
+Nothing was pushed, published or deployed.
+
+The integration workflow now selects the dedicated `large_results` fixture in
+its actual-database command. The exact additional selection passes locally:
+`cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test
+large_results -- --ignored --test-threads=1` (**1/1**, 18.53 s;
+`/tmp/joinery-million-row-ci-selection.log`). Workflow YAML parses. This is
+local verification of the configured check, not a remote CI run.

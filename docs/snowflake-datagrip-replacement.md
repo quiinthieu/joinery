@@ -58,7 +58,7 @@ coverage and read exact source. This is scoped evidence, not an exhaustive audit
 | Metadata and search | Browse/find and inspect every required Snowflake object type with DDL/keys/dependencies, bounded paging, denied-role behavior and refresh after external changes | Partial catalog pilot; exact object inventory and live qualification open |
 | SQL editing | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools | Bounded common editor; full Snowflake feature inventory/qualification open |
 | Execution | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes | Read-only SQL API exists; required stateful write path missing |
-| Results and data movement | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data | Shared store passes actual PostgreSQL million-row paging/export and browser acceptance with opt-in bounded temporary storage. Native preference/restart checks follow. Actual Snowflake retention/types/performance remain unqualified |
+| Results and data movement | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data | Shared store passes actual PostgreSQL million-row paging/export and browser acceptance with opt-in bounded temporary storage. Native preference/restart checks pass. Actual Snowflake retention/types/performance remain unqualified |
 | Data editing | Review and commit/rollback row changes with conflict/identity safeguards and truthful affected-row counts; support required keyless workflows safely or record a blocking gap | Disabled; no accepted narrowing |
 | Transactions | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully | Unsupported; primary blocker |
 | History and scripts | Reuse scripts, query history and session-independent drafts with chosen privacy/persistence, no automatic reconnect/execute after restart | Common library exists; Snowflake lifecycle/native acceptance open |
@@ -121,7 +121,7 @@ logout completion, context continuity and exact result types also require proof.
 The shared [opt-in temporary result store](large-results.md) now implements
 bounded memory/disk retention and passes an actual PostgreSQL million-row
 paging/export fixture, all 124 combined fixtures and all 138 browser workflows.
-Native preference/restart qualification follows in the ledger. This does not
+Native preference/restart qualification passes on `c860a78`; see the ledger. This does not
 qualify Snowflake SDK buffering, transport or types.
 The UI must distinguish retained, complete, truncated, failed and cancelled
 results, and must not rerun SQL merely to page or export a snapshot.

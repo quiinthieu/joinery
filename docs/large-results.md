@@ -5,7 +5,7 @@ store now has an opt-in temporary-storage implementation. Actual isolated
 PostgreSQL and browser workflows retain and export one million rows; final
 source checks pass 582 frontend / 205 standard Rust tests, 124 actual fixtures,
 three dedicated large-result fixtures and all 138 browser workflows. Native
-preference/restart qualification follows separately. This does not qualify Snowflake
+preference/restart checks pass on clean source `c860a78`. This does not qualify Snowflake
 authentication, SDK memory use, types, million-row transport or writes.
 
 ## Use and privacy

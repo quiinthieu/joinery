@@ -15,7 +15,7 @@ The owner requires the latest stable DataGrip release and Snowflake results up
 to **1,000,000 rows**. The current benchmark is **DataGrip 2026.3** (official
 release 5 November 2026). The [opt-in temporary result store](large-results.md)
 passes actual PostgreSQL million-row paging/export and browser acceptance.
-Native preference/restart checks follow. Actual Snowflake behavior remains
+Native preference/restart checks pass. Actual Snowflake behavior remains
 unqualified.
 
 Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
