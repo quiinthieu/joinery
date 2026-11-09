@@ -401,156 +401,54 @@ impl ResultStore {
         (state.bytes, state.results.len())
     }
 
+    /// Keep the query's original bounded snapshot after a successful commit.
+    /// Defaults, triggers, coercions, and query membership cannot be reconstructed
+    /// from submitted mutations. Re-running SQL is the explicit refresh boundary.
     pub fn apply_committed_changes(
         &self,
         anchor_id: Option<&str>,
         updates: &[ResultChanges],
         deletes: &[ResultDeletes],
-        inserted_rows: &[TextRow],
-    ) -> AppResult<Vec<ResultInfo>> {
+        has_inserts: bool,
+    ) -> Vec<ResultInfo> {
         let mut affected_ids = Vec::new();
-        for u in updates {
-            if !affected_ids.contains(&u.result_id) {
-                affected_ids.push(u.result_id.clone());
-            }
-        }
-        for d in deletes {
-            if !affected_ids.contains(&d.result_id) {
-                affected_ids.push(d.result_id.clone());
-            }
-        }
-        if !inserted_rows.is_empty()
-            && let Some(id) = anchor_id
-            && !affected_ids.iter().any(|existing| existing == id)
+        for id in updates
+            .iter()
+            .map(|u| u.result_id.as_str())
+            .chain(deletes.iter().map(|d| d.result_id.as_str()))
+            .chain(anchor_id.filter(|_| has_inserts))
         {
-            affected_ids.push(id.to_owned());
+            if !affected_ids.contains(&id) {
+                affected_ids.push(id);
+            }
         }
-
         let mut state = self.state.lock();
         let mut updated_infos = Vec::new();
-
         for id in affected_ids {
-            let Some(entry) = state.results.get(&id) else {
+            let Some(entry) = state.results.get_mut(id) else {
                 continue;
             };
+            // Table browser results already refresh through their dedicated path.
             if entry.info.run_id.starts_with("table:")
                 || !matches!(
                     entry.info.editability,
-                    Some(crate::domain::ResultEditability::Editable { .. })
+                    Some(ResultEditability::Editable { .. })
                 )
             {
                 continue;
             }
-            let col_count = entry.info.columns.len();
-            let col_positions: HashMap<String, usize> = entry
-                .info
-                .columns
-                .iter()
-                .enumerate()
-                .map(|(idx, col)| (col.id.clone(), idx))
-                .collect();
-
-            let mut rows = Vec::with_capacity(entry.info.retained_rows + inserted_rows.len());
-            for batch in &entry.batches {
-                let arrays: Vec<&StringArray> = (0..col_count)
-                    .map(|col_idx| {
-                        batch
-                            .column(col_idx)
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .ok_or_else(|| AppError::internal("Invalid result column encoding"))
-                    })
-                    .collect::<AppResult<Vec<_>>>()?;
-                for row_idx in 0..batch.num_rows() {
-                    let mut row = Vec::with_capacity(col_count);
-                    for array in &arrays {
-                        if array.is_null(row_idx) {
-                            row.push(None);
-                        } else {
-                            row.push(Some(array.value(row_idx).to_string()));
-                        }
-                    }
-                    rows.push(row);
-                }
+            entry.provenance = None;
+            entry.info.editability = Some(ResultEditability::ReadOnly {
+                reason: "Result is a snapshot from before these changes. Re-run query to refresh."
+                    .into(),
+            });
+            for column in &mut entry.info.columns {
+                column.editable = false;
+                column.insertable = false;
             }
-
-            for u in updates.iter().filter(|u| u.result_id == id) {
-                for change in &u.changes {
-                    if let Some(&col_idx) = col_positions.get(&change.column)
-                        && let Some(row) = rows.get_mut(change.row)
-                        && col_idx < row.len()
-                    {
-                        row[col_idx] = change.value.clone();
-                    }
-                }
-            }
-
-            let deleted_set: std::collections::HashSet<usize> = deletes
-                .iter()
-                .filter(|d| d.result_id == id)
-                .flat_map(|d| d.rows.iter().copied())
-                .collect();
-            if !deleted_set.is_empty() {
-                let mut idx = 0usize;
-                rows.retain(|_| {
-                    let keep = !deleted_set.contains(&idx);
-                    idx += 1;
-                    keep
-                });
-            }
-
-            if anchor_id == Some(id.as_str()) && !inserted_rows.is_empty() {
-                for inserted in inserted_rows {
-                    if inserted.len() == col_count {
-                        rows.push(inserted.clone());
-                    }
-                }
-            }
-
-            let schema = Arc::new(Schema::new(
-                entry
-                    .info
-                    .columns
-                    .iter()
-                    .map(|c| Field::new(&c.id, DataType::Utf8, true))
-                    .collect::<Vec<_>>(),
-            ));
-            let mut new_batches = Vec::new();
-            let mut new_bytes = 0usize;
-            for chunk in rows.chunks(BATCH_ROWS) {
-                let arrays: Vec<ArrayRef> = (0..col_count)
-                    .map(|i| {
-                        let bytes = chunk
-                            .iter()
-                            .map(|row| row[i].as_ref().map_or(0, String::len))
-                            .sum();
-                        let mut builder = StringBuilder::with_capacity(chunk.len(), bytes);
-                        for row in chunk {
-                            builder.append_option(row[i].as_deref());
-                        }
-                        Arc::new(builder.finish()) as ArrayRef
-                    })
-                    .collect();
-                let batch = RecordBatch::try_new(schema.clone(), arrays)
-                    .map_err(|_| AppError::internal("Could not encode updated result batch"))?;
-                new_bytes += batch.get_array_memory_size();
-                new_batches.push(batch);
-            }
-
-            let old_bytes = entry.bytes;
-            state.bytes = state
-                .bytes
-                .saturating_sub(old_bytes)
-                .saturating_add(new_bytes);
-            if let Some(entry_mut) = state.results.get_mut(&id) {
-                entry_mut.bytes = new_bytes;
-                entry_mut.batches = new_batches;
-                entry_mut.info.retained_rows = rows.len();
-                updated_infos.push(entry_mut.info.clone());
-            }
+            updated_infos.push(entry.info.clone());
         }
-
-        Ok(updated_infos)
+        updated_infos
     }
 }
 
@@ -564,6 +462,131 @@ fn not_found() -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn editable_schema() -> TableSchema {
+        let mut id = columns().remove(0);
+        id.id = "c0".into();
+        id.name = "id".into();
+        id.primary_key = true;
+        let mut value = columns().remove(0);
+        value.id = "c1".into();
+        value.editable = true;
+        value.insertable = true;
+        TableSchema {
+            table: TableRef {
+                schema: "public".into(),
+                name: "items".into(),
+            },
+            columns: vec![id, value],
+            primary_key: vec!["id".into()],
+            foreign_keys: Vec::new(),
+            inbound_foreign_keys: Vec::new(),
+            editable: true,
+        }
+    }
+
+    #[test]
+    fn committed_query_changes_preserve_bounded_snapshot() {
+        for mutation in ["insert", "update", "delete"] {
+            let store = ResultStore::new(1024, 1);
+            let schema = editable_schema();
+            let result = store
+                .create("query", 0, schema.columns.clone(), Some(schema))
+                .unwrap();
+            let original = vec![Some("1".into()), Some("original".into())];
+            assert!(store.append(&result.id, vec![original.clone()]).unwrap());
+            let before = store.finish(&result.id, true).unwrap();
+            let bytes_before = store.usage().0;
+            let updates = if mutation == "update" {
+                vec![ResultChanges {
+                    result_id: result.id.clone(),
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: "c1".into(),
+                        value: Some("x".repeat(2048)),
+                    }],
+                }]
+            } else {
+                Vec::new()
+            };
+            let deletes = if mutation == "delete" {
+                vec![ResultDeletes {
+                    result_id: result.id.clone(),
+                    rows: vec![0],
+                }]
+            } else {
+                Vec::new()
+            };
+            let updated = store.apply_committed_changes(
+                Some(&result.id),
+                &updates,
+                &deletes,
+                mutation == "insert",
+            );
+            assert!(
+                store.usage().0 <= 1024,
+                "{mutation} exceeded the global budget"
+            );
+            assert_eq!(store.usage().0, bytes_before);
+            assert_eq!(updated.len(), 1);
+            assert_eq!(updated[0].retained_rows, before.retained_rows);
+            assert_eq!(updated[0].status, before.status);
+            assert_eq!(store.row(&result.id, 0).unwrap(), original);
+            assert!(matches!(
+                updated[0].editability,
+                Some(ResultEditability::ReadOnly { .. })
+            ));
+            assert!(
+                updated[0]
+                    .columns
+                    .iter()
+                    .all(|c| !c.editable && !c.insertable)
+            );
+            assert_eq!(
+                store.provenance(&result.id).unwrap_err().code,
+                ErrorCode::PolicyBlocked
+            );
+        }
+    }
+
+    #[test]
+    fn committed_table_pages_and_released_queries_keep_existing_behavior() {
+        let store = ResultStore::new(1024, 1);
+        let schema = editable_schema();
+        let table = store
+            .create(
+                "table:browse",
+                0,
+                schema.columns.clone(),
+                Some(schema.clone()),
+            )
+            .unwrap();
+        assert!(
+            store
+                .append(
+                    &table.id,
+                    vec![vec![Some("1".into()), Some("original".into())]]
+                )
+                .unwrap()
+        );
+        let before = store.finish(&table.id, false).unwrap();
+        let bytes_before = store.usage().0;
+        assert!(
+            store
+                .apply_committed_changes(Some(&table.id), &[], &[], true)
+                .is_empty()
+        );
+        assert_eq!(store.info(&table.id).unwrap(), before);
+        assert_eq!(store.provenance(&table.id).unwrap(), schema);
+        assert_eq!(store.usage().0, bytes_before);
+        store.release(&table.id);
+        assert!(
+            store
+                .apply_committed_changes(Some(&table.id), &[], &[], true)
+                .is_empty()
+        );
+        assert_eq!(store.usage(), (0, 0));
+    }
+
     fn columns() -> Vec<ColumnInfo> {
         vec![ColumnInfo {
             id: "c0".into(),

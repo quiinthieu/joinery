@@ -4552,6 +4552,87 @@ async fn table_maintenance_executes_reviewed_analyze_optimize_and_check_and_reje
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB services"]
+async fn query_result_commit_preserves_snapshot_and_rerun_reads_server_defaults_and_triggers() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let table = format!("query_snapshot_{}", new_id().replace('-', "_"));
+        completed(&run(&studio, &session, &format!("CREATE TABLE joinery.{table} (id bigint AUTO_INCREMENT PRIMARY KEY, note varchar(255) NOT NULL DEFAULT 'server default') ENGINE=InnoDB")).await);
+        let sql = format!("SELECT id, note FROM joinery.{table}");
+        let initial = result(&run(&studio, &session, &sql).await);
+        let insert = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(initial.id.clone()),
+                    updates: Vec::new(),
+                    deletes: Vec::new(),
+                    inserts: vec![RowInsert { values: Vec::new() }],
+                },
+            )
+            .unwrap();
+        let insert_events = execute(&studio, &insert.plan).await;
+        let retained_insert = studio.results.info(&initial.id).unwrap();
+        let stale_insert_edit = studio.prepare_changes(
+            &session.id,
+            &initial.id,
+            vec![CellChange {
+                row: 0,
+                column: "c1".into(),
+                value: Some("must re-run".into()),
+            }],
+        );
+        let actual = result(&run(&studio, &session, &sql).await);
+        let actual_row = studio.results.row(&actual.id, 0).unwrap();
+        completed(&run(&studio, &session, &format!("CREATE TRIGGER joinery.{table}_upper BEFORE UPDATE ON joinery.{table} FOR EACH ROW SET NEW.note=UPPER(NEW.note)")).await);
+        let update = studio
+            .prepare_changes(
+                &session.id,
+                &actual.id,
+                vec![CellChange {
+                    row: 0,
+                    column: "c1".into(),
+                    value: Some("mixed case".into()),
+                }],
+            )
+            .unwrap();
+        let update_events = execute(&studio, &update.plan).await;
+        let retained_update = studio.results.row(&actual.id, 0).unwrap();
+        let updated_info = studio.results.info(&actual.id).unwrap();
+        let after_trigger = result(&run(&studio, &session, &sql).await);
+        let after_trigger_row = studio.results.row(&after_trigger.id, 0).unwrap();
+        completed(&run(&studio, &session, &format!("DROP TABLE joinery.{table}")).await);
+        completed(&insert_events);
+        completed(&update_events);
+        assert_eq!(
+            retained_insert.retained_rows, 0,
+            "commit invented a retained default row on {port}"
+        );
+        assert!(matches!(
+            retained_insert.editability,
+            Some(ResultEditability::ReadOnly { .. })
+        ));
+        assert_eq!(
+            stale_insert_edit.unwrap_err().code,
+            ErrorCode::PolicyBlocked
+        );
+        assert!(actual_row[0].is_some());
+        assert_eq!(actual_row[1].as_deref(), Some("server default"));
+        assert_eq!(retained_update, actual_row);
+        assert!(matches!(
+            updated_info.editability,
+            Some(ResultEditability::ReadOnly { .. })
+        ));
+        assert_eq!(after_trigger_row[1].as_deref(), Some("MIXED CASE"));
+        assert!(matches!(
+            after_trigger.editability,
+            Some(ResultEditability::Editable { .. })
+        ));
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
 async fn query_result_temporary_shadow_is_read_only() {
     for port in [53306, 53307] {
         let (_root, studio, session) = setup(port, SafeMode::Silent).await;
@@ -4649,9 +4730,28 @@ async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rej
         completed(&execute(&studio, &preview.plan).await);
 
         assert_eq!(
-            studio.results.row(&editable_res.id, 0).unwrap()[1].as_deref(),
-            Some(next_note.as_str()),
+            studio.results.row(&editable_res.id, 0).unwrap()[1],
+            original_note,
             "port {port}"
+        );
+        assert!(matches!(
+            studio.results.info(&editable_res.id).unwrap().editability,
+            Some(ResultEditability::ReadOnly { .. })
+        ));
+        assert_eq!(
+            studio
+                .prepare_changes(
+                    &session.id,
+                    &editable_res.id,
+                    vec![CellChange {
+                        row: 0,
+                        column: "c1".into(),
+                        value: original_note.clone(),
+                    }]
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
         );
 
         let missing_pk = result(
@@ -4676,13 +4776,21 @@ async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rej
         );
 
         // Restore original value
+        let refreshed = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT id, note FROM sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
         let restore = studio
             .prepare_table_changes(
                 &session.id,
                 TableChanges {
-                    result_id: Some(editable_res.id.clone()),
+                    result_id: Some(refreshed.id.clone()),
                     updates: vec![ResultChanges {
-                        result_id: editable_res.id,
+                        result_id: refreshed.id,
                         changes: vec![CellChange {
                             row: 0,
                             column: "c1".into(),

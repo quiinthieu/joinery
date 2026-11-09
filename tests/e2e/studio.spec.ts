@@ -309,6 +309,12 @@ test("edits a single-table SELECT query result with proven provenance and shows 
 
   const grid = page.locator(".grid-host");
   const box = (await grid.boundingBox())!;
+  if (!(await page.locator(".inspector").isVisible()))
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+  await page.mouse.click(box.x + 44 + 110 + 70, box.y + 37 + 18);
+  await expect(page.locator(".inspector h3")).toHaveText("status");
+  const originalStatus = await page.locator(".inspector-value").innerText();
+  expect(originalStatus).not.toBe(updatedStatus);
   await expect(async () => {
     await page.mouse.dblclick(box.x + 44 + 110 + 70, box.y + 37 + 18);
     await expect(page.locator("#portal textarea, #portal input").first()).toBeVisible({
@@ -325,6 +331,26 @@ test("edits a single-table SELECT query result with proven provenance and shows 
   await page.getByRole("button", { name: "Apply changes", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("status")).toContainText("Changes committed");
+  await expect(page.getByTestId("result-provenance-badge")).toHaveText(
+    "Read-only result · Result is a snapshot from before these changes. Re-run query to refresh.",
+  );
+  await expect(page.locator(".dirty-count")).toHaveCount(0);
+  const inspectStatus = async (value: string) => {
+    // The longer read-only badge and disappearing edits toolbar can move the grid.
+    await expect(async () => {
+      const currentBox = (await grid.boundingBox())!;
+      await page.mouse.click(currentBox.x + 44 + 110 + 70, currentBox.y + 37 + 18);
+      await expect(page.locator(".inspector-value")).toHaveText(value, { timeout: 500 });
+    }).toPass();
+  };
+  await inspectStatus(originalStatus);
+
+  // Only a fresh database read may display the committed value as editable.
+  await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+  await expect(page.getByTestId("result-provenance-badge")).toHaveText(
+    "Editable result · public.orders (PK: id)",
+  );
+  await inspectStatus(updatedStatus);
 
   // Query omitting the primary key column is declined with an explicit provenance reason
   await editor.fill("SELECT status FROM public.orders WHERE id = 3;");

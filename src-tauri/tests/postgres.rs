@@ -5085,6 +5085,65 @@ async fn table_maintenance_executes_reviewed_analyze_vacuum_and_reindex_and_guar
 
 #[tokio::test]
 #[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn query_result_commit_preserves_snapshot_and_rerun_reads_server_defaults() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let table = format!("query_snapshot_{}", new_id().replace('-', "_"));
+    assert_eq!(status(&run(&studio, &session, &format!("CREATE TABLE public.{table} (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, note text NOT NULL DEFAULT 'server default')")).await), RunStatus::Completed);
+    let sql = format!("SELECT id, note FROM public.{table}");
+    let initial = result(&run(&studio, &session, &sql).await);
+    let preview = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(initial.id.clone()),
+                updates: Vec::new(),
+                deletes: Vec::new(),
+                inserts: vec![RowInsert { values: Vec::new() }],
+            },
+        )
+        .unwrap();
+    let approval = studio.authorize(&preview.plan.id, None, None).unwrap();
+    let events = finish(start(&studio, &preview.plan, Some(&approval)).1).await;
+    let retained = studio.results.info(&initial.id).unwrap();
+    let stale_edit = studio.prepare_changes(
+        &session.id,
+        &initial.id,
+        vec![CellChange {
+            row: 0,
+            column: "c1".into(),
+            value: Some("must re-run".into()),
+        }],
+    );
+    let actual = result(&run(&studio, &session, &sql).await);
+    let actual_row = studio.results.row(&actual.id, 0).unwrap();
+    assert_eq!(
+        status(&run(&studio, &session, &format!("DROP TABLE public.{table}")).await),
+        RunStatus::Completed
+    );
+    assert_eq!(status(&events), RunStatus::Completed);
+    assert_eq!(
+        retained.retained_rows, 0,
+        "commit invented a retained row from omitted defaults"
+    );
+    assert_eq!(
+        retained.editability,
+        Some(ResultEditability::ReadOnly {
+            reason: "Result is a snapshot from before these changes. Re-run query to refresh."
+                .into()
+        })
+    );
+    assert_eq!(stale_edit.unwrap_err().code, ErrorCode::PolicyBlocked);
+    assert!(actual_row[0].is_some());
+    assert_eq!(actual_row[1].as_deref(), Some("server default"));
+    assert!(matches!(
+        actual.editability,
+        Some(ResultEditability::Editable { .. })
+    ));
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
 async fn query_result_search_path_resolves_later_schema_and_quoted_table() {
     let (_root, studio, session) = setup(SafeMode::Silent).await;
     let suffix = new_id();
@@ -5234,10 +5293,33 @@ async fn single_table_select_result_provenance_commits_edits_and_rejects_missing
     let commit_events = finish(start(&studio, &preview.plan, Some(&approval)).1).await;
     assert_eq!(status(&commit_events), RunStatus::Completed);
 
-    // Retained result in ResultStore is updated in place AND live DB has the committed value
+    // Keep the retained query snapshot truthful and require an explicit rerun.
     assert_eq!(
-        studio.results.row(&original_status.id, 0).unwrap()[1].as_deref(),
-        Some(updated_val.as_str())
+        studio.results.row(&original_status.id, 0).unwrap()[1],
+        prior_val
+    );
+    assert!(matches!(
+        studio
+            .results
+            .info(&original_status.id)
+            .unwrap()
+            .editability,
+        Some(ResultEditability::ReadOnly { .. })
+    ));
+    assert_eq!(
+        studio
+            .prepare_changes(
+                &session.id,
+                &original_status.id,
+                vec![CellChange {
+                    row: 0,
+                    column: "c1".into(),
+                    value: prior_val.clone(),
+                }]
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
     );
     let verify_live = result(
         &run(
@@ -5282,13 +5364,21 @@ async fn single_table_select_result_provenance_commits_edits_and_rejects_missing
     );
 
     // Restore original value
+    let refreshed = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT id, status FROM public.orders WHERE id = 2",
+        )
+        .await,
+    );
     let restore = studio
         .prepare_table_changes(
             &session.id,
             TableChanges {
-                result_id: Some(original_status.id.clone()),
+                result_id: Some(refreshed.id.clone()),
                 updates: vec![ResultChanges {
-                    result_id: original_status.id,
+                    result_id: refreshed.id,
                     changes: vec![CellChange {
                         row: 0,
                         column: "c1".into(),

@@ -85,7 +85,7 @@ enum Action {
         anchor_id: Option<String>,
         updates: Vec<ResultChanges>,
         deletes: Vec<ResultDeletes>,
-        inserted_rows: Vec<TextRow>,
+        has_inserts: bool,
     },
     CancelProcess {
         id: String,
@@ -1247,22 +1247,20 @@ impl Studio {
                 anchor_id,
                 updates,
                 deletes,
-                inserted_rows,
+                has_inserts,
             } => {
                 if token.is_cancelled() {
                     status = RunStatus::Cancelled;
                 } else {
                     match session.driver.apply(schema, rows).await {
                         Ok(()) => {
-                            if let Ok(updated_results) = self.results.apply_committed_changes(
+                            for result in self.results.apply_committed_changes(
                                 anchor_id.as_deref(),
                                 updates,
                                 deletes,
-                                inserted_rows,
+                                *has_inserts,
                             ) {
-                                for result in updated_results {
-                                    events(QueryEvent::Result { result });
-                                }
+                                events(QueryEvent::Result { result });
                             }
                         }
                         Err(error) => {
@@ -2739,21 +2737,9 @@ impl Studio {
         plan.requires_approval = true;
         plan.warnings.push("Grid edits use the login role in a separate transaction. SQL-editor transactions and session settings are independent.".into());
         bytes += sql.iter().map(String::len).sum::<usize>();
-        let inserted_rows: Vec<TextRow> = mutations
+        let has_inserts = mutations
             .iter()
-            .filter_map(|mutation| match mutation {
-                RowMutation::Insert { values } => {
-                    let mut row = vec![None; schema.columns.len()];
-                    for (idx, val) in values {
-                        if *idx < row.len() {
-                            row[*idx] = val.clone();
-                        }
-                    }
-                    Some(row)
-                }
-                _ => None,
-            })
-            .collect();
+            .any(|mutation| matches!(mutation, RowMutation::Insert { .. }));
         let row_count = mutations.len();
         let plan = self.store_plan(
             plan,
@@ -2763,7 +2749,7 @@ impl Studio {
                 anchor_id: retained_anchor,
                 updates: retained_updates,
                 deletes: retained_deletes,
-                inserted_rows,
+                has_inserts,
             },
             bytes,
         )?;
@@ -3468,7 +3454,7 @@ impl Studio {
                 anchor_id: None,
                 updates: Vec::new(),
                 deletes: Vec::new(),
-                inserted_rows: Vec::new(),
+                has_inserts: false,
             },
             total_bytes,
         )?;
