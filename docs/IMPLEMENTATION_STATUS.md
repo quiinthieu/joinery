@@ -1,5 +1,31 @@
 # Implementation and release status
 
+## Confirmed owner target (9 November 2026)
+
+The owner requires **Snowflake on macOS with SSO `authenticator=externalbrowser`**,
+and **everything DataGrip currently provides for that workflow**, explicitly
+including reads, writes, schema changes and multi-statement transactions.
+The [Snowflake implementation queue](snowflake-datagrip-replacement.md) records
+the required workflow inventory and qualification sequence.
+This is not a read-only-pilot or MVP target. All applicable capabilities in the
+official DataGrip baseline remain required until the owner explicitly excludes
+one; existing exclusions are blockers, not optional enhancements.
+
+The owner also requires the **latest stable DataGrip release** and Snowflake
+query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
+released 5 November 2026. Complete million-row paging/export with bounded memory
+is required; current 100,000-row / global 64 MiB retention does not meet it.
+
+Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
+the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
+session with writes/transactions. Browser login alone does not prove equivalent
+SSO setup or session behavior. These are primary replacement blockers. Local
+PostgreSQL/MySQL safety repairs remain useful application work but do not close
+Snowflake acceptance. External account qualification needs explicit non-production
+scope and permission for any billable activity/writes; no private DataGrip state
+or credentials will be inspected.
+
+
 ## Daily replacement qualification (9 November 2026)
 
 The persistent DataGrip replacement Goal is active and owner acceptance is
@@ -39,44 +65,35 @@ None of those observations count as passing tests. See the
 
 ## Current identity-safety increment (qualification incomplete)
 
-`ea3ea76` commits the vendored `tokio-postgres 0.7.18` foundation (MIT/Apache-2.0)
-and three source changes for actual query origins and bound-portal description.
-Six synthetic protocol tests and one ignored nine-case actual client protocol set
-pass; these do not qualify application behavior. Backend repair `4b7e4c3` carries
-actual relation/attribute/type identity from SELECT, browse and CSV preview
-through approvals and batches, then validates and executes the exact DML portal.
-The final PostgreSQL 18.6 `--engine postgres --require-safe` report passes all
-nine cases: each returns `Conflict`, preserves the replacement, consumes
-approval and passes fresh-control and cleanup checks, with no operational
-errors. This is scoped fixture evidence, not whole-application qualification.
+PostgreSQL repair `4b7e4c3` carries actual relation/attribute/type identity through
+SELECT, browse, CSV preview, plans and approvals, then validates and executes the
+same DML portal. The MySQL/MariaDB repair (`997680e`) retains a bounded
+read transaction holding the original metadata lock and requires that same live
+generation during writer preparation and each batch. Expiry, release, disconnect,
+application DDL and transport loss fail closed. Guard lifetime is 60 seconds and each
+session has at most 32 live targets, with no capacity eviction.
 
-A disconnect race was reproduced in the auxiliary write path and fixed by checking
-session registration under the same mutex used by retirement; its targeted rerun returned
-`ConnectionClosed` and left value `0`. Raw browse draining and permission
-fallback are implemented. Four actual permission/RLS/raw tests passed. After
-11 of 16 new state regressions
-failed and five passed, the 80-case state suite passed following fixes. Two actual
-browse unknown-outcome tests pass. Latest validation passed 561 frontend / 186
-Rust tests with strict Clippy. One clean seven-suite fixture command passed 112
-tests (41 MySQL/MariaDB, 43 PostgreSQL, four permission/RLS/raw, one
-client-protocol suite, six Redis, two SSH and 15 transport). The final strict
-PostgreSQL diagnostic and formal example regression passed nine cases separately.
-The focused nine-case browser run passed 9/9, including CSV mapping. After
-coordinate repair and UUID fixture isolation, the full browser suite passed
-129/129 and the focused table-data/raw-browse run passed 11/11. The earlier
-127-case 126-pass attempt and 10/11 focused attempt were historical test
-coordinate and fixture-isolation failures. Both raw-browse unknown-outcome UI
-cases passed. MySQL/MariaDB's 18 historical cases remain open and unsafe; the
-bounded [guard design](mysql-table-identity-design.md) records protocol-only
-evidence, not an application repair. Fresh clean-source normal macOS
-bundle/signature, two hidden native PostgreSQL recovery pairs and ten-cycle smoke
-pass on `5762ee5`; the ledger records artifact hashes and scope. Required
-engine/auth workflows, normal packaged restart/credentials and owner acceptance remain pending.
+Preliminary integrated qualification passed 580 frontend / 193 standard Rust tests,
+123 actual fixture tests, 27/27 strict three-engine identity scenarios and 137/137
+browser workflows. A later actual PostgreSQL regression reproduced a CSV caller
+omitting its preview token and silently adopting a newer target preview. Core and
+named IPC now require exact ownership; stale/released-token, malformed IPC and
+fresh-control regressions accompany the repair. Actual verified TLS-over-SSH now
+covers retained guards and approved writers on MySQL and MariaDB. Latest combined
+validation passes 581 frontend / 193 standard Rust tests, 124 actual fixtures,
+27 strict scenarios and all 137 browser workflows. Fresh clean-source
+native/bundle qualification remains pending.
 
-PostgreSQL identity implementation is committed locally as `4b7e4c3`; fixture isolation is `80ded6c`, frontend retirement is `08484fc`, and the vendored client foundation is `ea3ea76`. These changes remain unmerged, unpublished and not installed.
-The owner-private hub is not updated because this task forbids publication.
-Required engines/authentication, packaged restart/credential evaluation,
-signing/notarization, other platforms and hands-on acceptance remain open.
+The [ledger](replacement-verification.md) preserves original failures and exact
+source/artifact scope. Clean-source `5762ee5` native recovery/smoke and bundle
+qualification predates this current increment. The [guard design](mysql-table-identity-design.md)
+and [identity investigation](table-identity-safety.md) describe bounds and tests.
+Required engine/auth workflows, representative performance/accessibility, normal
+packaged restart/OS credentials, signing/notarization, other platforms and owner
+acceptance remain open. The Goal is active, not accepted.
+
+All work remains local, unmerged, unpublished and not installed. The owner-private
+hub is not updated because this task forbids publication.
 
 Updated 2026-11-02. R1–R4 are merged but unreleased. The local R6 branch now
 integrates R5 FK JOIN completion, structured Unicode diagnostics, typed

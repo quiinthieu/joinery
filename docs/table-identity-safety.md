@@ -1,8 +1,9 @@
 # Retained edits and replacement tables
 
-Investigation date: 9 November 2026. **The strict PostgreSQL 18.6 fixture
-diagnostic passes all nine cases; full application qualification remains open.
-MySQL and MariaDB remain unsafe in the reproduced cases.** This is a safety qualification within the active
+Investigation date: 9 November 2026. **The prior PostgreSQL 18.6 fixture
+diagnostic passed all nine cases. The current MySQL/MariaDB guard has
+preliminary passing fixture evidence; qualification of the combined latest
+source remains open.** This is a safety qualification within the active
 [replacement Goal](replacement-acceptance.md), not a claim about undocumented
 DataGrip behavior. The passing [qualification baseline](replacement-verification.md)
 does not cover this scenario.
@@ -123,7 +124,7 @@ replacement before those checks could satisfy them, as the historical diagnostic
 shows. Capturing a new identity at approval would still miss replacement of the
 table that produced an older result or CSV preview.
 
-## Partial PostgreSQL repair and current qualification
+## PostgreSQL identity repair and qualification record
 
 The identity foundation is committed as `ea3ea76`: vendored `tokio-postgres`
 0.7.18 under its MIT/Apache-2.0 licenses, with provenance for three upstream
@@ -139,13 +140,30 @@ stored results, preparation, approval and every batch. Before writing, it
 describes and executes the exact bound DML portal under the guarded transaction.
 The initial repaired report at
 `.cache/table-identity-probe/postgres-repaired-report.json` predates the final
-review fixes. The final strict `--engine postgres --require-safe` report at
-`.cache/table-identity-probe/postgres-csv-final-report.json` passes all nine
+review fixes. The prior-source strict `--engine postgres --require-safe` report at
+`.cache/table-identity-probe/postgres-csv-final-report.json` passed all nine
 PostgreSQL 18.6 scenarios: every case rejected with `Conflict`, preserved the
 replacement, consumed approval, passed fresh controls and cleanup, with zero
 operational errors. A separate formal example regression run over the same nine
 cases also passed. This is scoped fixture evidence, not general engine
 qualification.
+
+### CSV preview-token hardening
+
+A pre-hardening actual PostgreSQL regression failed: after preview A, preview B
+replaced the pending tokenless Rust lookup, and preparing A silently selected
+B's preview. The resulting approved row from A was written into replacement
+row 2 from B. The legacy tokenless Rust path has now been removed. Core plan
+preparation requires a nonempty `preview_token: &str` and performs exact
+triple-key lookup; the native named IPC boundary requires a string. Pure preview
+analysis can still have a null token, but cannot prepare a plan. This prevents
+stale-A, released-A-with-B-only, and empty-token requests from resolving to a
+different preview.
+
+Regression coverage has been added for those stale/released/empty-token cases,
+UI non-null tokens, and real RPC missing/null/empty-token requests. The focused
+frontend suite passes 15 tests and typecheck passes. These focused checks do not
+alone establish combined qualification; final source results follow below.
 
 Review found an auxiliary-connection race where an edit could commit after the
 originating session disconnected. A regression observed value `1` and
@@ -153,31 +171,26 @@ originating session disconnected. A regression observed value `1` and
 and its targeted rerun observed value `0` and `ConnectionClosed`. Raw browse
 commit/drain handling and a read-only fallback on permission denial are also
 implemented. Four actual permission/RLS/raw tests passed, including column-only
-read-only fallback and late-error cutoff. Sixteen frontend state-behavior cases
-exposed 11 failures while five passed; after repair, the 80-case state test file
-passed. Latest validation passes 561 frontend / 186 Rust tests and strict
-Clippy. One clean seven-suite fixture command passes 112 tests: 41 MySQL/MariaDB,
-43 PostgreSQL, four permission/RLS/raw, one client-protocol suite covering nine
-scenarios, six Redis, two SSH and 15 transaction transport. The final strict
-PostgreSQL diagnostic and formal example regression are additional, separate
-runs. The focused nine-case browser run passes 9/9, including CSV automatic-to-
-explicit mapping compatibility, changed-configuration denial and stale-
-replacement conflict. After the test-coordinate fix and UUID-based fixture
-isolation, the full browser suite passed 129/129; the focused table-data/raw-
-browse run passed 11/11. Both actual raw-browse unknown-outcome UI cases passed.
-Earlier 126/127 and 10/11 attempts were test-coordinate and fixture-isolation
-failures; they are historical, not current product failures. Fresh normal macOS
-bundle/signature, two hidden native PostgreSQL recovery pairs and ten-cycle smoke
-pass on clean `5762ee5`; the ledger records hashes and qualification limits. Earlier 545 frontend /
-180 Rust / 103 fixtures / 124 browser results and normal-bundle hash belong to
-the earlier writer repair only.
+read-only fallback and late-error cutoff. The earlier PostgreSQL identity source
+passed 580 frontend / 193 Rust checks, 123 fixture tests, 137 browser tests and
+the 27-case all-engine strict diagnostic. Its focused nine-case browser run
+passed 9/9, including CSV mapping compatibility and stale-replacement conflict;
+the focused table-data/raw-browse run passed 11/11. Those results predate the
+required-token and TLS changes described here. They are prior-source evidence,
+not final qualification of the current combined source. Earlier 561/186,
+112-fixture, 129-browser and native/bundle results likewise belong to earlier
+increments; the ledger retains their provenance and limits. The final combined
+source checks for `997680e` pass 581 frontend / 193 standard Rust, 124 actual
+fixture tests, all 27 strict scenarios and all 137 browser workflows. Fresh
+clean-source native/bundle qualification remains pending.
 
-Scope remains PostgreSQL 18.6. The implementation requires `SELECT` access to
+Scope of the PostgreSQL identity repair remains PostgreSQL 18.6. The implementation requires `SELECT` access to
 system columns for editable provenance; column-only readers fall back to
 read-only, covered by the actual permission tests. OID identity does not
 by itself qualify every rule, trigger, partition effect or OID reuse case.
-Grid writes remain separate from console transactions. MySQL and MariaDB's 18
-historical failures remain open and unsafe; no cross-engine repair is claimed.
+Grid writes remain separate from console transactions. The 18 MySQL/MariaDB
+failures below are historical results from `ff59ca6`; the current guard has
+separate preliminary passing results, but is not yet finally qualified.
 
 Independent Tier 2 reviews checked the driver, result store, provenance,
 preparation and CSV paths, with matching coverage metadata and direct source
@@ -186,34 +199,64 @@ reads. The important touch points are `results.rs::StoredResult`,
 `browse_with_approval`, `prepare_table_changes`, `preview_csv_import`,
 `prepare_csv_import_batch` and each SQL driver's apply path.
 
-## MySQL and MariaDB design boundary
+## MySQL and MariaDB current implementation and qualification
 
 The MySQL and MariaDB wire-level result metadata observed in this investigation
 provides names, not a documented table-incarnation identifier that can bind an
 old result to a replacement-safe object. See the bounded [MySQL/MariaDB guard
-design](mysql-table-identity-design.md) for probe evidence and a falsifiable
-next-step proposal. InnoDB dictionary `TABLE_ID` metadata
+design](mysql-table-identity-design.md) for the implemented guard contract,
+protocol evidence and current proof gates. InnoDB dictionary `TABLE_ID` metadata
 is documented, but reading those catalogs requires the `PROCESS` privilege in
 the documented MySQL 8.4 and MariaDB versions. Joinery must not request that
 privilege automatically or treat it as an acceptable default.
 
-One ordinary-role design to falsify on isolated fixtures is a dedicated,
-explicitly bounded guard connection: begin a transaction before the original
-read or CSV preview, access the target so its metadata lock remains held, and
-retain that transaction through review and CSV batches. The writer must acquire
-its own metadata lock and then verify the original retained guard using a fresh
-non-reconnecting round trip, fresh active-transaction status, generation and
-deadline checks before issuing DML. A ping on a replacement connection, automatic
-reconnect or a new transaction cannot prove continuity of the original guard.
-This protocol premise has passed the bounded standalone probe; application
-integration and lifecycle qualification remain open.
+The current implementation uses a dedicated ordinary-role guard connection,
+established before the original read or CSV preview. It retains target metadata
+protection through review; the writer acquires its own metadata lock, then checks
+the original guard with a fresh non-reconnecting round trip and active-transaction
+status before DML. The default guard TTL is 60 seconds, absolute and
+nonrenewing. The per-session maximum is 32; acquisition rejects while full
+rather than evicting a live guard. The preliminary 18-case MySQL/MariaDB
+application run used a hidden four-second fixture TTL, so it does not qualify
+the production TTL or every expiry boundary. See the detailed [guard contract](mysql-table-identity-design.md)
+for deadlines, statement revocation, CSV ownership and lock ordering.
+
+CSV plan preparation and commit require the exact nonempty preview token. Core
+uses exact triple-key lookup, native named IPC requires a string, and pure
+preview analysis with a null token cannot prepare a plan. No tokenless legacy
+fallback is allowed. The pre-hardening actual PostgreSQL regression described
+above demonstrated why: a missing token could select a newer preview and route
+an older approval's row into the newer replacement.
+
+The guard-only source's strict diagnostic report
+`.cache/table-identity-probe/mysql-guard-first-report.json` passed 27/27
+application cases across PostgreSQL 18.6, MySQL 8.4.13 and MariaDB 11.4.13;
+the MySQL/MariaDB portion includes the historical 18 replacement cases. Ten
+guard lifecycle tests passed in 15.87 seconds while looping across both engines.
+The existing 42 MySQL tests and PostgreSQL CSV preview-token regression also
+passed. These results predate the latest required-token and TLS changes. Full
+source checks now pass 581 frontend / 193 standard Rust, 124 actual fixtures
+(including 11 guard tests), 27 strict scenarios and all 137 browser workflows.
+See the ledger for the exact final-source commands and qualification limits.
+
+Recent regressions exposed and fixed a successful post-expiry read being
+misreported as `Conflict`, and a late database `SIGNAL` being swallowed after
+more than 2 MiB of raw-browse output. The database returned a known error in the
+latter case. Separately, direct actual raw-browse auxiliary-transport loss
+qualifies `OutcomeUnknown`, session retirement and no retry. That transport test
+does not assert whether the server committed or rolled back any effects. A
+focused local-TLS test passed in 2.97 seconds on both MySQL and MariaDB: all TCP
+channels verified SSLRequest and SNI `database.fixture.test`, and the test
+exercised guard metadata locking and writer commit. It used fixture settings;
+this is not production TLS, certificate or external-authentication qualification.
+These focused checks retain their own scope; the final integrated source checks
+above also pass. Clean-source native/bundle qualification remains pending.
 
 The guard can delay migrations. Queued DDL may block a later writer behind the
-original guard, so bounded deadlines/TTL, explicit release, cancel, eviction,
-disconnect and shutdown cleanup all need measured behavior. Run actual isolated
-drop/recreate and queued-DDL experiments, including CSV batch boundaries, before
-choosing this design. Production readiness and the owner's concurrent-migration
-requirement remain unresolved. Official references: [MySQL metadata locking](https://dev.mysql.com/doc/refman/8.4/en/metadata-locking.html),
+original guard; the default TTL and lock waits bound the delay, but the owner's
+concurrent-migration requirement and acceptance of rejection behavior remain
+unresolved. No production-readiness, external authentication, or all-version
+claim is implied. Official references: [MySQL metadata locking](https://dev.mysql.com/doc/refman/8.4/en/metadata-locking.html),
 [MariaDB metadata locking](https://mariadb.com/docs/server/reference/sql-statements/transactions/metadata-locking),
 and [MySQL InnoDB table metadata](https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-tables-table.html).
 
@@ -240,16 +283,22 @@ engines. Remaining proof obligations and design risks are:
   [MySQL 8.4](https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-tables-table.html)
   and [MariaDB](https://mariadb.com/docs/server/reference/system-tables/information-schema/information-schema-tables/information-schema-innodb-tables/information-schema-innodb_sys_tables-table).
   Do not grant privileges or substitute schema hashes/timestamps automatically.
-  A privilege-free alternative is an explicit bounded edit connection retaining
-  its metadata lock from snapshot through write. That changes resource use and
-  can delay migrations; expiry, cancel, disconnect and shutdown must release it.
+  The current privilege-free implementation uses an explicit bounded edit
+  connection retaining its metadata lock from snapshot through write. That
+  changes resource use and can delay migrations; final qualification must cover
+  expiry, cancel, disconnect and shutdown release.
 - Batch commits release transaction locks. CSV must retain the original target
   through each batch and qualify replacement after preview, after approval and
-  between commits. Current PostgreSQL cases pass the final strict report; MySQL/MariaDB
-  still demonstrate the unsafe outcome.
+  between commits. Current PostgreSQL cases pass the final strict report. The
+  unsafe MySQL/MariaDB outcomes were observed on the historical implementation;
+  the current guard has preliminary passing cases, with final qualification
+  still pending.
 
-Complete qualification still needs all nine cases on each engine, queued writers,
-permission denial, connection loss, guard expiry and namespace/partition cases.
+The 27-case all-engine and nine-case PostgreSQL reports predate the latest
+required-token and TLS changes. MySQL/MariaDB application cases used the hidden
+four-second TTL. Final qualification still needs the complete
+validation/browser run and confirmation of production-TTL expiry, queued writers,
+permission denial, connection loss, CSV batch expiry and namespace/partition cases.
 Existing manual console transactions must never be committed or rolled back by a
 hidden editing guard. UI workflows must show expiry/rejection and require a fresh read.
 

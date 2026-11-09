@@ -1,9 +1,34 @@
 # Joinery implementation roadmap
 
+## Confirmed owner target (9 November 2026)
+
+The owner requires **Snowflake on macOS with SSO `authenticator=externalbrowser`**,
+and **everything DataGrip currently provides for that workflow**, explicitly
+including reads, writes, schema changes and multi-statement transactions.
+The [Snowflake implementation queue](snowflake-datagrip-replacement.md) records
+the required workflow inventory and qualification sequence.
+This is not a read-only-pilot or MVP target. All applicable capabilities in the
+official DataGrip baseline remain required until the owner explicitly excludes
+one; existing exclusions are blockers, not optional enhancements.
+
+The owner also requires the **latest stable DataGrip release** and Snowflake
+query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
+released 5 November 2026. Complete million-row paging/export with bounded memory
+is required; current 100,000-row / global 64 MiB retention does not meet it.
+
+Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
+the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
+session with writes/transactions. Browser login alone does not prove equivalent
+SSO setup or session behavior. These are primary replacement blockers. Local
+PostgreSQL/MySQL safety repairs remain useful application work but do not close
+Snowflake acceptance. External account qualification needs explicit non-production
+scope and permission for any billable activity/writes; no private DataGrip state
+or credentials will be inspected.
+
+
 The active 9 November 2026 Goal and next qualification queue are in
-[daily replacement acceptance](replacement-acceptance.md). Requirements are
-pending owner confirmation; historical slice completion does not establish
-daily replacement acceptance.
+[daily replacement acceptance](replacement-acceptance.md). The required Snowflake externalbrowser/macOS target is confirmed above;
+historical slice completion does not establish daily replacement acceptance.
 
 The earlier P0 repairs cover query-result provenance, truthful bounded snapshots,
 abrupt backend restart, manual transaction outcomes and delayed result inspection.
@@ -33,21 +58,28 @@ Combined packaging/signature, two native recovery pairs, ordinary smoke and all
 124 browser workflows pass for that earlier source. A separate diagnostic on
 `ff59ca6` reproduced 27 drop/recreate identity failures (nine each on PostgreSQL,
 MySQL and MariaDB), including deletes, empty-result inserts and CSV between batch
-commits. The current identity increment addresses that historical result. Its
-PostgreSQL 18.6 strict diagnostic passes all nine expected rejections, and the
-formal example regression passes separately. Validation passes 561 frontend /
-186 Rust tests with strict Clippy; one clean seven-suite fixture command passes
-112 tests. The focused nine-case browser run passes 9/9, including CSV mapping.
-After the test-coordinate fix and UUID fixture isolation, the full browser
-suite passed 129/129 and the focused table-data/raw-browse run passed 11/11. The
-prior 126/127 and 10/11 results are historical test-coordinate and fixture-
-isolation failures. Both raw-browse unknown-outcome UI cases passed. MySQL/MariaDB's
-18 historical cases remain unsafe. The [identity investigation](table-identity-safety.md)
-links the bounded [MySQL/MariaDB design](mysql-table-identity-design.md),
-`ea3ea76` client foundation and scope limits. Fresh normal macOS bundle/signature,
-two hidden native PostgreSQL recovery pairs and ten-cycle smoke pass on clean
-`5762ee5`. Normal packaged restart/credentials, owner applicability, external
-workflows and hands-on acceptance remain open.
+commits. The PostgreSQL identity repair is committed locally and the current
+MySQL/MariaDB increment implements bounded retained metadata-lock guards,
+fail-closed original-generation checks and exact CSV preview ownership.
+Preliminary integrated validation passed 580 frontend / 193 standard Rust,
+123 real fixtures, 27/27 strict three-engine identity scenarios and all 137 browser
+workflows. A later actual PostgreSQL regression exposed tokenless CSV association
+with a newer preview; the legacy path is removed and named IPC requires the exact
+token. Verified TLS-over-SSH now exercises actual guarded browse and approved
+writes on both MySQL and MariaDB. Final source checks for local code `997680e`
+pass 581 frontend / 193 standard Rust, 124 actual fixtures, all 27 strict scenarios
+and all 137 browser workflows. Fresh clean-source native/bundle artifacts are
+next. Historical `5762ee5` native/bundle
+qualification belongs to the earlier PostgreSQL increment. See the
+[identity investigation](table-identity-safety.md) and
+[retained-guard contract](mysql-table-identity-design.md).
+
+Next after local integration: implement the confirmed Snowflake externalbrowser
+stateful transport and million-row result path; qualify all applicable DataGrip
+2026.3 capabilities, performance and accessibility;
+complete normal packaged restart/credentials and the hands-on walkthrough.
+The Goal remains active until acceptance. No push, installation, publication or
+private application-state access is authorized.
 
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;

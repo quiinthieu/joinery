@@ -1,12 +1,18 @@
 # Official DataGrip capability baseline
 
 Research date: 2026-11-09. Product documentation observed in the current
-DataGrip 2026.3 and 2026.2 help versions (called out by area below), with the
+DataGrip 2026.3 and older 2026.2 help versions (called out by area below), with the
 2026.3 release notes and official product pages where version-specific context
 matters. This is a user-facing capability
 benchmark for the adjacent Joinery comparison; actual availability varies by
 database, driver, permissions, and IDE configuration. It is not a claim that
-Joinery should implement every DataGrip feature.
+Joinery already implements every DataGrip feature. The owner's confirmed target
+requires every applicable Snowflake/macOS capability and results up to one million
+rows. The source-linked [Snowflake benchmark](snowflake-official-baseline.md)
+records that inventory and connector constraints. JetBrains' official
+[release API](https://data.services.jetbrains.com/products/releases?code=DG&latest=true&type=release)
+confirms **2026.3**, build `263.7307.216`, released 5 November 2026, as the latest
+stable release checked on 9 November.
 
 ## Licensing and AI are separate questions
 
@@ -46,7 +52,7 @@ separate from DataGrip's non-commercial IDE license. [AI Assistant docs](https:/
 | Saved work and recovery | SQL files/project work, saved queries, bookmarks, recent locations, Local History, and Git support workflows for finding and recovering edits. [User files](https://www.jetbrains.com/help/datagrip/working-with-user-files.html), [saved queries](https://www.jetbrains.com/help/datagrip/store-your-queries.html), [bookmarks](https://www.jetbrains.com/help/datagrip/bookmarks.html), [recent locations](https://www.jetbrains.com/help/datagrip/recent-files-and-changes.html), [Local History](https://www.jetbrains.com/help/datagrip/local-history.html) |
 | Keyboard and accessibility | Predefined and customizable keymaps support shortcut lookup/editing. Accessibility settings include screen-reader support, UI zoom and colors, plus keyboard navigation; the 2026.2 accessibility guide documents Windows, macOS, and Linux screen-reader support. [Keymap (2026.2)](https://www.jetbrains.com/help/datagrip/settings-keymap.html), [Accessibility (2026.2)](https://www.jetbrains.com/help/datagrip/accessibility.html) |
 | Installation, updates, and local persistence | Standalone installs and Toolbox-managed installs have update channels/policies, with automatic update checks enabled by default for standalone. Projects store data-source settings in `.idea/dataSources.xml`; personal IDE settings, caches/Local History, and projects occupy separate configuration, system, and projects directories. Backup and Sync can copy/sync selected settings through a JetBrains Account; projects/files remain local unless otherwise shared. [Update DataGrip (2026.3)](https://www.jetbrains.com/help/datagrip/update.html), [project data (2026.3)](https://www.jetbrains.com/help/datagrip/working-with-projects.html), [IDE directories (2026.3)](https://www.jetbrains.com/help/datagrip/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html), [settings sync (2026.3)](https://www.jetbrains.com/help/datagrip/sharing-your-ide-settings.html), [data sources](https://www.jetbrains.com/help/datagrip/managing-data-sources.html) |
-| AI and agents | AI Assistant provides chat, in-editor assistance, and coding agents. It can use database objects as context; external agents can connect via ACP, and MCP can expose tools or the IDE. In 2026.3, Air is included by default with a free Junie Lite configuration. This is an optional/provider-dependent capability layer and does not change non-commercial licensing parity for core IDE functionality. [AI Assistant](https://www.jetbrains.com/help/datagrip/ai-assistant-in-jetbrains-ides.html), [2026.3 What's New](https://www.jetbrains.com/datagrip/whatsnew/) |
+| AI and agents | AI Assistant provides chat, in-editor assistance, and coding agents. It can use database objects as context; external agents can connect via ACP, and MCP can expose tools or the IDE. In 2026.3, Air is included by default with a free Junie Lite configuration. This is a provider-dependent capability layer in the required applicability inventory and does not change non-commercial licensing parity for core IDE functionality. [AI Assistant](https://www.jetbrains.com/help/datagrip/ai-assistant-in-jetbrains-ides.html), [2026.3 What's New](https://www.jetbrains.com/datagrip/whatsnew/) |
 
 ## Scope notes for comparisons
 

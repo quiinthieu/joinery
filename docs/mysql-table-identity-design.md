@@ -1,10 +1,15 @@
-# MySQL/MariaDB retained-edit identity: bounded design draft
+# MySQL/MariaDB retained-edit identity: bounded guard implementation
 
-**Status:** design proposal only. MySQL 8.4.13 and MariaDB 11.4.13 pass a
-standalone metadata-lock protocol probe; Joinery's 18 historical drop/recreate
-application cases remain unsafe. This is not an application repair or a
-production-readiness claim. The owner's required engines and tolerance for
-concurrent migration blocking remain unanswered.
+**Status:** implemented and locally committed as `997680e`. Final source checks
+pass 581 frontend / 193 standard Rust tests, 124 actual fixture tests (including
+11 guard tests looping across both engines), 27/27 strict application identity
+scenarios and 137/137 browser workflows. The strict diagnostic includes all 18
+historical MySQL/MariaDB replacement cases under the hidden four-second fixture
+policy; production uses 60 seconds. Actual local TLS-over-SSH guard/writer checks
+pass on both engines. Clean-source native/bundle qualification is still pending.
+These checks do not qualify external engines or the owner's required Snowflake
+workflow. `ff59ca6` remains the historical unsafe baseline. Guard capacity and
+other disclosed lifecycle cases remain unqualified below.
 
 ## What the disposable probe established
 
@@ -35,66 +40,102 @@ Observed on both engines:
   A separate `START TRANSACTION READ ONLY` guard at READ COMMITTED, followed by
   a table read and fresh non-reconnecting ping, also retained protection.
 
-The report explicitly sets `applicationSafetyQualified: false`. These results
-establish a protocol premise for these fixture versions and SQL forms, not that
-Joinery already tracks a guard, that every server/version behaves identically,
-or that all 18 application workflows are safe.
+The standalone report explicitly sets `applicationSafetyQualified: false`.
+These results establish a protocol premise for these fixture versions and SQL
+forms; they do not qualify application integration, establish behavior on every
+server/version, or cover all application workflows. The separate, preliminary
+application evidence is summarized below.
 
-## Candidate ordinary-role protocol to falsify before implementation
+## Implemented guard contract
 
-1. **Acquire before reading.** Create a dedicated, backend-owned guard
-   connection and explicit transaction before the original table browse, query
-   result, or CSV preview reads the target. Access the target within that
-   transaction so its metadata lock spans the retained snapshot and approval
-   period. Store an opaque application generation/lease ID with the result or
-   preview; never infer lease identity from a connection pool slot or cached
-   transaction flag.
-2. **Bound and own the lease.** Set bounded server lock wait and application
-   lease deadlines. Expiry must actively close/rollback the guard connection,
-   even when no later request arrives; do not rely on lazy cache pruning. Release
-   when the last result/preview/plan owner releases it, including rejection,
-   cancellation, eviction and disconnect. Explicit invalidation and shutdown
-   revoke every reference. CSV must retain its original lease across batch
-   commits. If expiry or transport loss occurs, mark retained edits stale
-   and require a new read and review.
-3. **Validate from the writer transaction.** Start the writer transaction and
-   acquire its own lock on the exact qualified target first. Before schema/row
-   checks or DML, always issue a fresh ping on the original guard with reconnect
-   disabled; require success, an active transaction status, matching live
-   application generation, and an unexpired lease. Then validate schema and
-   conflicts and execute DML in that same writer transaction. Any failed or
-   ambiguous check fails closed and rolls back. Never auto-reconnect, begin a
-   replacement transaction, or replay reads to make a lost guard look valid.
-4. **Keep every workflow inside the contract.** Browse, eligible query results
-   (including empty results), and CSV preview need a lease established before
-   their source read. CSV batches reacquire/retain writer locks per batch and
-   revalidate the original guard each time; a batch commit does not replace the
-   original lease. Define ownership when multiple results share one page/lease.
-   Existing manual console transactions stay independent and must never be
-   committed or rolled back by the edit guard. Raw approved SQL effects that do
-   not have proven target provenance need a separate policy; do not claim this
-   protocol covers them.
-5. **Make waiting visible and bounded.** A queued DDL operation can sit ahead of
-   the writer and cause it to time out behind the still-held original lease.
-   Use a bounded metadata-lock wait, show rejection/expiry clearly, release the
-   guard explicitly before user-approved DDL, then require a fresh read and
-   review. Measure whether release unblocks queued DDL and how cancel/expiry
-   behaves while a writer is waiting.
+The implementation assigns each guard a stable generation, session identity
+and canonical table identity. Result-column names corroborate the source lease;
+they do not prove physical table identity. Source AST eligibility checks and
+temporary-table rejection remain required.
 
-The probe covers basic drop/rename, queued DDL, guard loss and writer-held-lock
-premises. It does not qualify Joinery lifecycle races, active TTL cleanup,
-multiple readers sharing a lease, cancellation while waiting, CSV batch commits,
-all 18 original application cases, engine variants, privilege combinations, TLS,
-or external deployments. Implement and qualify those interactions in isolated
-increments. Replacement acceptance must resolve the owner's concurrent-migration
-workflow and tolerable waiting behavior.
+| Bound | Value |
+|---|---:|
+| Absolute, nonrenewing lease TTL | 60 seconds |
+| Guards per session | At most 32; acquisition rejects while full (no eviction) |
+| Guard acquisition | 10 seconds |
+| Fresh original-guard PING/verification | 3 seconds |
+| Guard close | 2 seconds |
+| Writer metadata-lock wait | 5 seconds |
+| Editor non-read metadata-lock wait | 5 seconds |
+| Existing transport operation ceiling | 65 seconds |
+
+1. **Acquire before source reads.** Browse, eligible query-result reads and CSV
+   preview establish the original guard before reading rows. Each CSV preview
+   carries a distinct opaque generation so late async responses or an unmounted
+   dialog cannot attach a stale lease to a newer preview. Preparing or committing
+   a CSV plan requires its exact nonempty preview token; no tokenless legacy Rust
+   path or latest-preview fallback is accepted. The native named IPC boundary
+   requires a string. Pure preview analysis may omit the token, but cannot prepare
+   a plan. Wire names corroborate the lease; they do not replace it.
+2. **Own and expire the lease.** Releasing the last result, preview or approved
+   plan owner revokes that generation. TTL is absolute and nonrenewing, and
+   actively closes the connection even if references remain; do not rely on
+   lazy cache pruning. Cancellation and shutdown also revoke guards. Failed or
+   ambiguous PING, expiry, generation mismatch or session close invalidates the
+   retained edit and requires a fresh read and review.
+3. **Order writer checks.** The writer first acquires its own metadata lock
+   under the five-second bound. It then unconditionally sends a fresh `COM_PING`
+   on the original guard with reconnect disabled, verifies `IN_TRANS` and the
+   expected generation/session/canonical table within three seconds, then checks
+   schema/conflicts and runs DML in that same writer transaction. Successful
+   writer MDL plus fresh original-guard verification is the linearization point.
+   Failure before it is fail-closed. Never reconnect, re-`BEGIN`, or replay
+   writes to make a lost guard appear valid.
+4. **Handle expiry and CSV batches.** An already-authorized write may finish
+   after later guard expiry once writer MDL and fresh verification passed;
+   cancellation and shutdown still apply. Every subsequent CSV batch must
+   acquire writer MDL and verify the same original generation again. A batch
+   commit does not replace the original lease.
+5. **Coordinate DDL.** Explicitly approved application DDL revokes all
+   MySQL/MariaDB guards across application sessions before SQL is sent. DDL and
+   `Unknown` statements take this path; for example, `CREATE TRIGGER` is
+   classified `Unknown`. If a new read races revocation, bounded DDL acquisition
+   rejects without automatic retry. A write that already crossed the writer
+   MDL plus fresh-guard verification linearization point may finish after a
+   later expiry; cancellation and shutdown still apply. External DDL can wait
+   behind a lease, and a writer can wait behind queued DDL. Surface
+   timeout/expiry and require fresh read and review; provide explicit guard
+   release before planned DDL.
+6. **Keep ownership separate.** Existing manual console transactions are
+   untouched. Raw approved SQL effects without proven target provenance remain
+   outside this guard policy. Shared result/page ownership must not let releasing
+   one result revoke another live owner. Successful browse results whose guard
+   expires retain their returned snapshot but are narrowed to read-only. Late
+   raw-browse responses are drained to their terminal outcome: a server SQL error
+   remains a database failure, while transport loss after raw submission remains
+   outcome-unknown and retires the session without retry.
+   CSV previews use their own opaque generation token; release of a pending
+   plan, dialog unmount or late response cannot bind it to a newer preview.
+
+The user-visible tradeoff is that retained edits can hold a migration lock for
+up to 60 seconds; writer/editor metadata-lock waits are bounded at five seconds
+and may reject. The owner has not accepted this tradeoff. Do not extend TTL,
+request `PROCESS`, or silently retry around it.
+
+The standalone protocol report is not application qualification. Separate final
+application checks pass all 27 strict scenarios and all 137 browser workflows;
+the full actual fixture suite includes 11 guard tests. The historical 18-case
+MySQL/MariaDB replacement diagnostic uses a hidden four-second TTL and therefore
+does not qualify the production 60-second duration or every expiry race. The
+actual TLS-over-SSH test requires original SNI on every accepted channel and
+observes guard locking plus writer commit. It is positive local-fixture evidence,
+not external authentication or an independent wrong-CA/hostname rejection test.
+Capacity rejection at exactly 32 live targets, late handshakes and detailed close
+failure permutations remain unqualified; existing successful lifecycle checks
+do not imply those cases passed. Engine/version/privilege variants and owner
+acceptance of migration blocking remain separate gates.
 
 ## Reproduction
 
 Start the README's fixed local fixtures using its opt-in fixture setup. The
 probe accepts only loopback ports and fixed public fixture credentials; its TLS
 certificate verification is intentionally disabled for the self-signed local
-fixture only. This is not TLS or credential qualification.
+fixture only. The standalone probe does not qualify TLS or credentials.
 
 ```sh
 python3 scripts/mysql-tls-fixture.py
@@ -110,24 +151,24 @@ probe drops only its UUID-owned tables and verifies absence. It grants no
 privileges and changes no server-wide settings. Use disposable local fixtures
 only.
 
-## Next implementation increments
+## Remaining implementation and proof gates
 
-1. Build lifecycle-only tests for guard registration, active TTL closure,
-   disconnect/release, eviction, cancellation, late connection handshakes and
-   shutdown; prove one dead guard cannot retire a replacement generation.
-2. Integrate the guard through source reads and a single-row writer, testing
-   stale replacement before prepare, after approval and while queued DDL blocks
-   the writer. Keep the target lock, final verification, conflict check and DML
-   in one writer transaction.
-3. Extend to CSV preview and each committed batch, shared page/result leases,
-   empty-result inserts and UI expiry/review recovery. Keep raw SQL and console
-   transaction ownership separately specified.
+1. Qualify the disclosed capacity, late-handshake and close-failure cases rather
+   than extrapolating from existing lifecycle tests. Measure production-duration
+   expiry and waiting behavior separately from short fixture policy runs.
+2. Complete clean-source native/bundle qualification and normal packaged
+   restart/credential acceptance. Keep exact artifact/source identity in the ledger.
+3. Qualify external engine/version/privilege combinations only when needed and
+   authorized. Resolve any owner requirement for retained edits during concurrent
+   migrations; no acceptance of bounded rejection/lock delay has been inferred.
+4. Preserve actual replacement/conflict/fresh-control and cleanup regressions
+   when extending the driver. This guard does not supply Snowflake row identity.
 
-Relevant Joinery paths to review include `browse_with_approval`,
+Relevant Joinery paths include `browse_with_approval`,
 `resolve_statement_provenance` / `Output::describe`, `prepare_table_changes`,
 `preview_csv_import`, `prepare_csv_import_batch`, and the MySQL/MariaDB driver
-apply path. These names locate current read/plan/write responsibilities; they
-do not imply lease support exists.
+apply path. These paths now use the guard contract above; final qualification
+is still required before claiming completion or broad engine support.
 
 ## Source boundary
 
@@ -140,5 +181,6 @@ across drop/recreate:
 - [MySQL 8.4 InnoDB table metadata](https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-tables-table.html)
 
 The bounded report and script are local experimental evidence. The historical
-Joinery application probe at `ff59ca6` remains the evidence that MySQL/MariaDB
-can currently write to a replacement in 18 cases.
+Joinery application probe at `ff59ca6` recorded writes to replacement tables
+in 18 cases; it describes that historical implementation, not the current
+measured guard implementation.

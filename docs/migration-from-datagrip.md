@@ -6,6 +6,13 @@ your required engines, authentication and workflows in
 and limits are in the [verification ledger](replacement-verification.md).
 Keep DataGrip available until your required workflows are accepted.
 
+The confirmed target is Snowflake externalbrowser SSO on macOS, with all
+applicable DataGrip functionality including writes, DDL and explicit transactions.
+The current local-application OAuth/SQL-API read-only pilot does not satisfy that
+target. The fixture walkthrough below qualifies existing paths only; do not retire
+DataGrip on that basis. Stateful Snowflake authentication/session implementation
+and actual authorized-account qualification are required next.
+
 ## Build and run
 
 Follow [README setup](../README.md#development) with Node 24, pnpm 11 and the
@@ -87,21 +94,29 @@ unsupported results explain why editing is unavailable. After commit, that query
 result remains an explicitly stale, read-only snapshot. Rerun to see actual
 defaults, generated keys or trigger changes and restore editing.
 
-The `ff59ca6` diagnostic reproduced permanent table replacement failures across
-PostgreSQL, MySQL and MariaDB, including CSV. The final PostgreSQL 18.6 strict
-fixture diagnostic passes all nine expected rejections, and the formal example
-regression passes separately. Latest validation passes 561 frontend / 186 Rust
-tests with strict Clippy; one clean fixture command passes 112. The focused identity browser run passes 9/9; after test-coordinate repair and
-UUID fixture isolation, the full browser suite passes 129/129 and focused
-table-data/raw-browse tests pass 11/11. Earlier full/focused failures are historical
-test-coordinate and fixture-isolation failures. The 18
-MySQL/MariaDB cases remain unsafe; see the bounded
-[guard design proposal](mysql-table-identity-design.md). Until the relevant
-engine and workflow are qualified, discard pending edits and CSV
-previews after external DDL, read or preview again, and coordinate DDL throughout
-review and submission. This reduces exposure; a fresh read cannot protect
-against a later replacement. See the [identity investigation](table-identity-safety.md)
-for the original 27 cases, partial PostgreSQL repair, and remaining tests.
+PostgreSQL verifies original relation/attribute identity. MySQL/MariaDB retain a
+read transaction that protects the original table with a metadata lock for up to
+60 seconds; at most 32 targets can be live per session. Preparing or applying an
+expired target fails closed: refresh/rerun the table or preview the CSV again,
+review the new plan and submit deliberately. Preview ownership is exact; an old
+or released CSV preview cannot attach to a newer preview of the same file/table.
+Every batch carries its original preview token. Closing the import dialog releases
+its unused plan and target; a submitted batch keeps its truthful outcome.
+
+External DDL can wait for a live MySQL/MariaDB target. Application DDL revokes retained MySQL/MariaDB guards across the
+backend before submission, invalidating old edits and previews.
+A writer that obtained its own metadata lock and freshly verified the original
+guard may finish after later lease expiry. Coordinate migrations and refresh after
+DDL. A successful raw query whose guard expires still displays rows read-only;
+it must not be reported as failed merely because editing eligibility ended.
+
+Preliminary fixture qualification passes all 27 original replacement scenarios
+across PostgreSQL, MySQL and MariaDB, and 137 browser workflows. Final integrated
+qualification for mandatory CSV ownership and verified TLS-over-SSH guard/writer
+coverage is pending. See the [identity investigation](table-identity-safety.md),
+[guard contract](mysql-table-identity-design.md) and
+[verification ledger](replacement-verification.md) for evidence and exact limits.
+These fixtures do not qualify external engines/authentication or owner suitability.
 
 Use a console's Manual transaction mode to update a fixture row, inspect it in
 that session, then Rollback and verify from another session. Repeat with Commit.

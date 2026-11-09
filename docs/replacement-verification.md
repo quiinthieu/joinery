@@ -587,3 +587,218 @@ they do not qualify normal OS credential persistence, installed restart behavior
 other platforms, accessibility or the owner's actual workflows. MySQL/MariaDB's
 18 application identity failures remain open. No production or private
 application state was accessed.
+
+
+## MySQL/MariaDB retained guards and exact CSV preview ownership
+
+Current increment on `feat/datagrip-replacement`, parent `d8e1ece`; uncommitted at
+this record's first write. The previous 18 unsafe MySQL/MariaDB observations on
+`ff59ca6` are historical baseline evidence. Final integrated qualification and
+clean-source artifacts are being recorded here before the increment is committed.
+
+The application now retains an ordinary-role READ COMMITTED read-only transaction
+on a dedicated connection before eligible browse/query/CSV source reads. Its
+metadata lock protects the original table incarnation. The writer first acquires
+its own target lock, freshly verifies that original connection with non-reconnecting
+`COM_PING`, confirms `IN_TRANS`, generation/session/canonical-table identity and
+absolute deadline, then checks schema/full-row conflicts and performs DML in the
+same writer transaction. Every CSV batch repeats original-target verification.
+Names corroborate the source; names alone never authorize a write. A writer that
+crossed its own-lock/fresh-verification point can finish after later lease expiry.
+
+Production bounds are 60-second nonrenewing lifetime, 32 guards per session
+(reject full, no eviction), 10-second acquisition, three-second verification,
+two-second close, five-second writer/non-read editor metadata-lock wait and the
+existing 65-second transport ceiling. Last owner, active expiry, cancellation,
+disconnect and shutdown revoke the actual guard socket. Approved application DDL
+or unclassified SQL revokes retained MySQL/MariaDB guards across the backend before
+submission. External DDL can wait for a lease; applicable migration blocking and
+daily usage still require owner acceptance. The diagnostic injects a hidden
+Rust-only four-second policy, never a profile/IPC/persisted production setting.
+
+### Reproduced defects and repairs
+
+- Three frontend regressions initially failed while 80 existing state cases
+  passed: a completed read became a false schema error when its edit lease ended.
+  Pages now retain successful rows and only narrow write capabilities when every
+  structural field is unchanged. Negative metadata/capability cases still reject.
+- An actual stored-function raw browse produced rows beyond the retention bound
+  and a later server `SIGNAL`. Stopping consumption early had falsely reported
+  completion. Browse now drains its bounded server query through the terminal
+  response, including discarded rows. Known server failures remain `Database`;
+  uncertain transport loss after submission becomes `OutcomeUnknown`, closes the
+  backend and consumes approval without replay. An unchanged-byte loopback relay
+  qualifies that actual loss path with independent marker observation.
+- `/tmp/joinery-csv-required-token-baseline.log` records an actual PostgreSQL
+  failure before hardening: preview A targeted an original table; after
+  replacement, preview B targeted the new table. Omitting the token selected B,
+  completed, and independently observed `(1, reviewed), (2, replacement)` instead
+  of only `(2, replacement)`. UUID cleanup ran before propagating the failure.
+  Core preparation now requires `&str`, named native IPC requires `String`, and
+  the typed client requires `string`. Exact `(session, source, preview)` lookup
+  replaces latest-preview selection. Stale A, released A while B is the only
+  candidate, empty tokens and changed options/mappings reject; fresh B commits
+  once. The focused actual regression passes after repair in 1.08 seconds.
+- Each CSV preview owns a distinct opaque generation. Late preview responses,
+  replacement, session changes, unmount and completion release only their own
+  unused plans/targets. Target release and asynchronous plan publication share
+  the target lock; release cannot resurrect an already closed preview. Submitted
+  DML remains owned by its executing plan and keeps its truthful outcome.
+
+### Preliminary checks before the last token/TLS follow-up
+
+`pnpm validate` passed 580 frontend / 52 files, 193 standard Rust tests, production
+build, contracts, formatting, checks and strict all-target/all-feature Clippy.
+One clean eight-suite fixture run passed 123 tests: 42 MySQL/MariaDB, 10 guard
+lifecycle, 43 PostgreSQL, four permission/RLS/raw, one client-protocol suite
+(nine scenarios), six Redis, two SSH and 15 transaction-transport tests.
+The strict three-engine application diagnostic passed all 27 original replacement
+scenarios with `safetyPassed: true`, no operational errors, unchanged replacements,
+consumed approvals, successful fresh controls and verified UUID cleanup. Its JSON
+SHA-256 is `30dba3f7848fc1d4fdbb998cc6941308291bca60d31bdcfda3314bb5a97c86b7`.
+MySQL/MariaDB external replacement waited 3824–4021ms under the four-second policy.
+The formal ignored example regression passed two tests covering those 27 cases.
+
+Focused browser tests passed 11/11 in 49.0 seconds; the full suite passed 137/137
+in 7.4 minutes. The two added raw-function workflows independently observe a real
+write, preserve completed read-only rows after guard revocation, exercise a
+disabled exact-value cell viewer, reject approval replay and verify cleanup.
+An initial 9/11 focused attempt used an incorrect assertion that a read-only
+cell viewer would not exist; actual disabled-viewer evidence corrected the test.
+Cleanup runs sequentially so one prepare cannot consume another cleanup plan.
+These counts predate the final mandatory-token and TLS test additions.
+
+Preliminary logs: `/tmp/joinery-mysql-guard-validate-clean.log`,
+`/tmp/joinery-mysql-guard-fixtures-final.log`,
+`/tmp/joinery-mysql-guard-identity-final-report.json`,
+`/tmp/joinery-mysql-guard-example-final.log`,
+`/tmp/joinery-mysql-guard-browser-focused-final.log` and
+`/tmp/joinery-mysql-guard-browser-full.log`.
+
+### Required-token and verified TLS-over-SSH follow-up
+
+Focused frontend ownership/contract tests pass 15/15, including a preview without
+ownership refusing to prepare. Application and explicit E2E TypeScript checks
+pass. Real named-RPC missing/null/empty-token assertions are added to all three
+CSV replacement browser workflows; valid preview B remains available for its
+successful control. Hidden native smoke now bypasses typed callers to exercise
+Tauri's actual missing/null argument decoder as well. Final runtime results follow.
+
+The new `mysql_guard` verified TLS-over-SSH test passes on MySQL and MariaDB
+(2.97 seconds). A transparent relay forwards original bytes and parses only each
+owned channel's 32-byte MySQL SSLRequest/CLIENT_SSL and real TLS ClientHello SNI
+`database.fixture.test`. All accepted channels must satisfy those checks; browse
+adds at least three channels and an approved writer adds another. Actual opposing
+DDL returns 1205 while the guard is held, and an independent ordinary-role
+observer reads `tls-approved` after the writer completes. Replay is rejected,
+all relay sockets close and owned table absence is checked. This positive test
+proves successful configured VerifyFull TLS with original SNI, not independent
+wrong-CA/hostname rejection. Existing TLS negative fixture tests retain their
+separate scope. No TLS termination, fabricated server responses, privileged grants
+or global server settings are used. Focused strict Clippy passes.
+Logs: `/tmp/joinery-mysql-guard-tls-ssh-first.log` and
+`/tmp/joinery-mysql-guard-tls-ssh-clippy.log`.
+
+Independent bounded reviews of the driver lifecycle, writer order, raw browse,
+CSV ownership/publication, frontend capability narrowing, real IPC boundary tests
+and TLS relay found no remaining material issue. Review graph coverage metadata
+reported no recorded gaps at generation `2026-11-09T12:48:17Z`; exact changed
+source was also read. That signal is best effort, not a completeness proof.
+
+The final combined checks and clean-source native/bundle artifacts remain to be
+recorded below. This increment does not qualify normal installed credentials,
+external authentication, other platforms, representative performance/accessibility
+or the owner's required daily workflows. No push, install, publication or private
+application-state access occurred. The Goal remains active and unaccepted.
+
+
+### Owner target clarified during guard qualification
+
+The owner confirmed Snowflake SSO on macOS, specifically
+`authenticator=externalbrowser`, and all current DataGrip capabilities applicable
+to that workflow. Reads, writes, schema changes and explicit transactions are
+required. The earlier read-only browser-OAuth pilot is not an accepted narrowed
+target. Official driver research and a source/architecture audit now determine
+the stateful implementation route. Current local-database checks continue to
+protect the existing application, but do not demonstrate Snowflake replacement.
+No live account, private DataGrip state, billable query or Snowflake write has
+been accessed or authorized by this clarification alone.
+
+
+### Combined required-token/TLS source: validation and real fixtures
+
+The final integrated `pnpm validate` passes **581 frontend tests / 52 files**,
+**193 standard Rust tests**, contracts, production build, formatting/checks and
+strict all-target/all-feature Clippy. The unchanged nonfatal Vite chunk-size
+warning remains. Explicit E2E TypeScript checking passes as well.
+
+One clean eight-suite actual fixture command passes **124 tests**: 42
+MySQL/MariaDB, 11 retained-guard lifecycle/TLS, 43 PostgreSQL, four
+permission/RLS/raw, one client-protocol suite (nine scenarios), six Redis, two SSH
+and 15 transaction transport. The 11 guard tests loop across both MySQL and
+MariaDB; that is not counted as 22 tests. The strengthened actual PostgreSQL CSV
+ownership regression is included in 43, not counted again. A separate formal
+example run passes two tests covering all 27 strict identity scenarios in 83.55
+seconds. These results include the required-token API and the TLS-over-SSH test.
+
+Commands use the pinned local Node/Rust environment above:
+
+```sh
+pnpm validate
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --test postgres --test ssh --test mysql --test mysql_guard --test redis \
+  --test transaction_transport --test postgres_protocol \
+  --test postgres_identity_permissions -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --example table_identity_probe -- --ignored --test-threads=1
+pnpm exec tsc --ignoreConfig --noEmit --strict --skipLibCheck \
+  --module ESNext --moduleResolution Bundler --target ES2022 --lib ES2022,DOM \
+  --esModuleInterop tests/e2e/table-identity.spec.ts
+```
+
+Logs: `/tmp/joinery-mysql-guard-token-validate.log`,
+`/tmp/joinery-mysql-guard-token-fixtures.log`,
+`/tmp/joinery-mysql-guard-token-example.log` and
+`/tmp/joinery-csv-required-token-e2e-types.log`.
+Full final browser and clean-source native/bundle outcomes follow when measured.
+
+
+### Frozen final browser qualification and local code commit
+
+The first final browser attempt passed 135/137 and failed completion/context and
+index/constraint workflows. Both traces showed unexpected page reloads while
+documentation was being edited. The run is recorded as failed, not qualification;
+its log/traces are archived in `/tmp/joinery-browser-contaminated-20261109/`. No
+assertions or timeouts were weakened. With **all repository edits frozen**, the
+full rerun passes **137/137 in 7.3 minutes**, including those two workflows, actual
+named-RPC missing/null/empty CSV preview ownership, stale-target rejection and
+known/unknown transaction outcomes. Log:
+`/tmp/joinery-mysql-guard-token-browser-clean.log`. Command: pinned-environment
+`pnpm test:e2e`. The reload cause is inferred from trace timing; the clean rerun
+does not establish a deterministic watcher root cause.
+
+Code is locally committed as `997680e` (`fix(mysql): retain original edit target
+leases`). Final source evidence is 581 frontend / 193 standard Rust tests, 124
+actual fixture tests, 27 strict identity scenarios and 137 browser workflows.
+Clean-source native/bundle qualification follows separately; earlier artifacts
+do not qualify this revision. Nothing was pushed, installed, merged or published.
+
+### Latest-release and workload clarification
+
+The owner selected the latest stable DataGrip release and results up to
+**1,000,000 rows**. JetBrains' official release API was checked directly on
+9 November and reports DataGrip **2026.3**, build `263.7307.216`, released
+5 November 2026. The source-linked Snowflake official benchmark records current
+features, including Air, cross-database queries and column controls, without
+assuming their provider entitlements or Snowflake applicability. A research draft
+misidentified 2026.3 as prerelease; direct release-API verification corrected it
+before repository integration. Current result retention (100,000 rows and a
+global 64 MiB RAM budget) cannot satisfy the required workload. Million-row
+streaming, complete bounded paging/export and failure/cleanup behavior are
+required implementation and actual-engine acceptance gates.
+
+The official Node SDK 3.4.1 is the selected conditional transport candidate for
+externalbrowser and persistent sessions. Scratch helper/supervisor development
+is separate from the application, with no enabled Snowflake write capability.
+No real Snowflake account/SSO/warehouse was accessed. SDK retries, remote outcomes,
+macOS browser lifecycle, packaging and live correctness remain unqualified.

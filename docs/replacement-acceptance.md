@@ -12,6 +12,31 @@ Fresh commands, outcomes and qualification limits are recorded in the
 The [migration guide](migration-from-datagrip.md) provides build, connection,
 script, transaction and recovery steps for hands-on evaluation.
 
+## Confirmed owner target (9 November 2026)
+
+The owner requires **Snowflake on macOS with SSO `authenticator=externalbrowser`**,
+and **everything DataGrip currently provides for that workflow**, explicitly
+including reads, writes, schema changes and multi-statement transactions.
+The [Snowflake implementation queue](snowflake-datagrip-replacement.md) records
+the required workflow inventory and qualification sequence.
+This is not a read-only-pilot or MVP target. All applicable capabilities in the
+official DataGrip baseline remain required until the owner explicitly excludes
+one; existing exclusions are blockers, not optional enhancements.
+
+The owner also requires the **latest stable DataGrip release** and Snowflake
+query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
+released 5 November 2026. Complete million-row paging/export with bounded memory
+is required; current 100,000-row / global 64 MiB retention does not meet it.
+
+Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
+the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
+session with writes/transactions. Browser login alone does not prove equivalent
+SSO setup or session behavior. These are primary replacement blockers. Local
+PostgreSQL/MySQL safety repairs remain useful application work but do not close
+Snowflake acceptance. External account qualification needs explicit non-production
+scope and permission for any billable activity/writes; no private DataGrip state
+or credentials will be inspected.
+
 ## Target definition and open questions
 
 Replacement means the owner's required daily workflows succeed on their target
@@ -19,50 +44,36 @@ host, with reliable cancellation, transaction boundaries and local recovery.
 Feature existence, unit tests, or this checklist alone do not establish readiness.
 Full DataGrip parity is a separate, much broader claim and is not established.
 
-Repository context suggests PostgreSQL, MySQL/MariaDB, standalone Redis and
-Snowflake browser SSO. README documents password/TLS/SSH for SQL engines,
-Snowflake read-only OAuth, and Redis limitations. These are candidate workflows,
-not confirmation of the owner's requirements. Never read `.env`, OS keychains,
-DataGrip settings or private database state to infer requirements.
+The owner's target above supersedes the initial repository-derived candidate
+engine list. PostgreSQL, MySQL/MariaDB and Redis are secondary existing adapters;
+they are not substitutes for required Snowflake behavior. No feature is optional
+merely because it is currently unsupported or externally unqualified.
 
-Pending owner input (requested at Goal start):
-
-- Required engines/versions, target OS and authentication (password, SSO, IAM,
-  certificates, SSH, VPN), including whether Snowflake writes are essential.
-- Essential daily read/write, transaction, import/export, schema, performance,
-  saved-script, keyboard and accessibility workflows; representative sanitized
-  examples and acceptable performance expectations.
-- Whether pending edits/imports must survive concurrent migrations that drop,
-  rename or recreate their target tables. The `ff59ca6` diagnostic reproduced
-  failures on all three engines. The PostgreSQL 18.6 strict fixture diagnostic
-  now passes all nine cases; broader application qualification remains open.
-  MySQL/MariaDB remain unsafe in 18 cases. See the
-  [investigation and repair design](table-identity-safety.md).
-
-No unanswered feature is silently optional. Existing engine exclusions become
-replacement blockers if the owner requires them. New engines, AI, collaboration,
-visual designers and advanced administration are candidate enhancements only
-after requirements are confirmed.
+Remaining details: Snowflake account/version/environment, role/warehouse policy,
+representative sanitized tasks/column widths, CSV import sizes, accessibility/performance expectations,
+and an authorized non-production qualification scope. These refine acceptance;
+they do not narrow the confirmed all-applicable-DataGrip target.
 
 ## Required acceptance gates
 
-All rows are provisional requirements until the owner confirms applicability.
+All DataGrip capabilities applicable to the confirmed Snowflake/macOS target are
+required; rows below organize acceptance and are not an exhaustive parity claim.
 Each applicable engine/authentication pair needs its own evidence. Existing
 historical evidence is linked in the engineering matrix; this run must record
 fresh outcomes separately.
 
 | Workflow | Observable acceptance | Initial state / remaining evidence |
 |---|---|---|
-| Connect securely | Create profile, connect, inspect identity/context; reject wrong CA/hostname/SSH trust; reconnect after interruption without replay | Implemented in bounded adapters; external auth/version combinations unconfirmed |
-| Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Implemented with bounds; daily catalog/privilege qualification pending |
+| Connect securely | Existing Snowflake externalbrowser SSO; inspect identity/context; reject TLS/auth failures; reconnect deliberately without replay | Required externalbrowser path missing; current local-application OAuth pilot is not equivalent |
+| Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Snowflake partial catalog pilot; required object explorer/DDL/dependency coverage and daily role qualification incomplete |
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
-| Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 103 real fixtures and all 124 browser workflows pass within the ledger scopes; required external combinations remain open |
-| Inspect and move data | Filter/sort/page, copy exact numeric/NULL values, export complete file; cancelled export clearly incomplete | Implemented with bounds; representative dataset sizes unconfirmed |
-| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | PostgreSQL 18.6 strict diagnostic passes all nine expected rejections; the formal example regression passes separately. Latest validation is 561 frontend / 186 Rust tests with strict Clippy; one clean fixture command passes 112. Focused identity browser run passes 9/9. After test-coordinate repair and UUID fixture isolation, the full browser suite passed 129/129 and focused table-data/raw-browse tests passed 11/11. Earlier 126/127 and 10/11 attempts were test-coordinate and fixture-isolation failures. Both raw-browse unknown-outcome UI cases pass. Clean-source hidden native recovery/smoke and normal-bundle build/signature pass; normal packaged restart/credentials remain unqualified. MySQL/MariaDB's 18 historical cases remain unsafe |
-| Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual/reviewed COMMIT uncertainty and closed-session cleanup repaired; 15 real transport tests, toolbar checks, four grid/CSV fault browser cases and two raw-browse unknown-outcome UI cases pass |
+| Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | Read-only SQL API pilot; required stateful write/transaction path missing. Other-engine fixture evidence does not qualify it |
+| Inspect and move data | Browse and export complete results up to 1,000,000 rows with bounded memory; filter/sort/page, copy exact values; cancelled export clearly incomplete | Current 100,000-row / global 64 MiB retention is insufficient. Complete large-result storage/paging/export and actual Snowflake type/size qualification required |
+| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; stale/replaced targets reject atomically; ineligible results stay read-only | PostgreSQL original relation identity and MySQL/MariaDB retained guards implemented. Final source checks pass 581 frontend / 193 Rust, 124 actual fixtures, 27/27 strict scenarios and 137/137 browser workflows, including exact CSV ownership and TLS-over-SSH. Snowflake grid/CSV editing is still disabled and requires separate identity proof. Normal packaged restart/credentials and owner applicability/acceptance remain open |
+| Transactions | Snowflake consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives deliberate reconnect; DDL implicit commits and interrupted acknowledgements are truthful | Required Snowflake stateful transaction path missing. Fifteen local transaction transport tests qualify existing SQL adapters only |
 | Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Abrupt backend restart and two isolated actual native close/reopen pairs pass, including pending-save flush and real PostgreSQL rollback; normal packaged/credential evaluation remains open |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
-| Change schema | Review generated migration, reject stale target snapshot, demonstrate engine-specific implicit commits and refresh metadata | Implemented SQL workflow; unsupported objects disclosed |
+| Change schema | Review generated migration, reject stale target snapshot, demonstrate Snowflake implicit commits and refresh metadata | Existing other-engine workflow does not qualify Snowflake; required Snowflake DDL/schema diff/object coverage incomplete |
 | Everyday access | Complete daily workflow by keyboard; focus visible; dialogs traversable; required assistive technology usable | Keyboard tests exist; canvas accessibility/hands-on evaluation open |
 | Run locally | Build normal app, verify bundle, launch using isolated app data, quit/relaunch; preserve profiles/preferences; prove supported update/install path | Normal local bundle/signature and hidden native smoke pass; packaged restart/install/signing/platform qualification open |
 
@@ -88,26 +99,25 @@ fresh outcomes separately.
    recovery pairs, ordinary smoke and all 124 browser workflows pass. Local
    commits are `71d95b6` and `cd5bee0`; see the ledger for source/artifact scope.
 5. Permanent table identity: the opt-in diagnostic on `ff59ca6` reproduced 27
-   failures across PostgreSQL/MySQL/MariaDB (nine each), including deletes,
-   empty-result inserts and CSV across batch commits. The final PostgreSQL 18.6
-   strict diagnostic passes 9/9 expected rejections; four permission/RLS/raw
-   tests pass. One clean fixture command passes 112; validation passes 561
-   frontend / 186 Rust tests with strict Clippy. The focused identity browser run
-   passes 9/9. Full browser suite passes 129/129 and the focused table-data/raw-
-   browse run passes 11/11. The earlier 127-case 126-pass run and 10/11 focused
-   attempt are historical test-coordinate and fixture-isolation failures. Both
-   raw-browse unknown-outcome UI cases pass. MySQL/MariaDB's 18 cases remain
-   unsafe. Clean-source `5762ee5` passes normal macOS bundle/signature, two hidden
-   native PostgreSQL recovery pairs and ten-cycle smoke. Normal packaged
-   restart/credentials and owner acceptance remain open.
-   See [design and reproducible steps](table-identity-safety.md), including the
-   bounded [MySQL/MariaDB guard proposal](mysql-table-identity-design.md).
-   Confirm the owner's concurrent-migration workflow before declaring applicability.
-6. Pending owner input: confirm required engines/versions, authentication,
-   transports, daily workflows, target hosts and performance/accessibility needs.
-7. Use those answers to implement or qualify required gaps with isolated data;
-   obtain explicit scope before external/production access or paid services.
-   Unsupported required capabilities remain blockers, not optional omissions.
+   failures across PostgreSQL/MySQL/MariaDB. PostgreSQL original identity is
+   committed; current MySQL/MariaDB retained guards pass preliminary integrated
+   qualification (580 frontend / 193 Rust, 123 fixtures, 27 strict scenarios,
+   137 browser workflows). Actual tokenless CSV reassociation was then reproduced
+   and removed by requiring exact preview ownership at Rust and named IPC boundaries.
+   Verified TLS-over-SSH guards/writers pass both engines. Code is locally
+   committed as `997680e`; final source checks pass 581 frontend / 193 Rust,
+   124 actual fixtures, 27 strict scenarios and all 137 browser workflows.
+   Finish clean-source native/bundle qualification. Historical native evidence on `5762ee5` predates this increment.
+   See [design and reproducible steps](table-identity-safety.md) and
+   [retained-guard contract](mysql-table-identity-design.md).
+6. Confirmed priority: Snowflake externalbrowser SSO on macOS, all applicable
+   DataGrip capabilities, including writes/DDL/explicit transactions. Research
+   official driver routes and implement stateful session ownership; the existing
+   OAuth/SQL-API read-only pilot does not meet this requirement.
+7. Qualify each required capability locally where possible, then against an
+   explicitly authorized non-production Snowflake account. Obtain scope before
+   external/billable work or writes. Missing live evidence remains blocked;
+   synthetic transports never establish actual Snowflake behavior.
 8. Pending owner evaluation: follow the concrete walkthrough below, including
    packaged native restart and credential behavior. Record acceptance per required
    workflow and resolve failures before retiring DataGrip.
