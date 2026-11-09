@@ -18,6 +18,11 @@ repaired; focused real browser regressions and six transaction fault tests pass.
 Combined packaging/native/browser requalification passed; see the current
 ledger for reproducible commands, source revision and artifact identity.
 Required engine/authentication pairs and owner acceptance remain unconfirmed.
+The isolated native close/reopen follow-up (`a1ab58b`) also passes: two real
+PostgreSQL recovery pairs preserve pending drafts/preferences, roll back an
+uncommitted write and show zero connection/execution attempts before the explicit
+observer. Its validation passes 542 frontend / 180 standard Rust tests. This
+qualifies the hidden test build, not normal installed-bundle or OS credentials.
 
 ## Current replacement assessment (9 November 2026)
 
@@ -48,11 +53,11 @@ reproduced failures and exact qualification limits.
 | Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks | Lost COMMIT acknowledgements and acknowledged-commit refresh failures have six real fault regressions; target external connections remain unqualified |
 | Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector cache-arrival race repaired with delayed real Arrow coverage. Representative data sizes/export destinations and accessibility unconfirmed |
 | Editing, transactions, commit/rollback | Reviewed atomic grid changes, conflict checks, proven result provenance; temporary-target and stale-snapshot repairs have real-engine regressions | Manual COMMIT acknowledgement/refresh classification and closed-session retirement repaired; deferred-constraint and termination browser repeats pass. Query snapshots in other tabs are not automatically refreshed; grid writer remains separate from console transaction |
-| History and saved scripts | Library, file capabilities, opt-in drafts/history and preferences; real abrupt-backend restart browser workflow passes | Packaged native quit/restart/debounce and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
+| History and saved scripts | Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
 | Plans and performance investigation | Estimated/actual SQL-engine plan workflows, snapshots/comparison, timing and monitoring exercised in local fixtures | Engine-specific bounds remain; Snowflake live plans and representative workload/latency targets unqualified |
 | Schema changes and engine behavior | Reviewed object/column/index/constraint DDL, snapshots/diff and migration workflow; fixture coverage | Unsupported schema objects and engine implicit-commit behavior must match daily tasks; external versions/privileges unconfirmed |
 | Keyboard, accessibility, everyday use | Keyboard navigation/dialog/focus browser coverage and preferences/layout exist | Screen-reader/canvas usability and the owner's complete daily task sequence need hands-on evaluation |
-| Installation, packaging, updates, persistence | Normal macOS arm64 bundle/signature and three hidden native runs passed; isolated backend restart passes | Local bundle is uninstalled/unreleased. Packaged restart, supported update/install acceptance, Developer ID/notarization and Windows/Linux runtime remain open |
+| Installation, packaging, updates, persistence | Normal macOS arm64 bundle/signature and three hidden smoke runs passed; isolated backend restart and two hidden native close/reopen pairs pass | Local bundle is uninstalled/unreleased. Normal packaged restart, supported update/install acceptance, Developer ID/notarization and Windows/Linux runtime remain open |
 
 No capability is optional merely because its external acceptance is blocked.
 Candidate enhancements such as additional engines, AI, advanced administration

@@ -204,7 +204,8 @@ the final browser suite. The normal app remains at
 `src-tauri/target/release/bundle/macos/Joinery.app`; its packaged executable
 SHA-256 is `12bc3c6c89d5206e571c3216d6e06662ab576c75c6cbc47e20bedf675158168f`.
 Bundle identity is `com.quiinthieu.joinery`, version `0.1.0`; these labels alone
-do not identify a published preview. Subsequent changes only update this evidence.
+do not identify a published preview. The follow-up below changes native test
+instrumentation only; the normal bundle's executable digest remains unchanged.
 The separate hidden native build does not replace the normal `.app` bundle.
 Final documentation review confirmed the current queue, licensing distinction
 and qualification claims; both wording findings were resolved.
@@ -237,3 +238,57 @@ edits separate from browser execution.
 Open requirements and hands-on acceptance remain pending owner input. Signing,
 notarization, Windows/Linux packaged runtime, external authentication and live
 Snowflake qualification remain open. No passing local test closes those gates.
+
+## Native close and reopen qualification
+
+Local commit `a1ab58b` adds a recovery mode to the separately built hidden native
+test executable. It exercises App's actual window-close confirmation, including
+**Keep working** with a live PostgreSQL manual transaction, then **Continue**
+with a newly changed draft/preferences still pending in the normal workspace
+writer. It does not call the writer's flush directly or use the smoke command's
+forced exit for successful setup. A second fresh process opens the same owned
+workspace with the same in-memory secret-store implementation.
+
+Reproduce with the local Node 24.22.2 / Rust 1.99.1 environment above and the
+repository's healthy PostgreSQL 18 fixture on loopback port 55432:
+
+```sh
+pnpm validate
+pnpm test:native:recovery:runner
+pnpm desktop:smoke:build
+pnpm test:native:recovery --runs 2
+pnpm test:native --runs 1 --cycles 10
+```
+
+| Check | Outcome |
+|---|---|
+| Full validation | Passed: 542 frontend tests / 51 files, 180 standard Rust tests, production build, formatting, compilation and strict Clippy |
+| Recovery runner acceptance regressions | Six passed, including missing checks, nonzero backend invocations, process/watchdog failures and the strict pending-save deadline |
+| Native options | Both configuration unit tests passed; optional recovery mode preserves ordinary smoke defaults and validates fixture ports |
+| Actual close/reopen | Two pairs / four fresh native processes passed. Cancellation retained the live session, transaction and pending row. Confirmed close preserved exact Unicode draft text and preferences |
+| Pending-save evidence | Runner observed setup process exit 48.18 ms and 39.20 ms after the draft mutation, both strictly before the writer's 400 ms debounce. Baseline persistence was read back before mutation; the latest bytes were read back after reopening |
+| Restart safety | Zero `connect`, `prepare_execution` and `execute_plan` invocations before the first explicit observer connection in both reopened processes. Sessions, results, active runs and transaction UI were absent. Independent fresh PostgreSQL connections found zero rows, proving the uncommitted write rolled back; both owned tables were dropped |
+| Ordinary smoke compatibility | One native process / ten cleanup cycles passed, zero exit status, 3128 ms native elapsed time |
+
+The hidden test executable SHA-256 is
+`6361c7d1c4ae0ed46a2197607cae102daab9ce3dc3f77ee04e886602ed685d9f`.
+Build provenance records base revision `6eda0d5` with `sourceDirty=true`; the
+tested source changes were then committed as `a1ab58b`. No source edits occurred
+during native runtime. Raw local evidence is
+`.cache/native-smoke/recovery-runs.json`, with stage reports and captured logs in
+its owned `recovery-*` directories. Transient command logs use
+`/tmp/joinery-native-recovery-*.log`. The existing `rust-objcopy`/`libLLVM.dylib`
+warning recurred; build and all native processes succeeded.
+
+Independent review found a false-positive risk in inferring no replay from empty
+sessions and a zero row count alone: replay followed by rollback/disconnect could
+leave the same state. Native-only process-lifetime command counters now close
+that gap, and the runner requires their raw counts to be exactly zero. Review
+confirmed the repair and found no remaining material issue in the bounded scope.
+
+This is actual hidden native WebView close/reopen with real synthetic PostgreSQL,
+not normal installed-bundle or OS credential qualification. The normal app bundle
+retains the digest recorded above. The prior 97-fixture and 120-browser results
+remain the application qualification baseline; those full suites were not rerun
+for this native-test-only increment. Other engines, external authentication,
+visible native accessibility/performance and owner acceptance remain open.

@@ -104,8 +104,11 @@ the refreshed transaction indicator and context before continuing.
 Cancel a long fixture read and verify the session/reconnect behavior before
 retrying work. Never automatically retry an uncertain write. Save a draft and
 preferences, quit/relaunch, and check recovery; sessions and results should not
-be restored. The automated abrupt-backend test does not substitute for your
-packaged native quit/restart evaluation or OS credential-store qualification.
+be restored. Automated checks include abrupt backend restart and actual isolated
+native close/reopen with pending drafts/preferences and PostgreSQL rollback
+(`pnpm test:native:recovery`; see README). They use a hidden test build and an
+in-memory secret store. They do not substitute for your normal packaged native
+quit/restart evaluation or OS credential-store qualification.
 
 Snowflake is a read-only browser-OAuth pilot with open external qualification;
 Redis supports a bounded standalone command/key workflow, not Cluster, Sentinel,

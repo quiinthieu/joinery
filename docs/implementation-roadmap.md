@@ -16,8 +16,13 @@ The first pinned run passed validation, 91 fixtures, bundle and native smoke;
 116/118 browser workflows passed and the two failures were reproduced. The
 repaired runtime passed normal macOS packaging/signature, three isolated
 native processes and 120/120 browser workflows. The repairs have independent
-reviews; no material finding remains. Next: confirm required workflows and
-engine/authentication pairs, qualify authorized external combinations, and
+reviews; no material finding remains. The native-test-only follow-up `a1ab58b`
+passes full validation (542 frontend / 180 standard Rust), two isolated actual
+native close/reopen pairs against PostgreSQL, six runner acceptance tests and
+ordinary smoke compatibility. Pending drafts/preferences survive close, manual
+writes roll back and native invocation counters show no replay before observation.
+Normal packaged restart and credentials remain unqualified. Next: confirm
+required workflows and engine/authentication pairs, qualify authorized external combinations, and
 obtain the owner walkthrough acceptance. Follow the
 [verification ledger](replacement-verification.md); source presence and old
 slice test counts do not close these gates.

@@ -54,7 +54,7 @@ fresh outcomes separately.
 | Inspect and move data | Filter/sort/page, copy exact numeric/NULL values, export complete file; cancelled export clearly incomplete | Implemented with bounds; representative dataset sizes unconfirmed |
 | Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Reviewed provenance/snapshot repairs have real-engine regressions; delayed inspector race repaired and exercised with real Arrow data |
 | Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual COMMIT uncertainty/known-success reporting and closed-session cleanup repaired; six real fault tests and toolbar repeats pass |
-| Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Persistence implementation exists; page reload alone insufficient |
+| Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Abrupt backend restart and two isolated actual native close/reopen pairs pass, including pending-save flush and real PostgreSQL rollback; normal packaged/credential evaluation remains open |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
 | Change schema | Review generated migration, reject stale target snapshot, demonstrate engine-specific implicit commits and refresh metadata | Implemented SQL workflow; unsupported objects disclosed |
 | Everyday access | Complete daily workflow by keyboard; focus visible; dialogs traversable; required assistive technology usable | Keyboard tests exist; canvas accessibility/hands-on evaluation open |
@@ -69,12 +69,17 @@ fresh outcomes separately.
    97 real fixture tests, normal macOS bundle/signature, three isolated native
    runs and 120/120 browser workflows. Runtime source is `e481e62`; subsequent
    documentation records evidence rather than changing application behavior.
-3. Pending owner input: confirm required engines/versions, authentication,
+3. Completed: reviewed isolated native close/cancel/reopen qualification
+   (`a1ab58b`), two real PostgreSQL recovery pairs, six runner acceptance tests,
+   ordinary smoke compatibility and full validation (542 frontend / 180 standard
+   Rust). This is a native-test-only increment; normal packaged/credential gates
+   remain open. See the ledger for pending-save timing and replay counters.
+4. Pending owner input: confirm required engines/versions, authentication,
    transports, daily workflows, target hosts and performance/accessibility needs.
-4. Use those answers to implement or qualify required gaps with isolated data;
+5. Use those answers to implement or qualify required gaps with isolated data;
    obtain explicit scope before external/production access or paid services.
    Unsupported required capabilities remain blockers, not optional omissions.
-5. Pending owner evaluation: follow the concrete walkthrough below, including
+6. Pending owner evaluation: follow the concrete walkthrough below, including
    packaged native restart and credential behavior. Record acceptance per required
    workflow and resolve failures before retiring DataGrip.
 

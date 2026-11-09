@@ -17,6 +17,12 @@ repairs received independent review. Repaired source passes 542 frontend tests,
 179 standard Rust tests and 97 real fixture tests. Normal macOS bundle/signature,
 three isolated native processes (30 cleanup cycles) and all 120 browser workflows
 pass on clean runtime source `e481e62`; the ledger identifies the exact bundle.
+Native-test-only follow-up `a1ab58b` passes validation (542 frontend / 180 standard
+Rust), two isolated native close/reopen pairs with real PostgreSQL rollback,
+pending-draft persistence and zero connection/execution attempts before the
+observer, six runner acceptance tests and an ordinary ten-cycle native smoke.
+The normal bundle remains unchanged; packaged restart/OS credentials are not
+qualified by the hidden test build.
 
 These changes are committed locally, unmerged, unpublished and not installed.
 The owner-private hub is not updated because this task forbids publication.
