@@ -1,5 +1,10 @@
 # DataGrip workflow comparison and Joinery evidence
 
+The active 9 November 2026 replacement Goal is tracked in
+[daily replacement acceptance](replacement-acceptance.md), with current
+[official DataGrip research](datagrip-official-baseline.md). Historical audit
+results below retain their original dates and do not certify the current build.
+
 Audit date: 2026-10-28. Baseline: `bbba42122df2c8303af5a275671144d9337a4454`.
 This is an engineering gap inventory, not a shipping tracker. The owner-private
 [project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site) remains the

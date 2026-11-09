@@ -1,5 +1,10 @@
 # Joinery implementation roadmap
 
+The active 9 November 2026 Goal and next qualification queue are in
+[daily replacement acceptance](replacement-acceptance.md). Requirements are
+pending owner confirmation; historical slice completion does not establish
+daily replacement acceptance.
+
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;
 the owner-private [project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)
