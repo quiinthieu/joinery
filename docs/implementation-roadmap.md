@@ -33,13 +33,15 @@ and editor retirement. Real regressions reproduced the defects before repair;
 independent reviews found no material issues. Validation (545 frontend / 180
 standard Rust), 103 real fixtures and four new fault browser workflows pass.
 Combined packaging/signature, two native recovery pairs, ordinary smoke and all
-124 browser workflows pass; local repairs are `71d95b6` and `cd5bee0`. Next
-independent safety investigation: reproduce the permanent table drop/recreate
-identity gap through actual repository fixtures. Identity must bind the original
-read/preview to the locked writer target; ordinary privileges and engine/partition
-behavior need explicit qualification. This remains source inference, not a
-reproduced or repaired defect. Required external workflows and hands-on acceptance
-remain dependency gates.
+124 browser workflows pass; local repairs are `71d95b6` and `cd5bee0`. A separate
+development probe then reproduced the permanent table drop/recreate identity gap
+in four PostgreSQL cases. This remains unrepaired; other engines and CSV are not
+runtime-qualified for the case. The [identity investigation](table-identity-safety.md)
+records reproduction and coordinated repair requirements: original-read identity,
+actual writer target, ordinary privileges, CSV batches and namespace/partition
+behavior. Owner applicability, required external workflows and hands-on
+acceptance remain open. No partial identity guard or editing-privilege change
+was introduced.
 
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;

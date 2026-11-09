@@ -31,8 +31,10 @@ fixture tests and four new real fault browser workflows pass. Independent review
 found no material issue. Fresh combined qualification passes: normal macOS
 bundle/signature, two native recovery pairs, ordinary smoke and all 124 browser
 workflows (6.2 minutes). Local repairs are `71d95b6` and `cd5bee0`; see the ledger
-for artifact hashes. Permanent table drop/recreate identity remains a
-source-inferred safety gap pending actual fixture reproduction and design.
+for artifact hashes. A separate development probe reproduces permanent table
+drop/recreate identity failure in four PostgreSQL cases; it is not repaired or
+included in the passing counts. See the [identity investigation](table-identity-safety.md)
+for reproduction, design prerequisites and other-engine/CSV qualification limits.
 
 These changes are committed locally. All remain unmerged, unpublished and not installed.
 The owner-private hub is not updated because this task forbids publication.

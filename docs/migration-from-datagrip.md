@@ -87,11 +87,14 @@ unsupported results explain why editing is unavailable. After commit, that query
 result remains an explicitly stale, read-only snapshot. Rerun to see actual
 defaults, generated keys or trigger changes and restore editing.
 
-Permanent table replacement is an open qualification case: retained edits do not
-carry a physical object identity. After external DROP/CREATE, discard old edits
-and review plans, then read the table afresh before preparing changes. Coordinate
-DDL so the target is not replaced during editing. The ledger records this as a
-source-inferred limitation pending real-engine reproduction and protection.
+Permanent table replacement is a reproduced PostgreSQL safety gap: retained
+edits do not carry a physical object identity. After external DROP/CREATE,
+discard old edits and review plans, then read the table afresh before preparing
+changes. Coordinate
+DDL so the target is not replaced during editing; a fresh read cannot protect
+against replacement afterward. See the [identity investigation](table-identity-safety.md)
+for observed failures and unimplemented protection. Other engines/CSV still need
+separate qualification.
 
 Use a console's Manual transaction mode to update a fixture row, inspect it in
 that session, then Rollback and verify from another session. Repeat with Commit.

@@ -390,15 +390,16 @@ Transient logs use `/tmp/joinery-writer-*.log`; the final browser log is
 Required external engine/authentication pairs, normal installed-bundle/credential
 behavior, signing/notarization, accessibility and owner acceptance remain open.
 
-### Next bounded safety investigation: permanent object identity
+### Permanent object identity: source audit and failed fixture probe
 
 Read-only review confirms retained edit provenance stores schema/name, shape and
 keys without a physical relation identity. PostgreSQL compares locked original
 rows; MySQL/MariaDB also lock and compare table shape. Source inspection predicts
 an identically dropped/recreated table, reseeded with the same row before those
-locks, can receive an old approved edit. This is a **source-inferred limitation**,
-not a runtime-reproduced defect or a repaired capability. The passing suites
-above do not qualify that scenario.
+locks, can receive an old approved edit. This was initially a source-inferred
+limitation. A subsequent ordinary repository fixture probe now reproduces four
+PostgreSQL failures; it is **not repaired**. MySQL/MariaDB remain source-inferred
+for this scenario. The passing suites above do not qualify it.
 
 Next reproducible fixture sequence: create a UUID table and row; obtain a table
 browse result and separately an eligible SELECT result; prepare/approve an edit;
@@ -419,5 +420,31 @@ claim has been introduced.
 An attempted separate agent runtime investigation was rejected by automatic
 review as a possible cybersecurity risk before any runtime action. It performed
 only read-only log/source inspection; no files, processes, connections or tables
-were created. No runtime evidence is counted. Ordinary repository fixture
-regressions are the next investigation path.
+were created. No runtime evidence is counted from that rejected attempt.
+
+The lead subsequently used an ordinary development-only repository fixture probe
+on revision `95694e8`, through actual `Studio` calls and an independent observer,
+against the already authorized synthetic PostgreSQL 18 fixture on port 55432.
+The desired-safety assertion failed (exit 101): browse and SELECT updates after
+identical replacement before preparation both committed to the new table;
+SELECT update and browse insert after authorization did too. The observer found
+note `approved` in the three update cases and two rows in the insert case.
+Every approval was consumed and all four UUID tables were dropped before the
+final assertion. No production or private application state was accessed.
+
+The temporary failing probe was removed from normal fixture source; it is not
+counted as passing coverage. Local source and observations are retained under
+`.cache/table-identity-probe`. The durable [identity investigation](table-identity-safety.md)
+records the case table, independent reproduction steps, code touch points,
+engine privilege limits and complete-repair prerequisites. Independent design
+reviews recommend backend-owned original-read identity and warn that a
+prepare-time OID check cannot close the gap. The owner was asked whether pending
+edits/imports must survive concurrent migrations. That remains an open
+applicability question, not an automatic optional classification.
+
+Only documentation is changed after the frozen-source passing qualification.
+No application behavior, dependency, global configuration or privilege was
+changed for this investigation. Further probes for CSV, other engines and
+namespace/partition changes remain unexecuted. DataGrip's reviewed official
+documentation does not specify this exact concurrent replacement behavior; no
+comparative DataGrip runtime claim is made.
