@@ -1,5 +1,27 @@
 # Implementation and release status
 
+## Daily replacement qualification (9 November 2026)
+
+The persistent DataGrip replacement Goal is active and owner acceptance is
+pending. See [current capability assessment](datagrip-feature-matrix.md),
+[acceptance gates](replacement-acceptance.md), [migration guide](migration-from-datagrip.md)
+and [verification ledger](replacement-verification.md). Historical status below
+retains its original dates and delivery claims.
+
+Local branch `feat/datagrip-replacement` fixes temporary-table edit provenance,
+truthful post-commit snapshots, delayed inspector selection and manual
+transaction outcome/session cleanup. Real COMMIT acknowledgement-loss tests
+verify persisted rows using independent observers; abrupt backend restart
+coverage verifies draft recovery without reconnect or SQL replay. Substantial
+repairs received independent review. Repaired source passes 542 frontend tests,
+179 standard Rust tests and 97 real fixture tests. Focused browser repeats pass;
+normal bundle/native/full-browser requalification is pending.
+
+These changes are committed locally, unmerged, unpublished and not installed.
+The owner-private hub is not updated because this task forbids publication.
+Required engines/authentication, packaged restart/credential evaluation,
+signing/notarization, other platforms and hands-on acceptance remain open.
+
 Updated 2026-11-02. R1–R4 are merged but unreleased. The local R6 branch now
 integrates R5 FK JOIN completion, structured Unicode diagnostics, typed
 query parameters, inline error/statement navigation and SQL definitions/usages/

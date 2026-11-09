@@ -86,6 +86,14 @@ Grid commits use a separate transaction and login role; they do not join the
 console's transaction. Check shared versus isolated console bindings explicitly.
 Open snapshots in other tabs are not automatically refreshed by your writes.
 
+If Commit loses its acknowledgement, the app closes that session and reports an
+unknown outcome. Reconnect and inspect the data from a fresh session before
+deciding what to do; do not submit the write again automatically. If the server
+acknowledged Commit but context refresh failed, the message explicitly says the
+transaction committed and requires reconnection. An ordinary deferred-constraint
+error can end a PostgreSQL transaction while leaving its connection usable; check
+the refreshed transaction indicator and context before continuing.
+
 Cancel a long fixture read and verify the session/reconnect behavior before
 retrying work. Never automatically retry an uncertain write. Save a draft and
 preferences, quit/relaunch, and check recovery; sessions and results should not

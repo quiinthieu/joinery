@@ -12,9 +12,50 @@ provenance (`5a1fed7`); PostgreSQL full search-path resolution and MySQL/MariaDB
 qualified/unqualified shadows have focused real-engine regression coverage.
 Post-commit result snapshots now preserve original rows and become explicitly
 stale/read-only until rerun (`a2713bd`), with real defaults/trigger regression
-coverage. Both increments remain local and unmerged; combined browser/native
-qualification is in progress.
+coverage. Both increments remain local and unmerged. Delayed inspector selection
+(`66573be`) and manual transaction outcome/session cleanup (`19727e7`) are also
+repaired; focused real browser regressions and six transaction fault tests pass.
+Combined packaging/native/browser requalification follows.
 Required engine/authentication pairs and owner acceptance remain unconfirmed.
+
+## Current replacement assessment (9 November 2026)
+
+DataGrip's non-commercial license has the same core IDE feature set as its
+commercial license; the [official baseline](datagrip-official-baseline.md)
+provides the source-linked benchmark for each area. AI provider access is a
+separate entitlement. This current summary sits above the historical feature
+records below so their older verification dates cannot be mistaken for current
+replacement acceptance.
+
+The first frozen-source qualification through `6e16433` passed standard
+validation, 91 real fixture tests, macOS packaging and hidden native smoke;
+116/118 browser tests passed. Follow-up repairs now pass validation (542 frontend
+and 179 standard Rust tests), 97 real fixtures and focused browser repeats;
+combined runtime qualification remains pending. Each row remains
+a **provisional requirement** until the owner confirms their workflow. Locally
+verified subsets do not imply every DataGrip operation, engine or authentication
+method works. See the [ledger](replacement-verification.md) for commands,
+reproduced failures and exact qualification limits.
+
+| Area | Joinery implementation and current evidence | Incomplete or blocked acceptance |
+|---|---|---|
+| Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; Snowflake browser-OAuth read-only pilot | Required engine/version/authentication pairs unconfirmed. External SSO/IAM/accounts, live Snowflake and native credential lifecycle need explicit qualification. Unsupported required engines/authentication are blockers |
+| Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures | Bounded introspection and permission behavior vary by engine; qualify daily catalogs/roles and required object types |
+| SQL editing, completion, formatting, diagnostics | Bounded dialect-aware completion, formatting, parameters, diagnostics, navigation and refactoring with frontend/real browser coverage | Fresh-result completion synchronization is repaired (`f9abce0`); unsupported semantic forms remain explicit. Required authoring tasks/performance unconfirmed |
+| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks | Lost COMMIT acknowledgements and acknowledged-commit refresh failures have six real fault regressions; target external connections remain unqualified |
+| Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector cache-arrival race repaired with delayed real Arrow coverage. Representative data sizes/export destinations and accessibility unconfirmed |
+| Editing, transactions, commit/rollback | Reviewed atomic grid changes, conflict checks, proven result provenance; temporary-target and stale-snapshot repairs have real-engine regressions | Manual COMMIT acknowledgement/refresh classification and closed-session retirement repaired; deferred-constraint and termination browser repeats pass. Query snapshots in other tabs are not automatically refreshed; grid writer remains separate from console transaction |
+| History and saved scripts | Library, file capabilities, opt-in drafts/history and preferences; real abrupt-backend restart browser workflow passes | Packaged native quit/restart/debounce and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
+| Plans and performance investigation | Estimated/actual SQL-engine plan workflows, snapshots/comparison, timing and monitoring exercised in local fixtures | Engine-specific bounds remain; Snowflake live plans and representative workload/latency targets unqualified |
+| Schema changes and engine behavior | Reviewed object/column/index/constraint DDL, snapshots/diff and migration workflow; fixture coverage | Unsupported schema objects and engine implicit-commit behavior must match daily tasks; external versions/privileges unconfirmed |
+| Keyboard, accessibility, everyday use | Keyboard navigation/dialog/focus browser coverage and preferences/layout exist | Screen-reader/canvas usability and the owner's complete daily task sequence need hands-on evaluation |
+| Installation, packaging, updates, persistence | Normal macOS arm64 bundle/signature and three hidden native runs passed; isolated backend restart passes | Local bundle is uninstalled/unreleased. Packaged restart, supported update/install acceptance, Developer ID/notarization and Windows/Linux runtime remain open |
+
+No capability is optional merely because its external acceptance is blocked.
+Candidate enhancements such as additional engines, AI, advanced administration
+and broader DataGrip parity are prioritized only after required daily workflows
+are confirmed. The [acceptance walkthrough](replacement-acceptance.md) and
+[migration guide](migration-from-datagrip.md) define the next owner evaluation.
 
 Audit date: 2026-10-28. Baseline: `bbba42122df2c8303af5a275671144d9337a4454`.
 This is an engineering gap inventory, not a shipping tracker. The owner-private

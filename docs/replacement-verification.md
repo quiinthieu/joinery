@@ -39,7 +39,7 @@ were stopped or changed. Fixture volume data was retained.
 | Initial `pnpm validate`, host Node 26 | Failed in frontend tests: 14 suites failed loading `studio.ts` because `localStorage` was undefined; 417 tests passed. Later stages did not run |
 | `NODE_OPTIONS=--no-experimental-webstorage pnpm test`, Node 26 | 513 tests / 50 files passed; diagnostic workaround only, not a change to global settings or supported-toolchain qualification |
 | Real fixture suite, initial combined source | 86 passed: MySQL/MariaDB 39, PostgreSQL 39, Redis 6, SSH 2. Other ignored suites, native credentials and external Snowflake are not covered by this command |
-| Full `pnpm validate`, local Node 24 / shell Rust 1.91 | Frontend 513 passed, frontend build and 176 standard Rust tests passed, fmt/check passed; strict Clippy failed on three pre-existing nonminimal boolean predicates in `ddl.rs`/`safety.rs`. Separately repaired in `5f8e718`; 155 library tests and strict Clippy then passed. Final pinned-toolchain run pending |
+| Full `pnpm validate`, local Node 24 / shell Rust 1.91 | Frontend 513 passed, frontend build and 176 standard Rust tests passed, fmt/check passed; strict Clippy failed on three pre-existing nonminimal boolean predicates in `ddl.rs`/`safety.rs`. Separately repaired in `5f8e718`; 155 library tests and strict Clippy then passed. Superseded by the pinned-toolchain qualification below |
 | First full browser suite | 108 passed / 9 failed (14.2 minutes), contaminated by concurrent source generation and changed assertions against the old harness. Traces show Vite page reloads. Not clean qualification; repeat after builds. Harness talks to real local databases; Snowflake browser tests are synthetic |
 | Normal macOS app bundle/signature check, shell Rust 1.91 | Passed: optimized binary and 22.92 MiB `src-tauri/target/release/bundle/macos/Joinery.app`, verified ad-hoc signature. Includes temporary-target fix; predates stale-snapshot follow-up. No installation or Developer ID/notarization claim |
 | Actual process restart and restored UI | Passed targeted real backend SIGKILL/reopen with the same isolated metadata root. Drafts/preferences restored; sessions/results/transaction UI absent and no connect/SQL replay. Packaged native restart remains open |
@@ -72,7 +72,7 @@ permanent tables remain editable; PostgreSQL search-path resolution leaves the
 session AutoCommit/Idle. Independent read-only review found no material issue
 in the six-file patch. Existing permanent-table drop/recreate identity races
 remain a separate limitation; this fix does not persist physical object IDs.
-Full combined-source qualification is still in progress.
+Combined-source qualification and subsequent repairs are recorded below.
 
 The subsequent snapshot repair reproduced both an over-budget/over-row-limit
 insert and a real PostgreSQL result inventing a NULL/default row after a
@@ -101,13 +101,13 @@ This is real Rust/PostgreSQL/Arrow behavior, not synthetic RPC responses. Native
 window shutdown flush, packaged restart and OS credential restoration remain
 separate gates.
 
-The final pipeline uses explicit local Node 24.22.2 and Rust 1.99.1 compiler/
+The qualification pipeline uses explicit local Node 24.22.2 and Rust 1.99.1 compiler/
 documentation binaries, in this order: `pnpm validate`, full disposable fixture
 command above, `pnpm desktop:bundle:mac`, `pnpm desktop:smoke:build`,
 `pnpm test:native`, then `pnpm test:e2e`. No source generators run alongside the
 browser suite. Final logs use `/tmp/joinery-replacement-final-*.log`.
 
-## Final pinned-toolchain qualification (in progress)
+## First pinned-toolchain qualification
 
 Application source is committed locally through `a2713bd`; restart tooling is
 `c882fc2`, target-identity fix is `5a1fed7`, Clippy repair is `5f8e718`, initial
@@ -117,9 +117,88 @@ acceptance/baseline is `b07b738`. No push, merge, publication or installation.
 |---|---|
 | `pnpm validate` | Passed: 513 frontend tests, 178 standard Rust tests, frontend build, formatting, native check and strict Clippy |
 | Full disposable fixture command | Passed: 91 tests (41 MySQL/MariaDB, 42 PostgreSQL, 6 Redis, 2 SSH), including cancellation, transactions, TLS/SSH and the new regressions within those test scopes |
-| Final normal macOS bundle | Building; previous shell-toolchain bundle passed, do not substitute it for this final build |
-| Hidden native build/runtime | Pending prior step |
-| Full quiescent browser suite | Pending prior steps; earlier targeted restart/query-edit tests passed |
+| Normal macOS bundle | Passed: 27.33 MiB application bundle and strict ad-hoc signature verification; not installed, Developer ID signing/notarization remain open |
+| Hidden native build/runtime | Passed: three isolated native WebView processes, ten cleanup cycles each, all exited successfully. Synthetic native integration, not real native database/credential/restart qualification |
+| Full quiescent browser suite | 116 passed / 2 failed (6.2 minutes). PostgreSQL FK completion and initial result inspector selection failures reproduced in a separate three-repeat run (five failed / one passed). Repairs and requalification required |
+
+The Rust 1.99.1 release builds warned that bundled `rust-objcopy` could not load
+`libLLVM.dylib` while stripping debug information. Compilation, bundle signature
+verification and native runtime still succeeded. No global toolchain changes or
+warning suppression were applied.
+
+### Follow-up findings
+
+The FK browser test could observe the previous query's completed footer and
+advance before its new execution/context refresh finished. Its assertions now
+wait for the new run's actual Arrow page and idle editor/context before starting
+the next completion. This is a test synchronization repair; it does not establish
+a product completion defect.
+
+The inspector failure exposed a product race: selecting a cell while its Arrow
+page was loading notified the inspector with no value; later page arrival only
+repainted the canvas. A delayed real-result browser regression now holds the actual Rust/Arrow
+response, selects a cold cell, and verifies its inspector updates on arrival
+without another click. A focused two-repeat run passed after the repair. No synthetic result data is used
+for that browser check.
+
+A focused transaction review found manual toolbar COMMIT transport errors
+bypassed the write-outcome uncertainty mapping, and terminal toolbar errors
+could leave a session/transaction displayed as live. A second failure path
+could obscure an acknowledged COMMIT if the subsequent context refresh failed.
+The repair distinguishes an unknown acknowledgement from a known commit,
+retires unusable sessions, and preserves ordinary recoverable errors. Six real
+`transaction_transport` fixture tests passed: PostgreSQL/MySQL/MariaDB lost
+COMMIT acknowledgement; PostgreSQL acknowledged COMMIT followed by failed
+context refresh; injected PostgreSQL FATAL/class-08 response after actual
+COMMIT; and deferred constraint rejection with restored context and obsolete
+plan invalidation. Protocol-aware loopback proxies forward real server traffic
+and withhold acknowledgements; independent connections verify persisted data
+and the proxy counts one COMMIT. The FATAL frame is explicit fault injection,
+not a claim that a natural server FATAL was observed.
+
+PostgreSQL/MySQL transport and PostgreSQL refresh/FATAL/deferred-plan defects
+were reproduced before fixing. MariaDB passed after the repair but has no
+observed failing baseline because the original combined test stopped earlier.
+The shared transaction-control unit regression covers 24 engine/action/error
+cases; it checks the Studio contract, not real database behavior. Frontend
+regressions cover terminal retirement, recoverable-error context refresh,
+identity revision and late responses without retrying COMMIT.
+
+The real toolbar browser test then exposed another closed-session leak before
+transaction submission: initial lookup returned early and left the map entry
+and pending plans. The new preclosed-driver regression failed before fixing
+both COMMIT and ROLLBACK lookup paths. The focused unit and six real fault tests
+passed again; independent review found no material issue. The quiescent toolbar browser regression then passed twice (16.8 seconds),
+including independent rollback observations, exact resource cleanup and usable
+post-constraint context. A preceding two-repeat attempt was contaminated by
+this run's concurrent documentation edits triggering Vite reloads (one pass,
+one timeout); it is excluded from qualification. All repository edits, including
+documentation, must pause during browser execution.
+
+## Repaired-source qualification
+
+Application repairs are local commits `66573be` (inspector), `19727e7`
+(transaction outcomes), and `f9abce0` (FK browser synchronization). All substantial
+increments received independent review with no unresolved material finding.
+
+| Check | Outcome |
+|---|---|
+| `pnpm validate`, explicit Node 24.22.2 / Rust 1.99.1 | Passed: 542 frontend tests / 51 files, 179 standard Rust tests, production build, formatting, check and strict Clippy |
+| Expanded disposable fixture suite | Passed: 97 tests (41 MySQL/MariaDB, 42 PostgreSQL, 6 Redis, 2 SSH, 6 transaction transport faults) |
+| Focused browser repeats | FK completion, delayed inspector and committed-edit workflows each passed twice; final toolbar regression passed twice after the closed-session lookup fix |
+| Normal bundle, hidden native runtime, full browser suite | Repaired-source run pending |
+
+The expanded fixture command is now also in README:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --test postgres --test ssh --test mysql --test redis \
+  --test transaction_transport -- --ignored --test-threads=1
+```
+
+Transient repaired-source logs use `/tmp/joinery-replacement-repaired-*.log`.
+The final quiescent toolbar log is
+`/tmp/joinery-replacement-toolbar-quiescent.log`.
 
 Graph-assisted review used Tier 2 discovery/traces/snippets and coverage checks.
 The early index generation was stale, so source was read directly; later coverage
@@ -132,7 +211,9 @@ remain outside the passing local checks.
 The first full browser run is contaminated by concurrent generation/builds:
 traces show document reloads resetting workspaces during explorer and MariaDB
 tests. Do not count those timeouts as proved engine defects or a passing suite.
-Rerun after source generation and builds are quiescent.
+The first pinned run above was quiescent and exposed two reproducible issues;
+the post-repair run must also keep source generation and builds separate from
+browser execution.
 
 Open requirements and hands-on acceptance remain pending owner input. Signing,
 notarization, Windows/Linux packaged runtime, external authentication and live

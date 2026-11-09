@@ -50,15 +50,15 @@ fresh outcomes separately.
 | Connect securely | Create profile, connect, inspect identity/context; reject wrong CA/hostname/SSH trust; reconnect after interruption without replay | Implemented in bounded adapters; external auth/version combinations unconfirmed |
 | Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Implemented with bounds; daily catalog/privilege qualification pending |
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
-| Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | Implemented; fresh real-engine/browser run pending |
+| Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 97 real fixtures and focused browser repeats pass; full repaired-source browser requalification pending |
 | Inspect and move data | Filter/sort/page, copy exact numeric/NULL values, export complete file; cancelled export clearly incomplete | Implemented with bounds; representative dataset sizes unconfirmed |
-| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Implemented; focused correctness review in progress |
-| Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Implemented SQL sessions; actual engine tests required |
+| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Reviewed provenance/snapshot repairs have real-engine regressions; delayed inspector race repaired and exercised with real Arrow data |
+| Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual COMMIT uncertainty/known-success reporting and closed-session cleanup repaired; six real fault tests and toolbar repeats pass |
 | Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Persistence implementation exists; page reload alone insufficient |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
 | Change schema | Review generated migration, reject stale target snapshot, demonstrate engine-specific implicit commits and refresh metadata | Implemented SQL workflow; unsupported objects disclosed |
 | Everyday access | Complete daily workflow by keyboard; focus visible; dialogs traversable; required assistive technology usable | Keyboard tests exist; canvas accessibility/hands-on evaluation open |
-| Run locally | Build normal app, verify bundle, launch using isolated app data, quit/relaunch; preserve profiles/preferences; prove supported update/install path | Local packaging pending; signing/notarization/platform qualification open |
+| Run locally | Build normal app, verify bundle, launch using isolated app data, quit/relaunch; preserve profiles/preferences; prove supported update/install path | Normal local bundle/signature and hidden native smoke pass; packaged restart/install/signing/platform qualification open |
 
 ## Execution queue
 

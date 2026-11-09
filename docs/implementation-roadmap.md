@@ -6,9 +6,14 @@ pending owner confirmation; historical slice completion does not establish
 daily replacement acceptance.
 
 The current P0 qualification sequence is: resolve query-result target identity
-(local `5a1fed7`), preserve truthful bounded snapshots after committed edits,
-verify abrupt backend restart, and rerun combined-source validation/database/
-browser/native checks with the pinned toolchains. Follow the
+(local `5a1fed7`), preserve truthful bounded snapshots after committed edits
+(`a2713bd`), verify abrupt backend restart (`c882fc2`), repair manual transaction
+transport/outcome reporting (`19727e7`) and delayed result inspection
+(`66573be`), then rerun combined-source packaging/browser/native checks with
+the pinned toolchains. Repaired source passes validation (542 frontend / 179
+standard Rust tests), 97 real fixtures and focused browser repeats.
+The first pinned run passed validation, 91 fixtures, bundle and native smoke;
+116/118 browser workflows passed and the two failures were reproduced. The repairs have independent reviews; no material finding remains. Follow the
 [verification ledger](replacement-verification.md); source presence and old
 slice test counts do not close these gates.
 
