@@ -1,0 +1,21 @@
+{
+  "crate": "tokio-postgres",
+  "version": "0.7.18",
+  "repository": "https://github.com/rust-postgres/rust-postgres",
+  "tag": "tokio-postgres-v0.7.18",
+  "revision": "f1cb6ec0d5766b136cbd68f3010d64142a5daa66",
+  "registry_checksum_sha256": "a528f7d280f6d5b9cd149635c8705b0dd049754bc67d81d31fa25169a93809d3",
+  "license": "MIT OR Apache-2.0",
+  "patch": "patches/0001-expose-actual-column-origins.patch",
+  "modified_source": [
+    "src/simple_query.rs",
+    "src/bind.rs",
+    "src/portal.rs"
+  ],
+  "omitted_registry_metadata": [
+    ".cargo-ok",
+    ".cargo_vcs_info.json",
+    ".cargo-checksum.json",
+    "Cargo.lock"
+  ]
+}

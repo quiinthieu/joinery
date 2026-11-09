@@ -95,3 +95,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 codegen-units = 1
 lto = "thin"
 strip = true
+
+# Keep direct and TLS-adapter clients on the same reviewed upstream patch.
+[patch.crates-io]
+tokio-postgres = { path = "vendor/tokio-postgres" }
