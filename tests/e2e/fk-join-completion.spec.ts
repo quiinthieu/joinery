@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from "@playwright/test";
+import { tableFromIPC } from "apache-arrow";
 
 async function complete(editor: Locator, sql: string) {
   await editor.fill(sql);
@@ -62,9 +63,18 @@ for (const [engine, port] of [
       await item.click();
       await expect(editor).toContainText(expected);
       await expect(page.locator(".query-error")).toHaveCount(0);
+      const result = page.waitForResponse((response) =>
+        /\/result\/[^?]+\?start=0&/.test(response.url()),
+      );
       await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+      // Observe this run's data, rather than the previous run's completed footer.
+      const response = await result;
+      expect(response.ok()).toBe(true);
+      expect(tableFromIPC(new Uint8Array(await response.body())).numRows).toBe(1);
       await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
       await expect(page.locator(".result-footer")).toContainText("1 rows");
+      await expect(page.locator(".run-button")).toBeVisible();
+      await expect(page.locator(".completion-context")).not.toContainText("Loading");
       await expect(page.locator(".query-error")).toHaveCount(0);
     }
     expect(errors).toEqual([]);
