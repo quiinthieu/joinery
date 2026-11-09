@@ -87,14 +87,28 @@ unsupported results explain why editing is unavailable. After commit, that query
 result remains an explicitly stale, read-only snapshot. Rerun to see actual
 defaults, generated keys or trigger changes and restore editing.
 
+Permanent table replacement is an open qualification case: retained edits do not
+carry a physical object identity. After external DROP/CREATE, discard old edits
+and review plans, then read the table afresh before preparing changes. Coordinate
+DDL so the target is not replaced during editing. The ledger records this as a
+source-inferred limitation pending real-engine reproduction and protection.
+
 Use a console's Manual transaction mode to update a fixture row, inspect it in
 that session, then Rollback and verify from another session. Repeat with Commit.
 Grid commits use a separate transaction and login role; they do not join the
 console's transaction. Check shared versus isolated console bindings explicitly.
 Open snapshots in other tabs are not automatically refreshed by your writes.
 
-If Commit loses its acknowledgement, the app closes that session and reports an
-unknown outcome. Reconnect and inspect the data from a fresh session before
+If a reviewed grid edit or CSV batch loses its COMMIT response, the write may
+already be committed. PostgreSQL retires the editor and cancels changes already
+queued behind that session; reconnect and inspect the actual table before
+retrying. CSV imports halt, disable another submission and distinguish earlier
+committed batches from the uncertain current batch. A failed auxiliary MySQL
+writer may leave its healthy editor available; editor retirement follows an
+explicit session-closure event. Neither case automatically retries the write.
+
+If a console Commit loses its acknowledgement, the app closes that session and
+reports an unknown outcome. Reconnect and inspect the data from a fresh session before
 deciding what to do; do not submit the write again automatically. If the server
 acknowledged Commit but context refresh failed, the message explicitly says the
 transaction committed and requires reconnection. An ordinary deferred-constraint

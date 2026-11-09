@@ -50,10 +50,10 @@ fresh outcomes separately.
 | Connect securely | Create profile, connect, inspect identity/context; reject wrong CA/hostname/SSH trust; reconnect after interruption without replay | Implemented in bounded adapters; external auth/version combinations unconfirmed |
 | Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Implemented with bounds; daily catalog/privilege qualification pending |
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
-| Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 97 real fixtures and all 120 browser workflows pass within the ledger scopes; required external combinations remain open |
+| Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 103 real fixtures and all 124 browser workflows pass within the ledger scopes; required external combinations remain open |
 | Inspect and move data | Filter/sort/page, copy exact numeric/NULL values, export complete file; cancelled export clearly incomplete | Implemented with bounds; representative dataset sizes unconfirmed |
-| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Reviewed provenance/snapshot repairs have real-engine regressions; delayed inspector race repaired and exercised with real Arrow data |
-| Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual COMMIT uncertainty/known-success reporting and closed-session cleanup repaired; six real fault tests and toolbar repeats pass |
+| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Provenance/snapshot/inspector repairs have real regressions; queued writes after closure and uncertain CSV reporting repaired. Permanent drop/recreate identity remains a source-inferred gap pending fixture reproduction |
+| Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual/reviewed COMMIT uncertainty and closed-session cleanup repaired; 12 real transport tests, toolbar checks and four new grid/CSV fault browser cases pass |
 | Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Abrupt backend restart and two isolated actual native close/reopen pairs pass, including pending-save flush and real PostgreSQL rollback; normal packaged/credential evaluation remains open |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
 | Change schema | Review generated migration, reject stale target snapshot, demonstrate engine-specific implicit commits and refresh metadata | Implemented SQL workflow; unsupported objects disclosed |
@@ -74,12 +74,23 @@ fresh outcomes separately.
    ordinary smoke compatibility and full validation (542 frontend / 180 standard
    Rust). This is a native-test-only increment; normal packaged/credential gates
    remain open. See the ledger for pending-save timing and replay counters.
-4. Pending owner input: confirm required engines/versions, authentication,
+4. Reviewed-writer safety follow-up: synchronous PostgreSQL retirement, rejection
+   of already queued writes after closure, truthful uncertain CSV batch reporting
+   and frontend retirement have reproduced regressions and independent reviews.
+   Validation (545 frontend / 180 standard Rust), 103 real fixtures and four new
+   real browser workflows pass. Combined normal bundle/signature, two native
+   recovery pairs, ordinary smoke and all 124 browser workflows pass. Local
+   commits are `71d95b6` and `cd5bee0`; see the ledger for source/artifact scope.
+5. Next independent safety investigation: reproduce permanent table drop/recreate
+   identity behavior through repository fixtures, then design/qualify protection
+   from original read/preview through writer lock. Current evidence is source
+   inference only, with engine privilege and lifecycle questions unresolved.
+6. Pending owner input: confirm required engines/versions, authentication,
    transports, daily workflows, target hosts and performance/accessibility needs.
-5. Use those answers to implement or qualify required gaps with isolated data;
+7. Use those answers to implement or qualify required gaps with isolated data;
    obtain explicit scope before external/production access or paid services.
    Unsupported required capabilities remain blockers, not optional omissions.
-6. Pending owner evaluation: follow the concrete walkthrough below, including
+8. Pending owner evaluation: follow the concrete walkthrough below, including
    packaged native restart and credential behavior. Record acceptance per required
    workflow and resolve failures before retiring DataGrip.
 

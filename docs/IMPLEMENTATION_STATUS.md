@@ -24,7 +24,17 @@ observer, six runner acceptance tests and an ordinary ten-cycle native smoke.
 The normal bundle remains unchanged; packaged restart/OS credentials are not
 qualified by the hidden test build.
 
-These changes are committed locally, unmerged, unpublished and not installed.
+The reviewed grid/CSV writer follow-up repairs synchronous PostgreSQL retirement,
+blocks already queued changes after closure and reports uncertain CSV batches
+truthfully. Validation passes 545 frontend / 180 standard Rust tests; 103 real
+fixture tests and four new real fault browser workflows pass. Independent reviews
+found no material issue. Fresh combined qualification passes: normal macOS
+bundle/signature, two native recovery pairs, ordinary smoke and all 124 browser
+workflows (6.2 minutes). Local repairs are `71d95b6` and `cd5bee0`; see the ledger
+for artifact hashes. Permanent table drop/recreate identity remains a
+source-inferred safety gap pending actual fixture reproduction and design.
+
+These changes are committed locally. All remain unmerged, unpublished and not installed.
 The owner-private hub is not updated because this task forbids publication.
 Required engines/authentication, packaged restart/credential evaluation,
 signing/notarization, other platforms and hands-on acceptance remain open.

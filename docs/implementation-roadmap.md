@@ -27,6 +27,20 @@ obtain the owner walkthrough acceptance. Follow the
 [verification ledger](replacement-verification.md); source presence and old
 slice test counts do not close these gates.
 
+The reviewed-writer safety follow-up repairs synchronous PostgreSQL retirement,
+blocks queued writes after session closure, and fixes CSV unknown-outcome text
+and editor retirement. Real regressions reproduced the defects before repair;
+independent reviews found no material issues. Validation (545 frontend / 180
+standard Rust), 103 real fixtures and four new fault browser workflows pass.
+Combined packaging/signature, two native recovery pairs, ordinary smoke and all
+124 browser workflows pass; local repairs are `71d95b6` and `cd5bee0`. Next
+independent safety investigation: reproduce the permanent table drop/recreate
+identity gap through actual repository fixtures. Identity must bind the original
+read/preview to the locked writer target; ordinary privileges and engine/partition
+behavior need explicit qualification. This remains source inference, not a
+reproduced or repaired defect. Required external workflows and hands-on acceptance
+remain dependency gates.
+
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;
 the owner-private [project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)

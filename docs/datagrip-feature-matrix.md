@@ -15,7 +15,7 @@ stale/read-only until rerun (`a2713bd`), with real defaults/trigger regression
 coverage. Both increments remain local and unmerged. Delayed inspector selection
 (`66573be`) and manual transaction outcome/session cleanup (`19727e7`) are also
 repaired; focused real browser regressions and six transaction fault tests pass.
-Combined packaging/native/browser requalification passed; see the current
+The earlier `e481e62` packaging/native/120-browser qualification passed; see the
 ledger for reproducible commands, source revision and artifact identity.
 Required engine/authentication pairs and owner acceptance remain unconfirmed.
 The isolated native close/reopen follow-up (`a1ab58b`) also passes: two real
@@ -23,6 +23,14 @@ PostgreSQL recovery pairs preserve pending drafts/preferences, roll back an
 uncommitted write and show zero connection/execution attempts before the explicit
 observer. Its validation passes 542 frontend / 180 standard Rust tests. This
 qualifies the hidden test build, not normal installed-bundle or OS credentials.
+
+The reviewed-writer follow-up additionally reproduces and repairs delayed
+PostgreSQL retirement, queued writes reconnecting after closure, and CSV imports
+misreporting an uncertain batch as uncommitted. It passes 545 frontend / 180
+standard Rust tests, 103 real fixtures and four real grid/CSV fault browser
+workflows. Combined qualification passes: normal macOS bundle/signature, two
+native recovery pairs, ordinary smoke and all 124 browser workflows. The local
+repairs are `71d95b6` and `cd5bee0`; see the ledger for artifact identity and scope.
 
 ## Current replacement assessment (9 November 2026)
 
@@ -50,9 +58,9 @@ reproduced failures and exact qualification limits.
 | Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; Snowflake browser-OAuth read-only pilot | Required engine/version/authentication pairs unconfirmed. External SSO/IAM/accounts, live Snowflake and native credential lifecycle need explicit qualification. Unsupported required engines/authentication are blockers |
 | Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures | Bounded introspection and permission behavior vary by engine; qualify daily catalogs/roles and required object types |
 | SQL editing, completion, formatting, diagnostics | Bounded dialect-aware completion, formatting, parameters, diagnostics, navigation and refactoring with frontend/real browser coverage | Fresh-result completion synchronization is repaired (`f9abce0`); unsupported semantic forms remain explicit. Required authoring tasks/performance unconfirmed |
-| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks | Lost COMMIT acknowledgements and acknowledged-commit refresh failures have six real fault regressions; target external connections remain unqualified |
+| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks | Twelve real transaction-transport tests cover console/reviewed outcomes and retirement, including queued writes; target external connections remain unqualified |
 | Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector cache-arrival race repaired with delayed real Arrow coverage. Representative data sizes/export destinations and accessibility unconfirmed |
-| Editing, transactions, commit/rollback | Reviewed atomic grid changes, conflict checks, proven result provenance; temporary-target and stale-snapshot repairs have real-engine regressions | Manual COMMIT acknowledgement/refresh classification and closed-session retirement repaired; deferred-constraint and termination browser repeats pass. Query snapshots in other tabs are not automatically refreshed; grid writer remains separate from console transaction |
+| Editing, transactions, commit/rollback | Reviewed atomic grid changes, conflict checks, result provenance; temporary-target, stale-snapshot, retirement/queued-write and CSV uncertainty repairs have real regressions; four grid/CSV fault browser flows pass | Permanent drop/recreate identity is a source-inferred gap pending real reproduction/repair. Query snapshots in other tabs are not automatically refreshed; grid writer remains separate from console transaction |
 | History and saved scripts | Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
 | Plans and performance investigation | Estimated/actual SQL-engine plan workflows, snapshots/comparison, timing and monitoring exercised in local fixtures | Engine-specific bounds remain; Snowflake live plans and representative workload/latency targets unqualified |
 | Schema changes and engine behavior | Reviewed object/column/index/constraint DDL, snapshots/diff and migration workflow; fixture coverage | Unsupported schema objects and engine implicit-commit behavior must match daily tasks; external versions/privileges unconfirmed |

@@ -204,8 +204,9 @@ the final browser suite. The normal app remains at
 `src-tauri/target/release/bundle/macos/Joinery.app`; its packaged executable
 SHA-256 is `12bc3c6c89d5206e571c3216d6e06662ab576c75c6cbc47e20bedf675158168f`.
 Bundle identity is `com.quiinthieu.joinery`, version `0.1.0`; these labels alone
-do not identify a published preview. The follow-up below changes native test
-instrumentation only; the normal bundle's executable digest remains unchanged.
+do not identify a published preview. The native-test-only follow-up in the next
+section kept this normal bundle unchanged; the later reviewed-writer qualification
+below records a newly built normal bundle.
 The separate hidden native build does not replace the normal `.app` bundle.
 Final documentation review confirmed the current queue, licensing distinction
 and qualification claims; both wording findings were resolved.
@@ -287,8 +288,136 @@ that gap, and the runner requires their raw counts to be exactly zero. Review
 confirmed the repair and found no remaining material issue in the bounded scope.
 
 This is actual hidden native WebView close/reopen with real synthetic PostgreSQL,
-not normal installed-bundle or OS credential qualification. The normal app bundle
-retains the digest recorded above. The prior 97-fixture and 120-browser results
+not normal installed-bundle or OS credential qualification. For this native-only
+increment the normal bundle was not rebuilt. The prior 97-fixture and 120-browser results
 remain the application qualification baseline; those full suites were not rerun
 for this native-test-only increment. Other engines, external authentication,
 visible native accessibility/performance and owner acceptance remain open.
+
+## Reviewed grid and CSV writer safety
+
+Further review exercised the separate PostgreSQL grid/CSV writer, rather than
+assuming the console COMMIT tests covered it. Three new real fault tests first
+failed because `SessionClosed` was absent and the session remained registered.
+Their unknown-outcome, persisted-row and single-COMMIT assertions already passed;
+the initial hypothesis that a terminal response would be reported as a definite
+database rejection was not reproduced. The shared terminal-error classifier is
+now used consistently, and a raw protocol test verifies the injected response
+really is a PostgreSQL database error with SQLSTATE `08006`.
+
+The retirement defect was synchronous: aborting PostgreSQL connection tasks did
+not immediately change `Client::is_closed()`. An explicit atomic closed flag now
+makes retirement visible before execution emits its final events. A second real
+regression queued two reviewed writes behind an observer-held row lock. On the
+original path, the second write opened a fresh auxiliary connection after the
+first writer's uncertain COMMIT retired the session: the observer found two rows
+with a sum of 21 instead of one row with value 1. The changes lane now checks the
+session and driver closure after acquiring serialization, before submission.
+The passing regression proves one COMMIT, no new auxiliary connection, a cancelled
+second job, consumed approval and the expected independent observer values.
+
+CSV component regressions also reproduced a false claim that no rows committed
+after an unknown COMMIT, and stale primary/pooled editor state after an explicit
+closure event. Imports now say the batch may have committed and require table
+verification before retry. Only explicit `SessionClosed` retires the editor;
+writer-only uncertainty can leave a healthy MySQL editor intact. Unknown outcomes
+halt without advancing to another batch or replaying the approved write. Earlier
+completed batch counts remain separate. The three new component cases cover
+first-batch primary, pooled and writer-only outcomes; later-batch count handling
+was source-reviewed, without a new later-batch component regression.
+
+Independent peer reviews found no material findings in the backend, frontend,
+fixture relay or browser coverage. Tier 2 graph coverage was checked for every
+changed code/test path. The new CSV test has a recorded parse gap at its generic
+`vi.mock` call; that range and the complete file were read directly.
+
+Focused checks pass: 12 real transaction-transport tests, three CSV component
+cases and four real browser workflows (grid/CSV crossed with acknowledgement
+loss/terminal response). Browser workflows review and submit actual changes,
+assert unknown outcome and exact session retirement, disable retry/run, then
+connect directly to observe the committed value and one COMMIT without replay.
+The first four browser attempts failed only because their final observer helper
+checked the status bar while the old disconnected console remained active.
+Opening the observer's own console before checking its connection fixed the
+test setup; all four then passed in 19.8 seconds. This was not a product repair.
+
+Full validation passes 545 frontend tests / 52 files and 180 standard Rust tests,
+including strict Clippy. The expanded real fixture command passes 103 tests:
+41 MySQL/MariaDB, 42 PostgreSQL, 6 Redis, 2 SSH and 12 transaction-transport tests.
+The backend repair is local commit `71d95b6`; CSV reporting, component coverage
+and the browser harness/workflows are `cd5bee0`. No push, merge, publication or
+installation occurred.
+
+| Combined-source check | Outcome and scope |
+|---|---|
+| `pnpm validate` | Passed: 545 frontend tests / 52 files, 180 standard Rust tests, production build, formatting, compilation and strict Clippy |
+| Full disposable fixture command above | Passed: 103 tests (41 MySQL/MariaDB, 42 PostgreSQL, 6 Redis, 2 SSH, 12 transaction transport) |
+| `pnpm desktop:bundle:mac` | Passed: normal macOS arm64 bundle, 27.33 MiB reported by Tauri, strict ad-hoc signature verification; not installed or notarized |
+| `pnpm test:native:recovery:runner` | Six acceptance regressions passed |
+| Hidden native close/reopen | Two pairs / four fresh processes passed against PostgreSQL. Pending close timings were 43.29 ms and 38.16 ms, before the 400 ms debounce; latest drafts/preferences survived, the write rolled back and all three pre-observer invocation counters were zero |
+| `pnpm test:native --runs 1 --cycles 10` | Passed: ten cleanup cycles, zero exit status, 2938 ms native elapsed time and 108.72 MiB main-process peak RSS; smoke observations, not representative performance or whole-process memory qualification |
+| Workspace/write-fault ordering regression | Six workflows passed in 29.8 seconds, exercising persistence/layout tests immediately before all four fault cases |
+| Final `pnpm test:e2e` | Passed: 124/124 workflows in 6.2 minutes, real Rust/Arrow/local database fixtures; Snowflake responses remain synthetic |
+
+The first full browser attempt passed the previous 120 workflows, then timed out
+before the first new case connected: the preceding workspace test had persisted
+a hidden sidebar. That run was deliberately stopped: 120 passed, one setup
+failure, one interrupted and two not run (exit 130). Each new case now resets
+only the disposable harness workspace through its existing typed save command
+before page load, preserving profiles. Formatting and TypeScript checks passed
+after that test-only change. The ordering regression and final full suite then
+passed without repository edits or source generators during browser execution.
+The application and native artifact source did not change for this test repair.
+
+The normal packaged executable SHA-256 is
+`8b4cecb99466f6d6cb46f0106f0289022a715dc9d0c5a795362a63b818113f31`.
+It remains at `src-tauri/target/release/bundle/macos/Joinery.app`, identity
+`com.quiinthieu.joinery`, version `0.1.0`. Signature and digest were rechecked
+after building the separate hidden executable. The hidden raw executable hash
+is `dfd26489c4a9f3a3c0272bc9a766be71208f1cd239f9c79842c50dcf6c79f55b`;
+its signed hidden bundle executable hash is
+`0cd01d516fe13238d1c043986b1c568841fe64bcfe36fd9f3ec5226cc692ee2b`.
+Build provenance records base `4ce9f3c` with `sourceDirty=true`; application
+changes were subsequently committed in the two commits above. Existing Vite
+chunk-size and `rust-objcopy`/`libLLVM.dylib` stripping warnings recurred; builds,
+signature verification and all native processes passed.
+
+Transient logs use `/tmp/joinery-writer-*.log`; the final browser log is
+`/tmp/joinery-writer-browser-fixed-full.log`, and the ordering log is
+`/tmp/joinery-writer-browser-order.log`. Native reports remain under
+`.cache/native-smoke`, including recovery roots `recovery-yv1ju3y9` and
+`recovery-4bxzgca1`. These are local evidence, not distributable release assets.
+Required external engine/authentication pairs, normal installed-bundle/credential
+behavior, signing/notarization, accessibility and owner acceptance remain open.
+
+### Next bounded safety investigation: permanent object identity
+
+Read-only review confirms retained edit provenance stores schema/name, shape and
+keys without a physical relation identity. PostgreSQL compares locked original
+rows; MySQL/MariaDB also lock and compare table shape. Source inspection predicts
+an identically dropped/recreated table, reseeded with the same row before those
+locks, can receive an old approved edit. This is a **source-inferred limitation**,
+not a runtime-reproduced defect or a repaired capability. The passing suites
+above do not qualify that scenario.
+
+Next reproducible fixture sequence: create a UUID table and row; obtain a table
+browse result and separately an eligible SELECT result; prepare/approve an edit;
+use an independent fixture session to drop/recreate identical DDL and reseed the
+row; execute the retained approval; inspect the replacement from a fresh session.
+Repeat replacement before preparation, empty-table inserts and CSV after review.
+Each engine needs its own actual outcome, cleanup and approval-consumption check.
+
+A repair must bind identity to the original read/preview and verify it after a
+transaction-held writer lock, before any DML. Capturing identity only at prepare
+time would miss older retained results. The current PostgreSQL metadata prepare
+and simple-query execution are separate, so a pre-query resolver OID alone does
+not prove identity of the actual read. Engine-specific identity availability,
+ordinary privileges, partition/inheritance behavior and CSV batch lifecycle need
+explicit design and qualification; no timestamp/hash fallback or broader safety
+claim has been introduced.
+
+An attempted separate agent runtime investigation was rejected by automatic
+review as a possible cybersecurity risk before any runtime action. It performed
+only read-only log/source inspection; no files, processes, connections or tables
+were created. No runtime evidence is counted. Ordinary repository fixture
+regressions are the next investigation path.
