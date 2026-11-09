@@ -3,7 +3,7 @@ use async_trait::async_trait;
 
 pub mod browse_query;
 pub mod edit_target;
-pub use edit_target::{ColumnOrigin, EditIdentity, EditTarget};
+pub use edit_target::{ColumnOrigin, EditIdentity, EditTarget, MysqlColumnOrigin};
 pub mod mysql;
 pub mod postgres;
 pub mod redis;
@@ -17,6 +17,13 @@ pub trait QuerySink: Send {
         &mut self,
         columns: Vec<ColumnInfo>,
         _origins: Vec<ColumnOrigin>,
+    ) -> AppResult<()> {
+        self.describe(columns)
+    }
+    fn describe_mysql_with_origins(
+        &mut self,
+        columns: Vec<ColumnInfo>,
+        _origins: Vec<MysqlColumnOrigin>,
     ) -> AppResult<()> {
         self.describe(columns)
     }
@@ -52,6 +59,11 @@ pub struct CompletionRelations {
 
 #[async_trait]
 pub trait Driver: Send + Sync {
+    /// Revoke retained edit leases before approved schema changes. Drivers with
+    /// metadata locks must await their bounded release before SQL submission.
+    async fn invalidate_edit_targets(&self) -> AppResult<()> {
+        Ok(())
+    }
     async fn edit_target(&self, table: &TableRef) -> AppResult<EditTarget> {
         Ok(EditTarget {
             schema: self.schema(table).await?,

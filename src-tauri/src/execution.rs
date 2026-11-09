@@ -3,7 +3,7 @@ use crate::file_capability::NativeFileDialog;
 use crate::{
     domain::*,
     drivers::{
-        ColumnOrigin, Driver, EditIdentity, EditTarget, QuerySink, RowMutation,
+        ColumnOrigin, Driver, EditIdentity, EditTarget, MysqlColumnOrigin, QuerySink, RowMutation,
         mysql::Mysql,
         postgres::{Postgres, mutation_sql},
         redis::Redis,
@@ -83,6 +83,7 @@ enum Action {
         schema: TableSchema,
         identity: Option<EditIdentity>,
         rows: Vec<RowMutation>,
+        import_preview: Option<(String, String)>,
         anchor_id: Option<String>,
         updates: Vec<ResultChanges>,
         deletes: Vec<ResultDeletes>,
@@ -194,7 +195,8 @@ pub struct Studio {
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
-    import_targets: Mutex<HashMap<(String, String), ImportTarget>>,
+    import_targets: Mutex<HashMap<(String, String, String), ImportTarget>>,
+    mysql_guard_policy: crate::drivers::mysql::guard::GuardPolicy,
     pub results: ResultStore,
     connect_gate: tokio::sync::Mutex<()>,
     configuration_gate: Mutex<()>,
@@ -217,6 +219,18 @@ impl Studio {
         secrets: Arc<dyn SecretStore>,
         file_dialog: Arc<dyn FileDialogProvider>,
     ) -> AppResult<Arc<Self>> {
+        Self::with_mysql_guard_policy(root, secrets, file_dialog, Default::default())
+    }
+
+    /// Rust-only fixture injection for bounded expiry/lifecycle qualification.
+    /// No IPC, profile or persisted setting can change the production policy.
+    #[doc(hidden)]
+    pub fn with_mysql_guard_policy(
+        root: &Path,
+        secrets: Arc<dyn SecretStore>,
+        file_dialog: Arc<dyn FileDialogProvider>,
+        mysql_guard_policy: crate::drivers::mysql::guard::GuardPolicy,
+    ) -> AppResult<Arc<Self>> {
         Ok(Arc::new(Self {
             persistence: Persistence::open(root)?,
             secrets,
@@ -228,6 +242,7 @@ impl Studio {
             exports: Mutex::new(HashMap::new()),
             result_sessions: Mutex::new(HashMap::new()),
             import_targets: Mutex::new(HashMap::new()),
+            mysql_guard_policy,
             results: ResultStore::default(),
             connect_gate: tokio::sync::Mutex::new(()),
             configuration_gate: Mutex::new(()),
@@ -594,11 +609,12 @@ impl Studio {
                 (driver, info)
             }
             EngineKind::Mysql => {
-                let (driver, info) = Mysql::open(
+                let (driver, info) = Mysql::open_with_guard_policy(
                     &profile,
                     password.as_deref().map(String::as_str),
                     &session_id,
                     tunnel.as_ref().map(|t| t.port),
+                    self.mysql_guard_policy.clone(),
                 )
                 .await?;
                 (driver, info)
@@ -714,7 +730,7 @@ impl Studio {
         self.plans.lock().retain(|_, p| p.plan.session_id != id);
         self.import_targets
             .lock()
-            .retain(|(session_id, _), _| session_id != id);
+            .retain(|(session_id, _, _), _| session_id != id);
         for job in self.jobs.lock().values().filter(|j| j.session_id == id) {
             job.token.cancel();
         }
@@ -973,9 +989,10 @@ impl Studio {
                 schema,
                 identity,
                 rows,
+                import_preview,
                 ..
             } => fingerprint.update(
-                serde_json::to_vec(&(schema, identity, rows))
+                serde_json::to_vec(&(schema, identity, rows, import_preview))
                     .map_err(|_| AppError::internal("Could not fingerprint bound changes"))?,
             ),
             Action::CancelProcess { id, identity } => fingerprint.update(
@@ -1166,6 +1183,44 @@ impl Studio {
                         break;
                     }
                     let clock = Instant::now();
+                    if session.profile.engine == EngineKind::Mysql
+                        && matches!(statement.kind, StatementKind::Ddl | StatementKind::Unknown)
+                    {
+                        // Approved schema and unclassified operations (including
+                        // dialect DDL the parser cannot classify) must not wait
+                        // on leases retained by another application console.
+                        let drivers = self
+                            .sessions
+                            .lock()
+                            .values()
+                            .filter(|s| s.profile.engine == EngineKind::Mysql)
+                            .map(|s| s.driver.clone())
+                            .collect::<Vec<_>>();
+                        let releases = futures_util::future::join_all(
+                            drivers
+                                .iter()
+                                .map(|driver| driver.invalidate_edit_targets()),
+                        )
+                        .await;
+                        if let Some(error) = releases.into_iter().find_map(Result::err) {
+                            // SQL has not been submitted: this is not an unknown
+                            // write outcome, even if lease teardown lost a socket.
+                            status = if error.code == ErrorCode::Cancelled {
+                                RunStatus::Cancelled
+                            } else {
+                                RunStatus::Failed
+                            };
+                            events(QueryEvent::Error {
+                                error,
+                                statement_index: index,
+                            });
+                            break;
+                        }
+                        if token.is_cancelled() || session.closed.load(Ordering::Acquire) {
+                            status = RunStatus::Cancelled;
+                            break;
+                        }
+                    }
                     let provenance = self.resolve_statement_provenance(&session, statement).await;
                     let mut sink = Output {
                         studio: &self,
@@ -1279,6 +1334,7 @@ impl Studio {
                 updates,
                 deletes,
                 has_inserts,
+                ..
             } => {
                 if token.is_cancelled()
                     || session.closed.load(Ordering::Acquire)
@@ -1359,7 +1415,7 @@ impl Studio {
                 self.sessions.lock().remove(&session.info.id);
                 self.import_targets
                     .lock()
-                    .retain(|(session_id, _), _| session_id != &session.info.id);
+                    .retain(|(session_id, _, _), _| session_id != &session.info.id);
                 self.plans
                     .lock()
                     .retain(|_, p| p.plan.session_id != session.info.id);
@@ -2642,7 +2698,11 @@ impl Studio {
             ));
         }
 
-        if session.profile.engine == EngineKind::Postgres && identity.is_none() {
+        if matches!(
+            session.profile.engine,
+            EngineKind::Postgres | EngineKind::Mysql
+        ) && identity.is_none()
+        {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
                 "The original table identity is unavailable. Read the table again before editing.",
@@ -2872,6 +2932,7 @@ impl Studio {
                 schema,
                 identity,
                 rows: mutations,
+                import_preview: None,
                 anchor_id: retained_anchor,
                 updates: retained_updates,
                 deletes: retained_deletes,
@@ -3498,7 +3559,7 @@ impl Studio {
             .unwrap_or("import.csv")
             .to_owned();
         let engine = session.profile.engine;
-        let preview = tokio::task::spawn_blocking(move || {
+        let mut preview = tokio::task::spawn_blocking(move || {
             crate::import::build_csv_import_preview(
                 &path, max_bytes, file_name, engine, &schema, &options, &mappings,
             )
@@ -3508,17 +3569,26 @@ impl Studio {
         let config_digest = import_config_digest(table, &preview_options, &preview.mappings)?;
         let mut targets = self.import_targets.lock();
         targets.retain(|_, entry| entry.created.elapsed() < Duration::from_secs(300));
-        let key = (session_id.to_owned(), source_token.to_owned());
-        targets.remove(&key);
         if target.identity.is_some() {
+            if session.closed.load(Ordering::Acquire) {
+                return Err(AppError::new(
+                    ErrorCode::ConnectionClosed,
+                    "The import session closed during preview",
+                ));
+            }
             if targets.len() >= 100 {
                 return Err(AppError::new(
                     ErrorCode::ResultLimitReached,
                     "Close an import or wait for its preview to expire before opening another",
                 ));
             }
+            let preview_token = uuid::Uuid::new_v4().to_string();
             targets.insert(
-                key,
+                (
+                    session_id.to_owned(),
+                    source_token.to_owned(),
+                    preview_token.clone(),
+                ),
                 ImportTarget {
                     can_prepare: preview.can_prepare,
                     requested_config_digest,
@@ -3527,10 +3597,33 @@ impl Studio {
                     created: Instant::now(),
                 },
             );
+            preview.preview_token = Some(preview_token);
         }
         Ok(preview)
     }
 
+    pub fn release_csv_import_preview(
+        &self,
+        session_id: &str,
+        source_token: &str,
+        preview_token: &str,
+    ) {
+        let mut targets = self.import_targets.lock();
+        targets.remove(&(
+            session_id.to_owned(),
+            source_token.to_owned(),
+            preview_token.to_owned(),
+        ));
+        // Executing plans have already left this map. Releasing a dialog only
+        // discards its own unconsumed approval and never cancels submitted DML.
+        self.plans.lock().retain(|_, stored| {
+            stored.plan.session_id != session_id
+                || !matches!(&stored.action, Action::Changes { import_preview: Some((source, token)), .. }
+                    if source == source_token && token == preview_token)
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn prepare_csv_import_batch(
         &self,
         session_id: &str,
@@ -3539,23 +3632,37 @@ impl Studio {
         options: CsvImportOptions,
         mappings: Vec<CsvColumnMapping>,
         batch_index: usize,
+        preview_token: &str,
     ) -> AppResult<ChangePreview> {
         let (session, mut schema) = self.verify_import_target(session_id, table).await?;
-        let identity = if session.profile.engine == EngineKind::Postgres {
+        let (identity, import_preview_key) = if matches!(
+            session.profile.engine,
+            EngineKind::Postgres | EngineKind::Mysql
+        ) {
             let config_digest = import_config_digest(table, &options, &mappings)?;
             let targets = self.import_targets.lock();
             // Accept the exact preview request or its resolved mapping response. Both
             // refer to the same original target; unrelated configuration still expires it.
-            let entry = targets.get(&(session_id.to_owned(), source_token.to_owned())).filter(|entry| (entry.config_digest == config_digest || entry.requested_config_digest == config_digest) && entry.created.elapsed() < Duration::from_secs(300)).ok_or_else(|| AppError::new(ErrorCode::Conflict, "The original import target preview expired or changed. Preview and review the import again."))?;
+            let key = (
+                session_id.to_owned(),
+                source_token.to_owned(),
+                preview_token.to_owned(),
+            );
+            let entry = targets.get(&key)
+                .filter(|entry| {
+                    (entry.config_digest == config_digest || entry.requested_config_digest == config_digest)
+                        && entry.created.elapsed() < Duration::from_secs(300)
+                })
+                .ok_or_else(|| AppError::new(ErrorCode::Conflict, "The original import target preview expired or changed. Preview and review the import again."))?;
             if !entry.can_prepare {
                 return Err(AppError::invalid(
                     "The CSV preview contains invalid values. Correct them and preview again before preparing a batch.",
                 ));
             }
             schema = entry.target.schema.clone();
-            entry.target.identity.clone()
+            (entry.target.identity.clone(), Some(key.clone()))
         } else {
-            None
+            (None, None)
         };
         let (path, max_bytes) = self.file_capabilities.resolve_read_grant(source_token)?;
         let engine = session.profile.engine;
@@ -3616,11 +3723,24 @@ impl Studio {
         let total_bytes = prepared
             .approx_bytes
             .saturating_add(sql.iter().map(String::len).sum::<usize>());
+        // Serialize publication with exact-preview release. A closed dialog's
+        // parsing task must not resurrect a plan holding its original lease.
+        let targets = self.import_targets.lock();
+        if import_preview_key
+            .as_ref()
+            .is_some_and(|key| !targets.contains_key(key))
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "The original import preview was released. Preview and review the import again.",
+            ));
+        }
         let plan = self.store_plan(
             plan,
             Action::Changes {
                 schema,
                 identity,
+                import_preview: import_preview_key.map(|(_, source, token)| (source, token)),
                 rows: prepared.mutations,
                 anchor_id: None,
                 updates: Vec::new(),
@@ -4044,14 +4164,21 @@ impl QuerySink for Output<'_> {
         });
     }
     fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()> {
-        self.describe_actual(columns, None)
+        self.describe_actual(columns, None, None)
     }
     fn describe_with_origins(
         &mut self,
         columns: Vec<ColumnInfo>,
         origins: Vec<ColumnOrigin>,
     ) -> AppResult<()> {
-        self.describe_actual(columns, Some(origins))
+        self.describe_actual(columns, Some(origins), None)
+    }
+    fn describe_mysql_with_origins(
+        &mut self,
+        columns: Vec<ColumnInfo>,
+        origins: Vec<MysqlColumnOrigin>,
+    ) -> AppResult<()> {
+        self.describe_actual(columns, None, Some(origins))
     }
     fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool> {
         self.append_rows(rows)
@@ -4065,6 +4192,7 @@ impl Output<'_> {
         &mut self,
         columns: Vec<ColumnInfo>,
         origins: Option<Vec<ColumnOrigin>>,
+        mysql_origins: Option<Vec<MysqlColumnOrigin>>,
     ) -> AppResult<()> {
         if self.viewer_closed {
             return Ok(());
@@ -4087,10 +4215,15 @@ impl Output<'_> {
                     identity,
                     safe_mode,
                 } => {
-                    if identity.as_ref().is_some_and(|identity| {
-                        !origins
+                    if identity.as_ref().is_some_and(|identity| !match identity {
+                        EditIdentity::Postgres { .. } => origins
                             .as_ref()
-                            .is_some_and(|origins| identity.matches_projection(&columns, origins))
+                            .is_some_and(|origins| identity.matches_projection(&columns, origins)),
+                        EditIdentity::Mysql { .. } => {
+                            mysql_origins.as_ref().is_some_and(|origins| {
+                                identity.matches_mysql_projection(&columns, origins)
+                            })
+                        }
                     }) {
                         (columns, None, Some(ResultEditability::ReadOnly { reason: "The actual result does not match the original table identity. Read the table again before editing.".into() }))
                     } else {

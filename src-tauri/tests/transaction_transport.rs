@@ -230,7 +230,7 @@ async fn reviewed_writer_fault(csv: bool, fault: Fault) {
         std::fs::write(sandbox.root().join("row.csv"), "id,value\n1,1\n").unwrap();
         sandbox.queue_open(Some("row.csv")).unwrap();
         let grant = studio.pick_import_source().await.unwrap().unwrap();
-        studio
+        let csv_preview = studio
             .preview_csv_import(
                 &session.id,
                 &grant.token,
@@ -266,6 +266,7 @@ async fn reviewed_writer_fault(csv: bool, fault: Fault) {
                     },
                 ],
                 0,
+                csv_preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap()

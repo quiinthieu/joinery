@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -43,6 +43,25 @@ interface BatchFailure {
   batchIndex: number;
   status: RunStatus;
   message: string;
+}
+
+interface PreviewResource {
+  sessionId: string;
+  sourceToken: string;
+  previewToken: string | null;
+}
+
+function releasePreviewResource(resource: PreviewResource | null) {
+  if (!resource?.previewToken) return;
+  // Cleanup must not reject an unmount or replace a newer preview's UI state.
+  // Backend expiry remains the bound when this best-effort IPC cannot complete.
+  void client
+    .call("release_csv_import_preview", {
+      sessionId: resource.sessionId,
+      sourceToken: resource.sourceToken,
+      previewToken: resource.previewToken,
+    })
+    .catch(() => undefined);
 }
 
 function runApprovedBatch(
@@ -103,12 +122,38 @@ export function ImportCsvDialog({
   const [allCompleted, setAllCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const previewSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const previewResourceRef = useRef<PreviewResource | null>(null);
+
+  function releaseOwnedPreview() {
+    const resource = previewResourceRef.current;
+    previewResourceRef.current = null;
+    releasePreviewResource(resource);
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    setBusyMode("idle");
+    return () => {
+      mountedRef.current = false;
+      previewSeqRef.current += 1;
+      releaseOwnedPreview();
+    };
+  }, [session?.id, table.schema, table.name]);
+
+  function closeDialog() {
+    mountedRef.current = false;
+    previewSeqRef.current += 1;
+    releaseOwnedPreview();
+    onClose();
+  }
 
   async function loadPreview(
     chosen: FileSelection,
     nextOptions: CsvImportOptions,
     nextMappings: CsvColumnMapping[],
   ) {
+    if (!mountedRef.current) return;
     if (!session) {
       setError("Connect to the database before previewing a CSV import.");
       return;
@@ -128,12 +173,23 @@ export function ImportCsvDialog({
         options: nextOptions,
         mappings: nextMappings,
       });
-      if (seq !== previewSeqRef.current) return;
+      const resource = {
+        sessionId: session.id,
+        sourceToken: chosen.token,
+        previewToken: loaded.previewToken,
+      };
+      if (!mountedRef.current || seq !== previewSeqRef.current) {
+        releasePreviewResource(resource);
+        return;
+      }
+      releaseOwnedPreview();
+      previewResourceRef.current = resource;
       setPreview(loaded);
       setMappings(loaded.mappings);
       setBusyMode("idle");
     } catch (err) {
-      if (seq !== previewSeqRef.current) return;
+      if (!mountedRef.current || seq !== previewSeqRef.current) return;
+      releaseOwnedPreview();
       setPreview(null);
       setBusyMode("idle");
       setError(messageOf(err));
@@ -145,10 +201,12 @@ export function ImportCsvDialog({
       setError("CSV file import is available in the desktop app.");
       return;
     }
+    const seq = ++previewSeqRef.current;
     setBusyMode("picking");
     setError(null);
     try {
       const picked = await client.call<FileSelection | null>("pick_import_source");
+      if (!mountedRef.current || seq !== previewSeqRef.current) return;
       setBusyMode("idle");
       if (!picked) return;
       const inferredDelimiter: CsvDelimiter = picked.fileName.toLowerCase().endsWith(".tsv")
@@ -163,6 +221,7 @@ export function ImportCsvDialog({
       setMappings([]);
       await loadPreview(picked, nextOptions, []);
     } catch (err) {
+      if (!mountedRef.current || seq !== previewSeqRef.current) return;
       setBusyMode("idle");
       setError(messageOf(err));
     }
@@ -193,6 +252,21 @@ export function ImportCsvDialog({
 
   async function prepareBatch(batchIndex: number) {
     if (!session || !selection || !preview?.canPrepare) return;
+    const resource = previewResourceRef.current;
+    if (
+      !mountedRef.current ||
+      !resource ||
+      resource.sessionId !== session.id ||
+      resource.sourceToken !== selection.token ||
+      resource.previewToken !== preview.previewToken
+    )
+      return;
+    const previewToken = resource.previewToken;
+    if (!previewToken) {
+      setError("Preview this CSV again before reviewing an import batch.");
+      return;
+    }
+    const seq = previewSeqRef.current;
     setBusyMode("preparing");
     setError(null);
     setBatchFailure(null);
@@ -204,10 +278,13 @@ export function ImportCsvDialog({
         options,
         mappings,
         batchIndex,
+        previewToken,
       });
+      if (!mountedRef.current || seq !== previewSeqRef.current) return;
       setBusyMode("idle");
       setPendingBatch({ batchIndex, preview: changePreview });
     } catch (err) {
+      if (!mountedRef.current || seq !== previewSeqRef.current) return;
       setBusyMode("idle");
       setError(messageOf(err));
     }
@@ -223,13 +300,29 @@ export function ImportCsvDialog({
         preview={activeBatch.preview}
         profile={profile}
         onExecute={async (approval) => {
+          const seq = previewSeqRef.current;
+          const resource = previewResourceRef.current;
+          if (!mountedRef.current) return;
+          if (!resource?.previewToken)
+            throw new Error("Preview this CSV again before importing another batch.");
+          const previewToken = resource.previewToken;
           const outcome = await runApprovedBatch(activeBatch.preview.plan.id, approval);
+          // Session retirement can change the props before Finished arrives.
+          // Preserve that submitted batch's truthful outcome, but never chain
+          // another batch after its preview context was released.
+          if (!mountedRef.current) return;
           if (outcome.status === "completed") {
             const nextCompleted = activeBatch.batchIndex + 1;
             const nextCommittedRows = committedRows + activeBatch.preview.rowCount;
             setCompletedBatches(nextCompleted);
             setCommittedRows(nextCommittedRows);
             onImported();
+            if (
+              !mountedRef.current ||
+              seq !== previewSeqRef.current ||
+              previewResourceRef.current !== resource
+            )
+              return;
             if (nextCompleted < totalBatches && session && selection) {
               try {
                 const nextPreview = await client.call<ChangePreview>("prepare_csv_import_batch", {
@@ -239,17 +332,22 @@ export function ImportCsvDialog({
                   options,
                   mappings,
                   batchIndex: nextCompleted,
+                  previewToken,
                 });
+                if (!mountedRef.current || seq !== previewSeqRef.current) return;
                 setPendingBatch({ batchIndex: nextCompleted, preview: nextPreview });
               } catch (err) {
+                if (!mountedRef.current || seq !== previewSeqRef.current) return;
                 setError(messageOf(err));
               }
             } else {
+              releaseOwnedPreview();
               setAllCompleted(true);
             }
             return;
           }
 
+          if (outcome.status === "outcomeUnknown") releaseOwnedPreview();
           setBatchFailure({
             batchIndex: activeBatch.batchIndex,
             status: outcome.status,
@@ -277,7 +375,7 @@ export function ImportCsvDialog({
     <Modal
       title="Import CSV into table"
       subtitle={`${table.schema}.${table.name} · ${profile?.name ?? "Database"}`}
-      onClose={onClose}
+      onClose={closeDialog}
       wide
       busy={busy}
     >
@@ -572,7 +670,7 @@ export function ImportCsvDialog({
       </div>
 
       <footer className="modal-footer">
-        <button type="button" className="button ghost" disabled={busy} onClick={onClose}>
+        <button type="button" className="button ghost" disabled={busy} onClick={closeDialog}>
           {allCompleted ? "Done" : "Close"}
         </button>
         {!allCompleted ? (
@@ -581,6 +679,8 @@ export function ImportCsvDialog({
             className="button primary"
             disabled={
               busy ||
+              !session ||
+              previewResourceRef.current?.sessionId !== session.id ||
               !selection ||
               !preview?.canPrepare ||
               outcomeUnknownLocked ||

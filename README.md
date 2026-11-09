@@ -122,13 +122,25 @@ steps below. Rust integration tests marked ignored do not run in `pnpm validate`
 ```sh
 python3 scripts/mysql-tls-fixture.py
 docker compose --profile mysql --profile mysql-folded --profile redis up -d --wait
-cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test redis --test transaction_transport --test postgres_protocol --test postgres_identity_permissions -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test mysql_guard --test redis --test transaction_transport --test postgres_protocol --test postgres_identity_permissions -- --ignored --test-threads=1
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --example table_identity_probe -- --ignored --test-threads=1
 pnpm exec playwright install chromium --only-shell
 pnpm test:e2e
 ```
 
 The disposable PostgreSQL fixture listens on `127.0.0.1:55432`; database/user `joinery`, password `joinery-local-only`. Select **Local**, disable TLS for this fixture, and use these credentials. `docker compose down` stops the fixture while retaining its volume; `docker compose down -v` also deletes its test data.
+
+The table identity example tests include actual PostgreSQL replacement checks
+and MySQL/MariaDB lease-expiry replacement checks. The latter use an explicit
+Rust-only four-second fixture policy, with fresh-edit controls and verified
+cleanup. Normal application leases expire after 60 seconds; this diagnostic
+does not change profile settings or qualify external databases.
+MySQL/MariaDB edits and CSV imports must retain their original target generation;
+expired or disconnected targets require a fresh read/preview and review. The
+application retains at most 32 live guards per session, rejects acquisition when
+full, and releases them on expiry, last-owner release or shutdown. External DDL
+may wait for a live guard; approved application DDL releases retained guards
+before submission. See [the guard contract](docs/mysql-table-identity-design.md).
 
 The optional `mysql` Compose profile adds MySQL 8.4 on `127.0.0.1:53306` and
 MariaDB 11.4 on `127.0.0.1:53307`, with the same disposable database/user/password.

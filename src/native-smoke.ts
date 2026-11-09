@@ -9,6 +9,7 @@ import type {
   TableChanges,
 } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { sql } from "@codemirror/lang-sql";
@@ -290,6 +291,7 @@ export async function runNativeSmoke() {
             options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
             mappings: [],
             batchIndex: 0,
+            previewToken: "missing-preview-generation",
           }),
       ],
       [
@@ -503,6 +505,25 @@ export async function runNativeSmoke() {
           !!error && typeof error === "object" && "code" in error && error.code === expectedCode;
       }
       assert(matched, `Native ${command} must reach its Rust guard (${expectedCode})`);
+    }
+    // Exercise Tauri's real named-argument decoder independently of typed callers.
+    for (const previewToken of [undefined, null]) {
+      const args: Record<string, unknown> = {
+        sessionId: "missing-native-fixture",
+        sourceToken: "missing-import-token",
+        table: { schema: "public", name: "missing" },
+        options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
+        mappings: [],
+        batchIndex: 0,
+      };
+      if (previewToken !== undefined) args.previewToken = previewToken;
+      let rejected = false;
+      try {
+        await invoke("prepare_csv_import_batch", args);
+      } catch (error) {
+        rejected = typeof error === "string" && error.includes("previewToken");
+      }
+      assert(rejected, "Native CSV preparation must reject missing/null preview ownership");
     }
     const extractedParams = await client.call<{ key: string }[]>("extract_query_params", {
       engine: "postgres",
@@ -729,6 +750,7 @@ export async function runNativeSmoke() {
     report.checks = [
       "native bootstrap",
       "completion IPC disconnected-session guards",
+      "CSV required preview ownership IPC",
       "raw binary channel",
       "Arrow worker",
       "exact integer",

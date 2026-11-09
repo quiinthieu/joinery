@@ -67,6 +67,7 @@ fn main() {
             "cancel_export",
             "pick_import_source",
             "preview_csv_import",
+            "release_csv_import_preview",
             "prepare_csv_import_batch",
             "compare_data",
             "session_contexts",

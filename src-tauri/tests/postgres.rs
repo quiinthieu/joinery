@@ -2557,15 +2557,30 @@ async fn csv_import_automatic_preview_mappings_prepare_the_reviewed_target() {
         assert_eq!(preview.mappings[0].target_column.as_deref(), Some("id"));
         assert_eq!(preview.mappings[1].target_column.as_deref(), Some("note"));
 
+        // Two asynchronous previews own independent generations. Releasing a
+        // late response must not discard the preview accepted by the dialog.
+        let later = studio.preview_csv_import(&session.id, &source.token, &table, options.clone(), Vec::new()).await.unwrap();
+        let original_token = preview.preview_token.as_deref().unwrap();
+        let later_token = later.preview_token.as_deref().unwrap();
+        assert_ne!(original_token, later_token);
+        let released_plan = studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), later.mappings.clone(), 0, later_token).await.unwrap();
+        let released_approval = studio.authorize(&released_plan.plan.id, None, released_plan.plan.confirmation_text.as_deref()).unwrap();
+        studio.release_csv_import_preview(&session.id, &source.token, later_token);
+        assert_eq!(studio.execute(&released_plan.plan.id, Some(&released_approval), Arc::new(|_| true)).unwrap_err().code, ErrorCode::ApprovalExpired, "closing this exact preview must discard its unused approved batch");
+        assert_eq!(studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, later_token).await.unwrap_err().code, ErrorCode::Conflict);
+        studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, original_token).await.expect("releasing a different preview must preserve this exact generation");
+        studio.release_csv_import_preview("other-session", &source.token, original_token);
+        studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, original_token).await.expect("release is scoped to the session and source as well as token");
+
         // Original automatic requests remain supported, without changing the reviewed target.
         studio
-            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), Vec::new(), 0)
+            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), Vec::new(), 0, original_token)
             .await
             .expect("original automatic mapping request must remain valid");
 
         // The dialog submits the effective mappings returned by the preview.
         let prepared = studio
-            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0)
+            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, original_token)
             .await
             .expect("automatic preview must accept its returned effective mappings");
         assert_eq!(prepared.row_count, 1);
@@ -2574,12 +2589,12 @@ async fn csv_import_automatic_preview_mappings_prepare_the_reviewed_target() {
         let mut changed = preview.mappings.clone();
         changed[1].target_column = None;
         assert_eq!(
-            studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), changed, 0).await.unwrap_err().code,
+            studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), changed, 0, original_token).await.unwrap_err().code,
             ErrorCode::Conflict
         );
         let changed_options = CsvImportOptions { has_header: false, ..options };
         assert_eq!(
-            studio.prepare_csv_import_batch(&session.id, &source.token, &table, changed_options, preview.mappings.clone(), 0).await.unwrap_err().code,
+            studio.prepare_csv_import_batch(&session.id, &source.token, &table, changed_options, preview.mappings.clone(), 0, original_token).await.unwrap_err().code,
             ErrorCode::Conflict
         );
         let token = studio.authorize(&prepared.plan.id, None, prepared.plan.confirmation_text.as_deref()).unwrap();
@@ -2590,7 +2605,7 @@ async fn csv_import_automatic_preview_mappings_prepare_the_reviewed_target() {
         assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("1".into()), Some("reviewed".into())]);
 
         assert_eq!(status(&run(&studio, &session, &format!("DROP TABLE {qualified}; CREATE TABLE {qualified} (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO {qualified} VALUES (2, 'replacement')")).await), RunStatus::Completed);
-        let stale = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings, 0).await.unwrap();
+        let stale = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, original_token).await.unwrap();
         let token = studio.authorize(&stale.plan.id, None, stale.plan.confirmation_text.as_deref()).unwrap();
         let events = finish(start(&studio, &stale.plan, Some(&token)).1).await;
         assert_eq!(status(&events), RunStatus::Failed, "{events:?}");
@@ -2598,6 +2613,33 @@ async fn csv_import_automatic_preview_mappings_prepare_the_reviewed_target() {
         let observed = result(&run(&studio, &session, &format!("SELECT id::text, note FROM {qualified}")).await);
         assert_eq!(observed.retained_rows, 1);
         assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("2".into()), Some("replacement".into())]);
+
+        // A caller retaining the old preview must not silently adopt a newer
+        // matching preview of the replacement when its token is omitted.
+        let newer = studio.preview_csv_import(&session.id, &source.token, &table, CsvImportOptions::default(), Vec::new()).await.unwrap();
+        assert_ne!(newer.preview_token.as_deref(), Some(original_token));
+        let observer = studio.connect(&profile.id, ConnectionSecrets { password: Some("joinery-local-only".into()), ..Default::default() }).await.unwrap();
+        assert_eq!(studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, "").await.unwrap_err().code, ErrorCode::Conflict);
+        // An old exact token still targets the old OID even while a newer preview exists.
+        let old = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, original_token).await.unwrap();
+        let approval = studio.authorize(&old.plan.id, None, old.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &old.plan, Some(&approval)).1).await;
+        assert_eq!(status(&events), RunStatus::Failed, "{events:?}");
+        assert!(events.iter().any(|event| matches!(event, QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict)), "{events:?}");
+        studio.release_csv_import_preview(&session.id, &source.token, original_token);
+        assert_eq!(studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, original_token).await.unwrap_err().code, ErrorCode::Conflict, "releasing A must not select B, even when B is the only matching preview");
+        let observed = result(&run(&studio, &observer, &format!("SELECT id::text, note FROM {qualified} ORDER BY id")).await);
+        assert_eq!(observed.retained_rows, 1);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("2".into()), Some("replacement".into())]);
+        let fresh = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), newer.mappings, 0, newer.preview_token.as_deref().unwrap()).await.unwrap();
+        let approval = studio.authorize(&fresh.plan.id, None, fresh.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &fresh.plan, Some(&approval)).1).await;
+        assert_eq!(status(&events), RunStatus::Completed, "{events:?}");
+        assert_eq!(studio.execute(&fresh.plan.id, Some(&approval), Arc::new(|_| true)).unwrap_err().code, ErrorCode::ApprovalExpired);
+        let observed = result(&run(&studio, &observer, &format!("SELECT id::text, note FROM {qualified} ORDER BY id")).await);
+        assert_eq!(observed.retained_rows, 2);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("1".into()), Some("reviewed".into())]);
+        assert_eq!(studio.results.row(&observed.id, 1).unwrap(), vec![Some("2".into()), Some("replacement".into())]);
     }).catch_unwind().await;
     let cleanup = run(&studio, &session, &format!("DROP TABLE {qualified}")).await;
     studio.shutdown();
@@ -2780,6 +2822,7 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
                 CsvImportOptions::default(),
                 remapped.clone(),
                 0,
+                bad_preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap_err()
@@ -2833,6 +2876,7 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
                 CsvImportOptions::default(),
                 remapped.clone(),
                 batch_idx,
+                preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap();
@@ -2856,7 +2900,7 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
     std::fs::write(sandbox.root().join("conflict.csv"), conflict_csv.as_bytes()).unwrap();
     sandbox.queue_open(Some("conflict.csv")).unwrap();
     let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
-    studio
+    let conflict_preview = studio
         .preview_csv_import(
             &session.id,
             &conflict_grant.token,
@@ -2874,6 +2918,7 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
             CsvImportOptions::default(),
             remapped,
             0,
+            conflict_preview.preview_token.as_deref().unwrap(),
         )
         .await
         .unwrap();

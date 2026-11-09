@@ -3,6 +3,130 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 mod common;
 
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn csv_preview_release_discards_only_its_pending_plan_and_releases_mdl() {
+    use futures_util::FutureExt;
+    use joinery_core::file_capability::SandboxFileDialog;
+    for port in [53306, 53307] {
+        let root = tempfile::tempdir().unwrap();
+        let dialog = SandboxFileDialog::new(&root.path().join("imports")).unwrap();
+        let studio = Studio::with_secrets_and_dialog(
+            root.path(),
+            Arc::new(MemorySecrets::default()),
+            dialog.clone(),
+        )
+        .unwrap();
+        let p = studio
+            .save_profile(profile(port, SafeMode::Confirm), None)
+            .unwrap();
+        let session = studio
+            .connect(
+                &p.id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        // A separate Studio cannot revoke this Studio's leases before its DDL.
+        let (_observer_root, observer, observer_session) = setup(port, SafeMode::Silent).await;
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: format!("csv_release_{}", new_id().replace('-', "")),
+        };
+        let qualified = format!("joinery.{}", table.name);
+        completed(&run(&observer, &observer_session, &format!("CREATE TABLE {qualified} (id integer PRIMARY KEY, note varchar(64)) ENGINE=InnoDB")).await);
+        let checked = std::panic::AssertUnwindSafe(async {
+            std::fs::write(dialog.root().join("release.csv"), "id,note\n1,unused\n").unwrap();
+            dialog.queue_open(Some("release.csv")).unwrap();
+            let source = studio.pick_import_source().await.unwrap().unwrap();
+            let old = studio
+                .preview_csv_import(
+                    &session.id,
+                    &source.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            let current = studio
+                .preview_csv_import(
+                    &session.id,
+                    &source.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            let old_token = old.preview_token.as_deref().unwrap();
+            let token = current.preview_token.as_deref().unwrap();
+            let batch = studio
+                .prepare_csv_import_batch(
+                    &session.id,
+                    &source.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    current.mappings,
+                    0,
+                    token,
+                )
+                .await
+                .unwrap();
+            studio.release_csv_import_preview(&session.id, &source.token, old_token);
+            let approval = studio
+                .authorize(
+                    &batch.plan.id,
+                    None,
+                    batch.plan.confirmation_text.as_deref(),
+                )
+                .expect("releasing another generation must preserve this pending plan");
+            studio.release_csv_import_preview(&session.id, &source.token, token);
+            assert_eq!(
+                studio
+                    .execute(&batch.plan.id, Some(&approval), Arc::new(|_| true))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ApprovalExpired
+            );
+            // If the unused plan still owned its cloned guard, this independent
+            // DROP would wait for the production 60-second lease, then time out.
+            let dropped = tokio::time::timeout(
+                Duration::from_secs(4),
+                run(
+                    &observer,
+                    &observer_session,
+                    &format!("DROP TABLE {qualified}"),
+                ),
+            )
+            .await
+            .expect("last preview/plan release must promptly release actual MDL");
+            completed(&dropped);
+        })
+        .catch_unwind()
+        .await;
+        studio.shutdown();
+        let cleanup = run(
+            &observer,
+            &observer_session,
+            &format!("DROP TABLE IF EXISTS {qualified}"),
+        )
+        .await;
+        let absence = result(&run(&observer, &observer_session, &format!("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='joinery' AND table_name='{}'", table.name)).await);
+        let count = observer.results.row(&absence.id, 0).unwrap();
+        observer.release_result(&absence.id);
+        observer.shutdown();
+        completed(&cleanup);
+        assert_eq!(count, vec![Some("0".into())]);
+        if let Err(panic) = checked {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
 fn profile(port: u16, mode: SafeMode) -> ConnectionProfile {
     ConnectionProfile {
         id: new_id(),
@@ -2438,6 +2562,7 @@ async fn mysql_and_mariadb_import_csv_batches_enforce_read_only_and_rollback_con
                 CsvImportOptions::default(),
                 preview.mappings.clone(),
                 0,
+                preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap();
@@ -2475,14 +2600,47 @@ async fn mysql_and_mariadb_import_csv_batches_enforce_read_only_and_rollback_con
         .unwrap();
         sandbox.queue_open(Some("conflict-mysql.csv")).unwrap();
         let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+        assert_eq!(
+            studio
+                .prepare_csv_import_batch(
+                    &session.id,
+                    &conflict_grant.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    preview.mappings.clone(),
+                    0,
+                    preview.preview_token.as_deref().unwrap(),
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict,
+            "a different file grant must establish its own original target preview"
+        );
+        let conflict_preview = studio
+            .preview_csv_import(
+                &session.id,
+                &conflict_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                preview.mappings,
+            )
+            .await
+            .unwrap();
+        assert!(
+            conflict_preview.can_prepare,
+            "port {port}: {:?}",
+            conflict_preview.issues
+        );
         let conflict_batch = studio
             .prepare_csv_import_batch(
                 &session.id,
                 &conflict_grant.token,
                 &table,
                 CsvImportOptions::default(),
-                preview.mappings,
+                conflict_preview.mappings,
                 0,
+                conflict_preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap();
@@ -4584,6 +4742,32 @@ async fn query_result_commit_preserves_snapshot_and_rerun_reads_server_defaults_
         let actual = result(&run(&studio, &session, &sql).await);
         let actual_row = studio.results.row(&actual.id, 0).unwrap();
         completed(&run(&studio, &session, &format!("CREATE TRIGGER joinery.{table}_upper BEFORE UPDATE ON joinery.{table} FOR EACH ROW SET NEW.note=UPPER(NEW.note)")).await);
+        // Dialect DDL may be conservatively classified Unknown. It must release
+        // retained MDL before submission and invalidate this old source lease.
+        let stale = studio
+            .prepare_changes(
+                &session.id,
+                &actual.id,
+                vec![CellChange {
+                    row: 0,
+                    column: "c1".into(),
+                    value: Some("stale trigger source".into()),
+                }],
+            )
+            .unwrap();
+        let stale_events = execute(&studio, &stale.plan).await;
+        assert!(stale_events.iter().any(|event| matches!(event, QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict)), "{stale_events:?}");
+        assert!(
+            stale_events.iter().any(|event| matches!(
+                event,
+                QueryEvent::Finished {
+                    status: RunStatus::Failed,
+                    ..
+                }
+            )),
+            "{stale_events:?}"
+        );
+        let actual = result(&run(&studio, &session, &sql).await);
         let update = studio
             .prepare_changes(
                 &session.id,

@@ -152,10 +152,21 @@ impl Harness {
     async fn connect(fixture: Fixture) -> ProbeResult<Self> {
         let root = tempfile::tempdir().map_err(|e| e.to_string())?;
         let dialog = app(SandboxFileDialog::new(&root.path().join("imports")))?;
-        let studio = app(Studio::with_secrets_and_dialog(
+        // The fixture-only policy exercises active expiry without an 18-minute
+        // diagnostic. Production keeps its fixed 60-second absolute lifetime.
+        let policy = if fixture.engine == EngineKind::Mysql {
+            joinery_core::drivers::mysql::guard::GuardPolicy {
+                lifetime: Duration::from_secs(4),
+                ..Default::default()
+            }
+        } else {
+            Default::default()
+        };
+        let studio = app(Studio::with_mysql_guard_policy(
             root.path(),
             Arc::new(MemorySecrets::default()),
             dialog.clone(),
+            policy,
         ))?;
         let profile = app(studio.save_profile(
             ConnectionProfile {
@@ -320,6 +331,7 @@ struct Observation {
     approval_consumed: bool,
     fresh_control_succeeded: bool,
     cleanup_verified: bool,
+    replacement_wait_ms: u64,
 }
 impl Observation {
     fn safe(&self) -> bool {
@@ -405,6 +417,7 @@ async fn observe(
         },
     ];
     let mut source_token = None;
+    let mut preview_token = None;
     let selected = match case.source {
         Source::Browse => {
             Some(app(actor.studio.browse(&actor.session.id, table, None).await)?.result)
@@ -443,6 +456,7 @@ async fn observe(
                 return Err("synthetic CSV preview was not eligible".into());
             }
             source_token = Some(grant.token);
+            preview_token = preview.preview_token;
             None
         }
     };
@@ -457,6 +471,7 @@ async fn observe(
                 CsvImportOptions::default(),
                 mappings.clone(),
                 0,
+                preview_token.as_deref().ok_or("missing preview")?,
             )
             .await)?;
         let token = actor.approve(&first.plan)?;
@@ -468,8 +483,11 @@ async fn observe(
         }
         batch_index = 1;
     }
+    let mut replacement_wait_ms = 0;
     if case.timing != Timing::AfterApproval {
+        let started = std::time::Instant::now();
         replace(observer, &qualified, fixture, case.empty).await?;
+        replacement_wait_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
     }
     let baseline = if case.empty {
         vec![]
@@ -489,6 +507,7 @@ async fn observe(
                 CsvImportOptions::default(),
                 mappings,
                 batch_index,
+                preview_token.as_deref().ok_or("missing preview")?,
             )
             .await
     } else {
@@ -504,7 +523,9 @@ async fn observe(
         Ok(preview) => {
             let token = actor.approve(&preview.plan)?;
             if case.timing == Timing::AfterApproval {
+                let started = std::time::Instant::now();
                 replace(observer, &qualified, fixture, case.empty).await?;
+                replacement_wait_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             }
             let events = actor.execute(&preview.plan, token.as_deref()).await?;
             let consumed = actor
@@ -565,6 +586,7 @@ async fn observe(
         approval_consumed: consumed,
         fresh_control_succeeded,
         cleanup_verified: false,
+        replacement_wait_ms,
     })
 }
 
@@ -574,6 +596,8 @@ struct FixtureContext {
     engine: &'static str,
     loopback_port: u16,
     server_version: String,
+    /// Non-default Rust-only policy; replacement DDL waits for active expiry.
+    retained_guard_lifetime_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -652,6 +676,7 @@ async fn collect_report(engine: &str) -> Report {
             engine: fixture.name,
             loopback_port: fixture.port,
             server_version: observer.session.server_version.clone(),
+            retained_guard_lifetime_ms: (fixture.engine == EngineKind::Mysql).then_some(4000),
         });
         for case in CASES {
             let actor = match Harness::connect(fixture).await {
@@ -733,5 +758,20 @@ mod regression {
             serde_json::to_string_pretty(&report).unwrap()
         );
         assert_eq!(report.observations.len(), 9);
+    }
+
+    #[tokio::test]
+    #[ignore = "explicit opt-in: actual disposable MySQL/MariaDB fixtures 53306/53307"]
+    async fn mysql_and_mariadb_expired_targets_reject_replacement_and_allow_fresh_edits() {
+        for engine in ["mysql", "mariadb"] {
+            let report = super::collect_report(engine).await;
+            assert!(
+                report.safety_passed,
+                "{}",
+                serde_json::to_string_pretty(&report).unwrap()
+            );
+            assert_eq!(report.observations.len(), 9);
+            assert_eq!(report.fixtures[0].retained_guard_lifetime_ms, Some(4000));
+        }
     }
 }

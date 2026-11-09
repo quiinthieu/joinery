@@ -527,10 +527,33 @@ function retireAfterBrowseFailure(sessionId: string, error: AppError) {
     useStudio.getState().retireSession(sessionId);
 }
 function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
-  if (!schema || JSON.stringify(schema.columns) !== JSON.stringify(result.columns)) {
-    void client.call("release_result", { resultId: result.id }).catch(() => {});
-    throw new Error("The table schema changed. Refresh the table before continuing.");
-  }
+  if (schema && JSON.stringify(schema.columns) === JSON.stringify(result.columns))
+    return result.editability?.status === "readOnly" ? { ...schema, editable: false } : schema;
+  // A completed page may lose its edit lease while rows are fetched. Preserve
+  // that known result, but narrow the whole table view until explicit refresh.
+  // Every structural field must still match; this never promotes capabilities.
+  if (
+    schema &&
+    result.editability?.status === "readOnly" &&
+    JSON.stringify(schema.table) === JSON.stringify(result.table) &&
+    schema.columns.length === result.columns.length &&
+    result.columns.every((column, index) => {
+      const { editable: _actualEdit, insertable: _actualInsert, ...actual } = column;
+      const {
+        editable: _expectedEdit,
+        insertable: _expectedInsert,
+        ...expected
+      } = schema.columns[index];
+      return (
+        !column.editable &&
+        !column.insertable &&
+        JSON.stringify(actual) === JSON.stringify(expected)
+      );
+    })
+  )
+    return { ...schema, editable: false, columns: result.columns };
+  void client.call("release_result", { resultId: result.id }).catch(() => {});
+  throw new Error("The table schema changed. Refresh the table before continuing.");
 }
 
 export const useStudio = create<StudioState>((set, get) => ({
@@ -1666,7 +1689,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         return;
       }
       const latest = get().tabs.find((t) => t.id === id)!;
-      verifyPageColumns(latest.schema, page.result);
+      const schema = verifyPageColumns(latest.schema, page.result);
       const pages = [...latest.pages, { start, after, result: page.result }];
       if (pages.length > 8) {
         const evict = pages.findIndex(
@@ -1679,6 +1702,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         }
       }
       get().updateTab(id, {
+        schema,
         pages,
         pageKeys: { ...latest.pageKeys, [start]: after },
         loadedRows: start + page.result.retainedRows,
@@ -1729,7 +1753,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         void client.call("release_result", { resultId: page.result.id });
         return;
       }
-      verifyPageColumns(latest.schema, page.result);
+      const schema = verifyPageColumns(latest.schema, page.result);
       const pages = [
         ...latest.pages,
         { start, after: current.pageKeys[start], result: page.result },
@@ -1744,7 +1768,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           void client.call("release_result", { resultId: old.result.id });
         }
       }
-      get().updateTab(id, { pages });
+      get().updateTab(id, { schema, pages });
     } catch (error) {
       const failure = asAppError(error);
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))

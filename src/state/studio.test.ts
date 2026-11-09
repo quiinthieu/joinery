@@ -349,6 +349,104 @@ test("a page with changed column positions is rejected before it can be edited",
   expect(client.call).toHaveBeenCalledWith("release_result", { resultId: "result" });
 });
 
+for (const operation of ["refresh", "next", "evicted"] as const) {
+  test(`a completed ${operation} page can safely narrow editing without losing its rows`, async () => {
+    const source = schema("label");
+    source.editable = true;
+    source.primaryKey = ["label"];
+    source.columns[0] = {
+      ...source.columns[0],
+      primaryKey: true,
+      editable: true,
+      insertable: true,
+    };
+    const readonly = page({
+      ...source,
+      editable: false,
+      columns: source.columns.map((column) => ({ ...column, editable: false, insertable: false })),
+    });
+    readonly.result.editability = {
+      status: "readOnly",
+      reason: "The original edit lease expired. Refresh to edit again.",
+    };
+    vi.mocked(client.call).mockImplementation(((command: string) =>
+      Promise.resolve(
+        command === "table_schema" ? source : command === "browse_table" ? readonly : null,
+      )) as typeof client.call);
+    const id = tableTab();
+    useStudio.getState().updateTab(id, {
+      schema: source,
+      dataSessionId: session.id,
+      pageKeys: { 0: null },
+      hasMore: true,
+    });
+    if (operation === "refresh") await useStudio.getState().refreshTable(id);
+    else if (operation === "next") await useStudio.getState().loadNextPage(id);
+    else await useStudio.getState().ensureTablePage(id, 0);
+    const current = useStudio.getState().tabs.find((tab) => tab.id === id)!;
+    expect(current.error).toBeNull();
+    expect(current.pages).toHaveLength(1);
+    expect(current.pages[0].result.retainedRows).toBe(1);
+    expect(current.schema?.editable).toBe(false);
+    expect(current.schema?.columns.every((column) => !column.editable && !column.insertable)).toBe(
+      true,
+    );
+    expect(client.call).not.toHaveBeenCalledWith("release_result", {
+      resultId: readonly.result.id,
+    });
+    expect(useStudio.getState().sessions.profile.id).toBe(session.id);
+    expect(
+      vi.mocked(client.call).mock.calls.filter(([command]) => command === "browse_table"),
+    ).toHaveLength(1);
+  });
+}
+
+test("a read-only page also removes table-level editing when column flags are already false", async () => {
+  const source = { ...schema("label"), editable: true };
+  const readonly = page(source);
+  readonly.result.editability = { status: "readOnly", reason: "Expired fixture lease" };
+  vi.mocked(client.call).mockImplementation(((command: string) =>
+    Promise.resolve(
+      command === "table_schema" ? source : command === "browse_table" ? readonly : null,
+    )) as typeof client.call);
+  const id = tableTab();
+  await useStudio.getState().refreshTable(id);
+  const current = useStudio.getState().tabs.find((tab) => tab.id === id)!;
+  expect(current.pages).toHaveLength(1);
+  expect(current.error).toBeNull();
+  expect(current.schema?.editable).toBe(false);
+});
+
+test.each(["type", "nullability", "key", "table", "editable", "insertable"] as const)(
+  "a read-only page still rejects changed %s metadata or capabilities",
+  async (change) => {
+    const source = schema("label");
+    source.editable = true;
+    source.columns[0] = { ...source.columns[0], editable: true, insertable: true };
+    const readonly = page({
+      ...source,
+      columns: source.columns.map((column) => ({ ...column, editable: false, insertable: false })),
+    });
+    readonly.result.editability = { status: "readOnly", reason: "Expired fixture lease" };
+    if (change === "type") readonly.result.columns[0].databaseType = "integer";
+    if (change === "nullability") readonly.result.columns[0].nullable = false;
+    if (change === "key") readonly.result.columns[0].primaryKey = true;
+    if (change === "table") readonly.result.table = { ...source.table, name: "replacement" };
+    if (change === "editable") readonly.result.columns[0].editable = true;
+    if (change === "insertable") readonly.result.columns[0].insertable = true;
+    vi.mocked(client.call).mockImplementation(((command: string) =>
+      Promise.resolve(
+        command === "table_schema" ? source : command === "browse_table" ? readonly : null,
+      )) as typeof client.call);
+    const id = tableTab();
+    await useStudio.getState().refreshTable(id);
+    const current = useStudio.getState().tabs.find((tab) => tab.id === id)!;
+    expect(current.pages).toHaveLength(0);
+    expect(current.error?.message).toContain("schema changed");
+    expect(client.call).toHaveBeenCalledWith("release_result", { resultId: readonly.result.id });
+  },
+);
+
 for (const operation of [
   "review",
   "schema",

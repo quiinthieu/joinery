@@ -153,6 +153,7 @@ pub fn run() {
             commands::cancel_export,
             commands::pick_import_source,
             commands::preview_csv_import,
+            commands::release_csv_import_preview,
             commands::prepare_csv_import_batch,
             commands::compare_data,
             commands::session_contexts,

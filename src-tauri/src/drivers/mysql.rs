@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 mod catalog;
 mod explorer;
+pub mod guard;
 mod values;
 pub(crate) use catalog::browse_sql;
 pub(crate) use values::MysqlDialect;
@@ -67,6 +68,8 @@ pub struct Mysql {
     closed: CancellationToken,
     read_only: bool,
     maria: bool,
+    session_id: String,
+    guards: guard::GuardRegistry,
 }
 
 impl Mysql {
@@ -75,6 +78,24 @@ impl Mysql {
         password: Option<&str>,
         session_id: &str,
         forwarded_port: Option<u16>,
+    ) -> AppResult<(Arc<Self>, SessionInfo)> {
+        Self::open_with_guard_policy(
+            profile,
+            password,
+            session_id,
+            forwarded_port,
+            guard::GuardPolicy::default(),
+        )
+        .await
+    }
+
+    #[doc(hidden)]
+    pub async fn open_with_guard_policy(
+        profile: &ConnectionProfile,
+        password: Option<&str>,
+        session_id: &str,
+        forwarded_port: Option<u16>,
+        policy: guard::GuardPolicy,
     ) -> AppResult<(Arc<Self>, SessionInfo)> {
         let started = Instant::now();
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -170,6 +191,8 @@ impl Mysql {
             role: format!("{} ({})", cell(identity_row, 1), cell(identity_row, 2)),
             dirty: false,
         };
+        let closed = CancellationToken::new();
+        let guards = guard::GuardRegistry::new(session_id, policy, closed.clone())?;
         Ok((
             Arc::new(Self {
                 editor: Arc::new(LiveConnection {
@@ -181,9 +204,11 @@ impl Mysql {
                 edit: parking_lot::Mutex::new(None),
                 identity_cache: parking_lot::Mutex::new(initial_cache),
                 cancel_requested: CancellationToken::new(),
-                closed: CancellationToken::new(),
+                closed,
                 read_only: profile.safe_mode == SafeMode::ReadOnly,
                 maria,
+                session_id: session_id.into(),
+                guards,
             }),
             SessionInfo {
                 id: session_id.into(),
@@ -303,6 +328,13 @@ impl Mysql {
                 conn.query_drop("SET NAMES utf8mb4; SET SESSION sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'; SET SESSION time_zone='+00:00'")
                     .await
                     .map_err(mysql_error)?;
+                if kind != StatementKind::Read {
+                    // Approved DDL can race another console's newly acquired
+                    // guard. Bound that metadata-lock wait independently of row
+                    // lock waits; a new guard must never hang a DDL indefinitely.
+                    conn.query_drop(format!("SET SESSION lock_wait_timeout={}", self.guards.policy().writer_lock_timeout.as_secs().max(1)))
+                        .await.map_err(mysql_error)?;
+                }
                 if self.cancel_requested.is_cancelled() {
                     return Err(AppError::new(
                         ErrorCode::Cancelled,
@@ -388,11 +420,19 @@ impl Mysql {
                 0
             };
             if !columns.is_empty() {
-                sink.describe(
+                sink.describe_mysql_with_origins(
                     columns
                         .iter()
                         .enumerate()
                         .map(|(i, c)| column(i, c))
+                        .collect(),
+                    columns
+                        .iter()
+                        .map(|c| MysqlColumnOrigin {
+                            database: c.schema_str().into_owned(),
+                            original_table: c.org_table_str().into_owned(),
+                            original_column: c.org_name_str().into_owned(),
+                        })
                         .collect(),
                 )?;
             }
@@ -568,6 +608,7 @@ impl Driver for Mysql {
             .clone()
             .unwrap_or_else(|| self.editor.clone());
         self.cancel_requested.cancel();
+        self.guards.close();
         let outcome = tokio::time::timeout(Duration::from_secs(10), async {
             let mut conn = connect(&self.opts).await?;
             loop {
@@ -880,7 +921,71 @@ impl Driver for Mysql {
         self.browse_rows(schema, query.clone(), after).await
     }
     async fn apply(&self, schema: &TableSchema, rows: &[RowMutation]) -> AppResult<()> {
-        self.apply_rows(schema, rows).await
+        let _ = (schema, rows);
+        Err(guard::expired())
+    }
+    async fn edit_target(&self, table: &TableRef) -> AppResult<EditTarget> {
+        let preliminary = self.table_schema(table).await?;
+        if !preliminary.editable || self.read_only {
+            return Ok(EditTarget {
+                schema: preliminary,
+                identity: None,
+            });
+        }
+        let guard = self
+            .guards
+            .acquire(&self.opts, self.maria, &preliminary.table)
+            .await?;
+        let schema = guard.schema().ok_or_else(guard::expired)?.clone();
+        Ok(EditTarget {
+            schema,
+            identity: Some(EditIdentity::Mysql { guard }),
+        })
+    }
+    async fn browse_target(
+        &self,
+        schema: &TableSchema,
+        query: &BrowseQuery,
+        after: Option<Vec<Option<String>>>,
+    ) -> AppResult<(BrowseRows, EditTarget)> {
+        if !schema.editable || self.read_only {
+            return Ok((
+                self.browse_query(schema, query, after).await?,
+                EditTarget {
+                    schema: schema.clone(),
+                    identity: None,
+                },
+            ));
+        }
+        let mut target = self.edit_target(&schema.table).await?;
+        catalog::unchanged(schema, &target.schema)?;
+        let rows = self.browse_query(schema, query, after).await?;
+        // A successful raw clause may already have committed effects. Preserve
+        // that successful snapshot, narrowing its capabilities if protection
+        // expired during the read instead of falsely reporting a failed browse.
+        if !matches!(&target.identity, Some(EditIdentity::Mysql { guard }) if guard.is_live()) {
+            target.identity = None;
+            target.schema.editable = false;
+            for column in &mut target.schema.columns {
+                column.editable = false;
+                column.insertable = false;
+            }
+        }
+        Ok((rows, target))
+    }
+    async fn apply_target(
+        &self,
+        schema: &TableSchema,
+        identity: Option<&EditIdentity>,
+        rows: &[RowMutation],
+    ) -> AppResult<()> {
+        let Some(EditIdentity::Mysql { guard }) = identity else {
+            return Err(guard::expired());
+        };
+        self.apply_rows(schema, rows, guard).await
+    }
+    async fn invalidate_edit_targets(&self) -> AppResult<()> {
+        self.guards.invalidate().await
     }
     async fn processes(&self) -> AppResult<Vec<ProcessInfo>> {
         let rows=self.metadata(|conn| Box::pin(fetch(conn,"SELECT ID,USER,COALESCE(DB,''),COMMAND,TIME,LEFT(INFO,4096) FROM INFORMATION_SCHEMA.PROCESSLIST ORDER BY TIME DESC LIMIT 500",vec![],500,3*1024*1024))).await?;
@@ -999,6 +1104,7 @@ impl Driver for Mysql {
     }
     fn close(&self) {
         self.closed.cancel();
+        self.guards.close();
     }
 }
 

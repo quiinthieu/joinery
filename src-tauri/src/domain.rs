@@ -1767,6 +1767,8 @@ pub struct CsvImportIssue {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CsvImportPreview {
+    #[serde(default)]
+    pub preview_token: Option<String>,
     pub file_name: String,
     pub headers: Vec<String>,
     pub mappings: Vec<CsvColumnMapping>,

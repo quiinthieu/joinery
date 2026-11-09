@@ -455,10 +455,19 @@ async fn rpc(
                         &arg(&args, "table")?,
                         arg(&args, "options")?,
                         arg(&args, "mappings")?,
-                        arg(&args, "batchIndex")?
+                        arg(&args, "batchIndex")?,
+                        &arg::<String>(&args, "previewToken")?
                     )
                     .await?
             ),
+            "release_csv_import_preview" => {
+                studio.release_csv_import_preview(
+                    &arg::<String>(&args, "sessionId")?,
+                    &arg::<String>(&args, "sourceToken")?,
+                    &arg::<String>(&args, "previewToken")?,
+                );
+                Value::Null
+            }
             "compare_data" => json!(studio.compare_data(arg(&args, "request")?).await?),
             "session_contexts" => json!(
                 studio

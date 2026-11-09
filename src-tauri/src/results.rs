@@ -466,6 +466,7 @@ impl ResultStore {
                 continue;
             }
             entry.provenance = None;
+            entry.edit_identity = None;
             entry.info.editability = Some(ResultEditability::ReadOnly {
                 reason: "Result is a snapshot from before these changes. Re-run query to refresh."
                     .into(),
@@ -521,6 +522,15 @@ mod tests {
                 .create("query", 0, schema.columns.clone(), Some(schema))
                 .unwrap();
             let original = vec![Some("1".into()), Some("original".into())];
+            store
+                .set_edit_identity(
+                    &result.id,
+                    Some(crate::drivers::EditIdentity::Postgres {
+                        relation_oid: 42,
+                        attributes: Vec::new(),
+                    }),
+                )
+                .unwrap();
             assert!(store.append(&result.id, vec![original.clone()]).unwrap());
             let before = store.finish(&result.id, true).unwrap();
             let bytes_before = store.usage().0;
@@ -573,6 +583,7 @@ mod tests {
                 store.provenance(&result.id).unwrap_err().code,
                 ErrorCode::PolicyBlocked
             );
+            assert!(store.edit_identity(&result.id).unwrap().is_none());
         }
     }
 

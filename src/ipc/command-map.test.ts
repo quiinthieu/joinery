@@ -60,13 +60,21 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     });
     expectTypeOf(migrationPrepPromise).toEqualTypeOf<Promise<PreparedPlan>>();
 
+    const releasePreviewPromise = typedClient.call("release_csv_import_preview", {
+      sessionId: "session-1",
+      sourceToken: "source-1",
+      previewToken: "preview-1",
+    });
+    expectTypeOf(releasePreviewPromise).toEqualTypeOf<Promise<void>>();
+
     await Promise.all([
       bootstrapPromise,
       schemaPromise,
       explicitGenericPromise,
       migrationPrepPromise,
+      releasePreviewPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(4);
+    expect(callMock).toHaveBeenCalledTimes(5);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -85,6 +93,22 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
 
       // @ts-expect-error — wrong argument shape for generate_schema_ddl
       void c.call("generate_schema_ddl", { snapshot: "invalid" });
+
+      // @ts-expect-error — preparing a batch requires its exact preview generation
+      void c.call("prepare_csv_import_batch", {
+        sessionId: "session-1",
+        sourceToken: "source-1",
+        table: { schema: "public", name: "orders" },
+        options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
+        mappings: [],
+        batchIndex: 0,
+      });
+
+      // @ts-expect-error — releasing a preview requires its exact generation
+      void c.call("release_csv_import_preview", {
+        sessionId: "session-1",
+        sourceToken: "source-1",
+      });
     };
 
     expect(typeof verifyCompileTimeConstraints).toBe("function");

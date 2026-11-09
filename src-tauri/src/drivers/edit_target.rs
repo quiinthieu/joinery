@@ -8,6 +8,15 @@ pub struct ColumnOrigin {
     pub type_oid: u32,
 }
 
+/// Original wire names corroborate a retained metadata-lock lease. They are
+/// not a physical object identifier and must never authorize a write alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MysqlColumnOrigin {
+    pub database: String,
+    pub original_table: String,
+    pub original_column: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct PgAttribute {
     pub name: String,
@@ -20,6 +29,9 @@ pub enum EditIdentity {
     Postgres {
         relation_oid: u32,
         attributes: Vec<PgAttribute>,
+    },
+    Mysql {
+        guard: super::mysql::guard::MysqlGuardHandle,
     },
 }
 
@@ -41,7 +53,27 @@ impl EditIdentity {
                             })
                     })
             }
+            Self::Mysql { .. } => false,
         }
+    }
+
+    pub fn matches_mysql_projection(
+        &self,
+        columns: &[ColumnInfo],
+        origins: &[MysqlColumnOrigin],
+    ) -> bool {
+        let Self::Mysql { guard } = self else {
+            return false;
+        };
+        let table = &guard.identity().table;
+        guard.is_live()
+            && !columns.is_empty()
+            && columns.len() == origins.len()
+            && columns.iter().zip(origins).all(|(column, origin)| {
+                origin.database == table.schema
+                    && origin.original_table == table.name
+                    && origin.original_column == column.name
+            })
     }
 }
 

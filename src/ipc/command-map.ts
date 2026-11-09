@@ -384,6 +384,10 @@ export interface JoineryCommandMap {
     };
     result: CsvImportPreview;
   };
+  release_csv_import_preview: {
+    args: { sessionId: string; sourceToken: string; previewToken: string };
+    result: void;
+  };
   prepare_csv_import_batch: {
     args: {
       sessionId: string;
@@ -392,6 +396,7 @@ export interface JoineryCommandMap {
       options: CsvImportOptions;
       mappings: CsvColumnMapping[];
       batchIndex: number;
+      previewToken: string;
     };
     result: ChangePreview;
   };

@@ -733,6 +733,18 @@ pub async fn preview_csv_import(
 }
 
 #[tauri::command]
+pub fn release_csv_import_preview(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    source_token: String,
+    preview_token: String,
+) {
+    studio.release_csv_import_preview(&session_id, &source_token, &preview_token);
+}
+
+#[tauri::command]
+// Named IPC arguments bind every batch to its exact reviewed preview.
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_csv_import_batch(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
@@ -741,6 +753,7 @@ pub async fn prepare_csv_import_batch(
     options: CsvImportOptions,
     mappings: Vec<CsvColumnMapping>,
     batch_index: usize,
+    preview_token: String,
 ) -> AppResult<ChangePreview> {
     studio
         .prepare_csv_import_batch(
@@ -750,6 +763,7 @@ pub async fn prepare_csv_import_batch(
             options,
             mappings,
             batch_index,
+            &preview_token,
         )
         .await
 }
