@@ -134,6 +134,17 @@ impl Postgres {
         Ok((Arc::new(driver), info))
     }
 
+    fn transaction_connection_error(&self, mut error: AppError) -> AppError {
+        if matches!(
+            error.code,
+            ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
+        ) {
+            self.close();
+            error.code = ErrorCode::ConnectionClosed;
+        }
+        error
+    }
+
     async fn observe_transaction_state(&self) -> AppResult<TransactionState> {
         let meta = self.metadata().await?;
         let _ = meta
@@ -145,7 +156,7 @@ impl Postgres {
                 &[&self.own_pid],
             )
             .await
-            .map_err(pg_error)?;
+            .map_err(pg_transaction_error)?;
         Ok(match row.as_ref().map(|r| r.get::<_, &str>(0)) {
             Some("idle in transaction") => TransactionState::InTransaction,
             Some("idle in transaction (aborted)") => TransactionState::Failed,
@@ -645,7 +656,11 @@ impl Driver for Postgres {
     }
 
     async fn commit_transaction(&self) -> AppResult<()> {
-        match self.observe_transaction_state().await? {
+        let state = self
+            .observe_transaction_state()
+            .await
+            .map_err(|error| self.transaction_connection_error(error))?;
+        match state {
             TransactionState::Idle => Err(AppError::new(
                 ErrorCode::Conflict,
                 "No transaction is currently open",
@@ -655,13 +670,28 @@ impl Driver for Postgres {
                 "This transaction has failed and can only be rolled back",
             )),
             TransactionState::InTransaction => {
-                self.client.batch_execute("COMMIT").await.map_err(pg_error)
+                self.client.batch_execute("COMMIT").await.map_err(|error| {
+                    if pg_connection_lost(&error) {
+                        self.close();
+                        AppError::new(
+                            ErrorCode::OutcomeUnknown,
+                            "The connection was lost while committing. The transaction may have committed. Verify its outcome before retrying.",
+                        )
+                    } else {
+                        pg_error(error)
+                    }
+                })
             }
         }
     }
 
     async fn rollback_transaction(&self) -> AppResult<()> {
-        if self.observe_transaction_state().await? == TransactionState::Idle {
+        if self
+            .observe_transaction_state()
+            .await
+            .map_err(|error| self.transaction_connection_error(error))?
+            == TransactionState::Idle
+        {
             return Err(AppError::new(
                 ErrorCode::Conflict,
                 "No transaction is currently open",
@@ -670,7 +700,7 @@ impl Driver for Postgres {
         self.client
             .batch_execute("ROLLBACK")
             .await
-            .map_err(pg_error)?;
+            .map_err(|error| self.transaction_connection_error(pg_transaction_error(error)))?;
         self.drain_stale_prepared().await;
         Ok(())
     }
@@ -1329,6 +1359,27 @@ fn column(index: usize, name: &str, type_name: &str) -> ColumnInfo {
         editable: false,
         insertable: false,
         has_default: false,
+    }
+}
+
+fn pg_connection_lost(error: &tokio_postgres::Error) -> bool {
+    error.as_db_error().is_none_or(|db| {
+        matches!(
+            db.parsed_severity(),
+            Some(tokio_postgres::error::Severity::Fatal | tokio_postgres::error::Severity::Panic)
+        ) || matches!(db.severity(), "FATAL" | "PANIC")
+            || db.code().code().starts_with("08")
+    })
+}
+
+fn pg_transaction_error(error: tokio_postgres::Error) -> AppError {
+    if pg_connection_lost(&error) {
+        AppError::new(
+            ErrorCode::ConnectionClosed,
+            "The database connection closed",
+        )
+    } else {
+        pg_error(error)
     }
 }
 

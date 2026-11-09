@@ -218,7 +218,7 @@ interface StudioState {
   renameQuerySession(sessionId: string, label: string): void;
   disconnectQuerySession(sessionId: string): Promise<void>;
   updateSessionLatency(sessionId: string, latencyMs: number): void;
-  refreshSessionContexts(sessionId: string): Promise<void>;
+  refreshSessionContexts(sessionId: string, throwOnError?: boolean): Promise<boolean>;
   switchSessionContext(sessionId: string, target: string): Promise<void>;
   setTransactionMode(sessionId: string, mode: TransactionMode): Promise<void>;
   commitTransaction(sessionId: string): Promise<void>;
@@ -826,20 +826,40 @@ export const useStudio = create<StudioState>((set, get) => ({
       return { sessions, sessionPool, tabs };
     });
   },
-  async refreshSessionContexts(sessionId) {
+  async refreshSessionContexts(sessionId, throwOnError = false) {
     const options = await client
       .call<SessionContextOptions | null>("session_contexts", {
         sessionId,
       })
-      .catch(() => null);
-    if (!options?.state) return;
+      .catch((error) => {
+        if (throwOnError) throw error;
+        return null;
+      });
+    if (!options?.state) return false;
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
+      const prev = state.sessionStates[sessionId];
+      const runtime = options.state;
+      const contextChanged =
+        prev &&
+        (prev.activeContext !== runtime.activeContext ||
+          prev.database !== runtime.database ||
+          prev.role !== runtime.role ||
+          JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath));
       return {
-        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
+        sessionStates: { ...state.sessionStates, [sessionId]: runtime },
         sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+        ...(contextChanged
+          ? {
+              sessionContextRevision: {
+                ...state.sessionContextRevision,
+                [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+              },
+            }
+          : {}),
       };
     });
+    return isSessionActive(get(), sessionId);
   },
   async switchSessionContext(sessionId, target) {
     const options = await client.call<SessionContextOptions>("switch_session_context", {
@@ -886,7 +906,24 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   async commitTransaction(sessionId) {
-    const runtime = await client.call<SessionRuntimeState>("commit_transaction", { sessionId });
+    let runtime: SessionRuntimeState;
+    try {
+      runtime = await client.call<SessionRuntimeState>("commit_transaction", { sessionId });
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      else if ((code === "database" || code === "conflict") && isSessionActive(get(), sessionId)) {
+        try {
+          await get().refreshSessionContexts(sessionId, true);
+        } catch (refreshError) {
+          const { code: refreshCode } = asAppError(refreshError);
+          if (refreshCode === "connectionClosed" || refreshCode === "outcomeUnknown")
+            get().retireSession(sessionId);
+        }
+      }
+      throw error;
+    }
+    if (!isSessionActive(get(), sessionId)) return;
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
       return {
@@ -900,7 +937,24 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().notify("Transaction committed");
   },
   async rollbackTransaction(sessionId) {
-    const runtime = await client.call<SessionRuntimeState>("rollback_transaction", { sessionId });
+    let runtime: SessionRuntimeState;
+    try {
+      runtime = await client.call<SessionRuntimeState>("rollback_transaction", { sessionId });
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      else if ((code === "database" || code === "conflict") && isSessionActive(get(), sessionId)) {
+        try {
+          await get().refreshSessionContexts(sessionId, true);
+        } catch (refreshError) {
+          const { code: refreshCode } = asAppError(refreshError);
+          if (refreshCode === "connectionClosed" || refreshCode === "outcomeUnknown")
+            get().retireSession(sessionId);
+        }
+      }
+      throw error;
+    }
+    if (!isSessionActive(get(), sessionId)) return;
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
       return {

@@ -782,20 +782,36 @@ impl Driver for Mysql {
         .await
     }
     async fn commit_transaction(&self) -> AppResult<()> {
-        self.bounded(async {
-            let mut conn = self.editor.connection.lock().await;
-            if !observe_status_flags(&mut conn)
-                .await?
-                .contains(StatusFlags::SERVER_STATUS_IN_TRANS)
-            {
-                return Err(AppError::new(
-                    ErrorCode::Conflict,
-                    "No transaction is currently open",
-                ));
+        let mut submitted = false;
+        let result = self
+            .bounded(async {
+                let mut conn = self.editor.connection.lock().await;
+                if !observe_status_flags(&mut conn)
+                    .await?
+                    .contains(StatusFlags::SERVER_STATUS_IN_TRANS)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "No transaction is currently open",
+                    ));
+                }
+                submitted = true;
+                conn.query_drop("COMMIT").await.map_err(mysql_error)
+            })
+            .await;
+        result.map_err(|mut error| {
+            if matches!(error.code, ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed) {
+                self.close();
+                if submitted {
+                    return AppError::new(
+                        ErrorCode::OutcomeUnknown,
+                        "The connection was lost while committing. The transaction may have committed. Verify its outcome before retrying.",
+                    );
+                }
+                error.code = ErrorCode::ConnectionClosed;
             }
-            conn.query_drop("COMMIT").await.map_err(mysql_error)
+            error
         })
-        .await
     }
     async fn rollback_transaction(&self) -> AppResult<()> {
         self.bounded(async {
@@ -812,6 +828,16 @@ impl Driver for Mysql {
             conn.query_drop("ROLLBACK").await.map_err(mysql_error)
         })
         .await
+        .map_err(|mut error| {
+            if matches!(
+                error.code,
+                ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
+            ) {
+                self.close();
+                error.code = ErrorCode::ConnectionClosed;
+            }
+            error
+        })
     }
     async fn completion_catalog(
         &self,

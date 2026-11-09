@@ -1503,7 +1503,11 @@ impl Studio {
     }
 
     pub async fn commit_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
-        let session = self.session(session_id)?;
+        let session = self.session(session_id).inspect_err(|error| {
+            if error.code == ErrorCode::ConnectionClosed {
+                self.disconnect(session_id);
+            }
+        })?;
         if !session.info.capabilities.transactions {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
@@ -1520,12 +1524,17 @@ impl Studio {
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            self.disconnect(&session.info.id);
             return Err(AppError::new(
                 ErrorCode::ConnectionClosed,
                 "This database session is disconnected",
             ));
         }
-        session.driver.commit_transaction().await?;
+        session
+            .driver
+            .commit_transaction()
+            .await
+            .map_err(|error| self.transaction_control_error(&session, error))?;
         *session.completion.lock() = None;
         self.plans
             .lock()
@@ -1536,11 +1545,21 @@ impl Studio {
             &session.info.id,
             "completed",
         );
-        session.driver.session_state(&session.info.id).await
+        session.driver.session_state(&session.info.id).await.map_err(|_| {
+            self.disconnect(&session.info.id);
+            AppError::new(
+                ErrorCode::ConnectionClosed,
+                "Transaction committed, but session context could not be refreshed. Reconnect before continuing.",
+            )
+        })
     }
 
     pub async fn rollback_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
-        let session = self.session(session_id)?;
+        let session = self.session(session_id).inspect_err(|error| {
+            if error.code == ErrorCode::ConnectionClosed {
+                self.disconnect(session_id);
+            }
+        })?;
         if !session.info.capabilities.transactions {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
@@ -1557,12 +1576,17 @@ impl Studio {
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            self.disconnect(&session.info.id);
             return Err(AppError::new(
                 ErrorCode::ConnectionClosed,
                 "This database session is disconnected",
             ));
         }
-        session.driver.rollback_transaction().await?;
+        session
+            .driver
+            .rollback_transaction()
+            .await
+            .map_err(|error| self.transaction_control_error(&session, error))?;
         *session.completion.lock() = None;
         self.plans
             .lock()
@@ -1573,7 +1597,34 @@ impl Studio {
             &session.info.id,
             "completed",
         );
-        session.driver.session_state(&session.info.id).await
+        session.driver.session_state(&session.info.id).await.map_err(|_| {
+            self.disconnect(&session.info.id);
+            AppError::new(
+                ErrorCode::ConnectionClosed,
+                "Transaction rolled back, but session context could not be refreshed. Reconnect before continuing.",
+            )
+        })
+    }
+
+    fn transaction_control_error(&self, session: &Session, mut error: AppError) -> AppError {
+        // A deferred constraint failure can end the transaction and undo SET
+        // LOCAL context even though the connection remains usable.
+        if error.code == ErrorCode::Database {
+            *session.completion.lock() = None;
+            self.plans
+                .lock()
+                .retain(|_, p| p.plan.session_id != session.info.id);
+        }
+        if matches!(
+            error.code,
+            ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed | ErrorCode::OutcomeUnknown
+        ) {
+            self.disconnect(&session.info.id);
+            if error.code == ErrorCode::ConnectionFailed {
+                error.code = ErrorCode::ConnectionClosed;
+            }
+        }
+        error
     }
 
     async fn build_session_contexts(
@@ -4141,8 +4192,11 @@ mod browse_classification_tests {
         }
     }
 
+    #[derive(Default)]
     struct RecordingDriver {
         calls: Mutex<Vec<(String, crate::params::BoundStatement)>>,
+        transaction_error: Option<ErrorCode>,
+        closed: AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -4169,6 +4223,13 @@ mod browse_classification_tests {
         }
         async fn cancel(&self) -> AppResult<()> {
             Ok(())
+        }
+        async fn commit_transaction(&self) -> AppResult<()> {
+            self.transaction_error
+                .map_or(Ok(()), |code| Err(AppError::new(code, "control failure")))
+        }
+        async fn rollback_transaction(&self) -> AppResult<()> {
+            self.commit_transaction().await
         }
         async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
             Ok(Vec::new())
@@ -4208,9 +4269,112 @@ mod browse_classification_tests {
             Ok(1)
         }
         fn is_closed(&self) -> bool {
-            false
+            self.closed.load(Ordering::Acquire)
         }
-        fn close(&self) {}
+        fn close(&self) {
+            self.closed.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_controls_preserve_acknowledgement_and_retire_only_terminal_failures() {
+        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+            for rollback in [false, true] {
+                for (control_error, preclosed) in [
+                    (None, false),
+                    (Some(ErrorCode::Database), false),
+                    (Some(ErrorCode::Conflict), false),
+                    (Some(ErrorCode::ConnectionClosed), false),
+                    (Some(ErrorCode::OutcomeUnknown), false),
+                    (Some(ErrorCode::ConnectionClosed), true),
+                ] {
+                    let root = tempfile::tempdir().unwrap();
+                    let studio = Studio::with_secrets(
+                        root.path(),
+                        Arc::new(crate::secrets::MemorySecrets::default()),
+                    )
+                    .unwrap();
+                    let saved = studio
+                        .save_profile(profile(engine, SafeMode::Silent), None)
+                        .unwrap();
+                    let driver = Arc::new(RecordingDriver {
+                        transaction_error: control_error,
+                        ..Default::default()
+                    });
+                    let id = new_id();
+                    studio.sessions.lock().insert(
+                        id.clone(),
+                        Arc::new(Session {
+                            info: SessionInfo {
+                                id: id.clone(),
+                                connection_id: saved.id.clone(),
+                                engine,
+                                server_version: "fixture".into(),
+                                latency_ms: 0,
+                                encrypted: false,
+                                capabilities: EngineCapabilities {
+                                    sql: true,
+                                    transactions: true,
+                                    cancellation: true,
+                                    table_browsing: false,
+                                    table_editing: false,
+                                    table_filtering: false,
+                                    processes: false,
+                                    object_explorer: false,
+                                    schema_diagram: false,
+                                    schema_diff: false,
+                                    ddl_editing: false,
+                                    lock_inspection: false,
+                                    explain_analyze: false,
+                                    oauth_browser: false,
+                                    actual_plan: None,
+                                },
+                            },
+                            profile: saved,
+                            driver: driver.clone(),
+                            lane: tokio::sync::Mutex::new(()),
+                            cancellation_gate: tokio::sync::Mutex::new(()),
+                            active_run: Mutex::new(None),
+                            closed: AtomicBool::new(false),
+                            tunnel: None,
+                            completion: Mutex::new(None),
+                        }),
+                    );
+                    let pending = studio.prepare_execution(&id, "SELECT 1").unwrap();
+                    if preclosed {
+                        driver.close();
+                    }
+                    let error = if rollback {
+                        studio.rollback_transaction(&id).await
+                    } else {
+                        studio.commit_transaction(&id).await
+                    }
+                    .unwrap_err();
+                    let ordinary_error = matches!(
+                        control_error,
+                        Some(ErrorCode::Database | ErrorCode::Conflict)
+                    );
+                    if let Some(code) = control_error {
+                        assert_eq!(error.code, code);
+                    } else {
+                        assert_eq!(error.code, ErrorCode::ConnectionClosed);
+                        let action = if rollback { "rolled back" } else { "committed" };
+                        assert_eq!(
+                            error.message,
+                            format!(
+                                "Transaction {action}, but session context could not be refreshed. Reconnect before continuing."
+                            )
+                        );
+                    }
+                    assert_eq!(studio.sessions.lock().contains_key(&id), ordinary_error);
+                    assert_eq!(
+                        studio.plans.lock().contains_key(&pending.id),
+                        control_error == Some(ErrorCode::Conflict)
+                    );
+                    assert_eq!(driver.is_closed(), !ordinary_error);
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -4227,6 +4391,7 @@ mod browse_classification_tests {
 
         let recorder = Arc::new(RecordingDriver {
             calls: Mutex::new(Vec::new()),
+            ..Default::default()
         });
         let session_id = "param-test-session".to_string();
         studio.sessions.lock().insert(
@@ -4413,6 +4578,7 @@ mod browse_classification_tests {
             .unwrap();
         let recorder = Arc::new(RecordingDriver {
             calls: Mutex::new(Vec::new()),
+            ..Default::default()
         });
         let session_id = "cap-test-session".to_string();
         studio.sessions.lock().insert(

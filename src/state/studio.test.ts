@@ -1,6 +1,12 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
-import type { PreparedPlan, SessionInfo, TablePage, TableSchema } from "../ipc/generated";
+import type {
+  PreparedPlan,
+  SessionInfo,
+  SessionRuntimeState,
+  TablePage,
+  TableSchema,
+} from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import {
   useStudio,
@@ -749,6 +755,161 @@ test("sessionState events and context/transaction commands update runtime state 
   expect(useStudio.getState().sessionStates.session.transactionState).toBe("idle");
   expect(useStudio.getState().sessionContextRevision.session).toBe(3);
 });
+
+function transactionRuntime(sessionId: string): SessionRuntimeState {
+  return {
+    sessionId,
+    transactionMode: "manual",
+    transactionState: "inTransaction",
+    contextKind: "schema",
+    activeContext: "public",
+    database: "joinery",
+    role: "joinery",
+    searchPath: ["public", "pg_catalog"],
+  };
+}
+
+for (const action of ["commitTransaction", "rollbackTransaction"] as const) {
+  for (const ownership of ["primary", "secondary"] as const) {
+    test.each(["connectionClosed", "outcomeUnknown"] as const)(
+      `${action} retires only its ${ownership} session on %s and preserves the original error`,
+      async (code) => {
+        const first = useStudio.getState().openQuery("profile");
+        const second = useStudio.getState().openQuery("profile");
+        const unaffected = useStudio.getState().openQuery("profile");
+        const targetId = ownership === "primary" ? session.id : "target-secondary";
+        const unaffectedId = ownership === "primary" ? "other-secondary" : session.id;
+        if (ownership === "secondary") {
+          useStudio.getState().bindQuerySession(first, { ...session, id: targetId });
+          useStudio.getState().attachQuerySession(second, targetId);
+        } else {
+          useStudio.getState().bindQuerySession(unaffected, { ...session, id: unaffectedId });
+        }
+        useStudio.setState({
+          sessionStates: {
+            [targetId]: transactionRuntime(targetId),
+            [unaffectedId]: transactionRuntime(unaffectedId),
+          },
+          sessionContexts: { [targetId]: ["public"], [unaffectedId]: ["public"] },
+          sessionContextRevision: { [targetId]: 7, [unaffectedId]: 3 },
+          toast: "existing notice",
+        });
+        const error = { code, message: "Check the database before retrying this transaction" };
+        vi.mocked(client.call).mockRejectedValueOnce(error);
+
+        await expect(useStudio.getState()[action](targetId)).rejects.toBe(error);
+
+        const state = useStudio.getState();
+        for (const tabId of [first, second]) {
+          const tab = state.tabs.find((entry) => entry.id === tabId)!;
+          expect(querySessionForTab(tab, state.sessions)).toBeUndefined();
+          if (ownership === "secondary") expect(tab.querySessionClosed).toBe(true);
+        }
+        expect(
+          querySessionForTab(
+            state.tabs.find((entry) => entry.id === unaffected)!,
+            state.sessions,
+          )?.id,
+        ).toBe(unaffectedId);
+        expect(state.sessionStates[targetId]).toBeUndefined();
+        expect(state.sessionContexts[targetId]).toBeUndefined();
+        expect(state.sessionContextRevision[targetId]).toBeUndefined();
+        expect(state.sessionStates[unaffectedId]).toEqual(transactionRuntime(unaffectedId));
+        expect(state.sessionContextRevision[unaffectedId]).toBe(3);
+        expect(state.toast).toBe("existing notice");
+      },
+    );
+  }
+
+  test.each(["database", "conflict", "connectionFailed"] as const)(
+    `${action} preserves a usable transaction on recoverable %s errors`,
+    async (code) => {
+      const runtime = transactionRuntime(session.id);
+      useStudio.setState({ sessionStates: { [session.id]: runtime }, toast: "existing notice" });
+      const error = { code, message: "Transaction command was rejected" };
+      vi.mocked(client.call).mockRejectedValueOnce(error);
+      if (code !== "connectionFailed")
+        vi.mocked(client.call).mockResolvedValueOnce({ state: runtime, available: ["public"] });
+
+      await expect(useStudio.getState()[action](session.id)).rejects.toBe(error);
+
+      expect(useStudio.getState().sessions.profile).toEqual(session);
+      expect(useStudio.getState().sessionStates[session.id]).toEqual(runtime);
+      expect(useStudio.getState().toast).toBe("existing notice");
+    },
+  );
+
+  test.each(["database", "conflict"] as const)(
+    `${action} reconciles rejected transaction state and invalidates changed identity for %s`,
+    async (code) => {
+      const before = {
+        ...transactionRuntime(session.id),
+        activeContext: "temporary",
+        searchPath: ["temporary"],
+      };
+      const observed = { ...transactionRuntime(session.id), transactionState: "idle" as const };
+      useStudio.setState({
+        sessionStates: { [session.id]: before },
+        sessionContextRevision: { [session.id]: 4 },
+        toast: "existing notice",
+      });
+      const error = { code, message: "deferred constraint rejected COMMIT" };
+      vi.mocked(client.call)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce({ state: observed, available: ["public"] });
+      await expect(useStudio.getState()[action](session.id)).rejects.toBe(error);
+      expect(useStudio.getState().sessionStates[session.id]).toEqual(observed);
+      expect(useStudio.getState().sessionContextRevision[session.id]).toBe(5);
+      expect(useStudio.getState().sessions.profile).toEqual(session);
+      expect(useStudio.getState().toast).toBe("existing notice");
+      expect(vi.mocked(client.call).mock.calls.map(([command]) => command)).toEqual([
+        action === "commitTransaction" ? "commit_transaction" : "rollback_transaction",
+        "session_contexts",
+      ]);
+      vi.mocked(client.call).mockResolvedValueOnce({ state: observed, available: ["public"] });
+      expect(await useStudio.getState().refreshSessionContexts(session.id, true)).toBe(true);
+      expect(useStudio.getState().sessionContextRevision[session.id]).toBe(5);
+    },
+  );
+
+  test.each(["connectionClosed", "outcomeUnknown", "conflict", "connectionFailed"] as const)(
+    `${action} preserves the original rejection when runtime refresh fails with %s`,
+    async (code) => {
+      const runtime = transactionRuntime(session.id);
+      useStudio.setState({ sessionStates: { [session.id]: runtime } });
+      const error = { code: "database", message: "original constraint error" };
+      vi.mocked(client.call)
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce({ code, message: "refresh failed" });
+      await expect(useStudio.getState()[action](session.id)).rejects.toBe(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") {
+        expect(useStudio.getState().sessions.profile).toBeUndefined();
+        expect(useStudio.getState().sessionStates[session.id]).toBeUndefined();
+      } else {
+        expect(useStudio.getState().sessions.profile).toEqual(session);
+        expect(useStudio.getState().sessionStates[session.id]).toEqual(runtime);
+      }
+    },
+  );
+
+  test(`${action} ignores success arriving after its session was retired`, async () => {
+    let complete!: (runtime: SessionRuntimeState) => void;
+    vi.mocked(client.call).mockImplementationOnce(
+      () => new Promise((resolve) => (complete = resolve)),
+    );
+    useStudio.setState({
+      sessionStates: { [session.id]: transactionRuntime(session.id) },
+      toast: "Reconnect before continuing",
+    });
+    const pending = useStudio.getState()[action](session.id);
+    useStudio.getState().retireSession(session.id);
+    complete({ ...transactionRuntime(session.id), transactionState: "idle" });
+    await pending;
+
+    expect(useStudio.getState().sessionStates[session.id]).toBeUndefined();
+    expect(useStudio.getState().toast).toBe("Reconnect before continuing");
+  });
+}
 
 test("file-backed SQL tabs track dirty state, release grants on Save As and close, and never persist to workspace drafts", async () => {
   useStudio.setState({
