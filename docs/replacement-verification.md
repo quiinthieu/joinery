@@ -397,9 +397,9 @@ keys without a physical relation identity. PostgreSQL compares locked original
 rows; MySQL/MariaDB also lock and compare table shape. Source inspection predicts
 an identically dropped/recreated table, reseeded with the same row before those
 locks, can receive an old approved edit. This was initially a source-inferred
-limitation. A subsequent ordinary repository fixture probe now reproduces four
-PostgreSQL failures; it is **not repaired**. MySQL/MariaDB remain source-inferred
-for this scenario. The passing suites above do not qualify it.
+limitation. The initial repository probe reproduced four PostgreSQL failures.
+The durable diagnostic below now reproduces 27 across PostgreSQL/MySQL/MariaDB;
+it is **not repaired**. The passing suites above do not qualify it.
 
 Next reproducible fixture sequence: create a UUID table and row; obtain a table
 browse result and separately an eligible SELECT result; prepare/approve an edit;
@@ -442,9 +442,53 @@ prepare-time OID check cannot close the gap. The owner was asked whether pending
 edits/imports must survive concurrent migrations. That remains an open
 applicability question, not an automatic optional classification.
 
-Only documentation is changed after the frozen-source passing qualification.
 No application behavior, dependency, global configuration or privilege was
-changed for this investigation. Further probes for CSV, other engines and
-namespace/partition changes remain unexecuted. DataGrip's reviewed official
+changed for this investigation. Namespace/partition changes remain unexecuted.
+DataGrip's reviewed official
 documentation does not specify this exact concurrent replacement behavior; no
 comparative DataGrip runtime claim is made.
+
+### Durable three-engine identity diagnostic
+
+On unchanged application revision `ff59ca6`, the new opt-in
+[`table_identity_probe.rs`](../src-tauri/examples/table_identity_probe.rs) runs nine
+actual `Studio` cases on each loopback fixture: PostgreSQL 18.6 (55432), MySQL
+8.4.13 (53306) and MariaDB 11.4.13 (53307). These versions are recorded from the
+connected drivers' server-version information. Run with the pinned Rust 1.99.1
+toolchain, `RUSTC` and `RUSTDOC` used above:
+
+```sh
+cargo check --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --example table_identity_probe
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --example table_identity_probe -- -D warnings
+cargo run --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --example table_identity_probe -- \
+  --run-disposable-fixtures --engine all --require-safe
+```
+
+Compilation, formatting and strict Clippy pass. Missing opt-in and invalid engine
+arguments reject before opening a connection. Two strict actual runs both exited
+**2**, reporting `safetyPassed: false`, 27 `Completed` mutations of replacement
+tables and zero operational errors. All 27 approvals were consumed; all fresh
+read/approved-insert controls worked; all owned table removals were independently
+verified. No new passing fixture test is counted. The normal 103-fixture baseline,
+browser/native evidence and bundle remain unchanged.
+
+Coverage includes browse/query updates before prepare; query update and browse
+insert/delete after approval; empty-result insert; CSV after preview, after
+approval and between batch commits. The last case confirms 500 first-batch rows
+before replacement, then observes old-preview row 502 committed to the replacement.
+See the [case table and operational limits](table-identity-safety.md). Only fixed
+loopback fixture profiles, UUID tables, temporary app roots and `MemorySecrets`
+are used. The machine report is local ignored evidence at
+`.cache/table-identity-probe/three-engine-report.json`; stderr is
+`/tmp/joinery-table-identity-probe.log`. Report-only mode may exit 0 despite unsafe
+observations; `--require-safe` and the JSON must be used for qualification.
+
+A separate ignored PostgreSQL client prototype passes six synthetic protocol
+tests. It exposes actual simple-query origins and describes a bound portal before
+execution; it is not integrated or a demonstrated application repair. Real-engine
+qualification, maintenance/licensing review and application-level regressions
+remain required before adoption.

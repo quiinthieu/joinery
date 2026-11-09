@@ -1,12 +1,38 @@
 # Retained edits and replacement tables
 
-Investigation date: 9 November 2026. **Incomplete: PostgreSQL failure reproduced;
+Investigation date: 9 November 2026. **Incomplete: PostgreSQL, MySQL and MariaDB failures reproduced;
 no repair implemented.** This is a safety qualification within the active
 [replacement Goal](replacement-acceptance.md), not a claim about undocumented
 DataGrip behavior. The passing [qualification baseline](replacement-verification.md)
 does not cover this scenario.
 
 ## Reproduced behavior
+
+The durable diagnostic at
+[`src-tauri/examples/table_identity_probe.rs`](../src-tauri/examples/table_identity_probe.rs)
+now reproduces **27 failures: nine per engine** on PostgreSQL 18.6, MySQL 8.4.13
+and MariaDB 11.4.13. Each operation reported `Completed` and changed the replacement.
+All 27 approvals were consumed, fresh-read insert controls succeeded, and owned
+table removal was independently verified. There were no operational errors.
+
+| Case (each engine) | Replacement timing | Replacement rows afterward (`id`, `note`) |
+|---|---|---|
+| Browse update | Before prepare | `(1, approved)` |
+| Query-result update | Before prepare | `(1, approved)` |
+| Query-result update | After approval | `(1, approved)` |
+| Browse insert | After approval | `(1, before)`, `(2, before)` |
+| Browse delete | After approval | Empty |
+| Empty browse insert | After approval | `(2, before)` |
+| CSV import | After preview | `(1, before)`, `(2, approved)` |
+| CSV import | After batch approval | `(1, before)`, `(2, approved)` |
+| CSV import second batch | After first 500-row batch committed | `(1, before)`, `(502, approved)` |
+
+The final case independently confirms the first batch's 500 rows before replacing
+the table. The original preview then supplies row 502 to the replacement. This
+diagnostic adds no passing regression count: `--require-safe` exits **2**, with
+`safetyPassed: false`. The application remains unchanged from `ff59ca6`.
+
+### Initial PostgreSQL investigation
 
 A development-only Rust fixture probe used actual `Studio` browse/query,
 prepare, authorize and execute paths against disposable PostgreSQL 18 on
@@ -36,6 +62,27 @@ The steps below remain reproducible without those ignored local artifacts.
 
 ## Reproduce on disposable data
 
+Start the README's PostgreSQL, MySQL and MariaDB disposable fixtures. Use the
+pinned Rust toolchain documented in the [verification ledger](replacement-verification.md).
+Run from the repository root:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --example table_identity_probe -- \
+  --run-disposable-fixtures --engine all --require-safe
+```
+
+The explicit opt-in is mandatory. Only fixed loopback fixtures are accepted:
+PostgreSQL 55432, MySQL 53306 and MariaDB 53307, using public fixture credentials.
+`--engine postgres`, `mysql` or `mariadb` narrows the run. UUID tables, temporary
+application roots and `MemorySecrets` isolate the run. It drops only its owned
+tables and verifies removal; no production or OS credential store is accessed.
+Exit 1 means operational failure, exit 2 means an observed safety failure with
+`--require-safe`. Omitting that flag collects evidence with exit 0 even when
+unsafe; it is not a qualification command. Review the JSON, not just exit status.
+
+For a manual before-preparation reproduction:
+
 Use the README fixture setup and two independent Joinery connections to the
 PostgreSQL fixture. Choose a unique suffix; use only the table created here.
 
@@ -58,8 +105,10 @@ PostgreSQL fixture. Choose a unique suffix; use only the table created here.
 
 The replacement DDL is deliberately destructive **only to the uniquely named
 synthetic probe**. This is not an instruction to test against production data.
-MySQL/MariaDB, CSV, deletes, zero-row results, namespace changes and partition
-membership changes have not been runtime-qualified for this scenario.
+Namespace changes, partition/inheritance behavior, permissions, guard expiry and
+connection loss during a future identity guard remain unqualified. The diagnostic
+tests rejection after replacement completes; a repair that continuously locks the
+original must separately prove bounded DDL blocking and guard cleanup.
 
 ## Why a prepare-time check is insufficient
 
@@ -111,8 +160,7 @@ This is a design proposal, not implemented capability:
   guard or reacquire the target and obtain fresh review for the next batch.
   A lock obtained only at approval does not protect an older preview.
 
-Required real-engine regressions include the four cases above, deletes,
-zero-row inserts, CSV before prepare/between batches, queued writers, permission
+Required real-engine regressions include all nine cases above, queued writers, permission
 denial, connection loss, guard expiry and namespace/partition cases. Existing
 manual console transactions must never be committed or rolled back by a hidden
 editing guard. UI workflows must show expiry/rejection and require a fresh read.

@@ -34,9 +34,9 @@ independent reviews found no material issues. Validation (545 frontend / 180
 standard Rust), 103 real fixtures and four new fault browser workflows pass.
 Combined packaging/signature, two native recovery pairs, ordinary smoke and all
 124 browser workflows pass; local repairs are `71d95b6` and `cd5bee0`. A separate
-development probe then reproduced the permanent table drop/recreate identity gap
-in four PostgreSQL cases. This remains unrepaired; other engines and CSV are not
-runtime-qualified for the case. The [identity investigation](table-identity-safety.md)
+diagnostic then reproduced the permanent table drop/recreate identity gap
+in 27 cases across PostgreSQL/MySQL/MariaDB, including deletes, empty-result
+inserts and CSV between batch commits. This remains unrepaired. The [identity investigation](table-identity-safety.md)
 records reproduction and coordinated repair requirements: original-read identity,
 actual writer target, ordinary privileges, CSV batches and namespace/partition
 behavior. Owner applicability, required external workflows and hands-on

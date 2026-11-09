@@ -33,7 +33,7 @@ Pending owner input (requested at Goal start):
   saved-script, keyboard and accessibility workflows; representative sanitized
   examples and acceptable performance expectations.
 - Whether pending edits/imports must survive concurrent migrations that drop,
-  rename or recreate their target tables. PostgreSQL replacement is now a
+  rename or recreate their target tables. Replacement on all three SQL engines is now a
   reproduced safety gap; see [investigation and repair design](table-identity-safety.md).
 
 No unanswered feature is silently optional. Existing engine exclusions become
@@ -55,7 +55,7 @@ fresh outcomes separately.
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
 | Execute SQL | Current statement, selection, reviewed batch and typed parameters produce expected results; cancel long read and safely reconnect | 103 real fixtures and all 124 browser workflows pass within the ledger scopes; required external combinations remain open |
 | Inspect and move data | Filter/sort/page, copy exact numeric/NULL values, export complete file; cancelled export clearly incomplete | Implemented with bounds; representative dataset sizes unconfirmed |
-| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Provenance/snapshot/inspector repairs have real regressions; queued writes after closure and uncertain CSV reporting repaired. Permanent drop/recreate identity fails four actual PostgreSQL probe cases; repair, other engines and CSV remain incomplete |
+| Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; conflict rejects stale edits atomically; ineligible results stay read-only | Provenance/snapshot/inspector repairs have real regressions; queued writes after closure and uncertain CSV reporting repaired. Permanent drop/recreate identity fails 27 actual fixture cases across PostgreSQL/MySQL/MariaDB, including CSV; repair remains incomplete |
 | Transactions | Two consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives reconnect; cancellation reports unknown outcomes honestly | Manual/reviewed COMMIT uncertainty and closed-session cleanup repaired; 12 real transport tests, toolbar checks and four new grid/CSV fault browser cases pass |
 | Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Abrupt backend restart and two isolated actual native close/reopen pairs pass, including pending-save flush and real PostgreSQL rollback; normal packaged/credential evaluation remains open |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
@@ -84,11 +84,11 @@ fresh outcomes separately.
    real browser workflows pass. Combined normal bundle/signature, two native
    recovery pairs, ordinary smoke and all 124 browser workflows pass. Local
    commits are `71d95b6` and `cd5bee0`; see the ledger for source/artifact scope.
-5. Permanent table identity investigation: four actual PostgreSQL fixture cases
-   now reproduce stale edits reaching an identically recreated table. No repair
-   is claimed. The [design and reproducible steps](table-identity-safety.md)
+5. Permanent table identity investigation: a durable opt-in diagnostic reproduces
+   27 failures across PostgreSQL/MySQL/MariaDB (nine each), including deletes,
+   empty-result inserts and CSV across batch commits. No repair is claimed. The [design and reproducible steps](table-identity-safety.md)
    retain original-read, writer-target, privilege and CSV lifecycle requirements.
-   Other engines/CSV and namespace/partition behavior need separate qualification.
+   Namespace/partition behavior and future guard lifecycle need separate qualification.
    Confirm the owner's concurrent-migration workflow before declaring applicability.
 6. Pending owner input: confirm required engines/versions, authentication,
    transports, daily workflows, target hosts and performance/accessibility needs.
