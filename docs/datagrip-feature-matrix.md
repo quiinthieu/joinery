@@ -25,6 +25,15 @@ workflow, metadata, writes, transactions and actual account behavior remain open
 these implementation checks do not advance them to replacement-ready. See the
 [runtime guide](snowflake-runtime.md) and [verification ledger](replacement-verification.md).
 
+The connection-lifecycle increment is **implemented and locally verified**:
+exact attempt reservation/cancellation, late-response cleanup and native shutdown
+ordering have focused regression coverage. Combined checks pass 598 frontend /
+262 standard Rust tests, 124 actual fixtures, 141 browser workflows, three native
+smoke runs, two actual PostgreSQL recovery pairs and the normal ad-hoc macOS
+bundle. See the [ledger](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
+Externalbrowser profiles, SDK packaging and real
+Snowflake workflows remain **incomplete**, independently of these local repairs.
+
 Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
 the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
 session with writes/transactions. Browser login alone does not prove equivalent

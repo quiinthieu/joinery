@@ -91,6 +91,21 @@ run SQL again when you need current server data.
 - Learn the displayed shortcuts and command palette; use Preferences for custom
   shortcuts and layout. Verify your own keyboard and accessibility workflow.
 
+The active connection-lifecycle increment adds **Cancel** while connecting.
+Cancelling or closing that dialog prevents a delayed response from becoming an
+active session; failed cleanup is reported and retried when closing the app.
+Closing Joinery asks for a decision when work is pending, saves workspace state,
+and awaits local connection retirement. This is not a guarantee about a remote
+statement's outcome: verify interrupted writes or transactions on the database.
+Local combined lifecycle checks pass, including browser workflows and isolated
+native recovery. Normal installed-app restart, OS credentials and actual
+Snowflake authentication remain unqualified; consult the ledger.
+
+Connection setup is bounded to 32 open/pending sessions overall and four per
+profile. An unstarted reservation expires after 60 seconds; an active setup
+keeps its capacity until its owner unwinds. These are current implementation
+limits, not evidence of DataGrip parity or accepted limits for your workflow.
+
 ## Prove writes and recovery before switching
 
 On disposable fixture rows, change the profile from ReadOnly to a reviewed write

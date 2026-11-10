@@ -39,6 +39,21 @@ The [driver design](snowflake-driver-design.md) records the observed SDK retry
 behavior and remaining gates. Application auth cancellation, resource packaging,
 SSO session integration, writes and transaction qualification remain incomplete.
 
+The active increment adds reserved connection-attempt identifiers, cancellation
+before/during authentication, exact retirement of late responses, and a native
+shutdown publication barrier. Focused UI tests pass; independent review exposed
+startup socket/task ownership gaps in PostgreSQL, SSH and MySQL. Their focused
+repairs and 124 actual database fixtures now pass. Combined qualification passes
+598 frontend / 262 standard Rust tests, all 141 browser workflows, three native
+smoke runs, two actual PostgreSQL recovery pairs and the normal ad-hoc macOS
+bundle. This is prerequisite lifecycle work for
+SDK integration; it does not implement externalbrowser SSO. See the
+[active verification record](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
+The [connection ownership contract](connection-lifecycle.md) records cancellation,
+preflight, resource bounds and shutdown limits. Next are packaged runtime/profile
+integration, retained helper cleanup authority and
+session metadata, followed by the still-required write/transaction workflows.
+
 The active 9 November 2026 Goal and next qualification queue are in
 [daily replacement acceptance](replacement-acceptance.md). The required Snowflake externalbrowser/macOS target is confirmed above;
 historical slice completion does not establish daily replacement acceptance.

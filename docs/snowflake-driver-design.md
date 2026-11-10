@@ -171,6 +171,28 @@ loss has no terminal callback within the bounded 6.5-second observation; that is
 not retry exhaustion. The fake server does not establish Snowflake's own
 deduplication, commit, rollback or interruption behavior. Writes remain gated.
 
+A bounded 10 November review of the official
+[Node resubmission guidance](https://docs.snowflake.com/en/developer-guide/node-js/nodejs-driver-execute#resubmitting-requests)
+finds a documented duplicate-prevention contract, illustrated with an uncertain
+INSERT, requiring the original connection and request ID. Recognized IDs retain
+the original SQL; unrecognized IDs can execute the supplied SQL. No deduplication
+retention interval or detailed transaction-control/DDL recovery contract was
+found in that bounded documentation/source review. The 24-hour RESULT_SCAN
+window does not establish such an interval. The SQL API's separate
+`/api/v2/statements` plus `retry=true` contract must not be transplanted to the
+Node driver's `/queries/v1/query-request` route. Pinned source renews existing
+session tokens with RENEW; that does not authorize fresh-login replay.
+
+Authorized mutation qualification should lose a terminal successful server
+response before SDK delivery, record its query ID without credentials, allow the
+natural retry, and require the recovered query ID to match. Verify durable effects
+from a separate observer. Cover autocommit DML, transaction DML, BEGIN, COMMIT,
+ROLLBACK and DDL separately: repeated transaction controls can be ignored, so row
+counts alone cannot prove deduplication. DDL's implicit commit remains independent
+of retry safety. Test session loss and unresolved outcomes separately; short fault
+tests cannot establish an undocumented long-outage recovery guarantee. This adds
+a concrete acceptance design without claiming any external test has run.
+
 No real Snowflake account, browser SSO, external IdP, remote statement,
 transaction or remote cancellation was exercised. There is no current macOS
 package qualification for this driver. Before implementation can
@@ -195,3 +217,95 @@ replace the current mode, require at least:
 
 The owner's SSO and workflow requirements remain acceptance criteria. This
 design does not narrow them or assert that any gate has passed.
+
+
+## Next integration increment: explicit SDK sessions
+
+This is an implementation contract, not completed qualification. The reviewed
+sequence after connection-attempt qualification is:
+
+1. Add an immutable runtime factory using the packaged `snowflake-runtime`
+   resource directory. Development may explicitly select the repository's
+   prepared arm64 stage in debug builds. Never accept executable paths through
+   IPC/profiles, search PATH, or silently fall back to a global runtime or the
+   other authentication mode. Validate fixed paths, containment, permissions,
+   manifest pins and helper hashes before accepting the factory; perform hashing
+   outside Studio's configuration gate. Missing resources fail only explicit SDK
+   connections and leave existing engines and legacy OAuth available.
+2. Add a serialized Snowflake authentication mode. Missing fields in existing
+   profiles/backups retain legacy local-application OAuth. External browser SSO
+   is an explicit selection; unknown modes reject. Regenerate contracts and test
+   persistence/backup round trips, legacy defaults and routing.
+3. Reserve cleanup capacity under the connection UUID while holding the
+   configuration gate, before creating a helper state root. The tracked factory
+   consumes that non-cloneable permit outside the gate and attaches retained root
+   cleanup authority immediately after allocation, before further fallible
+   initialization or an authentication await. A pending slot remains visible to
+   cancellation/shutdown snapshots; dropping its permit without allocating a root
+   settles it as no launch. Attachment cannot fail because admission closed or
+   capacity changed. Recheck admission, cancellation and profile consistency
+   under the gate before polling authentication. Cancellation, profile replacement/deletion and shutdown must retain
+   cleanup ownership independently of the caller and session references. Keep
+   internal retirement synchronous; command-facing close/cancel waits for bounded
+   cleanup receipts. Shutdown closes admission, drains setup owners, then awaits
+   every retained helper receipt. A timeout/failure remains tracked and prevents
+   successful native exit approval. Retain the original root's native identity
+   and serialized removal authority after a failed deletion. A bounded retry may
+   remove that same root only after no-child or confirmed-reaped disposition;
+   replacement directories and symlinks must remain untouched. Cancellation of a
+   blocking worker does not stop it: that worker must retain the permit/authority
+   and publish its eventual result. A receipt proves local child reaping and root
+   removal only; it does not prove logout, remote cancellation or rollback.
+4. Package the exact prepared tree without flattening helper dependencies or
+   contained symlinks. Extend hidden native preparation to include resources,
+   verify startup from the actual application resource directory, and record
+   artifact identities. Validate signing/hash policy explicitly; notarization,
+   installation and external account acceptance remain separate gates.
+5. Implement metadata and live context through the same SDK connection used for
+   the console. Never substitute a separate SQL API/OAuth session. Until a
+   capability is implemented, gate automatic catalog refresh and other UI actions
+   on its truthful capability flag, clearing stale state. A raw driver switch
+   currently calls unsupported metadata immediately after successful connection.
+
+Required local regressions include missing/tampered resources, hostile or empty
+PATH and NODE_OPTIONS, legacy profile/backup compatibility, and explicit mode
+routing. Use the real helper with an isolated synthetic SDK to prove cancellation
+before spawn, during authentication, abandoned connect futures, late publication,
+disconnect with retained driver references, and shutdown success/failure. Retain
+failed cleanup evidence/capacity and test an explicit recovery path; repeatedly
+retrying a permanent failed receipt is not remediation. Verify packaged startup
+separately from these protocol tests.
+
+This increment may initially expose stateful reads while writes/DDL/transactions
+remain gated by SDK retry/outcome proof. That intermediate boundary does not
+change the required replacement target. Complete metadata, actual externalbrowser
+SSO, million-row workflows, mutations and explicit transactions still need their
+own evidence and owner acceptance.
+
+## Reviewed-table generation remains a required write gate
+
+A bounded official-documentation review on 10 November rules out
+[`SYSTEM$REFERENCE`](https://docs.snowflake.com/en/sql-reference/references#objects-identified-by-name)
+as an original-table generation guard. References identify objects by name.
+Drop/recreate can authorize the replacement if the encoded roles retain
+privileges; rename invalidates the reference and SWAP follows the name.
+SESSION or PERSISTENT scope does not change this behavior. References can be
+passed to `IDENTIFIER(?)`, but successful name binding does not protect reviewed
+grid or CSV writes against concurrent replacement. No account test was run.
+
+[`ACCOUNT_USAGE.TABLES.TABLE_ID`](https://docs.snowflake.com/en/sql-reference/account-usage/tables)
+has documented metadata latency up to 90 minutes.
+[`SYSTEM$GET_REFERENCED_OBJECT_ID_HASH`](https://docs.snowflake.com/en/sql-reference/functions/system_get_referenced_object_id_hash)
+detects replacement, but its documented input is an installed Native App's
+manifest reference name; the examples explicitly are not standalone consumer
+statements. Neither establishes atomic ordinary-session DML targeting here.
+The review found no documented ordinary-session generation pin; this is a
+bounded finding, not proof that no supported mechanism exists.
+
+Snowflake's [transaction rules](https://docs.snowflake.com/en/sql-reference/transactions)
+do not establish a metadata-check-then-write lock: statements use READ COMMITTED,
+and DDL implicitly commits. Hybrid-table row locks and temporary-table name
+precedence need separate qualification. Before enabling reviewed grid/CSV writes,
+establish a supported atomic target-acquisition mechanism and test two-session
+rename, DROP/recreate, SWAP, empty-table, zero-row and temporary-shadow races.
+Writes, schema changes and transactions remain required replacement capabilities.

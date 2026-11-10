@@ -7,6 +7,187 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Connection-startup increment (10 November 2026; locally qualified)
+
+Source follows local SDK foundation commit `1b7876f`. The frontend now reserves
+an attempt before authentication, cancels by that exact identifier, and retires
+late session responses instead of adopting them. A failed cleanup retains its
+identifier for retry and reports an error. Native close saves workspace state,
+blocks new UI interaction, rechecks pending work, cancels setup, and awaits the
+backend shutdown barrier before destroying the window. That barrier establishes
+local setup ownership; it is not proof of remote rollback or SDK child cleanup.
+
+Reproduced defects and focused evidence are under ignored
+`.cache/verification/connection-attempts/`:
+
+- `ui-before-fix.log`: connecting disabled the dialog cancellation action.
+- `shutdown-before-fix.log`: a legacy connection could publish after shutdown.
+- `cancellation-before-fix.log`: cancellation could acknowledge during credential
+  persistence or leave an already published session alive.
+- `ui-focused.log`: 24 focused tests pass (18 connection dialogs and six close
+  sequencing/interaction tests), including delayed responses, failed cleanup,
+  cancellation during SSH preflight, declined host trust and reservation reuse.
+- `validate.log`: intermediate validation passes 596 frontend and 239 standard
+  Rust tests, formatting, TypeScript, build and strict Clippy. This predates the
+  final startup-resource fixes and cannot qualify their final source.
+
+Independent review identified and repaired detached startup tasks when PostgreSQL's
+initial identity query, SSH key exchange, or MySQL's driver-internal settings query
+stalls. Dedicated cancellation-owned socket/task cleanup regressions now pass.
+Such loopback protocol fault tests prove the tested lifecycle interval;
+they do not qualify a database engine or Snowflake account.
+
+The SSH socket-owner fix separately passes three stalled-peer EOF regressions
+and four existing SSH tests. Review then found that dispatched host-key probes also need registry
+ownership: UI response suppression alone does not cancel native IPC. Prepared
+preflight now uses the same identifier before probing and connecting; backend
+claim/rearm and shutdown admission/drain checks pass nine integration tests.
+A declined trust prompt retires its reservation. Final combined application
+evidence follows below; intermediate pending states retain their original scope.
+
+The MySQL regression first observed the hidden `SELECT @@wait_timeout`. Sending
+result metadata, withholding its row and allowing 50 ms for consumption reproduced
+failure to close within three seconds. That leak reproduction is timing-assisted.
+The final regression has no sleep on its supported path: first query is the
+application's `SELECT VERSION()`, and cancellation produces physical socket
+closure. The option caches a client-side default and does not issue a server SET.
+Independent review found no material issue in the startup/preflight repairs.
+
+Six fresh isolated real database fixtures are healthy in Compose project
+`joinery-datagrip-acceptance`; startup evidence is `fixtures-start.log` in the same
+directory. The final eight-suite real fixture run passes **124/124** (42 MySQL/
+MariaDB, 11 retained guards including TLS-over-SSH, 43 PostgreSQL, four permission,
+one protocol fixture, six Redis, two SSH and 15 transaction-transport tests).
+Command: the eight-suite command below under the identity increment, using the
+current source and pinned toolchains; log `fixtures-final.log` in this directory.
+`validate-final.log` passes **598 frontend and 258 standard Rust tests**, plus
+formatting, TypeScript, production build and strict all-target/all-feature Clippy.
+This includes the final startup/preflight changes, before the fixture reset repair
+below. Browser/native/bundle qualification for this increment remains pending.
+
+The first final browser run reproduced an obsolete harness assumption:
+`disconnect_fixtures` called irreversible application shutdown. Subsequent
+`prepare_connection` was rejected as cancelled before network setup. The first
+browse-outcome test timed out; the lead interrupted the run rather than collecting
+repeated downstream failures. Log and browser trace are retained as
+`browser-before-harness-fix.log` and `browser-before-harness-fix/` in this directory.
+The repaired test-only reset retires attempts/sessions at its configuration-gate
+snapshot without reopening shutdown. Review found a second race: waiting for
+**global** idleness while still admitting fresh requests could hang on a later
+unclaimed reservation. The deterministic regression failed after three seconds
+before repair (`fixture-reset-race-before-fix.log`). Reset now drains only the
+claimed owners it canceled. All four reset regressions pass, including real
+loopback connections, stalled authentication, fresh admission during drain and
+irreversible shutdown (`fixture-reset-tests-final.log`). Final validation after
+this harness repair passes **598 frontend / 262 standard Rust tests**, formatting,
+TypeScript, production build and strict Clippy
+(`validate-after-harness-fix.log`). The eight affected connection/browse browser
+flows pass (`browser-focused.log`); full browser/native/bundle checks are pending.
+The compiled source is committed locally as backend `363b893` and frontend
+`b23dd7f`, with prior socket fixes `1b2c867` and `ec72f49`. The ignored
+`qualified-source-snapshot.json` records the exact content hashes used for these
+checks, including the preserved, unregistered future cleanup prototype; that
+prototype is not compiled by this increment.
+
+The subsequent full browser attempt was interrupted after reproducing two
+harness/environment issues. At test 76, the trace records a complete Vite page
+reload immediately after the lead's documentation edit; compiled-source hashes
+were unchanged. Later tests exhausted the 32-connection bound because separate
+browser pages shared the backend and left sessions alive. The recorded dialog
+error is `At most 32 connections may be open or connecting`. The lead interrupted
+the owned run (exit 130); this is not a passing full suite. Logs/traces are retained
+as `browser-before-test-isolation.log` and `browser-before-test-isolation/`.
+The repair disables integration-mode HMR and adds automatic per-test fixture
+retirement. All 34 specs use the fixture; HTTP/RPC reset errors fail the test and
+teardown runs in `finally`. The shared harness requires the configured single
+worker. Production capacity remains unchanged. Independent review found no
+material issue. The 33 affected connection, browse, rename, template and studio
+flows pass in `browser-isolation-focused.log`. A fresh full run then passes
+**141/141 in 7.8 minutes**, including the previously failing flows
+(`browser-isolated-final.log`). All 350 source hashes in
+`isolated-source-snapshot.json` remained unchanged during the run.
+
+Final combined validation also passes **598 frontend / 262 standard Rust tests**,
+formatting, TypeScript, production build and strict Clippy
+(`validate-isolated-final.log`). The test-isolation repair is committed locally
+as `504ab8d`; subsequent native and normal bundle qualification follows below.
+
+The first native build succeeded but all three ordinary smoke runs failed on
+the new test profile's empty username, before reservation checks. The existing
+required-field validation rejected `save_profile`; production behavior was not
+changed. Failure evidence and build identity are preserved in
+`native-smoke-before-fix.json`, `native-smoke-before-fixture-fix.log` and
+`native-build-before-fixture-fix.json`. The fixture now supplies a valid Redis
+username (`d2d22cc`), and independent review confirms cancelled reservation claims
+reject before socket dispatch. Full validation after that test-only fix again
+passes **598 frontend / 262 standard Rust tests** and strict checks
+(`validate-native-fixture-final.log`). Two actual PostgreSQL native recovery
+pairs also passed on the earlier build, with pending-close intervals of
+67.05 and 47.70 ms.
+
+The corrected hidden native binary passes all three ordinary runs, each with
+**19 summary check categories and 10 cleanup cycles**, plus **two actual
+PostgreSQL close/reopen pairs**. The latter observe pending-close intervals of
+69.20 and 57.05 ms, exact latest draft/preferences restoration, no pre-observer
+connection/SQL invocation, real rollback and owned table cleanup. All processes
+exit zero. Six recovery-runner acceptance tests pass. Logs are
+`native-smoke-final.log`, `native-recovery-final.log` and
+`native-recovery-runner-final.log`; complete copied reports are
+`native-smoke-runs.json` and `native-recovery-runs.json`.
+
+Native build identity (`native-build.json`): source `d2d22cc`, executable SHA-256
+`5997f93e471e84a89a3e63faf8c12186d8b737b929e6795bbbc1b09a72cd7d94`,
+isolated bundle binary SHA-256
+`ad26fdba507759ed9f613eda249b13b2b76a15b1e5d35be9f14ed370d556a0ff`.
+`sourceDirty` is true because documentation and preserved, unregistered SDK
+drafts exist. The 350-file `native-source-snapshot.json` records compiled-source
+content; its only difference from the passing full browser source is the native
+fixture username. These are hidden WebView/isolated-workspace tests with an
+in-memory secret store, not normal installed-app or OS credential qualification.
+Native smoke cancels reservations before driver dispatch; it does not exercise
+in-flight authentication or a native publication race. Rust socket/owner tests
+and PostgreSQL browser races provide separate complementary evidence. Actual
+Snowflake sign-in/cancellation and normal packaged restart remain open.
+
+The normal macOS arm64 bundle also passes `pnpm desktop:bundle:mac` and
+strict deep ad-hoc signature verification: **29.17 MiB** reported by Tauri,
+identifier `com.quiinthieu.joinery`, executable SHA-256
+`c1d7e9c30c42b2f512f3858dcd6e6cb07b9f0ca183858290965f1a93417f3706`.
+Evidence is `bundle-final.log` and `bundle-final.json` in the same directory.
+It was built from `d2d22cc` with the same compiled-source content as the native
+snapshot, before SDK integration. It was not launched, installed, notarized or
+published. This completes the local lifecycle increment's combined checks; it
+does not qualify the still-unimplemented Snowflake application SDK route.
+
+The first release build's debug-stripping subprocess could not resolve the
+installed Rust toolchain's `libLLVM.dylib`; compilation still exited zero.
+`rust-objcopy --version` succeeds with command-local
+`DYLD_FALLBACK_LIBRARY_PATH` pointing at that toolchain's `lib` directory. The
+corrected native build was also attempted with that scoped setting, but the full
+build chain still reports a stripping warning. The direct tool check is not a
+successful pipeline repair. No global configuration was changed; no binary-size
+or stripping qualification is claimed.
+
+That attempt did complete the actual PostgreSQL million-row browser flow in
+21.2 seconds. Its CSV contains 103,888,906 bytes and 1,000,000 line breaks,
+SHA-256 `958d2140f0d9ac59335d33e2c17b9ed363c4c08ee8cf5e4db5775ae59f89d34e`;
+see `million-row-browser-export.json`. The fresh isolated run repeats that flow
+in 19.0 seconds, with the same independently verified byte count, line count and
+SHA-256 (`million-row-browser-isolated.json`). This local fixture does not qualify
+Snowflake results or representative performance.
+
+The exact Snowflake helper production lock also passes a fresh public-registry
+npm audit on 10 November: zero advisories in all severities across 183 dependencies
+(Node 24.22.2/npm 11.19.1, lock SHA-256 `e23933ecb16badf5e9621cb089796193388493f9230976fa4b8c48efa9f13098`).
+The audit used copied public package files, isolated HOME/cache/configuration,
+`--package-lock-only --omit=dev --ignore-scripts`, and changed neither source nor
+lock. Evidence is `.cache/verification/snowflake-security/20261110T043620Z/`.
+This is advisory-database evidence, not proof of application/runtime security.
+
+The added SSH browser case uses an intercepted synthetic host-key probe with a
+real backend reservation; it does not qualify actual SSH transport. No external
+SSO, query, write or billable operation has been performed.
+
 Initial host: Node 26.7.0, pnpm 11.23.0, shell Rust 1.91.1 (the repository
 pins 1.99.1). The pinned Rust toolchain was subsequently installed without
 changing the default toolchain. README requires Node 24. A checksum-

@@ -39,6 +39,15 @@ The [driver design](snowflake-driver-design.md) records the observed SDK retry
 behavior and remaining gates. Application auth cancellation, resource packaging,
 SSO session integration, writes and transaction qualification remain incomplete.
 
+The active lifecycle increment adds tracked connection setup/cancellation and
+native shutdown ordering. Startup socket/task repairs, focused regressions and
+124 actual database fixtures pass. Combined qualification passes 598 frontend /
+262 standard Rust tests, all 141 browser workflows, three native smoke runs,
+two actual PostgreSQL native recovery pairs and the normal ad-hoc macOS bundle.
+These are local lifecycle checks, not Snowflake acceptance. See
+the [active verification record](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
+This work does not yet expose externalbrowser authentication in the application.
+
 ## Daily replacement qualification (9 November 2026)
 
 The persistent DataGrip replacement Goal is active and owner acceptance is
