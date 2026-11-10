@@ -775,7 +775,7 @@ export async function runNativeSmoke() {
       host: "127.0.0.1",
       port: 9,
       database: "0",
-      username: "",
+      username: "default",
       environment: "local",
       safeMode: "readOnly",
       tlsMode: "disable",
