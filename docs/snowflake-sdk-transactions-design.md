@@ -54,6 +54,23 @@ Local supervisor/process and actual SDK loopback evidence is recorded in the
 
 ## Dependent adapter and application slice
 
+The existing profile validator requires ReadOnly for both Snowflake routes.
+The complete explicit-boundary workflow therefore needs an SDK-specific policy
+prerequisite in the same increment as typed admission. Use the existing SafeMode
+field: permit owner-selected policies only for explicit external-browser SDK
+profiles; keep local-application OAuth and missing-authentication legacy profiles
+ReadOnly. Preserve HTTPS/443, verified TLS, no SSH and no stored-password rules.
+No persistence migration or automatic elevation of existing profiles is needed.
+
+New SDK profiles must still default to ReadOnly. Switching SDK to OAuth resets
+ReadOnly; switching back must not restore an elevated policy automatically.
+Group changes preserve ReadOnly and normalize explicitly chosen non-ReadOnly
+production policies to PasswordGated. Form copy must describe authorization for
+explicit boundary actions without implying that DML or DDL has been enabled.
+Keep the public adapter's one-classified-read gate and all editing/DDL/mode
+capabilities unchanged, even for a non-ReadOnly SDK profile. Land the profile
+gate with its usable typed workflow, rather than exposing elevated policy alone.
+
 Separate explicit-control capability from the existing transaction capability
 that also enables the AUTOCOMMIT dropdown. BEGIN requires fresh observed idle
 authority; normal COMMIT requires matching observed transaction authority. Hold
@@ -96,6 +113,13 @@ legacy commit/rollback methods that discard command evidence, observe again and
 can label a command ACK as committed. Publish the returned observation directly
 and audit boundary acknowledgement/rejection/uncertainty.
 
+Profile saves currently close matching sessions and discard their plans;
+passphrase changes clear plans. Preserve those protections. The dedicated route
+must additionally rederive effective policy when consuming its stored action,
+match action/revision/session, and recheck session closure after lane acquisition
+and immediately before dispatch. Ordinary SQL execution must reject stored
+boundary actions so it cannot bypass typed evidence and recovery handling.
+
 ## Required verification
 
 - Exact typed input, identity/action/impact matching and one fixed submission;
@@ -108,6 +132,12 @@ and audit boundary acknowledgement/rejection/uncertainty.
   changed transaction identity, stale authority and cross-tab ownership.
 - Backend safety-policy rejection with zero helper dispatch; pending controls,
   late retired results and truthful close/recovery messaging in browser/native UI.
+- SDK/OAuth/legacy profile-policy matrix, unchanged transport restrictions,
+  ReadOnly restart/backup round trips, production/group normalization and no
+  policy elevation when authentication changes. Every permitted SDK policy must
+  still reject direct public transaction/DML/DDL/session-setting SQL without
+  dispatch. Prepared actions invalidated by profile save, passphrase change,
+  disconnect or queued retirement must never reach the helper.
 - Separately approved isolated Snowflake BEGIN/DML/COMMIT/ROLLBACK effects, failed
   statements, aborted COMMIT behavior, descriptors and recovery on the actual
   account. Synthetic helpers and loopback SDK fixtures cannot establish these.
