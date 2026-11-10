@@ -1,9 +1,9 @@
 use crate::domain::*;
 use sqlparser::{
     ast::{
-        Expr, Function, FunctionArguments, GroupByExpr, Ident, Query, SelectItem,
-        SelectItemQualifiedWildcardKind, SetExpr, Statement, TableFactor, Visit, Visitor,
-        WildcardAdditionalOptions,
+        Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgOperator, FunctionArguments,
+        GroupByExpr, Ident, Query, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, Statement,
+        TableFactor, Value, Visit, Visitor, WildcardAdditionalOptions,
     },
     dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect},
     parser::Parser,
@@ -736,11 +736,84 @@ impl Visitor for Classification {
                 .contains(&builtin);
             let snowflake_observer = self.engine == Some(EngineKind::Snowflake)
                 && is_snowflake_zero_argument_observer(function);
-            if !(common_builtin || mysql_builtin || snowflake_observer) {
+            let snowflake_data =
+                self.engine == Some(EngineKind::Snowflake) && is_snowflake_data_function(function);
+            if !(common_builtin || mysql_builtin || snowflake_observer || snowflake_data) {
                 self.raise(StatementKind::Unknown);
             }
         }
         ControlFlow::Continue(())
+    }
+}
+
+fn is_snowflake_data_function(function: &Function) -> bool {
+    let [part] = function.name.0.as_slice() else {
+        return false;
+    };
+    let Some(name) = part.as_ident().filter(|name| name.quote_style.is_none()) else {
+        return false;
+    };
+    let FunctionArguments::List(arguments) = &function.args else {
+        return false;
+    };
+    if function.uses_odbc_syntax
+        || !matches!(function.parameters, FunctionArguments::None)
+        || arguments.duplicate_treatment.is_some()
+        || !arguments.clauses.is_empty()
+        || !function.within_group.is_empty()
+        || function.filter.is_some()
+        || function.null_treatment.is_some()
+        || function.over.is_some()
+    {
+        return false;
+    }
+    match name.value.to_ascii_lowercase().as_str() {
+        // Arguments remain expressions: the visitor independently classifies
+        // every nested function/subquery, including any unreviewed calls.
+        "mod" | "repeat" => {
+            arguments.args.len() == 2
+                && arguments
+                    .args
+                    .iter()
+                    .all(|arg| matches!(arg, FunctionArg::Unnamed(FunctionArgExpr::Expr(_))))
+        }
+        "seq1" | "seq2" | "seq4" | "seq8" => {
+            arguments.args.is_empty()
+                || matches!(arguments.args.as_slice(),
+                    [FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(value)))]
+                    if matches!(&value.value, Value::Number(number, false)
+                        if number == "0" || number == "1"))
+        }
+        "generator" => {
+            let mut rowcount = false;
+            let mut timelimit = false;
+            arguments.args.iter().all(|arg| {
+                let FunctionArg::Named {
+                    name,
+                    arg: FunctionArgExpr::Expr(Expr::Value(value)),
+                    operator: FunctionArgOperator::RightArrow,
+                } = arg
+                else {
+                    return false;
+                };
+                if name.quote_style.is_some()
+                    || !matches!(&value.value, Value::Null | Value::Number(_, false))
+                    || matches!(&value.value, Value::Number(number, _)
+                        if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()))
+                {
+                    return false;
+                }
+                let seen = if name.value.eq_ignore_ascii_case("rowcount") {
+                    &mut rowcount
+                } else if name.value.eq_ignore_ascii_case("timelimit") {
+                    &mut timelimit
+                } else {
+                    return false;
+                };
+                !std::mem::replace(seen, true)
+            })
+        }
+        _ => false,
     }
 }
 
@@ -1436,6 +1509,114 @@ mod tests {
         assert_eq!(plan.statements[0].kind, StatementKind::Read);
         assert!(!plan.requires_approval && !plan.requires_passphrase);
     }
+    #[test]
+    fn snowflake_synthetic_read_functions_are_engine_scoped() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Production);
+        p.engine = EngineKind::Snowflake;
+        let queries = [
+            "SELECT MOD(7, 2), MOD(column_value, 3) FROM synthetic_values",
+            "SELECT REPEAT('x', 96), REPEAT(column_value, 2) FROM synthetic_values",
+            "SELECT SEQ4(), SEQ4(1)",
+            "SELECT seq1(), SeQ2(0), seq8(1)",
+            "SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) FROM TABLE(GENERATOR(ROWCOUNT => 12))",
+            "SELECT 1 FROM TABLE(generator())",
+            "SELECT 1 FROM TABLE(GeNeRaToR(rowcount => 0))",
+            "SELECT 1 FROM TABLE(GENERATOR(ROWCOUNT => NULL))",
+            "SELECT 1 FROM TABLE(GENERATOR(TIMELIMIT => 0))",
+            "SELECT 1 FROM TABLE(GENERATOR(TIMELIMIT => 1, ROWCOUNT => 17))",
+        ];
+        let rejected: Vec<_> = queries
+            .iter()
+            .filter_map(|sql| prepare("s", &p, sql).err().map(|error| (*sql, error.code)))
+            .collect();
+        assert!(rejected.is_empty(), "Read functions rejected: {rejected:?}");
+        for sql in queries {
+            let plan = prepare("s", &p, sql).unwrap();
+            assert_eq!(plan.statements[0].kind, StatementKind::Read);
+            assert!(!plan.requires_approval && !plan.requires_passphrase);
+        }
+        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+            p.engine = engine;
+            for sql in ["SELECT MOD(7,2)", "SELECT REPEAT('x',2)", "SELECT SEQ4()"] {
+                assert_eq!(
+                    prepare("s", &p, sql).unwrap_err().code,
+                    ErrorCode::PolicyBlocked
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn snowflake_data_functions_reject_unreviewed_calls_and_modifiers() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Production);
+        p.engine = EngineKind::Snowflake;
+        for call in [
+            "MOD(7,2)",
+            "REPEAT('x',2)",
+            "SEQ4()",
+            "GENERATOR(ROWCOUNT => 12)",
+        ] {
+            for expression in [
+                format!("PUBLIC.{call}"),
+                format!("DB.PUBLIC.{call}"),
+                format!("{call} OVER ()"),
+                format!("{call} FILTER (WHERE true)"),
+                format!("{call} WITHIN GROUP (ORDER BY 1)"),
+                format!("{call} IGNORE NULLS"),
+                format!("{call}(1)"),
+                format!("{{fn {call}}}"),
+            ] {
+                let sql = format!("SELECT {expression}");
+                assert!(prepare("s", &p, &sql).is_err(), "{sql}");
+            }
+        }
+        for sql in [
+            "SELECT \"MOD\"(7,2)",
+            "SELECT \"REPEAT\"('x',2)",
+            "SELECT \"SEQ4\"()",
+            "SELECT * FROM TABLE(\"GENERATOR\"(ROWCOUNT => 12))",
+            "SELECT * FROM TABLE(PUBLIC.GENERATOR(ROWCOUNT => 12))",
+            "SELECT * FROM TABLE(UNKNOWN_GENERATOR(ROWCOUNT => 12))",
+            "SELECT MOD(UNKNOWN_FUNCTION(),2)",
+            "SELECT REPEAT(PUBLIC.UNKNOWN_FUNCTION(),2)",
+            "SELECT MOD(NEXTVAL('seq'),2)",
+            "SELECT MOD(DISTINCT 1,2)",
+            "SELECT REPEAT('x')",
+            "SELECT REPEAT(*)",
+            "SELECT SEQ4(2)",
+            "SELECT SEQ4(UNKNOWN_FUNCTION())",
+            "SELECT * FROM TABLE(GENERATOR(ROWCOUNT => UNKNOWN_FUNCTION()))",
+            "SELECT * FROM TABLE(GENERATOR(ROWCOUNT => 1, ROWCOUNT => 2))",
+            "SELECT * FROM TABLE(GENERATOR(\"ROWCOUNT\" => 12))",
+            "SELECT * FROM TABLE(GENERATOR(ROWCOUNT => -1))",
+            "SELECT * FROM TABLE(GENERATOR(ROWCOUNT => '12'))",
+            "SELECT * FROM TABLE(GENERATOR(ROWCOUNT => 1.5))",
+            "SELECT * FROM TABLE(GENERATOR(OTHER => 12))",
+            "SELECT * FROM TABLE(GENERATOR(12))",
+            "SELECT MOD(7,2); DELETE FROM T WHERE ID=1",
+            "SELECT REPEAT('x',2); ALTER SESSION SET AUTOCOMMIT = TRUE",
+        ] {
+            assert!(prepare("s", &p, sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn snowflake_million_row_template_is_a_read() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Production);
+        p.engine = EngineKind::Snowflake;
+        let sql = "WITH SYNTHETIC AS (\n\
+            SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) AS N\n\
+            FROM TABLE(GENERATOR(ROWCOUNT => 1000000))\n\
+            ) SELECT N AS ORDINAL,\n\
+            CAST(9007199254740992 + N AS NUMBER(38,0)) AS EXACT_INTEGER,\n\
+            CASE WHEN MOD(N, 2) = 0 THEN CAST(NULL AS VARCHAR) ELSE '' END AS NULL_OR_EMPTY,\n\
+            REPEAT('x', 96) AS PAD FROM SYNTHETIC ORDER BY N";
+        let plan = prepare("s", &p, sql).unwrap();
+        assert_eq!(plan.statements.len(), 1);
+        assert_eq!(plan.statements[0].kind, StatementKind::Read);
+        assert!(!plan.requires_approval && !plan.requires_passphrase);
+    }
+
     #[test]
     fn snowflake_observers_require_plain_zero_argument_calls() {
         let mut p = profile(SafeMode::ReadOnly, Environment::Production);

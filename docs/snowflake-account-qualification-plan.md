@@ -291,13 +291,18 @@ not exercise the intended phase. Current classifier support for GENERATOR,
 SEQ4/ROW_NUMBER and the expression forms must be checked offline; a rejection is
 a blocked app test, not permission to loosen the classifier broadly.
 
-A source-only policy review on 10 November finds `GENERATOR`, `SEQ4`, `MOD` and
-`REPEAT` absent from the current Snowflake read-function admission. `ROW_NUMBER`
-is already admitted by its common name. The exact template's parser/runtime
-decision still needs reproduction; no account execution is implied by this
-static inspection. Resolve the general engine-aware SQL workflow with meaningful
-regressions rather than adding a special exception solely for the acceptance
-query. Compiler and runner budgets remain separate from public SQL admission.
+The exact template's `PolicyBlocked` rejection is now reproduced locally. General
+Snowflake-only admission now covers plain unquoted/unqualified `MOD`, `REPEAT`,
+`SEQ1`/`SEQ2`/`SEQ4`/`SEQ8` and `GENERATOR` with their reviewed argument shapes.
+The latter accepts nonnegative decimal integer literals or NULL for distinct
+ROWCOUNT/TIMELIMIT arguments; this is public read classification, not a resource
+or billing cap. The account template above still excludes TIMELIMIT. Unknown
+nested calls, qualified/quoted names, modifiers and appended writes remain denied.
+The exact template now passes policy tests, and a twelve-row synthetic SDK
+helper fixture passes one dispatch and exact integer/NULL/empty preservation.
+No million-row account or SDK-memory behavior is implied; executable approval,
+compiler and runner budgets remain separate from public SQL admission. See the
+[verification ledger](replacement-verification.md).
 
 ## B1: unique schema, synthetic objects, mutations and transactions
 

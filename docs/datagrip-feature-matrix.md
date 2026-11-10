@@ -38,6 +38,12 @@ is tracked in the [schema-selection ledger](replacement-verification.md#sdk-guar
 Account switching remains unqualified. Public SQL USE remains blocked and
 replacement readiness is unchanged.
 
+The synthetic million-row query's local policy rejection is now reproduced and
+repaired through Snowflake-specific built-in admission, including negative
+nested-call and batch checks. A twelve-row production-helper/synthetic-SDK
+regression passes. Actual million-row SDK/account memory, paging and export
+remain unqualified; see the [verification ledger](replacement-verification.md).
+
 On 10 November, explicit SDK external-browser profiles and retained helper cleanup
 are implemented. New profiles select the SDK route; existing profiles retain local
 application OAuth. Focused local profile, actual-child lifecycle and browser checks

@@ -15,6 +15,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 const LIMIT: Duration = Duration::from_secs(10);
 const STARTER: &str =
     "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();";
+const SYNTHETIC_READ: &str = "WITH SYNTHETIC AS (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) AS N FROM TABLE(GENERATOR(ROWCOUNT => 12))) SELECT N AS ORDINAL, CAST(9007199254740992 + N AS NUMBER(38,0)) AS EXACT_INTEGER, CASE WHEN MOD(N, 2) = 0 THEN CAST(NULL AS VARCHAR) ELSE '' END AS NULL_OR_EMPTY, REPEAT('x', 96) AS PAD FROM SYNTHETIC ORDER BY N";
 const FAKE: &str = r#"
 import { Readable } from 'node:stream';
 import { writeFileSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -47,6 +48,11 @@ const sdk = { createConnection(options) {
       if (sql === '-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();') {
         names = ['CURRENT_DATABASE()','CURRENT_USER()','CURRENT_VERSION()'];
         values = [['DB','SERVER_USER','synthetic-version']];
+      }
+      const synthetic = sql === 'WITH SYNTHETIC AS (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) AS N FROM TABLE(GENERATOR(ROWCOUNT => 12))) SELECT N AS ORDINAL, CAST(9007199254740992 + N AS NUMBER(38,0)) AS EXACT_INTEGER, CASE WHEN MOD(N, 2) = 0 THEN CAST(NULL AS VARCHAR) ELSE \'\' END AS NULL_OR_EMPTY, REPEAT(\'x\', 96) AS PAD FROM SYNTHETIC ORDER BY N';
+      if (synthetic) {
+        names = ['ORDINAL','EXACT_INTEGER','NULL_OR_EMPTY','PAD'];
+        values = Array.from({length:12},(_,i)=>[String(i+1),(9007199254740993n+BigInt(i)).toString(),(i+1)%2===0?null:'','x'.repeat(96)]);
       }
       const context = sql.includes(' AS PRINCIPAL');
       if (identity && !context && settings.startupIdentity) {
@@ -97,7 +103,7 @@ const sdk = { createConnection(options) {
       }
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> (columns||preview)&&index===0?'FIXED':'TEXT'})),
+        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> ((columns||preview)&&index===0)||(synthetic&&index<2)?'FIXED':'TEXT'})),
         streamRows() {
           if(describe && settings.holdDescribe) {
             writeFileSync(new URL('./active',import.meta.url),'');
@@ -1106,6 +1112,56 @@ async fn sdk_starter_executes_once_and_returns_observer_values() {
         assert_eq!(error.code, ErrorCode::PolicyBlocked, "{sql}");
         assert!(rejected_sink.columns.is_empty() && rejected_sink.rows.is_empty());
         assert_eq!(h.queries().len(), after_starter, "{sql}");
+    }
+    assert!(!h.driver.is_closed());
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_synthetic_read_preserves_values_and_rejects_unreviewed_calls_before_dispatch() {
+    let h = Harness::open().await;
+    let before = h.queries().len();
+    let mut sink = Sink::default();
+    assert_eq!(
+        execute(&h.driver, SYNTHETIC_READ, &mut sink).await.unwrap(),
+        12
+    );
+    assert_eq!(&h.queries()[before..], &[SYNTHETIC_READ]);
+    assert_eq!(sink.columns.len(), 4);
+    for (index, row) in sink.rows.iter().enumerate() {
+        let n = index + 1;
+        assert_eq!(
+            row,
+            &vec![
+                Some(n.to_string()),
+                Some((9_007_199_254_740_992_u64 + n as u64).to_string()),
+                (n % 2 != 0).then(String::new),
+                Some("x".repeat(96)),
+            ]
+        );
+    }
+    assert_eq!(sink.rows.len(), 12);
+    assert_eq!(sink.completed, [12]);
+    let after = h.queries().len();
+    for sql in [
+        "SELECT MOD(UNKNOWN_FUNCTION(),2)",
+        "SELECT PUBLIC.MOD(1,2)",
+        "SELECT \"REPEAT\"('x',2)",
+        "SELECT * FROM TABLE(PUBLIC.GENERATOR(ROWCOUNT => 12))",
+        "SELECT * FROM TABLE(UNKNOWN_GENERATOR(ROWCOUNT => 12))",
+        "SELECT REPEAT('x',2); DELETE FROM T WHERE ID=1",
+    ] {
+        let mut rejected_sink = Sink::default();
+        assert_eq!(
+            execute(&h.driver, sql, &mut rejected_sink)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked,
+            "{sql}"
+        );
+        assert!(rejected_sink.columns.is_empty() && rejected_sink.rows.is_empty());
+        assert_eq!(h.queries().len(), after, "{sql}");
     }
     assert!(!h.driver.is_closed());
     h.close().await;

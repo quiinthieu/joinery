@@ -8,6 +8,14 @@ three dedicated large-result fixtures and all 138 browser workflows. Native
 preference/restart checks pass on clean source `c860a78`. This does not qualify Snowflake
 authentication, SDK memory use, types, million-row transport or writes.
 
+The proposed Snowflake synthetic million-row query's policy rejection is now
+reproduced and repaired with general engine-specific built-in admission. A small
+production-helper fixture uses a synthetic SDK to check single dispatch and exact
+integer/NULL/empty values. This removes a local SQL-admission blocker; it does not
+qualify million-row Snowflake transport, memory, paging or export. The separate
+[account plan](snowflake-account-qualification-plan.md#a3-one-million-row-result-paging-and-export)
+still needs an executable runner, fresh approval and actual account evidence.
+
 ## Use and privacy
 
 Open **Preferences → Data privacy** and enable **Temporary disk storage for large

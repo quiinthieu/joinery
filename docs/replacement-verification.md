@@ -121,6 +121,43 @@ qualification modules are outside that application source freeze. The local app
 is runnable at `src-tauri/target/release/bundle/macos/Joinery.app`; it is not
 installed or externally accepted.
 
+### Snowflake synthetic read admission (10 November 2026)
+
+Status: **locally verified SQL admission; account performance unqualified**. This changes
+public SQL classification, not account authorization. The existing normal macOS
+bundle recorded above predates this policy increment.
+
+`sdk-synthetic-functions-before-fix.log` reproduces `PolicyBlocked` for the exact
+proposed million-row query and independent scalar/sequence examples. The repair
+admits plain unquoted/unqualified Snowflake `MOD`, `REPEAT`, `SEQ1`/`SEQ2`/`SEQ4`/
+`SEQ8` and `GENERATOR` with reviewed argument shapes. Nested expression visitation
+and whole-batch classification remain intact. It is not a special SQL-text bypass
+or a result/compute/billing limit. Official references:
+[MOD](https://docs.snowflake.com/en/sql-reference/functions/mod),
+[REPEAT](https://docs.snowflake.com/en/sql-reference/functions/repeat),
+[sequence functions](https://docs.snowflake.com/en/sql-reference/functions/seq1),
+[GENERATOR](https://docs.snowflake.com/en/sql-reference/functions/generator), and
+[system-function names](https://docs.snowflake.com/en/developer-guide/udf-stored-procedure-naming-conventions).
+
+`sdk-synthetic-functions-safety-final.log` passes **22/22** safety tests, including
+engine isolation, argument/modifier constraints, quoted/qualified calls, unknown
+nested functions, duplicate generator arguments and appended writes. Independent
+bounded source review finds no material issue. The initial adapter invocation
+fails its explicit `JOINERY_TEST_NODE` environment prerequisite before helper
+launch; the corrected invocation passes in
+`sdk-synthetic-functions-adapter-second.log`. It uses actual Node and the production
+helper with a synthetic SDK: twelve rows, one exact SQL dispatch, exact large
+integer strings, NULL versus empty strings, and zero dispatch for rejected calls.
+This is not a Snowflake server or million-row transport result.
+
+`sdk-synthetic-functions-adapter-final.log` passes all **31/31** existing and new
+production-helper/synthetic-SDK adapter fixtures. Full `pnpm validate` passes in
+`sdk-synthetic-functions-validate-first.log`: **649 frontend / 368 standard Rust**
+tests, formatting, contracts/types, production web build, desktop compilation and
+strict all-target/all-feature Clippy. Its 129 opt-in database fixtures are ignored;
+this engine-specific admission slice adds no actual-account evidence. The separate
+transaction transport remains uncommitted and outside this policy change.
+
 ### Offline qualification result/protocol validation (10 November 2026)
 
 Committed separately as `7a7ea12`. The four pure modules/tests and
