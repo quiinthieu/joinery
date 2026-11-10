@@ -1,5 +1,183 @@
 //! Regression coverage for the vendored actual-origin protocol API.
-//! Synthetic tests use in-memory duplex streams; only the ignored fixture test connects.
+//! Synthetic tests use in-memory duplex streams or isolated loopback sockets.
+//! Only the ignored fixture test connects to a separately running database.
+mod startup_cleanup {
+    use joinery_core::{
+        domain::*, drivers::postgres::Postgres, execution::Studio, secrets::MemorySecrets,
+    };
+    use std::{sync::Arc, time::Duration};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::oneshot,
+    };
+
+    const BOUND: Duration = Duration::from_secs(3);
+
+    fn profile(port: u16) -> ConnectionProfile {
+        ConnectionProfile {
+            id: new_id(),
+            name: "Loopback PostgreSQL startup".into(),
+            group_id: "local".into(),
+            engine: EngineKind::Postgres,
+            host: "127.0.0.1".into(),
+            port,
+            database: "fixture".into(),
+            username: "fixture".into(),
+            environment: Environment::Local,
+            safe_mode: SafeMode::ReadOnly,
+            tls_mode: TlsMode::Disable,
+            ca_cert_path: None,
+            ssh: None,
+            remember_password: false,
+            store_query_text: false,
+            store_drafts: false,
+            snowflake: None,
+        }
+    }
+    fn message(tag: u8, body: &[u8], output: &mut Vec<u8>) {
+        output.push(tag);
+        output.extend_from_slice(&((body.len() + 4) as u32).to_be_bytes());
+        output.extend_from_slice(body);
+    }
+    struct Peer {
+        port: u16,
+        identity: oneshot::Receiver<()>,
+        eof: oneshot::Receiver<bool>,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for Peer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+    impl Peer {
+        async fn new() -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (identity_tx, identity) = oneshot::channel();
+            let (eof_tx, eof) = oneshot::channel();
+            let task = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let size = stream.read_u32().await.unwrap();
+                assert!((8..4096).contains(&size));
+                let mut startup = vec![0; size as usize - 4];
+                stream.read_exact(&mut startup).await.unwrap();
+                assert_eq!(&startup[..4], &196608_u32.to_be_bytes());
+                let mut ready = Vec::new();
+                message(b'R', &0_i32.to_be_bytes(), &mut ready);
+                message(b'Z', b"I", &mut ready);
+                stream.write_all(&ready).await.unwrap();
+                let mut identity_query = false;
+                loop {
+                    let tag = stream.read_u8().await.unwrap();
+                    let size = stream.read_u32().await.unwrap();
+                    assert!((4..4096).contains(&size));
+                    let mut body = vec![0; size as usize - 4];
+                    stream.read_exact(&mut body).await.unwrap();
+                    if tag == b'P' {
+                        identity_query = body
+                            .windows(b"SELECT version()".len())
+                            .any(|window| window == b"SELECT version()");
+                    }
+                    if tag == b'S' {
+                        break;
+                    }
+                }
+                assert!(
+                    identity_query,
+                    "the production initial identity query must reach the peer"
+                );
+                identity_tx.send(()).unwrap();
+                // Deliberately withhold the identity statement's first response.
+                // Closing the fixture itself after timeout must not count as EOF.
+                let closed = tokio::time::timeout(BOUND, async {
+                    let mut bytes = [0; 1024];
+                    loop {
+                        match stream.read(&mut bytes).await {
+                            Ok(0) => return true,
+                            Ok(_) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                                return true;
+                            }
+                            Err(_) => return false,
+                        }
+                    }
+                })
+                .await
+                .unwrap_or(false);
+                let _ = eof_tx.send(closed);
+            });
+            Self {
+                port,
+                identity,
+                eof,
+                task,
+            }
+        }
+        async fn dispatched(&mut self) {
+            tokio::time::timeout(BOUND, &mut self.identity)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        async fn assert_closed(&mut self) {
+            assert!(
+                tokio::time::timeout(BOUND + Duration::from_secs(1), &mut self.eof)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                "abandoned PostgreSQL startup left its connection task/socket alive"
+            );
+            (&mut self.task).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_studio_setup_aborts_the_postgres_task_before_identity_returns() {
+        let mut peer = Peer::new().await;
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+        let profile = studio.save_profile(profile(peer.port), None).unwrap();
+        let id = studio.prepare_connection(&profile.id).unwrap();
+        let connecting = studio.clone();
+        let attempt = id.clone();
+        let setup = tokio::spawn(async move {
+            connecting
+                .connect_prepared(&attempt, ConnectionSecrets::default())
+                .await
+        });
+        peer.dispatched().await;
+        studio.cancel_connection_attempt(&id);
+        assert_eq!(
+            tokio::time::timeout(BOUND, setup)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err()
+                .code,
+            ErrorCode::Cancelled
+        );
+        studio.shutdown_and_wait().await.unwrap();
+        assert_eq!(studio.usage().session_count, 0);
+        peer.assert_closed().await;
+    }
+
+    #[tokio::test]
+    async fn abandoned_open_future_aborts_the_postgres_task_before_identity_returns() {
+        let mut peer = Peer::new().await;
+        let profile = profile(peer.port);
+        let setup =
+            tokio::spawn(
+                async move { Postgres::open(&profile, None, "loopback-session", None).await },
+            );
+        peer.dispatched().await;
+        setup.abort();
+        assert!(setup.await.err().unwrap().is_cancelled());
+        peer.assert_closed().await;
+    }
+}
+
 mod synthetic {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

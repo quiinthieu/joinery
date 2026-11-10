@@ -13,6 +13,8 @@ pub use recovery::*;
 pub struct WindowGuard {
     pub requested: std::sync::atomic::AtomicU64,
     pub acknowledged: std::sync::atomic::AtomicU64,
+    pub draining: std::sync::atomic::AtomicBool,
+    pub exit_allowed: std::sync::atomic::AtomicBool,
 }
 
 #[tauri::command]
@@ -68,6 +70,36 @@ pub async fn delete_profile(studio: State<'_, Arc<Studio>>, id: String) -> AppRe
 }
 
 #[tauri::command]
+pub async fn prepare_connection(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<String> {
+    studio.prepare_connection(&id)
+}
+
+#[tauri::command]
+pub async fn connect_prepared(
+    studio: State<'_, Arc<Studio>>,
+    attempt_id: String,
+    secrets: ConnectionSecrets,
+) -> AppResult<SessionInfo> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_CONNECT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    studio.connect_prepared(&attempt_id, secrets).await
+}
+
+#[tauri::command]
+pub async fn cancel_connection_attempt(
+    studio: State<'_, Arc<Studio>>,
+    attempt_id: String,
+) -> AppResult<()> {
+    studio.cancel_connection_attempt(&attempt_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn app_shutdown(studio: State<'_, Arc<Studio>>) -> AppResult<()> {
+    studio.shutdown_and_wait().await
+}
+
+#[tauri::command]
 pub async fn connect(
     studio: State<'_, Arc<Studio>>,
     id: String,
@@ -88,8 +120,11 @@ pub async fn disconnect(studio: State<'_, Arc<Studio>>, session_id: String) -> A
 pub async fn probe_ssh(
     studio: State<'_, Arc<Studio>>,
     profile_id: String,
+    attempt_id: Option<String>,
 ) -> AppResult<SshHostKey> {
-    studio.probe_ssh(&profile_id).await
+    studio
+        .probe_ssh_with_attempt(&profile_id, attempt_id.as_deref())
+        .await
 }
 
 #[tauri::command]

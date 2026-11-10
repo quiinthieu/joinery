@@ -28,7 +28,7 @@ fn restore_requires_confirmation_current_passphrase_and_an_idle_studio() {
             .code,
         ErrorCode::InvalidPassphrase
     );
-    let connecting = studio.connect_gate.try_lock().unwrap();
+    let connecting = studio.connection_attempts.reserve("fixture", 0, 0).unwrap();
     assert!(
         studio
             .restore_metadata_backup(
@@ -39,7 +39,7 @@ fn restore_requires_confirmation_current_passphrase_and_an_idle_studio() {
             )
             .is_err()
     );
-    drop(connecting);
+    studio.cancel_connection_attempt(&connecting);
     let result = studio.results.create("fixture", 0, vec![], None).unwrap();
     assert!(
         studio

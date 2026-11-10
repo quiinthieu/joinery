@@ -1,6 +1,7 @@
 #[cfg(feature = "desktop")]
 use crate::file_capability::NativeFileDialog;
 use crate::{
+    connection_attempts::ConnectionAttempts,
     domain::*,
     drivers::{
         ColumnOrigin, Driver, EditIdentity, EditTarget, MysqlColumnOrigin, QuerySink, RowMutation,
@@ -35,6 +36,8 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+mod connection_tests;
 #[cfg(test)]
 mod recovery_tests;
 
@@ -198,7 +201,7 @@ pub struct Studio {
     import_targets: Mutex<HashMap<(String, String, String), ImportTarget>>,
     mysql_guard_policy: crate::drivers::mysql::guard::GuardPolicy,
     pub results: ResultStore,
-    connect_gate: tokio::sync::Mutex<()>,
+    connection_attempts: ConnectionAttempts,
     configuration_gate: Mutex<()>,
     tunnels: SshManager,
 }
@@ -249,7 +252,7 @@ impl Studio {
             import_targets: Mutex::new(HashMap::new()),
             mysql_guard_policy,
             results,
-            connect_gate: tokio::sync::Mutex::new(()),
+            connection_attempts: ConnectionAttempts::default(),
             configuration_gate: Mutex::new(()),
             tunnels: SshManager::default(),
         }))
@@ -356,10 +359,12 @@ impl Studio {
         if confirmation != "RESTORE" {
             return Err(AppError::invalid("Type RESTORE to replace local metadata"));
         }
-        let _connections = self.connect_gate.try_lock().map_err(|_| {
-            AppError::invalid("Wait for connection setup to finish before restoring")
-        })?;
         let _configuration = self.configuration_gate.lock();
+        if self.connection_attempts.has_pending() {
+            return Err(AppError::invalid(
+                "Cancel connection setup before restoring metadata",
+            ));
+        }
         if !self.sessions.lock().is_empty()
             || !self.jobs.lock().is_empty()
             || !self.exports.lock().is_empty()
@@ -474,6 +479,7 @@ impl Studio {
                 self.verify_passphrase(passphrase)?;
             }
         }
+        self.connection_attempts.cancel_profile(&profile.id);
         self.close_profile_sessions(&profile.id);
         if profiles
             .iter()
@@ -576,6 +582,7 @@ impl Studio {
     pub fn delete_profile(&self, id: &str) -> AppResult<()> {
         let _configuration = self.configuration_gate.lock();
         let profile = self.persistence.profile(id)?;
+        self.connection_attempts.cancel_profile(id);
         self.close_profile_sessions(id);
         if profile.remember_password {
             self.secrets.delete(&format!("database:{id}"))?;
@@ -583,91 +590,146 @@ impl Studio {
         self.persistence.delete_profile(id)
     }
 
-    pub async fn connect(&self, id: &str, secrets: ConnectionSecrets) -> AppResult<SessionInfo> {
-        let _gate = self.connect_gate.lock().await;
-        let profile = self.persistence.profile(id)?;
-        if self
-            .sessions
-            .lock()
-            .values()
-            .filter(|s| s.profile.id == id)
-            .count()
-            >= 4
-        {
-            return Err(AppError::new(
-                ErrorCode::InvalidInput,
-                "This connection already has four open sessions",
-            ));
-        }
-        let password = match secrets.password {
-            Some(value) => Some(Zeroizing::new(value)),
-            None if profile.remember_password => self
-                .secrets
-                .get(&format!("database:{id}"))?
-                .map(Zeroizing::new),
-            None => None,
-        };
-        let session_id = new_id();
-        let tunnel = if let Some(ssh) = &profile.ssh {
-            Some(
-                self.tunnels
-                    .acquire(
-                        &profile,
-                        self.persistence.setting(&host_setting(ssh))?,
-                        secrets.ssh_password.map(Zeroizing::new),
-                        secrets.key_passphrase.map(Zeroizing::new),
-                    )
-                    .await?,
+    /// Reserve capacity and issue the only identifier accepted by connect_prepared.
+    /// The identifier becomes the session ID if setup wins publication.
+    pub fn prepare_connection(&self, profile_id: &str) -> AppResult<String> {
+        let _configuration = self.configuration_gate.lock();
+        self.persistence.profile(profile_id)?;
+        let (live_total, live_for_profile) = {
+            let sessions = self.sessions.lock();
+            (
+                sessions.len(),
+                sessions
+                    .values()
+                    .filter(|session| session.profile.id == profile_id)
+                    .count(),
             )
-        } else {
-            None
         };
-        let (driver, info): (Arc<dyn Driver>, SessionInfo) = match profile.engine {
-            EngineKind::Redis => {
-                let (driver, info) = Redis::open(
-                    &profile,
-                    password.as_deref().map(String::as_str),
-                    &session_id,
-                    tunnel.as_ref().map(|t| t.port),
-                )
-                .await?;
-                (driver, info)
+        self.connection_attempts
+            .reserve(profile_id, live_total, live_for_profile)
+    }
+
+    pub fn cancel_connection_attempt(&self, attempt_id: &str) {
+        // Credential persistence and publication share this gate. Cancellation
+        // cannot acknowledge while either can still complete after its check.
+        let _configuration = self.configuration_gate.lock();
+        self.connection_attempts.cancel(attempt_id);
+        // Publication may already have won while its response was lost. The
+        // reservation ID names exactly that session, never another by profile.
+        self.disconnect(attempt_id);
+    }
+
+    /// Compatibility wrapper: every legacy request still has a tracked owner.
+    pub async fn connect(&self, id: &str, secrets: ConnectionSecrets) -> AppResult<SessionInfo> {
+        let attempt_id = self.prepare_connection(id)?;
+        self.connect_prepared(&attempt_id, secrets).await
+    }
+
+    pub async fn connect_prepared(
+        &self,
+        attempt_id: &str,
+        secrets: ConnectionSecrets,
+    ) -> AppResult<SessionInfo> {
+        let mut attempt = self.connection_attempts.claim(attempt_id)?;
+        let id = attempt.profile_id().to_owned();
+        let session_id = attempt.id().to_owned();
+        let cancellation = attempt.cancellation();
+        let (profile, password, known_host) = {
+            let _configuration = self.configuration_gate.lock();
+            if cancellation.is_cancelled() {
+                return Err(connection_cancelled());
             }
-            EngineKind::Mysql => {
-                let (driver, info) = Mysql::open_with_guard_policy(
-                    &profile,
-                    password.as_deref().map(String::as_str),
-                    &session_id,
-                    tunnel.as_ref().map(|t| t.port),
-                    self.mysql_guard_policy.clone(),
+            let profile = self.persistence.profile(&id)?;
+            let password = match secrets.password {
+                Some(value) => Some(Zeroizing::new(value)),
+                None if profile.remember_password => self
+                    .secrets
+                    .get(&format!("database:{id}"))?
+                    .map(Zeroizing::new),
+                None => None,
+            };
+            let known_host = profile
+                .ssh
+                .as_ref()
+                .map(|ssh| self.persistence.setting(&host_setting(ssh)))
+                .transpose()?
+                .flatten();
+            (profile, password, known_host)
+        };
+        // Neither the configuration gate nor a global connection lane is held
+        // while SSH, database authentication, or browser sign-in is pending.
+        let setup = async {
+            let tunnel = if profile.ssh.is_some() {
+                Some(
+                    self.tunnels
+                        .acquire(
+                            &profile,
+                            known_host,
+                            secrets.ssh_password.map(Zeroizing::new),
+                            secrets.key_passphrase.map(Zeroizing::new),
+                        )
+                        .await?,
                 )
-                .await?;
-                (driver, info)
-            }
-            EngineKind::Postgres => {
-                let (d, i) = Postgres::open(
-                    &profile,
-                    password.as_deref().map(String::as_str),
-                    &session_id,
-                    tunnel.as_ref().map(|t| t.port),
-                )
-                .await?;
-                (d, i)
-            }
-            EngineKind::Snowflake => {
-                if password.is_some() {
-                    return Err(AppError::invalid(
-                        "Snowflake browser sign-in does not use a password",
-                    ));
+            } else {
+                None
+            };
+            let (driver, info): (Arc<dyn Driver>, SessionInfo) = match profile.engine {
+                EngineKind::Redis => {
+                    let (driver, info) = Redis::open(
+                        &profile,
+                        password.as_deref().map(String::as_str),
+                        &session_id,
+                        tunnel.as_ref().map(|t| t.port),
+                    )
+                    .await?;
+                    (driver, info)
                 }
-                let (d, i) = Snowflake::open(&profile, &session_id).await?;
-                (d, i)
-            }
+                EngineKind::Mysql => {
+                    let (driver, info) = Mysql::open_with_guard_policy(
+                        &profile,
+                        password.as_deref().map(String::as_str),
+                        &session_id,
+                        tunnel.as_ref().map(|t| t.port),
+                        self.mysql_guard_policy.clone(),
+                    )
+                    .await?;
+                    (driver, info)
+                }
+                EngineKind::Postgres => {
+                    let (d, i) = Postgres::open(
+                        &profile,
+                        password.as_deref().map(String::as_str),
+                        &session_id,
+                        tunnel.as_ref().map(|t| t.port),
+                    )
+                    .await?;
+                    (d, i)
+                }
+                EngineKind::Snowflake => {
+                    if password.is_some() {
+                        return Err(AppError::invalid(
+                            "Snowflake browser sign-in does not use a password",
+                        ));
+                    }
+                    let (d, i) = Snowflake::open(&profile, &session_id).await?;
+                    (d, i)
+                }
+            };
+            Ok::<_, AppError>((driver, info, tunnel))
+        };
+        let (driver, info, tunnel) = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(connection_cancelled()),
+            outcome = setup => outcome?,
         };
         let _configuration = self.configuration_gate.lock();
+        if cancellation.is_cancelled() {
+            driver.close();
+            return Err(connection_cancelled());
+        }
         if self
             .persistence
-            .profile(id)
+            .profile(&id)
             .ok()
             .and_then(|current| serde_json::to_string(&current).ok())
             != serde_json::to_string(&profile).ok()
@@ -685,21 +747,27 @@ impl Studio {
             driver.close();
             return Err(error);
         }
-        self.sessions.lock().insert(
-            session_id,
-            Arc::new(Session {
-                info: info.clone(),
-                profile,
-                driver,
-                lane: tokio::sync::Mutex::new(()),
-                completion: Mutex::new(None),
-                cancellation_gate: tokio::sync::Mutex::new(()),
-                active_run: Mutex::new(None),
-                closed: AtomicBool::new(false),
-                tunnel,
-            }),
-        );
-        Ok(info)
+        let result = attempt.try_publish(|| {
+            self.sessions.lock().insert(
+                session_id,
+                Arc::new(Session {
+                    info: info.clone(),
+                    profile,
+                    driver: driver.clone(),
+                    lane: tokio::sync::Mutex::new(()),
+                    completion: Mutex::new(None),
+                    cancellation_gate: tokio::sync::Mutex::new(()),
+                    active_run: Mutex::new(None),
+                    closed: AtomicBool::new(false),
+                    tunnel,
+                }),
+            );
+            info
+        });
+        if result.is_err() {
+            driver.close();
+        }
+        result
     }
 
     fn session(&self, id: &str) -> AppResult<Arc<Session>> {
@@ -719,14 +787,54 @@ impl Studio {
     }
 
     pub async fn probe_ssh(&self, profile_id: &str) -> AppResult<SshHostKey> {
-        let profile = self.persistence.profile(profile_id)?;
-        let ssh = profile
-            .ssh
-            .as_ref()
-            .ok_or_else(|| AppError::invalid("SSH is not configured"))?;
-        self.tunnels
-            .probe(ssh, self.persistence.setting(&host_setting(ssh))?)
-            .await
+        self.probe_ssh_with_attempt(profile_id, None).await
+    }
+
+    pub async fn probe_ssh_with_attempt(
+        &self,
+        profile_id: &str,
+        attempt_id: Option<&str>,
+    ) -> AppResult<SshHostKey> {
+        let prepared = attempt_id.is_some();
+        let id = match attempt_id {
+            Some(id) => id.to_owned(),
+            None => self.prepare_connection(profile_id)?,
+        };
+        let attempt = self.connection_attempts.claim(&id)?;
+        let cancellation = attempt.cancellation();
+        let (ssh, known) = {
+            let _configuration = self.configuration_gate.lock();
+            if cancellation.is_cancelled() {
+                return Err(connection_cancelled());
+            }
+            if attempt.profile_id() != profile_id {
+                return Err(AppError::invalid(
+                    "This connection request belongs to a different profile",
+                ));
+            }
+            let ssh = self
+                .persistence
+                .profile(profile_id)?
+                .ssh
+                .ok_or_else(|| AppError::invalid("SSH is not configured"))?;
+            let known = self.persistence.setting(&host_setting(&ssh))?;
+            (ssh, known)
+        };
+        // The losing probe future drops its transport before the claim owner
+        // is released, so shutdown cannot drain past a live preflight socket.
+        let key = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(connection_cancelled()),
+            outcome = self.tunnels.probe(&ssh, known) => outcome?,
+        };
+        let _configuration = self.configuration_gate.lock();
+        if cancellation.is_cancelled() {
+            return Err(connection_cancelled());
+        }
+        if prepared {
+            attempt.return_to_reserved()?;
+        }
+        Ok(key)
     }
 
     pub fn trust_ssh_key(&self, challenge_id: &str, fingerprint: &str) -> AppResult<()> {
@@ -4093,7 +4201,38 @@ impl Studio {
             active_runs: self.jobs.lock().len() + self.exports.lock().len(),
         }
     }
+    /// Retire fixture work admitted before the configuration-gate snapshot.
+    /// New work may proceed afterward; a real shutdown remains irreversible.
+    #[cfg(any(test, feature = "test-harness"))]
+    pub async fn reset_fixtures(&self) -> AppResult<()> {
+        let pending = {
+            // Publication shares this gate: a setup either enters the session
+            // snapshot or is cancelled before it can publish.
+            let _configuration = self.configuration_gate.lock();
+            let pending = self.connection_attempts.cancel_fixture_snapshot();
+            for export in self.exports.lock().values() {
+                export.token.cancel();
+            }
+            self.file_capabilities.clear();
+            let ids = self.sessions.lock().keys().cloned().collect::<Vec<_>>();
+            for id in ids {
+                self.disconnect(&id);
+            }
+            pending
+        };
+        // Setup owners need the configuration gate to unwind; never await them
+        // while holding it. Leave the registry's shutdown barrier untouched.
+        self.connection_attempts
+            .wait_fixture_snapshot(&pending)
+            .await;
+        Ok(())
+    }
+
     pub fn shutdown(&self) {
+        // Publication holds the same gate: either it wins and enters this
+        // snapshot, or the irreversible attempt barrier rejects publication.
+        let _configuration = self.configuration_gate.lock();
+        self.connection_attempts.shutdown();
         for export in self.exports.lock().values() {
             export.token.cancel();
         }
@@ -4103,6 +4242,22 @@ impl Studio {
             self.disconnect(&id);
         }
     }
+
+    /// Await local setup owners after closing admission and existing sessions.
+    /// Driver close currently requests logical shutdown; this is not a receipt
+    /// of remote rollback or completed asynchronous engine cleanup.
+    pub async fn shutdown_and_wait(&self) -> AppResult<()> {
+        self.shutdown();
+        self.connection_attempts.wait_idle().await;
+        Ok(())
+    }
+}
+
+fn connection_cancelled() -> AppError {
+    AppError::new(
+        ErrorCode::Cancelled,
+        "This connection request was cancelled or the app is closing",
+    )
 }
 
 fn browse_sql_for_engine(

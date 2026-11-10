@@ -105,7 +105,7 @@ async fn rpc(
             "bootstrap" => json!(studio.bootstrap()?),
             "save_workspace" => json!(studio.save_workspace(arg(&args, "workspace")?)?),
             // Test-only isolation for recovery flows; never enrolled in desktop IPC.
-            "disconnect_fixtures" => { studio.shutdown(); Value::Null },
+            "disconnect_fixtures" => { studio.reset_fixtures().await?; Value::Null },
             "metadata_backups" => json!(studio.metadata_backups()?),
             "create_metadata_backup" => json!(studio.create_metadata_backup()?),
             "delete_metadata_backup" => json!(studio.delete_metadata_backup(&arg::<String>(&args, "id")?, &arg::<String>(&args, "digest")?)?),
@@ -149,6 +149,22 @@ async fn rpc(
                 studio.delete_profile(&arg::<String>(&args, "id")?)?;
                 Value::Null
             }
+            "prepare_connection" => json!(studio.prepare_connection(&arg::<String>(&args, "id")?)?),
+            "connect_prepared" => json!(
+                studio.connect_prepared(&arg::<String>(&args, "attemptId")?, arg(&args, "secrets")?).await?
+            ),
+            "cancel_connection_attempt" => {
+                studio.cancel_connection_attempt(&arg::<String>(&args, "attemptId")?);
+                Value::Null
+            }
+            "app_shutdown" => {
+                studio.shutdown_and_wait().await?;
+                Value::Null
+            }
+            "probe_ssh" => json!(studio.probe_ssh_with_attempt(
+                &arg::<String>(&args, "profileId")?,
+                arg::<Option<String>>(&args, "attemptId")?.as_deref(),
+            ).await?),
             "connect" => json!(
                 studio
                     .connect(&arg::<String>(&args, "id")?, arg(&args, "secrets")?)

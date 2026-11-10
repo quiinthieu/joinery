@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 pub mod compare;
+pub mod connection_attempts;
 pub mod ddl;
 pub mod domain;
 pub mod drivers;
@@ -81,6 +82,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // The frontend flushes drafts and awaits backend retirement
+                // before explicitly destroying the window. A missing frontend
+                // handler must not silently bypass that lifecycle.
+                api.prevent_close();
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window
                     .state::<std::sync::Arc<execution::Studio>>()
@@ -102,6 +109,10 @@ pub fn run() {
             commands::save_profile,
             commands::delete_profile,
             commands::connect,
+            commands::prepare_connection,
+            commands::connect_prepared,
+            commands::cancel_connection_attempt,
+            commands::app_shutdown,
             commands::disconnect,
             commands::set_passphrase,
             commands::extract_query_params,
@@ -182,17 +193,30 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("could not start Joinery")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
-                if let Some(window) = app.get_webview_window("main") {
-                    api.prevent_exit();
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                let state = app.state::<commands::WindowGuard>();
+                if state.exit_allowed.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
+                api.prevent_exit();
+                if code.is_none() && let Some(window) = app.get_webview_window("main") {
                     let state = app.state::<commands::WindowGuard>();
                     let generation = state.requested.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     let _ = window.emit("joinery:quit-requested", generation);
+                    // Wait for the user's pending-work decision. A frontend
+                    // acknowledgement timeout is not consent to discard work.
+                } else if !state.draining.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     let handle = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        if handle.state::<commands::WindowGuard>().acknowledged.load(std::sync::atomic::Ordering::Acquire) < generation {
-                            handle.exit(0);
+                        let studio = handle.state::<std::sync::Arc<execution::Studio>>().inner().clone();
+                        let result = studio.shutdown_and_wait().await;
+                        let guard = handle.state::<commands::WindowGuard>();
+                        if result.is_ok() {
+                            guard.exit_allowed.store(true, std::sync::atomic::Ordering::Release);
+                            handle.exit(code.unwrap_or(0));
+                        } else {
+                            guard.draining.store(false, std::sync::atomic::Ordering::Release);
+                            let _ = handle.emit("joinery:shutdown-failed", "Connection cleanup could not be confirmed. Joinery remains open.");
                         }
                     });
                 }

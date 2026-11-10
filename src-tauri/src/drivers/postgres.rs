@@ -29,6 +29,20 @@ impl Drop for Auxiliary {
     }
 }
 
+/// Own the spawned socket pump until every startup await and identity check
+/// finishes. Dropping a JoinHandle alone would detach the pending connection.
+struct StartupTask {
+    task: tokio::task::AbortHandle,
+    transferred: bool,
+}
+impl Drop for StartupTask {
+    fn drop(&mut self) {
+        if !self.transferred {
+            self.task.abort();
+        }
+    }
+}
+
 pub struct Postgres {
     client: Client,
     metadata: OnceCell<Client>,
@@ -95,9 +109,13 @@ impl Postgres {
                 .with_no_client_auth(),
         );
         let (client, connection) = config.connect(tls.clone()).await.map_err(pg_error)?;
-        let task = tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        let mut startup = StartupTask {
+            task: tokio::spawn(async move {
+                let _ = connection.await;
+            })
+            .abort_handle(),
+            transferred: false,
+        };
         let row = client
             .query_one(
                 "SELECT version(),pg_backend_pid(),pg_catalog.current_database()::pg_catalog.text,current_user::pg_catalog.text,pg_catalog.current_schemas(true)::pg_catalog.text[]",
@@ -142,13 +160,14 @@ impl Postgres {
             metadata: OnceCell::new(),
             config,
             tls,
-            tasks: Mutex::new(vec![task.abort_handle()]),
+            tasks: Mutex::new(vec![startup.task.clone()]),
             closed: AtomicBool::new(false),
             edit_cancel: Mutex::new(None),
             tx_mode: Mutex::new(TransactionMode::AutoCommit),
             cached_identity: Mutex::new(initial_identity),
             stale_prepared: Mutex::new(Vec::new()),
         };
+        startup.transferred = true;
         Ok((Arc::new(driver), info))
     }
 
