@@ -12,6 +12,8 @@ pub mod snowflake_auth;
 #[cfg(unix)]
 pub mod snowflake_external;
 #[cfg(unix)]
+mod snowflake_metadata;
+#[cfg(unix)]
 pub mod snowflake_process;
 
 pub trait QuerySink: Send {

@@ -2130,7 +2130,9 @@ impl Studio {
         table: &TableRef,
         require_complete: bool,
     ) -> AppResult<TableSchema> {
-        let session = self.session(session_id)?;
+        let session = self
+            .session(session_id)
+            .map_err(AppError::with_completion_invalidated)?;
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
                 ErrorCode::Conflict,
@@ -2155,13 +2157,23 @@ impl Studio {
                     ErrorCode::Conflict,
                     "Completion context changed; refresh suggestions",
                 )
+                .with_completion_invalidated()
             })?;
-        if session.driver.completion_identity().await? != snapshot.identity {
+        let observed = session
+            .driver
+            .completion_identity()
+            .await
+            .map_err(|error| {
+                *session.completion.lock() = None;
+                error.with_completion_invalidated()
+            })?;
+        if observed != snapshot.identity {
             *session.completion.lock() = None;
             return Err(AppError::new(
                 ErrorCode::Conflict,
                 "Completion context changed; refresh suggestions",
-            ));
+            )
+            .with_completion_invalidated());
         }
         if !snapshot
             .tables
@@ -2174,10 +2186,33 @@ impl Studio {
             ));
         }
         let schema = if require_complete {
-            session.driver.inspection_schema(table).await?
+            session.driver.inspection_schema(table).await
         } else {
-            session.driver.completion_schema(table).await?
-        };
+            session.driver.completion_schema(table).await
+        }
+        .inspect_err(|error| {
+            if error.completion_invalidated == Some(true) {
+                *session.completion.lock() = None;
+            }
+        })?;
+        // A driver may need several reads for columns. Never publish their
+        // result under an identity that changed while those reads ran.
+        let observed = session
+            .driver
+            .completion_identity()
+            .await
+            .map_err(|error| {
+                *session.completion.lock() = None;
+                error.with_completion_invalidated()
+            })?;
+        if observed != snapshot.identity {
+            *session.completion.lock() = None;
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Completion context changed; refresh suggestions",
+            )
+            .with_completion_invalidated());
+        }
         if schema.columns.len() > 4096
             || serde_json::to_vec(&schema)
                 .map_err(|_| AppError::internal("Cannot encode completion columns"))?
@@ -2190,10 +2225,11 @@ impl Studio {
             ));
         }
         if session.closed.load(Ordering::Acquire) {
-            return Err(AppError::new(
-                ErrorCode::ConnectionClosed,
-                "The session closed",
-            ));
+            *session.completion.lock() = None;
+            return Err(
+                AppError::new(ErrorCode::ConnectionClosed, "The session closed")
+                    .with_completion_invalidated(),
+            );
         }
         Ok(schema)
     }

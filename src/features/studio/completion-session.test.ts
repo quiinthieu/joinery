@@ -88,6 +88,68 @@ test("context revisions bind metadata requests and discard old privilege results
   session.dispose();
 });
 
+test("fingerprint-only context changes reject stale completions and reload metadata", async () => {
+  vi.useFakeTimers();
+  const old = deferred<TableSchema>();
+  const fresh = deferred<TableSchema>();
+  const load = vi
+    .fn()
+    .mockImplementationOnce(() => old.promise)
+    .mockImplementationOnce(() => fresh.promise);
+  const { session } = setup(load);
+  session.configure({ ...config, contextFingerprint: "schema=sales;warehouse=wh_a;secondary=all" });
+  const stale = request(session, state("SELECT o.| FROM orders o"));
+  await vi.advanceTimersByTimeAsync(100);
+  session.configure({ ...config, contextFingerprint: "schema=sales;warehouse=wh_b;secondary=all" });
+  const current = request(session, state("SELECT o.| FROM orders o"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(load).toHaveBeenCalledTimes(2);
+  fresh.resolve(schema("orders", "current_context_column"));
+  old.resolve(schema("orders", "stale_context_column"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(await stale).toBeNull();
+  expect((await current)?.options.map((item) => item.apply)).toEqual(["o.current_context_column"]);
+  session.dispose();
+});
+
+test("unchanged or null-equivalent fingerprints preserve loaded completion state", async () => {
+  vi.useFakeTimers();
+  const { session, load, messages } = setup();
+  session.configure({ ...config, contextFingerprint: null });
+  const first = request(session, state());
+  await vi.advanceTimersByTimeAsync(100);
+  expect((await first)?.options.map((item) => item.apply)).toEqual(["o.notes"]);
+  const catalogReplacements = messages.filter(
+    (message) => message.type === "replace" && message.section === "catalog",
+  ).length;
+  session.configure({ ...config, contextFingerprint: undefined });
+  session.configure({ ...config, contextFingerprint: null });
+  const next = request(session, state("SELECT o.no| FROM orders o WHERE id=12"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect((await next)?.options.map((item) => item.apply)).toEqual(["o.notes"]);
+  expect(load).toHaveBeenCalledOnce();
+  expect(
+    messages.filter((message) => message.type === "replace" && message.section === "catalog"),
+  ).toHaveLength(catalogReplacements);
+
+  session.configure({ ...config, contextFingerprint: "schema=sales;warehouse=wh_a" });
+  const stable = request(session, state());
+  await vi.advanceTimersByTimeAsync(100);
+  await stable;
+  const replacementsAfterChange = messages.filter(
+    (message) => message.type === "replace" && message.section === "catalog",
+  ).length;
+  session.configure({ ...config, contextFingerprint: "schema=sales;warehouse=wh_a" });
+  const sameFingerprint = request(session, state("SELECT o.no| FROM orders o WHERE id=2"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect((await sameFingerprint)?.options.map((item) => item.apply)).toEqual(["o.notes"]);
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(
+    messages.filter((message) => message.type === "replace" && message.section === "catalog"),
+  ).toHaveLength(replacementsAfterChange);
+  session.dispose();
+});
+
 test("loads scoped columns and preserves successful metadata when another table is denied", async () => {
   vi.useFakeTimers();
   const load = vi.fn(async (_session: string, table: { name: string }) => {

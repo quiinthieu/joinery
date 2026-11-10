@@ -1179,6 +1179,37 @@ for (const action of ["commitTransaction", "rollbackTransaction"] as const) {
   });
 }
 
+test("session context fingerprints invalidate completion revisions independently", () => {
+  const tabId = useStudio.getState().openQuery("profile");
+  const base = transactionRuntime("session");
+  useStudio.setState({
+    sessionStates: { session: base },
+    sessionContextRevision: { session: 7 },
+  });
+
+  const emit = (runtime: SessionRuntimeState) => {
+    const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)!.revision;
+    useStudio.getState().applyEvents(tabId, [{ type: "sessionState", state: runtime }], revision);
+  };
+
+  // Older drivers can omit the fingerprint; explicit null means the same state.
+  emit({ ...base, contextFingerprint: null } as unknown as SessionRuntimeState);
+  expect(useStudio.getState().sessionContextRevision.session).toBe(7);
+
+  // Schema, warehouse, policy, and secondary-role differences are represented
+  // by the backend digest even when the legacy fields above stay identical.
+  emit({ ...base, contextFingerprint: "schema=SALES;warehouse=WH_A;secondary=ALL" });
+  expect(useStudio.getState().sessionContextRevision.session).toBe(8);
+  emit({ ...base, contextFingerprint: "schema=SALES;warehouse=WH_A;secondary=ALL" });
+  expect(useStudio.getState().sessionContextRevision.session).toBe(8);
+  emit({ ...base, contextFingerprint: "schema=SALES;warehouse=WH_B;secondary=ALL" });
+  expect(useStudio.getState().sessionContextRevision.session).toBe(9);
+  emit({ ...base, contextFingerprint: "schema=SALES;warehouse=WH_B;secondary=NONE" });
+  expect(useStudio.getState().sessionContextRevision.session).toBe(10);
+  emit({ ...base, contextFingerprint: "schema=FINANCE;warehouse=WH_B;secondary=NONE" });
+  expect(useStudio.getState().sessionContextRevision.session).toBe(11);
+});
+
 test("file-backed SQL tabs track dirty state, release grants on Save As and close, and never persist to workspace drafts", async () => {
   useStudio.setState({
     bootstrap: {

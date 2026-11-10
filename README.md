@@ -48,9 +48,11 @@ sessions also require reconnecting. Disconnect interrupts local HTTP work;
 already submitted remote reads may continue until Snowflake's statement timeout
 if the connection closes before a statement handle can be cancelled.
 
-The stateful SDK route currently supports read-only SQL and cancellation;
-metadata browsing, writes, DDL and transactions are disabled pending their full
-implementation and qualification. These remain required replacement capabilities.
+The stateful SDK route supports read-only SQL, cancellation and bounded
+same-session relation/column completion in the observed current database. The
+[completion contract](docs/snowflake-sdk-metadata-design.md) records local evidence
+and remaining account qualification. Table browsing, authoritative inspection,
+writes, DDL and transactions remain disabled and required.
 The SDK can retransmit a statement request after a lost response; local tests do
 not prove Snowflake server deduplication. Neither route automatically falls back
 to the other authentication mode.

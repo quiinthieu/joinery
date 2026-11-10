@@ -604,6 +604,7 @@ describe("resolveDocumentErrorRange and appErrorOf", () => {
     const structured = {
       code: "policyBlocked" as const,
       message: "Expected expression",
+      completionInvalidated: true,
       location: {
         span: { startUtf16: 7, endUtf16: 11, line: 1, column: 8 },
         sqlState: "42601",

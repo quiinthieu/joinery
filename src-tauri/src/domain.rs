@@ -1444,6 +1444,11 @@ pub struct AppError {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, as = "Option<ErrorLocation>")]
     pub location: Option<Box<ErrorLocation>>,
+    /// The observed editor context is no longer valid. This is distinct from
+    /// an error reading one table, which must preserve other cached columns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub completion_invalidated: Option<bool>,
 }
 
 impl AppError {
@@ -1452,10 +1457,15 @@ impl AppError {
             code,
             message: message.into(),
             location: None,
+            completion_invalidated: None,
         }
     }
     pub fn with_location(mut self, location: ErrorLocation) -> Self {
         self.location = Some(Box::new(location));
+        self
+    }
+    pub fn with_completion_invalidated(mut self) -> Self {
+        self.completion_invalidated = Some(true);
         self
     }
     pub fn invalid(message: impl Into<String>) -> Self {
@@ -1522,6 +1532,10 @@ pub struct CompletionIdentity {
     pub role: String,
     pub search_path: Vec<String>,
     pub case_sensitive_table_names: Option<bool>,
+    /// Engine-specific canonical identity beyond the common display fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_fingerprint: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -1570,6 +1584,9 @@ pub struct SessionRuntimeState {
     pub database: String,
     pub role: String,
     pub search_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -677,6 +677,7 @@ impl Driver for Mysql {
                 database,
                 role,
                 case_sensitive_table_names: Some(case_sensitive),
+                context_fingerprint: None,
             })
         }).await
     }
@@ -754,6 +755,7 @@ impl Driver for Mysql {
                 database,
                 role,
                 search_path,
+                context_fingerprint: None,
             })
         })
         .await

@@ -468,6 +468,19 @@ export function sessionHasOpenTransaction(
   const txState = sessionStates[sessionId]?.transactionState;
   return txState === "inTransaction" || txState === "failed";
 }
+function sessionRuntimeContextChanged(
+  previous: SessionRuntimeState | undefined,
+  next: SessionRuntimeState,
+): boolean {
+  return (
+    !!previous &&
+    (previous.activeContext !== next.activeContext ||
+      previous.database !== next.database ||
+      previous.role !== next.role ||
+      JSON.stringify(previous.searchPath) !== JSON.stringify(next.searchPath) ||
+      (previous.contextFingerprint ?? null) !== (next.contextFingerprint ?? null))
+  );
+}
 function isSessionActive(
   state: Pick<StudioState, "sessions" | "sessionPool" | "tabs">,
   sessionId: string,
@@ -867,12 +880,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (!isSessionActive(state, sessionId)) return {};
       const prev = state.sessionStates[sessionId];
       const runtime = options.state;
-      const contextChanged =
-        prev &&
-        (prev.activeContext !== runtime.activeContext ||
-          prev.database !== runtime.database ||
-          prev.role !== runtime.role ||
-          JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath));
+      const contextChanged = sessionRuntimeContextChanged(prev, runtime);
       return {
         sessionStates: { ...state.sessionStates, [sessionId]: runtime },
         sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
@@ -913,12 +921,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
       const prev = state.sessionStates[sessionId];
-      const contextChanged =
-        prev &&
-        (prev.activeContext !== runtime.activeContext ||
-          prev.database !== runtime.database ||
-          prev.role !== runtime.role ||
-          JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath));
+      const contextChanged = sessionRuntimeContextChanged(prev, runtime);
       return {
         sessionStates: { ...state.sessionStates, [sessionId]: runtime },
         ...(contextChanged
@@ -2145,13 +2148,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           const prev = sessionStates[runtime.sessionId];
           sessionStates[runtime.sessionId] = runtime;
           changed = true;
-          if (
-            prev &&
-            (prev.activeContext !== runtime.activeContext ||
-              prev.database !== runtime.database ||
-              prev.role !== runtime.role ||
-              JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath))
-          ) {
+          if (sessionRuntimeContextChanged(prev, runtime)) {
             sessionContextRevision[runtime.sessionId] =
               (sessionContextRevision[runtime.sessionId] ?? 0) + 1;
           }

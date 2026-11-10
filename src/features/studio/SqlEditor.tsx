@@ -86,6 +86,15 @@ import { effectiveSqlSnippets } from "./sql-snippets";
 import { applySqlTemplate } from "./sql-template-context";
 import { SqlTemplateDialog } from "./SqlTemplateDialog";
 
+function isCompletionInvalidated(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "completionInvalidated" in error &&
+    (error as { completionInvalidated?: unknown }).completionInvalidated === true
+  );
+}
+
 export interface EditorHandle {
   selection(): string;
   executionSlice(): { sql: string; fromUtf16: number };
@@ -364,7 +373,33 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       unqualifiedTables: snapshot?.unqualifiedTables,
       caseSensitiveTableNames: snapshot?.identity.caseSensitiveTableNames ?? undefined,
       contextRevision: snapshot?.revision,
+      contextFingerprint: snapshot?.identity.contextFingerprint ?? null,
     };
+  };
+  const invalidateCompletionContext = (
+    sessionId: string,
+    contextRevision: string,
+    cache: Map<string, TableSchema>,
+    error: unknown,
+  ) => {
+    if (
+      latest.current.sessionId !== sessionId ||
+      liveRef.current?.revision !== contextRevision ||
+      schemaCacheRef.current !== cache
+    )
+      return;
+    clearNavigation();
+    liveRef.current = null;
+    liveObjectsRef.current = [];
+    schemaCacheRef.current = new Map();
+    contextLoadRef.current = null;
+    setLive(null);
+    setContextError(messageOf(error));
+    completion.current?.configure(configure());
+    if (view.current) {
+      closeCompletion(view.current);
+      completion.current?.update(view.current.state);
+    }
   };
   const host = useRef<HTMLDivElement>(null),
     view = useRef<EditorView | null>(null),
@@ -384,13 +419,20 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     const cache = schemaCacheRef.current;
     const cached = cache.get(key);
     if (cached) return cached;
-    const loaded = contextRevision
-      ? await client.call<TableSchema>("completion_schema", {
-          sessionId,
-          table,
-          revision: contextRevision,
-        })
-      : await client.call<TableSchema>("table_schema", { sessionId, table });
+    let loaded: TableSchema;
+    try {
+      loaded = contextRevision
+        ? await client.call<TableSchema>("completion_schema", {
+            sessionId,
+            table,
+            revision: contextRevision,
+          })
+        : await client.call<TableSchema>("table_schema", { sessionId, table });
+    } catch (error) {
+      if (contextRevision && isCompletionInvalidated(error))
+        invalidateCompletionContext(sessionId, contextRevision, cache, error);
+      throw error;
+    }
     if (
       schemaCacheRef.current === cache &&
       latest.current.sessionId === sessionId &&
@@ -1056,6 +1098,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     liveRef.current = null;
     liveObjectsRef.current = [];
     schemaCacheRef.current = new Map();
+    const cacheGeneration = schemaCacheRef.current;
     contextLoadRef.current = null;
     setLive(null);
     setContextError(null);
@@ -1067,7 +1110,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       contextLoadRef.current = client
         .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
         .then(async (snapshot) => {
-          if (!cancelled) {
+          const isCurrent = () =>
+            !cancelled &&
+            schemaCacheRef.current === cacheGeneration &&
+            latest.current.sessionId === props.sessionId;
+          if (isCurrent()) {
             liveRef.current = snapshot;
             setLive(snapshot);
             if (props.objectExplorerSupported) {
@@ -1075,7 +1122,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 const objects = await client.call<DatabaseObjectSummary[]>("database_objects", {
                   sessionId: props.sessionId,
                 });
-                if (!cancelled) liveObjectsRef.current = objects;
+                if (isCurrent()) liveObjectsRef.current = objects;
               } catch {
                 /* Catalog privileges may be narrower than SQL access. */
               }
@@ -1083,7 +1130,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           }
         })
         .catch((error) => {
-          if (!cancelled) setContextError(messageOf(error));
+          if (
+            !cancelled &&
+            schemaCacheRef.current === cacheGeneration &&
+            latest.current.sessionId === props.sessionId
+          )
+            setContextError(messageOf(error));
         });
     }
     return () => {

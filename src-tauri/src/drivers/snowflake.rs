@@ -768,6 +768,7 @@ impl Driver for Snowflake {
             database: self.database.clone(),
             role: self.role.clone(),
             search_path: vec![qualified_schema],
+            context_fingerprint: None,
         })
     }
     async fn list_contexts(&self) -> AppResult<Vec<String>> {

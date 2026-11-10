@@ -2,10 +2,125 @@
 
 Run started 9 November 2026 on macOS arm64, source `bcb606f`, task branch
 `feat/datagrip-replacement` from fetched `origin/main`. Local work is unmerged,
-unreleased and not installed. No external database qualification is claimed.
+unreleased and not installed. Actual-account evidence is limited to the explicit
+canary scopes recorded below; complete external workflow qualification is open.
 See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
+
+### SDK completion increment (10 November 2026; locally qualified)
+
+Working source follows `5229bba`. It adds bounded same-session Snowflake relation
+and resolved-column completion, context fingerprints, stale-response rejection
+and structured global context invalidation. Browsing/inspection, writes, DDL and
+transactions remain unsupported. All tests below are local; the actual-account
+canary approval covered two fixed SELECTs and does not authorize metadata reads.
+
+Evidence under `.cache/verification/connection-attempts/`:
+
+- `sdk-metadata-pure-tests.log`: 15 parser/builder tests pass.
+- `sdk-metadata-child-history.log`: 17 actual Node/helper adapter tests pass
+  against a synthetic SDK. Expanded history-index guards pass separately in
+  `sdk-metadata-history-indexes.log`; no history query reaches the helper.
+- `sdk-metadata-studio-interim.log`: the first parallel fixture run failed six
+  of nine tests. `sdk-metadata-studio-serial.log` passes eight and reproduces one
+  fixture defect: an unclassified synthetic Error correctly becomes
+  `OutcomeUnknown`. A synthetic definitive permission denial now supplies
+  SQLSTATE `42501`. A process sample found synchronous full-Node SHA256 work
+  during fixture construction; the nine actual-runtime fixtures now serialize
+  locally without widening production startup/authentication deadlines.
+- `sdk-metadata-browser-focused.log`: two existing Snowflake flows pass; the
+  new intercepted SDK flow fails a missing case-policy assertion. The synthetic
+  identity/expectation now explicitly uses `caseSensitiveTableNames: true`.
+- `sdk-metadata-validate.log`: the intermediate source passes 607 frontend /
+  312 standard Rust tests, formatting, contracts/TypeScript, production build,
+  desktop compilation and strict all-target/all-feature Clippy. This precedes
+  the global invalidation repair and does not qualify its final source.
+- `sdk-metadata-global-before-fix.log`: independent review's stale-completion
+  finding is reproduced. The existing outer identity-mismatch fixture fails
+  because its error lacks the structured `completionInvalidated` signal.
+  Backend snapshot removal alone cannot clear frontend relation/column caches.
+  The repair preserves original error codes/messages and distinguishes global
+  context failure from per-table denial; final combined checks remain pending.
+- `sdk-metadata-child-global-final.log`: 18 actual Node/helper adapter tests
+  pass against the synthetic SDK, including unusable NULL database context and
+  cancellation during metadata. A definitive engine error retains its code while
+  a retired session marks completion invalid. No retry or replacement connection
+  is created by these cases.
+- `sdk-metadata-studio-global-final.log`: nine serialized actual-runtime Studio
+  tests pass, including identity changes at both the driver and outer Studio
+  boundary, malformed/denied refreshes, per-table permission isolation and exact
+  cleanup. This run precedes the final stale/missing revision marker assertion;
+  its affected tests need a final rerun.
+- The new browser regression initially passes two and fails two of four flows:
+  one assertion expected text on an absent popup, and another held the sidebar's
+  initial object response rather than a settled editor refresh. Attempt two
+  passes three and fails one; attempt three also passes three and fails the
+  unsettled sidebar case. Raw logs and retained artifacts use the
+  `sdk-metadata-browser-global-attempt*` names. The settled editor fixture then
+  passes all four focused flows in `sdk-metadata-browser-global-attempt4.log`.
+- `sdk-metadata-cache-publication-mutation.log`: removing only the editor's
+  cache-generation publication condition makes the targeted PostgreSQL flow
+  fail: the released obsolete object reply appears in F1 documentation as
+  `stale-object-list-marker`. The screenshot/context/trace are retained in the
+  matching `-artifacts/` directory. The source was restored byte-for-byte
+  (SHA256 `e1573c2b5b43bea0b2e43833beb7652115c1d8ada428549b997d90eb60da0abf`).
+  Independent review clears the final guards and deterministic test; final
+  combined qualification remains pending.
+- The two final revision-marker regressions pass in
+  `sdk-metadata-{stale,missing}-revision-final.log`. A separate strict E2E
+  TypeScript check passes with `--types node`
+  (`sdk-metadata-e2e-types-node-final.log`); its first invocation omitted those
+  environment types and failed on `process`, without requiring a source change.
+- `sdk-metadata-validate-final.log`: 607 frontend and 312 standard Rust tests,
+  formatting, contracts/TypeScript, production build and desktop check pass;
+  strict Clippy rejects a new pass-through `map_err` callback. It now uses
+  `inspect_err`, preserving the original error and invalidation side effect.
+  Independent review clears that adjustment. Final validation and Studio checks
+  are recorded separately below.
+- `sdk-metadata-studio-combined-final.log`: all nine actual-runtime Studio tests
+  pass on the final callback/revision-marker source (185.44 seconds).
+  `sdk-metadata-validate-combined-final.log` passes **607 frontend / 312 standard
+  Rust tests**, formatting, contracts/TypeScript, production build, desktop
+  compilation and strict all-target/all-feature Clippy. The 305 source/test/build
+  input hashes in `sdk-metadata-qualified-source.json` match this source.
+  The serial eight-suite real-engine run then passes **124/124**
+  (`sdk-metadata-real-fixtures-final.log`): 42 MySQL/MariaDB, 11 retained guards,
+  43 PostgreSQL, four permission, one client-protocol, six Redis, two SSH and 15
+  transaction-transport tests.
+- `sdk-metadata-browser-all-final.log`: **145/145** browser workflows pass in
+  10.5 minutes, including both new completion regressions, actual existing-engine
+  flows, million-row result-store coverage and workspace recovery. All 305
+  recorded source/test/build-input hashes remain unchanged.
+- `sdk-metadata-bundle-final.log`: the fresh normal SDK-bearing macOS bundle
+  passes resource validation (15,104 entries, zero links after bundle copy),
+  strict ad-hoc signature verification and actual packaged SDK hello/EOF startup
+  with zero authentication/SQL requests. The existing local `rust-objcopy` LLVM
+  stripping warning remains non-fatal. `sdk-metadata-bundle-artifact-final.json`
+  records the 31,077,632-byte executable SHA256
+  `6fca5fe3b11350740c6b02d7fec28b5de2f72b193b6da4ca18ff89273113f7bb` and unchanged
+  runtime manifest `e99ae96378b685b7a49027c77fe36039d6a32a6f2f470b9353ae36ad27307d76`.
+  Nothing was installed or published.
+- `sdk-metadata-native-build-final.log` and its matching JSON record the fresh
+  hidden SDK-bearing bundle. Resource validation, signature verification and
+  guarded actual SDK startup pass. Standalone executable SHA256:
+  `85e0071d3a4097503d8ee33337e0bce0452a9b1422a1c745567c1abbdcd0bc7c`;
+  isolated bundle executable SHA256:
+  `6c99911e08cbc910450acdc6e6e7d1dc393bf3a16d2da0e3d358019dbe5514e3`.
+- `sdk-metadata-native-smoke-final.log` and `sdk-metadata-native-runs-final.json`:
+  all **19 native check categories / ten cleanup cycles** pass (4,138 ms,
+  main-process peak RSS 97.81 MiB in this synthetic fixture). Every checkpoint
+  reports SDK runtime availability and zero connect/execute/prepare calls. This
+  proves isolated local loading/workflows, not normal packaged sign-in, remote
+  session persistence or representative account performance. All 305 recorded
+  source/test/build-input hashes still match. Independent review has no remaining
+  material finding in this increment.
+
+The [metadata contract](snowflake-sdk-metadata-design.md) records exact bounds,
+fixed SQL, session ownership, relative-history limitations and the next complete
+browsing/session-context workflow. Fresh artifact identities are recorded above;
+older artifact and canary evidence below retains its original source and scope.
+No account metadata or complete Snowflake workflow is qualified by these checks.
 
 ### Connection-startup increment (10 November 2026; locally qualified)
 

@@ -228,7 +228,9 @@ completed narrow checks from open gates.
 
 The current [application integration](snowflake-sdk-integration.md) implements
 profile routing, fixed runtime selection and retained cleanup from this contract.
-Combined local native/package qualification passes. SDK metadata, normal packaged
+Combined local native/package qualification passes for that integration source.
+Subsequent [same-session completion](snowflake-sdk-metadata-design.md) is implemented
+with separate qualification. Complete SDK browsing/inspection, normal packaged
 account qualification and the write/transaction gates remain open. The reviewed
 integration sequence was:
 
@@ -270,10 +272,11 @@ integration sequence was:
    artifact identities. Validate signing/hash policy explicitly; notarization,
    installation and external account acceptance remain separate gates.
 5. Implement metadata and live context through the same SDK connection used for
-   the console. Never substitute a separate SQL API/OAuth session. Until a
-   capability is implemented, gate automatic catalog refresh and other UI actions
-   on its truthful capability flag, clearing stale state. A raw driver switch
-   currently calls unsupported metadata immediately after successful connection.
+   the console. Never substitute a separate SQL API/OAuth session. The integration
+   now gates unsupported automatic discovery instead of treating it as an
+   authentication failure; subsequent same-session completion is implemented.
+   Keep browsing/inspection and other unsupported UI actions behind truthful
+   capability flags, clearing stale state, until their workflows are complete.
 
 Required local regressions include missing/tampered resources, hostile or empty
 PATH and NODE_OPTIONS, legacy profile/backup compatibility, and explicit mode

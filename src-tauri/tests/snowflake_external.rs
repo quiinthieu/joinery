@@ -15,33 +15,64 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 const LIMIT: Duration = Duration::from_secs(10);
 const FAKE: &str = r#"
 import { Readable } from 'node:stream';
-import { writeFileSync, appendFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
 const { Helper } = await import(HELPER_URL);
 const { Decoder, writer } = await import(FRAMING_URL);
 let next = 0, executions = 0;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12,'0')}`;
 const sdk = { createConnection(options) {
+  appendFileSync(new URL('./connections',import.meta.url),'1');
   if (options.host !== 'org-account.region.privatelink.snowflakecomputing.com' || options.account !== 'org-account.region.privatelink') throw new Error('host changed');
   return {
     connectAsync(callback) { queueMicrotask(() => callback(null)); return Promise.resolve(); },
     destroy(callback) { setTimeout(() => callback(null), 40); },
     execute(options) {
       const sql = options.sqlText, id = ++next;
+      appendFileSync(new URL('./queries',import.meta.url),JSON.stringify(sql)+'\n');
+      const settingsFile = new URL('./metadata-settings.json',import.meta.url);
+      const settings = existsSync(settingsFile) ? JSON.parse(readFileSync(settingsFile,'utf8')) : {};
       if (sql.startsWith('SELECT WAIT_FOR_CANCEL')) writeFileSync(new URL('./active',import.meta.url),'');
       if (sql === 'SELECT TRANSPORT_FAILURE') appendFileSync(new URL('./transport-submits',import.meta.url),'1');
       executions++;
       let cancelled = false;
       const identity = sql.startsWith('SELECT CURRENT_USER');
-      const names = identity ? ['U','R','D','S','W','ID'] : sql === 'SELECT EXACT_VALUES' ? ['DUP','DUP','N','EMPTY','UTF8','JSON','DECIMAL','DATE'] : options.binds.length > 0 ? options.binds.map((_,i) => `B${i}`) : ['VALUE'];
-      const values = identity ? [['SERVER_USER','ROLE','DB','PUBLIC','WH','SESSION']]
+      let names = identity ? ['U','R','D','S','W','ID'] : sql === 'SELECT EXACT_VALUES' ? ['DUP','DUP','N','EMPTY','UTF8','JSON','DECIMAL','DATE'] : options.binds.length > 0 ? options.binds.map((_,i) => `B${i}`) : ['VALUE'];
+      let values = identity ? [['SERVER_USER','ROLE','DB','PUBLIC','WH','SESSION']]
         : sql === 'SELECT CURRENT_VERSION()' ? [['synthetic-version']]
         : sql === 'SELECT EXACT_VALUES' ? [['9007199254740993','-99999999999999999999999999999999999999',null,'','東京😀','{"x":1}','1.2300','2026-11-09']]
         : sql === 'SELECT EXECUTION_COUNT' ? [[String(executions)]]
         : options.binds.length > 0 ? [options.binds.map(x => x === null ? null : typeof x === 'boolean' ? String(x) : x)] : [['1']];
+      const context = sql.includes(' AS PRINCIPAL');
+      const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
+      const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ');
+      const columns = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
+      if (context) {
+        names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
+        values = [['SERVER_USER','ROLE',Object.hasOwn(settings,'database')?settings.database:'DB',settings.schema??'PUBLIC',settings.warehouse??'WH',settings.session??'SESSION','["DB.PUBLIC"]',JSON.stringify({roles:settings.roles??'',value:'ALL'})]];
+      } else if(sql.startsWith("SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE'")) {
+        names=['key','value']; values=[['QUOTED_IDENTIFIERS_IGNORE_CASE',settings.policy??'false']];
+      } else if(schemas) {
+        names=['CATALOG_NAME','SCHEMA_NAME']; values=[['DB','OTHER'],['DB','PUBLIC']];
+      } else if(relations) {
+        names=['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE'];
+        const schema=sql.includes("TABLE_SCHEMA = 'OTHER'")?'OTHER':'PUBLIC';
+        const row=n=>['DB',schema,n,'BASE TABLE','NO','NO','NO','NO','NO','NO'];
+        values=settings.overflow?Array.from({length:10001},(_,i)=>row('T'+i)):[row(schema==='OTHER'?'Mixed.Name':'ORDERS')];
+        if(settings.catalogDrift) writeFileSync(settingsFile,JSON.stringify({...settings,warehouse:'CHANGED',catalogDrift:false}));
+      } else if(columns) {
+        names=['ID','NOTES']; values=settings.columnRows?[['1','unexpected']]:[];
+      }
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map(name => ({getName:()=>name,getType:()=> 'TEXT'})),
+        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> columns&&index===0?'FIXED':'TEXT'})),
         streamRows() {
+          if (columns && settings.columnWait) {
+            writeFileSync(new URL('./active',import.meta.url),'');
+            return Readable.from((async function*() {
+              while (!cancelled) await new Promise(resolve=>setTimeout(resolve,5));
+              throw {sqlState:'57014'};
+            })());
+          }
           if (sql === 'SELECT MANY_VALUES' || sql === 'SELECT LATE_FAILURE') return Readable.from((async function*() {
             for (let i=0;i<5000;i++) yield [String(i)];
             if (sql === 'SELECT LATE_FAILURE') throw {sqlState:'22000'};
@@ -59,7 +90,8 @@ const sdk = { createConnection(options) {
           if(sql==='SELECT WAIT_FOR_CANCEL_UNKNOWN') setTimeout(()=>options.complete({sqlState:'08006'},statement),80);
         },
       };
-      if (sql === 'SELECT TRANSPORT_FAILURE') setImmediate(() => options.complete({sqlState:'08006'},statement));
+      if (settings.denied && relations) setImmediate(() => options.complete({sqlState:'42501'},statement));
+      else if (sql === 'SELECT TRANSPORT_FAILURE') setImmediate(() => options.complete({sqlState:'08006'},statement));
       else if(sql!=='SELECT WAIT_FOR_CANCEL_UNKNOWN') setImmediate(() => options.complete(null,statement));
       return statement;
     }
@@ -156,6 +188,20 @@ struct Harness {
     _scripts: tempfile::TempDir,
 }
 impl Harness {
+    fn metadata_settings(&self, value: serde_json::Value) {
+        std::fs::write(
+            self._scripts.path().join("metadata-settings.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+    }
+    fn queries(&self) -> Vec<String> {
+        std::fs::read_to_string(self._scripts.path().join("queries"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
     async fn open() -> Self {
         let (launch, scripts) = launch();
         let cleanup = launch.cleanup_observer();
@@ -685,5 +731,270 @@ async fn generated_binds_preserve_batch_positional_offsets_and_repeated_named_va
             Some("two".into())
         ]
     );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_completion_uses_one_existing_connection_and_resolved_zero_row_columns() {
+    let h = Harness::open().await;
+    let before = h.queries().len();
+    let identity = h.driver.completion_identity().await.unwrap();
+    assert_eq!(identity.database, "DB");
+    assert!(
+        identity
+            .context_fingerprint
+            .as_ref()
+            .is_some_and(|s| s.len() == 64)
+    );
+    let catalog = h.driver.completion_catalog(&identity).await.unwrap();
+    assert_eq!(catalog.tables.len(), 2);
+    let orders = TableRef {
+        schema: "PUBLIC".into(),
+        name: "ORDERS".into(),
+    };
+    assert_eq!(catalog.unqualified_tables, vec![orders.clone()]);
+    assert!(catalog.tables.iter().any(|t| t.table.name == "Mixed.Name"));
+    let columns = h.driver.completion_schema(&orders).await.unwrap();
+    assert_eq!(
+        columns
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ID", "NOTES"]
+    );
+    assert_eq!(columns.columns[0].database_type, "FIXED");
+    assert!(!columns.editable && columns.columns.iter().all(|c| !c.editable));
+    assert!(columns.primary_key.is_empty());
+    assert_eq!(
+        h.driver.inspection_schema(&orders).await.unwrap_err().code,
+        ErrorCode::Unsupported
+    );
+    assert_eq!(
+        h.driver.catalog().await.unwrap_err().code,
+        ErrorCode::Unsupported
+    );
+    assert_eq!(
+        h.driver
+            .session_state("synthetic-session")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Unsupported
+    );
+    let queries = h.queries();
+    assert!(
+        queries[before..]
+            .iter()
+            .all(|sql| sql.starts_with("SELECT ") || sql.starts_with("SHOW PARAMETERS "))
+    );
+    assert!(
+        queries
+            .iter()
+            .any(|sql| sql == "SELECT * FROM \"DB\".\"PUBLIC\".\"ORDERS\" LIMIT 0")
+    );
+    assert!(
+        queries
+            .iter()
+            .filter(|sql| sql.contains(".INFORMATION_SCHEMA.TABLES "))
+            .all(|sql| sql.contains("TABLE_SCHEMA = ") && sql.ends_with("LIMIT 10001"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(h._scripts.path().join("connections")).unwrap(),
+        "1"
+    );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_completion_fingerprint_tracks_hidden_context_and_rejects_old_identity() {
+    let h = Harness::open().await;
+    let original = h.driver.completion_identity().await.unwrap();
+    for settings in [
+        serde_json::json!({"warehouse":"OTHER_WH"}),
+        serde_json::json!({"schema":"OTHER"}),
+        serde_json::json!({"roles":"OTHER_ROLE"}),
+    ] {
+        h.metadata_settings(settings);
+        let changed = h.driver.completion_identity().await.unwrap();
+        assert_ne!(original.context_fingerprint, changed.context_fingerprint);
+        let error = match h.driver.completion_catalog(&original).await {
+            Err(error) => error,
+            Ok(_) => panic!("old completion identity accepted"),
+        };
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(!h.driver.is_closed());
+    }
+    h.metadata_settings(serde_json::json!({}));
+    assert_eq!(h.driver.completion_identity().await.unwrap(), original);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_metadata_rejects_context_drift_and_session_generation_change() {
+    let h = Harness::open().await;
+    let identity = h.driver.completion_identity().await.unwrap();
+    h.metadata_settings(serde_json::json!({"catalogDrift":true}));
+    let error = match h.driver.completion_catalog(&identity).await {
+        Err(error) => error,
+        Ok(_) => panic!("mixed-context catalog published"),
+    };
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert_eq!(error.completion_invalidated, Some(true));
+    assert!(!h.driver.is_closed());
+    h.metadata_settings(serde_json::json!({"session":"replacement-generation"}));
+    assert_eq!(
+        h.driver.completion_identity().await.unwrap_err().code,
+        ErrorCode::ConnectionClosed
+    );
+    assert!(h.driver.is_closed());
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver.completion_identity().await.unwrap_err().code,
+        ErrorCode::ConnectionClosed
+    );
+    assert_eq!(h.queries().len(), before);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_metadata_never_returns_partial_overflow_denied_or_column_rows() {
+    let h = Harness::open().await;
+    let identity = h.driver.completion_identity().await.unwrap();
+    for (settings, expected) in [
+        (
+            serde_json::json!({"overflow":true}),
+            ErrorCode::ResultLimitReached,
+        ),
+        (serde_json::json!({"denied":true}), ErrorCode::Database),
+    ] {
+        h.metadata_settings(settings);
+        let error = match h.driver.completion_catalog(&identity).await {
+            Err(error) => error,
+            Ok(_) => panic!("incomplete catalog returned"),
+        };
+        assert_eq!(error.code, expected);
+        assert!(!h.driver.is_closed());
+    }
+    h.metadata_settings(serde_json::json!({"columnRows":true}));
+    let table = TableRef {
+        schema: "PUBLIC".into(),
+        name: "ORDERS".into(),
+    };
+    assert_eq!(
+        h.driver.completion_schema(&table).await.unwrap_err().code,
+        ErrorCode::ResultLimitReached
+    );
+    h.metadata_settings(serde_json::json!({"policy":"true"}));
+    assert_eq!(
+        h.driver.completion_identity().await.unwrap_err().code,
+        ErrorCode::Unsupported
+    );
+    h.metadata_settings(serde_json::json!({"database":null}));
+    let before = h.queries().len();
+    let error = h.driver.completion_schema(&table).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert_eq!(error.completion_invalidated, Some(true));
+    assert!(
+        h.queries()[before..]
+            .iter()
+            .all(|sql| !sql.ends_with(" LIMIT 0"))
+    );
+    h.metadata_settings(serde_json::json!({}));
+    assert_eq!(h.driver.completion_identity().await.unwrap(), identity);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_metadata_cannot_interleave_an_active_editor_read() {
+    let h = Harness::open().await;
+    let driver = h.driver.clone();
+    let read = tokio::spawn(async move {
+        let mut sink = Sink::default();
+        execute(&driver, "SELECT WAIT_FOR_CANCEL", &mut sink).await
+    });
+    tokio::time::timeout(LIMIT, async {
+        while !h._scripts.path().join("active").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver.completion_identity().await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
+    // The synthetic SQLSTATE 57014 remains the original known database error;
+    // a cancel acknowledgement must not replace that terminal evidence.
+    assert_eq!(
+        h.driver.cancel().await.unwrap_err().code,
+        ErrorCode::Database
+    );
+    assert_eq!(read.await.unwrap().unwrap_err().code, ErrorCode::Database);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_cancelled_metadata_preserves_known_error_and_invalidates_context() {
+    let h = Harness::open().await;
+    h.metadata_settings(serde_json::json!({"columnWait":true}));
+    let driver = h.driver.clone();
+    let read = tokio::spawn(async move {
+        driver
+            .completion_schema(&TableRef {
+                schema: "PUBLIC".into(),
+                name: "ORDERS".into(),
+            })
+            .await
+    });
+    tokio::time::timeout(LIMIT, async {
+        while !h._scripts.path().join("active").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        h.driver.cancel().await.unwrap_err().code,
+        ErrorCode::Database
+    );
+    let error = tokio::time::timeout(LIMIT, read)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Database);
+    assert_eq!(error.completion_invalidated, Some(true));
+    assert!(h.driver.is_closed());
+    assert_eq!(
+        std::fs::read_to_string(h._scripts.path().join("connections")).unwrap(),
+        "1"
+    );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_history_relative_forms_remain_blocked_without_helper_dispatch() {
+    let h = Harness::open().await;
+    h.driver.completion_identity().await.unwrap();
+    let before = h.queries().len();
+    for sql in [
+        "SELECT LAST_QUERY_ID()",
+        "SELECT LAST_QUERY_ID(-1)",
+        "SELECT LAST_QUERY_ID(1)",
+        "SELECT * FROM TABLE(RESULT_SCAN())",
+        "SELECT * FROM TABLE(RESULT_SCAN(-1))",
+        "SELECT * FROM TABLE(RESULT_SCAN(1))",
+        "SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+    ] {
+        let error = execute(&h.driver, sql, &mut Sink::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PolicyBlocked, "{sql}");
+    }
+    assert_eq!(h.queries().len(), before);
+    assert!(!h.driver.is_closed());
     h.close().await;
 }

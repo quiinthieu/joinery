@@ -1,10 +1,14 @@
-//! Stateful external-browser read adapter. Remote authentication and writes remain unqualified.
+//! Stateful external-browser read adapter. Packaged account workflows and writes remain unqualified.
 //! Each instance owns one helper connection; no query or connection is automatically recreated.
 use super::snowflake_process::{
     Bounds, Certainty, CleanupObserver, Column, Impact, Launch, OperationToken, Report,
     ShutdownReport, Supervisor,
 };
-use super::{BrowseRows, Driver, QuerySink, RowMutation, snowflake::Snowflake};
+use super::{
+    BrowseRows, CompletionRelations, Driver, QuerySink, RowMutation,
+    snowflake::Snowflake,
+    snowflake_metadata::{self as metadata, LiveContext, MetadataResult},
+};
 use crate::{
     domain::*,
     params::{BoundStatement, TypedBind},
@@ -264,6 +268,108 @@ impl SnowflakeExternal {
         Ok(())
     }
 
+    /// Called only under `lane`, with fixed builders owned by this adapter.
+    /// Metadata cannot change session settings or create an independent connection.
+    async fn metadata_read(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> AppResult<MetadataResult> {
+        let mut sink = MetadataSink::new(max_rows, max_bytes);
+        self.stream_bounded(sql, vec![], &mut sink, max_rows as u64, max_bytes as u64)
+            .await?;
+        Ok(sink.data)
+    }
+
+    async fn live_metadata_context(&self) -> AppResult<LiveContext> {
+        async {
+            let context = self
+                .metadata_read(metadata::CONTEXT_SQL, 1, metadata::CONTEXT_MAX_BYTES)
+                .await?;
+            let policy = self
+                .metadata_read(
+                    metadata::QUOTED_IDENTIFIER_POLICY_SQL,
+                    1,
+                    metadata::CONTEXT_MAX_BYTES,
+                )
+                .await?;
+            let observed = metadata::parse_context(&context, &policy)?;
+            if self.identity.get("session").and_then(Value::as_str)
+                != Some(observed.session_id.as_str())
+                || self.identity.get("user").and_then(Value::as_str)
+                    != Some(observed.principal.as_str())
+            {
+                self.start_shutdown();
+                return Err(closed_error());
+            }
+            // An unset database is valid session state, but cannot identify this
+            // database-scoped completion workflow. Treat losing it as global.
+            observed.completion_identity()?;
+            Ok(observed)
+        }
+        .await
+        .map_err(AppError::with_completion_invalidated)
+    }
+
+    async fn metadata_operation<T: Send>(
+        &self,
+        work: impl std::future::Future<Output = AppResult<T>> + Send,
+    ) -> AppResult<T> {
+        let _lane = tokio::time::timeout(Duration::from_millis(1500), self.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The Snowflake session is busy"))?;
+        if self.is_closed() {
+            return Err(closed_error().with_completion_invalidated());
+        }
+        match tokio::time::timeout(Duration::from_secs(65), work).await {
+            Ok(result) => {
+                if result.as_ref().is_err_and(|error| {
+                    matches!(
+                        error.code,
+                        ErrorCode::ConnectionClosed | ErrorCode::OutcomeUnknown
+                    )
+                }) {
+                    self.start_shutdown();
+                }
+                if self.is_closed() && result.is_ok() {
+                    return Err(closed_error().with_completion_invalidated());
+                }
+                result.map_err(|error| {
+                    if self.is_closed()
+                        || matches!(
+                            error.code,
+                            ErrorCode::ConnectionClosed | ErrorCode::OutcomeUnknown
+                        )
+                    {
+                        error.with_completion_invalidated()
+                    } else {
+                        error
+                    }
+                })
+            }
+            Err(_) => {
+                self.start_shutdown();
+                Err(AppError::new(
+                    ErrorCode::ConnectionClosed,
+                    "Snowflake metadata deadline expired; reconnect before continuing",
+                )
+                .with_completion_invalidated())
+            }
+        }
+    }
+
+    async fn recheck_metadata_context(&self, before: &LiveContext) -> AppResult<()> {
+        if self.live_metadata_context().await? != *before {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Snowflake context changed; refresh suggestions",
+            )
+            .with_completion_invalidated());
+        }
+        Ok(())
+    }
+
     async fn run(
         &self,
         sql: &str,
@@ -368,13 +474,25 @@ impl SnowflakeExternal {
         binds: Vec<Value>,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
+        self.stream_bounded(wire, binds, sink, QUERY_ROWS, QUERY_BYTES)
+            .await
+    }
+
+    async fn stream_bounded(
+        &self,
+        wire: &str,
+        binds: Vec<Value>,
+        sink: &mut dyn QuerySink,
+        max_rows: u64,
+        max_bytes: u64,
+    ) -> AppResult<u64> {
         let mut operation = self
             .process
             .request(
                 "query",
                 "query",
                 json!({"sql":wire,"binds":binds,
-            "classification":"read","credits":1,"maxRows":QUERY_ROWS,"maxBytes":QUERY_BYTES}),
+            "classification":"read","credits":1,"maxRows":max_rows,"maxBytes":max_bytes}),
                 Impact::Read,
             )
             .map_err(control_error)?;
@@ -488,6 +606,85 @@ impl Drop for SnowflakeExternal {
 
 #[async_trait]
 impl Driver for SnowflakeExternal {
+    async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let identity = context.completion_identity()?;
+            self.recheck_metadata_context(&context).await?;
+            Ok(identity)
+        })
+        .await
+    }
+
+    async fn completion_catalog(
+        &self,
+        identity: &CompletionIdentity,
+    ) -> AppResult<CompletionRelations> {
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            if context.completion_identity()? != *identity {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "Snowflake context changed; refresh suggestions",
+                ));
+            }
+            let schemas = self
+                .metadata_read(
+                    &metadata::schemas_sql(&context)?,
+                    metadata::SCHEMA_LIMIT + 1,
+                    metadata::RELATION_MAX_BYTES,
+                )
+                .await?;
+            let mut relations = Vec::new();
+            let mut relation_bytes = 0usize;
+            for schema in metadata::parse_schemas(&context, &schemas)? {
+                let rows = self
+                    .metadata_read(
+                        &metadata::relations_sql(&context, &schema)?,
+                        metadata::RELATION_LIMIT + 1,
+                        metadata::RELATION_MAX_BYTES,
+                    )
+                    .await?;
+                let batch = metadata::parse_relations(&context, &schema, &rows)?;
+                relation_bytes = relation_bytes
+                    .checked_add(
+                        serde_json::to_vec(&batch)
+                            .map_err(|_| protocol_error())?
+                            .len(),
+                    )
+                    .ok_or_else(metadata_limit)?;
+                // Bound accumulation before retaining another schema's results.
+                if relations.len().saturating_add(batch.len()) > metadata::RELATION_LIMIT
+                    || relation_bytes > metadata::RELATION_MAX_BYTES
+                {
+                    return Err(metadata_limit());
+                }
+                relations.extend(batch);
+            }
+            let result = metadata::completion_relations(&context, relations)?;
+            self.recheck_metadata_context(&context).await?;
+            Ok(result)
+        })
+        .await
+    }
+
+    async fn completion_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let rows = self
+                .metadata_read(
+                    &metadata::resolved_columns_sql(&context, table)?,
+                    0,
+                    metadata::COLUMN_MAX_BYTES,
+                )
+                .await?;
+            let schema = metadata::parse_resolved_columns(table, rows)?;
+            self.recheck_metadata_context(&context).await?;
+            Ok(schema)
+        })
+        .await
+    }
+
     async fn execute(
         &self,
         sql: &str,
@@ -690,6 +887,80 @@ fn unsupported() -> AppError {
         ErrorCode::Unsupported,
         "This Snowflake external-browser increment supports read queries only",
     )
+}
+
+struct MetadataSink {
+    data: MetadataResult,
+    max_rows: usize,
+    max_bytes: usize,
+    bytes: usize,
+}
+impl MetadataSink {
+    fn new(max_rows: usize, max_bytes: usize) -> Self {
+        Self {
+            data: MetadataResult {
+                columns: vec![],
+                rows: vec![],
+                rows_seen: 0,
+                truncated: false,
+            },
+            max_rows,
+            max_bytes,
+            bytes: 0,
+        }
+    }
+    fn retain_bytes(&mut self, bytes: usize) -> AppResult<()> {
+        self.bytes = self.bytes.checked_add(bytes).ok_or_else(metadata_limit)?;
+        if self.bytes > self.max_bytes {
+            return Err(metadata_limit());
+        }
+        Ok(())
+    }
+}
+fn metadata_limit() -> AppError {
+    AppError::new(
+        ErrorCode::ResultLimitReached,
+        "Snowflake metadata exceeds its complete-result budget",
+    )
+}
+impl QuerySink for MetadataSink {
+    fn limit(&mut self, _: &str) {
+        self.data.truncated = true;
+    }
+    fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()> {
+        if columns.len() > metadata::COLUMN_LIMIT {
+            return Err(metadata_limit());
+        }
+        self.retain_bytes(
+            serde_json::to_vec(&columns)
+                .map_err(|_| protocol_error())?
+                .len(),
+        )?;
+        self.data.columns = columns;
+        Ok(())
+    }
+    fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool> {
+        if self.data.rows.len().saturating_add(rows.len()) > self.max_rows {
+            return Err(metadata_limit());
+        }
+        if rows.iter().any(|row| row.len() != self.data.columns.len()) {
+            return Err(protocol_error());
+        }
+        self.retain_bytes(
+            serde_json::to_vec(&rows)
+                .map_err(|_| protocol_error())?
+                .len(),
+        )?;
+        self.data.rows.extend(rows);
+        Ok(true)
+    }
+    fn complete(&mut self, rows_seen: u64) -> AppResult<()> {
+        self.data.rows_seen = rows_seen;
+        if self.data.truncated || rows_seen != self.data.rows.len() as u64 {
+            return Err(metadata_limit());
+        }
+        Ok(())
+    }
 }
 #[derive(Default)]
 struct ScalarSink {

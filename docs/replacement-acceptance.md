@@ -33,13 +33,20 @@ Actual Snowflake million-row behavior remains unqualified.
 
 Explicit SDK external-browser profiles and retained helper lifecycle are now
 implemented. New profiles select the SDK; existing profiles retain OAuth/SQL API.
-Both remain read-only. Current local validation passes 604 frontend / 297 standard
+Both remain read-only. The preceding SDK integration passes 604 frontend / 297 standard
 Rust tests; focused profile, actual-child lifecycle and browser checks pass.
 All 124 actual fixtures and normal SDK resource-bundle/signature/startup checks
 pass. All 143 browser workflows, 19 hidden SDK native checks with ten cleanup cycles
 and two standalone PostgreSQL native recovery pairs pass.
 See [SDK integration evidence](snowflake-sdk-integration.md). Actual Snowflake
 account behavior, metadata, writes, DDL and transactions remain required and open.
+
+The subsequent completion increment is locally qualified: 607 frontend /
+312 standard Rust tests, 124 real-engine regressions, all 145 browser workflows,
+fresh SDK-bearing packaging/startup and 19 hidden native check categories pass.
+This provides same-session relation/column suggestions, not browsing or complete
+inspection. Actual account metadata and the full required workflow remain open;
+the [ledger](replacement-verification.md) records exact evidence and limits.
 
 ## Target definition and open questions
 
@@ -81,7 +88,7 @@ fresh outcomes separately.
 | Connect securely | Existing Snowflake externalbrowser SSO; inspect identity/context; reject TLS/auth failures; reconnect deliberately without replay | SDK profile/lifecycle integration implemented with focused local evidence; actual externalbrowser account/native acceptance remains open |
 | Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Snowflake partial catalog pilot; required object explorer/DDL/dependency coverage and daily role qualification incomplete |
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
-| Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | Read-only SDK route integrated; metadata, reviewed writes/DDL, transactions and remote outcomes remain open. Other-engine fixtures do not qualify Snowflake |
+| Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | Read-only SDK route integrated; same-session completion implemented with separate local qualification. Browsing, authoritative inspection, reviewed writes/DDL, transactions and remote outcomes remain open. Other-engine fixtures do not qualify Snowflake |
 | Inspect and move data | Browse and export complete results up to 1,000,000 rows with bounded memory; filter/sort/page, copy exact values; cancelled export clearly incomplete | Opt-in temporary result storage passes actual PostgreSQL million-row paging/export and browser acceptance. Native preference/restart checks pass. Actual Snowflake types/transport/size, wide-result export and independent copy/import limits remain open; see [large results](large-results.md) |
 | Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; stale/replaced targets reject atomically; ineligible results stay read-only | PostgreSQL original relation identity and MySQL/MariaDB retained guards implemented. Final source checks pass 581 frontend / 193 Rust, 124 actual fixtures, 27/27 strict scenarios and 137/137 browser workflows, including exact CSV ownership and TLS-over-SSH. Snowflake grid/CSV editing is still disabled and requires separate identity proof. Normal packaged restart/credentials and owner applicability/acceptance remain open |
 | Transactions | Snowflake consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives deliberate reconnect; DDL implicit commits and interrupted acknowledgements are truthful | Required Snowflake stateful transaction path missing. Fifteen local transaction transport tests qualify existing SQL adapters only |

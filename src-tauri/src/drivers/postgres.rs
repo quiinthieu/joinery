@@ -128,6 +128,7 @@ impl Postgres {
             role: row.get(3),
             search_path: row.get(4),
             case_sensitive_table_names: None,
+            context_fingerprint: None,
         };
         let info = SessionInfo {
             id: session_id.into(),
@@ -619,6 +620,7 @@ impl Driver for Postgres {
             role: row.get(1),
             search_path: row.get(2),
             case_sensitive_table_names: None,
+            context_fingerprint: None,
         };
         if identity.search_path.len() > 128 {
             return Err(AppError::new(
@@ -653,6 +655,7 @@ impl Driver for Postgres {
             database: identity.database,
             role: identity.role,
             search_path: identity.search_path,
+            context_fingerprint: identity.context_fingerprint,
         })
     }
 

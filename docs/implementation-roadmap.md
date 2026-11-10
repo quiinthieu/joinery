@@ -21,8 +21,9 @@ are recorded in the verification ledger.
 Actual Snowflake million-row behavior remains unqualified.
 
 Current Joinery implements explicit local-application OAuth/SQL API and stateful
-SDK external-browser profile routes. Both enforce ReadOnly. SDK metadata, writes,
-DDL and transactions remain disabled; real account/session compatibility remains
+SDK external-browser profile routes. Both enforce ReadOnly. SDK same-session
+completion is implemented and locally qualified separately; table browsing,
+authoritative inspection, writes, DDL and transactions remain disabled. Full account/session compatibility remains
 unqualified. These are primary replacement blockers. Local
 PostgreSQL/MySQL safety repairs remain useful application work but do not close
 Snowflake acceptance. External account qualification needs explicit non-production
@@ -36,12 +37,24 @@ checks and combined validation pass (604 frontend / 297 standard Rust tests),
 as do 124 actual fixture tests and normal SDK resource-bearing macOS packaging,
 ad-hoc signature and packaged SDK hello/EOF startup. All 143 browser workflows and 19 hidden SDK native checks with ten cleanup
 cycles pass, as do two standalone PostgreSQL native recovery pairs.
-Next are account qualification, [SDK metadata/session context](snowflake-sdk-metadata-design.md)
-and the still-required write/transaction workflows. No target capability was made optional.
+The subsequent [SDK same-session completion](snowflake-sdk-metadata-design.md)
+passes local qualification: 607 frontend / 312 standard Rust tests, 124 real-engine
+regressions, all 145 browser workflows, fresh SDK-bearing packaging/startup and
+19 hidden native check categories. Complete browsing/session context and the
+required write/transaction workflows remain in the queue. No target capability
+was made optional.
 A separately approved two-query SDK helper canary now passes actual SSO,
 configured context, session continuity, synthetic scalar values and local
 cleanup. The ledger preserves its first validator failure and corrected rerun;
 broader account SQL and writes still require concrete authorization.
+
+The next independent repair is the default Snowflake SQL starter: source review
+finds that `SELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();` is
+rejected by the read-only classifier because the last two observers are not
+allowed for Snowflake. Reproduce this with the exact starter and actual-helper
+dispatch before adding strict Snowflake-only zero-argument observer support.
+Qualified/quoted functions, unknown functions and relative-history forms must
+remain blocked. Then continue complete browsing and authoritative session state.
 
 The preceding stateful transport foundation is in the repository: a pinned SDK helper
 passes 31 local tests (six use the actual SDK against loopback HTTP), and its
@@ -67,8 +80,9 @@ SDK integration; it does not implement externalbrowser SSO. See the
 [active verification record](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
 The [connection ownership contract](connection-lifecycle.md) records cancellation,
 preflight, resource bounds and shutdown limits. The current SDK integration implements profile routing and retained cleanup;
-hidden native qualification now passes. Next implement SDK session metadata and the
-still-required write/transaction workflows.
+hidden native qualification now passes. SDK completion now has an implementation;
+complete session metadata, browsing and the required write/transaction workflows
+remain open.
 
 The active 9 November 2026 Goal and next qualification queue are in
 [daily replacement acceptance](replacement-acceptance.md). The required Snowflake externalbrowser/macOS target is confirmed above;

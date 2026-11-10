@@ -1,7 +1,7 @@
 # Trying Joinery for daily database work
 
-This is a local evaluation guide, not a declaration of DataGrip parity. Confirm
-your required engines, authentication and workflows in
+This is a local evaluation guide, not a declaration of DataGrip parity. The
+confirmed target and required workflows are recorded in
 [replacement acceptance](replacement-acceptance.md). Current test/build outcomes
 and limits are in the [verification ledger](replacement-verification.md).
 Keep DataGrip available until your required workflows are accepted.
@@ -10,8 +10,10 @@ The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.
 The current SDK external-browser route is integrated for read-only SQL; its local
 browser, native and package qualification passes. Existing profiles retain their OAuth/SQL API
-route. Neither route satisfies the complete target: SDK metadata, writes, DDL,
-transactions and actual account qualification remain open. The fixture walkthrough
+route. SDK same-session completion is implemented and locally qualified under its
+[qualification contract](snowflake-sdk-metadata-design.md). Neither route satisfies
+the complete target: SDK browsing, authoritative inspection, writes, DDL,
+transactions and full account qualification remain open. The fixture walkthrough
 below qualifies existing paths only; keep DataGrip until the required walkthrough
 is accepted. See [SDK integration and limits](snowflake-sdk-integration.md).
 
@@ -32,6 +34,20 @@ pnpm validate
 pnpm desktop:bundle:mac
 ```
 
+For the confirmed Snowflake external-browser target, first follow
+[runtime preparation](snowflake-runtime.md), then build with the SDK resources:
+
+```sh
+pnpm snowflake:prepare
+pnpm desktop:snowflake:bundle:mac
+pnpm test:snowflake:startup --bundle src-tauri/target/release/bundle/macos/Joinery.app
+```
+
+Runtime preparation requires the pinned official Node archive described in that
+guide. The startup check performs hello/EOF only, without authentication or SQL.
+The ordinary bundle command does not include SDK resources and cannot connect an
+SDK profile. Neither build installs the application.
+
 The macOS application is
 `src-tauri/target/release/bundle/macos/Joinery.app`. Open it manually for evaluation;
 this build does not install or replace an application in `/Applications`.
@@ -44,6 +60,27 @@ disposable macOS test account. `JOINERY_NATIVE_SMOKE_ROOT` applies only to the
 hidden smoke executable; it does not redirect the normal application's data or
 keychain. Automated checks in the ledger used isolated harnesses, not existing
 private application state.
+
+## Current Snowflake evaluation boundary
+
+Create a Snowflake profile with **External browser SSO**, the existing account
+hostname and approved role/warehouse/database/schema. Existing OAuth profiles
+keep their prior authentication mode; select the SDK explicitly rather than
+expecting an automatic migration. Do not copy tokens or private DataGrip state.
+
+Account metadata needs separate qualification authorization: opening a query
+editor can issue same-session metadata SQL and use the warehouse. The approved
+two-query helper canary did not include this workflow. After a reviewed account
+scope is authorized, verify the displayed completion context, relation suggestions
+and lazy alias-column suggestions against that scope. Use **Refresh completion
+context** after a context failure; stale suggestions must stay unavailable until
+refresh succeeds. The [contract](snowflake-sdk-metadata-design.md) records bounds,
+permission handling and relative-query-history limitations.
+
+The current SDK route keeps SQL read-only and does not provide table browsing,
+authoritative inspection, writes, schema changes or transactions. Those remain
+required before switching. Keep the existing DataGrip connection available while
+these workflows and million-row results are implemented and accepted.
 
 Local ad-hoc signature verification is separate from Apple Developer ID signing
 and notarization. No automatic updater or cross-platform installation qualification

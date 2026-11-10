@@ -149,8 +149,11 @@ does not qualify packaged SDK resource discovery or Snowflake transactions.
 
 ## Remaining required workflows
 
-The SDK route advertises SQL and cancellation only. Metadata browsing, completion
-metadata, object inspection, schema tools, plans and transactions remain disabled
+The SDK route advertises SQL and cancellation. A subsequent
+[same-session completion increment](snowflake-sdk-metadata-design.md) implements
+bounded relation suggestions and lazy resolved columns; the preceding integration
+counts and packaged artifacts do not qualify that later source. Metadata browsing,
+authoritative object inspection, schema tools, plans and transactions remain disabled
 until their workflows are implemented. The UI skips unsupported catalog discovery
 and removes stale metadata rather than reporting a successful connection as an
 authentication failure. The existing SQL API metadata pilot does not qualify SDK

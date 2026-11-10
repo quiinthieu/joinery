@@ -33,6 +33,7 @@ interface Configuration {
   unqualifiedTables?: TableRef[];
   caseSensitiveTableNames?: boolean;
   contextRevision?: string;
+  contextFingerprint?: string | null;
 }
 interface SchemaEntry {
   start(): Promise<TableSchema>;
@@ -166,7 +167,8 @@ export class CompletionSession {
       previous.searchPath === config.searchPath &&
       previous.unqualifiedTables === config.unqualifiedTables &&
       previous.caseSensitiveTableNames === config.caseSensitiveTableNames &&
-      previous.contextRevision === config.contextRevision
+      previous.contextRevision === config.contextRevision &&
+      (previous.contextFingerprint ?? null) === (config.contextFingerprint ?? null)
     ) {
       if (previous.snippets !== config.snippets) {
         this.configuration = config;

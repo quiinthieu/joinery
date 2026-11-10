@@ -35,8 +35,10 @@ Application profiles now select explicitly between the stateful SDK external-bro
 route and the existing local-application OAuth/SQL API route. New profiles choose
 external browser; missing mode on an existing profile defaults to its prior OAuth
 route. No automatic fallback occurs. Both remain ReadOnly. The SDK route currently
-advertises SQL and cancellation, with metadata, writes, DDL and transactions
-disabled. Combined local qualification passes, including all 143 browser workflows,
+advertises SQL and cancellation. Subsequent same-session completion is implemented
+with [separate qualification](snowflake-sdk-metadata-design.md); browsing,
+authoritative inspection, writes, DDL and transactions remain disabled. The preceding
+SDK integration qualification passes, including all 143 browser workflows,
 124 actual local database fixtures and the packaged SDK runtime checks. These
 checks do not qualify the actual account workflow. See
 [integration evidence](snowflake-sdk-integration.md).

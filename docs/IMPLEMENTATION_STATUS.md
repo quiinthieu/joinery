@@ -22,13 +22,21 @@ Actual Snowflake million-row behavior remains unqualified.
 Current local source integrates explicit external-browser SDK profiles, fixed
 native runtime selection and retained helper cleanup. New profiles choose the SDK;
 existing profiles preserve local-application OAuth. Both routes enforce ReadOnly.
-SDK metadata, writes, DDL and transactions remain disabled and required. Actual
+SDK same-session completion is implemented and locally qualified; see the
+[metadata contract](snowflake-sdk-metadata-design.md). Table browsing,
+authoritative inspection, writes, DDL and transactions remain disabled and required. Actual
 packaged application authentication, million-row behavior and owner suitability
 are unqualified. A separately approved two-query SDK helper canary now passes
 actual account SSO, context/session continuity, scalar values and local cleanup;
 the ledger records its initial validator failure and corrected rerun.
 
-The current [SDK integration evidence](snowflake-sdk-integration.md) records 604
+The completion increment passes 607 frontend / 312 standard Rust tests,
+124 real-engine regressions, all 145 browser workflows, fresh SDK-bearing macOS
+packaging/signature/startup and 19 hidden native check categories with ten cleanup
+cycles. The [ledger](replacement-verification.md) records source/artifact identity
+and the stale-metadata reproduction. No account metadata was queried.
+
+The preceding [SDK integration evidence](snowflake-sdk-integration.md) records 604
 frontend / 297 standard Rust tests passing with build, desktop compilation,
 formatting and strict Clippy. Focused profile, actual-child lifecycle and browser
 checks also pass, together with 124 actual fixture tests. Packaging review's

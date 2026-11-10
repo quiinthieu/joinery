@@ -238,10 +238,13 @@ export function appErrorOf(error: unknown, fallbackCode: ErrorCode = "database")
     typeof (error as { message?: unknown }).message === "string"
   ) {
     const candidate = error as AppError;
+    const completionInvalidated = (candidate as AppError & { completionInvalidated?: unknown })
+      .completionInvalidated;
     return {
       code: candidate.code,
       message: candidate.message,
       ...(candidate.location ? { location: candidate.location } : {}),
+      ...(completionInvalidated === true ? { completionInvalidated: true } : {}),
     };
   }
   return { code: fallbackCode, message: messageOf(error) };
