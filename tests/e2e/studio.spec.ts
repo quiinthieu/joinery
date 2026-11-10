@@ -101,7 +101,8 @@ test("Snowflake form requires browser sign-in and read-only mode", async ({ page
   await expect(page.getByLabel("Safe Mode", { exact: true })).toBeDisabled();
   await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Connect through an SSH bastion")).toHaveCount(0);
-  await expect(page.getByText(/system browser for Snowflake sign-in/)).toBeVisible();
+  await expect(page.getByLabel("Snowflake authentication")).toHaveValue("externalBrowser");
+  await expect(page.getByText(/External browser SSO uses the Snowflake SDK/)).toBeVisible();
 });
 
 test("connects and runs SQL with separate binary-backed result tabs", async ({ page }) => {

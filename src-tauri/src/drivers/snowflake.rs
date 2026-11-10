@@ -116,6 +116,13 @@ impl Snowflake {
     ) -> AppResult<(Arc<Self>, SessionInfo)> {
         let started = Instant::now();
         Self::validate_profile(profile)?;
+        if profile.snowflake.as_ref().unwrap().authentication
+            != SnowflakeAuthentication::LocalApplicationOauth
+        {
+            return Err(AppError::invalid(
+                "This profile requires Snowflake external browser SSO",
+            ));
+        }
         let config = profile
             .snowflake
             .as_ref()

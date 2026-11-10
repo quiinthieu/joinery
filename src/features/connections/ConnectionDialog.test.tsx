@@ -2,7 +2,12 @@ import { afterEach, expect, test, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ConnectionDialog, ConnectDialog } from "./ConnectionDialog";
 import { client } from "../../ipc/client";
-import type { ConnectionProfile, SessionInfo } from "../../ipc/generated";
+import type {
+  Bootstrap,
+  ConnectionProfile,
+  SessionInfo,
+  SnowflakeAuthentication,
+} from "../../ipc/generated";
 import { useStudio } from "../../state/studio";
 import { cancelPendingConnections, hasPendingConnections } from "./connectionSetup";
 
@@ -43,6 +48,36 @@ const sshProfile: ConnectionProfile = {
     agentSocketPath: null,
   },
 };
+
+function snowflakeProfile(authentication?: SnowflakeAuthentication) {
+  const snowflake = {
+    role: "READ_ONLY",
+    warehouse: "COMPUTE",
+    schema: "PUBLIC",
+    ...(authentication ? { authentication } : {}),
+  };
+  // The undefined case deliberately models a persisted profile from before this field existed.
+  return {
+    ...profile,
+    id: "snowflake-fixture",
+    name: "Snowflake fixture",
+    engine: "snowflake",
+    host: "org-account.snowflakecomputing.com",
+    port: 443,
+    database: "ANALYTICS",
+    username: "BILLIE",
+    snowflake,
+  } as unknown as ConnectionProfile;
+}
+
+function enableSnowflakeEngine() {
+  useStudio.setState({
+    bootstrap: {
+      groups: [{ id: "local", name: "Local", environment: "local", parentId: null }],
+      supportedEngines: ["postgres", "snowflake"],
+    } as Bootstrap,
+  });
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -314,6 +349,91 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.resetAllMocks();
   useStudio.setState({ ...initialStudio }, true);
+});
+
+test("new Snowflake profiles default to external browser SSO and explain both modes", () => {
+  enableSnowflakeEngine();
+  render(<ConnectionDialog onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Database engine"), {
+    target: { value: "snowflake" },
+  });
+
+  const authentication = screen.getByLabelText("Snowflake authentication") as HTMLSelectElement;
+  expect(authentication.value).toBe("externalBrowser");
+  expect(screen.getByText(/metadata browsing is temporarily unavailable/i)).toBeTruthy();
+  expect(screen.getByText(/will not fall back to local application OAuth/i)).toBeTruthy();
+
+  fireEvent.change(authentication, { target: { value: "localApplicationOauth" } });
+  expect(authentication.value).toBe("localApplicationOauth");
+  expect(
+    screen.getByText(/bounded table previews require the account’s OAuth integration/i),
+  ).toBeTruthy();
+  expect(screen.getByText(/will not fall back to external browser SSO/i)).toBeTruthy();
+});
+
+for (const [name, configured, expected] of [
+  ["external browser SSO", "externalBrowser", "externalBrowser"],
+  ["local application OAuth", "localApplicationOauth", "localApplicationOauth"],
+  ["legacy missing authentication", undefined, "localApplicationOauth"],
+] as const) {
+  test(`editing a Snowflake profile preserves ${name}`, async () => {
+    const existing = snowflakeProfile(configured);
+    vi.mocked(client.call).mockImplementation(async (command) => {
+      if (command === "save_profile") return existing;
+      if (command === "prepare_connection") throw new Error("Stop after profile save");
+      return null;
+    });
+    render(<ConnectionDialog profile={existing} onClose={vi.fn()} />);
+
+    const authentication = screen.getByLabelText("Snowflake authentication") as HTMLSelectElement;
+    expect(authentication.value).toBe(expected);
+    fireEvent.change(screen.getByLabelText("Connection name", { exact: true }), {
+      target: { value: "Updated Snowflake name" },
+    });
+    fireEvent.submit(screen.getByRole("button", { name: "Save and connect" }).closest("form")!);
+
+    await waitFor(() =>
+      expect(
+        vi.mocked(client.call).mock.calls.some(([command]) => command === "save_profile"),
+      ).toBe(true),
+    );
+    const save = vi.mocked(client.call).mock.calls.find(([command]) => command === "save_profile");
+    expect(save?.[1]).toMatchObject({
+      profile: { snowflake: { authentication: expected } },
+    });
+  });
+}
+
+test("external-browser Snowflake sessions skip automatic catalog requests", async () => {
+  const snowflake = snowflakeProfile("externalBrowser");
+  const session = {
+    id: "snowflake-sdk-session",
+    connectionId: snowflake.id,
+    engine: "snowflake",
+    serverVersion: "fixture",
+    latencyMs: 0,
+    encrypted: true,
+    capabilities: {
+      sql: true,
+      transactions: false,
+      cancellation: false,
+      tableBrowsing: false,
+      tableEditing: false,
+      tableFiltering: false,
+      processes: false,
+    },
+  } as SessionInfo;
+  const onClose = vi.fn();
+  vi.mocked(client.call).mockImplementation(async (command) => {
+    if (command === "prepare_connection") return "snowflake-attempt";
+    if (command === "connect_prepared") return session;
+    return null;
+  });
+  render(<ConnectDialog profile={snowflake} onClose={onClose} />);
+  fireEvent.submit(screen.getByRole("button", { name: "Connect" }).closest("form")!);
+
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  expect(vi.mocked(client.call).mock.calls.map(([command]) => command)).not.toContain("catalog");
 });
 
 test("submitting deletion confirmation deletes instead of saving or connecting", async () => {

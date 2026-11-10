@@ -67,6 +67,13 @@ impl SnowflakeExternal {
         options: ExternalBrowserOptions,
     ) -> AppResult<(Arc<Self>, SessionInfo)> {
         Snowflake::validate_profile(profile)?;
+        if profile.snowflake.as_ref().unwrap().authentication
+            != SnowflakeAuthentication::ExternalBrowser
+        {
+            return Err(AppError::invalid(
+                "This profile requires local-application OAuth",
+            ));
+        }
         if profile.engine != EngineKind::Snowflake || session_id.is_empty() {
             return Err(AppError::invalid("Invalid Snowflake session"));
         }

@@ -149,6 +149,7 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
   await page.getByLabel("Connection name", { exact: true }).fill("Snowflake fixture");
   await page.getByLabel("Snowflake account hostname").fill("org-account.snowflakecomputing.com");
   await page.getByLabel("Database", { exact: true }).fill("DB");
@@ -295,6 +296,7 @@ test("approved Snowflake sign-in remains connected when table discovery fails", 
   await page.goto("/");
   await page.getByRole("button", { name: "New connection", exact: true }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
   await page.getByLabel("Connection group").selectOption("production");
   await page.getByLabel("Connection name", { exact: true }).fill("Approved SSO fixture");
   await page.getByLabel("Snowflake account hostname").fill("org-account.snowflakecomputing.com");

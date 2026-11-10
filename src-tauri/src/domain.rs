@@ -113,9 +113,19 @@ pub struct ConnectionProfile {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SnowflakeConfig {
+    #[serde(default)]
+    pub authentication: SnowflakeAuthentication,
     pub role: String,
     pub warehouse: String,
     pub schema: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeAuthentication {
+    #[default]
+    LocalApplicationOauth,
+    ExternalBrowser,
 }
 
 // Secret inputs deliberately do not implement Debug and are never persisted with profiles.

@@ -20,6 +20,7 @@ fn profile() -> ConnectionProfile {
         store_query_text: false,
         store_drafts: false,
         snowflake: Some(SnowflakeConfig {
+            authentication: SnowflakeAuthentication::LocalApplicationOauth,
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),
             schema: "PUBLIC".into(),
@@ -283,4 +284,101 @@ async fn studio_exports_retained_results_reports_truncation_and_cancels_cleanly(
         std::fs::read_to_string(sandbox.root().join("warehouse-cancel.csv.partial")).unwrap();
     assert!(partial.contains("# JOINERY EXPORT INCOMPLETE"));
     studio.shutdown();
+}
+
+#[test]
+fn snowflake_authentication_defaults_legacy_and_rejects_unknown_modes() {
+    let mut encoded = serde_json::to_value(profile()).unwrap();
+    encoded["snowflake"]
+        .as_object_mut()
+        .unwrap()
+        .remove("authentication");
+    let legacy: ConnectionProfile = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(
+        legacy.snowflake.unwrap().authentication,
+        SnowflakeAuthentication::LocalApplicationOauth
+    );
+    encoded["snowflake"]["authentication"] = serde_json::json!("externalBrowser");
+    let sdk: ConnectionProfile = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(
+        sdk.snowflake.unwrap().authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+    for unknown in [
+        serde_json::json!("externalbrowser"),
+        serde_json::Value::Null,
+        serde_json::json!({"executable":"/tmp/node"}),
+    ] {
+        encoded["snowflake"]["authentication"] = unknown;
+        assert!(serde_json::from_value::<ConnectionProfile>(encoded.clone()).is_err());
+    }
+}
+
+#[test]
+fn authentication_survives_restart_and_metadata_restore() {
+    let root = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let studio = Studio::with_secrets(root.path(), secrets.clone()).unwrap();
+    let mut sdk = profile();
+    sdk.group_id = "local".into();
+    sdk.environment = Environment::Local;
+    sdk.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    let saved = studio.save_profile(sdk, None).unwrap();
+    let backup = studio.create_metadata_backup().unwrap();
+    drop(studio);
+    let studio = Studio::with_secrets(root.path(), secrets).unwrap();
+    assert_eq!(
+        studio.bootstrap().unwrap().profiles[0]
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+    let mut legacy = saved;
+    legacy.snowflake.as_mut().unwrap().authentication =
+        SnowflakeAuthentication::LocalApplicationOauth;
+    studio.save_profile(legacy, None).unwrap();
+    studio
+        .restore_metadata_backup(&backup.id, &backup.digest, "RESTORE", None)
+        .unwrap();
+    assert_eq!(
+        studio.bootstrap().unwrap().profiles[0]
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+}
+
+#[tokio::test]
+async fn unavailable_sdk_rejects_explicit_mode_without_oauth_fallback() {
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let mut sdk = profile();
+    sdk.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    let sdk = studio.save_profile(sdk, None).unwrap();
+    let error = studio
+        .connect(&sdk.id, ConnectionSecrets::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(error.message.contains("runtime is unavailable"));
+    // The failed mode does not close global admission or alter its saved mode.
+    let reservation = studio.prepare_connection(&sdk.id).unwrap();
+    studio.cancel_connection_attempt(&reservation);
+    assert_eq!(
+        studio.bootstrap().unwrap().profiles[0]
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+    let error = joinery_core::drivers::snowflake::Snowflake::open(&sdk, "test-session")
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, ErrorCode::InvalidInput);
 }

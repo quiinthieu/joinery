@@ -27,9 +27,8 @@ pub struct Launch {
     /// Only an absolute packaged helper script, never credentials or SQL.
     pub script: Option<PathBuf>,
     pub working_directory: PathBuf,
-    state_directory: Option<tempfile::TempDir>,
+    state_directory: Option<PathBuf>,
     cleanup: CleanupObserver,
-    cleanup_tx: watch::Sender<Option<CleanupReport>>,
 }
 impl Launch {
     pub fn new(
@@ -38,29 +37,62 @@ impl Launch {
         working_directory: PathBuf,
         state_directory: tempfile::TempDir,
     ) -> std::io::Result<Self> {
-        let metadata = std::fs::symlink_metadata(state_directory.path())?;
-        if !state_directory.path().is_absolute()
-            || !metadata.is_dir()
-            || metadata.file_type().is_symlink()
-        {
-            return Err(std::io::Error::other("invalid owned state directory"));
-        }
-        secure_state_directory(state_directory.path())?;
-        let (cleanup_tx, receiver) = watch::channel(None);
-        Ok(Self {
+        Self::new_observed(
             executable,
             script,
             working_directory,
-            state_directory: Some(state_directory),
-            cleanup: CleanupObserver { receiver },
-            cleanup_tx,
-        })
+            state_directory,
+            |_| {},
+        )
+    }
+
+    /// Attach cleanup ownership immediately after allocation, before fallible
+    /// validation. The callback must consume an already reserved cleanup permit;
+    /// it must not perform admission checks or await anything.
+    pub fn new_observed(
+        executable: PathBuf,
+        script: Option<PathBuf>,
+        working_directory: PathBuf,
+        state_directory: tempfile::TempDir,
+        observe: impl FnOnce(CleanupObserver),
+    ) -> std::io::Result<Self> {
+        // Keep automatic TempDir deletion disarmed even on constructor errors.
+        // The observer retains removal authority and an explicit no-child receipt.
+        let path = state_directory.keep();
+        let (cleanup_tx, receiver) = watch::channel(None);
+        let authority = Arc::new(CleanupAuthority {
+            root: OwnedRoot::capture(path.clone()),
+            state: Mutex::new(CleanupState::default()),
+            updates: cleanup_tx,
+            #[cfg(test)]
+            before_remove: Mutex::new(None),
+        });
+        let launch = Self {
+            executable,
+            script,
+            working_directory,
+            state_directory: Some(path),
+            cleanup: CleanupObserver {
+                receiver,
+                authority: Some(authority),
+            },
+        };
+        observe(launch.cleanup_observer());
+        launch
+            .cleanup
+            .authority
+            .as_ref()
+            .expect("owned cleanup")
+            .root
+            .validate()?;
+        secure_state_directory(launch.state_directory())?;
+        Ok(launch)
     }
     pub fn state_directory(&self) -> &std::path::Path {
         self.state_directory
             .as_ref()
             .expect("owned launch root")
-            .path()
+            .as_path()
     }
     /// Capture before spawn to observe cleanup even if the spawn future is cancelled.
     pub fn cleanup_observer(&self) -> CleanupObserver {
@@ -69,13 +101,8 @@ impl Launch {
 }
 impl Drop for Launch {
     fn drop(&mut self) {
-        if let Some(root) = self.state_directory.take() {
-            let temporary_root_removed = root.close().is_ok();
-            self.cleanup_tx.send_replace(Some(CleanupReport {
-                child_started: false,
-                reaped: false,
-                temporary_root_removed,
-            }));
+        if self.state_directory.take().is_some() {
+            self.cleanup.finish(false, false);
         }
     }
 }
@@ -100,6 +127,7 @@ pub struct CleanupReport {
 #[derive(Clone)]
 pub struct CleanupObserver {
     receiver: watch::Receiver<Option<CleanupReport>>,
+    authority: Option<Arc<CleanupAuthority>>,
 }
 impl CleanupObserver {
     pub fn report(&self) -> Option<CleanupReport> {
@@ -122,7 +150,245 @@ impl CleanupObserver {
         .ok()
         .flatten()
     }
+
+    /// Wait for disposition and, when safe, retry this exact root once. A
+    /// cancelled/timed-out caller never owns the blocking removal job: its
+    /// retained authority publishes the eventual receipt independently.
+    pub async fn settle(&self, bound: Duration) -> Option<CleanupReport> {
+        timeout(bound, async {
+            let mut receiver = self.receiver.clone();
+            let report = loop {
+                if let Some(report) = *receiver.borrow_and_update() {
+                    break report;
+                }
+                if receiver.changed().await.is_err() {
+                    return None;
+                }
+            };
+            if report.temporary_root_removed || (report.child_started && !report.reaped) {
+                return Some(report);
+            }
+            let Some(authority) = &self.authority else {
+                return Some(report);
+            };
+            let ticket = authority.retry();
+            loop {
+                // Subscribe before checking completion; watch retains a change
+                // published between this check and changed().
+                drop(receiver.borrow_and_update());
+                if authority.finished(ticket) {
+                    return self.report();
+                }
+                if receiver.changed().await.is_err() {
+                    return self.report();
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    fn finish(&self, child_started: bool, reaped: bool) {
+        self.authority
+            .as_ref()
+            .expect("owned cleanup")
+            .finish(child_started, reaped);
+    }
 }
+
+#[derive(Default)]
+struct CleanupState {
+    report: Option<CleanupReport>,
+    removing: bool,
+    started: u64,
+    finished: u64,
+}
+
+struct CleanupAuthority {
+    root: OwnedRoot,
+    state: Mutex<CleanupState>,
+    updates: watch::Sender<Option<CleanupReport>>,
+    #[cfg(test)]
+    before_remove: Mutex<Option<BeforeRemove>>,
+}
+
+#[cfg(test)]
+type BeforeRemove = Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+
+impl CleanupAuthority {
+    fn finish(self: &Arc<Self>, child_started: bool, reaped: bool) {
+        let remove = {
+            let mut state = self.state.lock().unwrap();
+            debug_assert!(state.report.is_none(), "child disposition is final");
+            state.report = Some(CleanupReport {
+                child_started,
+                reaped,
+                temporary_root_removed: false,
+            });
+            let remove = !child_started || reaped;
+            if remove {
+                state.removing = true;
+                state.started += 1;
+            }
+            if !remove {
+                self.updates.send_replace(state.report);
+            }
+            remove
+        };
+        if remove {
+            self.remove();
+        }
+    }
+
+    fn retry(self: &Arc<Self>) -> u64 {
+        let mut state = self.state.lock().unwrap();
+        let safe = state.report.is_some_and(|report| {
+            !report.temporary_root_removed && (!report.child_started || report.reaped)
+        });
+        if safe && !state.removing {
+            state.removing = true;
+            state.started += 1;
+            let authority = self.clone();
+            tokio::task::spawn_blocking(move || authority.remove());
+        }
+        state.started
+    }
+
+    fn finished(&self, ticket: u64) -> bool {
+        self.state.lock().unwrap().finished >= ticket
+    }
+
+    fn remove(&self) {
+        let removed = self.try_remove().is_ok();
+        let mut state = self.state.lock().unwrap();
+        if let Some(report) = &mut state.report {
+            report.temporary_root_removed |= removed;
+        }
+        state.removing = false;
+        state.finished = state.started;
+        self.updates.send_replace(state.report);
+    }
+
+    fn try_remove(&self) -> std::io::Result<()> {
+        #[cfg(test)]
+        let before_remove = self.before_remove.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(before_remove) = before_remove {
+            before_remove()?;
+        }
+        self.root.remove()
+    }
+}
+
+/// The root is selected natively and never accepted through IPC. Identity checks
+/// protect ownership across retries; they are not a sandbox against same-user
+/// concurrent mutations of the trusted native parent directory.
+struct OwnedRoot {
+    path: PathBuf,
+    #[cfg(unix)]
+    identity: Option<RootIdentity>,
+}
+
+#[cfg(unix)]
+struct RootIdentity {
+    directory: std::fs::File,
+    parent: std::fs::File,
+    parent_path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl OwnedRoot {
+    fn capture(path: PathBuf) -> Self {
+        #[cfg(unix)]
+        let identity = (|| -> std::io::Result<RootIdentity> {
+            use std::os::unix::fs::MetadataExt;
+            if !path.is_absolute() {
+                return Err(invalid_root());
+            }
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(invalid_root());
+            }
+            let directory = std::fs::File::open(&path)?;
+            let opened = directory.metadata()?;
+            if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+                return Err(invalid_root());
+            }
+            let parent_path = path.parent().ok_or_else(invalid_root)?.canonicalize()?;
+            let parent = std::fs::File::open(&parent_path)?;
+            Ok(RootIdentity {
+                directory,
+                parent,
+                parent_path,
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        })()
+        .ok();
+        Self {
+            path,
+            #[cfg(unix)]
+            identity,
+        }
+    }
+
+    fn validate(&self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let identity = self.identity.as_ref().ok_or_else(invalid_root)?;
+            let parent = std::fs::symlink_metadata(&identity.parent_path)?;
+            let opened_parent = identity.parent.metadata()?;
+            if !parent.is_dir()
+                || parent.file_type().is_symlink()
+                || parent.dev() != opened_parent.dev()
+                || parent.ino() != opened_parent.ino()
+            {
+                return Err(invalid_root());
+            }
+            let metadata = std::fs::symlink_metadata(&self.path)?;
+            if metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.dev() == identity.device
+                && metadata.ino() == identity.inode
+            {
+                return Ok(());
+            }
+        }
+        Err(invalid_root())
+    }
+
+    fn remove(&self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let identity = self.identity.as_ref().ok_or_else(invalid_root)?;
+            // An open handle distinguishes genuine removal from a renamed root
+            // whose old pathname has disappeared or been reused.
+            if identity.directory.metadata()?.nlink() == 0 {
+                return Ok(());
+            }
+            self.validate()?;
+            let result = std::fs::remove_dir_all(&self.path);
+            // A successful removal of the identity-checked root is direct
+            // evidence. APFS may retain a nonzero link count on an open handle
+            // after rmdir; requiring nlink == 0 would fabricate a permanent
+            // failure even though this operation removed the exact root.
+            if result.is_ok() || identity.directory.metadata()?.nlink() == 0 {
+                return Ok(());
+            }
+            result?;
+        }
+        Err(invalid_root())
+    }
+}
+
+fn invalid_root() -> std::io::Error {
+    std::io::Error::other("owned Snowflake state directory identity could not be confirmed")
+}
+
 #[derive(Debug)]
 pub struct ShutdownReport {
     pub logout_acknowledged: bool,
@@ -429,11 +695,7 @@ impl Supervisor {
         // Disable automatic deletion before transferring ownership to an async task:
         // task/runtime cancellation must leave a remediable root, not delete it
         // before actual reaping has been confirmed.
-        let state_directory = launch
-            .state_directory
-            .take()
-            .expect("owned launch root")
-            .keep();
+        let _state_directory = launch.state_directory.take().expect("owned launch root");
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let (normal, normal_rx) = mpsc::channel(8);
@@ -453,7 +715,7 @@ impl Supervisor {
         let owner = inner.clone();
         // Child and private root transfer before the first await in spawn. The reaper
         // survives cancelled handshakes and bounded caller timeouts.
-        let cleanup_tx = launch.cleanup_tx.clone();
+        let cleanup = launch.cleanup.clone();
         tokio::spawn(async move {
             let reaped = if *stopping.borrow() {
                 let _ = child.start_kill();
@@ -470,16 +732,7 @@ impl Supervisor {
             // Never delete a root while its child might still be using it. On a wait
             // error retain the path, publish explicit failure, and leave remediation
             // to the application cleanup registry rather than claim success.
-            let temporary_root_removed = if reaped {
-                std::fs::remove_dir_all(&state_directory).is_ok()
-            } else {
-                false
-            };
-            cleanup_tx.send_replace(Some(CleanupReport {
-                child_started: true,
-                reaped,
-                temporary_root_removed,
-            }));
+            cleanup.finish(true, reaped);
         });
         let mut cancellation = SpawnCancellation {
             owner: inner.clone(),
@@ -1427,7 +1680,10 @@ mod tests {
         let (control, control_rx) = mpsc::channel(16);
         let (stop, _) = watch::channel(false);
         let (_, receiver) = watch::channel(None);
-        let exited = CleanupObserver { receiver };
+        let exited = CleanupObserver {
+            receiver,
+            authority: None,
+        };
         let inner = Arc::new(Inner {
             generation: "00000000-0000-4000-8000-000000000001".into(),
             state: Mutex::new(State {
@@ -1665,5 +1921,288 @@ mod tests {
         inner.retire(Retirement::Requested);
         assert!(inner.state.lock().unwrap().wire_ids.is_empty());
         task.await.unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod cleanup_tests {
+    use super::*;
+    use std::sync::{Condvar, atomic::AtomicUsize};
+
+    const LIMIT: Duration = Duration::from_secs(3);
+
+    fn launch(parent: &std::path::Path) -> Launch {
+        Launch::new(
+            PathBuf::from("/missing-snowflake-node"),
+            None,
+            parent.to_owned(),
+            tempfile::tempdir_in(parent).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn root_retry_preserves_final_no_child_and_reaped_dispositions() {
+        for child_started in [false, true] {
+            let parent = tempfile::tempdir().unwrap();
+            let mut launch = launch(parent.path());
+            let path = launch.state_directory().to_owned();
+            let cleanup = launch.cleanup_observer();
+            let authority = cleanup.authority.as_ref().unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let calls_for_remove = calls.clone();
+            *authority.before_remove.lock().unwrap() = Some(Arc::new(move || {
+                if calls_for_remove.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(std::io::Error::other("controlled removal failure"))
+                } else {
+                    Ok(())
+                }
+            }));
+            if child_started {
+                // Unit-test the final disposition supplied by the actual reaper.
+                // The process integration test separately proves real child reaping.
+                let _ = launch.state_directory.take();
+                cleanup.finish(true, true);
+            }
+            drop(launch);
+            assert_eq!(
+                cleanup.report(),
+                Some(CleanupReport {
+                    child_started,
+                    reaped: child_started,
+                    temporary_root_removed: false,
+                })
+            );
+            assert!(path.is_dir());
+            assert_eq!(
+                cleanup.settle(LIMIT).await,
+                Some(CleanupReport {
+                    child_started,
+                    reaped: child_started,
+                    temporary_root_removed: true,
+                })
+            );
+            assert!(!path.exists());
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert_eq!(cleanup.settle(LIMIT).await, cleanup.report());
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                2,
+                "completed roots must not retry"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_or_unreaped_disposition_cannot_start_removal() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        let path = launch.state_directory().to_owned();
+        let cleanup = launch.cleanup_observer();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_remove = calls.clone();
+        *cleanup
+            .authority
+            .as_ref()
+            .unwrap()
+            .before_remove
+            .lock()
+            .unwrap() = Some(Arc::new(move || {
+            calls_for_remove.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        assert!(cleanup.settle(Duration::ZERO).await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _ = launch.state_directory.take();
+        cleanup.finish(true, false);
+        drop(launch);
+        assert_eq!(
+            cleanup.settle(LIMIT).await,
+            Some(CleanupReport {
+                child_started: true,
+                reaped: false,
+                temporary_root_removed: false,
+            })
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(path.is_dir());
+    }
+
+    struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            *self.0.0.lock().unwrap() = true;
+            self.0.1.notify_all();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_keeps_one_shared_removal_job_and_eventual_receipt() {
+        let parent = tempfile::tempdir().unwrap();
+        let launch = launch(parent.path());
+        let path = launch.state_directory().to_owned();
+        let cleanup = launch.cleanup_observer();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_remove = calls.clone();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let release_for_remove = release.clone();
+        // Release even if a preceding assertion panics, so runtime teardown does
+        // not wait forever on this deliberately blocked blocking worker.
+        let release_guard = ReleaseOnDrop(release);
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        *cleanup
+            .authority
+            .as_ref()
+            .unwrap()
+            .before_remove
+            .lock()
+            .unwrap() = Some(Arc::new(move || {
+            if calls_for_remove.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(std::io::Error::other("controlled first removal failure"));
+            }
+            let _ = started.send(());
+            let (ready, changed) = &*release_for_remove;
+            let mut ready = ready.lock().unwrap();
+            while !*ready {
+                ready = changed.wait(ready).unwrap();
+            }
+            Ok(())
+        }));
+        drop(launch);
+        let first_observer = cleanup.clone();
+        let first =
+            tokio::spawn(async move { first_observer.settle(Duration::from_secs(60)).await });
+        timeout(LIMIT, started_rx.recv()).await.unwrap().unwrap();
+        let mut second = Box::pin(cleanup.settle(LIMIT));
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        first.abort();
+        assert!(matches!(first.await, Err(error) if error.is_cancelled()));
+        assert!(path.is_dir());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "concurrent callers must join the same retry"
+        );
+        drop(release_guard);
+        assert_eq!(
+            second.await,
+            Some(CleanupReport {
+                child_started: false,
+                reaped: false,
+                temporary_root_removed: true,
+            })
+        );
+        assert!(!path.exists());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn replacement_directory_and_symlink_are_never_removed_or_adopted() {
+        for symlink in [false, true] {
+            let parent = tempfile::tempdir().unwrap();
+            let launch = launch(parent.path());
+            let path = launch.state_directory().to_owned();
+            let cleanup = launch.cleanup_observer();
+            let retained = parent.path().join("retained-original");
+            let foreign = parent.path().join("foreign");
+            std::fs::create_dir(&foreign).unwrap();
+            std::fs::write(foreign.join("sentinel"), b"foreign").unwrap();
+            std::fs::rename(&path, &retained).unwrap();
+            if symlink {
+                std::os::unix::fs::symlink(&foreign, &path).unwrap();
+            } else {
+                std::fs::create_dir(&path).unwrap();
+                std::fs::write(path.join("sentinel"), b"replacement").unwrap();
+            }
+            drop(launch);
+            assert!(!cleanup.settle(LIMIT).await.unwrap().temporary_root_removed);
+            assert!(retained.is_dir());
+            assert_eq!(std::fs::read(foreign.join("sentinel")).unwrap(), b"foreign");
+            if symlink {
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                assert_eq!(
+                    std::fs::read(path.join("sentinel")).unwrap(),
+                    b"replacement"
+                );
+                std::fs::remove_dir_all(&path).unwrap();
+            }
+            std::fs::rename(&retained, &path).unwrap();
+            assert!(cleanup.settle(LIMIT).await.unwrap().temporary_root_removed);
+            assert!(!path.exists());
+            assert!(foreign.join("sentinel").is_file());
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_path_is_not_completion_when_original_directory_was_renamed() {
+        let parent = tempfile::tempdir().unwrap();
+        let launch = launch(parent.path());
+        let path = launch.state_directory().to_owned();
+        let cleanup = launch.cleanup_observer();
+        let retained = parent.path().join("retained-original");
+        std::fs::rename(&path, &retained).unwrap();
+        drop(launch);
+        assert!(!cleanup.settle(LIMIT).await.unwrap().temporary_root_removed);
+        assert!(retained.is_dir());
+        std::fs::rename(&retained, &path).unwrap();
+        assert!(cleanup.settle(LIMIT).await.unwrap().temporary_root_removed);
+    }
+
+    #[tokio::test]
+    async fn genuinely_removed_original_does_not_authorize_removing_reused_path() {
+        let parent = tempfile::tempdir().unwrap();
+        let launch = launch(parent.path());
+        let path = launch.state_directory().to_owned();
+        let cleanup = launch.cleanup_observer();
+        std::fs::remove_dir_all(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("sentinel"), b"replacement").unwrap();
+        drop(launch);
+        // Some filesystems prove the original handle was unlinked; APFS can
+        // retain its link count and must conservatively retain failed evidence.
+        // Neither outcome authorizes deleting the replacement at this path.
+        let report = cleanup.settle(LIMIT).await.unwrap();
+        assert!(!report.child_started);
+        assert!(!report.reaped);
+        assert_eq!(
+            std::fs::read(path.join("sentinel")).unwrap(),
+            b"replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn observed_constructor_error_retains_no_child_removal_authority() {
+        let parent = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir_in(parent.path()).unwrap();
+        let path = state.path().to_owned();
+        let retained = parent.path().join("retained-original");
+        let mut cleanup = None;
+        let result = Launch::new_observed(
+            PathBuf::from("/missing-snowflake-node"),
+            None,
+            parent.path().to_owned(),
+            state,
+            |observer| {
+                cleanup = Some(observer);
+                std::fs::rename(&path, &retained).unwrap();
+            },
+        );
+        assert!(
+            result.is_err(),
+            "validation must occur after observer attachment"
+        );
+        let cleanup = cleanup.unwrap();
+        assert_eq!(
+            cleanup.report(),
+            Some(CleanupReport {
+                child_started: false,
+                reaped: false,
+                temporary_root_removed: false,
+            })
+        );
+        std::fs::rename(&retained, &path).unwrap();
+        assert!(cleanup.settle(LIMIT).await.unwrap().temporary_root_removed);
+        assert!(!path.exists());
     }
 }

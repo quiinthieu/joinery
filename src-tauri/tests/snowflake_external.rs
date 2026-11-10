@@ -106,6 +106,7 @@ fn profile() -> ConnectionProfile {
         store_query_text: false,
         store_drafts: false,
         snowflake: Some(SnowflakeConfig {
+            authentication: SnowflakeAuthentication::ExternalBrowser,
             role: "ROLE".into(),
             warehouse: "WH".into(),
             schema: "PUBLIC".into(),

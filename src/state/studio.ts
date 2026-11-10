@@ -1038,6 +1038,17 @@ export const useStudio = create<StudioState>((set, get) => ({
   async refreshCatalog(id) {
     const session = get().sessions[id];
     if (!session) return;
+    if (!session.capabilities.tableBrowsing) {
+      const { catalog, objects } = get();
+      if (catalog[id] !== undefined || objects[id] !== undefined) {
+        const nextCatalog = { ...catalog };
+        const nextObjects = { ...objects };
+        delete nextCatalog[id];
+        delete nextObjects[id];
+        set({ catalog: nextCatalog, objects: nextObjects });
+      }
+      return;
+    }
     const catalog = await client.call<TableInfo[]>("catalog", { sessionId: session.id });
     const objects = session.capabilities.objectExplorer
       ? await client

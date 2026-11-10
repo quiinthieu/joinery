@@ -18,6 +18,12 @@ use crate::{
     secrets::{OsSecrets, SecretStore},
     ssh::{SshManager, Tunnel, host_setting},
 };
+#[cfg(unix)]
+use crate::{
+    drivers::snowflake_external::{ExternalBrowserOptions, SnowflakeExternal},
+    snowflake_cleanup::SnowflakeCleanup,
+    snowflake_runtime::SnowflakeRuntime,
+};
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
@@ -40,6 +46,8 @@ use zeroize::Zeroizing;
 mod connection_tests;
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(all(test, unix, feature = "test-harness"))]
+mod snowflake_connection_tests;
 
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
@@ -204,9 +212,24 @@ pub struct Studio {
     connection_attempts: ConnectionAttempts,
     configuration_gate: Mutex<()>,
     tunnels: SshManager,
+    #[cfg(unix)]
+    snowflake_runtime: Option<Arc<SnowflakeRuntime>>,
+    #[cfg(unix)]
+    snowflake_cleanup: SnowflakeCleanup,
 }
 
 impl Studio {
+    /// Native acceptance evidence only; does not authenticate or qualify a server.
+    #[cfg(feature = "native-smoke")]
+    pub fn snowflake_runtime_available(&self) -> bool {
+        #[cfg(unix)]
+        {
+            self.snowflake_runtime.is_some()
+        }
+        #[cfg(not(unix))]
+        false
+    }
+
     pub fn open(root: &Path) -> AppResult<Arc<Self>> {
         #[cfg(feature = "desktop")]
         let dialog: Arc<dyn FileDialogProvider> = Arc::new(NativeFileDialog);
@@ -234,6 +257,34 @@ impl Studio {
         file_dialog: Arc<dyn FileDialogProvider>,
         mysql_guard_policy: crate::drivers::mysql::guard::GuardPolicy,
     ) -> AppResult<Arc<Self>> {
+        Self::with_components(
+            root,
+            secrets,
+            file_dialog,
+            mysql_guard_policy,
+            #[cfg(unix)]
+            None,
+        )
+    }
+
+    /// Native-only selection; resources cannot be supplied by a profile or IPC.
+    #[cfg(unix)]
+    pub fn with_snowflake_runtime(
+        root: &Path,
+        secrets: Arc<dyn SecretStore>,
+        file_dialog: Arc<dyn FileDialogProvider>,
+        runtime: Option<Arc<SnowflakeRuntime>>,
+    ) -> AppResult<Arc<Self>> {
+        Self::with_components(root, secrets, file_dialog, Default::default(), runtime)
+    }
+
+    fn with_components(
+        root: &Path,
+        secrets: Arc<dyn SecretStore>,
+        file_dialog: Arc<dyn FileDialogProvider>,
+        mysql_guard_policy: crate::drivers::mysql::guard::GuardPolicy,
+        #[cfg(unix)] snowflake_runtime: Option<Arc<SnowflakeRuntime>>,
+    ) -> AppResult<Arc<Self>> {
         let persistence = Persistence::open(root)?;
         let results = ResultStore::default();
         results.set_temporary_disk_enabled(
@@ -255,6 +306,10 @@ impl Studio {
             connection_attempts: ConnectionAttempts::default(),
             configuration_gate: Mutex::new(()),
             tunnels: SshManager::default(),
+            #[cfg(unix)]
+            snowflake_runtime,
+            #[cfg(unix)]
+            snowflake_cleanup: SnowflakeCleanup::default(),
         }))
     }
 
@@ -619,6 +674,24 @@ impl Studio {
         self.disconnect(attempt_id);
     }
 
+    pub async fn cancel_connection_attempt_and_wait(&self, attempt_id: &str) -> AppResult<()> {
+        self.cancel_connection_attempt(attempt_id);
+        #[cfg(unix)]
+        self.snowflake_cleanup
+            .wait_for(attempt_id, Duration::from_secs(10))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn disconnect_and_wait(&self, session_id: &str) -> AppResult<()> {
+        self.disconnect(session_id);
+        #[cfg(unix)]
+        self.snowflake_cleanup
+            .wait_for(session_id, Duration::from_secs(10))
+            .await?;
+        Ok(())
+    }
+
     /// Compatibility wrapper: every legacy request still has a tracked owner.
     pub async fn connect(&self, id: &str, secrets: ConnectionSecrets) -> AppResult<SessionInfo> {
         let attempt_id = self.prepare_connection(id)?;
@@ -630,10 +703,27 @@ impl Studio {
         attempt_id: &str,
         secrets: ConnectionSecrets,
     ) -> AppResult<SessionInfo> {
+        let result = self.connect_prepared_inner(attempt_id, secrets).await;
+        #[cfg(unix)]
+        if result.is_err() {
+            self.snowflake_cleanup
+                .wait_for(attempt_id, Duration::from_secs(10))
+                .await?;
+        }
+        result
+    }
+
+    async fn connect_prepared_inner(
+        &self,
+        attempt_id: &str,
+        secrets: ConnectionSecrets,
+    ) -> AppResult<SessionInfo> {
         let mut attempt = self.connection_attempts.claim(attempt_id)?;
         let id = attempt.profile_id().to_owned();
         let session_id = attempt.id().to_owned();
         let cancellation = attempt.cancellation();
+        #[cfg(unix)]
+        let mut sdk_preparation = None;
         let (profile, password, known_host) = {
             let _configuration = self.configuration_gate.lock();
             if cancellation.is_cancelled() {
@@ -654,8 +744,59 @@ impl Studio {
                 .map(|ssh| self.persistence.setting(&host_setting(ssh)))
                 .transpose()?
                 .flatten();
+            if profile.engine == EngineKind::Snowflake
+                && profile.snowflake.as_ref().is_some_and(|config| {
+                    config.authentication == SnowflakeAuthentication::ExternalBrowser
+                })
+            {
+                if password.is_some() {
+                    return Err(AppError::invalid(
+                        "Snowflake browser sign-in does not use a password",
+                    ));
+                }
+                #[cfg(unix)]
+                {
+                    let runtime = self
+                        .snowflake_runtime
+                        .clone()
+                        .ok_or_else(snowflake_runtime_unavailable)?;
+                    let permit = self.snowflake_cleanup.reserve(attempt_id)?;
+                    sdk_preparation = Some((runtime, permit));
+                }
+                #[cfg(not(unix))]
+                return Err(snowflake_runtime_unavailable());
+            }
             (profile, password, known_host)
         };
+        #[cfg(unix)]
+        let mut sdk_launch = match sdk_preparation {
+            Some((runtime, permit)) => Some(
+                runtime
+                    .new_launch_tracked(permit)
+                    .map_err(|_| snowflake_runtime_unavailable())?,
+            ),
+            None => None,
+        };
+        // Hashing/allocation happen outside the gate, with a retained pending
+        // cleanup permit. Recheck before any authentication future is polled.
+        {
+            let _configuration = self.configuration_gate.lock();
+            if cancellation.is_cancelled() {
+                return Err(connection_cancelled());
+            }
+            if self
+                .persistence
+                .profile(&id)
+                .ok()
+                .and_then(|p| serde_json::to_string(&p).ok())
+                != serde_json::to_string(&profile).ok()
+            {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "This connection profile changed while connecting. Connect again using its current settings.",
+                ));
+            }
+        }
         // Neither the configuration gate nor a global connection lane is held
         // while SSH, database authentication, or browser sign-in is pending.
         let setup = async {
@@ -711,8 +852,35 @@ impl Studio {
                             "Snowflake browser sign-in does not use a password",
                         ));
                     }
-                    let (d, i) = Snowflake::open(&profile, &session_id).await?;
-                    (d, i)
+                    match profile
+                        .snowflake
+                        .as_ref()
+                        .map(|config| config.authentication)
+                        .unwrap_or_default()
+                    {
+                        SnowflakeAuthentication::LocalApplicationOauth => {
+                            let (d, i) = Snowflake::open(&profile, &session_id).await?;
+                            (d as Arc<dyn Driver>, i)
+                        }
+                        SnowflakeAuthentication::ExternalBrowser => {
+                            #[cfg(unix)]
+                            {
+                                let launch = sdk_launch
+                                    .take()
+                                    .ok_or_else(snowflake_runtime_unavailable)?;
+                                let (d, i) = SnowflakeExternal::open(
+                                    &profile,
+                                    &session_id,
+                                    launch,
+                                    ExternalBrowserOptions::default(),
+                                )
+                                .await?;
+                                (d as Arc<dyn Driver>, i)
+                            }
+                            #[cfg(not(unix))]
+                            return Err(snowflake_runtime_unavailable());
+                        }
+                    }
                 }
             };
             Ok::<_, AppError>((driver, info, tunnel))
@@ -4205,7 +4373,7 @@ impl Studio {
     /// New work may proceed afterward; a real shutdown remains irreversible.
     #[cfg(any(test, feature = "test-harness"))]
     pub async fn reset_fixtures(&self) -> AppResult<()> {
-        let pending = {
+        let (pending, cleanup) = {
             // Publication shares this gate: a setup either enters the session
             // snapshot or is cancelled before it can publish.
             let _configuration = self.configuration_gate.lock();
@@ -4218,13 +4386,28 @@ impl Studio {
             for id in ids {
                 self.disconnect(&id);
             }
-            pending
+            (pending, {
+                #[cfg(unix)]
+                {
+                    self.snowflake_cleanup.snapshot()
+                }
+                #[cfg(not(unix))]
+                {
+                    ()
+                }
+            })
         };
         // Setup owners need the configuration gate to unwind; never await them
         // while holding it. Leave the registry's shutdown barrier untouched.
         self.connection_attempts
             .wait_fixture_snapshot(&pending)
             .await;
+        #[cfg(unix)]
+        self.snowflake_cleanup
+            .wait_snapshot(&cleanup, Duration::from_secs(10))
+            .await?;
+        #[cfg(not(unix))]
+        let _ = cleanup;
         Ok(())
     }
 
@@ -4249,8 +4432,19 @@ impl Studio {
     pub async fn shutdown_and_wait(&self) -> AppResult<()> {
         self.shutdown();
         self.connection_attempts.wait_idle().await;
+        #[cfg(unix)]
+        self.snowflake_cleanup
+            .wait_all(Duration::from_secs(10))
+            .await?;
         Ok(())
     }
+}
+
+fn snowflake_runtime_unavailable() -> AppError {
+    AppError::new(
+        ErrorCode::Unsupported,
+        "The verified Snowflake SDK runtime is unavailable. Use a macOS ARM64 build with its prepared Snowflake resources.",
+    )
 }
 
 fn connection_cancelled() -> AppError {

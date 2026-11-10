@@ -6,7 +6,8 @@ if (process.platform === "win32") {
   throw new Error("Snowflake helper process qualification currently requires Unix");
 }
 for (const args of [
-  ["--lib", "drivers::snowflake_process::tests"],
+  ["--lib", "snowflake_"],
+  ["--features", "test-harness", "--lib", "execution::snowflake_connection_tests"],
   ["--features", "test-harness", "--test", "snowflake_process"],
   ["--features", "test-harness", "--test", "snowflake_external"],
 ]) {

@@ -152,6 +152,7 @@ async function fixture(page: Page, raw: string) {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
   await page.getByLabel("Connection name", { exact: true }).fill("Snowflake plan fixture");
   await page.getByLabel("Snowflake account hostname").fill("org-account.snowflakecomputing.com");
   await page.getByLabel("Database", { exact: true }).fill("LAB");

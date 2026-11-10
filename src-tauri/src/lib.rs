@@ -19,6 +19,10 @@ pub mod results;
 pub mod safety;
 pub mod schema_diff;
 pub mod secrets;
+#[cfg(unix)]
+pub mod snowflake_cleanup;
+#[cfg(unix)]
+pub mod snowflake_runtime;
 pub mod sql_text;
 pub mod ssh;
 
@@ -41,6 +45,37 @@ fn app_info() -> AppInfo {
     }
 }
 
+#[cfg(all(feature = "desktop", unix))]
+fn native_snowflake_runtime(
+    app: &tauri::App,
+    cache: &std::path::Path,
+) -> Option<std::sync::Arc<snowflake_runtime::SnowflakeRuntime>> {
+    use std::os::unix::fs::DirBuilderExt;
+    #[cfg(not(debug_assertions))]
+    use tauri::Manager;
+    let prepare = || -> std::io::Result<snowflake_runtime::SnowflakeRuntime> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(cache)?;
+        let state = cache.join("snowflake-state");
+        snowflake_runtime::SnowflakeRuntime::prepare_state_parent(&state)?;
+        #[cfg(debug_assertions)]
+        {
+            let _ = app;
+            snowflake_runtime::SnowflakeRuntime::from_development(&state)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let resources = app.path().resource_dir().map_err(std::io::Error::other)?;
+            snowflake_runtime::SnowflakeRuntime::from_packaged(&resources, &state)
+        }
+    };
+    // Other engines and existing OAuth profiles remain usable when the pinned
+    // runtime is unavailable. Explicit SDK connects report that failure.
+    prepare().ok().map(std::sync::Arc::new)
+}
+
 #[cfg(feature = "desktop")]
 pub fn run() {
     use tauri::{Emitter, Manager};
@@ -52,6 +87,15 @@ pub fn run() {
             #[cfg(not(feature = "native-smoke"))]
             {
             let root = app.path().app_data_dir()?;
+            #[cfg(unix)]
+            {
+                let runtime = app.path().app_cache_dir().ok()
+                    .and_then(|cache| native_snowflake_runtime(app, &cache));
+                app.manage(execution::Studio::with_snowflake_runtime(
+                    &root, secrets::OsSecrets::initialize(),
+                    std::sync::Arc::new(file_capability::NativeFileDialog), runtime)?);
+            }
+            #[cfg(not(unix))]
             app.manage(execution::Studio::open(&root)?);
             }
             #[cfg(feature = "native-smoke")]
@@ -66,6 +110,14 @@ pub fn run() {
                 std::fs::write(root.join("startup.json"), serde_json::to_vec(&serde_json::json!({"pid": std::process::id()}))?)?;
                 let sandbox = file_capability::SandboxFileDialog::new(&root.join("sandbox-files"))
                     .map_err(|e| std::io::Error::other(e.message))?;
+                #[cfg(unix)]
+                app.manage(execution::Studio::with_snowflake_runtime(
+                    &root,
+                    std::sync::Arc::new(secrets::MemorySecrets::default()),
+                    sandbox,
+                    native_snowflake_runtime(app, &root.join("cache")),
+                )?);
+                #[cfg(not(unix))]
                 app.manage(execution::Studio::with_secrets_and_dialog(
                     &root,
                     std::sync::Arc::new(secrets::MemorySecrets::default()),

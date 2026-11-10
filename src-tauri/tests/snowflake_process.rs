@@ -754,6 +754,74 @@ async fn forced_kill_reaps_and_removes_parent_root_without_claiming_logout() {
     assert!(!root.exists());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn reaped_child_root_removal_can_be_retried_without_deleting_a_replacement() {
+    let parent = tempfile::tempdir().unwrap();
+    let working = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir_in(parent.path()).unwrap();
+    let root = state.path().to_owned();
+    let retained = parent.path().join("retained-original");
+    let launch = Launch::new(
+        PathBuf::from(env!("CARGO_BIN_EXE_snowflake-protocol-fixture")),
+        None,
+        working.path().to_owned(),
+        state,
+    )
+    .unwrap();
+    let cleanup = launch.cleanup_observer();
+    let supervisor = Supervisor::spawn(launch, GENERATION, bounds())
+        .await
+        .unwrap();
+    let mut connect = supervisor
+        .request(
+            "connect",
+            "connect",
+            json!({"scenario":"wedged_close"}),
+            Impact::Control,
+        )
+        .unwrap();
+    assert!(connect.wait_bounded(LIMIT).await.ok);
+    std::fs::write(root.join("owned-cache"), b"synthetic").unwrap();
+    std::fs::rename(&root, &retained).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("sentinel"), b"replacement").unwrap();
+
+    let shutdown = supervisor.shutdown().await;
+    assert!(!shutdown.logout_acknowledged);
+    let failed = CleanupReport {
+        child_started: true,
+        reaped: true,
+        temporary_root_removed: false,
+    };
+    assert_eq!(shutdown.cleanup, Some(failed));
+    assert_eq!(cleanup.settle(LIMIT).await, Some(failed));
+    assert_eq!(
+        std::fs::read(root.join("sentinel")).unwrap(),
+        b"replacement"
+    );
+    assert_eq!(
+        std::fs::read(retained.join("owned-cache")).unwrap(),
+        b"synthetic"
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::rename(&retained, &root).unwrap();
+    assert_eq!(
+        cleanup.settle(LIMIT).await,
+        Some(CleanupReport {
+            child_started: true,
+            reaped: true,
+            temporary_root_removed: true,
+        })
+    );
+    assert!(!root.exists());
+    assert!(
+        !shutdown.logout_acknowledged,
+        "local recovery cannot establish logout"
+    );
+}
+
 #[tokio::test]
 async fn handshake_timeout_returns_failure_and_observable_reaped_root_cleanup() {
     let working = tempfile::tempdir().unwrap();

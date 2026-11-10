@@ -52,6 +52,23 @@ fn arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> AppResult<T> 
         .map_err(|_| AppError::invalid(format!("Invalid request field: {key}")))
 }
 
+// Snowflake profile persistence can be exercised offline. This harness must
+// never start either authentication route, even if native resources appear.
+fn allow_fixture_authentication(studio: &Studio, id: &str) -> AppResult<()> {
+    if studio
+        .bootstrap()?
+        .profiles
+        .iter()
+        .any(|profile| profile.id == id && profile.engine == EngineKind::Snowflake)
+    {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "The browser test harness does not authenticate Snowflake profiles",
+        ));
+    }
+    Ok(())
+}
+
 async fn rpc(
     State(state): State<Arc<Harness>>,
     Path(command): Path<String>,
@@ -129,12 +146,19 @@ async fn rpc(
                     (EngineKind::Redis, 56379) => true,
                     _ => false,
                 };
-                if profile.host != "127.0.0.1"
+                let offline_snowflake = profile.engine == EngineKind::Snowflake
+                    && profile.host == "joinery-offline.invalid.snowflakecomputing.com"
+                    && profile.port == 443 && profile.database == "DB"
+                    && profile.username == "login@example.test"
+                    && profile.ssh.is_none() && profile.environment == Environment::Local
+                    && profile.safe_mode == SafeMode::ReadOnly
+                    && !profile.remember_password;
+                if !offline_snowflake && (profile.host != "127.0.0.1"
                     || !allowed_fixture
                     || (profile.engine!=EngineKind::Redis && (profile.database!="joinery"||profile.username!="joinery"))
                     || (profile.engine==EngineKind::Redis && (profile.database!="0"||profile.username!="default"))
                     || profile.ssh.is_some()
-                    || profile.environment == Environment::Production
+                    || profile.environment == Environment::Production)
                 {
                     return Err(AppError::invalid(
                         "The browser test harness accepts only the local disposable database fixtures",
@@ -149,12 +173,16 @@ async fn rpc(
                 studio.delete_profile(&arg::<String>(&args, "id")?)?;
                 Value::Null
             }
-            "prepare_connection" => json!(studio.prepare_connection(&arg::<String>(&args, "id")?)?),
+            "prepare_connection" => {
+                let id: String = arg(&args, "id")?;
+                allow_fixture_authentication(studio, &id)?;
+                json!(studio.prepare_connection(&id)?)
+            },
             "connect_prepared" => json!(
                 studio.connect_prepared(&arg::<String>(&args, "attemptId")?, arg(&args, "secrets")?).await?
             ),
             "cancel_connection_attempt" => {
-                studio.cancel_connection_attempt(&arg::<String>(&args, "attemptId")?);
+                studio.cancel_connection_attempt_and_wait(&arg::<String>(&args, "attemptId")?).await?;
                 Value::Null
             }
             "app_shutdown" => {
@@ -165,13 +193,13 @@ async fn rpc(
                 &arg::<String>(&args, "profileId")?,
                 arg::<Option<String>>(&args, "attemptId")?.as_deref(),
             ).await?),
-            "connect" => json!(
-                studio
-                    .connect(&arg::<String>(&args, "id")?, arg(&args, "secrets")?)
-                    .await?
-            ),
+            "connect" => {
+                let id: String = arg(&args, "id")?;
+                allow_fixture_authentication(studio, &id)?;
+                json!(studio.connect(&id, arg(&args, "secrets")?).await?)
+            },
             "disconnect" => {
-                studio.disconnect(&arg::<String>(&args, "sessionId")?);
+                studio.disconnect_and_wait(&arg::<String>(&args, "sessionId")?).await?;
                 Value::Null
             }
             "set_passphrase" => {

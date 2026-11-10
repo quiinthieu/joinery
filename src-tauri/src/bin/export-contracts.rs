@@ -17,6 +17,7 @@ fn main() {
         SshConfig::decl(),
         ConnectionProfile::decl(),
         SnowflakeConfig::decl(),
+        SnowflakeAuthentication::decl(),
         ConnectionSecrets::decl(),
         CompletionCatalog::decl(),
         CompletionIdentity::decl(),

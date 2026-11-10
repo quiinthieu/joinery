@@ -90,8 +90,7 @@ pub async fn cancel_connection_attempt(
     studio: State<'_, Arc<Studio>>,
     attempt_id: String,
 ) -> AppResult<()> {
-    studio.cancel_connection_attempt(&attempt_id);
-    Ok(())
+    studio.cancel_connection_attempt_and_wait(&attempt_id).await
 }
 
 #[tauri::command]
@@ -112,8 +111,7 @@ pub async fn connect(
 
 #[tauri::command]
 pub async fn disconnect(studio: State<'_, Arc<Studio>>, session_id: String) -> AppResult<()> {
-    studio.disconnect(&session_id);
-    Ok(())
+    studio.disconnect_and_wait(&session_id).await
 }
 
 #[tauri::command]
@@ -597,6 +595,7 @@ pub async fn native_smoke_checkpoint(
         "options": state.options,
         "nativeElapsedMs": state.started.elapsed().as_millis() as u64,
         "usage": studio.usage(),
+        "snowflakeRuntimeAvailable": studio.snowflake_runtime_available(),
         "invocations": {
             "connect": NATIVE_SMOKE_CONNECT_CALLS.load(std::sync::atomic::Ordering::SeqCst),
             "prepareExecution": NATIVE_SMOKE_PREPARE_CALLS.load(std::sync::atomic::Ordering::SeqCst),

@@ -2,11 +2,27 @@ import { useState, type FormEvent } from "react";
 import { Database, Loader2, ShieldCheck } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
-import type { ConnectionProfile, SafeMode, SessionInfo } from "../../ipc/generated";
+import type {
+  ConnectionProfile,
+  SafeMode,
+  SessionInfo,
+  SnowflakeAuthentication,
+} from "../../ipc/generated";
 import { useStudio } from "../../state/studio";
 import { useSshTrust } from "./SshHostTrust";
 import { orderedGroups } from "./GroupManager";
 import { useConnectionSetup } from "./connectionSetup";
+
+function snowflakeAuthentication(config: ConnectionProfile["snowflake"]): SnowflakeAuthentication {
+  return config?.authentication ?? "localApplicationOauth";
+}
+
+function withSnowflakeAuthentication(
+  config: Omit<NonNullable<ConnectionProfile["snowflake"]>, "authentication">,
+  authentication: SnowflakeAuthentication,
+): NonNullable<ConnectionProfile["snowflake"]> {
+  return { ...config, authentication };
+}
 
 function completeConnection(profile: ConnectionProfile, session: SessionInfo, onClose: () => void) {
   const state = useStudio.getState();
@@ -32,33 +48,44 @@ export function ConnectionDialog({
   const bootstrap = useStudio((s) => s.bootstrap);
   const [profile, setProfile] = useState(initialProfile);
   const initialGroup = bootstrap?.groups.find((g) => g.id === (profile?.groupId ?? groupId));
-  const [draft, setDraft] = useState<ConnectionProfile>(
-    () =>
-      profile ?? {
-        id: crypto.randomUUID(),
-        name: "",
-        groupId,
-        engine: "postgres",
-        host: "localhost",
-        port: 5432,
-        database: "postgres",
-        username: "postgres",
-        environment: initialGroup?.environment ?? "local",
-        safeMode:
-          initialGroup?.environment === "production"
-            ? "passwordGated"
-            : initialGroup?.environment === "staging"
-              ? "confirm"
-              : "silent",
-        tlsMode: "verifyFull",
-        caCertPath: null,
-        ssh: null,
-        rememberPassword: false,
-        storeQueryText: false,
-        storeDrafts: false,
-        snowflake: null,
-      },
-  );
+  const [draft, setDraft] = useState<ConnectionProfile>(() => {
+    if (profile) {
+      if (profile.engine === "snowflake" && profile.snowflake) {
+        return {
+          ...profile,
+          snowflake: withSnowflakeAuthentication(
+            profile.snowflake,
+            snowflakeAuthentication(profile.snowflake),
+          ),
+        };
+      }
+      return profile;
+    }
+    return {
+      id: crypto.randomUUID(),
+      name: "",
+      groupId,
+      engine: "postgres",
+      host: "localhost",
+      port: 5432,
+      database: "postgres",
+      username: "postgres",
+      environment: initialGroup?.environment ?? "local",
+      safeMode:
+        initialGroup?.environment === "production"
+          ? "passwordGated"
+          : initialGroup?.environment === "staging"
+            ? "confirm"
+            : "silent",
+      tlsMode: "verifyFull",
+      caCertPath: null,
+      ssh: null,
+      rememberPassword: false,
+      storeQueryText: false,
+      storeDrafts: false,
+      snowflake: null,
+    };
+  });
   const [password, setPassword] = useState(""),
     [passphrase, setPassphrase] = useState(""),
     [busy, setBusy] = useState(false),
@@ -220,7 +247,14 @@ export function ConnectionDialog({
                   ssh: null,
                   rememberPassword: false,
                   snowflake:
-                    engine === "snowflake" ? { role: "", warehouse: "", schema: "" } : null,
+                    engine === "snowflake"
+                      ? current.engine === "snowflake" && current.snowflake
+                        ? current.snowflake
+                        : withSnowflakeAuthentication(
+                            { role: "", warehouse: "", schema: "" },
+                            "externalBrowser",
+                          )
+                      : null,
                 }));
               }}
             >
@@ -232,7 +266,9 @@ export function ConnectionDialog({
                       ? "MySQL / MariaDB"
                       : engine === "redis"
                         ? "Redis"
-                        : engine}
+                        : engine === "snowflake"
+                          ? "Snowflake"
+                          : engine}
                 </option>
               ))}
             </select>
@@ -281,6 +317,25 @@ export function ConnectionDialog({
           </label>
           {draft.engine === "snowflake" && draft.snowflake && (
             <>
+              <label className="span-2">
+                Snowflake authentication
+                <select
+                  aria-label="Snowflake authentication"
+                  value={snowflakeAuthentication(draft.snowflake)}
+                  onChange={(event) =>
+                    change(
+                      "snowflake",
+                      withSnowflakeAuthentication(
+                        draft.snowflake!,
+                        event.target.value as SnowflakeAuthentication,
+                      ),
+                    )
+                  }
+                >
+                  <option value="externalBrowser">External browser SSO (Snowflake SDK)</option>
+                  <option value="localApplicationOauth">Local application OAuth (SQL API)</option>
+                </select>
+              </label>
               <label>
                 Role
                 <input
@@ -316,8 +371,19 @@ export function ConnectionDialog({
                 />
               </label>
               <p className="form-note span-2">
-                Joinery opens your system browser for Snowflake sign-in. Read-only SQL and bounded
-                table previews need the account’s local-application OAuth integration.
+                {snowflakeAuthentication(draft.snowflake) === "externalBrowser" ? (
+                  <>
+                    External browser SSO uses the Snowflake SDK. SQL access is read-only; metadata
+                    browsing is temporarily unavailable for this sign-in mode. Joinery will not fall
+                    back to local application OAuth.
+                  </>
+                ) : (
+                  <>
+                    Local application OAuth uses Snowflake SQL API. SQL access is read-only, and
+                    bounded table previews require the account’s OAuth integration. Joinery will not
+                    fall back to external browser SSO.
+                  </>
+                )}
               </p>
             </>
           )}

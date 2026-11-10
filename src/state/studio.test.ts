@@ -817,6 +817,44 @@ test("refreshCatalog gates database_objects on objectExplorer capability and cle
   expect(useStudio.getState().objects.profile).toBeUndefined();
 });
 
+test("refreshCatalog clears stale metadata without querying unsupported table browsing", async () => {
+  useStudio.setState({
+    sessions: {
+      profile: {
+        ...session,
+        capabilities: { ...session.capabilities, tableBrowsing: false },
+      },
+    },
+    catalog: {
+      profile: [
+        {
+          table: { schema: "PUBLIC", name: "STALE_TABLE" },
+          kind: "r",
+          estimatedRows: 1,
+          totalBytes: 8,
+        },
+      ],
+    },
+    objects: {
+      profile: [
+        {
+          object: { schema: "PUBLIC", name: "STALE_FUNCTION", kind: "function", identity: null },
+          ownerTable: null,
+          signature: "() -> void",
+          estimatedRows: null,
+          totalBytes: null,
+        },
+      ],
+    },
+  });
+
+  await useStudio.getState().refreshCatalog("profile");
+
+  expect(client.call).not.toHaveBeenCalled();
+  expect(useStudio.getState().catalog.profile).toBeUndefined();
+  expect(useStudio.getState().objects.profile).toBeUndefined();
+});
+
 test("openObject distinguishes overloaded routines and routes relations to table tabs", async () => {
   const source = schema("id");
   vi.mocked(client.call).mockImplementation(((command: string) =>
