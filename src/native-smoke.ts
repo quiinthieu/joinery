@@ -8,6 +8,7 @@ import type {
   ResourceUsage,
   ResultInfo,
   TableChanges,
+  SwitchSchemaRequest,
 } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -171,6 +172,18 @@ export async function runNativeSmoke() {
         {
           sessionId: "missing-native-fixture",
           target: "public",
+        },
+      ],
+      [
+        "switch_session_schema",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            revision: "obsolete",
+            database: "DB",
+            schema: "PUBLIC",
+            contextFingerprint: "obsolete",
+          } satisfies SwitchSchemaRequest,
         },
       ],
       [

@@ -51,11 +51,16 @@ if the connection closes before a statement handle can be cancelled.
 The stateful SDK route supports read-only SQL, cancellation and bounded
 same-session relation/column completion in the observed current database. The
 [completion contract](docs/snowflake-sdk-metadata-design.md) records local evidence
-and remaining account qualification. Table browsing, authoritative inspection,
-writes, DDL and transactions remain disabled and required.
-The SDK can retransmit a statement request after a lost response; local tests do
-not prove Snowflake server deduplication. Neither route automatically falls back
-to the other authentication mode.
+and remaining account qualification. Local source also provides revision-bound
+[relation browsing, column inspection and read-only preview](docs/snowflake-sdk-browsing-design.md),
+explicit [session observations](docs/snowflake-sdk-session-observation.md), and
+[guarded schema selection](docs/snowflake-sdk-session-design.md), whose local
+application qualification passes. Complete object/constraint inspection, writes, DDL
+and transactions remain incomplete and required.
+The [submission guard](docs/snowflake-sdk-submit-guard-design.md) bounds SDK query
+submissions for pinned sources and retires on ambiguity. A lost acknowledgement
+can still mean the server executed a request; local tests do not establish remote
+exactly-once behavior. Neither route automatically falls back to the other mode.
 
 ## Development
 

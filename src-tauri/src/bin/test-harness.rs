@@ -529,6 +529,14 @@ async fn rpc(
                     )
                     .await?
             ),
+            "switch_session_schema" => json!(
+                studio
+                    .switch_session_schema(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg(&args, "request")?
+                    )
+                    .await?
+            ),
             "set_transaction_mode" => json!(
                 studio
                     .set_transaction_mode(

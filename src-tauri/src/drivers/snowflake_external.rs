@@ -1,7 +1,7 @@
 //! Stateful external-browser read adapter. Packaged account workflows and writes remain unqualified.
 //! Each instance owns one helper connection; no query or connection is automatically recreated.
 use super::snowflake_process::{
-    Bounds, Certainty, CleanupObserver, Column, Impact, Launch, OperationToken, Report,
+    Bounds, Certainty, CleanupObserver, Column, Impact, Launch, Operation, OperationToken, Report,
     ShutdownReport, Supervisor,
 };
 use super::{
@@ -74,6 +74,21 @@ struct SessionOptionsState {
 struct SessionOptionsSnapshot {
     sample: ObservationSample,
     available: Vec<String>,
+}
+
+// Keep the switch ticket, and its independent USE receipt, alive through the
+// final observation and publication. Dropping any admitted workflow closes it.
+struct SchemaSwitchLease<'a> {
+    driver: &'a SnowflakeExternal,
+    operation: Option<Operation>,
+    published: bool,
+}
+impl Drop for SchemaSwitchLease<'_> {
+    fn drop(&mut self) {
+        if self.operation.is_some() && !self.published {
+            self.driver.start_shutdown();
+        }
+    }
 }
 
 pub struct SnowflakeExternal {
@@ -877,6 +892,161 @@ impl Drop for SnowflakeExternal {
 
 #[async_trait]
 impl Driver for SnowflakeExternal {
+    async fn switch_schema(
+        &self,
+        session_id: &str,
+        request: &SwitchSchemaRequest,
+    ) -> AppResult<SessionContextOptions> {
+        if session_id != self.session_id {
+            return Err(AppError::invalid("Invalid Snowflake session"));
+        }
+        // Claim and consume the public revision before the first await. A stale
+        // caller cannot consume newer authority, and ABA never restores it.
+        let (snapshot, generation) = {
+            let mut options = self.session_options.lock();
+            if options.revision != request.revision {
+                return Err(stale_session_options().with_completion_invalidated());
+            }
+            let snapshot = options.snapshot.take().ok_or_else(stale_session_options)?;
+            let generation = uuid::Uuid::new_v4().to_string();
+            options.revision = generation.clone();
+            (snapshot, generation)
+        };
+        self.invalidate_relation_catalog();
+        let mut lease = SchemaSwitchLease {
+            driver: self,
+            operation: None,
+            published: false,
+        };
+        let result = self
+            .metadata_operation(async {
+                metadata::quote_identifier(&request.database)?;
+                metadata::quote_identifier(&request.schema)?;
+                if request.context_fingerprint != snapshot.sample.context.fingerprint()?
+                    || request.database != self.profile.database
+                    || snapshot.sample.context.database.as_deref()
+                        != Some(request.database.as_str())
+                    || snapshot.sample.transaction_id.is_some()
+                    || !snapshot.available.contains(&request.schema)
+                {
+                    return Err(stale_session_options());
+                }
+                self.require_session_options_revision(&generation)?;
+                let before = self.session_sample().await?;
+                if before != snapshot.sample || before.transaction_id.is_some() {
+                    return Err(stale_session_options());
+                }
+                let rows = self
+                    .metadata_read(
+                        &metadata::schemas_sql(&before.context)?,
+                        metadata::SCHEMA_LIMIT + 1,
+                        metadata::RELATION_MAX_BYTES,
+                    )
+                    .await?;
+                let available = metadata::parse_schemas(&before.context, &rows)?;
+                if !available.contains(&request.schema) {
+                    return Err(stale_session_options());
+                }
+                {
+                    // Admission is synchronous while generation ownership is locked.
+                    // A superseding refresh cannot slip between this check and USE.
+                    let options = self.session_options.lock();
+                    if options.revision != generation || self.is_closed() {
+                        return Err(stale_session_options());
+                    }
+                    lease.operation = Some(
+                        self.process
+                            .request(
+                                "switch-schema",
+                                "switchSchema",
+                                json!({"database":request.database,"schema":request.schema,
+                        "expected":{"user":before.context.principal,"role":before.context.role,
+                        "warehouse":before.context.warehouse,"session":before.context.session_id}}),
+                                Impact::ContextChange,
+                            )
+                            .map_err(control_error)?,
+                    );
+                }
+                let report = {
+                    let operation = lease.operation.as_mut().ok_or_else(protocol_error)?;
+                    *self.active.lock() = Some(Active {
+                        token: operation.token(),
+                        terminal: operation.terminal_receiver(),
+                    });
+                    let _active = ActiveLease(&self.active);
+                    operation.wait().await
+                };
+                check_report(&report)?;
+                if report.use_acknowledged.is_none() {
+                    return Err(protocol_error());
+                }
+                let readback = report.result.as_ref().ok_or_else(protocol_error)?;
+                for (field, expected) in [
+                    ("user", json!(before.context.principal)),
+                    ("role", json!(before.context.role)),
+                    ("database", json!(request.database)),
+                    ("schema", json!(request.schema)),
+                    ("warehouse", json!(before.context.warehouse)),
+                    ("session", json!(before.context.session_id)),
+                ] {
+                    if readback.get(field) != Some(&expected) {
+                        return Err(protocol_error());
+                    }
+                }
+                self.require_session_options_revision(&generation)?;
+                let after = self.session_sample().await?;
+                let mut comparable = after.clone();
+                // USE legitimately changes the active schema and CURRENT_SCHEMAS.
+                // Every other observed field, including transaction/settings, pins.
+                comparable.context.schema = before.context.schema.clone();
+                comparable.context.search_path = before.context.search_path.clone();
+                if after.context.schema.as_deref() != Some(request.schema.as_str())
+                    || comparable != before
+                    || after.transaction_id.is_some()
+                {
+                    return Err(stale_session_options());
+                }
+                let revision = uuid::Uuid::new_v4().to_string();
+                let published = SessionContextOptions {
+                    state: self.observed_session_state(&after)?,
+                    available: available.clone(),
+                    revision: Some(revision.clone()),
+                };
+                let mut options = self.session_options.lock();
+                if options.revision != generation || self.is_closed() {
+                    return Err(stale_session_options());
+                }
+                *options = SessionOptionsState {
+                    revision,
+                    snapshot: Some(SessionOptionsSnapshot {
+                        sample: after,
+                        available,
+                    }),
+                };
+                Ok(published)
+            })
+            .await;
+        match result {
+            Ok(options) => {
+                lease.published = true;
+                Ok(options)
+            }
+            Err(error) => {
+                self.invalidate_session_options_revision(&generation);
+                if let Some(operation) = &lease.operation {
+                    let acknowledged = operation.use_acknowledged().is_some();
+                    self.start_shutdown();
+                    if acknowledged {
+                        return Err(AppError::new(ErrorCode::ConnectionClosed,
+                            "Snowflake acknowledged the schema change, but its final session context could not be verified. The session was closed; reconnect before continuing.")
+                            .with_completion_invalidated());
+                    }
+                }
+                Err(error.with_completion_invalidated())
+            }
+        }
+    }
+
     async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
         if session_id != self.session_id {
             return Err(AppError::invalid("Invalid Snowflake session"));
@@ -1589,7 +1759,7 @@ import { readFileSync, appendFileSync, existsSync, writeFileSync } from 'node:fs
 const { Helper } = await import(HELPER_URL);
 const { Decoder, writer } = await import(FRAMING_URL);
 const file = name => new URL(name, import.meta.url);
-let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '';
+let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
   appendFileSync(file('connections'), '1');
@@ -1605,25 +1775,32 @@ const sdk = { createConnection() {
       const value = (key, fallback) => Object.hasOwn(settings, key) ? settings[key] : fallback;
       const context = sql.includes(' AS PRINCIPAL');
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
+      const use = sql.startsWith('USE SCHEMA ');
+      const readback = sql.startsWith('SELECT CURRENT_USER(),') && switched;
       let names = ['VALUE'], rows = [['1']], parameter;
-      if (sql.startsWith('SELECT CURRENT_USER(),')) {
+      if (use) {
+        const parts = /^USE SCHEMA "((?:[^"]|"")*)"\."((?:[^"]|"")*)"$/u.exec(sql);
+        if (!parts || parts[1] !== 'DB') throw new Error('unexpected fixture switch SQL');
+        if (!settings.failUse) { currentSchema = parts[2].replaceAll('""','"'); switched = true; }
+        names = []; rows = [];
+      } else if (sql.startsWith('SELECT CURRENT_USER(),')) {
         names = ['U','R','D','S','W','ID'];
-        rows = [['SERVER_USER','ROLE','DB','PUBLIC','WH','SESSION']];
+        rows = [['SERVER_USER',value('role','ROLE'),'DB',settings.badReadback ? 'WRONG' : currentSchema,value('warehouse','WH'),'SESSION']];
       } else if (sql === 'SELECT CURRENT_VERSION()') {
         rows = [['synthetic-version']];
       } else if (context) {
         contextReads++;
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
-        rows = [[value('principal','SERVER_USER'),value('role','ROLE'),value('database','DB'),value('schema','PUBLIC'),settings.contextDrift && contextReads >= 2 ? 'CHANGED' : 'WH',value('session','SESSION'),'["DB.PUBLIC"]','{"roles":"","value":"ALL"}']];
+        rows = [[value('principal','SERVER_USER'),switched ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),switched ? value('afterDatabase',value('database','DB')) : value('database','DB'),switched ? value('afterSchema',currentSchema) : value('schema',currentSchema),switched ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),switched ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),switched ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
       } else if (sql.startsWith('SHOW PARAMETERS LIKE ')) {
         parameter = sql.split("'")[1];
         names = ['key','value','default','level'];
-        const observed = parameter === 'AUTOCOMMIT' ? value('autocommit','true') : parameter === 'TRANSACTION_ABORT_ON_ERROR' ? value('abortOnError','false') : 'false';
+        const observed = parameter === 'AUTOCOMMIT' ? switched ? value('afterAutocommit',value('autocommit','true')) : value('autocommit','true') : parameter === 'TRANSACTION_ABORT_ON_ERROR' ? switched ? value('afterAbortOnError',value('abortOnError','false')) : value('abortOnError','false') : switched ? value('afterPolicy','false') : 'false';
         rows = [[parameter,observed,observed === 'true' ? 'false' : 'true','ACCOUNT']];
       } else if (sql === 'SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID') {
         transactionReads++;
         names = ['TRANSACTION_ID'];
-        rows = [[settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',null)]];
+        rows = [[switched ? value('afterTransactionId',value('transactionId',null)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',null)]];
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
         rows = value('schemas',['OTHER','PUBLIC']).map(name => ['DB',name]);
@@ -1635,8 +1812,8 @@ const sdk = { createConnection() {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
         getColumns: () => names.map(name => ({ getName: () => name, getType: () => settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
         streamRows() {
-          if (context && settings.holdContext && contextReads === 1) {
-            writeFileSync(file('held'), '');
+          if (context && (settings.holdContext && contextReads === 1 || switched && settings.holdAfterContext) || schemas && settings.holdSchemas) {
+            writeFileSync(file(switched && context ? 'held-after-context' : schemas ? 'held-schemas' : 'held'), '');
             return Readable.from((async function*() {
               while (!existsSync(file('release')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5));
               if (cancelled) throw { sqlState: '57014' };
@@ -1647,8 +1824,14 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = settings.failParameter === parameter && parameter !== undefined || settings.failSchemas && schemas;
-      setImmediate(() => options.complete(denied ? {sqlState:'42501'} : null, statement));
+      const denied = settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      setImmediate(() => {
+        if (use && settings.holdUse || readback && settings.holdReadback) {
+          writeFileSync(file(use ? 'held-use' : 'held-readback'), '');
+          return;
+        }
+        options.complete(denied ? {sqlState:'42501'} : null, statement);
+      });
       return statement;
     },
   };
@@ -1785,13 +1968,18 @@ process.stdin.on('end', retire);
                 std::fs::read_to_string(self.scripts.path().join("connections")).unwrap(),
                 "1"
             );
-            // Every statement is an owned fixed observer/list read or SELECT 1.
-            assert!(
-                self.queries()
-                    .iter()
-                    .all(|sql| sql.starts_with("SELECT ")
-                        || sql.starts_with("SHOW PARAMETERS LIKE "))
-            );
+            // Switch tests separately assert their one exact quoted USE. All
+            // other statements remain fixed observer/list reads or SELECT 1.
+            assert!(self.queries().iter().all(|sql| {
+                sql.starts_with("SELECT ")
+                    || [
+                        metadata::QUOTED_IDENTIFIER_POLICY_SQL,
+                        session::AUTOCOMMIT_SQL,
+                        session::ABORT_ON_ERROR_SQL,
+                    ]
+                    .contains(&sql.as_str())
+                    || sql.starts_with("USE SCHEMA \"DB\".")
+            }));
         }
     }
 
@@ -1805,6 +1993,483 @@ process.stdin.on('end', retire);
         ]
         .map(str::to_owned)
         .to_vec()
+    }
+
+    fn switch_request(options: &SessionContextOptions, schema: &str) -> SwitchSchemaRequest {
+        SwitchSchemaRequest {
+            revision: options.revision.clone().unwrap(),
+            database: options.state.database.clone(),
+            schema: schema.into(),
+            context_fingerprint: options.state.context_fingerprint.clone().unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn switch_uses_exactly_thirteen_executions_and_publishes_fresh_null_role_options() {
+        let h = Harness::open().await;
+        let schema = "Sales.\"雪; --";
+        h.settings(json!({"role":null,"warehouse":null,"schemas":["PUBLIC",schema]}));
+        let options = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        let request = switch_request(&options, schema);
+        let baseline = h.queries().len();
+        let switched = h
+            .driver
+            .switch_schema("observer-session", &request)
+            .await
+            .unwrap();
+        let queries = h.queries();
+        assert_eq!(queries.len() - baseline, 13);
+        assert_eq!(queries[baseline..baseline + 5], sample_sql());
+        assert_eq!(
+            queries[baseline + 5],
+            metadata::schemas_sql(
+                &h.driver
+                    .session_options
+                    .lock()
+                    .snapshot
+                    .as_ref()
+                    .unwrap()
+                    .sample
+                    .context
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            queries[baseline + 6],
+            "USE SCHEMA \"DB\".\"Sales.\"\"雪; --\""
+        );
+        assert_eq!(
+            queries[baseline + 7],
+            "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()"
+        );
+        assert_eq!(queries[baseline + 8..], sample_sql());
+        assert_eq!(switched.state.active_context.as_deref(), Some(schema));
+        assert_eq!(switched.state.role, None);
+        assert_eq!(switched.state.transaction_state, TransactionState::Idle);
+        assert_ne!(switched.revision, options.revision);
+        assert_ne!(
+            switched.state.context_fingerprint,
+            options.state.context_fingerprint
+        );
+        assert!(h.driver.session_options.lock().snapshot.is_some());
+        assert!(!h.driver.is_closed());
+        h.finish().await;
+    }
+
+    fn use_count(h: &Harness) -> usize {
+        h.queries()
+            .iter()
+            .filter(|sql| sql.starts_with("USE "))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn switch_rejects_forged_or_malformed_authority_without_sql_and_consumes_matching_revision()
+     {
+        let h = Harness::open().await;
+        for change in 0..7 {
+            let options = h
+                .driver
+                .session_context_options("observer-session")
+                .await
+                .unwrap();
+            let mut request = switch_request(&options, "OTHER");
+            match change {
+                0 => request.context_fingerprint = "forged".into(),
+                1 => request.database = "OTHER_DB".into(),
+                2 => request.schema = "unlisted".into(),
+                3 => request.schema.clear(),
+                4 => request.schema = "x".repeat(256),
+                5 => request.schema = "a\0b".into(),
+                _ => request.database = "x".repeat(256),
+            }
+            let baseline = h.queries().len();
+            let error = h
+                .driver
+                .switch_schema("observer-session", &request)
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error.code,
+                ErrorCode::Conflict | ErrorCode::InvalidInput
+            ));
+            assert_eq!(h.queries().len(), baseline);
+            assert!(h.driver.session_options.lock().snapshot.is_none());
+            assert_eq!(
+                h.driver
+                    .switch_schema("observer-session", &switch_request(&options, "OTHER"))
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Conflict
+            );
+            assert_eq!(h.queries().len(), baseline);
+        }
+        let old = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        let fresh = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        let baseline = h.queries().len();
+        assert_eq!(
+            h.driver
+                .switch_schema("observer-session", &switch_request(&old, "OTHER"))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(h.queries().len(), baseline);
+        assert_eq!(
+            h.driver.session_options.lock().revision,
+            fresh.revision.unwrap()
+        );
+        assert!(h.driver.session_options.lock().snapshot.is_some());
+        assert_eq!(use_count(&h), 0);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn switch_requires_cached_and_fresh_idle_matching_context_and_fresh_schema_membership() {
+        let h = Harness::open().await;
+        h.settings(json!({"transactionId":"open-opaque-TX"}));
+        let options = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        let baseline = h.queries().len();
+        assert_eq!(
+            h.driver
+                .switch_schema("observer-session", &switch_request(&options, "OTHER"))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(h.queries().len(), baseline);
+        for settings in [
+            json!({"transactionId":"new-TX"}),
+            json!({"warehouse":"CHANGED"}),
+            json!({"schemas":["PUBLIC"]}),
+            json!({"failSchemas":true}),
+        ] {
+            h.settings(json!({}));
+            let options = h
+                .driver
+                .session_context_options("observer-session")
+                .await
+                .unwrap();
+            h.settings(settings);
+            let error = h
+                .driver
+                .switch_schema("observer-session", &switch_request(&options, "OTHER"))
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error.code,
+                ErrorCode::Conflict | ErrorCode::Database
+            ));
+            assert!(h.driver.session_options.lock().snapshot.is_none());
+            assert!(!h.driver.is_closed());
+            assert_eq!(use_count(&h), 0);
+        }
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn switch_superseded_during_fresh_schema_read_never_admits_use() {
+        let h = Harness::open().await;
+        let options = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        h.settings(json!({"holdSchemas":true}));
+        let driver = h.driver.clone();
+        let request = switch_request(&options, "OTHER");
+        let task =
+            tokio::spawn(async move { driver.switch_schema("observer-session", &request).await });
+        h.wait_until(|| h.scripts.path().join("held-schemas").exists())
+            .await;
+        let replacement = h.driver.invalidate_session_options();
+        std::fs::write(h.scripts.path().join("release"), "").unwrap();
+        assert_eq!(task.await.unwrap().unwrap_err().code, ErrorCode::Conflict);
+        assert_eq!(h.driver.session_options.lock().revision, replacement);
+        assert_eq!(use_count(&h), 0);
+        assert!(!h.driver.is_closed());
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn switch_busy_admission_consumes_revision_while_wrong_session_and_public_use_do_not_dispatch()
+     {
+        let h = Harness::open().await;
+        let options = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        let request = switch_request(&options, "OTHER");
+        let baseline = h.queries().len();
+        assert_eq!(
+            h.driver
+                .switch_schema("other-session", &request)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert!(h.driver.session_options.lock().snapshot.is_some());
+        assert_eq!(
+            h.driver.switch_context("OTHER").await.unwrap_err().code,
+            ErrorCode::Unsupported
+        );
+        let mut sink = ScalarSink::default();
+        assert_eq!(
+            h.driver
+                .execute(
+                    "USE SCHEMA \"DB\".\"OTHER\"",
+                    StatementKind::Read,
+                    &mut sink
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
+        );
+        let lane = h.driver.lane.lock().await;
+        assert_eq!(
+            h.driver
+                .switch_schema("observer-session", &request)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        drop(lane);
+        assert_eq!(h.queries().len(), baseline);
+        assert!(h.driver.session_options.lock().snapshot.is_none());
+        assert!(!h.driver.is_closed());
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn switch_accepts_observed_manual_idle_but_rejects_changed_initial_session_before_use() {
+        let h = Harness::open().await;
+        h.settings(json!({"autocommit":"false","abortOnError":"true"}));
+        let options = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        let switched = h
+            .driver
+            .switch_schema("observer-session", &switch_request(&options, "OTHER"))
+            .await
+            .unwrap();
+        assert_eq!(switched.state.transaction_mode, TransactionMode::Manual);
+        assert_eq!(switched.state.transaction_state, TransactionState::Idle);
+        assert_eq!(use_count(&h), 1);
+        h.finish().await;
+        for settings in [
+            json!({"principal":"different"}),
+            json!({"session":"different"}),
+        ] {
+            let h = Harness::open().await;
+            let options = h
+                .driver
+                .session_context_options("observer-session")
+                .await
+                .unwrap();
+            h.settings(settings);
+            assert_eq!(
+                h.driver
+                    .switch_schema("observer-session", &switch_request(&options, "OTHER"))
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ConnectionClosed
+            );
+            assert_eq!(use_count(&h), 0);
+            assert!(h.driver.is_closed());
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn switch_use_rejection_is_definitive_database_error_but_retires_session() {
+        let h = Harness::open().await;
+        let options = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        h.settings(json!({"failUse":true}));
+        let error = h
+            .driver
+            .switch_schema("observer-session", &switch_request(&options, "OTHER"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Database);
+        assert!(!error.message.contains("acknowledged"));
+        assert!(h.driver.is_closed());
+        assert_eq!(use_count(&h), 1);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn switch_preserves_use_acknowledgement_on_readback_or_final_observation_failure() {
+        for settings in [
+            json!({"failReadback":true}),
+            json!({"badReadback":true}),
+            json!({"failFinalParameter":"AUTOCOMMIT"}),
+            json!({"afterRole":"CHANGED"}),
+            json!({"afterDatabase":"CHANGED"}),
+            json!({"afterWarehouse":"CHANGED"}),
+            json!({"afterSession":"CHANGED"}),
+            json!({"afterSecondaryRoles":"{\"roles\":\"\",\"value\":\"NONE\"}"}),
+            json!({"afterAutocommit":"false"}),
+            json!({"afterAbortOnError":"true"}),
+            json!({"afterTransactionId":"new-TX"}),
+            json!({"afterPolicy":"true"}),
+            json!({"afterSchema":"CHANGED"}),
+        ] {
+            let h = Harness::open().await;
+            h.settings(settings);
+            let options = h
+                .driver
+                .session_context_options("observer-session")
+                .await
+                .unwrap();
+            let error = h
+                .driver
+                .switch_schema("observer-session", &switch_request(&options, "OTHER"))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::ConnectionClosed);
+            assert_eq!(
+                error.message,
+                "Snowflake acknowledged the schema change, but its final session context could not be verified. The session was closed; reconnect before continuing."
+            );
+            assert!(error.completion_invalidated == Some(true));
+            assert!(h.driver.is_closed());
+            assert!(h.driver.session_options.lock().snapshot.is_none());
+            assert_eq!(use_count(&h), 1);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn abandoned_switch_after_use_ack_or_during_final_sample_reaps_without_publication() {
+        for (settings, barrier) in [
+            (json!({"holdReadback":true}), "held-readback"),
+            (json!({"holdAfterContext":true}), "held-after-context"),
+        ] {
+            let h = Harness::open().await;
+            let options = h
+                .driver
+                .session_context_options("observer-session")
+                .await
+                .unwrap();
+            h.settings(settings);
+            let driver = h.driver.clone();
+            let request = switch_request(&options, "OTHER");
+            let task =
+                tokio::spawn(
+                    async move { driver.switch_schema("observer-session", &request).await },
+                );
+            h.wait_until(|| h.scripts.path().join(barrier).exists())
+                .await;
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            assert!(h.driver.is_closed());
+            assert!(h.driver.session_options.lock().snapshot.is_none());
+            assert_eq!(use_count(&h), 1);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_switch_distinguishes_unacknowledged_use_from_known_use_success() {
+        for (settings, barrier, expected) in [
+            (
+                json!({"holdUse":true}),
+                "held-use",
+                ErrorCode::OutcomeUnknown,
+            ),
+            (
+                json!({"holdReadback":true}),
+                "held-readback",
+                ErrorCode::ConnectionClosed,
+            ),
+            (
+                json!({"holdAfterContext":true}),
+                "held-after-context",
+                ErrorCode::ConnectionClosed,
+            ),
+        ] {
+            let h = Harness::open().await;
+            let options = h
+                .driver
+                .session_context_options("observer-session")
+                .await
+                .unwrap();
+            h.settings(settings);
+            let driver = h.driver.clone();
+            let request = switch_request(&options, "OTHER");
+            let task =
+                tokio::spawn(
+                    async move { driver.switch_schema("observer-session", &request).await },
+                );
+            h.wait_until(|| h.scripts.path().join(barrier).exists())
+                .await;
+            let _ = h.driver.cancel().await;
+            let error = task.await.unwrap().unwrap_err();
+            assert_eq!(error.code, expected);
+            assert_eq!(
+                error.message.contains("acknowledged the schema change"),
+                expected == ErrorCode::ConnectionClosed
+            );
+            assert!(h.driver.is_closed());
+            assert_eq!(use_count(&h), 1);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn superseded_switch_after_use_ack_cannot_publish_and_closes() {
+        let h = Harness::open().await;
+        let options = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        h.settings(json!({"holdAfterContext":true}));
+        let driver = h.driver.clone();
+        let request = switch_request(&options, "OTHER");
+        let task =
+            tokio::spawn(async move { driver.switch_schema("observer-session", &request).await });
+        h.wait_until(|| h.scripts.path().join("held-after-context").exists())
+            .await;
+        h.driver.invalidate_session_options();
+        std::fs::write(h.scripts.path().join("release"), "").unwrap();
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code, ErrorCode::ConnectionClosed);
+        assert!(error.message.contains("acknowledged the schema change"));
+        assert!(h.driver.is_closed());
+        assert!(h.driver.session_options.lock().snapshot.is_none());
+        assert_eq!(use_count(&h), 1);
+        h.finish().await;
     }
 
     fn assert_unavailable(state: &SessionRuntimeState) {

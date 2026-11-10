@@ -49,10 +49,12 @@ SSO URLs and raw dependency output do not belong in either artifact.
 
 Dry-run must create no helper, network connection, authentication root or
 evidence files. Explicit manifest emission is an offline local file operation.
-There is no execution command in this compiler increment. A future runner needs
-its own tested dispatch ledger, bounded streaming-credit handling, result and
-identity validation, cancellation and cleanup ownership before account approval
-can be requested. Approval must name the exact manifest hash, run window, route
+There is no execution command in this compiler increment. The separate pure
+[result/protocol modules](snowflake-qualification-protocol.md) now implement
+typed validation, fixed-ledger reservation and bounded streaming-credit/control
+ownership. A future runner still needs strict physical framing, dispatch and
+timing, approval/source verification and process/cleanup ownership before account
+approval can be requested. Approval must name the exact manifest hash, run window, route
 and possible billing; elapsed time or an older approval is not authorization.
 
 Retirement, child reaping and identity-checked local cleanup remain available

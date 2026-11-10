@@ -52,9 +52,10 @@ Later local source adds revision-bound relation browsing and the
 [session observer](snowflake-sdk-session-observation.md): bounded same-connection
 settings/activity/context observations with explicit Unknown state. Current
 qualification is recorded in the ledger, separately from the earlier counts.
-Generic editable browsing, complete object inspection, typed schema switching,
-write/DDL/transaction workflows and account/owner acceptance remain required and
-open. Account scope must include automatic post-SQL observations and editor
+Guarded schema selection now has a typed adapter, IPC and selector; its application
+qualification passes. Generic editable browsing, complete object inspection,
+other session switches, write/DDL/transaction workflows and account/owner acceptance
+remain required and open. Account scope must include automatic post-SQL observations and editor
 metadata; the earlier two-query canary does not authorize them.
 
 ## Target definition and open questions

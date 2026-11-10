@@ -80,6 +80,7 @@ import type {
 } from "../ipc/generated";
 import {
   useStudio,
+  revokeSchemaSelectionBeforeWork,
   beginEventBatch,
   querySessionForTab,
   metadataSessionForTab,
@@ -593,13 +594,24 @@ export function App() {
   useEffect(() => {
     if (!session) return;
     const timer = setInterval(() => {
-      if (document.visibilityState !== "hidden")
-        void client
-          .call<number>("health", { sessionId: session.id })
-          .then((latencyMs) => {
-            useStudio.getState().updateSessionLatency(session.id, latencyMs);
-          })
-          .catch(() => useStudio.getState().retireSession(session.id));
+      const current = useStudio.getState();
+      if (
+        document.visibilityState === "hidden" ||
+        current.isSessionContextPending(session.id) ||
+        current.tabs.some(
+          (tab) =>
+            ["queued", "running"].includes(tab.status) &&
+            querySessionForTab(tab, current.sessions)?.id === session.id,
+        )
+      )
+        return;
+      revokeSchemaSelectionBeforeWork(session.id);
+      void client
+        .call<number>("health", { sessionId: session.id })
+        .then((latencyMs) => {
+          useStudio.getState().updateSessionLatency(session.id, latencyMs);
+        })
+        .catch(() => useStudio.getState().retireSession(session.id));
     }, 30000);
     return () => clearInterval(timer);
   }, [session?.id]);
@@ -623,6 +635,12 @@ export function App() {
       querySessionForTab(active, useStudio.getState().sessions)?.id !== plan.sessionId
     ) {
       state.notify("The query session changed. Run the statement again in its current session.");
+      return;
+    }
+    try {
+      revokeSchemaSelectionBeforeWork(plan.sessionId);
+    } catch (error) {
+      state.notify(messageOf(error));
       return;
     }
     if (active.kind === "query" && !preserveResults) {
@@ -651,6 +669,9 @@ export function App() {
     });
     const batch = beginEventBatch(tabId);
     try {
+      // Releasing old results can await IPC while metadata refreshes finish.
+      // Revoke any authority installed during that interval before dispatch.
+      revokeSchemaSelectionBeforeWork(plan.sessionId);
       const runId = await client.execute(plan.id, approval, (event) => {
         if (event.type === "planContext") {
           const latest = useStudio.getState().tabs.find((tab) => tab.id === tabId);
@@ -689,6 +710,7 @@ export function App() {
   ) {
     const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision;
     try {
+      revokeSchemaSelectionBeforeWork(sessionId);
       const plan = await client.call<PreparedPlan>(
         explain ? "prepare_explain" : "prepare_execution",
         {

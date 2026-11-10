@@ -8,6 +8,146 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK guarded schema selection (10 November 2026)
+
+Status: **locally qualified; account and owner acceptance open**. No account
+authentication or SQL is part of this increment. The previous two-SELECT canary
+approval is consumed and does not authorize observation, metadata or switching.
+
+The typed `switch_session_schema` command carries exact string revision,
+fingerprint, database and schema fields. The adapter consumes matching authority
+before awaiting, verifies the complete idle baseline and fresh schema membership,
+then uses exactly thirteen executions under one bounded lane. It retains the
+actual helper switch operation through final observation and publication. A known
+USE acknowledgement followed by failed verification closes the session with a
+fixed message preserving that distinction. Studio returns the driver's verified
+options directly, without another eleven-query observation. Public SQL USE,
+writes, DDL and transaction controls remain unavailable on the SDK route.
+
+Evidence under `.cache/verification/connection-attempts/`:
+
+- `sdk-switch-before-fix.log`: the new adapter success test reproduces inherited
+  Unsupported before implementation.
+- `sdk-switch-adapter-final.log`: **19/19** actual Node/production-helper tests
+  with a synthetic SDK pass, including eleven new switch cases and a thirteen-
+  variant post-ACK failure matrix. Quoted names, nullable role/warehouse, manual
+  idle mode, stale/forged/ABA/open-transaction requests, schema disappearance,
+  cancellation, abandonment, supersession and child/auth-root cleanup are covered.
+- `sdk-switch-existing-integration.log`: **30/30** existing actual-helper adapter
+  fixture tests pass; `sdk-switch-clippy.log` passes scoped strict Clippy.
+- `sdk-schema-switch-studio-first.log`: **2/2** strict DTO/Studio regressions pass;
+  the Studio case checks success, busy, closed, error, wrong-session and missing-
+  revision outcomes and proves zero follow-up observer calls.
+- `sdk-schema-switch-frontend-first.log`: **643/643** frontend tests pass before
+  the final shared legacy-switch gate and visible refresh hint. The focused state
+  suite initially passes **114/114**, including sixteen new authority/race cases.
+  `sdk-schema-switch-browsing-ui-final.log` passes **14/14** relation UI tests,
+  including authority revocation before catalog/inspection/preview and zero SQL
+  while switching.
+
+Independent substantial backend review finds no unresolved material issue.
+Frontend review identified a shared legacy pending-state gap, now addressed, and
+expired-authority discoverability. The selector stays visible disabled and says
+“Refresh to change schema”; metadata lookups do not add hidden observer reads.
+
+The first focused browser run reproduces a pre-existing console-test assertion
+expecting plural “transactions” after the product warning changed to “open or
+unknown transaction.” Both strings are present at preceding `f4bb5df`. PostgreSQL
+read/write/transaction/grid assertions reached the final close prompt; its failed
+assertion left the dialog open and the test's cleanup then timed out. The test
+assertion is corrected and the affected rerun passes.
+The first run passes **10/16**, including both new guarded-switch UI cases.
+It also reproduces a new template-dialog regression: publishing the template's
+context observation globally dismisses the dialog before NULL-schema validation.
+The template now uses the same guarded observation but returns state directly,
+without publishing a new editor context or adding SQL. This repair and a late
+PostgreSQL completion failure are covered by the passing rerun below. The log is
+`sdk-schema-switch-browser-first.log`; six failing traces are preserved in
+`schema-switch-browser-first-traces/`.
+
+`sdk-schema-switch-validate-first.log` stops at frontend tests: **635 pass / 8
+fail**. One assertion expects the former absent legacy-switch flag rather than
+its new settled `false` value. Seven failures are timeouts or ensuing assertions
+while browser tests ran concurrently. The five affected component files pass all
+**26/26** tests in `sdk-schema-switch-frontend-recheck.log` without concurrent
+browser work; the passing full final validation is recorded below. The first run does not
+qualify the final source or later validation stages.
+
+`sdk-schema-switch-browser-second.log` passes **16/16** focused headless browser
+workflows in 2.7 minutes: PostgreSQL/MySQL transactions, grid isolation and last-
+console cleanup; schema/database context isolation; SQL files/library; SDK
+browsing/completion/state; both new guarded-schema outcomes; and positive/negative
+template-context workflows on PostgreSQL, MySQL and MariaDB. SDK cases use
+synthetic RPC seams, not account behavior. Independent source review clears the
+new template observer's authority revocation, stale/retired ownership rejection,
+pending cleanup and no-global-publication/no-follow-up-SQL behavior.
+
+`sdk-schema-switch-state-final.log` passes **120/120** state tests, including
+the final shared legacy switch gate and template observation regressions.
+`sdk-schema-switch-postgres-final.log` and `sdk-schema-switch-mysql-final.log`
+pass the actual isolated PostgreSQL and MySQL/MariaDB manual-transaction,
+grid-isolation and schema/database-switch tests. These exercise the retained
+legacy route and do not establish Snowflake account behavior.
+
+`sdk-schema-switch-validate-final.log` passes full `pnpm validate`: **649 frontend /
+365 standard Rust** tests, formatting, generated contracts/types, production web
+build, desktop compilation and strict all-target/all-feature Clippy. The standard
+Rust run reports 129 opt-in fixture tests ignored; relevant actual database tests
+are run separately above. The existing bundle chunk-size/plugin-timing notices
+remain nonfatal.
+
+`sdk-schema-switch-bundle-final.log` passes a fresh normal SDK macOS arm64 app,
+strict ad-hoc signature/resource verification and actual packaged SDK hello/EOF
+startup with **zero authentication and SQL requests**. The 31,546,624-byte normal
+executable has SHA-256
+`c4d4160468f8e1a8a8603ce46efb5e6e53511945f24f504696142fcb9d541d79`;
+`sdk-schema-switch-bundle-artifact.json` records its path and bundle size. The
+runtime manifest remains `f863ea753dbd2908ea7f63f60604f162c888f6a65d3301a593187f32ab35fbbe`.
+The known missing-libLLVM debug-strip warning remains nonfatal; Developer ID,
+notarization, installation and actual account/normal-app acceptance remain open.
+`sdk-schema-switch-native-build-final.log` passes the separate fresh hidden-native
+build and resource/startup verification. `sdk-schema-switch-native-final.log`
+passes **three runs**, each with **19 native check categories / ten cleanup
+cycles**, including the newly enrolled schema-switch command's disconnected-
+session IPC guard. The native build SHA-256 is
+`f89c70a41a8862834a960ab09239cf66339f65f0f4d4aa639738bbeb10efbe61`.
+This hidden synthetic fixture does not qualify normal visible startup, SSO or
+Snowflake account switching.
+
+`sdk-schema-switch-qualified-source.json` confirms all **322 frozen application,
+runtime and test inputs** remain unchanged through qualification and the normal
+bundle executable retains its recorded hash. Documentation and the separate pure
+qualification modules are outside that application source freeze. The local app
+is runnable at `src-tauri/target/release/bundle/macos/Joinery.app`; it is not
+installed or externally accepted.
+
+### Offline qualification result/protocol validation (10 November 2026)
+
+Committed separately as `7a7ea12`. The four pure modules/tests and
+[usage contract](snowflake-qualification-protocol.md) add typed bounded result
+collection, observation comparison, fixed-manifest request reservation and
+streaming credit/cancel/close ownership. They perform no I/O and confer no
+execution authority; the v1 manifest remains `offlineOnly` / `runner: null`.
+
+`sdk-qualification-pure-combined-final.log` under the evidence directory passes
+**39/39** synthetic tests: 16 result tests and 23 protocol tests. An in-process
+production helper with a synthetic SDK and split framing exercises the complete
+24-SQL ledger, one connection, 1,000 schemas and a shared 1,023-row successful
+budget. No subprocess, network, real SDK authentication or account work occurs.
+
+Independent review reproduces an evidence-classification defect: an unknown
+terminal was labelled rejected and pending SQL reservations were absent from
+`outcomes()`. `sdk-qualification-protocol-outcomes-before-fix.log` records the
+failing regression. Evidence now separates request progress, remote certainty
+and typed-result validation, installs unknown before a frame escapes, and retains
+known success acknowledgement when later validation fails. Context rejection
+before its public acknowledgement remains unknown. A definitive query rejection
+also requires its dispatch phase; the missing-phase regression fails before the
+repair in `sdk-qualification-protocol-dispatch-before-fix.log`. The final combined
+run and independent 39-test rerun pass; scoped formatting passes and review clears
+the repair. Strict physical framing, approval/freshness/source enforcement and
+child cleanup remain separate required runner work.
+
 ### SDK schema-switch transport (10 November 2026)
 
 Status: **transport locally qualified; application switching incomplete**.

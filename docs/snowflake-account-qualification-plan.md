@@ -27,7 +27,10 @@ An [offline manifest compiler](snowflake-qualification-manifest.md) is implement
 and locally tested for the distinct `session-options-scalar-state-v1` workflow: exactly
 24 potential SQL executions on one helper connection, including the new observer
 reads and bounded schema-name inventory. It is not A1/A2 approval, an executable
-runner or application acceptance. The older stage envelopes below remain
+runner or application acceptance. Pure result/protocol validation is now
+[implemented and reviewed](snowflake-qualification-protocol.md); physical dispatch,
+approval enforcement and process lifecycle still require an executable runner.
+The older stage envelopes below remain
 proposed; they do not silently absorb this workflow.
 
 No developer switch, alternate OAuth route or SQL API fallback may bypass the app's

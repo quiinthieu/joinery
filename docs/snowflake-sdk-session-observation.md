@@ -11,9 +11,10 @@ offline checks below.
 For the design rationale and Snowflake references, see the
 [session observation and schema-switching proposal](snowflake-sdk-session-design.md),
 [SDK integration guide](snowflake-sdk-integration.md), and
-[relation browsing guide](snowflake-sdk-browsing-design.md). Only the observer
-and schema-options portion described here is implemented; typed schema switching
-remains future work.
+[relation browsing guide](snowflake-sdk-browsing-design.md). This document covers
+the observer and schema options. The dependent typed schema-switch adapter, IPC
+and selector are implemented with separate
+[application qualification](replacement-verification.md#sdk-guarded-schema-selection-10-november-2026).
 
 ## Read contract
 
@@ -99,7 +100,9 @@ The schema options are opaque, bounded choices from the current database. Their
 visibility is privilege filtered; a missing schema can mean it was not listed
 or is no longer available. The current schema may be displayed as unavailable,
 but an omitted schema is not inserted into the selectable choices. The SDK
-schema selector remains disabled pending typed switching. `USE`, `ALTER SESSION`,
+schema selector requires current opaque revision authority and observed idle
+activity; revoked authority stays visibly disabled until explicit refresh.
+The separate typed command does not widen public SQL admission. `USE`, `ALTER SESSION`,
 writes, DDL, BEGIN, COMMIT, and ROLLBACK remain blocked by the read-only SQL
 policy; `switch_session_context` does not enable SDK schema switching.
 

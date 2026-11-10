@@ -3,6 +3,7 @@ import { client } from "../ipc/client";
 import type {
   PreparedPlan,
   SessionInfo,
+  SessionContextOptions,
   SessionRuntimeState,
   TablePage,
   TableSchema,
@@ -15,6 +16,8 @@ import {
   isTabFileDirty,
   MAX_RECENT_LOCATIONS,
   sessionHasOpenTransaction,
+  revokeSchemaSelectionBeforeWork,
+  observeTemplateSessionContext,
 } from "./studio";
 import { workspaceSnapshot } from "./workspace";
 import { dirtyStore } from "../data/dirty-store";
@@ -99,6 +102,8 @@ beforeEach(() => {
     sessionStates: {},
     sessionContexts: {},
     sessionContextRevision: {},
+    sessionContextAuthorities: {},
+    sessionContextSwitching: {},
     savedQueries: [],
     bookmarks: [],
     sqlFormatSettings: {
@@ -1067,6 +1072,497 @@ function useSdkSession() {
     sessionContextRevision: { session: 0 },
   });
 }
+
+const quotedSchemaTarget = 'Quoted.雪"schema';
+function schemaAuthority(overrides: Partial<SessionContextOptions> = {}): SessionContextOptions {
+  return {
+    state: sdkRuntime(),
+    available: ["public", quotedSchemaTarget],
+    revision: "full-server-revision-0123456789/opaque-token",
+    ...overrides,
+  };
+}
+function seedSchemaAuthority(options = schemaAuthority()) {
+  useSdkSession();
+  useStudio.setState({
+    sessionStates: { session: options.state },
+    sessionContexts: { session: options.available },
+    sessionContextAuthorities: { session: options },
+  });
+  return options;
+}
+function deferredContextOptions() {
+  let resolve!: (options: SessionContextOptions) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<SessionContextOptions>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+test("SDK schema selection sends full verified typed authority and revokes it synchronously", async () => {
+  const authority = seedSchemaAuthority(
+    schemaAuthority({
+      state: {
+        ...sdkRuntime(),
+        database: 'Database.雪"name',
+        contextFingerprint: "full-fingerprint/0123456789",
+      },
+    }),
+  );
+  const response = schemaAuthority({
+    state: {
+      ...authority.state,
+      activeContext: quotedSchemaTarget,
+      searchPath: [quotedSchemaTarget],
+      contextFingerprint: "after-switch-fingerprint",
+    },
+    revision: "new-server-revision",
+  });
+  const pending = deferredContextOptions();
+  vi.mocked(client.call).mockImplementationOnce((() => {
+    const current = useStudio.getState();
+    expect(current.sessionContextAuthorities.session).toBeUndefined();
+    expect(current.sessionContexts.session).toEqual([]);
+    expect(current.sessionContextSwitching.session).toBe(true);
+    expect(current.sessionStates.session.transactionObservation).toEqual({ status: "unavailable" });
+    expect(current.sessionStates.session.transactionState).toBe("unknown");
+    expect(current.sessionContextRevision.session).toBe(1);
+    expect(current.isSessionContextPending("session")).toBe(true);
+    return pending.promise;
+  }) as typeof client.call);
+  const switching = useStudio.getState().switchSessionContext("session", quotedSchemaTarget);
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("switch_session_schema", {
+    sessionId: "session",
+    request: {
+      revision: authority.revision,
+      database: authority.state.database,
+      schema: quotedSchemaTarget,
+      contextFingerprint: authority.state.contextFingerprint,
+    },
+  });
+  pending.resolve(response);
+  await switching;
+  const current = useStudio.getState();
+  expect(current.sessionStates.session).toBe(response.state);
+  expect(current.sessionContextAuthorities.session).toBe(response);
+  expect(current.sessionContexts.session).toEqual(response.available);
+  expect(current.sessionContextRevision.session).toBe(2);
+  expect(current.sessionContextSwitching.session).toBe(false);
+  expect(current.isSessionContextPending("session")).toBe(false);
+});
+
+test("SDK schema selection rejects missing, unavailable, unknown, open or stale authority without IPC", async () => {
+  const cases: Array<[string, (options: SessionContextOptions) => void]> = [
+    [
+      "unavailable",
+      (options) => {
+        options.state.transactionObservation = { status: "unavailable" };
+      },
+    ],
+    [
+      "missing observation",
+      (options) => {
+        delete options.state.transactionObservation;
+      },
+    ],
+    [
+      "unknown",
+      (options) => {
+        options.state.transactionState = "unknown";
+        options.state.transactionMode = "unknown";
+      },
+    ],
+    [
+      "open",
+      (options) => {
+        options.state.transactionState = "inTransaction";
+      },
+    ],
+    [
+      "failed",
+      (options) => {
+        options.state.transactionState = "failed";
+      },
+    ],
+    [
+      "opaque transaction",
+      (options) => {
+        options.state.transactionObservation = {
+          status: "observed",
+          transactionId: "opaque-TX-A7",
+          abortOnError: false,
+          usability: "unknown",
+        };
+      },
+    ],
+    [
+      "not listed",
+      (options) => {
+        options.available = ["public"];
+      },
+    ],
+    [
+      "missing revision",
+      (options) => {
+        delete options.revision;
+      },
+    ],
+    [
+      "empty revision",
+      (options) => {
+        options.revision = "";
+      },
+    ],
+    [
+      "missing fingerprint",
+      (options) => {
+        delete options.state.contextFingerprint;
+      },
+    ],
+  ];
+  for (const [label, mutate] of cases) {
+    const options = schemaAuthority();
+    mutate(options);
+    seedSchemaAuthority(options);
+    await expect(
+      useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+      label,
+    ).rejects.toThrow("Refresh session context");
+    expect(client.call, label).not.toHaveBeenCalled();
+    expect(useStudio.getState().isSessionContextPending("session"), label).toBe(false);
+  }
+  seedSchemaAuthority();
+  useStudio.setState({ sessionContextAuthorities: {} });
+  await expect(
+    useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+  ).rejects.toThrow("Refresh session context");
+  seedSchemaAuthority();
+  useStudio.setState({ sessionStates: { session: { ...sdkRuntime() } } });
+  await expect(
+    useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+  ).rejects.toThrow("Refresh session context");
+  expect(client.call).not.toHaveBeenCalled();
+});
+
+test("an admitted SDK schema switch blocks refresh, duplicate selection and new work until settled", async () => {
+  seedSchemaAuthority();
+  const pending = deferredContextOptions();
+  vi.mocked(client.call).mockReturnValueOnce(pending.promise);
+  const switching = useStudio.getState().switchSessionContext("session", quotedSchemaTarget);
+  expect(await useStudio.getState().refreshSessionContexts("session")).toBe(false);
+  await expect(useStudio.getState().refreshSessionContexts("session", true)).rejects.toThrow(
+    "Wait for the schema change",
+  );
+  await expect(useStudio.getState().switchSessionContext("session", "public")).rejects.toThrow(
+    "Wait for the schema change",
+  );
+  expect(() => revokeSchemaSelectionBeforeWork("session")).toThrow("Wait for the schema change");
+  expect(client.call).toHaveBeenCalledTimes(1);
+  pending.resolve(schemaAuthority());
+  await switching;
+  expect(useStudio.getState().sessionContextSwitching.session).toBe(false);
+  expect(() => revokeSchemaSelectionBeforeWork("session")).not.toThrow();
+  expect(useStudio.getState().sessionContextAuthorities.session).toBeUndefined();
+  expect(useStudio.getState().sessionContexts.session).toEqual([]);
+  await expect(
+    useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+  ).rejects.toThrow("Refresh session context");
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+
+test("SDK refresh without a server revision cannot authorize a subsequent schema selection", async () => {
+  seedSchemaAuthority();
+  vi.mocked(client.call).mockResolvedValueOnce({
+    state: sdkRuntime(),
+    available: ["public", quotedSchemaTarget],
+  });
+  expect(await useStudio.getState().refreshSessionContexts("session", true)).toBe(true);
+  expect(useStudio.getState().sessionContextAuthorities.session).toBeUndefined();
+  await expect(
+    useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+  ).rejects.toThrow("Refresh session context");
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("session_contexts", { sessionId: "session" });
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+});
+
+test("a rejected SDK schema switch stays unknown and requires fresh authority before retry", async () => {
+  seedSchemaAuthority();
+  vi.mocked(client.call).mockRejectedValueOnce({ code: "conflict", message: "Authority expired" });
+  await expect(
+    useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(useStudio.getState().sessions.profile.id).toBe("session");
+  expect(useStudio.getState().sessionStates.session.transactionState).toBe("unknown");
+  expect(useStudio.getState().sessionContextSwitching.session).toBe(false);
+  expect(useStudio.getState().sessionContexts.session).toEqual([]);
+  expect(useStudio.getState().sessionContextAuthorities.session).toBeUndefined();
+  await expect(
+    useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+  ).rejects.toThrow("Refresh session context");
+  expect(client.call).toHaveBeenCalledTimes(1);
+  const fresh = schemaAuthority({ revision: "fresh-after-rejection" });
+  vi.mocked(client.call).mockResolvedValueOnce(fresh);
+  expect(await useStudio.getState().refreshSessionContexts("session", true)).toBe(true);
+  expect(useStudio.getState().sessionContextAuthorities.session).toBe(fresh);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+});
+
+for (const newerRefresh of [false, true]) {
+  for (const lateFailure of [false, true]) {
+    test(`work invalidation prevents old SDK refresh ${lateFailure ? "failure" : "success"} publishing${newerRefresh ? " over a newer refresh" : " authority"}`, async () => {
+      seedSchemaAuthority();
+      const oldResponse = deferredContextOptions();
+      vi.mocked(client.call).mockReturnValueOnce(oldResponse.promise);
+      const old = useStudio.getState().refreshSessionContexts("session", true);
+      expect(useStudio.getState().sessionContextAuthorities.session).toBeUndefined();
+      expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+      revokeSchemaSelectionBeforeWork("session");
+      const observedAfterWork = { ...sdkRuntime(), contextFingerprint: "observed-after-work" };
+      useStudio.setState({ sessionStates: { session: observedAfterWork } });
+      const latest = schemaAuthority({
+        state: { ...sdkRuntime(), contextFingerprint: "new-refresh" },
+        revision: "new-revision",
+      });
+      if (newerRefresh) {
+        vi.mocked(client.call).mockResolvedValueOnce(latest);
+        expect(await useStudio.getState().refreshSessionContexts("session", true)).toBe(true);
+        // The old promise remains pending even though a new request completed.
+        expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+      }
+      if (lateFailure) oldResponse.reject(new Error("obsolete observation denied"));
+      else oldResponse.resolve(schemaAuthority());
+      expect(await old).toBe(false);
+      const current = useStudio.getState();
+      expect(current.sessionStates.session).toBe(newerRefresh ? latest.state : observedAfterWork);
+      expect(current.sessionContextAuthorities.session).toBe(newerRefresh ? latest : undefined);
+      expect(current.sessionContexts.session).toEqual(newerRefresh ? latest.available : []);
+      expect(current.isSessionContextPending("session")).toBe(false);
+    });
+  }
+}
+
+for (const lateFailure of [false, true]) {
+  test(`retirement prevents pending SDK schema switch ${lateFailure ? "failure" : "success"} from publishing`, async () => {
+    seedSchemaAuthority();
+    const response = deferredContextOptions();
+    vi.mocked(client.call).mockReturnValueOnce(response.promise);
+    const switching = useStudio.getState().switchSessionContext("session", quotedSchemaTarget);
+    useStudio.getState().retireSession("session");
+    expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+    if (lateFailure) response.reject({ code: "outcomeUnknown", message: "obsolete switch" });
+    else response.resolve(schemaAuthority());
+    await switching;
+    const current = useStudio.getState();
+    expect(current.sessions.profile).toBeUndefined();
+    expect(current.sessionStates.session).toBeUndefined();
+    expect(current.sessionContexts.session).toBeUndefined();
+    expect(current.sessionContextAuthorities.session).toBeUndefined();
+    expect(current.sessionContextSwitching.session).toBeUndefined();
+  });
+}
+
+for (const code of ["outcomeUnknown", "connectionClosed"] as const) {
+  test(`SDK schema switch ${code} retires the session without follow-up IPC`, async () => {
+    seedSchemaAuthority();
+    vi.mocked(client.call).mockRejectedValueOnce({ code, message: "switch could not be verified" });
+    await expect(
+      useStudio.getState().switchSessionContext("session", quotedSchemaTarget),
+    ).rejects.toMatchObject({ code });
+    const current = useStudio.getState();
+    expect(current.sessions.profile).toBeUndefined();
+    expect(current.sessionStates.session).toBeUndefined();
+    expect(current.sessionContextAuthorities.session).toBeUndefined();
+    expect(current.sessionContextSwitching.session).toBeUndefined();
+    expect(current.isSessionContextPending("session")).toBe(false);
+    expect(client.call).toHaveBeenCalledTimes(1);
+  });
+}
+
+test("legacy schema selection retains its existing command and needs no SDK authority", async () => {
+  const response = {
+    state: { ...transactionRuntime("session"), activeContext: "analytics" },
+    available: ["public", "analytics"],
+  };
+  vi.mocked(client.call).mockResolvedValueOnce(response);
+  await useStudio.getState().switchSessionContext("session", "analytics");
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("switch_session_context", {
+    sessionId: "session",
+    target: "analytics",
+  });
+  expect(useStudio.getState().sessionStates.session).toEqual(response.state);
+  expect(useStudio.getState().sessionContexts.session).toEqual(response.available);
+  expect(useStudio.getState().sessionContextAuthorities.session).toBeUndefined();
+  expect(useStudio.getState().sessionContextSwitching.session).toBe(false);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+});
+
+test("legacy schema selection blocks refresh and competing work while its shared gate is pending", async () => {
+  const pending = deferredContextOptions();
+  vi.mocked(client.call).mockReturnValueOnce(pending.promise);
+  const switching = useStudio.getState().switchSessionContext("session", "analytics");
+
+  expect(useStudio.getState().sessionContextSwitching.session).toBe(true);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+  expect(await useStudio.getState().refreshSessionContexts("session")).toBe(false);
+  await expect(useStudio.getState().switchSessionContext("session", "reporting")).rejects.toThrow(
+    "Wait for the schema change",
+  );
+  expect(() => revokeSchemaSelectionBeforeWork("session")).toThrow("Wait for the schema change");
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("switch_session_context", {
+    sessionId: "session",
+    target: "analytics",
+  });
+
+  const response = {
+    state: { ...transactionRuntime("session"), activeContext: "analytics" },
+    available: ["public", "analytics"],
+  };
+  pending.resolve(response);
+  await switching;
+  expect(useStudio.getState().sessionContextSwitching.session).toBe(false);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+  expect(useStudio.getState().sessionStates.session).toEqual(response.state);
+});
+
+test("template observation returns a current context without publishing it or restoring authority", async () => {
+  const originalRuntime = sdkRuntime();
+  seedSchemaAuthority({
+    ...schemaAuthority(),
+    state: originalRuntime,
+  });
+  useStudio.setState({ sessionContextRevision: { session: 7 } });
+  const response = deferredContextOptions();
+  vi.mocked(client.call).mockReturnValueOnce(response.promise);
+
+  const observing = observeTemplateSessionContext("session");
+  const during = useStudio.getState();
+  expect(during.sessionContextAuthorities.session).toBeUndefined();
+  expect(during.sessionContexts.session).toEqual([]);
+  expect(during.sessionStates.session).toBe(originalRuntime);
+  expect(during.sessionContextRevision.session).toBe(7);
+  expect(during.isSessionContextPending("session")).toBe(true);
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("session_contexts", { sessionId: "session" });
+
+  const observed = {
+    ...sdkRuntime(),
+    activeContext: null,
+    database: "different-database",
+  };
+  response.resolve({ state: observed, available: ["new-schema"], revision: "must-not-publish" });
+  await expect(observing).resolves.toBe(observed);
+  const after = useStudio.getState();
+  expect(after.sessionStates.session).toBe(originalRuntime);
+  expect(after.sessionContexts.session).toEqual([]);
+  expect(after.sessionContextAuthorities.session).toBeUndefined();
+  expect(after.sessionContextRevision.session).toBe(7);
+  expect(after.isSessionContextPending("session")).toBe(false);
+});
+
+test("a superseded template observation cannot replace newer refresh state or ownership", async () => {
+  seedSchemaAuthority();
+  const oldResponse = deferredContextOptions();
+  vi.mocked(client.call).mockReturnValueOnce(oldResponse.promise);
+  const oldObservation = observeTemplateSessionContext("session");
+  const latest = schemaAuthority({
+    state: { ...sdkRuntime(), activeContext: "new-schema", contextFingerprint: "latest" },
+    available: ["new-schema"],
+    revision: "latest-revision",
+  });
+  vi.mocked(client.call).mockResolvedValueOnce(latest);
+
+  expect(await useStudio.getState().refreshSessionContexts("session", true)).toBe(true);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+  expect(useStudio.getState().sessionContextAuthorities.session).toBe(latest);
+  oldResponse.resolve(
+    schemaAuthority({
+      state: { ...sdkRuntime(), activeContext: "obsolete-schema" },
+      available: ["obsolete-schema"],
+      revision: "obsolete-revision",
+    }),
+  );
+  await expect(oldObservation).rejects.toThrow("The console context changed");
+
+  const current = useStudio.getState();
+  expect(current.sessionStates.session).toBe(latest.state);
+  expect(current.sessionContexts.session).toEqual(latest.available);
+  expect(current.sessionContextAuthorities.session).toBe(latest);
+  expect(current.isSessionContextPending("session")).toBe(false);
+});
+
+test("work invalidation rejects a late template observation without restoring authority", async () => {
+  seedSchemaAuthority();
+  const originalRuntime = useStudio.getState().sessionStates.session;
+  const response = deferredContextOptions();
+  vi.mocked(client.call).mockReturnValueOnce(response.promise);
+  const observing = observeTemplateSessionContext("session");
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+
+  revokeSchemaSelectionBeforeWork("session");
+  expect(useStudio.getState().sessionContextAuthorities.session).toBeUndefined();
+  expect(useStudio.getState().sessionContexts.session).toEqual([]);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+  response.resolve(
+    schemaAuthority({
+      state: { ...sdkRuntime(), activeContext: "late-schema" },
+      available: ["late-schema"],
+      revision: "late-revision",
+    }),
+  );
+  await expect(observing).rejects.toThrow("The console context changed");
+
+  const current = useStudio.getState();
+  expect(current.sessionStates.session).toBe(originalRuntime);
+  expect(current.sessionContexts.session).toEqual([]);
+  expect(current.sessionContextAuthorities.session).toBeUndefined();
+  expect(current.isSessionContextPending("session")).toBe(false);
+});
+
+test("retirement rejects a late template observation without recreating session state", async () => {
+  seedSchemaAuthority();
+  const response = deferredContextOptions();
+  vi.mocked(client.call).mockReturnValueOnce(response.promise);
+  const observing = observeTemplateSessionContext("session");
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+
+  useStudio.getState().retireSession("session");
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+  response.resolve(
+    schemaAuthority({
+      state: { ...sdkRuntime(), activeContext: "late-schema" },
+      available: ["late-schema"],
+    }),
+  );
+  await expect(observing).rejects.toThrow("The console context changed");
+  expect(useStudio.getState().sessions.profile).toBeUndefined();
+  expect(useStudio.getState().sessionStates.session).toBeUndefined();
+  expect(useStudio.getState().sessionContexts.session).toBeUndefined();
+  expect(useStudio.getState().sessionContextAuthorities.session).toBeUndefined();
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+});
+
+test("template observation is rejected during a schema switch without issuing another IPC", async () => {
+  seedSchemaAuthority();
+  const switchingResponse = deferredContextOptions();
+  vi.mocked(client.call).mockReturnValueOnce(switchingResponse.promise);
+  const switching = useStudio.getState().switchSessionContext("session", quotedSchemaTarget);
+
+  await expect(observeTemplateSessionContext("session")).rejects.toThrow(
+    "Wait for the schema change",
+  );
+  expect(useStudio.getState().sessionContextSwitching.session).toBe(true);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(true);
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("switch_session_schema", {
+    sessionId: "session",
+    request: expect.any(Object),
+  });
+  switchingResponse.resolve(schemaAuthority());
+  await switching;
+  expect(useStudio.getState().sessionContextSwitching.session).toBe(false);
+  expect(useStudio.getState().isSessionContextPending("session")).toBe(false);
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
 test("unknown or missing session transaction observation requires close confirmation", () => {
   expect(sessionHasOpenTransaction({}, "session")).toBe(true);
   expect(

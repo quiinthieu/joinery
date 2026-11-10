@@ -84,6 +84,7 @@
     "allow-compare-data",
     "allow-session-contexts",
     "allow-switch-session-context",
+    "allow-switch-session-schema",
     "allow-set-transaction-mode",
     "allow-commit-transaction",
     "allow-rollback-transaction",

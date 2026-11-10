@@ -41,11 +41,14 @@ with [separate qualification](snowflake-sdk-metadata-design.md). The later
 relation catalog, column inspection and bounded read-only preview locally.
 The [session observer](snowflake-sdk-session-observation.md) now implements
 bounded settings/activity observations and explicit Unknown states locally;
-account observation and typed schema switching remain unqualified/incomplete.
+account observation remains unqualified.
 The [typed switch transport](snowflake-sdk-session-design.md) now has separate
 USE/readback acknowledgement and retirement handling with local regression
-coverage. Its application adapter, IPC and selector remain incomplete; no account
-switching or additional account authorization is established.
+coverage. Its guarded application adapter, typed IPC and schema selector are now
+locally qualified, including browser and hidden native checks. The selector requires a
+fresh observed idle session and an exact revision-bound target; refresh is
+explicit when intervening work revokes that authority. No account switching or
+additional account authorization is established.
 Complete object/constraint inspection, generic editable browsing, schema/session
 switching, writes, DDL and transactions remain incomplete. The preceding
 SDK integration qualification passes, including all 143 browser workflows,
@@ -64,7 +67,7 @@ browser-SSO canaries do not establish the required SDK account behavior.
 | Area | Observable replacement acceptance | Current state |
 |---|---|---|
 | Connections and authentication | Existing account externalbrowser SSO; correct original account/host identity, TLS validation, browser cancellation/timeouts, expired login, explicit reconnect and logout; no credential leakage or automatic SQL replay | SDK profile route implemented; local lifecycle checks pass; actual account and native package acceptance open |
-| Session context | Observe current user/role/warehouse/database/schema; switch each deliberately, update metadata/completion, retain temporary/session objects and variables; isolate consoles when requested | SDK same-connection settings/activity/context observations locally qualified with explicit Unknown and nullable role. Switching remains disabled; temporary/session objects and actual account continuity unqualified |
+| Session context | Observe current user/role/warehouse/database/schema; switch each deliberately, update metadata/completion, retain temporary/session objects and variables; isolate consoles when requested | SDK same-connection observations locally qualified with explicit Unknown and nullable role. Guarded schema selection locally qualified; account switching, database/role/warehouse switching, temporary/session objects and account continuity remain unqualified or incomplete |
 | Metadata and search | Browse/find and inspect every required Snowflake object type with DDL/keys/dependencies, bounded paging, denied-role behavior and refresh after external changes | Partial catalog pilot; exact object inventory and live qualification open |
 | SQL editing | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools | Bounded common editor; full Snowflake feature inventory/qualification open |
 | Execution | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes | Read-only SDK route integrated; required write/batch/session semantics and remote outcome qualification open |

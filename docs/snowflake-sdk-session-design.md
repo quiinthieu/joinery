@@ -1,12 +1,12 @@
-# Snowflake SDK session observation and proposed schema switching
+# Snowflake SDK session observation and guarded schema switching
 
 The observation and bounded schema-options portion is now implemented; see its
 [current contract and qualification](snowflake-sdk-session-observation.md).
-Typed schema switching below remains proposed. Neither portion establishes
-Snowflake account qualification. Both use the existing SDK connection.
-The helper/supervisor transport foundation is implemented and locally qualified;
-see its [verification evidence](replacement-verification.md#sdk-schema-switch-transport-10-november-2026). It is not yet exposed through the application
-adapter, typed IPC or schema selector. Ordinary helper `context {}` is now a
+Typed schema switching now has a revision-bound adapter, enrolled strict IPC and
+guarded schema selector; local application qualification passes. Neither
+portion establishes Snowflake account qualification. Both use the existing SDK
+connection. The preceding helper/supervisor transport is locally qualified;
+see its [verification evidence](replacement-verification.md#sdk-schema-switch-transport-10-november-2026). Ordinary helper `context {}` is now a
 strict read-only operation. The separate `switchSchema` operation retains known
 USE acknowledgement independently of final context verification, quotes each
 identifier component and retires on uncertainty. Definitive USE rejection is
@@ -212,6 +212,21 @@ switching safely within an active transaction remain later requirements.
    observation must use the same guarded options path. Automatic health skips
    pending context work and queued/running queries, and clears authority before
    any admitted read. Session retirement clears all ownership.
+
+   The implementation retains the schema selector visibly disabled after such
+   revocation and displays “Refresh to change schema.” The existing “Refresh
+   completion context” action rebuilds completion before observing fresh options.
+   Lazy column lookups and relation browsing do not automatically add eleven
+   observer reads. A shared pending-switch flag excludes query preparation,
+   execution, health and metadata across tabs, including legacy schema/database
+   switches. The editor shows “Changing schema…” while the typed operation is
+   pending and defers its context effect until that operation settles.
+
+   Thirteen executions describe the adapter operation only. The application
+   subsequently refreshes editor completion and its eleven-read options; other
+   open editors can also refresh. These application reads need an explicitly
+   expanded account qualification ledger. No live account switch is authorized
+   by the old two-SELECT canary or the offline observer manifest.
 
    If USE is known acknowledged but later verification fails, preserve that
    distinction in the fixed application error message. Close the session without

@@ -854,6 +854,15 @@ pub async fn switch_session_context(
 }
 
 #[tauri::command]
+pub async fn switch_session_schema(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SwitchSchemaRequest,
+) -> AppResult<SessionContextOptions> {
+    studio.switch_session_schema(&session_id, &request).await
+}
+
+#[tauri::command]
 pub async fn set_transaction_mode(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

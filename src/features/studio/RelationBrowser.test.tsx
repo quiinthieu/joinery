@@ -9,6 +9,7 @@ import type {
 } from "../../ipc/generated";
 import { client } from "../../ipc/client";
 import { RelationBrowser } from "./RelationBrowser";
+import { useStudio } from "../../state/studio";
 
 vi.mock("../../ipc/client", () => ({
   client: { call: vi.fn() },
@@ -92,6 +93,12 @@ const preview: RelationPreview = {
 };
 beforeEach(() => {
   vi.clearAllMocks();
+  useStudio.setState({
+    sessionStates: {},
+    sessionContexts: {},
+    sessionContextAuthorities: {},
+    sessionContextSwitching: {},
+  });
   vi.mocked(client.call).mockImplementation(async (method) => {
     if (method === "relation_catalog") return catalog;
     if (method === "inspect_relation") return inspection;
@@ -108,6 +115,65 @@ it("opens one catalog request during StrictMode effect replay", async () => {
   );
   await screen.findByText("1 visible relations · DB");
   expect(client.call).toHaveBeenCalledTimes(1);
+});
+
+function installSchemaAuthority() {
+  const runtime = {
+    sessionId: "s",
+    transactionMode: "autoCommit" as const,
+    transactionState: "idle" as const,
+    contextKind: "schema" as const,
+    activeContext: "S",
+    database: "DB",
+    role: null,
+    searchPath: ["DB.S"],
+    contextFingerprint: "observed-fingerprint",
+    transactionObservation: {
+      status: "observed" as const,
+      transactionId: null,
+      abortOnError: false,
+      usability: "unknown" as const,
+    },
+  };
+  useStudio.setState({
+    sessionStates: { s: runtime },
+    sessionContexts: { s: ["S"] },
+    sessionContextAuthorities: {
+      s: { state: runtime, available: ["S"], revision: "old-authority" },
+    },
+  });
+}
+
+it("revokes schema selection before each catalog, inspection and preview admission", async () => {
+  const admitted: string[] = [];
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    expect(useStudio.getState().sessionContextAuthorities.s).toBeUndefined();
+    expect(useStudio.getState().sessionContexts.s).toEqual([]);
+    admitted.push(method);
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return inspection;
+    if (method === "preview_relation") return preview;
+    throw new Error(`Unexpected ${method}`);
+  });
+  installSchemaAuthority();
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  installSchemaAuthority();
+  await selectAndInspect();
+  installSchemaAuthority();
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByText("9007199254740993");
+  expect(admitted).toEqual(["relation_catalog", "inspect_relation", "preview_relation"]);
+});
+
+it("does not admit relation SQL while a typed schema switch is pending", async () => {
+  installSchemaAuthority();
+  useStudio.setState({ sessionContextSwitching: { s: true } });
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Wait for the schema change to finish first",
+  );
+  expect(client.call).not.toHaveBeenCalled();
 });
 
 it("a rejected old refresh cannot erase a newer successful refresh", async () => {

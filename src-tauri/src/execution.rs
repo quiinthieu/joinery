@@ -1871,6 +1871,56 @@ impl Studio {
         self.build_session_contexts(&session).await
     }
 
+    pub async fn switch_session_schema(
+        &self,
+        session_id: &str,
+        request: &SwitchSchemaRequest,
+    ) -> AppResult<SessionContextOptions> {
+        let session = self.session(session_id)?;
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        // Revoke targets before dispatch: an interrupted USE can change context.
+        *session.observed_runtime.lock() = None;
+        *session.completion.lock() = None;
+        session.driver.invalidate_relation_catalog();
+        self.plans
+            .lock()
+            .retain(|_, plan| plan.plan.session_id != session.info.id);
+        let options = session.driver.switch_schema(session_id, request).await?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        if options.state.session_id != session.info.id || options.revision.is_none() {
+            return Err(AppError::internal("Invalid schema switch observation"));
+        }
+        self.publish_observed_runtime(&session, &options.state);
+        let _ = self.persistence.audit(
+            &session.profile.id,
+            "switch-schema",
+            &request.schema,
+            "completed",
+        );
+        // The driver already verified and published coherent options. A second
+        // options read would add eleven SQL executions and revoke this revision.
+        Ok(options)
+    }
+
     pub async fn set_transaction_mode(
         &self,
         session_id: &str,
@@ -5093,6 +5143,10 @@ mod browse_classification_tests {
         mode_calls: std::sync::atomic::AtomicUsize,
         runtime_override: Mutex<Option<SessionRuntimeState>>,
         close_during_context: bool,
+        state_calls: std::sync::atomic::AtomicUsize,
+        schema_switch_calls: Mutex<Vec<SwitchSchemaRequest>>,
+        schema_switch_options: Mutex<Option<SessionContextOptions>>,
+        close_during_schema_switch: bool,
     }
 
     #[async_trait::async_trait]
@@ -5119,6 +5173,7 @@ mod browse_classification_tests {
             })
         }
         async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+            self.state_calls.fetch_add(1, Ordering::Relaxed);
             if !self.context_enabled {
                 return Err(AppError::new(ErrorCode::Unsupported, "No fixture context"));
             }
@@ -5158,6 +5213,27 @@ mod browse_classification_tests {
             self.switch_error.map_or(Ok(()), |code| {
                 Err(AppError::new(code, "Fixture switch failed"))
             })
+        }
+        async fn switch_schema(
+            &self,
+            _session_id: &str,
+            request: &SwitchSchemaRequest,
+        ) -> AppResult<SessionContextOptions> {
+            self.schema_switch_calls.lock().push(request.clone());
+            self.switch_saw_invalidation.store(
+                self.relation_invalidated.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+            if self.close_during_schema_switch {
+                self.close();
+            }
+            if let Some(code) = self.switch_error {
+                return Err(AppError::new(code, "Fixture schema switch failed"));
+            }
+            self.schema_switch_options
+                .lock()
+                .clone()
+                .ok_or_else(|| AppError::internal("Missing fixture schema switch result"))
         }
         async fn execute(
             &self,
@@ -5253,6 +5329,102 @@ mod browse_classification_tests {
             .lock()
             .insert(session.info.id.clone(), session.clone());
         session
+    }
+
+    #[tokio::test]
+    async fn typed_schema_switch_returns_driver_options_without_observer_reads() {
+        for outcome in [
+            "success",
+            "error",
+            "closed",
+            "wrong-session",
+            "no-revision",
+            "busy",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let studio = Studio::with_secrets(
+                root.path(),
+                Arc::new(crate::secrets::MemorySecrets::default()),
+            )
+            .unwrap();
+            let driver = Arc::new(RecordingDriver {
+                context_enabled: true,
+                switch_error: (outcome == "error").then_some(ErrorCode::OutcomeUnknown),
+                close_during_schema_switch: outcome == "closed",
+                ..Default::default()
+            });
+            let session = relation_test_session(&studio, driver.clone(), true);
+            let mut state = driver.session_state(&session.info.id).await.unwrap();
+            state.active_context = Some("Quoted \"Schema".into());
+            state.context_fingerprint = Some("verified-after-switch".into());
+            state.transaction_observation = Some(TransactionObservation::Observed {
+                transaction_id: None,
+                abort_on_error: false,
+                usability: TransactionUsability::Unknown,
+            });
+            if outcome == "wrong-session" {
+                state.session_id = "another-session".into();
+            }
+            let expected = SessionContextOptions {
+                state,
+                available: vec!["Quoted \"Schema".into()],
+                revision: (outcome != "no-revision").then(|| "fresh-driver-authority".into()),
+            };
+            *driver.schema_switch_options.lock() = Some(expected.clone());
+            *session.completion.lock() = Some(CompletionCatalog {
+                revision: "old".into(),
+                identity: driver.relation_catalog().await.unwrap().identity,
+                tables: vec![],
+                unqualified_tables: vec![],
+            });
+            let plan = studio
+                .prepare_execution(&session.info.id, "SELECT 1")
+                .unwrap();
+            driver.relation_invalidated.store(false, Ordering::Release);
+            driver.state_calls.store(0, Ordering::Relaxed);
+            if outcome == "busy" {
+                *session.active_run.lock() = Some("active-query".into());
+            }
+            let request = SwitchSchemaRequest {
+                revision: "original-options".into(),
+                database: "fixture".into(),
+                schema: "Quoted \"Schema".into(),
+                context_fingerprint: "original-fingerprint".into(),
+            };
+            let result = studio
+                .switch_session_schema(&session.info.id, &request)
+                .await;
+            assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0, "{outcome}");
+            if outcome == "busy" {
+                assert_eq!(result.unwrap_err().code, ErrorCode::Conflict);
+                assert!(driver.schema_switch_calls.lock().is_empty());
+                assert!(session.completion.lock().is_some());
+                assert!(studio.plans.lock().contains_key(&plan.id));
+                continue;
+            }
+            assert_eq!(&*driver.schema_switch_calls.lock(), &[request]);
+            assert!(driver.switch_saw_invalidation.load(Ordering::Acquire));
+            assert!(session.completion.lock().is_none());
+            assert!(!studio.plans.lock().contains_key(&plan.id));
+            if outcome == "success" {
+                let actual = result.unwrap();
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+                assert!(session.observed_runtime.lock().is_some());
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    match outcome {
+                        "error" => ErrorCode::OutcomeUnknown,
+                        "closed" => ErrorCode::ConnectionClosed,
+                        _ => ErrorCode::Internal,
+                    }
+                );
+                assert!(session.observed_runtime.lock().is_none());
+            }
+        }
     }
 
     #[tokio::test]

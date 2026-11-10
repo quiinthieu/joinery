@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { BrowseCatalog, RelationInspection, RelationPreview } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
+import { revokeSchemaSelectionBeforeWork } from "../../state/studio";
 import { Modal } from "../../components/ui/Modal";
 
 const PAGE_ROWS = 25;
@@ -33,6 +34,7 @@ export function RelationBrowser({ sessionId, onClose }: { sessionId: string; onC
     setBusy(true);
     setError(null);
     try {
+      revokeSchemaSelectionBeforeWork(sessionId);
       await work(current);
     } catch (err) {
       if (current()) {

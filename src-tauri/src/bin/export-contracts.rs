@@ -41,6 +41,7 @@ fn main() {
         SessionContextKind::decl(),
         SessionRuntimeState::decl(),
         SessionContextOptions::decl(),
+        SwitchSchemaRequest::decl(),
         SessionInfo::decl(),
         EngineCapabilities::decl(),
         ActualPlanFormat::decl(),

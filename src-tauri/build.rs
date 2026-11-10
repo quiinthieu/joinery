@@ -79,6 +79,7 @@ fn main() {
             "compare_data",
             "session_contexts",
             "switch_session_context",
+            "switch_session_schema",
             "set_transaction_mode",
             "commit_transaction",
             "rollback_transaction",

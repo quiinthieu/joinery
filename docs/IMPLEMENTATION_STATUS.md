@@ -42,7 +42,10 @@ separately acknowledged query results when observation fails. Local qualificatio
 passes **627 frontend / 357 standard Rust** tests, focused real-engine/browser
 checks, fresh macOS packaging and 19 hidden-native check categories. See the
 [ledger](replacement-verification.md#sdk-session-observation-10-november-2026).
-SDK schema switching and transaction controls remain disabled.
+Guarded SDK schema selection is locally qualified: **649 frontend / 365 standard
+Rust** tests, 16 focused browser workflows, real PostgreSQL/MySQL/MariaDB
+regressions, fresh normal SDK packaging and three hidden native runs pass.
+Transaction controls remain disabled.
 Actual account observation is unqualified and outside the old canary approval.
 
 The separate [schema-switch transport foundation](snowflake-sdk-session-design.md)
@@ -53,8 +56,9 @@ the new typed helper operation retains USE acknowledgement through uncertain
 readback and retires safely. Fresh normal SDK macOS packaging, ad-hoc signature
 and packaged hello/EOF startup pass with zero authentication/SQL; hidden-native
 checks will accompany the dependent IPC/UI slice.
-The application adapter, typed IPC and revision-bound UI workflow remain
-incomplete and disabled; no account switching or broader authorization is claimed.
+The application adapter, strict typed IPC and revision-bound UI workflow are now
+implemented; see the [current qualification](replacement-verification.md#sdk-guarded-schema-selection-10-november-2026).
+No account switching or broader authorization is claimed.
 
 The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
@@ -348,7 +352,7 @@ Notable regressions covered: numeric keys accidentally sorted as text; stale asy
 Platform: Apple Silicon, macOS 27.2. The hidden fixture loads 20,000 result rows and opens the editor/grid. Samples include startup peaks and a close-guard interaction.
 
 | Run | Native start to completed checks | Main peak RSS | Main peak physical footprint |
-|---|---:|---:|---:|
+| ------------------------ | -------------------------------: | ------------: | ---------------------------: |
 | First | 3,338 ms | 99.72 MiB | 29.06 MiB |
 | Subsequent fresh process | 668 ms | 105.36 MiB | 30.20 MiB |
 | Subsequent fresh process | 619 ms | 105.02 MiB | 30.03 MiB |

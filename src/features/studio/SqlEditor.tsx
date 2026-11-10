@@ -44,7 +44,6 @@ import type {
   EngineKind,
   ObjectDetails,
   QueryParamSlot,
-  SessionContextOptions,
   TableInfo,
   TableRef,
   TableSchema,
@@ -57,7 +56,11 @@ import {
   sqlFormatterLanguage,
   type EditorFormatJob,
 } from "../../data/sql-format";
-import { useStudio } from "../../state/studio";
+import {
+  useStudio,
+  revokeSchemaSelectionBeforeWork,
+  observeTemplateSessionContext,
+} from "../../state/studio";
 import { selectedStatement, selectedStatementSlice } from "./sql-context";
 import {
   adjacentStatement,
@@ -334,6 +337,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const availableContexts = useStudio((s) =>
     props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
   );
+  const contextAuthority = useStudio((s) =>
+    props.sessionId ? s.sessionContextAuthorities[props.sessionId] : undefined,
+  );
+  const contextSwitchPending = useStudio((s) =>
+    props.sessionId ? (s.sessionContextSwitching[props.sessionId] ?? false) : false,
+  );
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
@@ -421,6 +430,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     if (cached) return cached;
     let loaded: TableSchema;
     try {
+      revokeSchemaSelectionBeforeWork(sessionId);
       loaded = contextRevision
         ? await client.call<TableSchema>("completion_schema", {
             sessionId,
@@ -631,10 +641,13 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           throw new Error(
             "Connect this console before using database or schema template variables.",
           );
-        const { state: runtime } = await client.call<SessionContextOptions>("session_contexts", {
-          sessionId,
-        });
-        if (runtime.sessionId !== sessionId || runtime.transactionState === "failed")
+        const runtime = await observeTemplateSessionContext(sessionId);
+        if (
+          !runtime ||
+          runtime.sessionId !== sessionId ||
+          runtime.transactionState === "failed" ||
+          runtime.transactionState === "unknown"
+        )
           throw new Error(
             "Current console context is unavailable. Recover the transaction and try again.",
           );
@@ -1105,16 +1118,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     if (props.engine === "redis") return;
     completion.current?.configure(configure());
     if (view.current) closeCompletion(view.current);
+    if (contextSwitchPending) return;
     if (props.sessionId) {
-      void useStudio.getState().refreshSessionContexts(props.sessionId);
-      contextLoadRef.current = client
-        .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
+      const isCurrent = () =>
+        !cancelled &&
+        schemaCacheRef.current === cacheGeneration &&
+        latest.current.sessionId === props.sessionId;
+      contextLoadRef.current = Promise.resolve()
+        .then(() => {
+          if (!isCurrent()) return null;
+          revokeSchemaSelectionBeforeWork(props.sessionId!);
+          return client.call<CompletionCatalog>("completion_catalog", {
+            sessionId: props.sessionId!,
+          });
+        })
         .then(async (snapshot) => {
-          const isCurrent = () =>
-            !cancelled &&
-            schemaCacheRef.current === cacheGeneration &&
-            latest.current.sessionId === props.sessionId;
-          if (isCurrent()) {
+          if (snapshot && isCurrent()) {
             liveRef.current = snapshot;
             setLive(snapshot);
             if (props.objectExplorerSupported) {
@@ -1136,12 +1155,21 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             latest.current.sessionId === props.sessionId
           )
             setContextError(messageOf(error));
+        })
+        .finally(async () => {
+          if (
+            !cancelled &&
+            schemaCacheRef.current === cacheGeneration &&
+            latest.current.sessionId === props.sessionId
+          )
+            await useStudio.getState().refreshSessionContexts(props.sessionId!);
         });
     }
     return () => {
       cancelled = true;
     };
   }, [
+    contextSwitchPending,
     props.engine,
     props.sessionId,
     props.tables,
@@ -1184,7 +1212,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       : [];
   const showContextSwitcher =
     Boolean(props.sessionId) &&
-    contextOptions.length > 0 &&
+    (contextOptions.length > 0 || runtimeState?.transactionObservation !== undefined) &&
     runtimeState !== undefined &&
     runtimeState.contextKind !== "none";
   return (
@@ -1199,8 +1227,22 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
               <select
                 className="context-switcher"
                 aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
+                title={
+                  runtimeState?.transactionObservation !== undefined && !contextAuthority
+                    ? "Refresh completion context to select a schema"
+                    : undefined
+                }
                 value={currentContext}
-                disabled={switchingContext || runtimeState?.transactionObservation !== undefined}
+                disabled={
+                  switchingContext ||
+                  contextSwitchPending ||
+                  (runtimeState?.transactionObservation !== undefined &&
+                    (!contextAuthority?.revision ||
+                      contextAuthority.state !== runtimeState ||
+                      runtimeState.transactionState !== "idle" ||
+                      runtimeState.transactionObservation.status !== "observed" ||
+                      runtimeState.transactionObservation.transactionId !== null))
+                }
                 onChange={(event) => {
                   const target = event.target.value;
                   if (!target || !props.sessionId || target === currentContext) return;
@@ -1225,6 +1267,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 ))}
               </select>
             )}
+            {showContextSwitcher &&
+              runtimeState?.transactionObservation !== undefined &&
+              !contextAuthority &&
+              !contextSwitchPending && <span>Refresh to change schema</span>}
             <div
               aria-live="polite"
               aria-atomic="true"
@@ -1250,11 +1296,13 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
               >
                 {!props.sessionId
                   ? "Connect to run parameterized SQL"
-                  : contextError
-                    ? `Completion unavailable: ${contextError}`
-                    : live
-                      ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                      : "Loading completion context…"}
+                  : contextSwitchPending
+                    ? "Changing schema…"
+                    : contextError
+                      ? `Completion unavailable: ${contextError}`
+                      : live
+                        ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                        : "Loading completion context…"}
               </span>
               {paramSlots.length > 0 && props.onOpenParameters && (
                 <button

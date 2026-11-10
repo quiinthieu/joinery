@@ -56,6 +56,7 @@ import type {
   SessionContextOptions,
   SessionInfo,
   SessionRuntimeState,
+  SwitchSchemaRequest,
   SqlFormatSettings,
   SqlSnippet,
   SqlSnippetInput,
@@ -441,6 +442,10 @@ export interface JoineryCommandMap {
   };
   switch_session_context: {
     args: { sessionId: string; target: string };
+    result: SessionContextOptions;
+  };
+  switch_session_schema: {
+    args: { sessionId: string; request: SwitchSchemaRequest };
     result: SessionContextOptions;
   };
   set_transaction_mode: {

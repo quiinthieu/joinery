@@ -1673,6 +1673,16 @@ pub struct SessionContextOptions {
     pub revision: Option<String>,
 }
 
+/// One-use authority for a schema selected from this session's observed options.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SwitchSchemaRequest {
+    pub revision: String,
+    pub database: String,
+    pub schema: String,
+    pub context_fingerprint: String,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -2013,6 +2023,33 @@ pub struct DataCompareReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_switch_requires_exact_string_authority_fields() {
+        let request = serde_json::json!({
+            "revision":"opaque-revision", "database":"DB",
+            "schema":"Selected.Schema", "contextFingerprint":"opaque-fingerprint"
+        });
+        let parsed: SwitchSchemaRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(parsed.schema, "Selected.Schema");
+        for key in ["revision", "database", "schema", "contextFingerprint"] {
+            let mut missing = request.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<SwitchSchemaRequest>(missing).is_err());
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!(1),
+                serde_json::json!({}),
+            ] {
+                let mut wrong_type = request.clone();
+                wrong_type[key] = invalid;
+                assert!(serde_json::from_value::<SwitchSchemaRequest>(wrong_type).is_err());
+            }
+        }
+        let mut extra = request;
+        extra["sql"] = serde_json::json!("USE SCHEMA OTHER");
+        assert!(serde_json::from_value::<SwitchSchemaRequest>(extra).is_err());
+    }
 
     #[test]
     fn transaction_observation_requires_complete_tagged_evidence() {

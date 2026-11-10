@@ -84,7 +84,7 @@ The current source also has a distinct **Browse relations** action in an SDK
 query console. It loads visible schemas and relations for the configured current
 database, then offers bounded column inspection and an unordered read-only
 preview. This is separate from generic table browsing (`tableBrowsing` remains
-disabled) and provides no editing or schema switching. Inspection reports
+disabled) and provides no editing. Inspection reports
 constraints as **not fetched**; metadata does not establish edit eligibility.
 The feature is locally implemented but not qualified against an account.
 
@@ -98,6 +98,26 @@ qualification plan excludes existing-table data reads. Without approval, use the
 synthetic test flow documented in the contract and do not authenticate to
 Snowflake for this walkthrough.
 
+Guarded **Active schema** selection is now implemented for the SDK route;
+application qualification is recorded in the
+[ledger](replacement-verification.md#sdk-guarded-schema-selection-10-november-2026).
+After separately authorizing the account workflow, refresh completion context,
+require an observed idle transaction, and select a schema from the visible
+current-database list. Quoted punctuation remains part of the selected name.
+The selector says **Changing schema…** while pending and blocks concurrent query
+or metadata admission across tabs. Success refreshes editor context; a final-
+verification failure after known USE acknowledgement closes the session and asks
+for reconnection. Do not repeat the switch to infer what happened remotely.
+
+Metadata lookup, relation browsing, query preparation/execution and automatic
+health can revoke the opaque selection authority. The disabled selector then
+says **Refresh to change schema**; use the existing **Refresh completion context**
+button deliberately. No automatic eleven-read observation is added after each
+lazy lookup. The switch itself uses thirteen SQL executions; subsequent editor
+completion and eleven-read options add their own SQL, including other open
+editors. These must be included in any new account scope. Cross-database, role,
+warehouse and active-transaction switching remain incomplete and required.
+
 The SDK query console also observes settings and transaction activity on its
 existing connection: ten fixed reads per state observation, or eleven with a
 bounded schema-options read. These reads also require separate account scope.
@@ -108,19 +128,21 @@ reads. Include this cadence and editor refreshes in the approved account scope.
 An unavailable observation displays **Transaction state unknown**; a nonnull
 transaction ID displays **Open transaction · usability unknown**. Neither
 means rollback has happened or that an open transaction can still accept work.
-The schema selector and transaction controls remain disabled. Closing an open
+Schema selection is disabled unless fresh idle authority is available;
+transaction controls remain disabled. Closing an open
 or unknown console requires confirmation and verification of remote state;
 local closure does not promise immediate remote rollback. See the
 [observer contract](snowflake-sdk-session-observation.md).
 
 The helper's [schema-switch transport](snowflake-sdk-session-design.md) now has
 local regression coverage, with a separate typed USE/readback operation and
-retained acknowledgement on uncertain final context. The application adapter,
-IPC and revision-bound selector are still incomplete. Do not use the helper
-operation manually as a migration workaround; it has no account qualification
+retained acknowledgement on uncertain final context. Its guarded application
+adapter, IPC and selector are locally qualified, including focused browser and
+hidden native checks. Do not use the helper operation manually as a migration workaround;
+it has no account qualification
 or inherited authorization from the earlier read canary.
 
-The SDK SQL route remains ReadOnly, and authoritative constraints, schema
+The SDK SQL route remains ReadOnly, and authoritative constraints, complete session
 switching, writes, DDL, transactions and the required million-row result/export
 workflow remain open. Keep the existing DataGrip connection available while the
 required account workflows are implemented and accepted.

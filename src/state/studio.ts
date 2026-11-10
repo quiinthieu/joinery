@@ -176,6 +176,22 @@ let sqlFormatSaveSequence = 0;
 let sqlFormatPending = 0;
 let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
 const contextRequests = new Map<string, symbol>();
+const pendingContextRequests = new Map<string, Set<symbol>>();
+const schemaSwitchRequests = new Map<string, symbol>();
+
+function beginContextRequest(sessionId: string): symbol {
+  const request = Symbol();
+  contextRequests.set(sessionId, request);
+  const pending = pendingContextRequests.get(sessionId) ?? new Set<symbol>();
+  pending.add(request);
+  pendingContextRequests.set(sessionId, pending);
+  return request;
+}
+function finishContextRequest(sessionId: string, request: symbol) {
+  const pending = pendingContextRequests.get(sessionId);
+  pending?.delete(request);
+  if (pending?.size === 0) pendingContextRequests.delete(sessionId);
+}
 
 interface StudioState {
   bootstrap: Bootstrap | null;
@@ -185,6 +201,8 @@ interface StudioState {
   sessionStates: Record<string, SessionRuntimeState>;
   sessionContexts: Record<string, string[]>;
   sessionContextRevision: Record<string, number>;
+  sessionContextAuthorities: Record<string, SessionContextOptions>;
+  sessionContextSwitching: Record<string, boolean>;
   catalog: Record<string, TableInfo[]>;
   objects: Record<string, DatabaseObjectSummary[]>;
   selectedConnectionId: string | null;
@@ -220,6 +238,8 @@ interface StudioState {
   disconnectQuerySession(sessionId: string): Promise<void>;
   updateSessionLatency(sessionId: string, latencyMs: number): void;
   refreshSessionContexts(sessionId: string, throwOnError?: boolean): Promise<boolean>;
+  invalidateSessionContextAuthority(sessionId: string): void;
+  isSessionContextPending(sessionId: string): boolean;
   switchSessionContext(sessionId: string, target: string): Promise<void>;
   setTransactionMode(sessionId: string, mode: TransactionMode): Promise<void>;
   commitTransaction(sessionId: string): Promise<void>;
@@ -550,19 +570,38 @@ function defaultSecondarySessionLabel(existing: readonly NamedSession[]): string
   return `Isolated session ${index}`;
 }
 function purgeSessionRuntimeMaps(
-  state: Pick<StudioState, "sessionStates" | "sessionContexts" | "sessionContextRevision">,
+  state: Pick<
+    StudioState,
+    | "sessionStates"
+    | "sessionContexts"
+    | "sessionContextRevision"
+    | "sessionContextAuthorities"
+    | "sessionContextSwitching"
+  >,
   sessionIds: Iterable<string>,
 ) {
   const sessionStates = { ...state.sessionStates };
   const sessionContexts = { ...state.sessionContexts };
   const sessionContextRevision = { ...state.sessionContextRevision };
+  const sessionContextAuthorities = { ...state.sessionContextAuthorities };
+  const sessionContextSwitching = { ...state.sessionContextSwitching };
   for (const id of sessionIds) {
     contextRequests.delete(id);
+    pendingContextRequests.delete(id);
+    schemaSwitchRequests.delete(id);
+    delete sessionContextSwitching[id];
+    delete sessionContextAuthorities[id];
     delete sessionStates[id];
     delete sessionContexts[id];
     delete sessionContextRevision[id];
   }
-  return { sessionStates, sessionContexts, sessionContextRevision };
+  return {
+    sessionStates,
+    sessionContexts,
+    sessionContextRevision,
+    sessionContextAuthorities,
+    sessionContextSwitching,
+  };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
 
@@ -612,6 +651,40 @@ function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
   throw new Error("The table schema changed. Refresh the table before continuing.");
 }
 
+/** Frontend scheduling only; the driver independently validates one-use authority. */
+export function revokeSchemaSelectionBeforeWork(sessionId: string) {
+  const state = useStudio.getState();
+  if (state.sessionContextSwitching[sessionId])
+    throw new Error("Wait for the schema change to finish first");
+  state.invalidateSessionContextAuthority(sessionId);
+}
+
+/** Guard a template's observation without changing the editor being validated. */
+export async function observeTemplateSessionContext(
+  sessionId: string,
+): Promise<SessionRuntimeState> {
+  revokeSchemaSelectionBeforeWork(sessionId);
+  if (!isSessionActive(useStudio.getState(), sessionId))
+    throw new Error("This database session is disconnected");
+  const request = beginContextRequest(sessionId);
+  try {
+    const options = await client.call("session_contexts", { sessionId });
+    if (
+      contextRequests.get(sessionId) !== request ||
+      !isSessionActive(useStudio.getState(), sessionId)
+    )
+      throw new Error("The console context changed. Insert the template again.");
+    if (!options?.state || options.state.sessionId !== sessionId)
+      throw new Error("Session observation is unavailable");
+    // Publishing here can advance the editor context revision, dismissing the
+    // template dialog before its own current-context checks and errors finish.
+    // This read never grants schema-switch authority to the UI.
+    return options.state;
+  } finally {
+    finishContextRequest(sessionId, request);
+  }
+}
+
 export const useStudio = create<StudioState>((set, get) => ({
   bootstrap: null,
   error: null,
@@ -620,6 +693,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   sessionStates: {},
   sessionContexts: {},
   sessionContextRevision: {},
+  sessionContextAuthorities: {},
+  sessionContextSwitching: {},
   catalog: {},
   objects: {},
   selectedConnectionId: null,
@@ -909,82 +984,187 @@ export const useStudio = create<StudioState>((set, get) => ({
       return { sessions, sessionPool, tabs };
     });
   },
-  async refreshSessionContexts(sessionId, throwOnError = false) {
-    const request = Symbol();
-    contextRequests.set(sessionId, request);
-    const previous = get().sessionStates[sessionId];
-    const sdk = hasSdkObservation(get(), sessionId);
-    if (sdk && isSessionActive(get(), sessionId)) {
-      set((state) => ({
-        sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+  invalidateSessionContextAuthority(sessionId) {
+    if (!hasSdkObservation(get(), sessionId)) return;
+    contextRequests.delete(sessionId);
+    set((state) => {
+      const sessionContextAuthorities = { ...state.sessionContextAuthorities };
+      delete sessionContextAuthorities[sessionId];
+      return {
+        sessionContextAuthorities,
         sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
-      }));
+      };
+    });
+  },
+  isSessionContextPending(sessionId) {
+    return (pendingContextRequests.get(sessionId)?.size ?? 0) > 0;
+  },
+  async refreshSessionContexts(sessionId, throwOnError = false) {
+    if (get().sessionContextSwitching[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the schema change to finish first");
+      return false;
     }
-    let options: SessionContextOptions | null;
+    const sdk = hasSdkObservation(get(), sessionId);
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    const previous = get().sessionStates[sessionId];
     try {
-      options = await client.call<SessionContextOptions | null>("session_contexts", { sessionId });
-      if (!options?.state || options.state.sessionId !== sessionId)
-        throw new Error("Session observation is unavailable");
-    } catch (error) {
+      if (sdk && isSessionActive(get(), sessionId)) {
+        set((state) => ({
+          sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+        }));
+      }
+      let options: SessionContextOptions | null;
+      try {
+        options = await client.call<SessionContextOptions | null>("session_contexts", {
+          sessionId,
+        });
+        if (!options?.state || options.state.sessionId !== sessionId)
+          throw new Error("Session observation is unavailable");
+      } catch (error) {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+          return false;
+        set((state) => ({
+          sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+          ...(sdk
+            ? {
+                sessionStates: {
+                  ...state.sessionStates,
+                  [sessionId]: unknownSdkRuntime(sessionId),
+                },
+                ...(sessionRuntimeContextChanged(previous, unknownSdkRuntime(sessionId))
+                  ? {
+                      sessionContextRevision: {
+                        ...state.sessionContextRevision,
+                        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
+        }));
+        if (throwOnError) throw error;
+        return false;
+      }
       if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
         return false;
-      set((state) => ({
-        sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
-        ...(sdk
-          ? {
-              sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
-              ...(sessionRuntimeContextChanged(previous, unknownSdkRuntime(sessionId))
-                ? {
-                    sessionContextRevision: {
-                      ...state.sessionContextRevision,
-                      [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
-                    },
-                  }
-                : {}),
-            }
-          : {}),
-      }));
-      if (throwOnError) throw error;
-      return false;
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        const runtime = options.state;
+        const contextChanged = sessionRuntimeContextChanged(previous, runtime);
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: runtime },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+          ...(sdk && options.revision
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: options,
+                },
+              }
+            : {}),
+          ...(contextChanged
+            ? {
+                sessionContextRevision: {
+                  ...state.sessionContextRevision,
+                  [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                },
+              }
+            : {}),
+        };
+      });
+      return contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId);
+    } finally {
+      finishContextRequest(sessionId, request);
     }
-    if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
-      return false;
-    set((state) => {
-      if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
-        return {};
-      const runtime = options.state;
-      const contextChanged = sessionRuntimeContextChanged(previous, runtime);
-      return {
-        sessionStates: { ...state.sessionStates, [sessionId]: runtime },
-        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
-        ...(contextChanged
-          ? {
-              sessionContextRevision: {
-                ...state.sessionContextRevision,
-                [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
-              },
-            }
-          : {}),
-      };
-    });
-    return contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId);
   },
   async switchSessionContext(sessionId, target) {
-    const options = await client.call<SessionContextOptions>("switch_session_context", {
-      sessionId,
-      target,
-    });
-    set((state) => {
-      if (!isSessionActive(state, sessionId)) return {};
-      return {
-        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
-        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
-        sessionContextRevision: {
-          ...state.sessionContextRevision,
-          [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
-        },
-      };
-    });
+    const sdk = hasSdkObservation(get(), sessionId);
+    const authority = get().sessionContextAuthorities[sessionId];
+    const runtime = get().sessionStates[sessionId];
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionContextSwitching[sessionId])
+      throw new Error("Wait for the schema change to finish first");
+    if (
+      sdk &&
+      (!authority?.revision ||
+        !authority.state.contextFingerprint ||
+        authority.state !== runtime ||
+        runtime.transactionState !== "idle" ||
+        runtime.transactionObservation?.status !== "observed" ||
+        runtime.transactionObservation.transactionId !== null ||
+        !authority.available.includes(target))
+    )
+      throw new Error("Refresh session context before selecting an available schema");
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    schemaSwitchRequests.set(sessionId, request);
+    set((state) => ({
+      sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: true },
+      ...(sdk
+        ? {
+            sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+            sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+            sessionContextRevision: {
+              ...state.sessionContextRevision,
+              [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+            },
+          }
+        : {}),
+    }));
+    try {
+      const options = sdk
+        ? await client.call("switch_session_schema", {
+            sessionId,
+            request: {
+              revision: authority!.revision!,
+              database: authority!.state.database,
+              schema: target,
+              contextFingerprint: authority!.state.contextFingerprint!,
+            },
+          })
+        : await client.call("switch_session_context", { sessionId, target });
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      if (options.state.sessionId !== sessionId || (sdk && !options.revision))
+        throw new Error("Schema switch observation is unavailable");
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: options.state },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+          ...(sdk
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: options,
+                },
+              }
+            : {}),
+          sessionContextRevision: {
+            ...state.sessionContextRevision,
+            [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+          },
+        };
+      });
+    } catch (error) {
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      const { code } = asAppError(error);
+      if (sdk && (code === "connectionClosed" || code === "outcomeUnknown"))
+        get().retireSession(sessionId);
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      if (schemaSwitchRequests.get(sessionId) === request) {
+        schemaSwitchRequests.delete(sessionId);
+        set((state) => ({
+          sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: false },
+        }));
+      }
+    }
   },
   async setTransactionMode(sessionId, mode) {
     const runtime = await client.call<SessionRuntimeState>("set_transaction_mode", {
@@ -2213,6 +2393,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         const source = get().tabs.find((tab) => tab.id === tabId && tab.revision === revision);
         const sourceSession = source && querySessionForTab(source, get().sessions);
         if (sourceSession?.id === event.state.sessionId) {
+          get().invalidateSessionContextAuthority(event.state.sessionId);
           contextRequests.delete(event.state.sessionId);
           runtimeUpdates.push(event.state);
         }

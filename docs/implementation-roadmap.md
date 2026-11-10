@@ -39,8 +39,8 @@ bounded, same-connection AUTOCOMMIT/policy/opaque-transaction observations,
 nullable roles and explicit Unknown states. Stable observations preserve cached
 plans; changed or unavailable observations revoke them. Local qualification
 passes; the [ledger](replacement-verification.md#sdk-session-observation-10-november-2026)
-records current tests, packaging and native evidence. SDK schema switching and
-transaction controls remain disabled;
+records current tests, packaging and native evidence. Guarded SDK schema
+selection is locally qualified; transaction controls remain disabled;
 actual account observation remains unqualified. Its ten/eleven additional SQL
 executions are outside the earlier two-query canary approval.
 
@@ -59,7 +59,9 @@ actual-SDK loopback tests, 33 process fixtures, 30 synthetic-SDK adapter fixture
 and three focused browser workflows pass. Fresh normal SDK macOS packaging,
 ad-hoc signature and packaged hello/EOF startup pass with zero authentication/SQL;
 hidden-native checks will accompany the dependent IPC/UI slice. The revision-bound
-adapter, typed IPC, guarded UI selector and account switch acceptance remain required and incomplete. No public writes,
+adapter, typed IPC and guarded UI selector are now implemented under the
+[current qualification](replacement-verification.md#sdk-guarded-schema-selection-10-november-2026).
+Account switch acceptance remains required and incomplete. No public writes,
 DDL or transaction actions are enabled by this foundation.
 
 The preceding relation-browsing increment is locally qualified: **619 frontend / 338
@@ -107,7 +109,7 @@ process-local boundary against SDK retransmission and passes local qualification
 fresh SDK-bearing macOS packaging/startup and 19 hidden native check categories.
 The browsing contract now has a local catalog/column-inspection/preview
 implementation. Truthful session observation is now locally qualified;
-typed schema switching remains planned under the
+typed schema switching is now locally qualified under the
 reviewed [session observation/switching contract](snowflake-sdk-session-design.md);
 the complete browsing/session workflow is not finished. Neither is
 account qualified. The guard's actual pinned-SDK fault, redirect, proxy and cleanup

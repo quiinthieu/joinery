@@ -228,6 +228,16 @@ pub trait Driver: Send + Sync {
             "Database or schema switching is unavailable for this engine",
         ))
     }
+    async fn switch_schema(
+        &self,
+        _session_id: &str,
+        _request: &SwitchSchemaRequest,
+    ) -> AppResult<SessionContextOptions> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Revision-bound schema switching is unavailable for this engine",
+        ))
+    }
     async fn set_transaction_mode(&self, _mode: TransactionMode) -> AppResult<()> {
         Err(AppError::new(
             ErrorCode::Unsupported,
