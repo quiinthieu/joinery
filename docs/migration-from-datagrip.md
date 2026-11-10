@@ -26,6 +26,32 @@ explicit opt-in before a query runs, has bounded disk use, and preserves the
 memory-only default. Its common-store PostgreSQL qualification does not establish
 Snowflake connector performance or replacement readiness.
 
+## Explicit SDK transaction controls (local acceptance walkthrough)
+
+Keep an existing profile ReadOnly unless deliberately evaluating boundary controls
+in an approved isolated scope. An external-browser SDK profile can select Confirm,
+Guard, Silent or Password gated; production normalizes non-ReadOnly policy to
+Password gated. Switching to OAuth resets ReadOnly. This authorizes only the
+separate buttons, while public SQL writes, DDL and transaction statements remain
+blocked. The Auto-commit/Manual dropdown remains disabled for SDK sessions.
+
+After a fresh context observation, an idle console offers **Begin transaction**.
+An observed active transaction offers **Commit transaction** and **Rollback
+transaction**. BEGIN/COMMIT use the selected review/passphrase policy; ROLLBACK
+retains its recovery exemption. A pending action blocks queries, schema selection
+and background metadata/health work. After completion, use **Refresh completion
+context** deliberately to resume metadata loading. Acknowledged means the command
+was accepted; verify actual data effects independently before repeating a write.
+
+If the follow-up observer is rejected, the console can show **Only rollback
+recovery is available**. Use **Rollback transaction** or disconnect. Rollback
+needs no successful pre-read and cannot be trapped by normal review policy.
+An unknown/retired result closes local ownership without claiming remote rollback;
+inspect the remote state before reconnecting or repeating work. No automatic
+retry or reconnect occurs. These steps are a prepared walkthrough, not account
+transaction acceptance: no transaction/write approval has been consumed for this
+increment. See the [contract and required checks](snowflake-sdk-transactions-design.md).
+
 ## Build and run
 
 Follow [README setup](../README.md#development) with Node 24, pnpm 11 and the
@@ -73,9 +99,10 @@ scalars. Logout, child reaping and private authentication-state cleanup passed.
 The earlier failed attempt is retained in the ledger. Both approvals are consumed
 and authorize no additional application workflows. See the
 [account pass and limits](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
-The corrected `29bd71a` SDK bundle passes fresh normal packaging, ad-hoc signature,
-resources and guarded SDK startup without authentication/SQL. Earlier hidden
-native checks at `c543ef5` predate this query correction. Normal application
+The current `929ae06` SDK bundle passes fresh normal packaging, ad-hoc signature,
+resources and guarded SDK startup without authentication/SQL; three current hidden
+native runs pass 20 check categories with ten cleanup cycles. Its local browser
+and helper evidence does not qualify actual account transaction effects. Normal application
 account acceptance remains open; a helper pass does not substitute for it.
 
 Create a Snowflake profile with **External browser SSO**, the existing account

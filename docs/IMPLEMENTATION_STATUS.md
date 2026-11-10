@@ -1,5 +1,34 @@
 # Implementation and release status
 
+## Explicit transaction increment (10 November 2026, locally qualified)
+
+Local source now includes separately reviewed SDK BEGIN/COMMIT/ROLLBACK controls,
+one-use authority, policy rechecks and rollback-only recovery. SDK profiles still
+default ReadOnly; only explicitly selected external-browser policies can permit
+BEGIN/COMMIT. OAuth remains ReadOnly. DML, DDL and AUTOCOMMIT changes remain
+blocked. The UI retains command acknowledgement separately from transaction
+activity and verified data effects, and pauses automatic metadata after a control.
+See the [transaction contract](snowflake-sdk-transactions-design.md).
+
+Full `pnpm validate` passes: 659 frontend and 384 Rust tests, formatting,
+production frontend build, Rust checks and strict all-target/all-feature Clippy.
+The standard run reports 129 fixture tests ignored. Separate checks pass 31
+actual-helper/synthetic-SDK internal adapter tests, 31 adapter integration tests
+and 16 Studio/helper fixtures; all six affected cases also pass against the final
+source. Seven Studio policy/race tests and actual local SQLite profile restart/
+backup round trips pass. Three transaction browser flows pass, including keyboard
+approval and 31-second quiet-window checks; seven related UI cases passed in the
+prior run. These UI tests intercept RPCs and do not qualify account behavior.
+
+The rebuilt isolated SDK native app passes three runs, 20 check categories and
+ten cleanup cycles each, including typed IPC admission guards. The normal SDK
+macOS bundle passes packaging, strict ad-hoc signature/resource checks and guarded
+SDK startup: 224.14 MiB, 15,106 resource entries, no symlinks, zero authentication
+or SQL requests. All 324 frozen inputs stay unchanged. This source is committed
+as `929ae06`; it is unmerged, unpublished and not installed. No account transaction
+statements or writes are authorized or executed for this increment. Actual
+account effects, Developer ID/notarization and owner acceptance remain open.
+
 ## Confirmed owner target (9 November 2026)
 
 The owner requires **Snowflake on macOS with SSO `authenticator=externalbrowser`**,
@@ -21,7 +50,8 @@ Actual Snowflake million-row behavior remains unqualified.
 
 Current local source integrates explicit external-browser SDK profiles, fixed
 native runtime selection and retained helper cleanup. New profiles choose the SDK;
-existing profiles preserve local-application OAuth. Both routes enforce ReadOnly.
+existing profiles preserve local-application OAuth. Both restrict public SQL to reads; only SDK typed controls may use an explicitly
+selected boundary policy.
 SDK same-session completion is implemented and locally qualified; see the
 [metadata contract](snowflake-sdk-metadata-design.md). The current local browsing
 increment adds a separate revision-bound relation catalog, column inspection and
@@ -45,8 +75,10 @@ checks, fresh macOS packaging and 19 hidden-native check categories. See the
 Guarded SDK schema selection is locally qualified: **649 frontend / 365 standard
 Rust** tests, 16 focused browser workflows, real PostgreSQL/MySQL/MariaDB
 regressions, fresh normal SDK packaging and three hidden native runs pass.
-Transaction controls remain disabled.
-Actual account observation is unqualified and outside the old canary approval.
+Explicit application controls pass local qualification on `929ae06`. Account
+transaction effects remain unqualified. Actual helper observations
+pass under their separately approved 24-SQL ledger; normal application acceptance
+remains open.
 
 The separate [schema-switch transport foundation](snowflake-sdk-session-design.md)
 now passes **627 frontend / 363 standard Rust** tests, 169 Node helper/guard/
@@ -447,7 +479,6 @@ is the canonical plan, implementation-progress, and shipping-status destination.
 Update it after implementation, verification, merge, and release milestones;
 the former plan and testing Pages are retired.
 
-
 ## Continuation batch C: MySQL/MariaDB studio
 
 The new `mysql_async` adapter is verified against disposable MySQL 8.4 and
@@ -483,7 +514,6 @@ edit, generated SQL review, commit/readback and lazy completion for both new
 engines. These use disposable synthetic data; no production databases were read
 or modified. Build/native/release evidence is recorded on the project Site after
 completion.
-
 
 ## Continuation batch D: Redis workspace
 
@@ -527,7 +557,6 @@ production frontend build, formatting, native compilation and strict Clippy.
 All nine browser workflows pass across the four engine families. Six disposable
 Redis integration tests pass alongside the earlier twenty PostgreSQL/MySQL/SSH
 tests. These checks use synthetic fixtures and never read production tables.
-
 
 ## Continuation batch E: local metadata startup protection
 
@@ -600,7 +629,6 @@ Preview.11 remains the app download. Representative total-idle memory, cold
 visible startup and display FPS remain unqualified. Current validation and merge
 evidence is recorded on the private project hub.
 
-
 ## Scoped SQL completion repair (local, unmerged)
 
 On 2026-10-28, task branch `fix/scoped-sql-completion` implements the bounded
@@ -645,7 +673,6 @@ records samples and limitations. Live database/schema/search-path/role revisions
 full CTE/derived/correlated inference and FK JOIN generation remain separate work.
 No dependency replacement, new state manager, privileged IPC command or backend
 authorization change is introduced.
-
 
 ## PostgreSQL live completion context (shipped in preview.13)
 
@@ -715,7 +742,6 @@ verified. The installed executable matches release SHA-256
 `cfb5db5ef905148148c5dabddb081a9c24385771a9a2bc93a8c091a6ae7df6d1` and
 launched from Applications with a visible window. The prior preview.12 bundle
 is retained locally; the owner-private hub records the shipping receipt.
-
 
 ## MySQL/MariaDB live completion context (local implementation)
 

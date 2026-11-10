@@ -8,6 +8,107 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK explicit transaction application controls (10 November 2026, locally qualified)
+
+The increment adds reviewed SDK BEGIN/COMMIT/ROLLBACK buttons, separate typed
+prepare/execute IPC, one-use revision-bound authority and persisted policy
+rechecks. SDK profiles default ReadOnly; only deliberate external-browser policy
+selection permits BEGIN/COMMIT. ROLLBACK keeps its recovery exemption. OAuth,
+legacy profiles and public SQL remain read-only. No account transaction or write
+activity is authorized by this increment.
+
+Local checks pass with the repository-pinned toolchains:
+
+| Check | Result and scope |
+| --- | --- |
+| Full `pnpm validate` | 659 frontend tests in 54 files; 384 Rust tests; formatting, contracts/types, production frontend build, Rust check and strict all-target/all-feature Clippy. The standard Rust run reports 129 ignored fixture tests, not passes |
+| SDK adapter | 31 internal and 31 separate integration cases, with actual helper children and synthetic SDKs; stale/cross-session/policy rejection, cancellation, known ACK retention, protocol loss and cleanup |
+| Studio/helper | Corrected full suite 16/16. Its binary predates the last Unknown-outcome safeguard; all six affected final-source cases also pass in 99.24 seconds, including normal/recovery budgets and lost ACK |
+| Studio policy/races | Seven RecordingDriver tests pass: one-use exact-plan approvals, production passphrase, policy drift, generic-route exclusion, audit-failure rollback exemption, queued invalidation, disconnect and mandatory Unknown retirement. These do not establish database semantics |
+| Profile persistence | Actual local SQLite restart and metadata backup/restore across all five SDK policies; ReadOnly preserved and production normalization checked. No OS keychain or account qualification claim |
+| Helper | 216 tests pass, including actual pinned-SDK loopback transport/transaction fault cases; no account activity |
+| Browser | Three new transaction flows pass on final frozen spec; seven related existing flows passed in the prior run. RPC-intercepted UI behavior, not browser-to-real-Snowflake execution |
+| SDK hidden native | Three runs pass 20 check categories and ten cleanup cycles each. Typed IPC reaches disconnected-session/missing-plan guards; this is negative enrollment, not a positive account transaction |
+
+Normal BEGIN/COMMIT uses five baseline reads, one boundary and five final reads;
+recovery ROLLBACK uses one boundary and five final reads with no mandatory preread.
+Studio publishes returned observations without its generic ten-read follow-up.
+Ordinary observer denial retains rollback-only ownership; transport/protocol
+uncertainty retires without replay. Command ACK remains distinct from verified
+transaction/data effects. Adapter counts are synthetic evidence, not an account
+SQL approval or total network-cost bound.
+
+Independent review found and root repaired mandatory auditing that could trap
+rollback, late disconnect authority, automatic post-boundary metadata reloads and
+delayed query events replacing recovery. Editor/health metadata stays paused
+until owner refresh. A stale relation browser cannot remount, including with a
+fast batched response. Unsettled sibling queries block a boundary before tab
+revision invalidation. Final guard review cleared mandatory Unknown retirement
+in Rust and the UI even when a driver omits its retirement flag.
+
+Browser checks cover keyboard focus/Enter, held BEGIN exclusion, denied-observer
+recovery and no-approval ROLLBACK; Unknown retirement without replay; and immediate
+COMMIT with a 31-second quiet window. A metadata browser revokes prior authority,
+so the owner explicitly refreshes before BEGIN. During rollback-only recovery,
+the refresh button stays disabled; the refresh hint appears after recovery.
+Standalone E2E TypeScript and formatting pass. Final spec SHA-256:
+`4436e1f6f66e7383b339656029a209fc8940a81ff3cb1aa719fddea7321d0e28`.
+
+Failed attempts remain evidence. The first Studio fixture run was 14/16 because
+its helper wrongly required ROLLBACK approval; corrected fixtures passed 16/16.
+Browser attempts were 7/10, 8/10 and 9/10 before fixing synthetic plan ownership,
+metadata-authority refresh, no-approval wire expectations and duplicate/priority
+status locators. No product behavior was changed to satisfy those fixture
+mistakes. Logs are `sdk-transactions-studio-interim.log`,
+`sdk-transactions-browser-interim.log`, `sdk-transactions-browser-final.log` and
+`sdk-transactions-browser-qualified.log`; filenames do not imply a pass. Failed
+traces are retained under `sdk-transactions-browser-final-failures/` and
+`sdk-transactions-browser-qualified-failure/`. The final control pass is
+`sdk-transactions-browser-controls-final.log`.
+
+The initial and final source freezes each record 324 application/runtime/test/
+tooling inputs, based on `b9673ab` plus the owned increment. Only the synthetic
+browser fixture changed after full validation; all product inputs stayed fixed.
+Receipts are `sdk-transactions-source-freeze.json` and
+`sdk-transactions-qualified-source-freeze.json`. The isolated SDK native build
+passes packaged resource/startup checks with zero authentication and SQL requests.
+Copied native build/run receipts and logs have prefix `sdk-transactions-native-`.
+The known nonfatal `rust-objcopy`/`libLLVM.dylib` stripping warning persists.
+Normal SDK application packaging passes for commit `929ae06`: **224.14 MiB**,
+strict ad-hoc signature verification, **15,106 resource entries and zero symlinks**,
+and actual packaged SDK hello/EOF with **zero authentication/SQL requests**.
+The executable is 31,669,808 bytes, SHA-256
+`f1e2660b3455c6a5cd24477e824c6ed5265595fe26e90a12af5ae58da7d4f40c`.
+All 324 frozen inputs remain unchanged through packaging and exactly match the
+committed source/test files. Evidence: `sdk-transactions-bundle-final.log` and
+`sdk-transactions-bundle-artifact.json`. The runnable local application is
+`src-tauri/target/release/bundle/macos/Joinery.app`. It is not installed or launched
+against private app state; Developer ID, notarization, account effects and owner
+acceptance remain open.
+
+Reproducible commands (set `JOINERY_TEST_NODE` to the pinned Node binary):
+
+```sh
+pnpm validate
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib explicit_boundary -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib drivers::snowflake::tests -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --test snowflake_external -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib execution::snowflake_connection_tests -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib sdk_studio_ -- --nocapture
+pnpm test:snowflake:helper
+pnpm exec playwright test tests/e2e/snowflake-sdk-transactions.spec.ts
+pnpm desktop:snowflake:smoke:build
+python3 scripts/native-smoke.py
+pnpm desktop:snowflake:bundle:mac
+```
+
+Evidence is under `.cache/verification/connection-attempts/` with prefix
+`sdk-transactions-`. The [transaction contract](snowflake-sdk-transactions-design.md)
+and [migration walkthrough](migration-from-datagrip.md#explicit-sdk-transaction-controls-local-acceptance-walkthrough)
+record behavior and remaining actual-account/owner acceptance. DML, DDL,
+AUTOCOMMIT changes, account effects and complete replacement remain open.
+
 ### Corrected account read/metadata qualification (10 November 2026)
 
 The owner freshly approved exactly one attempt for execution plan

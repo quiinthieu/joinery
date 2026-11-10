@@ -34,7 +34,8 @@ records connector alternatives and the expanded latest-release inventory.
 Application profiles now select explicitly between the stateful SDK external-browser
 route and the existing local-application OAuth/SQL API route. New profiles choose
 external browser; missing mode on an existing profile defaults to its prior OAuth
-route. No automatic fallback occurs. Both remain ReadOnly. The SDK route currently
+route. No automatic fallback occurs. Public SQL remains restricted to reads;
+only SDK typed controls can use an explicitly selected boundary policy. The SDK route currently
 advertises SQL and cancellation. Subsequent same-session completion is implemented
 with [separate qualification](snowflake-sdk-metadata-design.md). The later
 [browsing slice](snowflake-sdk-browsing-design.md) implements a revision-bound
@@ -73,7 +74,7 @@ browser-SSO canaries do not establish the required SDK account behavior.
 | Execution | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes | Read-only SDK route integrated; required write/batch/session semantics and remote outcome qualification open |
 | Results and data movement | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data | Shared store passes actual PostgreSQL million-row paging/export and browser acceptance with opt-in bounded temporary storage. Native preference/restart checks pass. Actual Snowflake retention/types/performance remain unqualified |
 | Data editing | Review and commit/rollback row changes with conflict/identity safeguards and truthful affected-row counts; support required keyless workflows safely or record a blocking gap | Disabled; no accepted narrowing |
-| Transactions | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully | Unsupported; primary blocker |
+| Transactions | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully | Explicit typed controls and recovery locally qualified on `929ae06`. Normal SDK AUTOCOMMIT changes and DML/DDL remain blocked. Actual account effects and complete transaction workflow remain primary blockers |
 | History and scripts | Reuse scripts, query history and session-independent drafts with chosen privacy/persistence, no automatic reconnect/execute after restart | Common library exists; Snowflake lifecycle/native acceptance open |
 | Performance | Appropriate Snowflake estimated/actual plans, query history/profile/timing and required monitoring/cancellation workflow | Synthetic estimated logical plans; live features and full inventory open |
 | Schema and engine behavior | Required Snowflake DDL/object operations, schema compare/migration and session/role behavior, with explicit implicit-commit warnings and stale-target checks | Write/DDL path disabled; metadata and engine semantics incomplete |

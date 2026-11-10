@@ -1,8 +1,9 @@
 # Snowflake SDK explicit transactions
 
-**Status: transport foundation implemented and locally tested; application controls disabled.**
+**Status: explicit adapter/application controls implemented and locally qualified (`929ae06`); actual-account effects and acceptance open.**
 Reads, writes, schema changes and explicit transactions remain required for the
-owner's DataGrip replacement. This document defines the next transaction slices;
+owner's DataGrip replacement. This document records the transaction contract and
+remaining qualification;
 it does not qualify an account or authorize billable work, DML or DDL. The earlier
 two-SELECT canary is complete and grants no further authority.
 
@@ -40,8 +41,9 @@ or rolled-back database effects. Known acknowledgement must survive a later
 readback/drain error, cancellation or malformed trailing frame. Lost responses
 remain unknown and must never be replayed automatically.
 
-This slice does not enable arbitrary public SQL transaction statements, DML,
-DDL, profile mode changes or application transaction buttons.
+The transport slice alone did not enable application controls. The dependent
+application increment now adds reviewed buttons while arbitrary public SQL
+transaction statements, DML, DDL and AUTOCOMMIT changes remain blocked.
 
 The helper now accepts only the typed action and expected identity, rechecks the
 pin at dispatch, and compiles one fixed statement. `boundaryAcknowledged` is
@@ -54,9 +56,8 @@ Local supervisor/process and actual SDK loopback evidence is recorded in the
 
 ## Dependent adapter and application slice
 
-The existing profile validator requires ReadOnly for both Snowflake routes.
-The complete explicit-boundary workflow therefore needs an SDK-specific policy
-prerequisite in the same increment as typed admission. Use the existing SafeMode
+The explicit-boundary increment includes an SDK-specific policy prerequisite
+with typed admission. Use the existing SafeMode
 field: permit owner-selected policies only for explicit external-browser SDK
 profiles; keep local-application OAuth and missing-authentication legacy profiles
 ReadOnly. Preserve HTTPS/443, verified TLS, no SSH and no stored-password rules.
@@ -80,8 +81,9 @@ of adding its ordinary ten-read observer afterward.
 
 A normal control can use five baseline reads, one boundary and five final reads:
 eleven statement executions. Recovery ROLLBACK uses no mandatory baseline and can
-use one boundary plus five final reads. These are proposed adapter counts, not an
-account approval or a complete application SQL budget.
+use one boundary plus five final reads. These fixed adapter counts are verified
+through synthetic SDK/helper fixtures,
+not an account approval or a complete application SQL budget.
 
 After a known boundary acknowledgement, an ordinary observer SQL/permission
 failure must retain a restricted same-session recovery state. Do not reuse schema
@@ -90,7 +92,7 @@ uncertainty, abandoned ownership and unacknowledged boundaries still require
 conservative retirement. Distinguish command acknowledgement, observed activity,
 transaction usability and verified disposition in DTOs, history and UI.
 
-The proposed integration uses a dedicated explicit-boundary capability and
+The integration uses a dedicated explicit-boundary capability and
 `transaction_control(session_id, {action, revision})` driver route. It returns
 structured acknowledged/rejected/unknown command evidence, observed state,
 observed/rollback-only/unavailable authority and retirement status. Keep the
@@ -120,6 +122,27 @@ match action/revision/session, and recheck session closure after lane acquisitio
 and immediately before dispatch. Ordinary SQL execution must reject stored
 boundary actions so it cannot bypass typed evidence and recovery handling.
 
+## Application scheduling and recovery
+
+`prepare_transaction_control` and `execute_transaction_control` use a distinct
+one-use stored plan. The console lane is held through the adapter result. A
+failed start audit blocks BEGIN/COMMIT but cannot trap ROLLBACK recovery; final
+audit failure cannot erase known command evidence. A concurrent disconnect
+returns retained command evidence with retired state and no authority.
+
+The frontend rejects controls while any owning tab has unsettled queries. On
+dispatch it advances owning tab revisions to reject delayed earlier query
+events, revokes schema authority, invalidates metadata caches and pauses
+automatic metadata/health work. After publication, completion remains paused
+until the owner chooses **Refresh completion context**. An open relation browser
+is closed rather than silently remounted after a boundary. Pending controls
+block competing work. Rollback-only state blocks ordinary queries and metadata;
+its typed ROLLBACK remains available without normal read/approval prerequisites.
+
+The UI reports **BEGIN/COMMIT/ROLLBACK acknowledged**, rejected or outcome unknown.
+It does not infer committed or rolled-back data effects. Unknown/retired sessions
+are not reconnected or replayed automatically.
+
 ## Required verification
 
 - Exact typed input, identity/action/impact matching and one fixed submission;
@@ -145,5 +168,5 @@ boundary actions so it cannot bypass typed evidence and recovery handling.
 An abrupt disconnection can leave a detached transaction. Child reaping and local
 authentication-directory cleanup do not prove remote rollback; see
 [detached transactions](https://docs.snowflake.com/en/sql-reference/transactions#aborting-transactions).
-Meaningful DML and DDL workflows remain subsequent required slices, followed by
-owner hands-on acceptance.
+Meaningful [reviewed DML](snowflake-sdk-dml-design.md) and DDL workflows remain
+subsequent required slices, followed by owner hands-on acceptance.

@@ -55,8 +55,12 @@ and remaining account qualification. Local source also provides revision-bound
 [relation browsing, column inspection and read-only preview](docs/snowflake-sdk-browsing-design.md),
 explicit [session observations](docs/snowflake-sdk-session-observation.md), and
 [guarded schema selection](docs/snowflake-sdk-session-design.md), whose local
-application qualification passes. Complete object/constraint inspection, writes, DDL
-and transactions remain incomplete and required.
+application qualification passes. Separately reviewed
+[explicit transaction controls](docs/snowflake-sdk-transactions-design.md) are
+implemented with one-use authority and rollback recovery; their integrated local
+qualification passes on `929ae06`. They preserve command acknowledgement separately
+from verified data effects. Complete object/constraint inspection, writes, DDL,
+AUTOCOMMIT changes and actual transaction effects remain incomplete and required.
 The [submission guard](docs/snowflake-sdk-submit-guard-design.md) bounds SDK query
 submissions for pinned sources and retires on ambiguity. A lost acknowledgement
 can still mean the server executed a request; local tests do not establish remote

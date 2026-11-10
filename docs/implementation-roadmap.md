@@ -1,5 +1,38 @@
 # Joinery implementation roadmap
 
+## Explicit transaction increment (10 November 2026, locally qualified)
+
+Local source now includes separately reviewed SDK BEGIN/COMMIT/ROLLBACK controls,
+one-use authority, policy rechecks and rollback-only recovery. SDK profiles still
+default ReadOnly; only explicitly selected external-browser policies can permit
+BEGIN/COMMIT. OAuth remains ReadOnly. DML, DDL and AUTOCOMMIT changes remain
+blocked. The UI retains command acknowledgement separately from transaction
+activity and verified data effects, and pauses automatic metadata after a control.
+See the [transaction contract](snowflake-sdk-transactions-design.md).
+The next required SQL-write increment follows the
+[reviewed DML proposal](snowflake-sdk-dml-design.md): explicit opt-in, strict AST
+admission, exact affected-count evidence and same-session recovery. It is a design,
+not enabled write support; broader DML and DDL remain required.
+
+Full `pnpm validate` passes: 659 frontend and 384 Rust tests, formatting,
+production frontend build, Rust checks and strict all-target/all-feature Clippy.
+The standard run reports 129 fixture tests ignored. Separate checks pass 31
+actual-helper/synthetic-SDK internal adapter tests, 31 adapter integration tests
+and 16 Studio/helper fixtures; all six affected cases also pass against the final
+source. Seven Studio policy/race tests and actual local SQLite profile restart/
+backup round trips pass. Three transaction browser flows pass, including keyboard
+approval and 31-second quiet-window checks; seven related UI cases passed in the
+prior run. These UI tests intercept RPCs and do not qualify account behavior.
+
+The rebuilt isolated SDK native app passes three runs, 20 check categories and
+ten cleanup cycles each, including typed IPC admission guards. The normal SDK
+macOS bundle passes packaging, strict ad-hoc signature/resource checks and guarded
+SDK startup: 224.14 MiB, 15,106 resource entries, no symlinks, zero authentication
+or SQL requests. All 324 frozen inputs stay unchanged. This source is committed
+as `929ae06`; it is unmerged, unpublished and not installed. No account transaction
+statements or writes are authorized or executed for this increment. Actual
+account effects, Developer ID/notarization and owner acceptance remain open.
+
 ## Confirmed owner target (9 November 2026)
 
 The owner requires **Snowflake on macOS with SSO `authenticator=externalbrowser`**,
@@ -21,7 +54,8 @@ are recorded in the verification ledger.
 Actual Snowflake million-row behavior remains unqualified.
 
 Current Joinery implements explicit local-application OAuth/SQL API and stateful
-SDK external-browser profile routes. Both enforce ReadOnly. SDK same-session
+SDK external-browser profile routes. Both restrict public SQL to reads; only SDK typed controls may use an explicitly
+selected boundary policy. SDK same-session
 completion is implemented and locally qualified separately. A distinct
 revision-bound relation catalog/inspection/read-only preview is now implemented
 locally; see the [browsing contract](snowflake-sdk-browsing-design.md) and
@@ -40,8 +74,9 @@ nullable roles and explicit Unknown states. Stable observations preserve cached
 plans; changed or unavailable observations revoke them. Local qualification
 passes; the [ledger](replacement-verification.md#sdk-session-observation-10-november-2026)
 records current tests, packaging and native evidence. Guarded SDK schema
-selection is locally qualified; transaction controls remain disabled;
-actual account observation remains unqualified. Its ten/eleven additional SQL
+selection and explicit transaction controls are locally qualified. Account
+transaction effects remain unqualified.
+The separately approved helper observation ledger passes on the actual account. Its ten/eleven additional SQL
 executions are outside the earlier two-query canary approval.
 
 An [offline qualification manifest](snowflake-qualification-manifest.md) is now
@@ -79,10 +114,9 @@ DDL or transaction actions are enabled by this foundation.
 
 The [explicit-transaction transport foundation](snowflake-sdk-transactions-design.md)
 is implemented and locally tested. It separates a boundary command's
-acknowledgement from verified database disposition. The dependent adapter must
-retain same-session rollback recovery when an aborted transaction rejects
-observer reads. Application actions remain disabled until their authority,
-policy, recovery and UI workflows are implemented.
+acknowledgement from verified database disposition. The dependent adapter now retains same-session rollback recovery when an aborted
+transaction rejects observer reads. The complete controls pass local application
+qualification on `929ae06`; actual transaction effects remain unqualified.
 
 At `c543ef5`, the transaction transport and synthetic-function policy repairs
 also pass fresh normal SDK macOS packaging, ad-hoc signing/resources and guarded

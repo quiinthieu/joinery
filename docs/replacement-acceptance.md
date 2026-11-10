@@ -1,5 +1,34 @@
 # Daily DataGrip replacement acceptance
 
+## Explicit transaction increment (10 November 2026, locally qualified)
+
+Local source now includes separately reviewed SDK BEGIN/COMMIT/ROLLBACK controls,
+one-use authority, policy rechecks and rollback-only recovery. SDK profiles still
+default ReadOnly; only explicitly selected external-browser policies can permit
+BEGIN/COMMIT. OAuth remains ReadOnly. DML, DDL and AUTOCOMMIT changes remain
+blocked. The UI retains command acknowledgement separately from transaction
+activity and verified data effects, and pauses automatic metadata after a control.
+See the [transaction contract](snowflake-sdk-transactions-design.md).
+
+Full `pnpm validate` passes: 659 frontend and 384 Rust tests, formatting,
+production frontend build, Rust checks and strict all-target/all-feature Clippy.
+The standard run reports 129 fixture tests ignored. Separate checks pass 31
+actual-helper/synthetic-SDK internal adapter tests, 31 adapter integration tests
+and 16 Studio/helper fixtures; all six affected cases also pass against the final
+source. Seven Studio policy/race tests and actual local SQLite profile restart/
+backup round trips pass. Three transaction browser flows pass, including keyboard
+approval and 31-second quiet-window checks; seven related UI cases passed in the
+prior run. These UI tests intercept RPCs and do not qualify account behavior.
+
+The rebuilt isolated SDK native app passes three runs, 20 check categories and
+ten cleanup cycles each, including typed IPC admission guards. The normal SDK
+macOS bundle passes packaging, strict ad-hoc signature/resource checks and guarded
+SDK startup: 224.14 MiB, 15,106 resource entries, no symlinks, zero authentication
+or SQL requests. All 324 frozen inputs stay unchanged. This source is committed
+as `929ae06`; it is unmerged, unpublished and not installed. No account transaction
+statements or writes are authorized or executed for this increment. Actual
+account effects, Developer ID/notarization and owner acceptance remain open.
+
 Started 9 November 2026. Goal remains **active, not accepted**. This document
 coordinates the persistent Goal; the [engineering matrix](datagrip-feature-matrix.md)
 retains historical evidence and the [roadmap](implementation-roadmap.md) retains
@@ -33,7 +62,8 @@ Actual Snowflake million-row behavior remains unqualified.
 
 Explicit SDK external-browser profiles and retained helper lifecycle are now
 implemented. New profiles select the SDK; existing profiles retain OAuth/SQL API.
-Both remain read-only. The preceding SDK integration passes 604 frontend / 297 standard
+Both restrict public SQL to reads; SDK typed boundary actions have a separate
+policy. The preceding SDK integration passes 604 frontend / 297 standard
 Rust tests; focused profile, actual-child lifecycle and browser checks pass.
 All 124 actual fixtures and normal SDK resource-bundle/signature/startup checks
 pass. All 143 browser workflows, 19 hidden SDK native checks with ten cleanup cycles
@@ -118,7 +148,7 @@ fresh outcomes separately.
 | Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | Read-only SDK route integrated; same-session completion implemented with separate local qualification. Browsing, authoritative inspection, reviewed writes/DDL, transactions and remote outcomes remain open. Other-engine fixtures do not qualify Snowflake |
 | Inspect and move data | Browse and export complete results up to 1,000,000 rows with bounded memory; filter/sort/page, copy exact values; cancelled export clearly incomplete | Opt-in temporary result storage passes actual PostgreSQL million-row paging/export and browser acceptance. Native preference/restart checks pass. Actual Snowflake types/transport/size, wide-result export and independent copy/import limits remain open; see [large results](large-results.md) |
 | Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; stale/replaced targets reject atomically; ineligible results stay read-only | PostgreSQL original relation identity and MySQL/MariaDB retained guards implemented. Final source checks pass 581 frontend / 193 Rust, 124 actual fixtures, 27/27 strict scenarios and 137/137 browser workflows, including exact CSV ownership and TLS-over-SSH. Snowflake grid/CSV editing is still disabled and requires separate identity proof. Normal packaged restart/credentials and owner applicability/acceptance remain open |
-| Transactions | Snowflake consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives deliberate reconnect; DDL implicit commits and interrupted acknowledgements are truthful | Required Snowflake stateful transaction path missing. Fifteen local transaction transport tests qualify existing SQL adapters only |
+| Transactions | Snowflake consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives deliberate reconnect; DDL implicit commits and interrupted acknowledgements are truthful | SDK explicit controls and rollback recovery locally qualified on `929ae06`; see the verification ledger. Actual Snowflake data effects, mode changes, DML/DDL interaction and owner acceptance remain open. Other-engine tests cannot close this gate |
 | Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Abrupt backend restart and two isolated actual native close/reopen pairs pass, including pending-save flush and real PostgreSQL rollback; normal packaged/credential evaluation remains open |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
 | Change schema | Review generated migration, reject stale target snapshot, demonstrate Snowflake implicit commits and refresh metadata | Existing other-engine workflow does not qualify Snowflake; required Snowflake DDL/schema diff/object coverage incomplete |

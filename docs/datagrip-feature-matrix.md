@@ -1,5 +1,34 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Explicit transaction increment (10 November 2026, locally qualified)
+
+Local source now includes separately reviewed SDK BEGIN/COMMIT/ROLLBACK controls,
+one-use authority, policy rechecks and rollback-only recovery. SDK profiles still
+default ReadOnly; only explicitly selected external-browser policies can permit
+BEGIN/COMMIT. OAuth remains ReadOnly. DML, DDL and AUTOCOMMIT changes remain
+blocked. The UI retains command acknowledgement separately from transaction
+activity and verified data effects, and pauses automatic metadata after a control.
+See the [transaction contract](snowflake-sdk-transactions-design.md).
+
+Full `pnpm validate` passes: 659 frontend and 384 Rust tests, formatting,
+production frontend build, Rust checks and strict all-target/all-feature Clippy.
+The standard run reports 129 fixture tests ignored. Separate checks pass 31
+actual-helper/synthetic-SDK internal adapter tests, 31 adapter integration tests
+and 16 Studio/helper fixtures; all six affected cases also pass against the final
+source. Seven Studio policy/race tests and actual local SQLite profile restart/
+backup round trips pass. Three transaction browser flows pass, including keyboard
+approval and 31-second quiet-window checks; seven related UI cases passed in the
+prior run. These UI tests intercept RPCs and do not qualify account behavior.
+
+The rebuilt isolated SDK native app passes three runs, 20 check categories and
+ten cleanup cycles each, including typed IPC admission guards. The normal SDK
+macOS bundle passes packaging, strict ad-hoc signature/resource checks and guarded
+SDK startup: 224.14 MiB, 15,106 resource entries, no symlinks, zero authentication
+or SQL requests. All 324 frozen inputs stay unchanged. This source is committed
+as `929ae06`; it is unmerged, unpublished and not installed. No account transaction
+statements or writes are authorized or executed for this increment. Actual
+account effects, Developer ID/notarization and owner acceptance remain open.
+
 ## Confirmed owner target (9 November 2026)
 
 The owner requires **Snowflake on macOS with SSO `authenticator=externalbrowser`**,
@@ -82,13 +111,13 @@ separate [integration evidence](snowflake-sdk-integration.md). Hidden native SDK
 checks now pass; real Snowflake daily workflows remain **incomplete**.
 
 Current Joinery offers explicit local-application OAuth/SQL API and stateful SDK
-external-browser routes. Both enforce ReadOnly. SDK same-session relation/column
+external-browser routes. Both restrict public SQL to reads; only SDK typed controls may use an explicitly
+selected boundary policy. SDK same-session relation/column
 completion is implemented; its [qualification](snowflake-sdk-metadata-design.md)
-is separate from the preceding SDK integration counts above. SDK writes, DDL,
-transactions remain disabled. A locally tested
-[typed transaction transport foundation](snowflake-sdk-transactions-design.md)
-now preserves command acknowledgements separately from verified database effects;
-the adapter, policy, recovery and UI workflows remain incomplete. A distinct
+is separate from the preceding SDK integration counts above. SDK writes and DDL remain disabled. The explicit transaction adapter, policy,
+recovery and UI now pass local qualification on `929ae06`; actual account effects
+remain unqualified.
+Command acknowledgements remain separate from verified database effects. A distinct
 revision-bound relation catalog,
 column inspection and read-only preview is implemented locally under the
 [browsing contract](snowflake-sdk-browsing-design.md). Complete object/constraint
@@ -98,7 +127,6 @@ PostgreSQL/MySQL safety repairs remain useful application work but do not close
 Snowflake acceptance. External account qualification needs explicit non-production
 scope and permission for any billable activity/writes; no private DataGrip state
 or credentials will be inspected.
-
 
 The active 9 November 2026 replacement Goal is tracked in
 [daily replacement acceptance](replacement-acceptance.md), with current
@@ -475,7 +503,6 @@ not close E02/I04 live session-context tracking, E06 JOIN completion, or derived
 query-output inference. See [implementation-roadmap.md](implementation-roadmap.md)
 for the dependency order and verification contract.
 
-
 ## Implemented batch: scoped completion repair
 
 Work is local on `fix/scoped-sql-completion`, based on fetched `bbba421`.
@@ -552,7 +579,6 @@ Identifier rules were cross-checked against official
 [MySQL object naming](https://dev.mysql.com/doc/refman/8.4/en/identifiers.html), and
 [Snowflake identifier requirements](https://docs.snowflake.com/en/sql-reference/identifiers-syntax).
 
-
 ## PostgreSQL live completion context — 29 October 2026
 
 The PostgreSQL slice of E02/I04 shipped in preview.13 through PR #21 (`e8f1cec`),
@@ -594,7 +620,6 @@ the 50 ms target remains missed. Warm 100,000-name lookup p95 was **0.10 ms**
 (1,000 samples; index build 6.8 ms). These are headless Chromium observations,
 not native startup/memory/FPS qualification. No production connections,
 destructive runtime SQL or application release form part of this batch.
-
 
 ## MySQL/MariaDB continuation — preview.14 and case-mode follow-up
 
