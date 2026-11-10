@@ -234,6 +234,12 @@ for this increment yet.
 
 ## Second slice: complete current-database read browsing
 
+The reviewed [browsing/session proposal](snowflake-sdk-browsing-design.md)
+expands this slice's target contracts, inspection sources, bounds and acceptance
+gates. Its typed context switching depends on the separately proposed
+[submission guard](snowflake-sdk-submit-guard-design.md); neither proposal is
+implemented or account-qualified by this completion increment.
+
 Implement `catalog`, complete `schema`, bounded `browse`, live `session_state`,
 `list_contexts` and verified explicit schema switching. Enable `tableBrowsing`
 only when this whole sidebar → inspect → preview → refresh workflow works. Keep

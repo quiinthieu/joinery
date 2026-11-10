@@ -10,6 +10,11 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ### SDK completion increment (10 November 2026; locally qualified)
 
+Implementation and its local qualification record are committed as `4c77cc4`.
+The subsequent [browsing/session](snowflake-sdk-browsing-design.md) and
+[submission guard](snowflake-sdk-submit-guard-design.md) documents are reviewed
+designs only; they add no implementation, test result or account qualification.
+
 Working source follows `5229bba`. It adds bounded same-session Snowflake relation
 and resolved-column completion, context fingerprints, stale-response rejection
 and structured global context invalidation. Browsing/inspection, writes, DDL and

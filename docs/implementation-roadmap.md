@@ -56,6 +56,15 @@ dispatch before adding strict Snowflake-only zero-argument observer support.
 Qualified/quoted functions, unknown functions and relative-history forms must
 remain blocked. Then continue complete browsing and authoritative session state.
 
+The reviewed [browsing/session proposal](snowflake-sdk-browsing-design.md)
+defines the catalog → inspect → bounded preview → refresh workflow, qualified
+targets and truthful unknown transaction/context states. The separate
+[submission guard proposal](snowflake-sdk-submit-guard-design.md) describes a
+possible process-local boundary against SDK retransmission. Neither proposal
+is implemented or account-qualified. The guard needs actual pinned-SDK fault,
+redirect, proxy and cleanup evidence before it can underpin write admission;
+passing that foundation alone must not enable writes or transactions.
+
 The preceding stateful transport foundation is in the repository: a pinned SDK helper
 passes 31 local tests (six use the actual SDK against loopback HTTP), and its
 Rust supervisor passes eight unit and 30 integration tests. The latter includes
