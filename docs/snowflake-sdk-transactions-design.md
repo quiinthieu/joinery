@@ -1,0 +1,119 @@
+# Snowflake SDK explicit transactions
+
+**Status: transport foundation implemented and locally tested; application controls disabled.**
+Reads, writes, schema changes and explicit transactions remain required for the
+owner's DataGrip replacement. This document defines the next transaction slices;
+it does not qualify an account or authorize billable work, DML or DDL. The earlier
+two-SELECT canary is complete and grants no further authority.
+
+## Database contract
+
+Explicit transactions and AUTOCOMMIT mode changes are different actions. Keep the
+SDK mode dropdown disabled until its own reviewed workflow exists: assigning
+AUTOCOMMIT can implicitly commit an active transaction, including when the value
+does not change. Explicit BEGIN can operate while AUTOCOMMIT is enabled. DDL also
+has implicit-commit behavior and needs a separate reviewed path; initially reject
+DDL while a transaction is open. A failed DML statement alone does not prove that
+the transaction is unusable. See Snowflake's
+[transaction rules](https://docs.snowflake.com/en/sql-reference/transactions).
+
+With TRANSACTION_ABORT_ON_ERROR enabled, an aborted transaction can reject
+observer statements until COMMIT or ROLLBACK closes it. Requiring a successful
+observer before every control would prevent recovery. A dedicated same-session
+rollback must therefore accept retained backend ownership without mandatory
+pre-read SQL. See the
+[parameter contract](https://docs.snowflake.com/en/sql-reference/parameters#transaction-abort-on-error).
+
+## Transport slice
+
+Add a strict typed helper operation with exactly an action (`begin`, `commit` or
+`rollback`) and expected principal/session identity. The helper accepts no caller
+SQL or identifiers and compiles exactly one of `BEGIN TRANSACTION`, `COMMIT`, or
+`ROLLBACK`. It checks the established identity pin and matches supervisor impact
+to action before admission. Preserve its one-submission guard through result
+drain and terminal reporting.
+
+Install a distinct boundary acknowledgement before callbacks or result draining.
+The supervisor retains action and statement association separately from generic
+request progress. An acknowledged command does not by itself establish committed
+or rolled-back database effects. Known acknowledgement must survive a later
+readback/drain error, cancellation or malformed trailing frame. Lost responses
+remain unknown and must never be replayed automatically.
+
+This slice does not enable arbitrary public SQL transaction statements, DML,
+DDL, profile mode changes or application transaction buttons.
+
+The helper now accepts only the typed action and expected identity, rechecks the
+pin at dispatch, and compiles one fixed statement. `boundaryAcknowledged` is
+retained before result draining; the supervisor validates its exact action and
+registered statement identity. Post-ACK failures preserve `StatementSucceeded`
+without claiming `Committed` or `RolledBack`. A definitive database rejection
+retains its failure classification and allows a same-session recovery command.
+Local supervisor/process and actual SDK loopback evidence is recorded in the
+[verification ledger](replacement-verification.md#sdk-transaction-transport-10-november-2026).
+
+## Dependent adapter and application slice
+
+Separate explicit-control capability from the existing transaction capability
+that also enables the AUTOCOMMIT dropdown. BEGIN requires fresh observed idle
+authority; normal COMMIT requires matching observed transaction authority. Hold
+one console lane and invalidate plans, completion and browsing authority before
+dispatch. Publish the adapter's verified state directly through Studio instead
+of adding its ordinary ten-read observer afterward.
+
+A normal control can use five baseline reads, one boundary and five final reads:
+eleven statement executions. Recovery ROLLBACK uses no mandatory baseline and can
+use one boundary plus five final reads. These are proposed adapter counts, not an
+account approval or a complete application SQL budget.
+
+After a known boundary acknowledgement, an ordinary observer SQL/permission
+failure must retain a restricted same-session recovery state. Do not reuse schema
+switching's blanket post-admission retirement rule here. Transport/protocol
+uncertainty, abandoned ownership and unacknowledged boundaries still require
+conservative retirement. Distinguish command acknowledgement, observed activity,
+transaction usability and verified disposition in DTOs, history and UI.
+
+The proposed integration uses a dedicated explicit-boundary capability and
+`transaction_control(session_id, {action, revision})` driver route. It returns
+structured acknowledged/rejected/unknown command evidence, observed state,
+observed/rollback-only/unavailable authority and retirement status. Keep the
+complete observation sample and principal/session pin server-side. Authority is
+generation/revision-bound, consumed before dispatch, and distinct from context
+options so an ordinary options invalidation cannot erase recovery ownership.
+
+When restricted to rollback-only recovery, reject public queries, browsing,
+schema switching, BEGIN and COMMIT before helper dispatch. Allow owner-requested
+rollback and disconnect. An unsuccessful permitted observer refresh must not
+erase that recovery state. Use a transaction-specific RAII lease: known boundary
+ACK plus ordinary observer denial preserves restricted recovery; lost responses,
+transport/protocol uncertainty and abandoned ownership retire conservatively.
+
+Studio needs a dedicated stored-plan action bound to boundary/revision/session
+and the existing one-use authorization policy. Recheck effective SafeMode on
+consumption: BEGIN/COMMIT follow ReadOnly, confirmation and production-password
+requirements; rollback retains the recovery exemption. Do not route through
+legacy commit/rollback methods that discard command evidence, observe again and
+can label a command ACK as committed. Publish the returned observation directly
+and audit boundary acknowledgement/rejection/uncertainty.
+
+## Required verification
+
+- Exact typed input, identity/action/impact matching and one fixed submission;
+  foreign, duplicate, missing and mismatched statement acknowledgements.
+- Loss of BEGIN, COMMIT and ROLLBACK responses; acknowledged boundary followed by
+  drain failure, observer denial, cancellation or malformed trailing bytes.
+- Cancellation before admission versus after dispatch; exact-operation drop,
+  cleanup, child exit and no retry/reconnect or outcome rewriting.
+- Aborted-transaction recovery without preflight; nullable role/warehouse,
+  changed transaction identity, stale authority and cross-tab ownership.
+- Backend safety-policy rejection with zero helper dispatch; pending controls,
+  late retired results and truthful close/recovery messaging in browser/native UI.
+- Separately approved isolated Snowflake BEGIN/DML/COMMIT/ROLLBACK effects, failed
+  statements, aborted COMMIT behavior, descriptors and recovery on the actual
+  account. Synthetic helpers and loopback SDK fixtures cannot establish these.
+
+An abrupt disconnection can leave a detached transaction. Child reaping and local
+authentication-directory cleanup do not prove remote rollback; see
+[detached transactions](https://docs.snowflake.com/en/sql-reference/transactions#aborting-transactions).
+Meaningful DML and DDL workflows remain subsequent required slices, followed by
+owner hands-on acceptance.

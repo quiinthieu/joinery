@@ -23,6 +23,12 @@ for (const transport of ["http", "tls", "proxy"]) {
     "helper-lost-ack",
     "helper-ack-drain",
     "helper-database",
+    "helper-transaction-begin",
+    "helper-transaction-commit",
+    "helper-transaction-rollback",
+    "helper-transaction-lost-ack",
+    "helper-transaction-ack-guard",
+    "helper-transaction-database",
     "helper-switch-success",
     "helper-switch-lost-use",
     "helper-switch-readback-denied",
@@ -192,6 +198,7 @@ for (const [scenario, transport] of cases) {
         assert.equal(result.intendedSQLOnly, true);
         assert.equal(result.scalarBindsExact, true);
         const switchScenario = scenario.startsWith("helper-switch-");
+        const transactionScenario = scenario.startsWith("helper-transaction-");
         assert.equal(
           result.queryPosts,
           switchScenario && scenario !== "helper-switch-lost-use"
@@ -215,13 +222,17 @@ for (const [scenario, transport] of cases) {
         ]);
         assert.equal(
           result.effects,
-          switchScenario
-            ? 1
-            : scenario === "mutation-no-guard"
-              ? 2
-              : effectful.has(scenario)
-                ? 1
-                : 0,
+          transactionScenario
+            ? scenario === "helper-transaction-database"
+              ? 0
+              : 1
+            : switchScenario
+              ? 1
+              : scenario === "mutation-no-guard"
+                ? 2
+                : effectful.has(scenario)
+                  ? 1
+                  : 0,
         );
         if (scenario.startsWith("helper-")) {
           const expected = {
@@ -229,6 +240,12 @@ for (const [scenario, transport] of cases) {
             "helper-lost-ack": "outcomeUnknown",
             "helper-ack-drain": "connectionClosed",
             "helper-database": "database",
+            "helper-transaction-begin": "success",
+            "helper-transaction-commit": "success",
+            "helper-transaction-rollback": "success",
+            "helper-transaction-lost-ack": "outcomeUnknown",
+            "helper-transaction-ack-guard": "connectionClosed",
+            "helper-transaction-database": "database",
             "helper-switch-success": "success",
             "helper-switch-lost-use": "outcomeUnknown",
             "helper-switch-readback-denied": "connectionClosed",
@@ -240,11 +257,18 @@ for (const [scenario, transport] of cases) {
           assert.equal(result.helperTerminals, 1);
           assert.equal(result.helperRetired, 1);
           assert.equal(result.outcome, `helper-${expected}`);
-          const violation = switchScenario
-            ? scenario.includes("lost-")
-            : scenario !== "helper-success";
+          const violation = transactionScenario
+            ? ["helper-transaction-lost-ack", "helper-transaction-ack-guard"].includes(scenario)
+            : switchScenario
+              ? scenario.includes("lost-")
+              : scenario !== "helper-success";
           assert.equal(result.violations, violation ? 1 : 0);
           if (violation) assert.equal(result.helperSettledSynchronously, true);
+          if (transactionScenario)
+            assert.equal(
+              result.helperBoundaryAcknowledged === true,
+              !["helper-transaction-lost-ack", "helper-transaction-database"].includes(scenario),
+            );
           if (switchScenario) {
             assert.equal(result.helperUseAcknowledged, scenario !== "helper-switch-lost-use");
             assert.equal(result.helperAcknowledged, expected === "success");

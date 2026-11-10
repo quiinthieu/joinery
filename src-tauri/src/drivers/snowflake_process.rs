@@ -428,10 +428,57 @@ impl Default for Bounds {
 pub enum Impact {
     Read,
     ContextChange,
+    Begin,
     Mutating,
     Commit,
     Rollback,
     Control,
+}
+/// A fixed boundary command, never arbitrary SQL or a transaction-disposition claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransactionAction {
+    Begin,
+    Commit,
+    Rollback,
+}
+impl TransactionAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Begin => "begin",
+            Self::Commit => "commit",
+            Self::Rollback => "rollback",
+        }
+    }
+    pub fn impact(self) -> Impact {
+        match self {
+            Self::Begin => Impact::Begin,
+            Self::Commit => Impact::Commit,
+            Self::Rollback => Impact::Rollback,
+        }
+    }
+    fn parse(value: &Value) -> Option<Self> {
+        match value.as_str()? {
+            "begin" => Some(Self::Begin),
+            "commit" => Some(Self::Commit),
+            "rollback" => Some(Self::Rollback),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundaryAcknowledgement {
+    pub action: TransactionAction,
+    pub statement: StatementIdentity,
+}
+fn valid_transaction_impact(op: &str, payload: &Value, impact: Impact) -> bool {
+    if op == "transaction" {
+        payload
+            .get("action")
+            .and_then(TransactionAction::parse)
+            .is_some_and(|action| action.impact() == impact)
+    } else {
+        !matches!(impact, Impact::Begin | Impact::Commit | Impact::Rollback)
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Phase {
@@ -447,7 +494,9 @@ pub enum Certainty {
     ReadInterrupted,
     OutcomeUnknown,
     StatementSucceeded,
+    /// Reserved for independently verified disposition; never produced by this transport.
     Committed,
+    /// Reserved for independently verified disposition; never produced by this transport.
     RolledBack,
     ServerTerminal,
 }
@@ -471,6 +520,8 @@ pub struct Report {
     pub statements: Vec<StatementIdentity>,
     /// The USE succeeded, independently of whether final context was verified.
     pub use_acknowledged: Option<StatementIdentity>,
+    /// Fixed boundary command success, independent of drain or transaction disposition.
+    pub boundary_acknowledged: Option<BoundaryAcknowledgement>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatementIdentity {
@@ -515,6 +566,8 @@ struct Pending {
     accepted: bool,
     statements: Vec<StatementIdentity>,
     use_acknowledged: Option<StatementIdentity>,
+    transaction_action: Option<TransactionAction>,
+    boundary_acknowledged: Option<BoundaryAcknowledgement>,
     statement_events: u8,
     wire_id: Option<String>,
     terminal: watch::Sender<Option<Report>>,
@@ -619,6 +672,20 @@ impl Operation {
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.use_acknowledged.clone())
     }
+    /// Boundary statement ACK does not imply COMMIT/ROLLBACK disposition was observed.
+    pub fn boundary_acknowledged(&self) -> Option<BoundaryAcknowledgement> {
+        if let Some(report) = self.report() {
+            return report.boundary_acknowledged;
+        }
+        self.owner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .get(&self.id)
+            .filter(|pending| pending.ticket == self.token.ticket)
+            .and_then(|pending| pending.boundary_acknowledged.clone())
+    }
     /// Observe completion while independently consuming columns and queued rows.
     /// A terminal report does not imply the row receiver has been drained.
     pub fn terminal_receiver(&self) -> watch::Receiver<Option<Report>> {
@@ -640,6 +707,7 @@ impl Operation {
                     retirement: Some(Retirement::Protocol),
                     statements: vec![],
                     use_acknowledged: None,
+                    boundary_acknowledged: None,
                 };
             }
         }
@@ -658,7 +726,7 @@ impl Operation {
     fn cleanup_unfinished(&self) {
         if matches!(
             self.op.as_str(),
-            "connect" | "context" | "switchSchema" | "close"
+            "connect" | "context" | "switchSchema" | "transaction" | "close"
         ) {
             self.owner.retire_target(&self.token, Retirement::Dropped);
             return;
@@ -817,8 +885,9 @@ impl Supervisor {
         let state = self.inner.state.lock().unwrap();
         state.retired.is_some() || state.closing
     }
-    /// Low-level trusted-driver API. The official helper STILL rejects mutations.
-    /// Impact is lifecycle evidence for future integration, never a capability grant.
+    /// Low-level trusted-driver API. Typed transaction boundaries are transport
+    /// primitives; their availability grants no application write capability.
+    /// Impact is lifecycle evidence, never a capability grant.
     pub fn request(
         &self,
         id: &str,
@@ -826,6 +895,9 @@ impl Supervisor {
         payload: Value,
         impact: Impact,
     ) -> Result<Operation, &'static str> {
+        if !valid_transaction_impact(op, &payload, impact) {
+            return Err("invalid transaction impact");
+        }
         if (op == "context" && impact != Impact::Read)
             || (op == "connect" && impact != Impact::Control)
             || ((op == "switchSchema") != (impact == Impact::ContextChange))
@@ -900,7 +972,10 @@ impl Supervisor {
                         .iter()
                         .filter(|(_, p)| {
                             p.phase == Phase::Queued
-                                && matches!(p.op.as_str(), "query" | "context" | "switchSchema")
+                                && matches!(
+                                    p.op.as_str(),
+                                    "query" | "context" | "switchSchema" | "transaction"
+                                )
                         })
                         .map(|(id, _)| id.clone())
                         .collect();
@@ -915,6 +990,7 @@ impl Supervisor {
                             retirement: None,
                             statements: pending.statements,
                             use_acknowledged: pending.use_acknowledged,
+                            boundary_acknowledged: pending.boundary_acknowledged,
                         }));
                     }
                 }
@@ -1012,7 +1088,9 @@ impl Inner {
             .filter(|pending| pending.ticket == target.ticket)
             .ok_or(TargetError::Inactive)?;
         let is_connect = pending.op == "connect";
-        if pending.op != "query" && !(allow_connect && (is_connect || pending.op == "switchSchema"))
+        if pending.op != "query"
+            && !(allow_connect
+                && (is_connect || matches!(pending.op.as_str(), "switchSchema" | "transaction")))
         {
             return Err(TargetError::Control("invalid query target"));
         }
@@ -1030,6 +1108,7 @@ impl Inner {
             retirement: None,
             statements: pending.statements,
             use_acknowledged: pending.use_acknowledged,
+            boundary_acknowledged: pending.boundary_acknowledged,
         }));
         Ok((None, is_connect))
     }
@@ -1099,11 +1178,21 @@ impl Inner {
             || id.len() > 128
             || !matches!(
                 op,
-                "connect" | "query" | "context" | "switchSchema" | "credit" | "cancel" | "close"
+                "connect"
+                    | "query"
+                    | "context"
+                    | "switchSchema"
+                    | "transaction"
+                    | "credit"
+                    | "cancel"
+                    | "close"
             )
             || !payload.is_object()
         {
             return Err("invalid request");
+        }
+        if !valid_transaction_impact(op, &payload, impact) {
+            return Err("invalid transaction impact");
         }
         if (op == "switchSchema") != (impact == Impact::ContextChange) {
             return Err("invalid context-change impact");
@@ -1124,6 +1213,11 @@ impl Inner {
             .get("target")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        let transaction_action = if op == "transaction" {
+            payload.get("action").and_then(TransactionAction::parse)
+        } else {
+            None
+        };
         let bytes = serde_json::to_vec(
             &json!({"v":1,"generation":self.generation,"id":id,"op":op,"payload":payload}),
         )
@@ -1174,6 +1268,8 @@ impl Inner {
                 accepted: false,
                 statements: vec![],
                 use_acknowledged: None,
+                boundary_acknowledged: None,
+                transaction_action,
                 statement_events: 0,
                 wire_id: None,
                 terminal,
@@ -1234,7 +1330,11 @@ impl Inner {
         }
         state.retired = Some(reason);
         for (_, pending) in state.pending.drain() {
-            let certainty = interrupted_certainty(pending.impact, pending.phase);
+            let certainty = if pending.boundary_acknowledged.is_some() {
+                Certainty::StatementSucceeded
+            } else {
+                interrupted_certainty(pending.impact, pending.phase)
+            };
             pending.terminal.send_replace(Some(Report {
                 ok: false,
                 certainty,
@@ -1251,6 +1351,7 @@ impl Inner {
                 retirement: Some(reason),
                 statements: pending.statements,
                 use_acknowledged: pending.use_acknowledged,
+                boundary_acknowledged: pending.boundary_acknowledged,
             }));
         }
         state.wire_ids.clear();
@@ -1289,7 +1390,10 @@ impl Inner {
             Some("phase") => match event.get("phase").and_then(Value::as_str) {
                 Some("dispatching")
                     if pending.accepted
-                        && matches!(pending.op.as_str(), "query" | "context" | "switchSchema")
+                        && matches!(
+                            pending.op.as_str(),
+                            "query" | "context" | "switchSchema" | "transaction"
+                        )
                         && pending.phase < Phase::Dispatching =>
                 {
                     pending.phase = Phase::Dispatching;
@@ -1306,11 +1410,50 @@ impl Inner {
                     {
                         return false;
                     }
+                    if pending.op == "transaction"
+                        && (pending.boundary_acknowledged.is_none()
+                            || pending.statements.len() != 1
+                            || event.get("sdkRequestId").and_then(Value::as_str).is_none())
+                    {
+                        return false;
+                    }
                     pending.phase = Phase::Acknowledged;
                     true
                 }
                 _ => false,
             },
+            Some("boundaryAcknowledged") => {
+                if pending.op != "transaction"
+                    || !pending.accepted
+                    || pending.phase != Phase::Dispatching
+                    || pending.boundary_acknowledged.is_some()
+                    || pending.statements.len() != 1
+                    || event.get("sdkRequestId").and_then(Value::as_str).is_none()
+                    || event.get("action").and_then(TransactionAction::parse)
+                        != pending.transaction_action
+                    || !event.as_object().is_some_and(|object| {
+                        object.keys().all(|key| {
+                            matches!(
+                                key.as_str(),
+                                "v" | "generation"
+                                    | "id"
+                                    | "type"
+                                    | "action"
+                                    | "sdkRequestId"
+                                    | "queryId"
+                            )
+                        })
+                    })
+                    || !validate_latest_statement(pending, &event)
+                {
+                    return false;
+                }
+                pending.boundary_acknowledged = Some(BoundaryAcknowledgement {
+                    action: pending.transaction_action.unwrap(),
+                    statement: pending.statements[0].clone(),
+                });
+                true
+            }
             Some("useAcknowledged") => {
                 if pending.op != "switchSchema"
                     || !pending.accepted
@@ -1328,7 +1471,10 @@ impl Inner {
             Some("statement") => {
                 if !pending.accepted
                     || pending.phase < Phase::Dispatching
-                    || !matches!(pending.op.as_str(), "query" | "context" | "switchSchema")
+                    || !matches!(
+                        pending.op.as_str(),
+                        "query" | "context" | "switchSchema" | "transaction"
+                    )
                 {
                     return false;
                 }
@@ -1412,6 +1558,22 @@ impl Inner {
                 {
                     return false;
                 }
+                if ok && pending.op == "transaction" {
+                    let Some(result) = event.get("result").and_then(Value::as_object) else {
+                        return false;
+                    };
+                    if event.get("sdkRequestId").and_then(Value::as_str).is_none()
+                        || result.get("action").and_then(TransactionAction::parse)
+                            != pending.transaction_action
+                        || !result.keys().all(|key| {
+                            matches!(key.as_str(), "action" | "sdkRequestId" | "queryId")
+                        })
+                        || result.get("sdkRequestId").and_then(Value::as_str).is_none()
+                        || !validate_latest_statement(pending, event.get("result").unwrap())
+                    {
+                        return false;
+                    }
+                }
                 let (code, result) = if ok {
                     if event.get("error").is_some() || event.get("result").is_none() {
                         return false;
@@ -1441,16 +1603,23 @@ impl Inner {
                     (Some(code.to_owned()), None)
                 };
                 if ok
-                    && matches!(pending.op.as_str(), "query" | "context" | "switchSchema")
+                    && matches!(
+                        pending.op.as_str(),
+                        "query" | "context" | "switchSchema" | "transaction"
+                    )
                     && pending.phase != Phase::Acknowledged
                 {
                     return false;
                 }
                 let unverified_use =
                     pending.use_acknowledged.is_some() && pending.phase != Phase::Acknowledged;
-                let cancelled_context =
-                    pending.impact == Impact::ContextChange && code.as_deref() == Some("cancelled");
-                let certainty = if pending.phase == Phase::Acknowledged {
+                let cancelled_context = matches!(
+                    pending.impact,
+                    Impact::ContextChange | Impact::Begin | Impact::Commit | Impact::Rollback
+                ) && code.as_deref() == Some("cancelled");
+                let certainty = if pending.boundary_acknowledged.is_some() {
+                    Certainty::StatementSucceeded
+                } else if pending.phase == Phase::Acknowledged {
                     acknowledged_certainty(pending.impact)
                 } else if unverified_use
                     || cancelled_context
@@ -1480,6 +1649,8 @@ impl Inner {
                     .as_deref()
                     .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"))
                     || unverified_use
+                    || (pending.boundary_acknowledged.is_some()
+                        && pending.phase != Phase::Acknowledged)
                     || cancelled_context;
                 pending.terminal.send_replace(Some(Report {
                     ok,
@@ -1490,6 +1661,7 @@ impl Inner {
                     retirement: None,
                     statements: pending.statements,
                     use_acknowledged: pending.use_acknowledged,
+                    boundary_acknowledged: pending.boundary_acknowledged,
                 }));
                 let closing = state.pending.values().any(|p| p.op == "close");
                 drop(state);
@@ -1555,6 +1727,13 @@ fn update_statement(pending: &mut Pending, event: &Value) -> bool {
         {
             pending.use_acknowledged = Some(existing.clone());
         }
+        if let Some(ack) = pending
+            .boundary_acknowledged
+            .as_mut()
+            .filter(|ack| ack.statement.sdk_request_id == request_id)
+        {
+            ack.statement = existing.clone();
+        }
     } else {
         if pending.statements.len() >= if pending.op == "switchSchema" { 2 } else { 1 }
             || (pending.op == "switchSchema"
@@ -1581,15 +1760,12 @@ fn local_report(result: Value) -> Report {
         retirement: None,
         statements: vec![],
         use_acknowledged: None,
+        boundary_acknowledged: None,
     }
 }
 
-fn acknowledged_certainty(impact: Impact) -> Certainty {
-    match impact {
-        Impact::Commit => Certainty::Committed,
-        Impact::Rollback => Certainty::RolledBack,
-        _ => Certainty::StatementSucceeded,
-    }
+fn acknowledged_certainty(_impact: Impact) -> Certainty {
+    Certainty::StatementSucceeded
 }
 fn interrupted_certainty(impact: Impact, phase: Phase) -> Certainty {
     if phase == Phase::Queued {
@@ -1599,9 +1775,11 @@ fn interrupted_certainty(impact: Impact, phase: Phase) -> Certainty {
         return acknowledged_certainty(impact);
     }
     match impact {
-        Impact::ContextChange | Impact::Mutating | Impact::Commit | Impact::Rollback => {
-            Certainty::OutcomeUnknown
-        }
+        Impact::ContextChange
+        | Impact::Begin
+        | Impact::Mutating
+        | Impact::Commit
+        | Impact::Rollback => Certainty::OutcomeUnknown,
         _ => Certainty::ReadInterrupted,
     }
 }
@@ -1825,6 +2003,236 @@ mod tests {
             json!({"type":"statement","sdkRequestId":USE_ID})
         ));
         (inner, op)
+    }
+    fn dispatched_transaction(action: TransactionAction) -> (Arc<Inner>, Operation) {
+        let (inner, _normal, _control) = isolated();
+        let op = inner
+            .request(
+                "transaction",
+                "transaction",
+                json!({"action":action.as_str(),"expected":{"user":"USER","session":"OPAQUE"}}),
+                action.impact(),
+            )
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.pending.get_mut("transaction").unwrap().phase = Phase::Sent;
+            state.wire_ids.insert("1".into(), "transaction".into());
+        }
+        assert!(switch_event(&inner, json!({"type":"accepted"})));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"dispatching"})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":USE_ID})
+        ));
+        (inner, op)
+    }
+    #[tokio::test]
+    async fn transaction_action_and_impact_are_paired_and_queued_cancel_is_local() {
+        let (inner, _normal, _control) = isolated();
+        for action in [
+            TransactionAction::Begin,
+            TransactionAction::Commit,
+            TransactionAction::Rollback,
+        ] {
+            for impact in [
+                Impact::Read,
+                Impact::Mutating,
+                Impact::ContextChange,
+                Impact::Control,
+            ] {
+                assert!(
+                    inner
+                        .request(
+                            "bad",
+                            "transaction",
+                            json!({"action":action.as_str()}),
+                            impact
+                        )
+                        .is_err()
+                );
+            }
+            assert!(
+                inner
+                    .request("bad", "query", json!({}), action.impact())
+                    .is_err()
+            );
+            let mut op = inner
+                .request(
+                    action.as_str(),
+                    "transaction",
+                    json!({"action":action.as_str()}),
+                    action.impact(),
+                )
+                .unwrap();
+            assert!(inner.discard(&op.token()).is_err());
+            assert!(inner.cancel(&op.token()).unwrap().wait().await.ok);
+            let report = op.wait().await;
+            assert_eq!(report.certainty, Certainty::NotSubmitted);
+            assert!(report.boundary_acknowledged.is_none());
+            assert!(inner.state.lock().unwrap().retired.is_none());
+        }
+        assert!(
+            inner
+                .request(
+                    "bad",
+                    "transaction",
+                    json!({"action":"COMMIT"}),
+                    Impact::Commit
+                )
+                .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn transaction_ack_is_statement_success_for_every_retirement_not_disposition() {
+        for action in [
+            TransactionAction::Begin,
+            TransactionAction::Commit,
+            TransactionAction::Rollback,
+        ] {
+            for reason in [
+                Retirement::Eof,
+                Retirement::Protocol,
+                Retirement::Deadline,
+                Retirement::Dropped,
+                Retirement::Requested,
+                Retirement::Write,
+            ] {
+                let (inner, mut op) = dispatched_transaction(action);
+                assert!(switch_event(
+                    &inner,
+                    json!({"type":"boundaryAcknowledged","action":action.as_str(),"sdkRequestId":USE_ID})
+                ));
+                assert_eq!(op.boundary_acknowledged().unwrap().action, action);
+                assert!(switch_event(
+                    &inner,
+                    json!({"type":"statement","sdkRequestId":USE_ID,"queryId":READBACK_ID})
+                ));
+                inner.retire(reason);
+                let report = op.wait().await;
+                assert!(!report.ok);
+                assert_eq!(report.phase, Phase::Dispatching);
+                assert_eq!(report.certainty, Certainty::StatementSucceeded);
+                let ack = report.boundary_acknowledged.unwrap();
+                assert_eq!(ack.action, action);
+                assert_eq!(ack.statement, report.statements[0]);
+                assert_eq!(ack.statement.query_id.as_deref(), Some(READBACK_ID));
+            }
+            let (inner, mut op) = dispatched_transaction(action);
+            inner.retire(Retirement::Eof);
+            assert_eq!(op.wait().await.certainty, Certainty::OutcomeUnknown);
+        }
+    }
+    #[tokio::test]
+    async fn transaction_ack_and_terminal_require_exact_action_and_statement_identity() {
+        let (inner, mut op) = dispatched_transaction(TransactionAction::Commit);
+        for event in [
+            json!({"type":"boundaryAcknowledged","action":"commit"}),
+            json!({"type":"boundaryAcknowledged","action":"rollback","sdkRequestId":USE_ID}),
+            json!({"type":"boundaryAcknowledged","action":"commit","sdkRequestId":READBACK_ID}),
+            json!({"type":"boundaryAcknowledged","action":"commit","sdkRequestId":USE_ID,"extra":true}),
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID}),
+        ] {
+            assert!(!switch_event(&inner, event));
+        }
+        assert!(op.boundary_acknowledged().is_none());
+        assert!(switch_event(
+            &inner,
+            json!({"type":"boundaryAcknowledged","action":"commit","sdkRequestId":USE_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"boundaryAcknowledged","action":"commit","sdkRequestId":USE_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged"})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":READBACK_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+        ));
+        for event in [
+            json!({"type":"terminal","ok":true,"result":{"action":"commit","sdkRequestId":USE_ID}}),
+            json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":{"action":"commit"}}),
+            json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":{"action":"rollback","sdkRequestId":USE_ID}}),
+            json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":{"action":"commit","sdkRequestId":READBACK_ID}}),
+        ] {
+            assert!(!switch_event(&inner, event));
+        }
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":{"action":"commit","sdkRequestId":USE_ID}})
+        ));
+        let report = op.wait().await;
+        assert!(report.ok);
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        assert!(report.boundary_acknowledged.is_some());
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"boundaryAcknowledged","action":"rollback","sdkRequestId":USE_ID})
+        ));
+        assert!(op.report().unwrap().ok);
+    }
+    #[tokio::test]
+    async fn transaction_known_ack_survives_failure_but_database_rejection_has_no_ack() {
+        for acknowledged in [false, true] {
+            let (inner, mut op) = dispatched_transaction(TransactionAction::Begin);
+            if acknowledged {
+                assert!(switch_event(
+                    &inner,
+                    json!({"type":"boundaryAcknowledged","action":"begin","sdkRequestId":USE_ID})
+                ));
+            }
+            assert!(switch_event(
+                &inner,
+                json!({"type":"terminal","ok":false,"error":{"code":"database"},"sdkRequestId":USE_ID})
+            ));
+            let report = op.wait().await;
+            assert_eq!(report.boundary_acknowledged.is_some(), acknowledged);
+            assert_eq!(
+                report.certainty,
+                if acknowledged {
+                    Certainty::StatementSucceeded
+                } else {
+                    Certainty::ServerTerminal
+                }
+            );
+            assert_eq!(inner.state.lock().unwrap().retired.is_some(), acknowledged);
+        }
+    }
+    #[test]
+    fn completed_transaction_cleanup_cannot_retire_replacement_work() {
+        let (inner, _normal, _control) = isolated();
+        let old = inner
+            .request(
+                "same",
+                "transaction",
+                json!({"action":"begin"}),
+                Impact::Begin,
+            )
+            .unwrap();
+        let pending = inner.state.lock().unwrap().pending.remove("same").unwrap();
+        pending.terminal.send_replace(Some(local_report(json!({}))));
+        let replacement = inner
+            .request(
+                "same",
+                "transaction",
+                json!({"action":"rollback"}),
+                Impact::Rollback,
+            )
+            .unwrap();
+        old.cleanup_unfinished();
+        assert!(replacement.report().is_none());
+        assert!(inner.state.lock().unwrap().retired.is_none());
+        inner.retire(Retirement::Requested);
     }
     #[tokio::test]
     async fn context_change_unsent_cancel_is_not_submitted_and_cannot_discard() {

@@ -64,6 +64,13 @@ adapter, typed IPC and guarded UI selector are now implemented under the
 Account switch acceptance remains required and incomplete. No public writes,
 DDL or transaction actions are enabled by this foundation.
 
+The [explicit-transaction transport foundation](snowflake-sdk-transactions-design.md)
+is implemented and locally tested. It separates a boundary command's
+acknowledgement from verified database disposition. The dependent adapter must
+retain same-session rollback recovery when an aborted transaction rejects
+observer reads. Application actions remain disabled until their authority,
+policy, recovery and UI workflows are implemented.
+
 The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
 application/helper browsing flow, **11** focused browser workflows and an actual

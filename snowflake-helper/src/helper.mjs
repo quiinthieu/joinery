@@ -38,6 +38,11 @@ const nullableIdentifier = (s) => s === null || identifier(s);
 const quoteIdentifier = (s) => `"${s.replaceAll('"', '""')}"`;
 const CONTEXT_SQL =
   "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()";
+const TRANSACTIONS = Object.freeze({
+  begin: "BEGIN TRANSACTION",
+  commit: "COMMIT",
+  rollback: "ROLLBACK",
+});
 const integer = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
 const sdkFailure = (failure, acknowledged = false) => {
   const state = failure?.sqlState;
@@ -112,7 +117,9 @@ export class Helper {
     if (this.active)
       this.finish(
         this.active.request,
-        (this.active.useAcknowledged ? "connectionClosed" : undefined) ??
+        (this.active.useAcknowledged || this.active.boundaryAcknowledged
+          ? "connectionClosed"
+          : undefined) ??
           this.active.knownFailure ??
           (this.active.acknowledged ? "connectionClosed" : "outcomeUnknown"),
       );
@@ -155,7 +162,8 @@ export class Helper {
     if (r.op === "close") return this.close(r);
     if (r.op === "cancel") return this.cancel(r);
     if (r.op === "credit") return this.credit(r);
-    if (!["query", "context", "switchSchema"].includes(r.op)) return this.finish(r, "unsupported");
+    if (!["query", "context", "switchSchema", "transaction"].includes(r.op))
+      return this.finish(r, "unsupported");
     if (this.state !== "connected") return this.finish(r, "connectionClosed");
     if (!this.validateWork(r)) return;
     if (this.queue.length >= LIMITS.queued) return this.finish(r, "busy");
@@ -208,6 +216,24 @@ export class Helper {
   }
   validateWork(r) {
     const p = r.payload;
+    if (r.op === "transaction") {
+      if (
+        !exact(p, ["action", "expected"]) ||
+        typeof p.action !== "string" ||
+        !Object.hasOwn(TRANSACTIONS, p.action) ||
+        !exact(p.expected, ["user", "session"]) ||
+        !identifier(p.expected.user) ||
+        !text(p.expected.session, 1024) ||
+        !p.expected.session.isWellFormed() ||
+        !this.identityPin ||
+        p.expected.user !== this.identityPin.user ||
+        p.expected.session !== this.identityPin.session
+      ) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
     if (r.op === "context") {
       if (!exact(p, [])) {
         this.finish(r, "invalidInput");
@@ -278,6 +304,14 @@ export class Helper {
       if (r.op === "query") {
         const result = await this.execute(a, r.payload.sql, r.payload.binds, true);
         this.finish(r, null, { ...result, ...this.idsFor(a) });
+      } else if (r.op === "transaction") {
+        // Recheck at dispatch too: a queued operation never adopts another pin.
+        if (!this.validateWork(r)) return;
+        this.send(r, "phase", { phase: "dispatching" });
+        await this.execute(a, TRANSACTIONS[r.payload.action], [], false, false, r.payload.action);
+        if (this.retired || this.done.has(r)) return;
+        this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
+        this.finish(r, null, { action: r.payload.action, ...this.idsFor(a) });
       } else {
         this.send(r, "phase", { phase: "dispatching" });
         if (r.op === "switchSchema")
@@ -338,7 +372,7 @@ export class Helper {
     } catch (e) {
       this.finish(
         r,
-        a.useAcknowledged
+        a.useAcknowledged || a.boundaryAcknowledged
           ? "connectionClosed"
           : ["resultLimitReached", "outcomeUnknown", "connectionClosed", "database"].includes(
                 e?.code,
@@ -346,7 +380,8 @@ export class Helper {
             ? e.code
             : "database",
       );
-      if (e?.retire || r.op === "context" || r.op === "switchSchema") this.stop();
+      if (e?.retire || r.op === "context" || r.op === "switchSchema" || a.boundaryAcknowledged)
+        this.stop();
     } finally {
       if (a.submitOwner) {
         try {
@@ -400,7 +435,7 @@ export class Helper {
     a.statements.set(sdkRequestId, identity);
     this.send(a.request, "statement", identity);
   }
-  execute(a, sql, binds, publish, use = false) {
+  execute(a, sql, binds, publish, use = false, boundary = null) {
     // This is per execute: a preceding USE acknowledgement cannot settle the
     // following context readback's outcome before that statement acknowledges.
     a.acknowledged = false;
@@ -432,6 +467,13 @@ export class Helper {
           return reject(failure);
         }
         a.acknowledged = true;
+        if (boundary) {
+          // Command success is distinct from verified transaction disposition.
+          // Registered identity and ACK survive reentrant record/send failures.
+          a.boundaryAcknowledged = boundary;
+          this.send(a.request, "boundaryAcknowledged", { action: boundary, ...this.idsFor(a) });
+          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+        }
         // Operation evidence survives the following readback's per-execute reset.
         // Establish it before record/send can reenter submissionViolation().
         if (use) {
@@ -603,7 +645,7 @@ export class Helper {
   }
   removeQueued(control, target) {
     const index = this.queue.findIndex(
-      (r) => ["query", "switchSchema"].includes(r.op) && r.id === target,
+      (r) => ["query", "switchSchema", "transaction"].includes(r.op) && r.id === target,
     );
     if (index < 0) return false;
     const [queued] = this.queue.splice(index, 1);
@@ -625,13 +667,18 @@ export class Helper {
     const a = this.active;
     if (!a || a.request.id !== p.target || !a.statement) return this.finish(r, "invalidInput");
     this.send(r, "accepted");
-    if (a.request.op === "switchSchema") {
+    if (a.request.op === "switchSchema" || a.request.op === "transaction") {
       // A cancel ACK cannot verify either the USE outcome or final context.
       try {
         a.statement.cancel(() => {});
       } catch {}
       this.finish(r, null, { requested: true });
-      this.finish(a.request, a.useAcknowledged ? "connectionClosed" : "outcomeUnknown");
+      this.finish(
+        a.request,
+        a.useAcknowledged || a.boundaryAcknowledged
+          ? "connectionClosed"
+          : (a.knownFailure ?? "outcomeUnknown"),
+      );
       return this.stop();
     }
     a.discard = true;

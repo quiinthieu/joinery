@@ -41,6 +41,12 @@ const allowed = new Set([
   "helper-lost-ack",
   "helper-ack-drain",
   "helper-database",
+  "helper-transaction-begin",
+  "helper-transaction-commit",
+  "helper-transaction-rollback",
+  "helper-transaction-lost-ack",
+  "helper-transaction-ack-guard",
+  "helper-transaction-database",
   "helper-switch-success",
   "helper-switch-lost-use",
   "helper-switch-readback-denied",
@@ -94,6 +100,16 @@ const firstQuery = new Promise((resolve) => {
 });
 const SQL = "SELECT ? AS EXACT_VALUE, ? AS ENABLED, ? AS EMPTY_VALUE";
 const switchScenario = scenario.startsWith("helper-switch-");
+const transactionScenario = scenario.startsWith("helper-transaction-");
+const transactionAction =
+  scenario === "helper-transaction-begin"
+    ? "begin"
+    : scenario === "helper-transaction-rollback"
+      ? "rollback"
+      : "commit";
+const transactionSQL = { begin: "BEGIN TRANSACTION", commit: "COMMIT", rollback: "ROLLBACK" }[
+  transactionAction
+];
 const SWITCH_SCHEMA = 'Quoted."雪';
 const SWITCH_SQL = `USE SCHEMA "SYNTHETIC"."${SWITCH_SCHEMA.replaceAll('"', '""')}"`;
 const CONTEXT_SQL =
@@ -263,11 +279,34 @@ try {
       } else report.queryIdsSame &&= firstId === id;
       report.intendedSQLOnly &&=
         body.sqlText ===
-        (switchScenario ? (report.queryPosts === 1 ? SWITCH_SQL : CONTEXT_SQL) : SQL);
-      report.scalarBindsExact &&= switchScenario
-        ? body.bindings === undefined || JSON.stringify(body.bindings) === "{}"
-        : JSON.stringify(body.bindings) === JSON.stringify(expectedBindings);
+        (transactionScenario
+          ? transactionSQL
+          : switchScenario
+            ? report.queryPosts === 1
+              ? SWITCH_SQL
+              : CONTEXT_SQL
+            : SQL);
+      report.scalarBindsExact &&=
+        switchScenario || transactionScenario
+          ? body.bindings === undefined || JSON.stringify(body.bindings) === "{}"
+          : JSON.stringify(body.bindings) === JSON.stringify(expectedBindings);
       resolveFirstQuery();
+      if (transactionScenario) {
+        if (scenario === "helper-transaction-database")
+          return json(response, {
+            success: false,
+            code: "100038",
+            message: "synthetic boundary rejection",
+            data: { sqlState: "42501", queryId: "11111111-1111-4111-8111-111111111111" },
+          });
+        report.effects++;
+        if (scenario === "helper-transaction-lost-ack") return request.socket.destroy();
+        const reply = success();
+        reply.data.rowtype = [{ name: "status", type: "text", length: 1024, nullable: false }];
+        reply.data.rowset = [["Synthetic boundary acknowledged"]];
+        reply.data.total = reply.data.returned = 1;
+        return json(response, reply);
+      }
       if (switchScenario) {
         switchIds.add(id);
         report.switchIdsDistinct = switchIds.size === report.queryPosts;
@@ -629,6 +668,11 @@ try {
           resolveAcknowledged();
         }
         if (event.type === "useAcknowledged") report.helperUseAcknowledged = true;
+        if (event.type === "boundaryAcknowledged") {
+          report.helperBoundaryAcknowledged =
+            event.action === transactionAction && event.sdkRequestId === firstId;
+          if (scenario === "helper-transaction-ack-guard") nativeStale(event.sdkRequestId);
+        }
         if (event.type === "rows") report.rows += event.rows.length;
         if (
           event.type === "statement" &&
@@ -664,30 +708,37 @@ try {
     helper.state = "connected";
     helper.generation = "11111111-1111-4111-8111-111111111111";
     if (switchScenario) helper.expectedProfile = { database: "SYNTHETIC" };
+    if (transactionScenario)
+      helper.identityPin = { user: "SERVER_USER", session: "OPAQUE-SESSION" };
     helper.receive({
       v: 1,
       generation: helper.generation,
       id: "1",
-      op: switchScenario ? "switchSchema" : "query",
-      payload: switchScenario
+      op: transactionScenario ? "transaction" : switchScenario ? "switchSchema" : "query",
+      payload: transactionScenario
         ? {
-            database: "SYNTHETIC",
-            schema: SWITCH_SCHEMA,
-            expected: {
-              user: "SERVER_USER",
-              role: null,
-              warehouse: null,
-              session: "OPAQUE-SESSION",
-            },
+            action: transactionAction,
+            expected: { user: "SERVER_USER", session: "OPAQUE-SESSION" },
           }
-        : {
-            sql: SQL,
-            binds,
-            classification: "read",
-            credits: scenario === "helper-ack-drain" ? 0 : 1,
-            maxRows: 4,
-            maxBytes: 4096,
-          },
+        : switchScenario
+          ? {
+              database: "SYNTHETIC",
+              schema: SWITCH_SCHEMA,
+              expected: {
+                user: "SERVER_USER",
+                role: null,
+                warehouse: null,
+                session: "OPAQUE-SESSION",
+              },
+            }
+          : {
+              sql: SQL,
+              binds,
+              classification: "read",
+              credits: scenario === "helper-ack-drain" ? 0 : 1,
+              maxRows: 4,
+              maxBytes: 4096,
+            },
     });
     if (scenario === "helper-ack-drain") {
       await bounded(acknowledged);
@@ -695,7 +746,11 @@ try {
       nativeStale(firstId);
     }
     await bounded(terminal);
-    if (scenario !== "helper-success" && (!switchScenario || scenario.includes("lost-")))
+    if (
+      transactionScenario
+        ? ["helper-transaction-lost-ack", "helper-transaction-ack-guard"].includes(scenario)
+        : scenario !== "helper-success" && (!switchScenario || scenario.includes("lost-"))
+    )
       await bounded(violated);
     await pause(350);
     assert.equal(
@@ -709,13 +764,27 @@ try {
       "helper-lost-ack": "outcomeUnknown",
       "helper-ack-drain": "connectionClosed",
       "helper-database": "database",
+      "helper-transaction-begin": "success",
+      "helper-transaction-commit": "success",
+      "helper-transaction-rollback": "success",
+      "helper-transaction-lost-ack": "outcomeUnknown",
+      "helper-transaction-ack-guard": "connectionClosed",
+      "helper-transaction-database": "database",
       "helper-switch-success": "success",
       "helper-switch-lost-use": "outcomeUnknown",
       "helper-switch-readback-denied": "connectionClosed",
       "helper-switch-lost-readback": "connectionClosed",
     }[scenario];
     assert.equal(report.helperTerminal, expected);
-    assert.equal(report.helperRetired, expected === "success" ? 0 : 1);
+    assert.equal(
+      report.helperRetired,
+      expected === "success" || scenario === "helper-transaction-database" ? 0 : 1,
+    );
+    if (transactionScenario)
+      assert.equal(
+        report.helperBoundaryAcknowledged === true,
+        !["helper-transaction-lost-ack", "helper-transaction-database"].includes(scenario),
+      );
     if (switchScenario) {
       assert.equal(report.helperUseAcknowledged, scenario !== "helper-switch-lost-use");
       assert.equal(report.helperAcknowledged, expected === "success");
@@ -723,8 +792,8 @@ try {
       assert.equal(report.effects, 1);
       if (expected === "success") assert(report.switchSchemaMatches && report.switchRoleNull);
     }
-    if (expected === "success") {
-      assert.equal(report.rows, switchScenario ? 0 : 1);
+    if (expected === "success" || scenario === "helper-transaction-database") {
+      assert.equal(report.rows, switchScenario || transactionScenario ? 0 : 1);
       helper.stop();
     }
     report.guardFailed = guard.snapshot().failed;

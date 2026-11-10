@@ -141,6 +141,56 @@ const switchPayload = (overrides = {}) => ({
   },
   ...overrides,
 });
+const transactionPayload = (action, overrides = {}) => ({
+  action,
+  expected: { user: "FIXTURE", session: "opaque-session" },
+  ...overrides,
+});
+async function pinned(opts) {
+  const s = await connected(opts);
+  s.streams.push(Readable.from([["FIXTURE", null, "TEST", "PUBLIC", null, "opaque-session"]]));
+  s.columnSets.push(["user", "role", "database", "schema", "warehouse", "session"]);
+  const id = s.send("context");
+  for (let turn = 0; turn < 8 && !s.terminal(id); turn++) await tick();
+  assert.equal(s.terminal(id)?.ok, true);
+  return s;
+}
+test("typed transaction executes exactly one fixed boundary on the pinned session", async () => {
+  for (const [action, sql] of [
+    ["begin", "BEGIN TRANSACTION"],
+    ["commit", "COMMIT"],
+    ["rollback", "ROLLBACK"],
+  ]) {
+    const s = await pinned({ synchronousComplete: true });
+    s.streams.push(Readable.from([]));
+    s.columnSets.push([]);
+    const before = s.calls.length;
+    const id = s.send("transaction", transactionPayload(action));
+    for (let turn = 0; turn < 8 && !s.terminal(id); turn++) await tick();
+    const calls = s.calls.slice(before).filter((call) => typeof call === "object");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].sqlText, sql);
+    assert.deepEqual(calls[0].binds, []);
+    const events = s.events.filter((event) => event.id === id);
+    const ack = events.find((event) => event.type === "boundaryAcknowledged");
+    assert.equal(ack?.action, action);
+    assert.equal(
+      ack?.sdkRequestId,
+      events.find((event) => event.type === "statement").sdkRequestId,
+    );
+    assert.equal(s.terminal(id)?.ok, true);
+    assert.deepEqual(s.terminal(id).result, {
+      action,
+      ...Object.fromEntries(["sdkRequestId", "queryId"].map((key) => [key, s.terminal(id)[key]])),
+    });
+    assert.equal(
+      events.some((event) => ["columns", "rows"].includes(event.type)),
+      false,
+    );
+    assert.equal(s.retired(), 0);
+    s.helper.stop();
+  }
+});
 test("ordinary context strictly rejects schema payload before SQL", async () => {
   const s = await connected();
   const id = s.send("context", { schema: "OTHER" });
@@ -1021,4 +1071,195 @@ test("readback definitive failure plus immediate guard violation preserves USE e
   assert.equal(s.terminal(id).error.code, "connectionClosed");
   assert.equal(s.events.filter((e) => e.id === id && e.type === "useAcknowledged").length, 1);
   assert.equal(s.events.filter((e) => e.id === id && e.type === "terminal").length, 1);
+});
+
+test("transaction rejects arbitrary SQL, coerced actions and foreign or missing session pins before dispatch", async () => {
+  const s = await pinned();
+  const before = s.calls.length;
+  for (const payload of [
+    transactionPayload("COMMIT"),
+    transactionPayload("commit; SELECT 1"),
+    transactionPayload(["commit"]),
+    transactionPayload("toString"),
+    transactionPayload("commit", { sql: "COMMIT" }),
+    { action: "commit" },
+    transactionPayload("commit", { expected: { user: "FIXTURE", session: "other" } }),
+    transactionPayload("commit", { expected: { user: "other", session: "opaque-session" } }),
+    transactionPayload("commit", {
+      expected: { user: "FIXTURE", session: "opaque-session", role: null },
+    }),
+    transactionPayload("commit", {
+      expected: { user: "FIXTURE", session: String.fromCharCode(0xd800) },
+    }),
+    transactionPayload("commit", { expected: { user: "FIXTURE", session: "x".repeat(1025) } }),
+    transactionPayload("commit", { expected: { user: "FIXTURE", session: null } }),
+    transactionPayload("commit", { expected: { user: ["FIXTURE"], session: "opaque-session" } }),
+  ]) {
+    const id = s.send("transaction", payload);
+    assert.equal(s.terminal(id)?.error.code, "invalidInput");
+  }
+  assert.equal(s.calls.length, before);
+  const unpinned = await connected();
+  const id = unpinned.send("transaction", transactionPayload("begin"));
+  assert.equal(unpinned.terminal(id)?.error.code, "invalidInput");
+  assert.equal(unpinned.calls.length, 0);
+  s.helper.stop();
+  unpinned.helper.stop();
+});
+
+test("queued transaction revalidates its pin before executing", async () => {
+  const s = await pinned();
+  const stream = new PassThrough({ objectMode: true });
+  s.streams.push(stream);
+  s.columnSets.push([]);
+  const first = s.send("transaction", transactionPayload("begin"));
+  await tick();
+  const queued = s.send("transaction", transactionPayload("rollback"));
+  s.helper.identityPin = { user: "FIXTURE", session: "replacement" };
+  stream.end();
+  for (let turn = 0; turn < 8 && !s.terminal(queued); turn++) await tick();
+  assert.equal(s.terminal(first)?.ok, true);
+  assert.equal(s.terminal(queued)?.error.code, "invalidInput");
+  assert.equal(s.calls.filter((c) => typeof c === "object").length, 2);
+  s.helper.stop();
+});
+
+test("transaction ACK survives reentrant guard failure before record or row drain", async () => {
+  for (const boundary of ["ack", "record"]) {
+    const s = await pinned();
+    s.streams.push(new PassThrough({ objectMode: true }));
+    s.columnSets.push([]);
+    const emit = s.helper.emit;
+    s.helper.emit = (event) => {
+      const result = emit(event);
+      if (
+        (boundary === "ack" && event.type === "boundaryAcknowledged") ||
+        (boundary === "record" && event.type === "statement" && event.queryId)
+      )
+        s.helper.submissionViolation();
+      return result;
+    };
+    const id = s.send("transaction", transactionPayload("commit"));
+    for (let turn = 0; turn < 8 && !s.terminal(id); turn++) await tick();
+    const events = s.events.filter((event) => event.id === id);
+    assert.equal(events.filter((event) => event.type === "boundaryAcknowledged").length, 1);
+    assert(
+      events.findIndex((event) => event.type === "boundaryAcknowledged") <
+        events.findIndex((event) => event.type === "terminal"),
+    );
+    assert.equal(s.terminal(id)?.error.code, "connectionClosed");
+    assert.equal(s.retired(), 1);
+  }
+});
+
+test("transaction cancellation preserves independent pre/post ACK evidence and settles exactly once", async () => {
+  for (const acknowledged of [false, true]) {
+    const s = await pinned();
+    s.connection.holdComplete = !acknowledged;
+    const stream = new PassThrough({ objectMode: true });
+    s.streams.push(stream);
+    s.columnSets.push([]);
+    const id = s.send("transaction", transactionPayload("rollback"));
+    await tick();
+    const cancel = s.send("cancel", { target: id });
+    assert.equal(s.terminal(cancel)?.ok, true);
+    assert.equal(s.terminal(id)?.error.code, acknowledged ? "connectionClosed" : "outcomeUnknown");
+    assert.equal(
+      s.events.filter((event) => event.id === id && event.type === "boundaryAcknowledged").length,
+      acknowledged ? 1 : 0,
+    );
+    stream.end();
+    await tick();
+    assert.equal(
+      s.events.filter((event) => event.id === id && event.type === "terminal").length,
+      1,
+    );
+    assert.equal(s.retired(), 1);
+  }
+});
+
+test("queued transaction cancellation cannot dispatch and cannot discard an active boundary", async () => {
+  const s = await pinned();
+  const stream = new PassThrough({ objectMode: true });
+  s.streams.push(stream);
+  s.columnSets.push([]);
+  const active = s.send("transaction", transactionPayload("begin"));
+  await tick();
+  const queued = s.send("transaction", transactionPayload("commit"));
+  const cancel = s.send("cancel", { target: queued });
+  assert.equal(s.terminal(cancel)?.result.cancelledLocally, true);
+  assert.equal(s.terminal(queued)?.error.code, "cancelled");
+  const credit = s.send("credit", { target: active, discard: true, batches: 0 });
+  assert.equal(s.terminal(credit)?.error.code, "invalidInput");
+  assert.equal(s.calls.filter((call) => typeof call === "object").length, 2);
+  stream.end();
+  for (let turn = 0; turn < 5; turn++) await tick();
+  assert.equal(s.terminal(active)?.ok, true);
+  s.helper.stop();
+});
+
+test("definitive boundary rejection has no success ACK and leaves same-session rollback possible", async () => {
+  const s = await pinned();
+  s.connection.nextError = { sqlState: "42501", message: "PRIVATE_DATABASE_ERROR" };
+  const denied = s.send("transaction", transactionPayload("commit"));
+  for (let turn = 0; turn < 8 && !s.terminal(denied); turn++) await tick();
+  assert.equal(s.terminal(denied)?.error.code, "database");
+  assert.equal(
+    s.events.some((event) => event.id === denied && event.type === "boundaryAcknowledged"),
+    false,
+  );
+  assert.equal(s.retired(), 0);
+  s.streams.push(Readable.from([]));
+  s.columnSets.push([]);
+  const rollback = s.send("transaction", transactionPayload("rollback"));
+  for (let turn = 0; turn < 8 && !s.terminal(rollback); turn++) await tick();
+  assert.equal(s.terminal(rollback)?.ok, true);
+  assert.equal(
+    s.events.some((event) => event.id === rollback && event.type === "boundaryAcknowledged"),
+    true,
+  );
+  assert.equal(JSON.stringify(s.events).includes("PRIVATE_DATABASE_ERROR"), false);
+  s.helper.stop();
+});
+
+test("boundary drain failure retains ACK without claiming transaction disposition", async () => {
+  const s = await pinned();
+  const stream = new PassThrough({ objectMode: true });
+  s.streams.push(stream);
+  s.columnSets.push([]);
+  const id = s.send("transaction", transactionPayload("commit"));
+  await tick();
+  stream.destroy(new Error("PRIVATE_DRAIN_ERROR"));
+  for (let turn = 0; turn < 8 && !s.terminal(id); turn++) await tick();
+  assert.equal(s.terminal(id)?.error.code, "connectionClosed");
+  assert.equal(
+    s.events.filter((event) => event.id === id && event.type === "boundaryAcknowledged").length,
+    1,
+  );
+  assert.equal(s.retired(), 1);
+  assert.equal(JSON.stringify(s.events).includes("PRIVATE_DRAIN_ERROR"), false);
+});
+
+test("cancel reentry cannot erase an already classified definitive boundary failure", async () => {
+  const s = await pinned();
+  const record = s.helper.record.bind(s.helper);
+  let cancel;
+  s.helper.record = (active, statement) => {
+    if (active.knownFailure === "database" && !cancel) {
+      cancel = s.send("cancel", { target: active.request.id });
+    }
+    record(active, statement);
+  };
+  s.connection.nextError = { sqlState: "42501", message: "PRIVATE_DATABASE_ERROR" };
+  const id = s.send("transaction", transactionPayload("commit"));
+  for (let turn = 0; turn < 8 && !s.terminal(id); turn++) await tick();
+  assert.equal(s.terminal(cancel)?.ok, true);
+  assert.equal(s.terminal(id)?.error.code, "database");
+  assert.equal(
+    s.events.some((e) => e.id === id && e.type === "boundaryAcknowledged"),
+    false,
+  );
+  assert.equal(s.events.filter((e) => e.id === id && e.type === "terminal").length, 1);
+  assert.equal(s.retired(), 1);
+  assert.equal(JSON.stringify(s.events).includes("PRIVATE_DATABASE_ERROR"), false);
 });

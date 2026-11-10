@@ -179,19 +179,13 @@ async fn sent_mutation_crash_is_unknown_even_without_dispatch_event() {
 
 #[tokio::test]
 async fn acknowledged_success_is_not_rewritten_as_unknown_by_eof() {
-    for (impact, expected) in [
-        (Impact::Mutating, Certainty::StatementSucceeded),
-        (Impact::Commit, Certainty::Committed),
-        (Impact::Rollback, Certainty::RolledBack),
-    ] {
-        let supervisor = spawn("crash_ack").await;
-        let mut operation = query(&supervisor, "operation", impact, 0);
-        let report = operation.wait_bounded(LIMIT).await;
-        assert!(!report.ok);
-        assert_eq!(report.certainty, expected);
-        assert_eq!(report.phase, Phase::Acknowledged);
-        assert!(supervisor.wait_exited().await);
-    }
+    let supervisor = spawn("crash_ack").await;
+    let mut operation = query(&supervisor, "operation", Impact::Mutating, 0);
+    let report = operation.wait_bounded(LIMIT).await;
+    assert!(!report.ok);
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    assert_eq!(report.phase, Phase::Acknowledged);
+    assert!(supervisor.wait_exited().await);
 }
 
 #[tokio::test]
@@ -830,6 +824,300 @@ async fn actual_node_switch_cancel_and_abandon_preserve_ack_evidence_and_reap() 
             assert!(!root.exists());
         }
     }
+}
+
+fn transaction_payload(action: TransactionAction) -> serde_json::Value {
+    json!({"action":action.as_str(),"expected":{"user":"SERVER_USER","session":"OPAQUE-SESSION"}})
+}
+
+// Production Helper and framing, local SDK injection only. The context SELECT
+// installs the actual helper pin; no account login, network, or transaction state
+// is simulated as evidence of a real Snowflake transaction disposition.
+fn transaction_launch(scenario: &str) -> Launch {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("transaction-fixture.mjs");
+    let helper = serde_json::to_string(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../snowflake-helper/src/helper.mjs"),
+    )
+    .unwrap();
+    let framing = serde_json::to_string(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../snowflake-helper/src/framing.mjs"),
+    )
+    .unwrap();
+    let body = r#"
+import { Readable, PassThrough } from 'node:stream';
+import { writeFileSync } from 'node:fs';
+const { Helper } = await import(HELPER_PATH);
+const { Decoder, writer } = await import(FRAMING_PATH);
+const scenario = SCENARIO, root = process.env.JOINERY_SNOWFLAKE_STATE_DIR;
+const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+let count=0, boundaries=0, connections=0, stopping=false;
+const calls=[];
+const sdk={createConnection:()=>({
+  connectAsync(cb){ connections++; queueMicrotask(()=>cb(null)); return Promise.resolve(); },
+  destroy(cb){ cb(null); },
+  execute(options){
+    const context=options.sqlText==='SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()';
+    if(!context&&!['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(options.sqlText)) throw Error('fixture SQL mismatch');
+    if(!Array.isArray(options.binds)||options.binds.length!==0) throw Error('fixture binds mismatch');
+    const n=++count;
+    if(!context) boundaries++;
+    calls.push(options.sqlText);
+    writeFileSync(root+'/calls',JSON.stringify({connections,calls}));
+    if(!context) writeFileSync(root+'/stage','boundary');
+    let acknowledged=false;
+    const stmt={
+      getRequestId:()=>uuid(n), getQueryId:()=>acknowledged?uuid(n+100):undefined,
+      getColumns:()=>Array.from({length:context?6:1},(_,i)=>({getName:()=>context?`c${i}`:'status',getType:()=>'TEXT'})),
+      streamRows:()=> context?Readable.from([['SERVER_USER',null,'DB','PUBLIC',null,'OPAQUE-SESSION']])
+        : scenario==='ack_pending'?new PassThrough()
+        : scenario==='drain_error'?Readable.from((async function*(){throw Error('PRIVATE_FIXTURE_ERROR');})())
+        : Readable.from([['Acknowledged']]),
+      cancel(cb){cb(null);}
+    };
+    if(!context&&scenario==='pending') return stmt;
+    setImmediate(()=>{
+      if(!context&&scenario==='denied'&&boundaries===1) options.complete({sqlState:'42501',message:'PRIVATE_FIXTURE_ERROR'},stmt);
+      else {acknowledged=true;options.complete(null,stmt);}
+    });
+    return stmt;
+  }
+})};
+const send=writer(process.stdout.write.bind(process.stdout),()=>process.exit(2));
+const stop=()=>{if(!stopping){stopping=true;send.flush().then(()=>process.exit(0));}};
+const helper=new Helper(sdk,send,stop,{clientConfigFile:'/nonexistent/local-fixture',closeTimeoutMs:20});
+const decoder=new Decoder();
+process.stdin.on('data',chunk=>{try{for(const frame of decoder.push(chunk))helper.receive(frame);}catch{stop();}});
+process.stdin.on('end',stop);
+"#;
+    std::fs::write(
+        &script,
+        body.replace("HELPER_PATH", &helper)
+            .replace("FRAMING_PATH", &framing)
+            .replace("SCENARIO", &serde_json::to_string(scenario).unwrap()),
+    )
+    .unwrap();
+    Launch::new(
+        explicit_node(),
+        Some(script),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        root,
+    )
+    .unwrap()
+}
+async fn transaction_supervisor(scenario: &str) -> (Supervisor, PathBuf) {
+    let launch = transaction_launch(scenario);
+    let root = launch.state_directory().to_owned();
+    let supervisor = Supervisor::spawn(launch, GENERATION, Bounds::default())
+        .await
+        .unwrap();
+    let mut connect = supervisor.request("connect","connect",json!({"account":"org-account","host":"org-account.snowflakecomputing.com","username":"LOGIN_NAME","role":"ROLE","warehouse":"WH","database":"DB","schema":"PUBLIC"}),Impact::Control).unwrap();
+    assert!(connect.wait_bounded(LIMIT).await.ok);
+    let mut context = supervisor
+        .request("pin", "context", json!({}), Impact::Read)
+        .unwrap();
+    let pin = context.wait_bounded(LIMIT).await;
+    assert!(pin.ok, "{pin:?}");
+    assert_eq!(pin.result.unwrap()["role"], serde_json::Value::Null);
+    (supervisor, root)
+}
+#[tokio::test]
+async fn actual_node_transaction_boundaries_are_exact_pinned_and_not_disposition_claims() {
+    let (supervisor, root) = transaction_supervisor("healthy").await;
+    for action in [
+        TransactionAction::Begin,
+        TransactionAction::Commit,
+        TransactionAction::Rollback,
+    ] {
+        assert!(
+            supervisor
+                .request(
+                    "bad-impact",
+                    "transaction",
+                    transaction_payload(action),
+                    Impact::Read
+                )
+                .is_err()
+        );
+        assert!(
+            supervisor
+                .request(
+                    "public-sql",
+                    "query",
+                    json!({"sql":"COMMIT"}),
+                    action.impact()
+                )
+                .is_err()
+        );
+        let mut wrong = transaction_payload(action);
+        wrong["expected"]["session"] = json!("OTHER");
+        let mut rejected = supervisor
+            .request("foreign-pin", "transaction", wrong, action.impact())
+            .unwrap();
+        let rejected = rejected.wait_bounded(LIMIT).await;
+        assert!(!rejected.ok);
+        assert_eq!(rejected.error_code.as_deref(), Some("invalidInput"));
+        assert!(rejected.statements.is_empty());
+        let mut op = supervisor
+            .request(
+                action.as_str(),
+                "transaction",
+                transaction_payload(action),
+                action.impact(),
+            )
+            .unwrap();
+        let report = op.wait_bounded(LIMIT).await;
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.phase, Phase::Acknowledged);
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        assert_eq!(report.statements.len(), 1);
+        let ack = report.boundary_acknowledged.unwrap();
+        assert_eq!(ack.action, action);
+        assert_eq!(ack.statement, report.statements[0]);
+        assert_eq!(report.result.unwrap()["action"], action.as_str());
+    }
+    let calls: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("calls")).unwrap()).unwrap();
+    assert_eq!(calls["connections"], 1);
+    assert_eq!(
+        calls["calls"],
+        json!([
+            "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()",
+            "BEGIN TRANSACTION",
+            "COMMIT",
+            "ROLLBACK"
+        ])
+    );
+    let cleanup = supervisor.shutdown().await.cleanup.unwrap();
+    assert!(cleanup.reaped && cleanup.temporary_root_removed);
+    assert!(!root.exists());
+}
+#[tokio::test]
+async fn actual_node_transaction_rejection_allows_same_session_rollback_without_success_ack() {
+    let (supervisor, root) = transaction_supervisor("denied").await;
+    let mut op = supervisor
+        .request(
+            "denied",
+            "transaction",
+            transaction_payload(TransactionAction::Commit),
+            Impact::Commit,
+        )
+        .unwrap();
+    let report = op.wait_bounded(LIMIT).await;
+    assert!(!report.ok);
+    assert_eq!(report.certainty, Certainty::ServerTerminal);
+    assert_eq!(report.error_code.as_deref(), Some("database"));
+    assert!(report.boundary_acknowledged.is_none());
+    assert!(!supervisor.is_closed());
+    let mut rollback = supervisor
+        .request(
+            "rollback",
+            "transaction",
+            transaction_payload(TransactionAction::Rollback),
+            Impact::Rollback,
+        )
+        .unwrap();
+    let report = rollback.wait_bounded(LIMIT).await;
+    assert!(report.ok);
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    let calls: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("calls")).unwrap()).unwrap();
+    assert_eq!(calls["connections"], 1);
+    assert_eq!(calls["calls"].as_array().unwrap().len(), 3);
+    assert!(
+        supervisor
+            .shutdown()
+            .await
+            .cleanup
+            .unwrap()
+            .temporary_root_removed
+    );
+    assert!(!root.exists());
+}
+#[tokio::test]
+async fn actual_node_transaction_cancel_and_drop_distinguish_ack_and_reap() {
+    for acknowledged in [false, true] {
+        for abandon in [false, true] {
+            let (supervisor, root) = transaction_supervisor(if acknowledged {
+                "ack_pending"
+            } else {
+                "pending"
+            })
+            .await;
+            let mut op = supervisor
+                .request(
+                    "boundary",
+                    "transaction",
+                    transaction_payload(TransactionAction::Commit),
+                    Impact::Commit,
+                )
+                .unwrap();
+            wait_switch_stage(&root, "boundary").await;
+            timeout(LIMIT, async {
+                while op.phase() != Phase::Dispatching
+                    || (acknowledged && op.boundary_acknowledged().is_none())
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(supervisor.discard(&op.token()).is_err());
+            let mut receiver = op.terminal_receiver();
+            if abandon {
+                drop(op);
+            } else {
+                let mut cancel = supervisor.cancel(&op.token()).unwrap();
+                assert!(cancel.wait_bounded(LIMIT).await.ok);
+                let _ = op.wait_bounded(LIMIT).await;
+            }
+            let report = timeout(LIMIT, async {
+                loop {
+                    if let Some(report) = receiver.borrow_and_update().clone() {
+                        break report;
+                    }
+                    receiver.changed().await.unwrap();
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!report.ok);
+            assert_eq!(
+                report.certainty,
+                if acknowledged {
+                    Certainty::StatementSucceeded
+                } else {
+                    Certainty::OutcomeUnknown
+                }
+            );
+            assert_eq!(report.boundary_acknowledged.is_some(), acknowledged);
+            assert_eq!(report.phase, Phase::Dispatching);
+            assert!(supervisor.wait_exited().await);
+            assert!(!root.exists());
+        }
+    }
+}
+#[tokio::test]
+async fn actual_node_transaction_drain_failure_keeps_known_ack_without_disposition() {
+    let (supervisor, root) = transaction_supervisor("drain_error").await;
+    let mut op = supervisor
+        .request(
+            "commit",
+            "transaction",
+            transaction_payload(TransactionAction::Commit),
+            Impact::Commit,
+        )
+        .unwrap();
+    let report = op.wait_bounded(LIMIT).await;
+    assert!(!report.ok);
+    assert_eq!(report.error_code.as_deref(), Some("connectionClosed"));
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    assert_eq!(
+        report.boundary_acknowledged.unwrap().action,
+        TransactionAction::Commit
+    );
+    assert!(supervisor.wait_exited().await);
+    assert!(!root.exists());
 }
 
 #[tokio::test]

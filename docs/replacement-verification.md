@@ -8,6 +8,63 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK transaction transport (10 November 2026)
+
+Status: **transport foundation locally tested; application and account workflows incomplete**.
+No account authentication, SQL or billable work was part of this increment.
+The [transaction design](snowflake-sdk-transactions-design.md) distinguishes typed
+boundary commands, command acknowledgement, observed state and verified effects.
+The helper accepts exactly `begin`, `commit` or `rollback` plus the established
+principal/session pin. It submits one fixed statement, retains the submission
+guard through drain, and publishes a distinct associated boundary ACK. The Rust
+supervisor pairs action and impact, validates registered statement identity, and
+preserves known ACKs through cancellation, drop, drain failure and retirement.
+Generic ACKs produce `StatementSucceeded`; this layer never infers committed or
+rolled-back effects. Existing application transaction/write capabilities stay disabled.
+
+Review found a helper cancellation reentry gap: an already classified definitive
+database rejection could become unknown before terminal publication. The new
+regression failed before repair (`sdk-schema-transport-transaction-cancel-before-fix.log`)
+and now passes. Root independently reviewed the helper/supervisor diffs, outcome
+branches, action/impact association and process tests; no material finding remains.
+
+Focused verification uses the repository's pinned Node 24 and Rust 1.99.1:
+
+- Supervisor unit tests: **19/19**; actual Node/production-helper process tests:
+  **37/37**, including the existing repeated two-million-row lifetime test.
+  New tests cover exact SQL/pins, definitive rejection followed by same-session
+  recovery, pre/post-ACK cancellation/drop, drain failure and stale-handle cleanup.
+- Helper tests: **56/56**. The complete helper set covers **216 passing tests**
+  across the final-source runs, including **80 actual pinned-SDK loopback cases**.
+  Eighteen of those exercise HTTP/TLS/proxy BEGIN/COMMIT/ROLLBACK, lost COMMIT
+  response, definitive rejection and post-ACK guard violations. These endpoints
+  are local synthetic servers, not Snowflake transaction-effect evidence.
+- Strict scoped Clippy, Rustfmt, scoped Prettier and `git diff --check`: pass.
+  Logs: `.cache/verification/connection-attempts/sdk-schema-transport-transaction-`
+  `{supervisor,process,clippy,format,node-all,node-process,sdk}.log`.
+  The first complete Node invocation used the repository cwd and had four
+  relative-path process-test failures; the correct helper cwd rerun passed **4/4**.
+  Both logs are retained; no failing check was bypassed.
+
+Offline runtime preparation initially used the empty default npm cache and failed
+dependency installation. Repeating with the documented repository-local cache
+passed without network: `pnpm snowflake:prepare --cache-dir
+.cache/snowflake-helper-dev/npm-cache --offline`. Logs are
+`sdk-transaction-runtime-prepare{,-final}.log`. Full `pnpm validate` passes:
+**649 frontend / 373 standard Rust tests**, 129 opt-in checks ignored, plus
+contracts, TypeScript, web build, Rustfmt, desktop check and strict all-target/
+all-feature Clippy. No UI control changed in this transport-only increment.
+Fresh packaging/native checks follow separately; the preceding package does not
+contain this transport slice.
+
+The first full validation attempt passed formatting/contracts/types but stopped
+at two unchanged frontend tests: a five-second index-dialog timeout and a
+time-bounded SQL JOIN inspection. The two files passed **30/30** in isolation
+without source or timeout changes, and the full rerun passed **649/649** frontend
+tests. Logs: `sdk-transaction-validate-final.log`,
+`sdk-transaction-frontend-focused.log`, `sdk-transaction-validate-rerun.log`.
+These first-run timing failures are retained; they are not product-fix evidence.
+
 ### SDK guarded schema selection (10 November 2026)
 
 Status: **locally qualified; account and owner acceptance open**. No account

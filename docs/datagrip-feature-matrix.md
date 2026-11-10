@@ -74,7 +74,11 @@ Current Joinery offers explicit local-application OAuth/SQL API and stateful SDK
 external-browser routes. Both enforce ReadOnly. SDK same-session relation/column
 completion is implemented; its [qualification](snowflake-sdk-metadata-design.md)
 is separate from the preceding SDK integration counts above. SDK writes, DDL,
-transactions remain disabled. A distinct revision-bound relation catalog,
+transactions remain disabled. A locally tested
+[typed transaction transport foundation](snowflake-sdk-transactions-design.md)
+now preserves command acknowledgements separately from verified database effects;
+the adapter, policy, recovery and UI workflows remain incomplete. A distinct
+revision-bound relation catalog,
 column inspection and read-only preview is implemented locally under the
 [browsing contract](snowflake-sdk-browsing-design.md). Complete object/constraint
 inspection, editable browsing and account metadata qualification remain open. Browser login alone does not prove account compatibility
