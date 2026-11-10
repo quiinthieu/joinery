@@ -48,13 +48,14 @@ configured context, session continuity, synthetic scalar values and local
 cleanup. The ledger preserves its first validator failure and corrected rerun;
 broader account SQL and writes still require concrete authorization.
 
-The next independent repair is the default Snowflake SQL starter: source review
-finds that `SELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();` is
-rejected by the read-only classifier because the last two observers are not
-allowed for Snowflake. Reproduce this with the exact starter and actual-helper
-dispatch before adding strict Snowflake-only zero-argument observer support.
-Qualified/quoted functions, unknown functions and relative-history forms must
-remain blocked. Then continue complete browsing and authoritative session state.
+The default Snowflake SQL starter repair reproduces the exact script's
+`PolicyBlocked` failure in both policy and actual-helper tests, then adds strict
+Snowflake-only zero-argument `CURRENT_USER()` / `CURRENT_VERSION()` observers.
+Qualified/quoted functions, unknown functions and relative-history forms remain
+blocked. All 19 safety and 19 synthetic-SDK actual-helper tests pass, as do
+607 frontend / 314 standard Rust tests and full validation; see the
+[repair evidence](replacement-verification.md#snowflake-starter-repair-10-november-2026-local-checks).
+Complete browsing and authoritative session state remain required.
 
 The reviewed [browsing/session proposal](snowflake-sdk-browsing-design.md)
 defines the catalog → inspect → bounded preview → refresh workflow, qualified

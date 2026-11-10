@@ -1,8 +1,9 @@
 use crate::domain::*;
 use sqlparser::{
     ast::{
-        Expr, GroupByExpr, Ident, Query, SelectItem, SelectItemQualifiedWildcardKind, SetExpr,
-        Statement, TableFactor, Visit, Visitor, WildcardAdditionalOptions,
+        Expr, Function, FunctionArguments, GroupByExpr, Ident, Query, SelectItem,
+        SelectItemQualifiedWildcardKind, SetExpr, Statement, TableFactor, Visit, Visitor,
+        WildcardAdditionalOptions,
     },
     dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect},
     parser::Parser,
@@ -733,12 +734,36 @@ impl Visitor for Classification {
                     "utc_timestamp",
                 ]
                 .contains(&builtin);
-            if !(common_builtin || mysql_builtin) {
+            let snowflake_observer = self.engine == Some(EngineKind::Snowflake)
+                && is_snowflake_zero_argument_observer(function);
+            if !(common_builtin || mysql_builtin || snowflake_observer) {
                 self.raise(StatementKind::Unknown);
             }
         }
         ControlFlow::Continue(())
     }
+}
+
+fn is_snowflake_zero_argument_observer(function: &Function) -> bool {
+    let [part] = function.name.0.as_slice() else {
+        return false;
+    };
+    let Some(name) = part.as_ident() else {
+        return false;
+    };
+    name.quote_style.is_none()
+        && (name.value.eq_ignore_ascii_case("current_user")
+            || name.value.eq_ignore_ascii_case("current_version"))
+        && !function.uses_odbc_syntax
+        && matches!(function.parameters, FunctionArguments::None)
+        && matches!(&function.args, FunctionArguments::List(arguments)
+            if arguments.args.is_empty()
+                && arguments.duplicate_treatment.is_none()
+                && arguments.clauses.is_empty())
+        && function.within_group.is_empty()
+        && function.filter.is_none()
+        && function.null_treatment.is_none()
+        && function.over.is_none()
 }
 
 fn unrestricted(selection: Option<&sqlparser::ast::Expr>) -> bool {
@@ -1400,6 +1425,79 @@ mod tests {
                 ErrorCode::PolicyBlocked
             );
         }
+    }
+    #[test]
+    fn snowflake_starter_is_read_only_without_approval() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Production);
+        p.engine = EngineKind::Snowflake;
+        let sql = "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();";
+        let plan = prepare("s", &p, sql).unwrap();
+        assert_eq!(plan.statements.len(), 1);
+        assert_eq!(plan.statements[0].kind, StatementKind::Read);
+        assert!(!plan.requires_approval && !plan.requires_passphrase);
+    }
+    #[test]
+    fn snowflake_observers_require_plain_zero_argument_calls() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Production);
+        p.engine = EngineKind::Snowflake;
+        for name in [
+            "CURRENT_USER",
+            "current_user",
+            "CuRrEnT_UsEr",
+            "CURRENT_VERSION",
+            "current_version",
+            "CuRrEnT_VeRsIoN",
+        ] {
+            let plan = prepare("s", &p, &format!("SELECT {name}()")).unwrap();
+            assert_eq!(plan.statements[0].kind, StatementKind::Read, "{name}");
+            assert!(
+                !plan.requires_approval && !plan.requires_passphrase,
+                "{name}"
+            );
+        }
+        for name in ["CURRENT_USER", "CURRENT_VERSION"] {
+            for expression in [
+                format!("\"{name}\"()"),
+                format!("PUBLIC.{name}()"),
+                format!("DB.PUBLIC.{name}()"),
+                format!("{name}(1)"),
+                format!("{name}(*)"),
+                format!("{name}(value => 1)"),
+                format!("{name}(DISTINCT)"),
+                format!("{name}(ALL)"),
+                format!("{name}(ORDER BY 1)"),
+                format!("{name}(LIMIT 1)"),
+                format!("{name}(IGNORE NULLS)"),
+                format!("{name}() IGNORE NULLS"),
+                format!("{name}() RESPECT NULLS"),
+                format!("{name}() FILTER (WHERE true)"),
+                format!("{name}() WITHIN GROUP (ORDER BY 1)"),
+                format!("{name}() OVER ()"),
+                format!("{name}() OVER win"),
+                format!("{name}()(1)"),
+                format!("{{fn {name}()}}"),
+            ] {
+                assert!(
+                    prepare("s", &p, &format!("SELECT {expression}")).is_err(),
+                    "{expression}"
+                );
+            }
+        }
+        assert!(prepare("s", &p, "SELECT CURRENT_UNREVIEWED()").is_err());
+        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+            p.engine = engine;
+            assert!(prepare("s", &p, "SELECT CURRENT_VERSION()").is_err());
+        }
+        p.engine = EngineKind::Postgres;
+        assert!(prepare("s", &p, "SELECT CURRENT_USER()").is_err());
+        p.engine = EngineKind::Mysql;
+        assert_eq!(
+            prepare("s", &p, "SELECT CURRENT_USER()")
+                .unwrap()
+                .statements[0]
+                .kind,
+            StatementKind::Read
+        );
     }
     #[test]
     fn generated_snowflake_explain_is_read_only_without_allowing_a_batch_escape() {

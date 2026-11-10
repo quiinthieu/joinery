@@ -8,6 +8,48 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake starter repair (10 November 2026; local checks)
+
+Source follows `459db5a`. Joinery's exact default Snowflake script,
+`-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();`,
+previously failed the ReadOnly classifier before dispatch. Both
+`sdk-starter-policy-before-fix.log` and `sdk-starter-child-before-fix.log` under
+`.cache/verification/connection-attempts/` reproduce `PolicyBlocked` (exit 101).
+
+The repair admits only unquoted, unqualified, ordinary zero-argument Snowflake
+`CURRENT_USER()` and `CURRENT_VERSION()` observers. Function parameters,
+arguments, aggregate/window/null/ODBC modifiers and unknown functions remain
+blocked; the shared builtin policy and other engines are unchanged.
+[CURRENT_USER](https://docs.snowflake.com/en/sql-reference/functions/current_user)
+and [CURRENT_VERSION](https://docs.snowflake.com/en/sql-reference/functions/current_version)
+document these observers.
+
+- `sdk-starter-safety-final.log`: all 19 safety tests pass, including the exact
+  commented starter with no approval/passphrase and malformed-call negatives.
+- `sdk-starter-child-final.log`: all 19 actual Node/helper tests with a synthetic
+  SDK pass. The starter reaches that helper exactly once and returns three
+  expected scalar values; 15 rejected variants submit no additional SQL, leave
+  result sinks empty and preserve the connection. Relative-history guards pass.
+  This counts helper dispatch, not actual SDK HTTP submissions or account effects.
+- `sdk-starter-clippy-final.log`: scoped strict Clippy passes. Owned-file rustfmt
+  and diff checks pass. Independent review reports no material finding.
+- `sdk-starter-validate.log`: first full validation stopped at formatting on an
+  unrelated in-progress guard module. After that module was formatted,
+  `sdk-starter-validate-final.log` passes **607 frontend / 314 standard Rust**
+  tests, contracts, production build, formatting, desktop check and strict
+  all-target/all-feature Clippy. External fixture suites remain explicitly
+  ignored in this standard command; their previous results are not a fresh run.
+- `sdk-starter-browser-final.log`: all eight focused authentication, plan,
+  completion and browsing/error browser workflows pass (52 seconds). Snowflake
+  RPC responses are synthetic in these flows; the stale-publication case uses
+  disposable PostgreSQL metadata. The existing editor check displays the
+  default starter; its policy/dispatch behavior is covered separately above.
+
+No account SQL, SSO, packaging or native run was performed for this narrow repair.
+The preceding completion increment's normal bundle and hidden native evidence
+identify their earlier source and remain distinct. The guard module and source
+pin work in progress do not qualify a submission guard or enable writes.
+
 ### SDK completion increment (10 November 2026; locally qualified)
 
 Implementation and its local qualification record are committed as `4c77cc4`.

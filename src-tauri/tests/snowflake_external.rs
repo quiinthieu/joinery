@@ -13,6 +13,8 @@ use joinery_core::{
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 const LIMIT: Duration = Duration::from_secs(10);
+const STARTER: &str =
+    "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();";
 const FAKE: &str = r#"
 import { Readable } from 'node:stream';
 import { writeFileSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -42,6 +44,10 @@ const sdk = { createConnection(options) {
         : sql === 'SELECT EXACT_VALUES' ? [['9007199254740993','-99999999999999999999999999999999999999',null,'','東京😀','{"x":1}','1.2300','2026-11-09']]
         : sql === 'SELECT EXECUTION_COUNT' ? [[String(executions)]]
         : options.binds.length > 0 ? [options.binds.map(x => x === null ? null : typeof x === 'boolean' ? String(x) : x)] : [['1']];
+      if (sql === '-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();') {
+        names = ['CURRENT_DATABASE()','CURRENT_USER()','CURRENT_VERSION()'];
+        values = [['DB','SERVER_USER','synthetic-version']];
+      }
       const context = sql.includes(' AS PRINCIPAL');
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
       const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ');
@@ -972,6 +978,53 @@ async fn sdk_cancelled_metadata_preserves_known_error_and_invalidates_context() 
         std::fs::read_to_string(h._scripts.path().join("connections")).unwrap(),
         "1"
     );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_starter_executes_once_and_returns_observer_values() {
+    let h = Harness::open().await;
+    let before = h.queries().len();
+    let mut sink = Sink::default();
+    assert_eq!(execute(&h.driver, STARTER, &mut sink).await.unwrap(), 1);
+    assert_eq!(&h.queries()[before..], &[STARTER]);
+    assert_eq!(sink.columns.len(), 3);
+    assert_eq!(
+        sink.rows,
+        vec![vec![
+            Some("DB".into()),
+            Some("SERVER_USER".into()),
+            Some("synthetic-version".into()),
+        ]]
+    );
+    assert_eq!(sink.completed, [1]);
+    let after_starter = h.queries().len();
+    for sql in [
+        "SELECT \"CURRENT_USER\"()",
+        "SELECT PUBLIC.CURRENT_USER()",
+        "SELECT CURRENT_USER(1)",
+        "SELECT CURRENT_USER() OVER ()",
+        "SELECT {fn CURRENT_USER()}",
+        "SELECT \"CURRENT_VERSION\"()",
+        "SELECT PUBLIC.CURRENT_VERSION()",
+        "SELECT CURRENT_VERSION(1)",
+        "SELECT CURRENT_VERSION(DISTINCT)",
+        "SELECT CURRENT_VERSION() FILTER (WHERE true)",
+        "SELECT CURRENT_VERSION() WITHIN GROUP (ORDER BY 1)",
+        "SELECT CURRENT_VERSION() IGNORE NULLS",
+        "SELECT CURRENT_VERSION()(1)",
+        "SELECT {fn CURRENT_VERSION()}",
+        "SELECT CURRENT_UNREVIEWED()",
+    ] {
+        let mut rejected_sink = Sink::default();
+        let error = execute(&h.driver, sql, &mut rejected_sink)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PolicyBlocked, "{sql}");
+        assert!(rejected_sink.columns.is_empty() && rejected_sink.rows.is_empty());
+        assert_eq!(h.queries().len(), after_starter, "{sql}");
+    }
+    assert!(!h.driver.is_closed());
     h.close().await;
 }
 
