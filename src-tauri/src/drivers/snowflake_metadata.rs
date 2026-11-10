@@ -23,7 +23,10 @@ pub(crate) const COLUMN_MAX_BYTES: usize = 1024 * 1024;
 // returns JSON with string fields `roles` and `value`; do not split their commas.
 // https://docs.snowflake.com/en/sql-reference/functions/current_session
 // https://docs.snowflake.com/en/sql-reference/functions/current_secondary_roles
-pub(crate) const CONTEXT_SQL: &str = "SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_JSON(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES";
+// Normalize search-path output to text without TO_JSON's VARIANT-only input
+// contract. TO_VARCHAR preserves string text and renders ARRAY values as JSON.
+// https://docs.snowflake.com/en/sql-reference/functions/to_char
+pub(crate) const CONTEXT_SQL: &str = "SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES";
 pub(crate) const QUOTED_IDENTIFIER_POLICY_SQL: &str =
     "SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE' IN SESSION";
 const CONTEXT_COLUMNS: [&str; 8] = [
@@ -727,6 +730,33 @@ mod tests {
         );
         assert_code(observed.completion_identity(), ErrorCode::Unsupported);
         assert_code(schemas_sql(&observed), ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn context_json_text_preserves_documents_without_double_decoding() {
+        let mut input = context_result();
+        input.rows[0][6] = Some(r#" [ "DB.PUBLIC", "\"D.B\".\"S\"\"Q\"" ] "#.into());
+        input.rows[0][7] = Some(r#" { "value": "ALL", "roles": "" } "#.into());
+        let observed = parse_context(&input, &policy_result()).unwrap();
+        assert_eq!(observed.search_path[0].raw, "DB.PUBLIC");
+        assert_eq!(observed.search_path[1].database.as_deref(), Some("D.B"));
+        assert_eq!(observed.search_path[1].schema.as_deref(), Some("S\"Q"));
+        assert_eq!(observed.secondary_roles.roles, "");
+        assert_eq!(observed.secondary_roles.value, "ALL");
+        // Text normalization must not invite a permissive second JSON decode.
+        for invalid in [
+            serde_json::to_string(r#"["DB.PUBLIC"]"#).unwrap(),
+            "null".into(),
+            "{}".into(),
+            "[null]".into(),
+            "[1]".into(),
+        ] {
+            input.rows[0][6] = Some(invalid);
+            assert_code(
+                parse_context(&input, &policy_result()),
+                ErrorCode::ResultLimitReached,
+            );
+        }
     }
 
     #[test]

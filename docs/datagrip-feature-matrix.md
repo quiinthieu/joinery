@@ -27,6 +27,10 @@ SSO and startup checks but failed at the third session-context statement; it
 stopped and cleaned up without retry. See the
 [account evidence](replacement-verification.md#approved-account-qualification-attempt-10-november-2026).
 Required capabilities below retain their incomplete/unqualified states.
+The SDK context SQL now uses documented TO_VARCHAR text normalization, with
+focused regressions, independent review and full application validation passing.
+That local correction does not prove which expression caused the rejection or
+qualify the account; see the [correction evidence](replacement-verification.md#sdk-context-text-normalization-10-november-2026).
 
 The [schema-switch transport foundation](snowflake-sdk-session-design.md) now
 separates observation from typed schema mutation and preserves acknowledged USE

@@ -1759,6 +1759,10 @@ import { readFileSync, appendFileSync, existsSync, writeFileSync } from 'node:fs
 const { Helper } = await import(HELPER_URL);
 const { Decoder, writer } = await import(FRAMING_URL);
 const file = name => new URL(name, import.meta.url);
+// Independent expected SQL: a fixture success must not mask unsupported implicit
+// coercion in the production template. This models routing, not Snowflake typing.
+const normalizedContextSql = 'SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES';
+const oldContextSql = normalizedContextSql.replace('TO_VARCHAR(CURRENT_SCHEMAS())', 'TO_JSON(CURRENT_SCHEMAS())');
 let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
@@ -1773,7 +1777,8 @@ const sdk = { createConnection() {
       if (settingsText !== previousSettings) { previousSettings = settingsText; contextReads = 0; transactionReads = 0; }
       const settings = JSON.parse(settingsText);
       const value = (key, fallback) => Object.hasOwn(settings, key) ? settings[key] : fallback;
-      const context = sql.includes(' AS PRINCIPAL');
+      const context = sql === normalizedContextSql;
+      const unsupportedContext = sql === oldContextSql;
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
       const use = sql.startsWith('USE SCHEMA ');
       const readback = sql.startsWith('SELECT CURRENT_USER(),') && switched;
@@ -1788,6 +1793,8 @@ const sdk = { createConnection() {
         rows = [['SERVER_USER',value('role','ROLE'),'DB',settings.badReadback ? 'WRONG' : currentSchema,value('warehouse','WH'),'SESSION']];
       } else if (sql === 'SELECT CURRENT_VERSION()') {
         rows = [['synthetic-version']];
+      } else if (unsupportedContext) {
+        names = []; rows = [];
       } else if (context) {
         contextReads++;
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
@@ -1824,13 +1831,13 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      const denied = unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
       setImmediate(() => {
         if (use && settings.holdUse || readback && settings.holdReadback) {
           writeFileSync(file(use ? 'held-use' : 'held-readback'), '');
           return;
         }
-        options.complete(denied ? {sqlState:'42501'} : null, statement);
+        options.complete(denied ? {sqlState:unsupportedContext ? '42883' : '42501'} : null, statement);
       });
       return statement;
     },
@@ -1993,6 +2000,37 @@ process.stdin.on('end', retire);
         ]
         .map(str::to_owned)
         .to_vec()
+    }
+
+    #[tokio::test]
+    async fn context_normalization_routes_exact_text_sql_and_rejects_old_expression() {
+        const EXPECTED: &str = "SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES";
+        let h = Harness::open().await;
+        let baseline = h.queries().len();
+        let lane = h.driver.lane.lock().await;
+        let observed = h.driver.live_metadata_context().await.unwrap();
+        assert_eq!(observed.search_path[0].raw, "DB.PUBLIC");
+        assert_eq!(observed.secondary_roles.roles, "");
+        assert_eq!(observed.secondary_roles.value, "ALL");
+        assert_eq!(
+            h.queries()[baseline..],
+            [EXPECTED, metadata::QUOTED_IDENTIFIER_POLICY_SQL]
+        );
+        // An actual helper child passes the exact old SQL to the synthetic SDK,
+        // whose explicit rejection must remain a definitive database outcome.
+        let old = EXPECTED.replace(
+            "TO_VARCHAR(CURRENT_SCHEMAS())",
+            "TO_JSON(CURRENT_SCHEMAS())",
+        );
+        let error = h
+            .driver
+            .metadata_read(&old, 1, metadata::CONTEXT_MAX_BYTES)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Database);
+        assert_eq!(h.queries()[baseline + 2..], [old]);
+        drop(lane);
+        h.finish().await;
     }
 
     fn switch_request(options: &SessionContextOptions, schema: &str) -> SwitchSchemaRequest {

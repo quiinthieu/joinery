@@ -32,6 +32,21 @@ Each observation sample makes five fixed reads on that lane:
 4. `SHOW PARAMETERS LIKE 'TRANSACTION_ABORT_ON_ERROR' IN SESSION`.
 5. `SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID`.
 
+The context query normalizes the search path with
+`TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH` and parses exactly one JSON array
+of strings. It does not decode a JSON string a second time. Snowflake documents
+[TO_VARCHAR](https://docs.snowflake.com/en/sql-reference/functions/to_char) as
+accepting any input type, returning VARCHAR and rendering ARRAY values as JSON.
+This avoids relying on the VARIANT-only input contract of
+[TO_JSON](https://docs.snowflake.com/en/sql-reference/functions/to_json).
+The [CURRENT_SCHEMAS](https://docs.snowflake.com/en/sql-reference/functions/current_schemas)
+page shows array-shaped output without specifying its SQL return type. The
+correction is locally tested; it is not proof of which expression caused the
+earlier generic account rejection. The actual account context query remains
+unqualified until a new reviewed attempt succeeds. Secondary-role parsing keeps
+the documented JSON object with string `roles` and `value` fields, including
+comma-containing strings and empty `roles`; no parser permissiveness was added.
+
 Two samples are compared before state is published. `session_state` therefore
 uses ten fixed statement executions. The schema-options request places one
 bounded current-database `INFORMATION_SCHEMA.SCHEMATA` read between the samples,

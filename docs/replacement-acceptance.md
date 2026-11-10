@@ -58,6 +58,15 @@ other session switches, write/DDL/transaction workflows and account/owner accept
 remain required and open. Account scope must include automatic post-SQL observations and editor
 metadata; the earlier two-query canary does not authorize them.
 
+One separately approved helper-only 24-read/SHOW qualification attempt ended on
+10 November at 12:31:29 UTC. SSO and its two startup checks passed; Snowflake
+rejected the third session-context query. The runner stopped, acknowledged logout,
+reaped the child and removed its own temporary authentication state. The approval
+is consumed and was not retried. This failed attempt does not close account
+observation, metadata, application or owner acceptance; the
+[ledger](replacement-verification.md#approved-account-qualification-attempt-10-november-2026)
+records its exact plan, scope and evidence.
+
 ## Target definition and open questions
 
 Replacement means the owner's required daily workflows succeed on their target

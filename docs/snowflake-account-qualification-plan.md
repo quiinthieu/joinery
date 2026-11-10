@@ -36,6 +36,13 @@ exact private execution plan is still required; no account run is implied.
 The older stage envelopes below remain
 proposed; they do not silently absorb this workflow.
 
+One owner-approved execution of the separate 24-statement workflow passed SSO
+and its two startup checks, then stopped on rejection of the third context query.
+Its approval is consumed; logout/reaping/private-state cleanup passed. The
+context normalization below is a local correction and needs a new reviewed plan
+and fresh approval before another account attempt. See the
+[attempt and correction evidence](replacement-verification.md).
+
 No developer switch, alternate OAuth route or SQL API fallback may bypass the app's
 ReadOnly gate for qualification. An independently reviewed SDK qualification tool
 can establish engine behavior before app integration, but its evidence must say
@@ -177,7 +184,7 @@ SELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();
 SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME,
        CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME,
        CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID,
-       TO_JSON(CURRENT_SCHEMAS()) AS SEARCH_PATH,
+       TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH,
        CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES
 ```
 

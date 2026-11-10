@@ -55,7 +55,10 @@ child lifecycle and private evidence. Its 18 runner tests and the complete
 SSO and the two startup queries, then stopped on a definitive rejection of its
 session-context query. Logout, child reaping and temporary-state removal passed.
 The approval is consumed; no retry was attempted. Diagnose and locally repair
-the context query before preparing any new approved attempt. Account and normal
+the context query before preparing any new approved attempt. The SDK query now
+uses documented TO_VARCHAR text normalization and passes focused regression,
+independent review and full validation; actual account behavior remains unverified.
+Account and normal
 application qualification remain open; see the
 [attempt evidence](replacement-verification.md#approved-account-qualification-attempt-10-november-2026).
 

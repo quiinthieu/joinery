@@ -8,6 +8,53 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK context text normalization (10 November 2026)
+
+The SDK context query and its exact qualification template now use
+`TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH`. Snowflake's
+[TO_VARCHAR contract](https://docs.snowflake.com/en/sql-reference/functions/to_char)
+accepts any type, returns VARCHAR and serializes ARRAY inputs as JSON, while
+[TO_JSON](https://docs.snowflake.com/en/sql-reference/functions/to_json) requires
+VARIANT. The CURRENT_SCHEMAS reference shows a JSON list without declaring its SQL
+type. This is a documented normalization correction, **not confirmed attribution**
+of the generic rejection in the account attempt below. No additional account
+authentication or SQL was performed. The preceding normal/native package predates
+this correction; new package qualification is separate.
+
+The production adapter and offline compiler retain identical SQL. Strict JSON
+path/secondary-role parsing, required descriptors, byte/row caps, all source
+checks and the 24/10/11/13 statement counts are unchanged. A new parser regression
+preserves quoted components, whitespace and empty string roles while rejecting
+double-encoded arrays and wrong JSON types. No fallback or second decode was added.
+
+The exact-ledger regression failed before repair (exit 1), and an actual Node/
+production-helper synthetic-SDK adapter regression failed with the old production
+query (exit 101). The fixture independently requires the corrected SQL and
+explicitly rejects the old expression. Final checks pass: **113 qualification
+tooling / 16 metadata / 20 session-switch adapter / 31 adapter integration tests**,
+scoped formatting and strict test-harness Clippy. Independent review reports no
+material finding, with a separate **51/51** manifest/result/protocol run. These
+fixtures establish local routing/validation behavior, not actual SQL compilation.
+
+Full `pnpm validate` passes **649 frontend / 374 standard Rust tests**, 129 opt-in
+checks ignored, plus contracts, TypeScript/web build, Rustfmt, desktop check and
+strict all-target/all-feature Clippy. Root also reproduced a stale exact context
+SQL expectation in the opt-in Studio fixture, then updated that expectation and
+the proposed qualification-plan SQL. Production source is unchanged by those
+two follow-ups. All **13/13** opt-in Studio connection tests then pass using the
+actual helper subprocess and synthetic SDK, including interrupted authentication,
+context/session drift, denied post-query observations and schema options. This
+does not add actual Snowflake account evidence. Independent follow-up review
+cleared both changed expectations without material findings.
+
+Logs under `.cache/verification/connection-attempts/`:
+`sdk-context-normalization-{manifest,adapter}-before-fix.log`,
+`sdk-context-normalization-{tooling,metadata,adapter,integration,clippy,validate}-final.log`,
+`sdk-context-normalization-studio-before-fixture-fix.log`,
+`sdk-context-normalization-studio-final.log`.
+The alternate legacy OAuth completion query still uses the older wrapper and
+has no account qualification; this SDK-specific correction does not certify it.
+
 ### Approved account qualification attempt (10 November 2026)
 
 The owner explicitly approved one helper-direct attempt for execution plan
