@@ -11,6 +11,9 @@ export function connectionOptions(profile, clientConfigFile) {
     serverSessionKeepAlive: false,
     browserActionTimeout: 120000,
     retryTimeout: 0,
+    // Only strict scalar binds enter execute. A positive threshold prevents the
+    // SDK's count-zero path from selecting implicit staged-binding setup SQL.
+    arrayBindingThreshold: 1_000_000,
     clientConfigFile: clientConfigFile,
   };
 }
@@ -58,6 +61,9 @@ export class Helper {
     this.emit = emit;
     this.retire = retire;
     this.clientConfigFile = options.clientConfigFile;
+    // Direct synthetic tests may omit this seam; production main always injects
+    // the mandatory process-local guard after verifying the pinned sources.
+    this.submitGuard = options.submitGuard;
     this.closeTimeoutMs = options.closeTimeoutMs ?? 1000;
     this.generation = null;
     this.lastId = 0n;
@@ -93,6 +99,20 @@ export class Helper {
       ...(a ? this.idsFor(a) : {}),
       ...(code ? { ok: false, error: error(code) } : { ok: true, result }),
     });
+  }
+  submissionViolation() {
+    // A violation is a protocol failure even if a native throw is swallowed by
+    // a dependency. Preserve any established terminal; never infer delivery.
+    if (this.active)
+      this.finish(
+        this.active.request,
+        this.active.knownFailure ??
+          (this.active.acknowledged ? "connectionClosed" : "outcomeUnknown"),
+      );
+    if (this.state === "connecting" && this.connectRequest)
+      this.finish(this.connectRequest, "outcomeUnknown");
+    for (const queued of this.queue.splice(0)) this.finish(queued, "connectionClosed");
+    this.stop();
   }
   fatal() {
     if (!this.retired) {
@@ -155,6 +175,7 @@ export class Helper {
     this.connectRequest = r;
     this.send(r, "accepted");
     try {
+      this.submitGuard?.setAuthority({ protocol: "https:", hostname: p.host, port: 443 });
       this.connection = this.sdk.createConnection(connectionOptions(p, this.clientConfigFile));
       this.connection
         .connectAsync((err) => {
@@ -225,6 +246,7 @@ export class Helper {
       statements: new Map(),
     });
     try {
+      a.submitOwner = this.submitGuard?.beginOperation();
       if (r.op === "query") {
         const result = await this.execute(a, r.payload.sql, r.payload.binds, true);
         this.finish(r, null, { ...result, ...this.idsFor(a) });
@@ -269,6 +291,13 @@ export class Helper {
       );
       if (e?.retire || r.op === "context") this.stop();
     } finally {
+      if (a.submitOwner) {
+        try {
+          this.submitGuard.endOperation(a.submitOwner);
+        } catch {
+          this.submissionViolation();
+        }
+      }
       if (this.active === a) this.active = null;
       this.wake?.();
       this.pump();
@@ -315,10 +344,48 @@ export class Helper {
     this.send(a.request, "statement", identity);
   }
   execute(a, sql, binds, publish) {
-    return new Promise((resolve, reject) => {
+    // This is per execute: a preceding USE acknowledgement cannot settle the
+    // following context readback's outcome before that statement acknowledges.
+    a.acknowledged = false;
+    a.knownFailure = undefined;
+    const ticket = this.submitGuard?.beginStatement(a.submitOwner);
+    const task = new Promise((resolve, reject) => {
       if (this.retired) return reject(error("connectionClosed"));
       a.dispatching = true;
       if (publish) this.send(a.request, "phase", { phase: "dispatching" });
+      let returned = false,
+        pending,
+        completed = false;
+      const complete = (err, statement) => {
+        // Actual SDK dispatch is deferred. Synthetic callbacks can be
+        // synchronous; never consume/complete them before exact-ID registration.
+        if (!returned) {
+          pending = [err, statement];
+          return;
+        }
+        if (completed) return;
+        completed = true;
+        if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+        if (err) {
+          const failure = sdkFailure(err);
+          // Preserve only the existing definitive database classification, before
+          // record/publication can cause a reentrant submission violation.
+          if (failure.code === "database") a.knownFailure = failure.code;
+          this.record(a, statement ?? a.statement);
+          return reject(failure);
+        }
+        a.acknowledged = true;
+        a.statement = statement;
+        this.record(a, statement);
+        if (publish)
+          this.send(a.request, "phase", {
+            phase: "acknowledged",
+            ...this.idsFor(a),
+          });
+        this.consume(a, statement, publish).then(resolve, (e) =>
+          reject(e?.code === "resultLimitReached" ? e : sdkFailure(e, true)),
+        );
+      };
       try {
         a.statement = this.connection.execute({
           sqlText: sql,
@@ -326,28 +393,23 @@ export class Helper {
           rowMode: "array",
           fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON"],
           streamResult: true,
-          complete: (err, statement) => {
-            if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
-            if (err) {
-              this.record(a, statement ?? a.statement);
-              return reject(sdkFailure(err));
-            }
-            a.statement = statement;
-            this.record(a, statement);
-            if (publish)
-              this.send(a.request, "phase", {
-                phase: "acknowledged",
-                ...this.idsFor(a),
-              });
-            this.consume(a, statement, publish).then(resolve, (e) =>
-              reject(e?.code === "resultLimitReached" ? e : sdkFailure(e, true)),
-            );
-          },
+          complete,
         });
+        // Do not infer an ID from a native URL or completion callback. Register
+        // only the exact ID returned by this execute, before deferred transport.
+        if (ticket) this.submitGuard.registerRequestId(ticket, a.statement?.getRequestId?.());
         this.record(a, a.statement);
+        returned = true;
+        if (pending) complete(...pending);
       } catch {
+        returned = true;
         reject(sdkFailure(null));
       }
+    });
+    // The allowance stays owned throughout acknowledgement and result drain,
+    // including cancel acknowledgement. The operation closes after its terminal.
+    return task.finally(() => {
+      if (ticket) this.submitGuard.endStatement(ticket);
     });
   }
   async consume(a, statement, publish) {

@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { NODE_BINARY_SHA256, NODE_VERSION } from "./prepare-snowflake-runtime.mjs";
+import { verifyTransportSources } from "../snowflake-helper/src/transport-source-pins.mjs";
 
 // Startup qualification only. Empty stdin never submits an authentication or SQL request.
 const repository = fileURLToPath(new URL("../", import.meta.url));
@@ -36,6 +37,7 @@ export function verifySnowflakeRuntime({
   platform = process.platform,
   arch = process.arch,
   runChild = spawnSync,
+  verifyTransport = verifyTransportSources,
 } = {}) {
   const { kind, runtime } = selectRuntime(args, repoRoot);
   if (platform !== "darwin" || arch !== "arm64")
@@ -55,12 +57,18 @@ export function verifySnowflakeRuntime({
   const sha256 = createHash("sha256").update(readFileSync(executable)).digest("hex");
   if (sha256 !== NODE_BINARY_SHA256)
     throw new Error("The Node hash did not match the pinned binary");
-  const expectedFiles = ["framing.mjs", "helper.mjs", "main.mjs"];
+  const expectedFiles = [
+    "framing.mjs",
+    "helper.mjs",
+    "main.mjs",
+    "query-submit-guard.mjs",
+    "transport-source-pins.mjs",
+  ];
   if (
     JSON.stringify(Object.keys(manifest.helper.sourceSha256 ?? {}).sort()) !==
     JSON.stringify(expectedFiles)
   )
-    throw new Error("The helper manifest must contain exactly all three source hashes");
+    throw new Error("The helper manifest must contain exactly the reviewed source hashes");
   const sdk = JSON.parse(
     readFileSync(path.join(runtime, "helper/node_modules/snowflake-sdk/package.json"), "utf8"),
   );
@@ -81,6 +89,7 @@ export function verifySnowflakeRuntime({
     if (actual !== source) throw new Error("The selected helper does not match this checkout");
   }
 
+  verifyTransport(pathToFileURL(path.join(runtime, "helper/main.mjs")));
   const root = mkdtempSync(path.join(tmpdir(), "joinery-snowflake-startup-"));
   chmodSync(root, 0o700);
   try {

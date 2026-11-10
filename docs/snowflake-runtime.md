@@ -50,7 +50,10 @@ credential caches.
 The startup check verifies current source/manifest hashes and the installed SDK
 version, starts the absolute staged Node/helper with an isolated parent-owned
 temporary state directory, reads one bounded hello frame and checks clean EOF
-exit. A Node socket/DNS guard detects attempted traffic. This guard is not an OS
+exit. Production main independently verifies its reviewed transport-source pins
+and installs query admission before SDK import. These pins cover selected SDK,
+Axios and follow-redirects sources, not every dependency file.
+A separate startup socket/DNS guard detects attempted traffic. It is not an OS
 sandbox or evidence about SSO, TLS, native addons, subprocesses or account behavior.
 
 For the resource-bearing local application and hidden native fixture:
@@ -79,8 +82,13 @@ pnpm test:snowflake:process
 ```
 
 Helper tests require the helper package's locked dependencies installed first
-with lifecycle scripts disabled. Six tests use the actual SDK against local
-loopback HTTP; remaining helper tests use synthetic SDKs. Rust supervisor and
+with lifecycle scripts disabled. The suite separates pure/native guard and
+source-pin tests, synthetic-SDK Helper/process tests, and actual-SDK loopback
+transport. The unchanged baseline has six actual-SDK HTTP cases. The guarded
+matrix adds 49 actual-SDK HTTP/verified-TLS/CONNECT scenarios and one fixture
+network-boundary self-check; these use synthetic local login, not Snowflake SSO.
+Explicitly identified cases drive the production Helper with a preconnected
+actual SDK connection. Rust supervisor and
 adapter tests use real child processes and a synthetic SDK, with Node selected
 explicitly by the runner. They do not authenticate to Snowflake.
 

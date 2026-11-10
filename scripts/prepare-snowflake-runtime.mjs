@@ -19,7 +19,8 @@ import {
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { verifyTransportSources } from "../snowflake-helper/src/transport-source-pins.mjs";
 
 export const NODE_VERSION = "24.22.2";
 export const NODE_ARCHIVE_NAME = `node-v${NODE_VERSION}-darwin-arm64.tar.gz`;
@@ -30,7 +31,13 @@ export const NODE_BINARY_SHA256 =
 export const NPM_VERSION = "11.19.1";
 const NODE_SIGNING_TEAM = "HX7739G8FX";
 const NODE_SIGNING_AUTHORITY = "Node.js Foundation";
-const HELPER_FILES = ["main.mjs", "helper.mjs", "framing.mjs"];
+const HELPER_FILES = [
+  "main.mjs",
+  "helper.mjs",
+  "framing.mjs",
+  "query-submit-guard.mjs",
+  "transport-source-pins.mjs",
+];
 const NOTICE_NAME = /^(?:license|licence|copying|notice)(?:\..*)?$/i;
 const README_NAME = /^readme(?:\..*)?$/i;
 
@@ -468,6 +475,7 @@ export function prepareSnowflakeRuntime({
   offline = false,
   cacheDir,
   removeBackup = rmSync,
+  verifyTransport = verifyTransportSources,
 } = {}) {
   if (platform !== "darwin" || arch !== "arm64")
     throw new Error(
@@ -628,6 +636,9 @@ export function prepareSnowflakeRuntime({
       "Production dependency installation",
     );
 
+    // Validate the exact code supplying the reviewed native transport behavior
+    // before promoting resources. No SDK import, authentication or SQL occurs.
+    verifyTransport(pathToFileURL(path.join(packageRoot, "src/main.mjs")));
     const helperTarget = path.join(stage, "helper");
     mkdirSync(helperTarget, { recursive: true, mode: 0o700 });
     for (const filename of HELPER_FILES)

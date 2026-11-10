@@ -8,6 +8,131 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK submission admission (10 November 2026; locally qualified)
+
+Source follows `5df743c`. The original process-local guard is installed before
+SDK import and admits one canonical native query POST for the exact request ID
+returned by each intended execute. Ownership lasts through result drain and the
+terminal decision. Redirects, stale owners, duplicate submissions, malformed
+targets and exhausted lifetime capacity latch admission and retire the helper.
+No profile, environment or IPC override enables another transport or disables
+enforcement. Writes, DDL and transaction controls remain disabled.
+
+The helper and runtime independently pin the reviewed source: five helper
+modules plus 13 specific SDK/Axios/follow-redirects files, including resolution
+from their actual importing files. This is a bounded transport-source contract,
+not authentication of every dependency file or an OS network sandbox. See the
+[guard contract](snowflake-sdk-submit-guard-design.md).
+
+Local evidence is under `.cache/verification/connection-attempts/`:
+
+- `sdk-submit-guard-helper-final.log`: **98 tests pass**: 60 native guard,
+  29 Helper and nine source-pin regressions. Native loopback tests include
+  legitimate encoded query values, query endpoint aliases, ambiguous native
+  authorities, irreversible admission, exact registration and retained ownership.
+- `sdk-submit-guard-resource-final.log`: **57 tests pass**: 50 preparation/startup
+  script tests plus seven native resource tests. Rejected source verification
+  preserves the previous stage or prevents a startup child, respectively.
+- `sdk-submit-guard-runtime-rust-final.log`: all **18** runtime factory tests
+  pass, including missing/tampered new modules and rewritten manifests.
+- `sdk-submit-guard-studio-final.log`: **nine** application connection/completion
+  tests pass with the real core helper/guard and pinned Node. Their private
+  synthetic SDK/source verifier does not prove actual SDK transport. Earlier
+  `sdk-submit-guard-studio-command-setup.log` records an invocation error: a
+  wrong filter and omitted explicit `JOINERY_TEST_NODE`; this is not a source
+  regression. The corrected fixture run supplies the explicit runtime pin.
+- `sdk-submit-guard-stage.log`: first offline preparation failed because the
+  default npm cache was empty. Using the previously populated explicit local
+  cache succeeds. `sdk-submit-guard-stage-frozen.log` stages final production
+  bytes; `sdk-submit-guard-startup-final.log` passes actual SDK hello/EOF with
+  **zero authentication and SQL requests**. Manifest SHA256:
+  `8dfda76a001b44c51f84a3cb298b085c674ca75cc35661c5b643524f1af8ab9c`.
+
+Independent review reproduced and repaired native header-accessor, effective
+default-port and URL-owned-property target mismatches; outcome classification
+after acknowledgement and definitive SQLSTATE failure; and deeper importer
+shadowing missed by package-root resolution. A legitimate non-query URL with
+encoded percent values also reproduced a false latch; only raw paths are now
+decoded for candidate detection. The actual SDK fixture first caught rejection
+of its supported `request_guid` spelling; the closed key lexer was corrected.
+The relevant `submit-guard-review-*`, `sdk-submit-guard-importer-shadow-before-fix.log`
+and `submit-guard-sdk-first.log` preserve the unsuccessful cases. Independent
+review clears the final lifetime/outcome mapping and source-resolution checks.
+
+Further final evidence:
+
+- `sdk-submit-guard-all-helper-final.log`: **159/159** pass, including the
+  unchanged six-case unguarded actual-SDK retry baseline. The guard matrix in
+  `submit-guard-sdk-final.log` passes **50/50**: 49 actual-SDK scenarios and one
+  fixture network-boundary self-check. Twelve SDK scenarios drive production
+  Helper terminal handling through a preconnected actual SDK connection;
+  remaining scenario outcomes are explicitly harness mappings. Local synthetic
+  OAuth login and the preconnected seam do not exercise external-browser SSO.
+  HTTP/verified-TLS/CONNECT cases count server requests and simulated effects.
+  Rejected redirects reach no second destination; untrusted direct/proxy TLS
+  fails before login/query. Removing enforcement admits two POSTs/two simulated
+  effects versus one with enforcement, without relying on server deduplication.
+  Children and owned certificate subprocesses close before private root removal.
+  The socket/DNS/UDP test boundary is self-tested and is not an OS sandbox.
+- `sdk-submit-guard-process-final.log`: all process-runner stages pass:
+  **68** Snowflake unit tests, **nine** actual-runtime application fixtures,
+  **31** child-supervisor tests and **19** synthetic-SDK read-adapter tests.
+  These categories overlap other focused runs; they are not additional unique
+  coverage counts. No synthetic SDK result establishes actual account behavior.
+- `sdk-submit-guard-validate-final.log`: **607 frontend / 314 standard Rust**
+  tests, contracts/types, production build, formatting, desktop check and strict
+  all-target/all-feature Clippy pass. External engine suites remain ignored in
+  this standard command. The preceding 124-engine-fixture result belongs to its
+  earlier source; it was not rerun for this Snowflake/runtime-only increment.
+- `sdk-submit-guard-browser-final.log`: all **eight** focused browser workflows
+  pass in 29.4 seconds. Snowflake RPCs are synthetic; the stale-publication case
+  uses disposable PostgreSQL metadata. The full 145-workflow result remains a
+  preceding-source result, not a rerun of this increment.
+
+- `sdk-submit-guard-bundle-final.log`: fresh normal SDK-bearing macOS arm64
+  bundle, strict ad-hoc signature, 15,106 resource entries/zero links, reviewed
+  pins and actual SDK hello/EOF pass with zero authentication/SQL. The 223.60 MiB
+  bundle's executable is 31,110,464 bytes, SHA256
+  `2ad7fe7c162f1c89f025f87b1a682019d31e21fb01091ae16f3c9ccd5a03dbd8`.
+  `sdk-submit-guard-bundle-artifact.json` records its manifest and scope.
+- `sdk-submit-guard-native-build-final.log` and
+  `sdk-submit-guard-native-final.log`: fresh SDK-bearing hidden native build,
+  resource/startup verification and **19 check categories / ten cleanup cycles**
+  pass. All six checkpoints load the runtime and report zero connect, execute
+  and prepare invocations. `sdk-submit-guard-native-runs.json` records the
+  isolated bundle executable SHA256
+  `769d69477eeed38a5c95f25188ef7ae825a98e9fa82124331b00b4c8a643c991`.
+  This is synthetic hidden WebView/IPC/cleanup evidence, not normal account UI,
+  representative performance, installed restart or credential persistence.
+  Both release builds pass despite the previously recorded `rust-objcopy`
+  missing-`libLLVM.dylib` stripping warning; no global toolchain was changed.
+- `sdk-submit-guard-qualified-source.json`: all **308** application/runtime/test
+  input hashes remain unchanged at the end of qualification. The preceding
+  `sdk-submit-guard-source-freeze-transition.json` records only the final SDK
+  test self-check and documentation-only helper README refresh. Production
+  source bytes stayed frozen. Build provenance records `5df743c` with a dirty
+  tree because verification precedes the local commit; this is not a clean-tree
+  artifact claim. No installation, push, publication or project-hub update ran.
+
+No result here qualifies account metadata, remote write
+effects, cancellation, rollback or the million-row Snowflake workflow. The
+existing two-SELECT approval was not reused for this increment.
+
+Reproduction uses the pinned Node/Rust environment documented below:
+
+```sh
+pnpm test:snowflake:helper
+pnpm test:snowflake:process
+pnpm test:snowflake:runtime
+pnpm test:native:resources
+pnpm snowflake:prepare --cache-dir .cache/snowflake-helper-dev/npm-cache --offline
+pnpm test:snowflake:startup
+pnpm validate
+pnpm desktop:snowflake:bundle:mac
+pnpm desktop:snowflake:smoke:build
+pnpm test:native --runs 1 --attributed-memory
+```
+
 ### Snowflake starter repair (10 November 2026; local checks)
 
 Source follows `459db5a`. Joinery's exact default Snowflake script,
@@ -53,9 +178,10 @@ pin work in progress do not qualify a submission guard or enable writes.
 ### SDK completion increment (10 November 2026; locally qualified)
 
 Implementation and its local qualification record are committed as `4c77cc4`.
-The subsequent [browsing/session](snowflake-sdk-browsing-design.md) and
-[submission guard](snowflake-sdk-submit-guard-design.md) documents are reviewed
-designs only; they add no implementation, test result or account qualification.
+The subsequent [browsing/session](snowflake-sdk-browsing-design.md) document is a
+reviewed design only. The [submission guard](snowflake-sdk-submit-guard-design.md)
+has a later implementation and separate qualification; it does not expand this
+completion increment's account evidence.
 
 Working source follows `5229bba`. It adds bounded same-session Snowflake relation
 and resolved-column completion, context fingerprints, stale-response rejection

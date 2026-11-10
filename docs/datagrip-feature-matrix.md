@@ -95,6 +95,20 @@ session switching and actual account metadata remain incomplete. No metadata
 query has been sent under the earlier two-SELECT canary approval. See the
 [implementation contract](snowflake-sdk-metadata-design.md).
 
+The later [SDK submission guard](snowflake-sdk-submit-guard-design.md) is
+implemented with **159 passing helper-suite tests**, including 60 native guard
+tests and a separate 50-case matrix (49 actual SDK transport cases plus one
+fixture network-boundary check). Twelve of those SDK cases exercise production
+Helper outcome mapping on a preconnected actual SDK connection. Direct HTTP,
+verified TLS and CONNECT show one admitted submission under loss/retry/renewal;
+redirect destinations receive none. Source pins reject unsupported or shadowed
+transport dependencies. Full validation, eight focused browser workflows, fresh
+SDK-bearing macOS packaging/startup and 19 hidden native check categories pass;
+artifact identities are recorded separately
+in the [ledger](replacement-verification.md). This is a locally verified
+submission foundation, not remote effects, write/transaction qualification or
+DataGrip parity. Those required capabilities remain incomplete.
+
 The reviewed-writer follow-up additionally reproduces and repairs delayed
 PostgreSQL retirement, queued writes reconnecting after closure, and CSV imports
 misreporting an uncertain batch as uncommitted. It passes 545 frontend / 180
@@ -140,11 +154,11 @@ reproduced failures and exact qualification limits.
 
 | Area | Joinery implementation and current evidence | Incomplete or blocked acceptance |
 |---|---|---|
-| Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; Snowflake browser-OAuth read-only pilot | SDK externalbrowser profiles are implemented with focused local routing/lifecycle tests. Local SDK bundle/native qualification and a two-query actual helper canary pass; normal packaged account/session behavior, metadata, writes/transactions and live/native credential lifecycle remain open |
-| Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures | Bounded introspection and permission behavior vary by engine; qualify daily catalogs/roles and required object types |
+| Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; explicit Snowflake SDK externalbrowser and OAuth/SQL API read routes | SDK profile routing, cleanup and local bundle/native checks pass. The two-query account canary qualifies its earlier helper source, not the new guard. Normal packaged account/session behavior, metadata, writes/transactions and live/native credential lifecycle remain open |
+| Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures; bounded SDK same-session relation/column completion | SDK catalog browsing and authoritative inspection remain unsupported. Bounded introspection and permissions vary by engine; daily Snowflake catalogs/roles and required object types need qualification |
 | SQL editing, completion, formatting, diagnostics | Bounded dialect-aware completion, formatting, parameters, diagnostics, navigation and refactoring with frontend/real browser coverage | Fresh-result completion synchronization is repaired (`f9abce0`); unsupported semantic forms remain explicit. Full applicable Snowflake authoring inventory and representative performance remain unqualified |
-| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks | Fifteen real transaction-transport tests cover console/reviewed outcomes, retirement and raw-browse uncertainty, including queued writes; required Snowflake stateful execution/writes/transactions are unsupported; external qualification remains open |
-| Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector cache-arrival race repaired with delayed real Arrow coverage. Representative data sizes/export destinations and accessibility unconfirmed |
+| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks; stateful SDK read execution and local one-submission guard | Fifteen real local-engine transaction-transport tests cover outcomes and retirement. Snowflake writes, full batches and transactions remain disabled; actual-account cancellation/outcome qualification remains open |
+| Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector race repaired with delayed real Arrow coverage. The required million-row Snowflake paging/export workflow, export destinations and accessibility remain unqualified |
 | Editing, transactions, commit/rollback | Reviewed atomic grid changes and conflict checks; PostgreSQL original relation identity and MySQL/MariaDB bounded retained guards carry target ownership through review and every CSV batch. Exact preview generations are mandatory. Strict diagnostic passes 27/27 on its recorded source; current combined validation and all 145 browser workflows pass | Guard lifetime is 60 seconds, at most 32 live targets per session; expired/disconnected/released targets require a fresh read/preview. External DDL may wait for the lease. All target engine/auth pairs, representative workloads and owner acceptance remain open. See [identity investigation](table-identity-safety.md). Query snapshots in other tabs do not auto-refresh; grid writer remains separate from console transaction |
 | History and saved scripts | Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
 | Plans and performance investigation | Estimated/actual SQL-engine plan workflows, snapshots/comparison, timing and monitoring exercised in local fixtures | Engine-specific bounds remain; Snowflake live plans and representative workload/latency targets unqualified |

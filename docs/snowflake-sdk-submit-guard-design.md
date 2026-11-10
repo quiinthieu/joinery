@@ -1,8 +1,9 @@
-# Snowflake SDK submission guard proposal
+# Snowflake SDK submission guard
 
-Status: read-only feasibility design, 2026-11-10. No guard is implemented or
-qualified by this document. No new tests, network requests, authentication or
-account SQL were performed during the investigation. The SDK route's existing
+Status: implemented and locally qualified, 2026-11-10.
+The original feasibility investigation was read-only; the subsequent
+implementation adds the guard and local fault fixtures described below.
+No additional account SQL or authentication is included. The SDK route's existing
 ReadOnly gate remains unchanged: writes, DDL, transaction controls and unknown
 statements remain disabled. The full requirements in
 [snowflake-datagrip-replacement.md](snowflake-datagrip-replacement.md) remain open.
@@ -16,7 +17,7 @@ proposal's effectiveness or Snowflake's remote deduplication behavior. See
 
 ## Scope and rationale
 
-Investigate an original wrapper around Node's native `http.request` and
+The implementation wraps Node's native `http.request` and
 `https.request`, installed before the SDK import in
 `snowflake-helper/src/main.mjs`. Each helper owns one SDK connection and a
 serialized statement lane. This makes a child-process-local guard practical:
@@ -25,7 +26,7 @@ global Node configuration, dependency source, the owner's environment or other
 application processes. Do not patch installed SDK/Axios files or introduce an
 IPC/profile-selected transport module.
 
-The proposed invariant is **at most one admitted native query submission for
+The invariant is **at most one admitted native query submission for
 each registered noReplay statement**, even if the SDK attempts another request.
 It does not promise one remote effect, delivery, commit, rollback or a known
 outcome. A server can execute the first submission before its response is lost.
@@ -72,9 +73,13 @@ The code graph covers the helper source with no recorded gap. Staged dependency
 directories are deliberately excluded from the graph, so their transport claims
 come from targeted direct source reads. Clean coverage metadata is only a
 best-effort signal. This design does not authenticate every staged dependency
-file; implementation must tie its reviewed transport behavior to exact source
-digests/pins and reject unsupported versions rather than relying on SDK version
-alone.
+file. The implementation independently verifies 13 reviewed SDK/Axios/
+follow-redirects files and exact module resolution from the actual importing
+files. It rejects unsupported bytes, symlinked sources and shadow dependencies
+before importing the SDK. The runtime manifest also pins all five helper modules;
+it cannot substitute new transport pins by rewriting its own hashes. These checks
+do not provide an OS sandbox or protect against hostile concurrent filesystem
+mutation.
 
 ## Admission and lifetime
 
@@ -178,11 +183,11 @@ other execution modes or future SDK versions.
 
 ## Required local proof
 
-Reuse the actual pinned SDK fixture in `snowflake-helper/test/transport-probe.mjs`
+The guarded proof uses `snowflake-helper/test/query-submit-guard-sdk-probe.mjs`
 with disposable owned listeners, synthetic credentials/data, outbound socket/DNS
 denial and bounded output. Do not replace SDK transport methods in the proof;
 the new production wrapper is the component under test. Keep the existing
-unguarded retransmission baseline and demonstrate that removing enforcement
+unguarded `transport-probe.mjs` baseline and demonstrate that removing enforcement
 reproduces the second submission.
 
 | Scenario                                                                    | Required observation                                                                                                                            |
@@ -212,10 +217,41 @@ log SQL, binds, tokens, request/query IDs, proxy credentials, full URLs, Locatio
 or raw errors. Reap test children before deleting their owned private state;
 leave failed cleanup observable rather than sweeping unrelated directories.
 
-## Gates after a successful foundation
+## Implementation and qualification boundary
 
-Passing these tests would establish a bounded local noReplay submission
-foundation for these exact sources. It would not by itself enable writes or
+`main.mjs` verifies the source pins, installs admission, then imports the SDK.
+Production has no profile, environment or IPC bypass. Direct synthetic Helper
+unit tests can omit constructor injection; private Rust test fixtures replace
+only their own source verifier and SDK. Neither qualifies actual SDK transport.
+The separate real SDK loopback fixtures exercise the production guard and, for
+explicitly identified scenarios, the production Helper with a preconnected
+actual SDK connection. They skip account authentication and profile connection.
+
+Admission retains operation ownership through result drain and terminal
+publication. Each execute has its own exact returned SDK request ID and one
+allowance; cancellation and token renewal do not reopen it. The process retains
+up to 65,536 IDs and retires closed at the bound. A violation latches admission,
+notifies the Helper directly and retires the connection. Pending unacknowledged
+work reports unknown outcome; established database errors and acknowledged
+outcomes keep their existing classification. Retiring the helper is not a
+rollback assertion. Read-only operations are guarded too.
+
+Review regressions cover native target ambiguity (header accessors, default
+ports and URL-owned properties), exact dependency importer shadowing, preserved
+acknowledgement/database-error classification and legitimate encoded-percent
+query values on non-query download paths. Only the path is decoded for endpoint
+detection; encoded endpoint aliases still fail closed. Diagnostics contain fixed
+categories and counters, without SQL, URLs, IDs or secrets.
+
+Final commands, results, source/artifact identities and unsuccessful attempts
+belong in the [verification ledger](replacement-verification.md). Local transport
+fixtures do not establish server deduplication, transaction behavior, production
+proxy behavior or actual account cancellation.
+
+## Gates after the foundation
+
+The passing local tests establish a bounded noReplay submission
+foundation for these exact sources. They do not by themselves enable writes or
 establish remote transaction semantics. Keep the existing ReadOnly gate until
 the application has truthful DML/DDL results, transaction and autocommit state,
 batch behavior, cancellation/deadline outcomes, uncertain-session retirement and

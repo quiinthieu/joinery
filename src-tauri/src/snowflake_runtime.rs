@@ -158,7 +158,7 @@ fn development_root() -> PathBuf {
 struct ExpectedPins {
     node_sha256: String,
     lock_sha256: String,
-    sources: [(&'static str, String); 3],
+    sources: [(&'static str, String); 5],
 }
 
 impl ExpectedPins {
@@ -182,6 +182,18 @@ impl ExpectedPins {
                 (
                     "framing.mjs",
                     digest_bytes(include_bytes!("../../snowflake-helper/src/framing.mjs")),
+                ),
+                (
+                    "query-submit-guard.mjs",
+                    digest_bytes(include_bytes!(
+                        "../../snowflake-helper/src/query-submit-guard.mjs"
+                    )),
+                ),
+                (
+                    "transport-source-pins.mjs",
+                    digest_bytes(include_bytes!(
+                        "../../snowflake-helper/src/transport-source-pins.mjs"
+                    )),
                 ),
             ],
         })
@@ -232,6 +244,8 @@ fn validate_resources(root: &Path, pins: &ExpectedPins) -> io::Result<()> {
         "helper/main.mjs",
         "helper/helper.mjs",
         "helper/framing.mjs",
+        "helper/query-submit-guard.mjs",
+        "helper/transport-source-pins.mjs",
         "helper/node_modules/snowflake-sdk/package.json",
     ] {
         let metadata = fs::symlink_metadata(root.join(file))?;
@@ -434,6 +448,8 @@ mod tests {
                 ("main.mjs", "synthetic main"),
                 ("helper.mjs", "synthetic helper"),
                 ("framing.mjs", "synthetic framing"),
+                ("query-submit-guard.mjs", "synthetic guard"),
+                ("transport-source-pins.mjs", "synthetic source verifier"),
             ];
             for (name, source) in sources {
                 fs::write(root.join("helper").join(name), source).unwrap();
@@ -534,6 +550,8 @@ mod tests {
             "helper/main.mjs",
             "helper/helper.mjs",
             "helper/framing.mjs",
+            "helper/query-submit-guard.mjs",
+            "helper/transport-source-pins.mjs",
             "helper/node_modules/snowflake-sdk/package.json",
         ] {
             let fixture = Fixture::new();
@@ -549,6 +567,8 @@ mod tests {
             "helper/main.mjs",
             "helper/helper.mjs",
             "helper/framing.mjs",
+            "helper/query-submit-guard.mjs",
+            "helper/transport-source-pins.mjs",
         ] {
             let fixture = Fixture::new();
             fs::write(fixture.root.join(file), b"replacement").unwrap();
@@ -821,8 +841,9 @@ mod tests {
     }
 }
 
-// Test-only resource tree: real helper sources and real pinned Node, synthetic
-// SDK. No production factory, profile, IPC, environment fallback or pins change.
+// Test-only resource tree: real core helper/guard and pinned Node, synthetic SDK
+// and source verifier. Only private fixture pins change; production main has no
+// profile, IPC or environment bypass. Actual transport proof uses the real SDK.
 #[cfg(all(test, feature = "test-harness"))]
 pub(crate) mod studio_fixture {
     use super::*;
@@ -861,6 +882,15 @@ pub(crate) mod studio_fixture {
             fs::set_permissions(root.join("bin/node"), fs::Permissions::from_mode(0o755)).unwrap();
             let mut pins = ExpectedPins::compiled().unwrap();
             pins.node_sha256 = digest_file(&node, MAX_NODE_BYTES).unwrap();
+            // This private fixture deliberately loads a synthetic SDK. Only
+            // its test-owned verifier source/pin is replaced; production main
+            // still calls the verifier and has no environment/IPC bypass.
+            let synthetic_verifier = b"export function verifyTransportSources() {}\n";
+            pins.sources
+                .iter_mut()
+                .find(|(name, _)| *name == "transport-source-pins.mjs")
+                .unwrap()
+                .1 = digest_bytes(synthetic_verifier);
             for (name, bytes) in [
                 (
                     "main.mjs",
@@ -874,6 +904,11 @@ pub(crate) mod studio_fixture {
                     "framing.mjs",
                     include_bytes!("../../snowflake-helper/src/framing.mjs").as_slice(),
                 ),
+                (
+                    "query-submit-guard.mjs",
+                    include_bytes!("../../snowflake-helper/src/query-submit-guard.mjs").as_slice(),
+                ),
+                ("transport-source-pins.mjs", synthetic_verifier.as_slice()),
             ] {
                 fs::write(root.join("helper").join(name), bytes).unwrap();
             }

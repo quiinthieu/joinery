@@ -60,11 +60,14 @@ Complete browsing and authoritative session state remain required.
 The reviewed [browsing/session proposal](snowflake-sdk-browsing-design.md)
 defines the catalog → inspect → bounded preview → refresh workflow, qualified
 targets and truthful unknown transaction/context states. The separate
-[submission guard proposal](snowflake-sdk-submit-guard-design.md) describes a
-possible process-local boundary against SDK retransmission. Neither proposal
-is implemented or account-qualified. The guard needs actual pinned-SDK fault,
-redirect, proxy and cleanup evidence before it can underpin write admission;
-passing that foundation alone must not enable writes or transactions.
+[submission guard](snowflake-sdk-submit-guard-design.md) now implements a
+process-local boundary against SDK retransmission and passes local qualification:
+159 helper tests, 607 frontend / 314 standard Rust tests, focused browser flows,
+fresh SDK-bearing macOS packaging/startup and 19 hidden native check categories.
+The browsing proposal remains unimplemented. Neither is account
+qualified. The guard's actual pinned-SDK fault, redirect, proxy and cleanup
+evidence establishes a bounded submission foundation; that foundation alone
+must not enable writes or transactions.
 
 The preceding stateful transport foundation is in the repository: a pinned SDK helper
 passes 31 local tests (six use the actual SDK against loopback HTTP), and its

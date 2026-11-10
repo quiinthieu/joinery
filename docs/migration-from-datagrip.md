@@ -82,6 +82,14 @@ authoritative inspection, writes, schema changes or transactions. Those remain
 required before switching. Keep the existing DataGrip connection available while
 these workflows and million-row results are implemented and accepted.
 
+The SDK helper now guards query submission against automatic retransmission for
+its exact reviewed dependency sources. It verifies those sources before import
+and retires on a second or ambiguous submission. A lost acknowledgement can
+still mean the server executed the first request: an unknown outcome is not a
+failed query or rollback. Do not rerun uncertain work automatically. This guard
+does not enable writes or qualify account transaction behavior. See the
+[guard contract](snowflake-sdk-submit-guard-design.md) and current ledger.
+
 Local ad-hoc signature verification is separate from Apple Developer ID signing
 and notarization. No automatic updater or cross-platform installation qualification
 is established by this guide. For a local update, rebuild and evaluate the new

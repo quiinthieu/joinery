@@ -29,7 +29,13 @@ import {
 } from "./prepare-snowflake-runtime.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const sourceNames = ["framing.mjs", "helper.mjs", "main.mjs"];
+const sourceNames = [
+  "framing.mjs",
+  "helper.mjs",
+  "main.mjs",
+  "query-submit-guard.mjs",
+  "transport-source-pins.mjs",
+];
 const nodeBytes = Buffer.from("synthetic pinned node binary");
 
 function put(root, relative, bytes, mode = 0o644) {

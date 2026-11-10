@@ -25,7 +25,13 @@ import {
 } from "./prepare-snowflake-runtime.mjs";
 
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const HELPER_FILES = ["framing.mjs", "helper.mjs", "main.mjs"];
+const HELPER_FILES = [
+  "framing.mjs",
+  "helper.mjs",
+  "main.mjs",
+  "query-submit-guard.mjs",
+  "transport-source-pins.mjs",
+];
 const HELPER_PACKAGE = "joinery-snowflake-helper";
 const HELPER_VERSION = "0.0.0";
 const SDK_VERSION = "3.4.1";

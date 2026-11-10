@@ -101,7 +101,13 @@ function makeFixture({ nodeMode = 0o755 } = {}) {
   writeFileSync(nodeSource, "synthetic node executable\n", { mode: nodeMode });
   chmodSync(nodeSource, nodeMode);
   writeFileSync(path.join(archiveTree, "LICENSE"), "synthetic Node license\n");
-  for (const filename of ["main.mjs", "helper.mjs", "framing.mjs"])
+  for (const filename of [
+    "main.mjs",
+    "helper.mjs",
+    "framing.mjs",
+    "query-submit-guard.mjs",
+    "transport-source-pins.mjs",
+  ])
     writeFileSync(path.join(helperRoot, "src", filename), `// ${filename}\n`);
   writeFileSync(
     path.join(helperRoot, "package.json"),
@@ -243,6 +249,9 @@ function commandRunner({
 function runFixture(fixture, options = {}) {
   const { calls, runCommand } = commandRunner(options);
   const result = prepareSnowflakeRuntime({
+    // Synthetic notice/package fixtures do not contain real SDK code. Actual
+    // reviewed bytes and tampering are covered by transport-source-pins tests.
+    verifyTransport: options.verifyTransport ?? (() => {}),
     repoRoot: fixture.repoRoot,
     platform: "darwin",
     arch: "arm64",
@@ -489,6 +498,7 @@ test("rejects escaping npm links before promotion and preserves the prior runtim
   assert.throws(
     () =>
       prepareSnowflakeRuntime({
+        verifyTransport: () => {},
         repoRoot: fixture.repoRoot,
         platform: "darwin",
         arch: "arm64",
@@ -502,6 +512,29 @@ test("rejects escaping npm links before promotion and preserves the prior runtim
   assert.equal(readFileSync(path.join(target, "prior-success"), "utf8"), "keep\n");
 });
 
+test("transport source rejection prevents promotion and preserves the prior runtime", (t) => {
+  const fixture = makeFixture();
+  t.after(() => rmSync(fixture.repoRoot, { recursive: true, force: true }));
+  const target = path.join(fixture.repoRoot, ".cache", "snowflake-runtime", "macos-arm64");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(path.join(target, "prior-success"), "keep\n");
+  let verified = false;
+  assert.throws(
+    () =>
+      runFixture(fixture, {
+        verifyTransport: (entry) => {
+          verified = true;
+          assert.equal(path.basename(fileURLToPath(entry)), "main.mjs");
+          assert.equal(existsSync(fileURLToPath(entry)), true);
+          throw new Error("fixed transport rejection");
+        },
+      }),
+    /fixed transport rejection/,
+  );
+  assert.equal(verified, true);
+  assert.equal(readFileSync(path.join(target, "prior-success"), "utf8"), "keep\n");
+});
+
 test("reports a retained old backup after promotion cleanup fails", (t) => {
   const fixture = makeFixture();
   t.after(() => rmSync(fixture.repoRoot, { recursive: true, force: true }));
@@ -510,6 +543,7 @@ test("reports a retained old backup after promotion cleanup fails", (t) => {
   writeFileSync(path.join(target, "prior-success"), "old\n");
   const { runCommand } = commandRunner();
   const result = prepareSnowflakeRuntime({
+    verifyTransport: () => {},
     repoRoot: fixture.repoRoot,
     platform: "darwin",
     arch: "arm64",
@@ -555,6 +589,7 @@ test("rejects a tampered archive before invoking npm or replacing the prior stag
   assert.throws(
     () =>
       prepareSnowflakeRuntime({
+        verifyTransport: () => {},
         repoRoot: fixture.repoRoot,
         platform: "darwin",
         arch: "arm64",
@@ -596,6 +631,7 @@ test("failed dependency staging leaves the previous successful runtime intact", 
   assert.throws(
     () =>
       prepareSnowflakeRuntime({
+        verifyTransport: () => {},
         repoRoot: fixture.repoRoot,
         platform: "darwin",
         arch: "arm64",
@@ -620,6 +656,7 @@ test("refuses cache roots that resolve through a symlink", (t) => {
   assert.throws(
     () =>
       prepareSnowflakeRuntime({
+        verifyTransport: () => {},
         repoRoot: fixture.repoRoot,
         platform: "darwin",
         arch: "arm64",
@@ -641,6 +678,7 @@ test("rejects a Node binary that remains non-executable", (t) => {
   assert.throws(
     () =>
       prepareSnowflakeRuntime({
+        verifyTransport: () => {},
         repoRoot: fixture.repoRoot,
         platform: "darwin",
         arch: "arm64",

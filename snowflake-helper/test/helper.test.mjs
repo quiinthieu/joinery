@@ -14,7 +14,7 @@ const profile = {
   database: "TEST",
   schema: "PUBLIC",
 };
-function setup({ pendingConnect = false } = {}) {
+function setup({ pendingConnect = false, submitGuard, synchronousComplete = false } = {}) {
   const events = [],
     calls = [];
   let retired = 0,
@@ -73,7 +73,8 @@ function setup({ pendingConnect = false } = {}) {
         acknowledged = true;
         opts.complete(null, statement);
       });
-      setImmediate(() => completes.shift()?.());
+      if (synchronousComplete) completes.shift()?.();
+      else if (!connection.holdComplete) setImmediate(() => completes.shift()?.());
       return statement;
     },
   };
@@ -90,7 +91,7 @@ function setup({ pendingConnect = false } = {}) {
       return Promise.resolve();
     },
     () => retired++,
-    { clientConfigFile: "/owned/nonexistent", closeTimeoutMs: 10 },
+    { clientConfigFile: "/owned/nonexistent", closeTimeoutMs: 10, submitGuard },
   );
   let sequence = 0;
   const send = (op, payload = {}, id = String(++sequence)) => {
@@ -493,3 +494,266 @@ for (const control of ["cancel", "discard"]) {
     s.send("close");
   });
 }
+
+// This seam checks helper ownership/ordering only. Native transport behavior is
+// separately exercised by query-submit-guard and actual pinned-SDK fault tests.
+function trackingGuard() {
+  const calls = [];
+  let owner, ticket;
+  return {
+    calls,
+    setAuthority(value) {
+      calls.push(["authority", value]);
+    },
+    beginOperation() {
+      assert.equal(owner, undefined);
+      owner = {};
+      calls.push(["operation"]);
+      return owner;
+    },
+    beginStatement(value) {
+      assert.equal(value, owner);
+      assert.equal(ticket, undefined);
+      ticket = {};
+      calls.push(["statement"]);
+      return ticket;
+    },
+    registerRequestId(value, id) {
+      assert.equal(value, ticket);
+      assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      calls.push(["register", id]);
+    },
+    endStatement(value) {
+      assert.equal(value, ticket);
+      ticket = undefined;
+      calls.push(["endStatement"]);
+    },
+    endOperation(value) {
+      assert.equal(value, owner);
+      assert.equal(ticket, undefined);
+      owner = undefined;
+      calls.push(["endOperation"]);
+    },
+  };
+}
+
+test("submit ownership keeps exact statement through drain and cancel acknowledgement", async () => {
+  const guard = trackingGuard();
+  const x = setup({ submitGuard: guard });
+  const stream = new PassThrough({ objectMode: true });
+  x.streams.push(stream);
+  x.send("connect", profile);
+  await tick();
+  assert.deepEqual(guard.calls, [
+    ["authority", { protocol: "https:", hostname: profile.host, port: 443 }],
+  ]);
+  assert.equal(x.options().arrayBindingThreshold, 1_000_000);
+  const query = x.query();
+  await tick();
+  assert.deepEqual(
+    guard.calls.map(([kind]) => kind),
+    ["authority", "operation", "statement", "register"],
+  );
+  const cancel = x.send("cancel", { target: query });
+  assert.equal(x.terminal(cancel).ok, true);
+  assert.equal(x.terminal(query), undefined);
+  assert.equal(
+    guard.calls.some(([kind]) => kind === "endStatement"),
+    false,
+  );
+  const end = guard.endOperation.bind(guard);
+  guard.endOperation = (owner) => {
+    assert.equal(x.terminal(query).ok, true);
+    end(owner);
+  };
+  stream.end(["value", "value"]);
+  await tick();
+  await tick();
+  assert.deepEqual(
+    guard.calls.map(([kind]) => kind),
+    ["authority", "operation", "statement", "register", "endStatement", "endOperation"],
+  );
+  assert.equal(x.retired(), 0);
+});
+
+test("synchronous completion is processed only after exact returned ID registration", async () => {
+  const guard = trackingGuard();
+  const x = setup({ submitGuard: guard, synchronousComplete: true });
+  x.send("connect", profile);
+  await tick();
+  const execute = x.connection.execute.bind(x.connection);
+  x.connection.execute = (options) => {
+    const complete = options.complete;
+    options.complete = (...args) => {
+      assert.equal(
+        guard.calls.some(([kind]) => kind === "register"),
+        false,
+      );
+      complete(...args);
+    };
+    const statement = execute(options);
+    const columns = statement.getColumns;
+    statement.getColumns = () => {
+      assert.equal(guard.calls.at(-1)[0], "register");
+      return columns();
+    };
+    return statement;
+  };
+  const query = x.query();
+  await tick();
+  await tick();
+  assert.equal(x.terminal(query).ok, true);
+  assert.deepEqual(
+    guard.calls.map(([kind]) => kind),
+    ["authority", "operation", "statement", "register", "endStatement", "endOperation"],
+  );
+});
+
+test("context USE and readback each own a distinct ticket under one operation", async () => {
+  const guard = trackingGuard();
+  const x = setup({ submitGuard: guard });
+  x.send("connect", profile);
+  await tick();
+  x.streams.push(
+    Readable.from([], { objectMode: true }),
+    Readable.from(
+      [["principal", profile.role, profile.database, "OTHER", profile.warehouse, "opaque-session"]],
+      { objectMode: true },
+    ),
+  );
+  x.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
+  const context = x.send("context", { schema: "OTHER" });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(x.terminal(context).ok, true);
+  assert.deepEqual(
+    guard.calls.map(([kind]) => kind),
+    [
+      "authority",
+      "operation",
+      "statement",
+      "register",
+      "endStatement",
+      "statement",
+      "register",
+      "endStatement",
+      "endOperation",
+    ],
+  );
+  const ids = guard.calls.filter(([kind]) => kind === "register").map(([, id]) => id);
+  assert.equal(new Set(ids).size, 2);
+});
+
+test("submission violation during acknowledged drain preserves known outcome and retires", async () => {
+  const x = setup();
+  const stream = new PassThrough({ objectMode: true });
+  x.streams.push(stream);
+  x.send("connect", profile);
+  await tick();
+  const query = x.query();
+  await tick();
+  const queued = x.query();
+  x.helper.submissionViolation();
+  assert.equal(x.terminal(query).error.code, "connectionClosed");
+  assert.equal(x.terminal(queued).error.code, "connectionClosed");
+  assert.equal(x.retired(), 1);
+  stream.end(["value", "value"]);
+  await tick();
+  x.helper.submissionViolation();
+  assert.equal(
+    x.events.filter((event) => event.id === query && event.type === "terminal").length,
+    1,
+  );
+  assert.equal(x.retired(), 1);
+});
+
+test("late submission violation preserves established successful terminal", async () => {
+  const x = setup();
+  x.send("connect", profile);
+  await tick();
+  const query = x.query();
+  await tick();
+  await tick();
+  const terminal = x.terminal(query);
+  assert.equal(terminal.ok, true);
+  x.helper.submissionViolation();
+  assert.equal(x.terminal(query), terminal);
+  assert.equal(
+    x.events.filter((event) => event.id === query && event.type === "terminal").length,
+    1,
+  );
+  assert.equal(x.retired(), 1);
+});
+
+test("submission violation before current statement acknowledgement remains unknown", async () => {
+  const x = setup();
+  x.send("connect", profile);
+  await tick();
+  x.connection.holdComplete = true;
+  const query = x.query();
+  x.helper.submissionViolation();
+  assert.equal(x.terminal(query).error.code, "outcomeUnknown");
+  assert.equal(x.retired(), 1);
+});
+
+test("preceding context USE acknowledgement cannot settle pending readback outcome", async () => {
+  const x = setup();
+  x.send("connect", profile);
+  await tick();
+  x.streams.push(Readable.from([], { objectMode: true }));
+  x.columnSets.push([]);
+  const execute = x.connection.execute.bind(x.connection);
+  let statements = 0;
+  x.connection.execute = (options) => {
+    statements++;
+    if (statements === 2) x.connection.holdComplete = true;
+    return execute(options);
+  };
+  const context = x.send("context", { schema: "OTHER" });
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(statements, 2);
+  assert.equal(x.terminal(context), undefined);
+  x.helper.submissionViolation();
+  assert.equal(x.terminal(context).error.code, "outcomeUnknown");
+  assert.equal(x.retired(), 1);
+});
+
+test("definitive SQL failure survives violation before its pump terminal", async () => {
+  const x = setup();
+  x.send("connect", profile);
+  await tick();
+  x.connection.nextError = { sqlState: "42501" };
+  const execute = x.connection.execute.bind(x.connection);
+  x.connection.execute = (options) => {
+    const complete = options.complete;
+    options.complete = (...args) => {
+      complete(...args);
+      x.helper.submissionViolation();
+    };
+    return execute(options);
+  };
+  const query = x.query();
+  await tick();
+  assert.equal(x.terminal(query).error.code, "database");
+  assert.equal(
+    x.events.filter((event) => event.id === query && event.type === "terminal").length,
+    1,
+  );
+  assert.equal(x.retired(), 1);
+});
+
+test("a prior definitive SQL failure cannot settle a later pending query", async () => {
+  const x = setup();
+  x.send("connect", profile);
+  await tick();
+  x.connection.nextError = { sqlState: "42501" };
+  const first = x.query();
+  await tick();
+  assert.equal(x.terminal(first).error.code, "database");
+  assert.equal(x.retired(), 0);
+  x.connection.holdComplete = true;
+  const next = x.query();
+  x.helper.submissionViolation();
+  assert.equal(x.terminal(next).error.code, "outcomeUnknown");
+  assert.equal(x.terminal(first).error.code, "database");
+  assert.equal(x.retired(), 1);
+});

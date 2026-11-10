@@ -36,6 +36,18 @@ packaging/signature/startup and 19 hidden native check categories with ten clean
 cycles. The [ledger](replacement-verification.md) records source/artifact identity
 and the stale-metadata reproduction. No account metadata was queried.
 
+The later [submission guard](snowflake-sdk-submit-guard-design.md) is implemented
+and its full helper suite passes 159 tests. The separate 50-case transport matrix
+uses the actual pinned SDK against owned HTTP/TLS/CONNECT fixtures; synthetic
+login and explicit preconnected-Helper seams remain documented. The original
+unguarded retry baseline and disabled-guard sensitivity reproduce multiple
+submissions. Reviewed source pins, native ambiguity regressions and independent
+outcome/lifetime review pass. Full validation passes 607 frontend / 314 standard
+Rust tests; eight focused browser workflows, fresh SDK-bearing macOS packaging/
+startup and 19 hidden native check categories with ten cleanup cycles pass.
+The ledger records artifact identity. Writes, DDL and transaction controls remain
+disabled and required.
+
 The preceding [SDK integration evidence](snowflake-sdk-integration.md) records 604
 frontend / 297 standard Rust tests passing with build, desktop compilation,
 formatting and strict Clippy. Focused profile, actual-child lifecycle and browser

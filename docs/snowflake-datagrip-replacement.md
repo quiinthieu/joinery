@@ -120,6 +120,11 @@ Actual SDK loopback fault injection observes retransmission after a lost respons
 with the same request ID and body; a simulated server without deduplication applies
 two effects. This does not prove actual Snowflake deduplication. The SDK's
 public options do not provide a documented statement-retry disable switch.
+A subsequent original [submission guard](snowflake-sdk-submit-guard-design.md)
+now enforces one admitted native query submission per exact returned statement
+ID for the reviewed transport sources. Its local qualification is separate from
+the unguarded baseline and does not establish server effects or transaction
+semantics. Writes, DDL and transaction controls remain disabled.
 Preserve SDK query/request IDs, distinguish statement acknowledgement from commit,
 and prove fail-after-commit behavior before enabling mutations. Browser-auth abort,
 logout completion, context continuity and exact result types also require proof.

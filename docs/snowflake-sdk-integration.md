@@ -74,6 +74,12 @@ redistribution clearance, notarization, installation or publication.
 
 ## Qualification record
 
+This table preserves the original profile integration qualification. Subsequent
+[completion](snowflake-sdk-metadata-design.md), starter repair and
+[submission admission](snowflake-sdk-submit-guard-design.md) increments have
+separate current evidence in the [ledger](replacement-verification.md). The
+original two-query account canary does not qualify later guarded resources.
+
 Local evidence is under `.cache/verification/connection-attempts/`. Cache paths
 identify the current local run; committed tests and commands permit reproduction.
 
@@ -159,8 +165,10 @@ and removes stale metadata rather than reporting a successful connection as an
 authentication failure. The existing SQL API metadata pilot does not qualify SDK
 metadata behavior.
 
-Writes, DDL and explicit transactions remain required and blocked by unqualified
-SDK retransmission/outcome behavior; they are not optional. Actual Snowflake
+Writes, DDL and explicit transactions remain required and disabled; they are not
+optional. The local submission guard prevents a second admitted native query
+request for its reviewed sources, but truthful mutation/batch/transaction and
+remote outcome behavior still need implementation and qualification. Actual Snowflake
 deduplication after a lost successful response needs independent server-state
 observation. Grid/CSV target identity also remains an open safety gate: documented
 name-based references do not pin an object generation. Raw reviewed SQL and safe

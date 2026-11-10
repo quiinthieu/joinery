@@ -31,7 +31,13 @@ function fixture(t) {
   const bundled = selectRuntime(["--bundle", bundle], repoRoot).runtime;
   const sources = {};
   mkdirSync(path.join(repoRoot, "snowflake-helper/src"), { recursive: true });
-  for (const name of ["main.mjs", "helper.mjs", "framing.mjs"]) {
+  for (const name of [
+    "main.mjs",
+    "helper.mjs",
+    "framing.mjs",
+    "query-submit-guard.mjs",
+    "transport-source-pins.mjs",
+  ]) {
     sources[name] = `// synthetic fixture ${name}\n`;
     writeFileSync(path.join(repoRoot, "snowflake-helper/src", name), sources[name]);
   }
@@ -88,6 +94,9 @@ function verify(
   runChild = () => {
     throw new Error("unexpected child launch");
   },
+  // This fixture tests startup orchestration with synthetic helper/dependencies.
+  // Actual reviewed bytes and tampering have separate transport-source tests.
+  verifyTransport = () => {},
 ) {
   return verifySnowflakeRuntime({
     args,
@@ -95,6 +104,7 @@ function verify(
     platform: "darwin",
     arch: "arm64",
     runChild,
+    verifyTransport,
   });
 }
 
@@ -224,7 +234,7 @@ test("extra helper hash entries and SDK version drift are rejected", (t) => {
   const f = fixture(t);
   f.manifest.helper.sourceSha256["extra.mjs"] = "0".repeat(64);
   writeFileSync(path.join(f.stage, "manifest.json"), JSON.stringify(f.manifest));
-  assert.throws(() => verify(f, []), /exactly all three/);
+  assert.throws(() => verify(f, []), /exactly the reviewed source hashes/);
   delete f.manifest.helper.sourceSha256["extra.mjs"];
   writeFileSync(path.join(f.stage, "manifest.json"), JSON.stringify(f.manifest));
   writeFileSync(
@@ -256,6 +266,28 @@ test("network attempt, failed child, extra frames and wrong hello fail and retir
     );
     assert.equal(existsSync(privateRoot), false);
   }
+});
+
+test("transport verification failure prevents any startup child", (t) => {
+  const f = fixture(t);
+  let verified = false;
+  assert.throws(
+    () =>
+      verify(
+        f,
+        [],
+        () => {
+          assert.fail("unverified transport must not spawn");
+        },
+        (entry) => {
+          verified = true;
+          assert.equal(fileURLToPath(entry), path.join(f.stage, "helper/main.mjs"));
+          throw new Error("fixed transport rejection");
+        },
+      ),
+    /fixed transport rejection/,
+  );
+  assert.equal(verified, true);
 });
 
 test("CLI rejects unknown arguments without attempting runtime startup", () => {

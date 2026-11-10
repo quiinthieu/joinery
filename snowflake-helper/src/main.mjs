@@ -2,6 +2,8 @@ import { closeSync, fchownSync, lstatSync, openSync, writeFileSync } from "node:
 import { isAbsolute, join } from "node:path";
 import { Decoder, writer } from "./framing.mjs";
 import { Helper } from "./helper.mjs";
+import { installQuerySubmitGuard } from "./query-submit-guard.mjs";
+import { verifyTransportSources } from "./transport-source-pins.mjs";
 
 // Capture protocol writer before silencing all dependency console/stdio output.
 // SDK exceptions are never rendered with messages/stacks containing SQL or tokens.
@@ -63,6 +65,16 @@ process.env.SNOWFLAKE_DISABLE_PLATFORM_DETECTION = "true";
 // Certificate-validation caches are isolated; never read/write the owner home.
 process.env.SF_OCSP_RESPONSE_CACHE_DIR = join(root, "ocsp");
 process.env.SNOWFLAKE_CRL_ON_DISK_CACHE_DIR = join(root, "crls");
+// Mandatory reviewed-source and native admission gates precede SDK import.
+// There is no environment/profile/IPC switch that bypasses either gate.
+verifyTransportSources();
+let helper;
+const submitGuard = installQuerySubmitGuard({
+  onViolation() {
+    if (helper) helper.submissionViolation();
+    else exit(2);
+  },
+});
 const sdk = (await import("snowflake-sdk")).default;
 // An explicit custom logger avoids file transports, even before a connection.
 sdk.configure({
@@ -72,7 +84,7 @@ sdk.configure({
 });
 // Explicit owned config path prevents SDK default/env/home profile lookup.
 const output = writer(rawWrite, () => exit(2));
-const helper = new Helper(
+helper = new Helper(
   sdk,
   output,
   () => {
@@ -83,7 +95,7 @@ const helper = new Helper(
       exit(0);
     });
   },
-  { clientConfigFile },
+  { clientConfigFile, submitGuard },
 );
 const decoder = new Decoder();
 process.stdin.on("data", (chunk) => {
