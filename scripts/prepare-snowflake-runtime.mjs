@@ -206,15 +206,123 @@ function copyNotice(source, destination) {
   return { sha256: digestFile(destination) };
 }
 
-function collectDependencyNotices(packageRoot, noticesRoot, packageLock) {
+function readNoticeProvenance(repoRoot, packageRoot, packageLock, noticesRoot) {
+  const vendorRoot = path.join(repoRoot, "snowflake-helper", "vendor", "notices");
+  assertNoSymlinkDirectory(vendorRoot, "Supplemental notice directory");
+  const manifestPath = path.join(vendorRoot, "provenance.json");
+  const readRegular = (root, relative) => {
+    if (typeof relative !== "string" || relative.includes("\\"))
+      throw new Error("Unsafe notice evidence path");
+    const candidate = path.resolve(root, relative);
+    assertContained(root, candidate, "Notice evidence path");
+    if (realpathSync(candidate) !== candidate || !lstatSync(candidate).isFile())
+      throw new Error(`Notice evidence must be a regular file without symlinks: ${relative}`);
+    return candidate;
+  };
+  readRegular(vendorRoot, "provenance.json");
+  if (statSync(manifestPath).size > 256 * 1024)
+    throw new Error("Supplemental notice provenance is too large");
+  const provenance = JSON.parse(readFileSync(manifestPath, "utf8"));
+  if (
+    provenance.format !== "joinery-snowflake-notices-v1" ||
+    provenance.packageLockSha256 !== digestFile(path.join(packageRoot, "package-lock.json")) ||
+    !Array.isArray(provenance.packages) ||
+    provenance.packages.length > 256
+  )
+    throw new Error("Unsupported supplemental notice provenance");
+  const records = new Map();
+  for (const record of provenance.packages) {
+    const locked = packageLock.packages?.[record.lockPath];
+    if (
+      typeof record.lockPath !== "string" ||
+      !record.lockPath.startsWith("node_modules/") ||
+      records.has(record.lockPath) ||
+      !locked ||
+      locked.version !== record.version ||
+      locked.integrity !== record.integrity ||
+      locked.resolved !== record.resolved
+    )
+      throw new Error(
+        `Notice provenance does not match the exact locked package: ${record.lockPath}`,
+      );
+    const installedRoot = path.resolve(packageRoot, record.lockPath);
+    assertContained(path.join(packageRoot, "node_modules"), installedRoot, "Notice package");
+    const installedManifest = JSON.parse(
+      readFileSync(readRegular(installedRoot, "package.json"), "utf8"),
+    );
+    if (installedManifest.name !== record.name || installedManifest.version !== record.version)
+      throw new Error(`Notice provenance does not match the installed package: ${record.lockPath}`);
+    if (
+      !["supplement", "complete-readme"].includes(record.kind) ||
+      typeof record.complete !== "boolean" ||
+      !record.installedFiles ||
+      !Object.hasOwn(record.installedFiles, "package.json")
+    )
+      throw new Error(`Incomplete notice provenance record: ${record.lockPath}`);
+    for (const [filename, expected] of Object.entries(record.installedFiles)) {
+      if (
+        !/^[a-f\d]{64}$/.test(expected) ||
+        digestFile(readRegular(installedRoot, filename)) !== expected
+      )
+        throw new Error(`Installed notice evidence hash mismatch: ${record.lockPath}/${filename}`);
+    }
+    if (
+      !record.source ||
+      !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(record.source.repository) ||
+      !/^[a-f\d]{40}$/.test(record.source.commit) ||
+      !Array.isArray(record.source.artifacts) ||
+      record.source.artifacts.length === 0 ||
+      typeof record.source.mapping !== "string" ||
+      !record.source.mapping
+    )
+      throw new Error(`Missing immutable notice source: ${record.lockPath}`);
+    const rawRoot = record.source.repository.replace(
+      "https://github.com/",
+      "https://raw.githubusercontent.com/",
+    );
+    for (const artifact of record.source.artifacts) {
+      if (
+        !artifact.url?.startsWith(`${rawRoot}/${record.source.commit}/`) ||
+        !/^[a-f\d]{64}$/.test(artifact.sha256)
+      )
+        throw new Error(`Invalid immutable notice artifact: ${record.lockPath}`);
+    }
+    if (record.kind === "supplement") {
+      const noticePath = readRegular(vendorRoot, record.notice?.file);
+      if (
+        digestFile(noticePath) !== record.notice.sha256 ||
+        !record.source.artifacts.some(
+          (artifact) =>
+            artifact.url === record.notice.sourceUrl && artifact.sha256 === record.notice.sha256,
+        )
+      )
+        throw new Error(`Supplemental notice hash or source mismatch: ${record.lockPath}`);
+      const destination = path.posix.join("supplements", record.notice.file);
+      copyNotice(noticePath, path.join(noticesRoot, destination));
+    } else if (
+      record.complete !== true ||
+      !Object.keys(record.installedFiles).some((filename) => README_NAME.test(filename))
+    )
+      throw new Error(`Complete README record has no verified README: ${record.lockPath}`);
+    records.set(record.lockPath, record);
+  }
+  copyNotice(manifestPath, path.join(noticesRoot, "supplements", "provenance.json"));
+  return { records, sha256: digestFile(manifestPath) };
+}
+
+function collectDependencyNotices(repoRoot, packageRoot, noticesRoot, packageLock) {
   const nodeModulesRoot = path.join(packageRoot, "node_modules");
+  const provenance = readNoticeProvenance(repoRoot, packageRoot, packageLock, noticesRoot);
   const packages = [];
   for (const [lockPath, lockInfo] of Object.entries(packageLock.packages ?? {})) {
     if (!lockPath.startsWith("node_modules/")) continue;
     const relativePackagePath = lockPath.slice("node_modules/".length);
     const installedPath = path.resolve(nodeModulesRoot, relativePackagePath);
     assertContained(nodeModulesRoot, installedPath, "Locked package path");
-    if (!existsSync(installedPath)) continue;
+    if (!existsSync(installedPath)) {
+      if (lockInfo.optional) continue;
+      throw new Error(`Locked production dependency is missing: ${lockPath}`);
+    }
     const packageStat = lstatSync(installedPath);
     if (packageStat.isSymbolicLink() || !packageStat.isDirectory())
       throw new Error(`Installed dependency is not a real package directory: ${lockPath}`);
@@ -222,6 +330,8 @@ function collectDependencyNotices(packageRoot, noticesRoot, packageLock) {
     if (!existsSync(packageJsonPath))
       throw new Error(`Installed dependency has no package.json: ${lockPath}`);
     const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    if (manifest.version !== lockInfo.version)
+      throw new Error(`Installed dependency version differs from lock: ${lockPath}`);
     const rootFiles = readdirSync(installedPath, { withFileTypes: true })
       .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
       .map((entry) => entry.name);
@@ -243,19 +353,26 @@ function collectDependencyNotices(packageRoot, noticesRoot, packageLock) {
       };
     });
     const declaredLicense = manifest.license ?? lockInfo.license ?? null;
-    let evidence = licenseFiles.length
+    const evidence = licenseFiles.length
       ? "package-license-files"
       : readmeFiles.length
         ? "readme-only"
         : "no-root-notice-found";
-    const notes = [];
-    if (manifest.name === "proxy-agent-negotiate" && manifest.version === "1.1.0")
+    const record = provenance.records.get(lockPath);
+    const complete = licenseFiles.length > 0 || record?.complete === true;
+    const coverage = licenseFiles.length
+      ? "package-notice-files"
+      : record?.kind === "complete-readme"
+        ? "verified-complete-readme"
+        : record?.kind === "supplement"
+          ? record.complete
+            ? "original-upstream-supplement"
+            : "incomplete-sibling-notice-evidence"
+          : "incomplete";
+    const notes = record?.notes ?? [];
+    if (!complete && notes.length === 0)
       notes.push(
-        "MIT is declared, but the bounded source audit found no notice text in the exact tarball or checked upstream tag.",
-      );
-    if (manifest.name === "asn1.js-rfc2560" && manifest.version === "5.0.1")
-      notes.push(
-        "The project MIT notice exists upstream, but the exact npm source-to-tag mapping remains unresolved.",
+        "No complete original license notice has been verified for this package; README presence or a license label alone is insufficient.",
       );
     packages.push({
       name: manifest.name,
@@ -264,11 +381,24 @@ function collectDependencyNotices(packageRoot, noticesRoot, packageLock) {
       declaredLicense,
       evidence,
       files,
+      coverage,
+      complete,
+      supplements:
+        record?.kind === "supplement"
+          ? [
+              {
+                path: path.posix.join("supplements", record.notice.file),
+                sha256: record.notice.sha256,
+                sourceUrl: record.notice.sourceUrl,
+              },
+            ]
+          : [],
       notes,
     });
   }
   packages.sort((left, right) => left.lockPath.localeCompare(right.lockPath));
   return {
+    provenance: { path: "supplements/provenance.json", sha256: provenance.sha256 },
     packages,
     packagesWithNoNoticeFile: packages
       .filter((item) => item.evidence === "no-root-notice-found")
@@ -276,8 +406,11 @@ function collectDependencyNotices(packageRoot, noticesRoot, packageLock) {
     packagesWithReadmeOnly: packages
       .filter((item) => item.evidence === "readme-only")
       .map((item) => `${item.name}@${item.version}`),
+    packagesWithIncompleteNotice: packages
+      .filter((item) => !item.complete)
+      .map((item) => `${item.name}@${item.version}`),
     knownEvidenceGaps: packages
-      .filter((item) => item.notes.length)
+      .filter((item) => !item.complete)
       .map((item) => ({ package: `${item.name}@${item.version}`, notes: item.notes })),
   };
 }
@@ -509,7 +642,12 @@ export function prepareSnowflakeRuntime({
     assertTreeSymlinksContained(path.join(helperTarget, "node_modules"));
 
     const noticesRoot = path.join(stage, "notices");
-    const noticeInventory = collectDependencyNotices(packageRoot, noticesRoot, packageLock);
+    const noticeInventory = collectDependencyNotices(
+      realRepoRoot,
+      packageRoot,
+      noticesRoot,
+      packageLock,
+    );
     const manifest = {
       format: "joinery-snowflake-runtime-v1",
       target: "darwin-arm64",
@@ -533,7 +671,7 @@ export function prepareSnowflakeRuntime({
         nodeLicenseSha256: digestFile(path.join(noticesRoot, "node", "LICENSE")),
         ...noticeInventory,
         disclaimer:
-          "Root license/notice files and README fallbacks found in the installed lockfile packages are copied verbatim. This is not the final legal audit; unresolved source and notice evidence must remain visible.",
+          "Package license/notice files, README fallbacks and separately identified original upstream supplements are copied verbatim. Coverage describes preserved notice evidence, not legal clearance or authentication of every dependency file. Incomplete notice applicability remains explicit.",
       },
     };
     writeFileSync(path.join(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
