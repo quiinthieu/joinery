@@ -2,10 +2,13 @@ use crate::domain::*;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 mod library;
 mod recovery;
 mod workspace;
+
+const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct Persistence {
     connection: Mutex<Connection>,
@@ -31,13 +34,12 @@ impl Persistence {
                 .map_err(|_| AppError::internal("Could not protect application database"))?;
         }
         connection
-            .busy_timeout(std::time::Duration::from_secs(5))
+            .busy_timeout(DATABASE_BUSY_TIMEOUT)
             .map_err(db_error)?;
         initialize_schema(&mut connection)?;
+        enable_wal(&connection, DATABASE_BUSY_TIMEOUT).map_err(db_error)?;
         connection
-            .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;",
-            )
+            .execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")
             .map_err(db_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -220,6 +222,41 @@ impl Persistence {
             .map_err(db_error)?;
         Ok(())
     }
+}
+
+fn enable_wal(connection: &Connection, budget: Duration) -> rusqlite::Result<()> {
+    // WAL promotion needs a lock upgrade. SQLite may return BUSY immediately
+    // when another opener holds a reserved writer lock, bypassing its busy
+    // handler to avoid deadlock. Retry only this idempotent startup pragma,
+    // after each failed statement has released its own read lock.
+    let deadline = Instant::now() + budget;
+    let result = (|| {
+        loop {
+            connection.busy_timeout(deadline.saturating_duration_since(Instant::now()))?;
+            match connection.query_row("PRAGMA journal_mode=WAL", [], |row| row.get::<_, String>(0))
+            {
+                Ok(mode) if mode.eq_ignore_ascii_case("wal") => return Ok(()),
+                Ok(_) => return Err(rusqlite::Error::InvalidQuery),
+                Err(error)
+                    if matches!(&error, rusqlite::Error::SqliteFailure(error, _)
+                        if error.code == rusqlite::ErrorCode::DatabaseBusy)
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(
+                        Duration::from_millis(10)
+                            .min(deadline.saturating_duration_since(Instant::now())),
+                    );
+                    if Instant::now() >= deadline {
+                        return Err(error);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    })();
+    // This temporary admission deadline must not shorten later application SQL.
+    let restored = connection.busy_timeout(DATABASE_BUSY_TIMEOUT);
+    result.and(restored)
 }
 
 const SCHEMA_VERSION: i64 = 1;
@@ -496,9 +533,16 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        for thread in threads {
-            thread.join().unwrap();
-        }
+        // Join every opener before asserting, so a failing worker cannot drop
+        // the temporary directory while its peers are still accessing SQLite.
+        let outcomes = threads
+            .into_iter()
+            .map(|thread| thread.join())
+            .collect::<Vec<_>>();
+        assert!(
+            outcomes.iter().all(Result::is_ok),
+            "a concurrent opener failed"
+        );
         assert_eq!(
             Persistence::open(root.path())
                 .unwrap()
@@ -507,6 +551,109 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn wal_admission_waits_for_a_reserved_writer_then_verifies_wal() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("reserved.sqlite");
+        let owner = Connection::open(&path).unwrap();
+        owner.execute_batch("CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('preserve'); BEGIN IMMEDIATE;").unwrap();
+        let (started, awaiting) = std::sync::mpsc::channel();
+        let (finished, completed) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let connection = Connection::open(path).unwrap();
+            started.send(()).unwrap();
+            let result = enable_wal(&connection, Duration::from_secs(2));
+            let mode =
+                connection.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0));
+            let timeout =
+                connection.pragma_query_value(None, "busy_timeout", |row| row.get::<_, i64>(0));
+            finished.send((result, mode, timeout)).unwrap();
+        });
+        awaiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let early = completed.recv_timeout(Duration::from_millis(50));
+        // Release and join even if the pre-fix one-shot PRAGMA has already
+        // failed, retaining the fixture until every SQLite owner has finished.
+        owner.execute_batch("ROLLBACK").unwrap();
+        worker.join().unwrap();
+        assert!(
+            matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "WAL admission must wait for the reserved owner: {early:?}"
+        );
+        let (result, mode, timeout) = completed.recv_timeout(Duration::from_secs(1)).unwrap();
+        result.unwrap();
+        assert_eq!(mode.unwrap(), "wal");
+        assert_eq!(timeout.unwrap(), 5000);
+        assert_eq!(
+            owner
+                .query_row("SELECT value FROM marker", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "preserve"
+        );
+    }
+
+    #[test]
+    fn wal_admission_exhausts_its_budget_without_rewriting_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("blocked.sqlite");
+        let owner = Connection::open(&path).unwrap();
+        owner.execute_batch("CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('preserve'); BEGIN IMMEDIATE;").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let started = Instant::now();
+        let error = enable_wal(&connection, Duration::from_millis(60)).unwrap_err();
+        assert!(started.elapsed() >= Duration::from_millis(60));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(matches!(error, rusqlite::Error::SqliteFailure(error, _)
+            if error.code == rusqlite::ErrorCode::DatabaseBusy));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "busy_timeout", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            5000
+        );
+        owner.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
+                .unwrap(),
+            "delete"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT value FROM marker", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "preserve"
+        );
+    }
+
+    #[test]
+    fn wal_admission_does_not_retry_non_busy_errors_or_accept_non_wal_mode() {
+        let connection = Connection::open_in_memory().unwrap();
+        // In-memory SQLite reports MEMORY instead of WAL without an SQL error.
+        assert!(matches!(
+            enable_wal(&connection, Duration::from_secs(2)),
+            Err(rusqlite::Error::InvalidQuery)
+        ));
+        let root = tempfile::tempdir().unwrap();
+        let connection = Connection::open(root.path().join("transaction.sqlite")).unwrap();
+        connection
+            .execute_batch("CREATE TABLE marker(value TEXT); BEGIN; SELECT * FROM marker;")
+            .unwrap();
+        let started = Instant::now();
+        let error = enable_wal(&connection, Duration::from_secs(2)).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(error, rusqlite::Error::SqliteFailure(error, _)
+            if error.code != rusqlite::ErrorCode::DatabaseBusy));
+        assert!(
+            !connection.is_autocommit(),
+            "admission must not commit caller transactions"
+        );
+        connection.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]
