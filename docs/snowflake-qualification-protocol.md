@@ -75,12 +75,35 @@ per container. Raw whitespace and partial headers/bodies count toward byte limit
 It allocates one checked body buffer per frame and copies split input linearly;
 input constructor/species hooks cannot substitute copying behavior.
 
-## Required future runner boundary
+## Supplied-child lifecycle
 
-These modules do not implement serialized pipe writes and
-backpressure, time/window checks, approval consumption, source-file/runtime
-verification, process/environment selection, authentication, EOF/TERM/KILL,
-reaping or identity-checked authentication-root cleanup. The future executable
+`scripts/snowflake-qualification-child.mjs` takes one valid supplied child's
+lifecycle through serialized physical writes, callback/drain backpressure,
+per-stage/group deadlines and bounded close/EOF/TERM/KILL cleanup. It reserves
+each command before writing and checks both decoder/protocol latches before
+queued writes. Only an explicit owner interruption may request an identified
+cancel; timeouts do not invent one. Known SQL acknowledgement evidence survives
+later malformed input or interrupted cleanup.
+
+Both absolute admission-window edges are checked at every new admission. A
+separate fixed monotonic 360-second workflow deadline applies independently of
+the offline ledger's maximum ten-minute admission window. A reduction-only test
+seam cannot increase either deadline. Receipts distinguish write reservation,
+attempt/completion, stdin-end request/local finish, logout acknowledgement,
+process exit and stdio closure. They disclose unknown local cleanup and make no
+remote rollback/cancellation claim.
+
+This module selects no process/runtime, reads or writes no files, consumes no
+approval and has no CLI. Invalid configuration rejects before lifecycle
+ownership; its caller must retain and reap that child. The executable boundary
+must separately own its fixed runtime/environment, approval and state roots.
+
+## Executable boundary requirements
+
+The pure result/protocol/framing modules grant no execution authority. The
+supplied-child lifecycle still does not implement approval consumption,
+source-file/runtime verification, process/environment selection or
+identity-checked authentication-root cleanup. The executable
 manifest must bind that runner and these modules' hashes and limits. It must stop
 queued writes after protocol failure and reserve permission before physical
 dispatch; a reservation is not proof of submission or success.

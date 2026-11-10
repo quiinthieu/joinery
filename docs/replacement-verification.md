@@ -8,6 +8,41 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Qualification child lifecycle (10 November 2026)
+
+Status: **locally tested and independently reviewed supplied-child engine**;
+it has no CLI, process/runtime selection, filesystem cleanup or approval authority.
+The immutable offline-v1 ledger remains offline-only. The
+[protocol contract](snowflake-qualification-protocol.md#supplied-child-lifecycle)
+now has serialized physical dispatch, callback/drain backpressure, dual failure
+latches, owner-only identified cancellation and bounded close/EOF/TERM/KILL.
+Receipts retain known outcomes and distinguish attempted cleanup from confirmed
+logout, exit and closed stdio. No account or actual SDK authentication was used.
+
+The original **19 child tests** and **80 combined result/protocol/framing/child
+tests** passed. Independent review reproduced a clock rollback that admitted
+later SQL below the approved lower window edge, and identified the missing
+independent overall deadline. Three regression tests now cover both absolute
+edges and a fixed monotonic **360-second** ceiling through authentication, SQL
+and grouped observation. The final child suite passes **22/22**, and the four
+modules together pass **83/83**. Actual subprocess fixtures exercise the
+production helper with synthetic SDK responses through exactly 24 SQL, malformed
+trailing frames, early exit, inherited stdio and TERM-resistant/KILL cleanup.
+In-process production-helper fixtures cover credits, late terminals, synchronous
+and late write failures, stalled drain, cancellation and unconfirmed reaping.
+They establish local lifecycle behavior, not database effects or account behavior.
+
+Commands: `node --test scripts/snowflake-qualification-child.test.mjs` and Node's
+combined result/protocol/framing/child files; syntax and scoped Prettier pass.
+Logs under `.cache/verification/connection-attempts/`:
+`sdk-qualification-child-{final,combined,format}.log`,
+`sdk-qualification-child-deadlines-{before-fix,final,combined,format}.log`.
+Final child hash: `115218a087c7ea3f86a656d20fef61f17932cf5612d10e558449d52e8e19eb8f`.
+The offline manifest's 12 tests also pass. `pnpm test:snowflake:qualification`
+now selects all qualification regression files and is included in the existing
+Snowflake CI integration step. Formatting includes the same qualification files;
+package/workflow Prettier and `git diff --check` pass. CI itself was not triggered.
+
 ### SDK transaction transport (10 November 2026)
 
 Status: **transport foundation locally tested; application and account workflows incomplete**.
