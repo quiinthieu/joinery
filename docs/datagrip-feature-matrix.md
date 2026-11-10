@@ -18,6 +18,13 @@ passes actual PostgreSQL million-row paging/export and browser acceptance.
 Native preference/restart checks pass. Actual Snowflake behavior remains
 unqualified.
 
+The [offline qualification compiler](snowflake-qualification-manifest.md) now
+passes 12 synthetic tests and actual local CLI/resource checks using synthetic
+connection identifiers. It records exact SQL and local resource bounds for a
+separate 24-statement observer/options/scalar workflow. There is no executable
+runner, inherited approval or new account evidence; required capabilities below
+retain their incomplete/unqualified states.
+
 On 10 November, explicit SDK external-browser profiles and retained helper cleanup
 are implemented. New profiles select the SDK route; existing profiles retain local
 application OAuth. Focused local profile, actual-child lifecycle and browser checks

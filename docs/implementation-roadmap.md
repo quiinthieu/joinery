@@ -44,6 +44,13 @@ transaction controls remain disabled;
 actual account observation remains unqualified. Its ten/eleven additional SQL
 executions are outside the earlier two-query canary approval.
 
+An [offline qualification manifest](snowflake-qualification-manifest.md) is now
+implemented and locally verified: 12 synthetic tests and actual CLI checks with
+synthetic identifiers, current source/runtime validation and private exclusive
+output. The distinct observer/options/scalar workflow has a complete 24-SQL
+ledger. An executable runner and fresh account approval remain open; this tooling
+does not qualify the account or normal application.
+
 The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
 application/helper browsing flow, **11** focused browser workflows and an actual

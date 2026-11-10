@@ -23,6 +23,13 @@ and [required inventory](snowflake-datagrip-replacement.md).
 | Stages B1–B2 below         | Proposed disposable-object scope                                                                                 | Write/DDL/transaction state, affected-row/outcome handling, fault controls and cleanup must first be implemented and locally reviewed; current app gates must continue rejecting these operations |
 | Packaged app acceptance    | Separate run against a recorded package                                                                          | Must enforce the approved SQL/metadata budget, use the actual app path and exercise its UI, result storage and lifecycle; SDK-only evidence cannot substitute                                     |
 
+An [offline manifest compiler](snowflake-qualification-manifest.md) is implemented
+and locally tested for the distinct `session-options-scalar-state-v1` workflow: exactly
+24 potential SQL executions on one helper connection, including the new observer
+reads and bounded schema-name inventory. It is not A1/A2 approval, an executable
+runner or application acceptance. The older stage envelopes below remain
+proposed; they do not silently absorb this workflow.
+
 No developer switch, alternate OAuth route or SQL API fallback may bypass the app's
 ReadOnly gate for qualification. An independently reviewed SDK qualification tool
 can establish engine behavior before app integration, but its evidence must say
@@ -280,6 +287,14 @@ does not prove rollback or that execution stopped. Do not rerun if the race does
 not exercise the intended phase. Current classifier support for GENERATOR,
 SEQ4/ROW_NUMBER and the expression forms must be checked offline; a rejection is
 a blocked app test, not permission to loosen the classifier broadly.
+
+A source-only policy review on 10 November finds `GENERATOR`, `SEQ4`, `MOD` and
+`REPEAT` absent from the current Snowflake read-function admission. `ROW_NUMBER`
+is already admitted by its common name. The exact template's parser/runtime
+decision still needs reproduction; no account execution is implied by this
+static inspection. Resolve the general engine-aware SQL workflow with meaningful
+regressions rather than adding a special exception solely for the acceptance
+query. Compiler and runner budgets remain separate from public SQL admission.
 
 ## B1: unique schema, synthetic objects, mutations and transactions
 

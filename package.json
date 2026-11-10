@@ -29,8 +29,8 @@
     "test:native": "python3 scripts/native-smoke.py",
     "test:native:recovery": "python3 scripts/native-recovery.py",
     "test:native:recovery:runner": "python3 scripts/native-recovery.test.py",
-    "format:check": "prettier --check src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs scripts/native-smoke-resources*.mjs scripts/verify-macos-bundle.mjs snowflake-helper scripts/test-snowflake-process.mjs scripts/prepare-snowflake-runtime*.mjs scripts/verify-snowflake-runtime*.mjs scripts/verify-snowflake-package.mjs scripts/snowflake-read-canary*.mjs",
-    "format": "prettier --write src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs scripts/native-smoke-resources*.mjs scripts/verify-macos-bundle.mjs snowflake-helper scripts/test-snowflake-process.mjs scripts/prepare-snowflake-runtime*.mjs scripts/verify-snowflake-runtime*.mjs scripts/verify-snowflake-package.mjs scripts/snowflake-read-canary*.mjs",
+    "format:check": "prettier --check src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs scripts/native-smoke-resources*.mjs scripts/verify-macos-bundle.mjs snowflake-helper scripts/test-snowflake-process.mjs scripts/prepare-snowflake-runtime*.mjs scripts/verify-snowflake-runtime*.mjs scripts/verify-snowflake-package.mjs scripts/snowflake-read-canary*.mjs scripts/snowflake-qualification-manifest*.mjs",
+    "format": "prettier --write src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs scripts/native-smoke-resources*.mjs scripts/verify-macos-bundle.mjs snowflake-helper scripts/test-snowflake-process.mjs scripts/prepare-snowflake-runtime*.mjs scripts/verify-snowflake-runtime*.mjs scripts/verify-snowflake-package.mjs scripts/snowflake-read-canary*.mjs scripts/snowflake-qualification-manifest*.mjs",
     "desktop:bundle:mac": "tauri build --bundles app && node scripts/verify-macos-bundle.mjs",
     "test:snowflake:process": "node scripts/test-snowflake-process.mjs",
     "test:snowflake:helper": "pnpm --dir snowflake-helper test",
@@ -41,7 +41,9 @@
     "desktop:snowflake:smoke:build": "node scripts/verify-snowflake-package.mjs && tauri build --no-bundle --features native-smoke --config src-tauri/tauri.snowflake.conf.json --config src-tauri/tauri.smoke.conf.json && node scripts/prepare-native-smoke.mjs --snowflake-resources && node scripts/verify-snowflake-package.mjs --bundle '.cache/native-smoke/Joinery Native Smoke.app' && node scripts/verify-snowflake-runtime.mjs --bundle '.cache/native-smoke/Joinery Native Smoke.app'",
     "test:native:resources": "node --test scripts/native-smoke-resources.test.mjs",
     "test:snowflake:canary": "node --test scripts/snowflake-read-canary.test.mjs",
-    "snowflake:canary": "node scripts/snowflake-read-canary.mjs"
+    "snowflake:canary": "node scripts/snowflake-read-canary.mjs",
+    "test:snowflake:qualification:manifest": "node --test scripts/snowflake-qualification-manifest.test.mjs",
+    "snowflake:qualification:manifest": "node scripts/snowflake-qualification-manifest.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6",

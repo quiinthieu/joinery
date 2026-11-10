@@ -8,6 +8,29 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Offline account qualification manifest (10 November 2026)
+
+The [compiler contract](snowflake-qualification-manifest.md) is implemented and
+locally tested. It expands the distinct helper-direct
+`session-options-scalar-state-v1` workflow to exactly **24 SQL / 26 commands**,
+including startup identity, eleven-read schema options, one typed scalar and
+ten-read state observation. It is offline-only; no executable runner or account
+authorization is established.
+
+`pnpm test:snowflake:qualification:manifest` passes **12/12** synthetic tests;
+syntax, scoped formatting and diff checks pass. Evidence under
+`.cache/verification/connection-attempts/` is `sdk-manifest-tests-final.log`
+and `sdk-manifest-format-check.log`. Actual CLI checks using synthetic connection
+identifiers reject the old prepared helper source, then pass dry-run, exclusive
+emission and independent verification after offline resource preparation;
+re-emission is refused. The `sdk-manifest-current-stage-*`,
+`sdk-manifest-emit-final.log`, `sdk-manifest-verify-final.log` and
+`sdk-manifest-overwrite-refused.log` logs retain those outcomes. No authentication
+or SQL ran. Independent review clears this bounded tooling after correcting
+documentation about supplied versus fresh IDs/windows and private input storage.
+The future runner still needs tested dispatch, result validation, credit, cleanup
+and fresh approval enforcement. All required Snowflake replacement gates remain.
+
 ### SDK session observation (10 November 2026)
 
 Status: **locally qualified; account and owner acceptance open**. Source
