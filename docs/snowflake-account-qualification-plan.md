@@ -41,7 +41,12 @@ and its two startup checks, then stopped on rejection of the third context query
 Its approval is consumed; logout/reaping/private-state cleanup passed. The
 context normalization below is a local correction and needs a new reviewed plan
 and fresh approval before another account attempt. See the
-[attempt and correction evidence](replacement-verification.md).
+[attempt and correction evidence](replacement-verification.md). A newly approved
+corrected execution subsequently passed all 24 statements at 12:59:21 UTC,
+including account context/settings, bounded schema discovery and scalar values.
+That one-use approval is also consumed. Its
+[pass](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026)
+does not authorize or qualify the proposed stages below.
 
 No developer switch, alternate OAuth route or SQL API fallback may bypass the app's
 ReadOnly gate for qualification. An independently reviewed SDK qualification tool

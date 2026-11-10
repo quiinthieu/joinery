@@ -29,8 +29,12 @@ stopped and cleaned up without retry. See the
 Required capabilities below retain their incomplete/unqualified states.
 The SDK context SQL now uses documented TO_VARCHAR text normalization, with
 focused regressions, independent review and full application validation passing.
-That local correction does not prove which expression caused the rejection or
-qualify the account; see the [correction evidence](replacement-verification.md#sdk-context-text-normalization-10-november-2026).
+That local correction does not prove which expression caused the rejection.
+A freshly approved corrected helper attempt then **passed all 24 SQL statements**
+on the actual connection at 12:59:21 UTC, validating context, session settings,
+bounded schema discovery, scalar values and cleanup. See the
+[account pass and limits](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
+Normal application workflows and complete replacement acceptance remain open.
 
 The [schema-switch transport foundation](snowflake-sdk-session-design.md) now
 separates observation from typed schema mutation and preserves acknowledged USE

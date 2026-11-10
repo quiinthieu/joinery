@@ -1,8 +1,8 @@
 # Snowflake SDK session observation
 
-**Status: locally qualified; account and owner acceptance open.** This
+**Status: locally qualified; fixed helper account observation passes; application and owner acceptance open.** This
 increment observes runtime state on the existing SDK connection. It does not
-switch schemas, enable transaction controls, qualify Snowflake account behavior,
+switch schemas, enable transaction controls, qualify complete account behavior,
 or complete the [DataGrip replacement scope](snowflake-datagrip-replacement.md).
 The earlier approval for two fixed SELECT statements does not cover these
 additional observer or schema-list statements. No account SQL is needed for the
@@ -42,8 +42,10 @@ This avoids relying on the VARIANT-only input contract of
 The [CURRENT_SCHEMAS](https://docs.snowflake.com/en/sql-reference/functions/current_schemas)
 page shows array-shaped output without specifying its SQL return type. The
 correction is locally tested; it is not proof of which expression caused the
-earlier generic account rejection. The actual account context query remains
-unqualified until a new reviewed attempt succeeds. Secondary-role parsing keeps
+earlier generic account rejection. A freshly approved fixed helper attempt now
+validates the actual account context query and its result shape; see the
+[account pass and limits](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
+Secondary-role parsing keeps
 the documented JSON object with string `roles` and `value` fields, including
 comma-containing strings and empty `roles`; no parser permissiveness was added.
 
@@ -141,6 +143,8 @@ pnpm test:e2e -- tests/e2e/snowflake-sdk-session.spec.ts
 The Rust helper fixture runs a child Node process with a synthetic SDK; it does
 not import the installed Snowflake SDK or perform sign-in. The browser test
 intercepts RPCs for the actual UI and likewise performs no SSO or Snowflake SQL.
-These checks qualify local implementation behavior only. Actual account
-observation shapes, history effects, transaction behavior, and schema
-visibility remain unqualified and require separate approval and evidence.
+These fixture checks qualify local implementation behavior only. The separate
+approved helper attempt above qualifies its fixed account observation shapes
+and bounded schema discovery. Normal application observations, history effects,
+transaction behavior and broader visibility remain unqualified and require
+separate approval and evidence.

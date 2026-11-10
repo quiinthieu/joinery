@@ -8,6 +8,64 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Corrected account read/metadata qualification (10 November 2026)
+
+The owner freshly approved exactly one attempt for execution plan
+`4133ffac4585e8167b207e1dc435322d661e0d561963090186c817ed2ccc71b0`,
+ledger `92fd58414eba58c8c5e11c3554502fbda63980df6d0458ff3a047329a40fd35b`,
+source `29bd71a`, runtime manifest
+`375e0639ee6d2285b25fd4e9646a1078b6302faa1630a9bcd002ed653ab23114`,
+inside the 12:56:16–13:06:16 UTC admission window, including possible billing.
+The actual helper-direct attempt **passed at 12:59:21 UTC**. All **24 planned SQL
+statements succeeded and validated**: startup identity/version, coherent before/
+after context and session parameters, bounded current-database schema discovery,
+synthetic scalar values and final state observations. This includes the corrected
+`TO_VARCHAR(CURRENT_SCHEMAS())` query on the owner's actual connection.
+
+The protocol completed its ledger with 26 commands and one additional credit;
+all framing and aggregate result budgets passed (43,517 inbound bytes, 196 frames;
+12,956 retained result bytes across 66 rows over the complete ledger). These are
+aggregate counts, not a schema-count disclosure or representative performance
+benchmark. No existing table data, schema switch, DML, DDL or transaction boundary
+was requested. SDK network traffic and possible charges are not limited by the
+helper SQL count.
+
+Logout/close acknowledgement, stdin completion, closed stdout/stderr, normal
+exit code 0, actual child reaping, original authentication-directory identity and
+removal, source/runtime revalidation and private receipt persistence all passed.
+No cancellation, TERM or KILL was needed. These observations do not prove an
+account-wide session inventory or remote transaction disposition. The exclusive
+approval marker is consumed; this success grants no further account access.
+
+Safe log: `.cache/verification/connection-attempts/`
+`sdk-context-normalization-owner-attempt.log`; offline plan summary:
+`sdk-context-normalization-plan.json`. Private input/plan/approval/result remain
+under `.cache/snowflake-qualification`; no profile, schema names, session/query
+identifiers, tokens or raw diagnostics are committed. The runner command is
+documented in [the execution boundary](snowflake-qualification-runner.md).
+
+This qualifies the fixed helper workflow and its actual account result shapes.
+Normal packaged application sign-in, browsing/completion, restart, cancellation,
+million-row results, writes, schema changes, explicit transactions and owner
+replacement acceptance remain required and incomplete. The earlier failed
+attempt below remains part of the evidence.
+
+The same `29bd71a` application source also passes a fresh
+`pnpm desktop:snowflake:bundle:mac`: normal **224.02 MiB** macOS arm64 bundle,
+strict ad-hoc signature/resource validation (15,106 entries, no dependency links),
+and actual packaged SDK hello/EOF startup with **zero authentication/SQL requests**.
+All **322 frozen application/tooling inputs** remain unchanged through the build.
+The 31,548,464-byte executable SHA-256 is
+`d778e0dca71f9f7f4a1dc74f42c877278e84bc4e1575f1eca73e20c90a5da73a`.
+The runnable bundle is `src-tauri/target/release/bundle/macos/Joinery.app`;
+it was not installed or launched against private application state. Developer ID,
+notarization and normal account/native restart acceptance remain open. The known
+nonfatal `rust-objcopy`/`libLLVM.dylib` stripping warning remains unchanged.
+Logs/receipt: `sdk-context-normalization-bundle-final.log` and
+`sdk-context-normalization-bundle-artifact.json` in the verification directory.
+The earlier three hidden native runs predate this SQL-only correction; this
+fresh normal bundle does not claim a new native UI qualification run.
+
 ### SDK context text normalization (10 November 2026)
 
 The SDK context query and its exact qualification template now use
@@ -18,8 +76,9 @@ accepts any type, returns VARCHAR and serializes ARRAY inputs as JSON, while
 VARIANT. The CURRENT_SCHEMAS reference shows a JSON list without declaring its SQL
 type. This is a documented normalization correction, **not confirmed attribution**
 of the generic rejection in the account attempt below. No additional account
-authentication or SQL was performed. The preceding normal/native package predates
-this correction; new package qualification is separate.
+authentication or SQL was performed during the local correction. The later
+approved account attempt and fresh normal package are recorded above; the
+preceding hidden native package predates this correction.
 
 The production adapter and offline compiler retain identical SQL. Strict JSON
 path/secondary-role parsing, required descriptors, byte/row caps, all source

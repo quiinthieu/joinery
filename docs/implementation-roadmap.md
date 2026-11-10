@@ -57,9 +57,11 @@ session-context query. Logout, child reaping and temporary-state removal passed.
 The approval is consumed; no retry was attempted. Diagnose and locally repair
 the context query before preparing any new approved attempt. The SDK query now
 uses documented TO_VARCHAR text normalization and passes focused regression,
-independent review and full validation; actual account behavior remains unverified.
-Account and normal
-application qualification remain open; see the
+independent review and full validation. A separately approved corrected attempt
+then passed all 24 statements on the actual account at 12:59:21 UTC, including
+context/settings, bounded schema discovery and scalar validation. See the
+[account pass and its limits](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
+Normal application and complete account-workflow qualification remain open; see the
 [attempt evidence](replacement-verification.md#approved-account-qualification-attempt-10-november-2026).
 
 The [schema-switch transport foundation](snowflake-sdk-session-design.md) is

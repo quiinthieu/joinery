@@ -67,6 +67,14 @@ observation, metadata, application or owner acceptance; the
 [ledger](replacement-verification.md#approved-account-qualification-attempt-10-november-2026)
 records its exact plan, scope and evidence.
 
+A freshly approved corrected attempt passed at 12:59:21 UTC: all 24 fixed SQL
+statements validated on the actual connection, with logout/reaping/private-state
+cleanup. This qualifies helper context/settings, bounded schema discovery and
+scalar results. It does not qualify normal application behavior, metadata beyond
+that ledger, million-row results, writes, DDL, transactions or owner acceptance.
+Both approvals are consumed. See the
+[account pass](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
+
 ## Target definition and open questions
 
 Replacement means the owner's required daily workflows succeed on their target
