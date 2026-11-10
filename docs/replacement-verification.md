@@ -148,6 +148,29 @@ run and independent 39-test rerun pass; scoped formatting passes and review clea
 the repair. Strict physical framing, approval/freshness/source enforcement and
 child cleanup remain separate required runner work.
 
+### Offline qualification framing (10 November 2026)
+
+The pure strict decoder and its tests add physical byte accounting, bounded
+incremental copying, fatal UTF-8 and strict JSON validation to the separate
+[qualification contract](snowflake-qualification-protocol.md). There is no
+executable runner, process launch, authentication or account SQL in this slice.
+
+Independent review reproduces two defects in
+`sdk-qualification-framing-review-before-fix.log`: a callback could swallow a
+reentrant-call exception and let the outer decoder deliver another frame; a
+typed-array constructor/species getter could escape as an unlatched raw error.
+Both are repaired with regressions. Copying now bypasses those hooks and latches
+detached-input errors; a swallowed reentry still stops subsequent delivery.
+
+`sdk-qualification-framing-review-combined.log` and the independent lead rerun
+`sdk-qualification-framing-lead-final.log` pass **61/61** synthetic tests: 16
+result, 23 protocol and 22 framing cases. The latter include one-byte splits,
+physical limits, duplicate escaped keys, malformed UTF-8, exact decimal-number
+validation and a composed decoder/protocol success-ACK followed by malformed or
+truncated bytes. Known success survives the later failure. Independent review
+and scoped formatting pass after the repairs. This establishes no subprocess,
+approval, cleanup or remote behavior; those remain required executable work.
+
 ### SDK schema-switch transport (10 November 2026)
 
 Status: **transport locally qualified; application switching incomplete**.

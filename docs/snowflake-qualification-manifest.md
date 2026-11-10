@@ -52,7 +52,8 @@ evidence files. Explicit manifest emission is an offline local file operation.
 There is no execution command in this compiler increment. The separate pure
 [result/protocol modules](snowflake-qualification-protocol.md) now implement
 typed validation, fixed-ledger reservation and bounded streaming-credit/control
-ownership. A future runner still needs strict physical framing, dispatch and
+ownership. A separately reviewed decoder now adds strict physical framing and
+actual byte counts. A future runner still needs dispatch and
 timing, approval/source verification and process/cleanup ownership before account
 approval can be requested. Approval must name the exact manifest hash, run window, route
 and possible billing; elapsed time or an older approval is not authorization.

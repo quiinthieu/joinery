@@ -56,10 +56,28 @@ Inbound framing is bounded to 4,096 frames / 8 MiB including four-byte headers;
 individual bodies are at most 1 MiB. Outbound fixed-ledger, credit and cancellation
 reservations have separate bounds.
 
+## Strict physical framing
+
+`scripts/snowflake-qualification-framing.mjs` exports
+`createQualificationDecoder({ onFrame })`. `push(Buffer | Uint8Array)` delivers
+each validated `{ frame, bodyBytes }` synchronously and returns a count;
+`end()` validates EOF. The required callback returns `undefined`. A valid success
+acknowledgement is delivered before examining a malformed suffix in the same pipe
+read, preserving the known outcome. Callback failure, reentry, malformed input or
+resource exhaustion permanently stops decoding. A future runner must retain both
+its protocol failure and decoder failure and prevent further writes on either.
+
+The decoder rejects malformed UTF-8, BOMs, duplicate decoded JSON keys, unpaired
+surrogates and numbers outside the exact safe-integer subset. Decimal database
+values remain strings. It enforces the protocol's 1 MiB frame / 8 MiB physical
+input / 4,096 frame ceilings, plus depth 16, 10,000 value nodes and 4,096 entries
+per container. Raw whitespace and partial headers/bodies count toward byte limits.
+It allocates one checked body buffer per frame and copies split input linearly;
+input constructor/species hooks cannot substitute copying behavior.
+
 ## Required future runner boundary
 
-These modules deliberately do not implement physical framing, duplicate-JSON-key
-or UTF-8 rejection, trustworthy raw byte counts, serialized pipe writes and
+These modules do not implement serialized pipe writes and
 backpressure, time/window checks, approval consumption, source-file/runtime
 verification, process/environment selection, authentication, EOF/TERM/KILL,
 reaping or identity-checked authentication-root cleanup. The future executable
@@ -78,9 +96,11 @@ Run with the repository's Node 24 toolchain:
 
 ```sh
 node --test scripts/snowflake-qualification-results.test.mjs \
-  scripts/snowflake-qualification-protocol.test.mjs
+  scripts/snowflake-qualification-protocol.test.mjs \
+  scripts/snowflake-qualification-framing.test.mjs
 pnpm exec prettier --check scripts/snowflake-qualification-results*.mjs \
-  scripts/snowflake-qualification-protocol*.mjs
+  scripts/snowflake-qualification-protocol*.mjs \
+  scripts/snowflake-qualification-framing*.mjs
 ```
 
 The tests use synthetic results and an in-process production helper with a
