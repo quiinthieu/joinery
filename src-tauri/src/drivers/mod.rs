@@ -10,6 +10,8 @@ pub mod redis;
 pub mod snowflake;
 pub mod snowflake_auth;
 #[cfg(unix)]
+pub(crate) mod snowflake_browsing;
+#[cfg(unix)]
 pub mod snowflake_external;
 #[cfg(unix)]
 mod snowflake_metadata;
@@ -65,6 +67,32 @@ pub struct CompletionRelations {
 
 #[async_trait]
 pub trait Driver: Send + Sync {
+    /// Forget all server-held relation targets before attempting a context change.
+    fn invalidate_relation_catalog(&self) {}
+    async fn relation_catalog(&self) -> AppResult<BrowseCatalog> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Session relation browsing is unavailable for this engine",
+        ))
+    }
+    async fn inspect_relation(
+        &self,
+        _request: &InspectRelationRequest,
+    ) -> AppResult<RelationInspection> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Session relation inspection is unavailable for this engine",
+        ))
+    }
+    async fn preview_relation(
+        &self,
+        _request: &PreviewRelationRequest,
+    ) -> AppResult<RelationPreview> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Session relation preview is unavailable for this engine",
+        ))
+    }
     /// Revoke retained edit leases before approved schema changes. Drivers with
     /// metadata locks must await their bounded release before SQL submission.
     async fn invalidate_edit_targets(&self) -> AppResult<()> {

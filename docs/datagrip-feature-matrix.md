@@ -48,7 +48,10 @@ Current Joinery offers explicit local-application OAuth/SQL API and stateful SDK
 external-browser routes. Both enforce ReadOnly. SDK same-session relation/column
 completion is implemented; its [qualification](snowflake-sdk-metadata-design.md)
 is separate from the preceding SDK integration counts above. SDK writes, DDL,
-transactions, browsing and authoritative inspection remain disabled. Browser login alone does not prove account compatibility
+transactions remain disabled. A distinct revision-bound relation catalog,
+column inspection and read-only preview is implemented locally under the
+[browsing contract](snowflake-sdk-browsing-design.md). Complete object/constraint
+inspection, editable browsing and account metadata qualification remain open. Browser login alone does not prove account compatibility
 or session behavior. These are primary replacement blockers. Local
 PostgreSQL/MySQL safety repairs remain useful application work but do not close
 Snowflake acceptance. External account qualification needs explicit non-production
@@ -90,8 +93,10 @@ before/after checks reject context drift. Its parsers and synthetic actual-helpe
 tests establish local behavior. Combined qualification passes 607 frontend /
 312 standard Rust tests, 124 real-engine regressions, all 145 browser workflows,
 fresh SDK-bearing macOS packaging/startup and 19 hidden native check categories.
-Authoritative inspection, table browsing, foreign keys, cross-database targets,
-session switching and actual account metadata remain incomplete. No metadata
+At that completion-only revision, authoritative inspection and table browsing
+remained absent. The later browsing slice below adds bounded read-only relation
+inspection/preview; foreign keys, cross-database targets, session switching and
+actual account metadata remain incomplete. No metadata
 query has been sent under the earlier two-SELECT canary approval. See the
 [implementation contract](snowflake-sdk-metadata-design.md).
 
@@ -108,6 +113,28 @@ artifact identities are recorded separately
 in the [ledger](replacement-verification.md). This is a locally verified
 submission foundation, not remote effects, write/transaction qualification or
 DataGrip parity. Those required capabilities remain incomplete.
+
+The current [SDK relation-browsing increment](snowflake-sdk-browsing-design.md)
+implements **catalog → inspect → read-only preview → refresh** using opaque
+session-held target/inspection revisions. Catalogs retain relation kinds/traits
+and explicitly mark ambiguous, shadowed or unknown targets. Column inspection
+cross-checks COLUMNS, DESCRIBE and zero-row resolved metadata while preserving
+independent Iceberg default observations; constraints remain `notFetched`.
+Preview retains at most 500 unordered rows/2 MiB with local row/column paging.
+The separate `relationBrowsing` capability does not enable generic editable table
+browsing. Local checks and their limits are recorded in the
+[ledger](replacement-verification.md#sdk-relation-browsing-10-november-2026).
+Actual account metadata, descriptor variants, temporary collisions, broader
+objects, schema/session switching, writes, DDL, transactions and the Snowflake
+million-row workflow remain required and incomplete. No existing canary approval
+was reused for metadata SQL.
+
+Current browsing qualification passes **619 frontend / 338 standard Rust**
+tests, **29** synthetic-SDK actual-helper adapter tests, the final application/
+helper browsing workflow, **11** focused browser workflows, an actual PostgreSQL
+context/transaction regression, fresh normal SDK macOS packaging/startup and
+**19** hidden native check categories with ten cleanup cycles. These are local
+results; the required actual-account and owner acceptance gates remain open.
 
 The reviewed-writer follow-up additionally reproduces and repairs delayed
 PostgreSQL retirement, queued writes reconnecting after closure, and CSV imports
@@ -155,7 +182,7 @@ reproduced failures and exact qualification limits.
 | Area | Joinery implementation and current evidence | Incomplete or blocked acceptance |
 |---|---|---|
 | Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; explicit Snowflake SDK externalbrowser and OAuth/SQL API read routes | SDK profile routing, cleanup and local bundle/native checks pass. The two-query account canary qualifies its earlier helper source, not the new guard. Normal packaged account/session behavior, metadata, writes/transactions and live/native credential lifecycle remain open |
-| Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures; bounded SDK same-session relation/column completion | SDK catalog browsing and authoritative inspection remain unsupported. Bounded introspection and permissions vary by engine; daily Snowflake catalogs/roles and required object types need qualification |
+| Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures; bounded SDK same-session relation/column completion | SDK current-database relation catalog, revision-bound column inspection and bounded read-only preview are implemented locally; complete object/constraint inspection and actual account shapes remain unqualified. Bounded introspection and permissions vary by engine; daily Snowflake catalogs/roles and required object types need qualification |
 | SQL editing, completion, formatting, diagnostics | Bounded dialect-aware completion, formatting, parameters, diagnostics, navigation and refactoring with frontend/real browser coverage | Fresh-result completion synchronization is repaired (`f9abce0`); unsupported semantic forms remain explicit. Full applicable Snowflake authoring inventory and representative performance remain unqualified |
 | Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks; stateful SDK read execution and local one-submission guard | Fifteen real local-engine transaction-transport tests cover outcomes and retirement. Snowflake writes, full batches and transactions remain disabled; actual-account cancellation/outcome qualification remains open |
 | Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector race repaired with delayed real Arrow coverage. The required million-row Snowflake paging/export workflow, export destinations and accessibility remain unqualified |

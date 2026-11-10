@@ -1,0 +1,196 @@
+//! Read-only relation browsing contracts. Target IDs and revisions refer to
+//! server-held snapshots, not immutable Snowflake object identifiers.
+
+use crate::domain::{ColumnInfo, ColumnKind, CompletionIdentity, TableRef, TextRow};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseCatalog {
+    pub revision: String,
+    pub identity: CompletionIdentity,
+    pub database: String,
+    pub relations: Vec<RelationTargetSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationTargetSummary {
+    pub target_id: String,
+    pub database: String,
+    pub table: TableRef,
+    pub table_type: String,
+    pub traits: RelationTraits,
+    pub availability: RelationAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationTraits {
+    pub transient: Option<bool>,
+    pub temporary: Option<bool>,
+    pub iceberg: Option<bool>,
+    pub dynamic: Option<bool>,
+    pub hybrid: Option<bool>,
+    /// READ ONLY property; unrelated to dynamic-table frozen regions.
+    pub immutable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationAvailability {
+    Available,
+    Shadowed,
+    Ambiguous,
+    UnsupportedKind,
+    UnknownTraits,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InspectRelationRequest {
+    pub revision: String,
+    pub target_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreviewRelationRequest {
+    pub revision: String,
+    pub target_id: String,
+    pub inspection_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationInspection {
+    pub revision: String,
+    pub target_id: String,
+    pub database: String,
+    pub table: TableRef,
+    pub columns: Vec<ColumnInspection>,
+    pub constraints: ConstraintInspectionStatus,
+}
+
+/// No empty key arrays masquerading as an authoritative constraint inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConstraintInspectionStatus {
+    NotFetched,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnInspection {
+    pub name: String,
+    pub ordinal: u32,
+    pub full_type: String,
+    pub data_type: String,
+    pub data_type_alias: Option<String>,
+    pub kind: InspectedColumnKind,
+    pub result_kind: ColumnKind,
+    pub nullable: bool,
+    /// INFORMATION_SCHEMA.COLUMNS.COLUMN_DEFAULT; not an inferred Iceberg default.
+    pub default_expression: Option<String>,
+    /// DESCRIBE's default field (the initial default for Iceberg tables).
+    pub descriptor_default_expression: Option<String>,
+    /// DESCRIBE's independently reported write default, without expression evaluation.
+    pub write_default_expression: Option<String>,
+    /// Distinguishes an absent descriptor field from a field reporting SQL NULL.
+    pub write_default_status: WriteDefaultObservationStatus,
+    pub comment: Option<String>,
+    // Decimal text avoids lossy conversion through JavaScript Number.
+    pub character_maximum_length: Option<String>,
+    pub character_octet_length: Option<String>,
+    pub numeric_precision: Option<String>,
+    pub numeric_precision_radix: Option<String>,
+    pub numeric_scale: Option<String>,
+    pub identity: ColumnIdentity,
+    pub expression: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum WriteDefaultObservationStatus {
+    NotReported,
+    Available,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum InspectedColumnKind {
+    Column,
+    VirtualColumn,
+    PartitionColumn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnIdentity {
+    pub is_identity: Option<bool>,
+    pub generation: Option<String>,
+    pub start: Option<String>,
+    pub increment: Option<String>,
+    pub ordered: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationPreview {
+    pub columns: Vec<ColumnInfo>,
+    pub rows: Vec<TextRow>,
+    pub truncated: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_reject_sql_fragments_and_unknown_options() {
+        assert!(
+            serde_json::from_value::<PreviewRelationRequest>(serde_json::json!({
+                "revision": "r", "targetId": "opaque", "inspectionRevision": "i",
+                "orderBy": "secret()"
+            }))
+            .is_err()
+        );
+        let request: InspectRelationRequest = serde_json::from_value(serde_json::json!({
+            "revision": "r", "targetId": "opaque"
+        }))
+        .unwrap();
+        assert_eq!(request.target_id, "opaque");
+    }
+
+    #[test]
+    fn unavailable_constraints_and_unknown_traits_are_explicit_on_wire() {
+        assert_eq!(
+            serde_json::to_value(ConstraintInspectionStatus::NotFetched).unwrap(),
+            "notFetched"
+        );
+        let traits = RelationTraits {
+            transient: None,
+            temporary: Some(false),
+            iceberg: Some(false),
+            dynamic: Some(false),
+            hybrid: Some(false),
+            immutable: Some(false),
+        };
+        let value = serde_json::to_value(traits).unwrap();
+        assert!(value["transient"].is_null());
+        assert_eq!(value["temporary"], false);
+        assert!(RelationInspection::decl().contains("constraints"));
+        assert!(ColumnInspection::decl().contains("defaultExpression"));
+        assert!(ColumnInspection::decl().contains("descriptorDefaultExpression"));
+        assert!(ColumnInspection::decl().contains("writeDefaultStatus"));
+        assert_eq!(
+            serde_json::to_value(WriteDefaultObservationStatus::NotReported).unwrap(),
+            "notReported"
+        );
+        assert_eq!(
+            serde_json::to_value(WriteDefaultObservationStatus::Available).unwrap(),
+            "available"
+        );
+    }
+}

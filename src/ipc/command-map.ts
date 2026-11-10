@@ -4,6 +4,11 @@ import type {
   Bootstrap,
   BrowseApproval,
   BrowseQuery,
+  BrowseCatalog,
+  InspectRelationRequest,
+  PreviewRelationRequest,
+  RelationInspection,
+  RelationPreview,
   CellChange,
   ChangePreview,
   CompareRequest,
@@ -72,6 +77,15 @@ import type {
  * command with its exact argument payload and result DTO.
  */
 export interface JoineryCommandMap {
+  relation_catalog: { args: { sessionId: string }; result: BrowseCatalog };
+  inspect_relation: {
+    args: { sessionId: string; request: InspectRelationRequest };
+    result: RelationInspection;
+  };
+  preview_relation: {
+    args: { sessionId: string; request: PreviewRelationRequest };
+    result: RelationPreview;
+  };
   prepare_connection: {
     args: { id: string };
     result: string;

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use crate::relation_inspection::*;
+
 pub use crate::ddl::{
     DdlStatement, IndexConstraintAction, IndexConstraintPreview, SchemaDdlPlan, TableColumnDraft,
     TableMaintenanceAction, TableMaintenancePreview, TableObjectAction, TableObjectPreview,
@@ -156,6 +158,10 @@ pub struct EngineCapabilities {
     pub transactions: bool,
     pub cancellation: bool,
     pub table_browsing: bool,
+    /// Session-bound relation inspection and bounded read-only previews.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub relation_browsing: bool,
     pub table_editing: bool,
     /// Server-side typed sorting and filtering while browsing tables.
     pub table_filtering: bool,

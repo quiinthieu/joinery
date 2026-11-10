@@ -8,6 +8,139 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK relation browsing (10 November 2026)
+
+Status: **locally qualified**, with account and owner acceptance still open.
+Source follows `44a8b0c`. The local SDK route adds a distinct `relationBrowsing`
+capability; generic `tableBrowsing` and all edit/write/DDL/transaction capabilities
+remain false. This is a bounded current-database relation workflow, not complete
+DataGrip object inspection or account qualification. See the
+[implementation contract](snowflake-sdk-browsing-design.md).
+
+Catalog, inspection and preview use the retained console session and existing
+Studio/driver lanes. Catalog refresh invalidates old targets before admission,
+even when the console is busy. Opaque target/inspection revisions reject stale
+requests before SQL. Context/session/target observations bracket publication;
+they detect observed drift without promising atomic identity under external DDL.
+Unknown kinds/traits, permanent targets shadowed by temporary tables and
+ambiguous collisions remain visible with actions disabled. No automatic
+reconnection or alternative metadata connection is introduced.
+
+Inspection combines bounded COLUMNS, relation-specific DESCRIBE and zero-row
+resolved columns. It retains ordinal gaps, full types, aliases, nullability,
+identity attributes, comments and independent COLUMNS/descriptor/write-default
+observations. Missing write-default fields differ from reported NULL. Keys are
+explicitly `notFetched`; metadata never establishes edit eligibility. Preview
+uses an explicit quoted projection, retains at most 500 unordered rows/2 MiB,
+and pages those retained rows/columns locally without re-execution.
+
+Regression evidence under `.cache/verification/connection-attempts/` includes:
+
+- `sdk-browsing-reproduce-context_list_denial_is_not_published_as_empty_success.log`
+  and `sdk-browsing-reproduce-failed_switch_revokes_targets_and_plans_before_dispatch.log`:
+  restoring the two old Studio behaviors makes the new assertions fail.
+  Current code propagates context-list denial and invalidates targets/completion/
+  plans before switch dispatch, including failure. Original source is restored
+  after each sensitivity run.
+- `sdk-browsing-iceberg-before-fix.log`: the official initial-default `2` versus
+  write-default `3` example reproduces the missing observation. The repair keeps
+  COLUMNS expression defaults independent of DESC observations on Iceberg;
+  ordinary non-Iceberg equality remains checked. Missing, NULL, empty, malformed
+  and oversized write-default cases have regressions. See
+  [the official semantics](https://docs.snowflake.com/en/user-guide/tables-iceberg-default-values).
+- `sdk-browsing-studio-final.log`: **10/10** actual Node/core-helper application
+  fixtures pass, using the isolated synthetic SDK. The added workflow runs
+  catalog → inspect → preview → refresh, checks exact large integers/NULL/empty
+  strings and ordinal gaps, rejects stale targets without SQL, and verifies
+  that a busy catalog refresh also revokes old targets. One connection is
+  retained and cleanup is awaited. This combined run precedes the reviewed
+  Iceberg DTO repair; `sdk-browsing-studio-workflow-final.log` then reruns the
+  affected browsing workflow on final source: **1/1** passes in 19.70 seconds.
+  These tests do not use actual SDK transport or an account.
+
+- `sdk-browsing-pure-final.log`: **19/19** parser/builder tests pass after
+  the Iceberg repair. Two additional DTO wire-contract tests pass in validation.
+- `sdk-browsing-validate-final.log`: **619 frontend / 338 standard Rust**
+  tests, contracts/types, production web build, repository formatting, desktop
+  compilation and strict all-target/all-feature Clippy pass. The first combined
+  run passed its tests but failed the repository Rust formatter on test layout;
+  `sdk-browsing-validate-first.log` retains that result. The corrected source
+  passes the complete command. Standard validation does not execute the ignored
+  external-engine suites or the feature-gated actual-helper adapter fixtures.
+  The existing Vite chunk-size warning remains nonfatal.
+
+- `sdk-browsing-adapter-final.log`: **29/29** actual Node/core-helper
+  read-adapter tests pass on final source using the synthetic SDK. The ten added
+  browsing cases cover stale/forged/cross-database targets before SQL, superseded
+  inspection attempts, concurrent refresh ownership, denial/malformed results,
+  preview bounds, drift and busy-lane refresh invalidation.
+- `sdk-browsing-browser-final.log`: all **11** focused browser workflows pass
+  in 1.4 minutes. The new Snowflake browse flow verifies opaque request binding,
+  disabled shadowed-target actions, exact scalar rendering, local paging without
+  another preview query, failed-refresh clearing, Escape and focus restoration.
+  Snowflake RPCs are synthetic. The context/template cases use actual disposable
+  PostgreSQL, MySQL and MariaDB; the late-navigation case uses PostgreSQL.
+  The earlier full 145-workflow result is not a rerun of this increment.
+
+- `sdk-browsing-postgres-context-final.log`: the actual disposable PostgreSQL
+  manual-transaction/failed-state/grid-isolation/schema-switch regression passes
+  after the shared Studio context-list and pre-dispatch invalidation changes.
+  The preceding 124-fixture suite was not rerun for this increment.
+
+- `sdk-browsing-bundle-final.log`: fresh normal SDK-bearing macOS arm64
+  bundle, strict ad-hoc signature, 15,106 resource entries/zero links, source pins
+  and actual packaged-SDK hello/EOF pass with **zero authentication and SQL**.
+  The 223.89 MiB bundle executable is 31,409,792 bytes, SHA256
+  `59c06ca283b981c139be32e52d182d6fc8da088291a9610812e1250cdf1c84cd`.
+  `sdk-browsing-bundle-artifact.json` records the artifact and source snapshot.
+  Compilation passes despite the previously observed local `rust-objcopy`
+  missing-`libLLVM.dylib` stripping warning. No global toolchain changed.
+
+- `sdk-browsing-native-build-final.log` and `sdk-browsing-native-final.log`:
+  fresh SDK-bearing hidden native build/resource/startup checks and **19 check
+  categories / ten cleanup cycles** pass (4,114 ms native elapsed). This includes
+  disconnected-session IPC admission for all three new commands, WebView workers,
+  exact values, persistence and cleanup. All six checkpoints report the runtime
+  available and zero connect/execute/prepare invocations. The actually launched
+  isolated bundle executable SHA256 is
+  `e6943dd4035bdd16fb17d15977b528c85017e1006182930f7e632ced65cabc9a`;
+  the separate fixture executable is
+  `7b587336c106bb3e8bc5da8ce4308d02b5d76e3f1d18b9fd4afc0cda87091321`.
+  `sdk-browsing-native-runs.json` preserves the report. This is synthetic hidden
+  native evidence, not normal account sign-in, installed restart, OS credentials
+  or representative performance. The known stripping warning also occurs here.
+- `sdk-browsing-qualified-source.json`: all **316** application/runtime/test
+  input hashes remain unchanged through final verification. The recorded
+  `sdk-browsing-source-freeze-transition.json` captures the reviewed Iceberg fix,
+  UI regressions and generated contracts; its formatting-only successor is
+  `sdk-browsing-format-freeze-transition.json`. Derived Python bytecode is
+  excluded from source inputs. Artifact provenance records `44a8b0c` and a dirty
+  tree because qualification precedes the local commit; no clean-tree artifact
+  claim is made. Independent implementation review clears the shared/adapter
+  workflow and repaired Iceberg observations. Documentation review's two scope
+  ambiguities are corrected.
+
+No installation, push, publication, merge or private project-hub update ran.
+No additional authentication or account SQL ran. The prior two-SELECT approval was not reused. Actual descriptor
+shapes, privileges, supported type families, temporary collision inspection,
+external DDL, full session observation/schema switching, broader object metadata,
+writes/DDL/transactions and million-row Snowflake behavior remain open gates.
+
+Reproduce with the pinned Node/Rust environment documented below. The fixture
+commands use only synthetic SDK data or disposable local databases:
+
+```sh
+pnpm validate
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib snowflake_browsing
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --test snowflake_external
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_connection_tests
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres postgres_manual_transactions_failed_state_grid_isolation_and_schema_switch -- --ignored --test-threads=1
+pnpm test:e2e tests/e2e/snowflake-sdk-browsing.spec.ts tests/e2e/snowflake-sdk-completion.spec.ts tests/e2e/snowflake-authentication.spec.ts tests/e2e/sql-template-context.spec.ts
+pnpm desktop:snowflake:bundle:mac
+pnpm desktop:snowflake:smoke:build
+pnpm test:native --runs 1 --cycles 10 --attributed-memory
+```
+
 ### SDK submission admission (10 November 2026; locally qualified)
 
 Source follows `5df743c`. The original process-local guard is installed before

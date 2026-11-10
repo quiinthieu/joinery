@@ -23,12 +23,26 @@ Current local source integrates explicit external-browser SDK profiles, fixed
 native runtime selection and retained helper cleanup. New profiles choose the SDK;
 existing profiles preserve local-application OAuth. Both routes enforce ReadOnly.
 SDK same-session completion is implemented and locally qualified; see the
-[metadata contract](snowflake-sdk-metadata-design.md). Table browsing,
-authoritative inspection, writes, DDL and transactions remain disabled and required. Actual
+[metadata contract](snowflake-sdk-metadata-design.md). The current local browsing
+increment adds a separate revision-bound relation catalog, column inspection and
+read-only preview; its [contract](snowflake-sdk-browsing-design.md) and
+[qualification ledger](replacement-verification.md#sdk-relation-browsing-10-november-2026)
+distinguish local evidence from actual account behavior. Generic editable table
+browsing, complete object/constraint inspection, writes, DDL and transactions
+remain incomplete and required. Actual
 packaged application authentication, million-row behavior and owner suitability
 are unqualified. A separately approved two-query SDK helper canary now passes
 actual account SSO, context/session continuity, scalar values and local cleanup;
 the ledger records its initial validator failure and corrected rerun.
+
+The relation-browsing increment is locally qualified: **619 frontend / 338
+standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
+application/helper browsing flow, **11** focused browser workflows and an actual
+PostgreSQL context/transaction regression pass. Fresh normal SDK macOS packaging,
+signature/startup and **19** hidden native check categories with ten cleanup
+cycles pass. The ledger records source hashes, artifact identities and explicit
+account/installed-application limits. This does not qualify Snowflake account
+metadata or enable writes, DDL or transactions.
 
 The completion increment passes 607 frontend / 312 standard Rust tests,
 124 real-engine regressions, all 145 browser workflows, fresh SDK-bearing macOS

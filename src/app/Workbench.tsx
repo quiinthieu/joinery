@@ -71,6 +71,7 @@ import {
   ObjectKindGlyph,
 } from "../features/studio/ObjectInspectorView";
 import { SessionStructureView } from "../features/studio/SessionStructureView";
+import { RelationBrowser } from "../features/studio/RelationBrowser";
 import { StructureView } from "../features/studio/UtilityViews";
 import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
@@ -152,6 +153,7 @@ export function Workbench({
     [renamingSessionId, setRenamingSessionId] = useState<string | null>(null),
     [renameDraft, setRenameDraft] = useState(""),
     [txBusy, setTxBusy] = useState(false),
+    [relationBrowserSession, setRelationBrowserSession] = useState<string | null>(null),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const objectExplorerSupported = Boolean(session?.capabilities.objectExplorer);
@@ -669,6 +671,15 @@ export function Workbench({
           )}
           {tab.kind === "query" && (
             <>
+              {session?.capabilities.relationBrowsing && (
+                <button
+                  className="button ghost small"
+                  disabled={running}
+                  onClick={() => setRelationBrowserSession(session.id)}
+                >
+                  <Table2 size={13} /> Browse relations
+                </button>
+              )}
               <button
                 className="button ghost small"
                 aria-label="Open SQL file"
@@ -841,6 +852,13 @@ export function Workbench({
           )}
         </div>
       </div>
+      {relationBrowserSession && session?.id === relationBrowserSession && !running && (
+        <RelationBrowser
+          key={`${session.id}:${state.sessionContextRevision[session.id] ?? 0}:${tab.revision}`}
+          sessionId={session.id}
+          onClose={() => setRelationBrowserSession(null)}
+        />
+      )}
       {tab.kind === "query" && profile?.engine === "redis" && (
         <RedisTools
           sessionId={session?.id ?? null}

@@ -89,7 +89,21 @@ export default {
           const schema = sql.includes("TABLE_SCHEMA = 'PUBLIC'") ? 'PUBLIC' : 'OTHER';
           names = relationColumns;
           values = [[profile.database, schema, 'SAME_NAME', 'BASE TABLE', 'NO', 'NO', 'NO', 'NO', 'NO', 'NO']];
+          if (sql.includes('CREATED::VARCHAR AS CREATED')) {
+            names = [...names, 'CREATED', 'LAST_DDL'];
+            values = values.map(row => [...row, 'created', 'last-ddl']);
+          }
           if (existsSync(marker('malformed-catalog'))) names = ['WRONG_CATALOG', ...relationColumns.slice(1)];
+        } else if (sql.includes('.INFORMATION_SCHEMA.COLUMNS AS C ')) {
+          names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','COLUMN_NAME','ORDINAL_POSITION','COLUMN_DEFAULT','IS_NULLABLE','DATA_TYPE','DATA_TYPE_ALIAS','CHARACTER_MAXIMUM_LENGTH','CHARACTER_OCTET_LENGTH','NUMERIC_PRECISION','NUMERIC_PRECISION_RADIX','NUMERIC_SCALE','IS_IDENTITY','IDENTITY_GENERATION','IDENTITY_START','IDENTITY_INCREMENT','IDENTITY_ORDERED','COMMENT','EXPRESSION','KIND'];
+          const schema = sql.includes("TABLE_SCHEMA = 'PUBLIC'") ? 'PUBLIC' : 'OTHER';
+          values = [[profile.database,schema,'SAME_NAME','ID','1',null,'NO','NUMBER',null,null,null,'38','10','0','NO',null,null,null,null,null,null,'COLUMN'],[profile.database,schema,'SAME_NAME','NAME','3',null,'YES','TEXT',null,'100','400',null,null,null,'NO',null,null,null,null,'synthetic comment',null,'COLUMN']];
+        } else if (sql.startsWith('DESCRIBE TABLE ')) {
+          names = ['name','type','kind','null?','default','expression','comment'];
+          values = [['ID','NUMBER(38,0)','COLUMN','N',null,null,null],['NAME','VARCHAR(100)','COLUMN','Y',null,null,'synthetic comment']];
+        } else if (sql.startsWith('SELECT "ID", "NAME" FROM ')) {
+          names = ['ID','NAME']; types = ['FIXED','TEXT'];
+          values = [['9007199254740993',null],['2','']];
         } else if (sql.startsWith('SELECT * FROM ') && sql.endsWith(' LIMIT 0')) {
           names = ['ID', 'NAME'];
           types = ['FIXED', 'TEXT'];

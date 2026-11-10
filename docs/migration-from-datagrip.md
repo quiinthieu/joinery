@@ -8,12 +8,15 @@ Keep DataGrip available until your required workflows are accepted.
 
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.
-The current SDK external-browser route is integrated for read-only SQL; its local
-browser, native and package qualification passes. Existing profiles retain their OAuth/SQL API
+The SDK external-browser route is integrated for read-only SQL. The preceding
+profile/runtime increment passed its local browser, native and package checks;
+the later browsing increment has separate [qualification evidence](replacement-verification.md#sdk-relation-browsing-10-november-2026). Existing profiles retain their OAuth/SQL API
 route. SDK same-session completion is implemented and locally qualified under its
 [qualification contract](snowflake-sdk-metadata-design.md). Neither route satisfies
-the complete target: SDK browsing, authoritative inspection, writes, DDL,
-transactions and full account qualification remain open. The fixture walkthrough
+the complete target. A distinct SDK relation catalog, column inspection and
+read-only preview is implemented locally; complete object/constraint inspection,
+editable browsing, writes, DDL, transactions and full account qualification remain
+open. The fixture walkthrough
 below qualifies existing paths only; keep DataGrip until the required walkthrough
 is accepted. See [SDK integration and limits](snowflake-sdk-integration.md).
 
@@ -77,10 +80,28 @@ context** after a context failure; stale suggestions must stay unavailable until
 refresh succeeds. The [contract](snowflake-sdk-metadata-design.md) records bounds,
 permission handling and relative-query-history limitations.
 
-The current SDK route keeps SQL read-only and does not provide table browsing,
-authoritative inspection, writes, schema changes or transactions. Those remain
-required before switching. Keep the existing DataGrip connection available while
-these workflows and million-row results are implemented and accepted.
+The current source also has a distinct **Browse relations** action in an SDK
+query console. It loads visible schemas and relations for the configured current
+database, then offers bounded column inspection and an unordered read-only
+preview. This is separate from generic table browsing (`tableBrowsing` remains
+disabled) and provides no editing or schema switching. Inspection reports
+constraints as **not fetched**; metadata does not establish edit eligibility.
+The feature is locally implemented but not qualified against an account.
+
+Do not use the old two-query canary approval for this flow. The separate
+[browsing contract](snowflake-sdk-browsing-design.md) describes the exact local
+limits and a synthetic UI check. For an account walkthrough, first obtain reviewed
+approval covering the query-editor completion metadata and Browse relations
+schema/relationship metadata. Previewing rows from an existing table requires
+additional approval for that exact target and data scope; the current account
+qualification plan excludes existing-table data reads. Without approval, use the
+synthetic test flow documented in the contract and do not authenticate to
+Snowflake for this walkthrough.
+
+The SDK SQL route remains ReadOnly, and authoritative constraints, schema
+switching, writes, DDL, transactions and the required million-row result/export
+workflow remain open. Keep the existing DataGrip connection available while the
+required account workflows are implemented and accepted.
 
 The SDK helper now guards query submission against automatic retransmission for
 its exact reviewed dependency sources. It verifies those sources before import
@@ -217,7 +238,8 @@ native close/reopen with pending drafts/preferences and PostgreSQL rollback
 in-memory secret store. They do not substitute for your normal packaged native
 quit/restart evaluation or OS credential-store qualification.
 
-Snowflake is a read-only browser-OAuth pilot with open external qualification;
+Snowflake has read-only external-browser SDK and local-application OAuth routes,
+with full external workflow qualification open;
 Redis supports a bounded standalone command/key workflow, not Cluster, Sentinel,
 streams or Pub/Sub. A required unsupported engine/authentication/operation is a
 replacement blocker, not a reason to silently omit that daily workflow.

@@ -15,6 +15,7 @@ mod native_smoke_config;
 pub mod params;
 pub mod persistence;
 mod query_plan;
+mod relation_inspection;
 pub mod results;
 pub mod safety;
 pub mod schema_diff;
@@ -176,6 +177,9 @@ pub fn run() {
             commands::completion_catalog,
             commands::completion_schema,
             commands::inspection_schema,
+            commands::relation_catalog,
+            commands::inspect_relation,
+            commands::preview_relation,
             commands::catalog,
             commands::database_objects,
             commands::object_details,

@@ -22,13 +22,26 @@ Actual Snowflake million-row behavior remains unqualified.
 
 Current Joinery implements explicit local-application OAuth/SQL API and stateful
 SDK external-browser profile routes. Both enforce ReadOnly. SDK same-session
-completion is implemented and locally qualified separately; table browsing,
-authoritative inspection, writes, DDL and transactions remain disabled. Full account/session compatibility remains
+completion is implemented and locally qualified separately. A distinct
+revision-bound relation catalog/inspection/read-only preview is now implemented
+locally; see the [browsing contract](snowflake-sdk-browsing-design.md) and
+[current qualification](replacement-verification.md#sdk-relation-browsing-10-november-2026).
+Generic editable browsing, complete object/constraint inspection, writes, DDL
+and transactions remain incomplete. Full account/session compatibility remains
 unqualified. These are primary replacement blockers. Local
 PostgreSQL/MySQL safety repairs remain useful application work but do not close
 Snowflake acceptance. External account qualification needs explicit non-production
 scope and permission for any billable activity/writes; no private DataGrip state
 or credentials will be inspected.
+
+The relation-browsing increment is locally qualified: **619 frontend / 338
+standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
+application/helper browsing flow, **11** focused browser workflows and an actual
+PostgreSQL context/transaction regression pass. Fresh normal SDK macOS packaging,
+signature/startup and **19** hidden native check categories with ten cleanup
+cycles pass. The ledger records source hashes, artifact identities and explicit
+account/installed-application limits. This does not qualify Snowflake account
+metadata or enable writes, DDL or transactions.
 
 The current [SDK application integration](snowflake-sdk-integration.md) adds explicit
 authentication modes, fixed native runtime selection, retained cleanup authority,
@@ -64,8 +77,10 @@ targets and truthful unknown transaction/context states. The separate
 process-local boundary against SDK retransmission and passes local qualification:
 159 helper tests, 607 frontend / 314 standard Rust tests, focused browser flows,
 fresh SDK-bearing macOS packaging/startup and 19 hidden native check categories.
-The browsing proposal remains unimplemented. Neither is account
-qualified. The guard's actual pinned-SDK fault, redirect, proxy and cleanup
+The browsing contract now has a local catalog/column-inspection/preview
+implementation. Typed schema switching and truthful session observation remain
+planned; the complete browsing/session workflow is not finished. Neither is
+account qualified. The guard's actual pinned-SDK fault, redirect, proxy and cleanup
 evidence establishes a bounded submission foundation; that foundation alone
 must not enable writes or transactions.
 

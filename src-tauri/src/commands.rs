@@ -223,6 +223,32 @@ pub async fn cancel_run(studio: State<'_, Arc<Studio>>, run_id: String) -> AppRe
 }
 
 #[tauri::command]
+pub async fn relation_catalog(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<BrowseCatalog> {
+    studio.relation_catalog(&session_id).await
+}
+
+#[tauri::command]
+pub async fn inspect_relation(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: InspectRelationRequest,
+) -> AppResult<RelationInspection> {
+    studio.inspect_relation(&session_id, &request).await
+}
+
+#[tauri::command]
+pub async fn preview_relation(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: PreviewRelationRequest,
+) -> AppResult<RelationPreview> {
+    studio.preview_relation(&session_id, &request).await
+}
+
+#[tauri::command]
 pub async fn catalog(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

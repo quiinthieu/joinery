@@ -226,6 +226,7 @@ impl Mysql {
                     transactions: true,
                     cancellation: true,
                     table_browsing: true,
+                    relation_browsing: false,
                     table_editing: true,
                     table_filtering: true,
                     processes: true,

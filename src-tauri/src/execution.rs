@@ -1851,11 +1851,14 @@ impl Studio {
                 "This database session is disconnected",
             ));
         }
-        session.driver.switch_context(target).await?;
+        // A failed/lost response can still leave a changed server context.
+        // Revoke every prepared target before dispatch, including on failure.
         *session.completion.lock() = None;
+        session.driver.invalidate_relation_catalog();
         self.plans
             .lock()
             .retain(|_, p| p.plan.session_id != session.info.id);
+        session.driver.switch_context(target).await?;
         let _ = self
             .persistence
             .audit(&session.profile.id, "switch-context", target, "completed");
@@ -2030,7 +2033,7 @@ impl Studio {
         session: &Arc<Session>,
     ) -> AppResult<SessionContextOptions> {
         let state = session.driver.session_state(&session.info.id).await?;
-        let mut available = session.driver.list_contexts().await.unwrap_or_default();
+        let mut available = session.driver.list_contexts().await?;
         if let Some(active) = &state.active_context
             && !active.is_empty()
             && !available.iter().any(|item| item == active)
@@ -2233,6 +2236,72 @@ impl Studio {
         }
         Ok(schema)
     }
+    async fn relation_lane(session: &Session) -> AppResult<tokio::sync::MutexGuard<'_, ()>> {
+        if !session.info.capabilities.relation_browsing {
+            return Err(AppError::new(
+                ErrorCode::Unsupported,
+                "Session relation browsing is unavailable for this engine",
+            ));
+        }
+        let lane = tokio::time::timeout(Duration::from_millis(1500), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            session.driver.invalidate_relation_catalog();
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        Ok(lane)
+    }
+
+    fn publish_relation<T>(session: &Session, result: AppResult<T>) -> AppResult<T> {
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            session.driver.invalidate_relation_catalog();
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "The database session closed while reading metadata",
+            ));
+        }
+        result
+    }
+
+    pub async fn relation_catalog(&self, session_id: &str) -> AppResult<BrowseCatalog> {
+        let session = self.session(session_id)?;
+        // Refresh revokes targets even if the outer console lane is busy.
+        // Never let a failed refresh leave a previously granted target usable.
+        session.driver.invalidate_relation_catalog();
+        let _lane = Self::relation_lane(&session).await?;
+        Self::publish_relation(&session, session.driver.relation_catalog().await)
+    }
+
+    pub async fn inspect_relation(
+        &self,
+        session_id: &str,
+        request: &InspectRelationRequest,
+    ) -> AppResult<RelationInspection> {
+        let session = self.session(session_id)?;
+        let _lane = Self::relation_lane(&session).await?;
+        Self::publish_relation(&session, session.driver.inspect_relation(request).await)
+    }
+
+    pub async fn preview_relation(
+        &self,
+        session_id: &str,
+        request: &PreviewRelationRequest,
+    ) -> AppResult<RelationPreview> {
+        let session = self.session(session_id)?;
+        let _lane = Self::relation_lane(&session).await?;
+        Self::publish_relation(&session, session.driver.preview_relation(request).await)
+    }
+
     pub async fn catalog(&self, session_id: &str) -> AppResult<Vec<TableInfo>> {
         self.session(session_id)?.driver.catalog().await
     }
@@ -4965,10 +5034,69 @@ mod browse_classification_tests {
         calls: Mutex<Vec<(String, crate::params::BoundStatement)>>,
         transaction_error: Option<ErrorCode>,
         closed: AtomicBool,
+        context_enabled: bool,
+        contexts_error: Option<ErrorCode>,
+        switch_error: Option<ErrorCode>,
+        relation_calls: std::sync::atomic::AtomicUsize,
+        relation_invalidated: AtomicBool,
+        switch_saw_invalidation: AtomicBool,
+        close_during_relation: bool,
     }
 
     #[async_trait::async_trait]
     impl Driver for RecordingDriver {
+        fn invalidate_relation_catalog(&self) {
+            self.relation_invalidated.store(true, Ordering::Release);
+        }
+        async fn relation_catalog(&self) -> AppResult<BrowseCatalog> {
+            self.relation_calls.fetch_add(1, Ordering::Relaxed);
+            if self.close_during_relation {
+                self.close();
+            }
+            Ok(BrowseCatalog {
+                revision: "r".into(),
+                database: "fixture".into(),
+                relations: vec![],
+                identity: CompletionIdentity {
+                    database: "fixture".into(),
+                    role: "reader".into(),
+                    search_path: vec!["public".into()],
+                    case_sensitive_table_names: Some(true),
+                    context_fingerprint: None,
+                },
+            })
+        }
+        async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+            if !self.context_enabled {
+                return Err(AppError::new(ErrorCode::Unsupported, "No fixture context"));
+            }
+            Ok(SessionRuntimeState {
+                session_id: session_id.into(),
+                transaction_mode: TransactionMode::AutoCommit,
+                transaction_state: TransactionState::Idle,
+                context_kind: SessionContextKind::Schema,
+                active_context: Some("public".into()),
+                database: "fixture".into(),
+                role: "reader".into(),
+                search_path: vec!["public".into()],
+                context_fingerprint: None,
+            })
+        }
+        async fn list_contexts(&self) -> AppResult<Vec<String>> {
+            match self.contexts_error {
+                Some(code) => Err(AppError::new(code, "Fixture context list denied")),
+                None => Ok(vec!["public".into()]),
+            }
+        }
+        async fn switch_context(&self, _target: &str) -> AppResult<()> {
+            self.switch_saw_invalidation.store(
+                self.relation_invalidated.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+            self.switch_error.map_or(Ok(()), |code| {
+                Err(AppError::new(code, "Fixture switch failed"))
+            })
+        }
         async fn execute(
             &self,
             _sql: &str,
@@ -5044,6 +5172,129 @@ mod browse_classification_tests {
         }
     }
 
+    fn relation_test_session(
+        studio: &Studio,
+        driver: Arc<RecordingDriver>,
+        enabled: bool,
+    ) -> Arc<Session> {
+        let profile = profile(EngineKind::Postgres, SafeMode::ReadOnly);
+        let session = Arc::new(Session {
+            info: SessionInfo { id: new_id(), connection_id: profile.id.clone(), engine: EngineKind::Postgres, server_version: "fixture".into(), latency_ms: 0, encrypted: false, capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"cancellation":true,"tableBrowsing":false,"relationBrowsing":enabled,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
+            profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None),
+        });
+        studio
+            .sessions
+            .lock()
+            .insert(session.info.id.clone(), session.clone());
+        session
+    }
+
+    #[tokio::test]
+    async fn context_list_denial_is_not_published_as_empty_success() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let driver = Arc::new(RecordingDriver {
+            context_enabled: true,
+            contexts_error: Some(ErrorCode::PermissionDenied),
+            ..Default::default()
+        });
+        let session = relation_test_session(&studio, driver, true);
+        assert_eq!(
+            studio
+                .session_contexts(&session.info.id)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_switch_revokes_targets_and_plans_before_dispatch() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let driver = Arc::new(RecordingDriver {
+            context_enabled: true,
+            switch_error: Some(ErrorCode::OutcomeUnknown),
+            ..Default::default()
+        });
+        let session = relation_test_session(&studio, driver.clone(), true);
+        *session.completion.lock() = Some(CompletionCatalog {
+            revision: "old".into(),
+            identity: driver.relation_catalog().await.unwrap().identity,
+            tables: vec![],
+            unqualified_tables: vec![],
+        });
+        let plan = studio
+            .prepare_execution(&session.info.id, "SELECT 1")
+            .unwrap();
+        assert_eq!(
+            studio
+                .switch_session_context(&session.info.id, "next")
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::OutcomeUnknown
+        );
+        assert!(driver.switch_saw_invalidation.load(Ordering::Acquire));
+        assert!(session.completion.lock().is_none());
+        assert!(!studio.plans.lock().contains_key(&plan.id));
+    }
+
+    #[tokio::test]
+    async fn relation_admission_rejects_unavailable_busy_and_closed_sessions() {
+        for state in [
+            "unsupported",
+            "running",
+            "closed",
+            "closed-during-read",
+            "ready",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let studio = Studio::with_secrets(
+                root.path(),
+                Arc::new(crate::secrets::MemorySecrets::default()),
+            )
+            .unwrap();
+            let driver = Arc::new(RecordingDriver {
+                close_during_relation: state == "closed-during-read",
+                ..Default::default()
+            });
+            let session = relation_test_session(&studio, driver.clone(), state != "unsupported");
+            if state == "running" {
+                *session.active_run.lock() = Some("query".into());
+            }
+            if state == "closed" {
+                session.closed.store(true, Ordering::Release);
+            }
+            let result = studio.relation_catalog(&session.info.id).await;
+            if state == "ready" {
+                assert_eq!(result.unwrap().revision, "r");
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    match state {
+                        "unsupported" => ErrorCode::Unsupported,
+                        "running" => ErrorCode::Conflict,
+                        _ => ErrorCode::ConnectionClosed,
+                    }
+                );
+            }
+            assert_eq!(
+                driver.relation_calls.load(Ordering::Relaxed),
+                usize::from(matches!(state, "ready" | "closed-during-read"))
+            );
+        }
+    }
+
     #[tokio::test]
     async fn transaction_controls_preserve_acknowledgement_and_retire_only_terminal_failures() {
         for engine in [EngineKind::Postgres, EngineKind::Mysql] {
@@ -5085,6 +5336,7 @@ mod browse_classification_tests {
                                     transactions: true,
                                     cancellation: true,
                                     table_browsing: false,
+                                    relation_browsing: false,
                                     table_editing: false,
                                     table_filtering: false,
                                     processes: false,
@@ -5178,6 +5430,7 @@ mod browse_classification_tests {
                         transactions: true,
                         cancellation: true,
                         table_browsing: true,
+                        relation_browsing: false,
                         table_editing: true,
                         table_filtering: true,
                         processes: true,
@@ -5365,6 +5618,7 @@ mod browse_classification_tests {
                         transactions: true,
                         cancellation: true,
                         table_browsing: false,
+                        relation_browsing: false,
                         table_editing: false,
                         table_filtering: false,
                         processes: false,

@@ -75,6 +75,7 @@ async fn sdk_session_is_published_and_disconnect_waits_with_retained_driver() {
         .await
         .unwrap();
     assert!(!info.capabilities.table_browsing);
+    assert!(info.capabilities.relation_browsing);
     assert!(!info.capabilities.transactions);
     let retained = studio.session(&info.id).unwrap();
     let marker = started(&fixture).await;
@@ -252,6 +253,118 @@ async fn sdk_completion_refresh_and_lazy_columns_keep_stable_revision_on_one_con
     assert_eq!(first.identity, refreshed.identity);
     assert!(Arc::ptr_eq(&retained, &studio.session(&info.id).unwrap()));
     close_metadata_session(&fixture, &studio, &info.id).await;
+}
+
+#[tokio::test]
+async fn sdk_relation_workflow_uses_console_lane_and_revokes_stale_targets() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = metadata_session(&fixture, &studio).await;
+    assert!(info.capabilities.relation_browsing);
+    assert!(!info.capabilities.table_browsing);
+    let retained = studio.session(&info.id).unwrap();
+    let catalog = studio.relation_catalog(&info.id).await.unwrap();
+    let target = catalog
+        .relations
+        .iter()
+        .find(|target| target.table == public_table())
+        .unwrap();
+    let request = InspectRelationRequest {
+        revision: catalog.revision.clone(),
+        target_id: target.target_id.clone(),
+    };
+    let inspected = studio.inspect_relation(&info.id, &request).await.unwrap();
+    assert_eq!(
+        inspected
+            .columns
+            .iter()
+            .map(|column| column.ordinal)
+            .collect::<Vec<_>>(),
+        [1, 3]
+    );
+    assert_eq!(
+        inspected.constraints,
+        ConstraintInspectionStatus::NotFetched
+    );
+    let preview_request = PreviewRelationRequest {
+        revision: request.revision.clone(),
+        target_id: request.target_id.clone(),
+        inspection_revision: inspected.revision,
+    };
+    let preview = studio
+        .preview_relation(&info.id, &preview_request)
+        .await
+        .unwrap();
+    assert_eq!(
+        preview.rows,
+        vec![
+            vec![Some("9007199254740993".into()), None],
+            vec![Some("2".into()), Some("".into())]
+        ]
+    );
+    assert!(!preview.truncated);
+    let refreshed = studio.relation_catalog(&info.id).await.unwrap();
+    assert_ne!(refreshed.revision, catalog.revision);
+    let before = queries(&fixture).len();
+    assert_eq!(
+        studio
+            .inspect_relation(&info.id, &request)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        studio
+            .preview_relation(&info.id, &preview_request)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        queries(&fixture).len(),
+        before,
+        "stale requests must submit no helper SQL"
+    );
+    let next_target = &refreshed.relations[0];
+    let next_request = InspectRelationRequest {
+        revision: refreshed.revision,
+        target_id: next_target.target_id.clone(),
+    };
+    let held = retained.lane.lock().await;
+    assert_eq!(
+        studio.relation_catalog(&info.id).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    drop(held);
+    assert_eq!(
+        studio
+            .inspect_relation(&info.id, &next_request)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        queries(&fixture).len(),
+        before,
+        "a busy outer refresh must revoke targets before waiting"
+    );
+    assert!(Arc::ptr_eq(&retained, &studio.session(&info.id).unwrap()));
+    studio.disconnect_and_wait(&info.id).await.unwrap();
+    assert!(retained.driver.is_closed());
+    no_roots(&fixture);
+    let events = std::fs::read_to_string(fixture.controls.join("sdk-events")).unwrap();
+    assert_eq!(
+        events.lines().collect::<Vec<_>>(),
+        ["create", "connect", "destroy"]
+    );
+    let submitted = queries(&fixture);
+    assert!(submitted.iter().all(|sql| sql.starts_with("SELECT ")
+        || sql.starts_with("DESCRIBE TABLE ")
+        || sql == "SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE' IN SESSION"));
 }
 
 #[tokio::test]

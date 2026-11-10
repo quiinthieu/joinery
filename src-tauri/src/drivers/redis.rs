@@ -112,6 +112,7 @@ impl Redis {
                 transactions: false,
                 cancellation: true,
                 table_browsing: false,
+                relation_browsing: false,
                 table_editing: false,
                 table_filtering: false,
                 processes: false,

@@ -51,6 +51,21 @@ export async function runNativeSmoke() {
     for (const [command, args] of [
       ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1" }],
       ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1", analyze: true }],
+      ["relation_catalog", { sessionId: "missing-native-fixture" }],
+      [
+        "inspect_relation",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
+        "preview_relation",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing", inspectionRevision: "obsolete" },
+        },
+      ],
       [
         "completion_catalog",
         {

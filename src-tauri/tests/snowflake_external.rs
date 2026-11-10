@@ -20,7 +20,7 @@ import { Readable } from 'node:stream';
 import { writeFileSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
 const { Helper } = await import(HELPER_URL);
 const { Decoder, writer } = await import(FRAMING_URL);
-let next = 0, executions = 0;
+let next = 0, executions = 0, relationChecks = 0;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12,'0')}`;
 const sdk = { createConnection(options) {
   appendFileSync(new URL('./connections',import.meta.url),'1');
@@ -51,6 +51,11 @@ const sdk = { createConnection(options) {
       const context = sql.includes(' AS PRINCIPAL');
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
       const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ');
+      const columnMetadata = sql.includes('.INFORMATION_SCHEMA.COLUMNS AS C ');
+      const describe = sql.startsWith('DESCRIBE TABLE ');
+      const preview = sql.startsWith('SELECT "ID", "NOTES" FROM ');
+      const exactRelation = relations && sql.includes(" AND TABLE_NAME = ");
+      const browsing = relations && sql.includes('CREATED::VARCHAR AS CREATED');
       const columns = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
       if (context) {
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
@@ -64,14 +69,40 @@ const sdk = { createConnection(options) {
         const schema=sql.includes("TABLE_SCHEMA = 'OTHER'")?'OTHER':'PUBLIC';
         const row=n=>['DB',schema,n,'BASE TABLE','NO','NO','NO','NO','NO','NO'];
         values=settings.overflow?Array.from({length:10001},(_,i)=>row('T'+i)):[row(schema==='OTHER'?'Mixed.Name':'ORDERS')];
+        if(browsing) {
+          names.push('CREATED','LAST_DDL');
+          if(exactRelation) relationChecks++;
+          values=values.map(row=>[...row,'created',settings.relationDriftAfter && relationChecks>=settings.relationDriftAfter?'changed':'last-ddl']);
+          if(settings.collision) values.push([...values[0].slice(0,3),'TEMPORARY TABLE','NO','YES','NO','NO','NO','NO','created','last-ddl']);
+        }
         if(settings.catalogDrift) writeFileSync(settingsFile,JSON.stringify({...settings,warehouse:'CHANGED',catalogDrift:false}));
+      } else if(columnMetadata) {
+        names=['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','COLUMN_NAME','ORDINAL_POSITION','COLUMN_DEFAULT','IS_NULLABLE','DATA_TYPE','DATA_TYPE_ALIAS','CHARACTER_MAXIMUM_LENGTH','CHARACTER_OCTET_LENGTH','NUMERIC_PRECISION','NUMERIC_PRECISION_RADIX','NUMERIC_SCALE','IS_IDENTITY','IDENTITY_GENERATION','IDENTITY_START','IDENTITY_INCREMENT','IDENTITY_ORDERED','COMMENT','EXPRESSION','KIND'];
+        const schema=sql.includes("TABLE_SCHEMA = 'OTHER'")?'OTHER':'PUBLIC';
+        const table=schema==='OTHER'?'Mixed.Name':'ORDERS';
+        values=[['DB',schema,table,'ID','1','42','NO','NUMBER','BIGINT',null,null,'38','10','0','NO',null,null,null,null,'identifier',null,'COLUMN'],['DB',schema,table,'NOTES','3',null,'YES','TEXT',null,'100','400',null,null,null,'NO',null,null,null,null,null,null,'COLUMN']];
+        if(settings.badOrdinal) values[1][4]='1';
+      } else if(describe) {
+        names=['name','type','kind','null?','default','expression','comment'];
+        values=[['ID','NUMBER(38,0)','COLUMN','N','42',null,'identifier'],['NOTES','VARCHAR(100)','COLUMN','Y',null,null,null]];
+      } else if(preview) {
+        names=settings.previewWrongColumns?['NOTES','ID']:['ID','NOTES'];
+        values=Array.from({length:settings.previewRows??2},(_,i)=>[String(i),settings.previewBytes?'x'.repeat(40000):i===0?null:'note']);
+        if(settings.previewDrift) writeFileSync(settingsFile,JSON.stringify({...settings,warehouse:'CHANGED',previewDrift:false}));
       } else if(columns) {
         names=['ID','NOTES']; values=settings.columnRows?[['1','unexpected']]:[];
       }
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> columns&&index===0?'FIXED':'TEXT'})),
+        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> (columns||preview)&&index===0?'FIXED':'TEXT'})),
         streamRows() {
+          if(describe && settings.holdDescribe) {
+            writeFileSync(new URL('./active',import.meta.url),'');
+            return Readable.from((async function*() {
+              while(!existsSync(new URL('./release',import.meta.url))) await new Promise(resolve=>setTimeout(resolve,5));
+              yield* values;
+            })());
+          }
           if (columns && settings.columnWait) {
             writeFileSync(new URL('./active',import.meta.url),'');
             return Readable.from((async function*() {
@@ -96,7 +127,7 @@ const sdk = { createConnection(options) {
           if(sql==='SELECT WAIT_FOR_CANCEL_UNKNOWN') setTimeout(()=>options.complete({sqlState:'08006'},statement),80);
         },
       };
-      if (settings.denied && relations) setImmediate(() => options.complete({sqlState:'42501'},statement));
+      if ((settings.denied && relations) || (settings.inspectDenied && columnMetadata) || (settings.previewDenied && preview)) setImmediate(() => options.complete({sqlState:'42501'},statement));
       else if (sql === 'SELECT TRANSPORT_FAILURE') setImmediate(() => options.complete({sqlState:'08006'},statement));
       else if(sql!=='SELECT WAIT_FOR_CANCEL_UNKNOWN') setImmediate(() => options.complete(null,statement));
       return statement;
@@ -225,6 +256,7 @@ impl Harness {
         .unwrap();
         assert_eq!(info.server_version, "synthetic-version");
         assert!(info.capabilities.sql && info.capabilities.cancellation);
+        assert!(info.capabilities.relation_browsing);
         assert!(
             !info.capabilities.transactions
                 && !info.capabilities.table_browsing
@@ -1049,5 +1081,425 @@ async fn sdk_history_relative_forms_remain_blocked_without_helper_dispatch() {
     }
     assert_eq!(h.queries().len(), before);
     assert!(!h.driver.is_closed());
+    h.close().await;
+}
+
+fn browse_request(catalog: &BrowseCatalog) -> InspectRelationRequest {
+    InspectRelationRequest {
+        revision: catalog.revision.clone(),
+        target_id: catalog
+            .relations
+            .iter()
+            .find(|target| target.table.schema == "PUBLIC")
+            .unwrap()
+            .target_id
+            .clone(),
+    }
+}
+fn preview_request(
+    request: &InspectRelationRequest,
+    inspection: &RelationInspection,
+) -> PreviewRelationRequest {
+    PreviewRelationRequest {
+        revision: request.revision.clone(),
+        target_id: request.target_id.clone(),
+        inspection_revision: inspection.revision.clone(),
+    }
+}
+
+#[tokio::test]
+async fn sdk_relation_workflow_inspects_gapped_ordinals_and_bounded_preview_on_one_session() {
+    let h = Harness::open().await;
+    let catalog = h.driver.relation_catalog().await.unwrap();
+    assert_eq!(catalog.database, "DB");
+    assert_eq!(catalog.relations.len(), 2);
+    assert!(
+        catalog
+            .relations
+            .iter()
+            .all(|r| r.availability == RelationAvailability::Available)
+    );
+    let request = browse_request(&catalog);
+    let inspection = h.driver.inspect_relation(&request).await.unwrap();
+    assert_eq!(
+        inspection.constraints,
+        ConstraintInspectionStatus::NotFetched
+    );
+    assert_eq!(
+        inspection
+            .columns
+            .iter()
+            .map(|c| c.ordinal)
+            .collect::<Vec<_>>(),
+        [1, 3]
+    );
+    assert_eq!(inspection.columns[0].full_type, "NUMBER(38,0)");
+    assert_eq!(
+        inspection.columns[0].default_expression.as_deref(),
+        Some("42")
+    );
+    assert!(!inspection.columns[0].nullable);
+    assert_eq!(
+        inspection.columns[1].character_maximum_length.as_deref(),
+        Some("100")
+    );
+    h.metadata_settings(serde_json::json!({"previewRows":501}));
+    let preview = h
+        .driver
+        .preview_relation(&preview_request(&request, &inspection))
+        .await
+        .unwrap();
+    assert_eq!(preview.rows.len(), 500);
+    assert!(preview.truncated);
+    assert_eq!(preview.rows[0], [Some("0".into()), None]);
+    assert!(
+        preview
+            .columns
+            .iter()
+            .all(|column| !column.editable && !column.insertable)
+    );
+    assert_eq!(
+        std::fs::read_to_string(h._scripts.path().join("connections")).unwrap(),
+        "1"
+    );
+    let queries = h.queries();
+    assert!(
+        queries.iter().any(
+            |sql| sql == "SELECT \"ID\", \"NOTES\" FROM \"DB\".\"PUBLIC\".\"ORDERS\" LIMIT 501"
+        )
+    );
+    assert!(
+        queries
+            .iter()
+            .all(|sql| !sql.starts_with("USE ") && !sql.starts_with("COMMIT"))
+    );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_stale_tokens_and_failed_refresh_dispatch_no_target_sql() {
+    let h = Harness::open().await;
+    let first = h.driver.relation_catalog().await.unwrap();
+    let old = browse_request(&first);
+    let first_inspection = h.driver.inspect_relation(&old).await.unwrap();
+    let second = h.driver.relation_catalog().await.unwrap();
+    assert_ne!(first.revision, second.revision);
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver.inspect_relation(&old).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        h.driver
+            .preview_relation(&preview_request(&old, &first_inspection))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let forged = InspectRelationRequest {
+        revision: second.revision.clone(),
+        target_id: "DB.PUBLIC.ORDERS; DROP TABLE ORDERS".into(),
+    };
+    assert_eq!(
+        h.driver.inspect_relation(&forged).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
+    h.metadata_settings(serde_json::json!({"denied":true}));
+    assert_eq!(
+        h.driver.relation_catalog().await.unwrap_err().code,
+        ErrorCode::Database
+    );
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver
+            .inspect_relation(&browse_request(&second))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_failed_reinspection_forgets_previous_preview_authority() {
+    let h = Harness::open().await;
+    let request = browse_request(&h.driver.relation_catalog().await.unwrap());
+    let inspection = h.driver.inspect_relation(&request).await.unwrap();
+    h.metadata_settings(serde_json::json!({"inspectDenied":true}));
+    assert_eq!(
+        h.driver.inspect_relation(&request).await.unwrap_err().code,
+        ErrorCode::Database
+    );
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver
+            .preview_relation(&preview_request(&request, &inspection))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_collision_keeps_distinct_rows_but_refuses_actions_before_sql() {
+    let h = Harness::open().await;
+    h.metadata_settings(serde_json::json!({"collision":true}));
+    let catalog = h.driver.relation_catalog().await.unwrap();
+    assert_eq!(catalog.relations.len(), 4);
+    assert_eq!(
+        catalog
+            .relations
+            .iter()
+            .filter(|r| r.availability == RelationAvailability::Shadowed)
+            .count(),
+        2
+    );
+    assert_eq!(
+        catalog
+            .relations
+            .iter()
+            .filter(|r| r.availability == RelationAvailability::Ambiguous)
+            .count(),
+        2
+    );
+    let before = h.queries().len();
+    for relation in catalog.relations {
+        assert!(
+            h.driver
+                .inspect_relation(&InspectRelationRequest {
+                    revision: catalog.revision.clone(),
+                    target_id: relation.target_id
+                })
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(h.queries().len(), before);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_drift_prevents_inspection_and_preview_publication() {
+    for settings in [
+        serde_json::json!({"relationDriftAfter":2}),
+        serde_json::json!({"badOrdinal":true}),
+    ] {
+        let h = Harness::open().await;
+        let request = browse_request(&h.driver.relation_catalog().await.unwrap());
+        h.metadata_settings(settings);
+        assert!(h.driver.inspect_relation(&request).await.is_err());
+        let before = h.queries().len();
+        assert!(
+            h.driver
+                .preview_relation(&PreviewRelationRequest {
+                    revision: request.revision.clone(),
+                    target_id: request.target_id.clone(),
+                    inspection_revision: "never-published".into()
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(h.queries().len(), before);
+        h.close().await;
+    }
+    let h = Harness::open().await;
+    let request = browse_request(&h.driver.relation_catalog().await.unwrap());
+    let inspection = h.driver.inspect_relation(&request).await.unwrap();
+    h.metadata_settings(serde_json::json!({"previewDrift":true}));
+    let error = h
+        .driver
+        .preview_relation(&preview_request(&request, &inspection))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert_eq!(error.completion_invalidated, Some(true));
+    let before = h.queries().len();
+    assert!(h.driver.inspect_relation(&request).await.is_err());
+    assert_eq!(h.queries().len(), before);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_preview_rejects_byte_overflow_wrong_columns_and_permission_failure() {
+    let h = Harness::open().await;
+    let request = browse_request(&h.driver.relation_catalog().await.unwrap());
+    let inspection = h.driver.inspect_relation(&request).await.unwrap();
+    for (settings, expected) in [
+        (
+            serde_json::json!({"previewRows":60,"previewBytes":true}),
+            ErrorCode::ResultLimitReached,
+        ),
+        (
+            serde_json::json!({"previewWrongColumns":true}),
+            ErrorCode::Conflict,
+        ),
+        (
+            serde_json::json!({"previewDenied":true}),
+            ErrorCode::Database,
+        ),
+    ] {
+        h.metadata_settings(settings);
+        assert_eq!(
+            h.driver
+                .preview_relation(&preview_request(&request, &inspection))
+                .await
+                .unwrap_err()
+                .code,
+            expected
+        );
+    }
+    assert!(!h.driver.is_closed());
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_initial_database_pin_and_explicit_invalidation_fail_closed() {
+    let h = Harness::open().await;
+    let request = browse_request(&h.driver.relation_catalog().await.unwrap());
+    h.driver.invalidate_relation_catalog();
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver.inspect_relation(&request).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
+    h.metadata_settings(serde_json::json!({"database":"OTHER_DATABASE"}));
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver.relation_catalog().await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert!(
+        h.queries()[before..]
+            .iter()
+            .all(|sql| !sql.contains("INFORMATION_SCHEMA"))
+    );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_invalidation_during_inspection_cannot_publish_a_late_snapshot() {
+    let h = Harness::open().await;
+    let request = browse_request(&h.driver.relation_catalog().await.unwrap());
+    h.metadata_settings(serde_json::json!({"holdDescribe":true}));
+    let driver = h.driver.clone();
+    let pending_request = request.clone();
+    let pending = tokio::spawn(async move { driver.inspect_relation(&pending_request).await });
+    tokio::time::timeout(LIMIT, async {
+        while !h._scripts.path().join("active").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    h.driver.invalidate_relation_catalog();
+    std::fs::write(h._scripts.path().join("release"), "").unwrap();
+    assert_eq!(
+        tokio::time::timeout(LIMIT, pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let before = h.queries().len();
+    assert!(h.driver.inspect_relation(&request).await.is_err());
+    assert_eq!(h.queries().len(), before);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_busy_refresh_forgets_old_targets_before_lane_acquisition() {
+    let h = Harness::open().await;
+    let old = browse_request(&h.driver.relation_catalog().await.unwrap());
+    let driver = h.driver.clone();
+    let read = tokio::spawn(async move {
+        execute(&driver, "SELECT WAIT_FOR_CANCEL", &mut Sink::default()).await
+    });
+    tokio::time::timeout(LIMIT, async {
+        while !h._scripts.path().join("active").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver.relation_catalog().await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        h.driver.inspect_relation(&old).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
+    assert_eq!(
+        h.driver.cancel().await.unwrap_err().code,
+        ErrorCode::Database
+    );
+    assert_eq!(read.await.unwrap().unwrap_err().code, ErrorCode::Database);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_relation_superseding_failed_inspection_cannot_restore_older_preview_authority() {
+    let h = Harness::open().await;
+    let request = browse_request(&h.driver.relation_catalog().await.unwrap());
+    let previous = h.driver.inspect_relation(&request).await.unwrap();
+    h.metadata_settings(serde_json::json!({"holdDescribe":true}));
+    let driver = h.driver.clone();
+    let old_request = request.clone();
+    let older = tokio::spawn(async move { driver.inspect_relation(&old_request).await });
+    tokio::time::timeout(LIMIT, async {
+        while !h._scripts.path().join("active").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // The newer attempt replaces authority immediately, even though its lane
+    // acquisition fails. The older successful reads cannot restore it later.
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver.inspect_relation(&request).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        h.driver
+            .preview_relation(&preview_request(&request, &previous))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
+    std::fs::write(h._scripts.path().join("release"), "").unwrap();
+    assert_eq!(
+        tokio::time::timeout(LIMIT, older)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let before = h.queries().len();
+    assert_eq!(
+        h.driver
+            .preview_relation(&preview_request(&request, &previous))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(h.queries().len(), before);
     h.close().await;
 }

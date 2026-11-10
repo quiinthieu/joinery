@@ -158,11 +158,13 @@ does not qualify packaged SDK resource discovery or Snowflake transactions.
 The SDK route advertises SQL and cancellation. A subsequent
 [same-session completion increment](snowflake-sdk-metadata-design.md) implements
 bounded relation suggestions and lazy resolved columns; the preceding integration
-counts and packaged artifacts do not qualify that later source. Metadata browsing,
-authoritative object inspection, schema tools, plans and transactions remain disabled
-until their workflows are implemented. The UI skips unsupported catalog discovery
-and removes stale metadata rather than reporting a successful connection as an
-authentication failure. The existing SQL API metadata pilot does not qualify SDK
+counts and packaged artifacts do not qualify that later source. The later [browsing slice](snowflake-sdk-browsing-design.md) adds a local
+revision-bound relation catalog, column inspection and read-only preview. Complete
+object/constraint inspection, schema tools, plans and transactions remain incomplete
+until their workflows are implemented. The UI skips automatic generic catalog discovery for SDK sessions. The explicit
+Browse relations action performs its own bounded metadata reads; current request
+errors clear its stale UI state rather than reporting a successful connection as
+an authentication failure. The existing SQL API metadata pilot does not qualify SDK
 metadata behavior.
 
 Writes, DDL and explicit transactions remain required and disabled; they are not

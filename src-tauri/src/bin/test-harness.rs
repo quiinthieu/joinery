@@ -278,6 +278,9 @@ async fn rpc(
             "completion_catalog" => json!(studio.completion_catalog(&arg::<String>(&args, "sessionId")?).await?),
             "completion_schema" => json!(studio.completion_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
             "inspection_schema" => json!(studio.inspection_schema(&arg::<String>(&args, "sessionId")?, &arg::<String>(&args,"revision")?, &arg(&args,"table")?).await?),
+            "relation_catalog" => json!(studio.relation_catalog(&arg::<String>(&args, "sessionId")?).await?),
+            "inspect_relation" => json!(studio.inspect_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
+            "preview_relation" => json!(studio.preview_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
             "database_objects" => {
                 json!(studio.database_objects(&arg::<String>(&args, "sessionId")?).await?)

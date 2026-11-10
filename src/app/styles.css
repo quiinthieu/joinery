@@ -4138,3 +4138,35 @@ kbd {
   opacity: 0.55;
   cursor: not-allowed;
 }
+.relation-browser {
+  max-height: 75vh;
+  overflow: auto;
+}
+.relation-browser label {
+  display: block;
+  margin: 12px 0;
+}
+.relation-browser input,
+.relation-browser select {
+  display: block;
+  width: 100%;
+}
+.relation-table-scroll {
+  overflow: auto;
+  max-height: 38vh;
+  margin: 12px 0;
+}
+.relation-browser table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.relation-browser th,
+.relation-browser td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 90px;
+  max-width: 400px;
+}

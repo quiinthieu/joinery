@@ -7,6 +7,7 @@ use super::snowflake_process::{
 use super::{
     BrowseRows, CompletionRelations, Driver, QuerySink, RowMutation,
     snowflake::Snowflake,
+    snowflake_browsing::{self as browsing, BrowseRelation},
     snowflake_metadata::{self as metadata, LiveContext, MetadataResult},
 };
 use crate::{
@@ -17,6 +18,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -48,6 +50,21 @@ impl Drop for ActiveLease<'_> {
     }
 }
 
+#[derive(Default)]
+struct BrowseState {
+    revision: String,
+    snapshot: Option<BrowseSnapshot>,
+}
+struct BrowseSnapshot {
+    context: LiveContext,
+    targets: HashMap<String, BrowseRelation>,
+    inspections: HashMap<String, InspectionSlot>,
+}
+struct InspectionSlot {
+    revision: String,
+    columns: Option<Vec<ColumnInspection>>,
+}
+
 pub struct SnowflakeExternal {
     process: Arc<Supervisor>,
     profile: ConnectionProfile,
@@ -55,6 +72,7 @@ pub struct SnowflakeExternal {
     identity: Value,
     lane: AsyncMutex<()>,
     active: Mutex<Option<Active>>,
+    browsing: Mutex<BrowseState>,
     closed: CancellationToken,
     shutdown_started: AtomicBool,
     shutdown: watch::Sender<Option<Arc<ShutdownReport>>>,
@@ -168,6 +186,7 @@ impl SnowflakeExternal {
             identity,
             lane: AsyncMutex::new(()),
             active: Mutex::new(None),
+            browsing: Mutex::new(BrowseState::default()),
             closed: CancellationToken::new(),
             shutdown_started: AtomicBool::new(false),
             shutdown,
@@ -198,6 +217,7 @@ impl SnowflakeExternal {
                 transactions: false,
                 cancellation: true,
                 table_browsing: false,
+                relation_browsing: true,
                 table_editing: false,
                 table_filtering: false,
                 processes: false,
@@ -368,6 +388,106 @@ impl SnowflakeExternal {
             .with_completion_invalidated());
         }
         Ok(())
+    }
+
+    fn invalidate_browse_revision(&self, revision: &str) {
+        let mut state = self.browsing.lock();
+        if state.revision == revision {
+            *state = BrowseState::default();
+        }
+    }
+
+    fn browse_target(
+        &self,
+        revision: &str,
+        target_id: &str,
+    ) -> AppResult<(LiveContext, BrowseRelation)> {
+        let state = self.browsing.lock();
+        if state.revision != revision {
+            return Err(stale_browse());
+        }
+        let snapshot = state.snapshot.as_ref().ok_or_else(stale_browse)?;
+        let target = snapshot.targets.get(target_id).ok_or_else(stale_browse)?;
+        // This also rejects unavailable/colliding kinds before any helper SQL.
+        browsing::relation_sql(&snapshot.context, target)?;
+        Ok((snapshot.context.clone(), target.clone()))
+    }
+
+    fn browse_columns(
+        &self,
+        revision: &str,
+        target_id: &str,
+        inspection: &str,
+    ) -> AppResult<Vec<ColumnInspection>> {
+        let state = self.browsing.lock();
+        if state.revision != revision {
+            return Err(stale_browse());
+        }
+        let slot = state
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.inspections.get(target_id))
+            .filter(|slot| slot.revision == inspection)
+            .ok_or_else(stale_browse)?;
+        slot.columns.clone().ok_or_else(stale_browse)
+    }
+
+    fn require_inspection_attempt(
+        &self,
+        revision: &str,
+        target_id: &str,
+        inspection: &str,
+    ) -> AppResult<()> {
+        let state = self.browsing.lock();
+        if state.revision != revision
+            || !state.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .inspections
+                    .get(target_id)
+                    .is_some_and(|slot| slot.revision == inspection)
+            })
+        {
+            return Err(stale_browse());
+        }
+        Ok(())
+    }
+
+    async fn browse_operation<T: Send>(
+        &self,
+        revision: &str,
+        work: impl std::future::Future<Output = AppResult<T>> + Send,
+    ) -> AppResult<T> {
+        self.metadata_operation(work).await.inspect_err(|error| {
+            if error.completion_invalidated == Some(true) {
+                self.invalidate_browse_revision(revision);
+            }
+        })
+    }
+
+    async fn browse_context(&self, expected: Option<&LiveContext>) -> AppResult<LiveContext> {
+        let context = self.live_metadata_context().await?;
+        if context.database.as_deref() != Some(self.profile.database.as_str())
+            || expected.is_some_and(|expected| *expected != context)
+        {
+            return Err(stale_browse().with_completion_invalidated());
+        }
+        Ok(context)
+    }
+
+    async fn require_browse_relation(
+        &self,
+        context: &LiveContext,
+        target: &BrowseRelation,
+    ) -> AppResult<()> {
+        let result = self
+            .metadata_read(
+                &browsing::relation_sql(context, target)?,
+                3,
+                browsing::CATALOG_MAX_BYTES,
+            )
+            .await?;
+        browsing::require_relation(context, target, &result)
+            .map_err(AppError::with_completion_invalidated)
     }
 
     async fn run(
@@ -606,6 +726,229 @@ impl Drop for SnowflakeExternal {
 
 #[async_trait]
 impl Driver for SnowflakeExternal {
+    fn invalidate_relation_catalog(&self) {
+        *self.browsing.lock() = BrowseState::default();
+    }
+
+    async fn relation_catalog(&self) -> AppResult<BrowseCatalog> {
+        let revision = uuid::Uuid::new_v4().to_string();
+        // Refresh owns a new generation before its first await, even if it fails
+        // to acquire the lane or the caller abandons it.
+        *self.browsing.lock() = BrowseState {
+            revision: revision.clone(),
+            snapshot: None,
+        };
+        self.browse_operation(&revision, async {
+            if self.browsing.lock().revision != revision {
+                return Err(stale_browse());
+            }
+            let context = self.browse_context(None).await?;
+            let rows = self
+                .metadata_read(
+                    &browsing::schemas_sql(&context)?,
+                    browsing::SCHEMA_LIMIT + 1,
+                    browsing::CATALOG_MAX_BYTES,
+                )
+                .await?;
+            let schemas = browsing::parse_schemas(&context, &rows)?;
+            let mut relations = Vec::new();
+            let mut bytes = 0usize;
+            for schema in &schemas {
+                let rows = self
+                    .metadata_read(
+                        &browsing::relations_sql(&context, schema)?,
+                        browsing::RELATION_LIMIT + 1,
+                        browsing::CATALOG_MAX_BYTES,
+                    )
+                    .await?;
+                let batch = browsing::parse_relations(&context, schema, &rows)?;
+                bytes = bytes
+                    .checked_add(
+                        serde_json::to_vec(&batch)
+                            .map_err(|_| protocol_error())?
+                            .len(),
+                    )
+                    .ok_or_else(metadata_limit)?;
+                if relations.len().saturating_add(batch.len()) > browsing::RELATION_LIMIT
+                    || bytes > browsing::CATALOG_MAX_BYTES
+                {
+                    return Err(metadata_limit());
+                }
+                relations.extend(batch);
+            }
+            browsing::validate_catalog(&context, &schemas, &mut relations)?;
+            self.browse_context(Some(&context)).await?;
+            let targets: HashMap<_, _> = relations
+                .into_iter()
+                .map(|relation| (uuid::Uuid::new_v4().to_string(), relation))
+                .collect();
+            let mut summaries: Vec<_> = targets
+                .iter()
+                .map(|(id, target)| target.summary(id.clone()))
+                .collect();
+            summaries.sort_by(|left, right| {
+                (
+                    &left.table.schema,
+                    &left.table.name,
+                    &left.table_type,
+                    &left.target_id,
+                )
+                    .cmp(&(
+                        &right.table.schema,
+                        &right.table.name,
+                        &right.table_type,
+                        &right.target_id,
+                    ))
+            });
+            let catalog = BrowseCatalog {
+                revision: revision.clone(),
+                identity: context.completion_identity()?,
+                database: self.profile.database.clone(),
+                relations: summaries,
+            };
+            if serde_json::to_vec(&catalog)
+                .map_err(|_| protocol_error())?
+                .len()
+                > browsing::CATALOG_MAX_BYTES
+            {
+                return Err(metadata_limit());
+            }
+            let mut state = self.browsing.lock();
+            if state.revision != revision {
+                return Err(stale_browse());
+            }
+            state.snapshot = Some(BrowseSnapshot {
+                context,
+                targets,
+                inspections: HashMap::new(),
+            });
+            Ok(catalog)
+        })
+        .await
+    }
+
+    async fn inspect_relation(
+        &self,
+        request: &InspectRelationRequest,
+    ) -> AppResult<RelationInspection> {
+        let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
+        let inspection = uuid::Uuid::new_v4().to_string();
+        {
+            let mut state = self.browsing.lock();
+            if state.revision != request.revision {
+                return Err(stale_browse());
+            }
+            state
+                .snapshot
+                .as_mut()
+                .ok_or_else(stale_browse)?
+                .inspections
+                .insert(
+                    request.target_id.clone(),
+                    InspectionSlot {
+                        revision: inspection.clone(),
+                        columns: None,
+                    },
+                );
+        }
+        self.browse_operation(&request.revision, async {
+            self.require_inspection_attempt(&request.revision, &request.target_id, &inspection)?;
+            self.browse_context(Some(&context)).await?;
+            self.require_browse_relation(&context, &target).await?;
+            let columns = self
+                .metadata_read(
+                    &browsing::columns_sql(&target)?,
+                    browsing::COLUMN_LIMIT + 1,
+                    browsing::COLUMN_MAX_BYTES,
+                )
+                .await?;
+            let describe = self
+                .metadata_read(
+                    &browsing::describe_sql(&target)?,
+                    browsing::COLUMN_LIMIT + 1,
+                    browsing::COLUMN_MAX_BYTES,
+                )
+                .await?;
+            let resolved = self
+                .metadata_read(
+                    &browsing::resolved_columns_sql(&target)?,
+                    0,
+                    browsing::COLUMN_MAX_BYTES,
+                )
+                .await?;
+            let columns = browsing::parse_inspection(&target, &columns, &describe, &resolved)?;
+            self.require_browse_relation(&context, &target).await?;
+            self.browse_context(Some(&context)).await?;
+            let result = RelationInspection {
+                revision: inspection.clone(),
+                target_id: request.target_id.clone(),
+                database: target.database,
+                table: target.table,
+                columns: columns.clone(),
+                constraints: ConstraintInspectionStatus::NotFetched,
+            };
+            if serde_json::to_vec(&result)
+                .map_err(|_| protocol_error())?
+                .len()
+                > browsing::COLUMN_MAX_BYTES
+            {
+                return Err(metadata_limit());
+            }
+            let mut state = self.browsing.lock();
+            if state.revision != request.revision {
+                return Err(stale_browse());
+            }
+            let slot = state
+                .snapshot
+                .as_mut()
+                .and_then(|snapshot| snapshot.inspections.get_mut(&request.target_id))
+                .filter(|slot| slot.revision == inspection)
+                .ok_or_else(stale_browse)?;
+            slot.columns = Some(columns);
+            Ok(result)
+        })
+        .await
+    }
+
+    async fn preview_relation(
+        &self,
+        request: &PreviewRelationRequest,
+    ) -> AppResult<RelationPreview> {
+        let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
+        let columns = self.browse_columns(
+            &request.revision,
+            &request.target_id,
+            &request.inspection_revision,
+        )?;
+        self.browse_operation(&request.revision, async {
+            // A request may have waited behind a refresh or replacement inspection.
+            self.browse_columns(
+                &request.revision,
+                &request.target_id,
+                &request.inspection_revision,
+            )?;
+            self.browse_context(Some(&context)).await?;
+            self.require_browse_relation(&context, &target).await?;
+            let rows = self
+                .metadata_read(
+                    &browsing::preview_sql(&target, &columns)?,
+                    browsing::PREVIEW_LIMIT + 1,
+                    browsing::PREVIEW_MAX_BYTES,
+                )
+                .await?;
+            let preview = browsing::parse_preview(&columns, &rows)?;
+            self.require_browse_relation(&context, &target).await?;
+            self.browse_context(Some(&context)).await?;
+            self.browse_columns(
+                &request.revision,
+                &request.target_id,
+                &request.inspection_revision,
+            )?;
+            Ok(preview)
+        })
+        .await
+    }
+
     async fn completion_identity(&self) -> AppResult<CompletionIdentity> {
         self.metadata_operation(async {
             let context = self.live_metadata_context().await?;
@@ -886,6 +1229,13 @@ fn unsupported() -> AppError {
     AppError::new(
         ErrorCode::Unsupported,
         "This Snowflake external-browser increment supports read queries only",
+    )
+}
+
+fn stale_browse() -> AppError {
+    AppError::new(
+        ErrorCode::Conflict,
+        "Snowflake relation context changed; refresh relations and inspect again",
     )
 }
 

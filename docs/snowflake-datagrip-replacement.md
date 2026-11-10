@@ -36,8 +36,11 @@ route and the existing local-application OAuth/SQL API route. New profiles choos
 external browser; missing mode on an existing profile defaults to its prior OAuth
 route. No automatic fallback occurs. Both remain ReadOnly. The SDK route currently
 advertises SQL and cancellation. Subsequent same-session completion is implemented
-with [separate qualification](snowflake-sdk-metadata-design.md); browsing,
-authoritative inspection, writes, DDL and transactions remain disabled. The preceding
+with [separate qualification](snowflake-sdk-metadata-design.md). The later
+[browsing slice](snowflake-sdk-browsing-design.md) implements a revision-bound
+relation catalog, column inspection and bounded read-only preview locally.
+Complete object/constraint inspection, generic editable browsing, schema/session
+switching, writes, DDL and transactions remain incomplete. The preceding
 SDK integration qualification passes, including all 143 browser workflows,
 124 actual local database fixtures and the packaged SDK runtime checks. These
 checks do not qualify the actual account workflow. See
