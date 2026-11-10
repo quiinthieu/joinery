@@ -991,10 +991,11 @@ fn mysql_placeholder_expr(bind: &TypedBind) -> String {
 
 fn snowflake_placeholder_expr(bind: &TypedBind) -> String {
     match bind.kind {
-        QueryParamKind::Text
-        | QueryParamKind::Integer
-        | QueryParamKind::Boolean
-        | QueryParamKind::Uuid => "?".into(),
+        QueryParamKind::Text | QueryParamKind::Uuid => "?".into(),
+        // The stateful SDK binds exact integers as text to avoid JavaScript
+        // rounding. Server casts also retain the intended type for NULL binds.
+        QueryParamKind::Integer => "CAST(? AS NUMBER(38,0))".into(),
+        QueryParamKind::Boolean => "CAST(? AS BOOLEAN)".into(),
         QueryParamKind::Decimal => {
             let (p, s) = bind.decimal_dims.unwrap_or((38, 10));
             let p = p.clamp(1, 38);

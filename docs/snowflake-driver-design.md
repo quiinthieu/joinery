@@ -1,7 +1,8 @@
 # Snowflake stateful driver design
 
-Status: planned integration design, not a qualified driver. This document
-records a candidate route and the proof required before enabling it. The
+Status: implemented and locally tested transport/read-driver foundation;
+application integration and external qualification remain open. This document
+records the route and the proof required before enabling it. The
 current application still uses Snowflake's SQL API with local-application
 OAuth and read-only behavior; this design does not change that implementation.
 See the [replacement inventory](snowflake-datagrip-replacement.md) and
@@ -15,9 +16,9 @@ the Snowflake reads, writes, schema changes, explicit multi-statement
 transactions, and DataGrip capabilities applicable to that engine. An OAuth
 browser sign-in or a successful SQL API query does not establish this
 authentication or stateful-session requirement. The selected prototype route
-is the official Snowflake Node.js driver (`snowflake-sdk` 3.4.1) in a bundled
-Node 24 helper, supervised by Rust. It is a proposal for implementation, not a
-claim of DataGrip parity or production readiness.
+is the official Snowflake Node.js driver (`snowflake-sdk` 3.4.1) in a pinned
+Node 24 helper, supervised by Rust. This is not a claim of DataGrip parity or
+production readiness.
 
 The official Node driver documents `authenticator: "EXTERNALBROWSER"` and an
 external-browser callback in its [authentication guide](https://docs.snowflake.com/en/developer-guide/node-js/nodejs-driver-authenticate)
@@ -29,8 +30,8 @@ application, owner's IdP, callback cancellation, or account policy works.
 Keep externalbrowser SAML distinct from the existing local-application OAuth
 flow.
 
-Pinned prototype inputs are `snowflake-sdk` 3.4.1 (Apache-2.0; package requires
-Node >=20), Node 24.22.2, and the scratch Rust/Tokio supervisor. Versions and
+Pinned implementation inputs are `snowflake-sdk` 3.4.1 (Apache-2.0; package requires
+Node >=20), Node 24.22.2, and the Rust/Tokio supervisor. Versions and
 notices are recorded in [the SDK license audit](snowflake-sdk-licenses.md).
 The final product must bundle and sign a supported runtime; it must not depend
 on a developer's global Node installation.
@@ -47,12 +48,12 @@ connection outcomes retire the child. The supervisor must reap it; a kill or
 socket loss is not evidence that Snowflake canceled work or rolled back a
 transaction.
 
-The scratch supervisor now exposes controls through an opaque operation token
+The supervisor exposes controls through an opaque operation token
 bound to the exact supervisor and operation ticket. A stale control cannot bind
 to a later operation that reused the same local name. Its reproduced late-Drop
 race is repaired: cleanup of a completed operation is a no-op, while genuine
-control failures still retire the child. This is a reviewed prototype API, not
-yet an integrated Joinery capability.
+control failures still retire the child. This reviewed transport is now in
+`src-tauri/src/drivers/snowflake_process.rs`; application integration remains open.
 
 Keep all commands for a console serialized on the same SDK connection. On
 connect, verify the expected server identity and role/database/schema/warehouse
@@ -123,28 +124,56 @@ multi-action transactions, subject to same-session and loss-injection proof.
 
 ## Evidence and gates
 
-The scratch helper was tested locally on 2026-11-09 with Node 24.22.2 and SDK
-3.4.1: 23 synthetic tests passed. The real SDK was imported and accepted the
-shared connection options, then destroyed before authentication; no
-`connect`, `connectAsync`, or `execute` was called. Other tests inject a fake
-SDK. Two synthetic million-row streams exercised helper and frame-codec
-bounds. The separate Rust supervisor prototype passed 33 local fake-child and
-interop tests, including bounded streaming, protocol faults, cancellation,
-reaping and exact-operation stale-token/Drop races. Strict Clippy and formatting
-pass, and an independent source review has no remaining material finding in the
-token delta. These results qualify prototype mechanics only.
+The helper in `snowflake-helper/` passes **31 tests** with pinned Node
+24.22.2 and SDK 3.4.1, rerun on 2026-11-10. Twenty-five exercise the framed protocol,
+isolated child configuration and synthetic streams, including two million-row
+streams. Six use the actual SDK against an isolated loopback HTTP service. The
+Rust supervisor passes **8 unit and 30 integration tests**, covering bounded
+streaming, protocol faults, cancellation, stale controls, handshake abandonment,
+graceful/forced shutdown, runtime abandonment and cleanup receipts. Scoped strict
+Clippy and formatting pass; independent review has no material finding. The
+read adapter adds **11 integration tests** using the real framed helper with a
+synthetic SDK. These cover exact typed bindings, rejection of forged compiled
+statements, identity checks, late errors after result limits, cancellation versus
+original terminal outcomes, and cleanup outside the caller's runtime. A
+deterministic barrier reproduced a rejected late credit/discard masking the
+original successful terminal; the repaired driver preserves that terminal.
+Integer/boolean placeholders have explicit SQL types, preserving typed NULLs
+and exact integer strings. This does not qualify remote Snowflake coercion. Run
+`pnpm test:snowflake:helper` after locked dependency installation and
+`pnpm test:snowflake:process` with pinned Node/Rust. These qualify local mechanics.
 
-Promotion review additionally found that a force-killed helper could leave its
-child-created cache root behind, and cancellation of the spawn future during
-handshake lacked an awaitable reap receipt. Follow-up work moves root ownership
-and child reaping to the parent before the handshake. The helper now requires
-the fixed parent-supplied private state directory before importing the SDK;
-its missing-root regression failed before that change. Parent lifecycle repair
-and final combined requalification remain in progress outside the repository.
+The macOS arm64 runtime staging command passes offline preparation and nine
+preparation tests. It verifies the pinned Node archive/binary, original signature,
+locked SDK dependencies and bounded source hashes, and promotes the stage
+atomically. `pnpm test:snowflake:startup` launches the staged Node and actual SDK,
+checks a single hello frame and clean EOF exit, and detects no attempted Node
+socket/DNS traffic with its guard. This is an import/startup check, not an OS
+network sandbox, SSO test or packaged-app check. See the
+[runtime preparation guide](snowflake-runtime.md) for commands and limits.
 
-No real Snowflake account, browser SSO, external IdP, session, statement,
-transaction, remote cancellation, or actual SDK transport retry was exercised.
-There is no current macOS package qualification. Before implementation can
+Parent ownership now precedes the first handshake await. The parent supplies a
+private `0700` root, and removes it only after an actual child wait. An abandoned
+runtime retains an uncertain root without claiming cleanup. The helper requires
+that root before SDK import. Missing-root behavior was reproduced before repair.
+Actual SDK connect also exposed that a missing client-config file fails before
+HTTP, and that the SDK requires its uid and primary gid to match. The helper now
+creates an exclusive `0600` valid configuration through an owned file descriptor,
+sets its uid/gid, and selects logging `OFF`. SDK connect can reset its logger;
+this is not a promise of immutable custom logging or an OS sandbox.
+
+The actual SDK retransmits after a lost successful response: two POSTs use the
+same request ID and body hash, one SDK callback follows, and no sequence ID was
+observed. A simulator with request-ID deduplication applies one effect; without
+deduplication it applies two. Documented login retry settings and unsupported
+statement-retry settings do not disable the retransmission. Persistent response
+loss has no terminal callback within the bounded 6.5-second observation; that is
+not retry exhaustion. The fake server does not establish Snowflake's own
+deduplication, commit, rollback or interruption behavior. Writes remain gated.
+
+No real Snowflake account, browser SSO, external IdP, remote statement,
+transaction or remote cancellation was exercised. There is no current macOS
+package qualification for this driver. Before implementation can
 replace the current mode, require at least:
 
 1. Owner-authorized macOS externalbrowser sign-in, callback lifecycle, account

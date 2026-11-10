@@ -1,0 +1,16 @@
+{
+  "name": "joinery-snowflake-helper",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --expose-gc --test test/*.test.mjs",
+    "start": "node src/main.mjs"
+  },
+  "dependencies": {
+    "snowflake-sdk": "3.4.1"
+  }
+}

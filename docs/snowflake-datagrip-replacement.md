@@ -14,7 +14,7 @@ The owner subsequently selected the **latest stable DataGrip release** and
 reported query results of **up to 1,000,000 rows**. JetBrains' official
 [release API](https://data.services.jetbrains.com/products/releases?code=DG&latest=true&type=release)
 reported DataGrip **2026.3**, build `263.7307.216`, released 5 November 2026,
-when checked on 9 November. Version-specific features, including bundled Air,
+when checked on 9 November and rechecked on 10 November. Version-specific features, including bundled Air,
 cross-database queries and the new grid column controls, belong in applicability
 review. Their provider entitlements and database support remain separate facts.
 
@@ -104,11 +104,17 @@ between separate console actions. See [Node authentication](https://docs.snowfla
 [pinned package and license](https://github.com/snowflakedb/snowflake-connector-nodejs/tree/v3.4.1),
 and [SQL API limits](https://docs.snowflake.com/en/developer-guide/sql-api/intro).
 
-Separate local prototypes implement a versioned bounded child protocol and a
-Rust supervisor. They are not yet integrated or packaged and do not enable an
-application capability. One child owns one console generation; cancellation
+The repository now contains a versioned bounded child protocol and a
+Rust supervisor (31 helper tests, 8 supervisor unit and 30 integration tests),
+plus a read adapter with 11 integration tests. Offline macOS arm64 runtime
+staging, nine preparation tests and actual SDK staged startup also pass. They
+are not yet integrated into application profiles or packaged and do not enable
+an application capability. See the [preparation guide](snowflake-runtime.md).
+One child owns one console generation; cancellation
 bypasses row backpressure, and process loss never causes automatic SQL replay.
-The SDK itself retries recoverable HTTP requests with a stable request ID; its
+Actual SDK loopback fault injection observes retransmission after a lost response
+with the same request ID and body; a simulated server without deduplication applies
+two effects. This does not prove actual Snowflake deduplication. The SDK's
 public options do not provide a documented statement-retry disable switch.
 Preserve SDK query/request IDs, distinguish statement acknowledgement from commit,
 and prove fail-after-commit behavior before enabling mutations. Browser-auth abort,
@@ -151,6 +157,7 @@ Authentication occurs through the app/browser; secrets must never be pasted into
 source, logs or the repository. Do all local implementation and review first so
 any authorization request concerns a concrete, reviewable test plan.
 
-Account/version/environment, role/warehouse policy, representative sanitized
+Account/role/warehouse/database/schema settings have been located locally. Server
+version/environment, warehouse policy, representative sanitized
 workloads/data sizes and performance/accessibility expectations remain to be
 provided. They refine the all-applicable-DataGrip target rather than reduce it.

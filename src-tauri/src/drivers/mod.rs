@@ -9,6 +9,10 @@ pub mod postgres;
 pub mod redis;
 pub mod snowflake;
 pub mod snowflake_auth;
+#[cfg(unix)]
+pub mod snowflake_external;
+#[cfg(unix)]
+pub mod snowflake_process;
 
 pub trait QuerySink: Send {
     fn limit(&mut self, reason: &str);

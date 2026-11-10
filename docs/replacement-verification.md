@@ -987,3 +987,71 @@ its actual-database command. The exact additional selection passes locally:
 large_results -- --ignored --test-threads=1` (**1/1**, 18.53 s;
 `/tmp/joinery-million-row-ci-selection.log`). Workflow YAML parses. This is
 local verification of the configured check, not a remote CI run.
+
+## 10 November 2026: SDK driver foundation
+
+Pinned Node 24.22.2 / Rust 1.99.1 checks on the local feature branch:
+
+```sh
+pnpm validate
+pnpm test:snowflake:helper
+pnpm test:snowflake:process
+pnpm test:snowflake:runtime
+pnpm snowflake:prepare --cache-dir .cache/snowflake-helper-dev/npm-cache --offline
+pnpm test:snowflake:startup
+```
+
+Full validation passes **582 frontend / 213 standard Rust tests**, application
+build, formatting, desktop Cargo check and all-target/all-feature strict Clippy.
+The first full run caught the old SQL API test expecting an untyped integer
+placeholder. The request now uses `CAST(? AS NUMBER(38,0))`; the assertion was
+updated and the complete validation rerun passes. SQL API binding payloads and
+source-location mapping remain covered by that loopback test.
+
+The helper passes **31/31 tests**: six actual SDK loopback HTTP tests and 25
+synthetic protocol/configuration/stream tests. The process runner passes **8
+supervisor units, 30 real-child supervisor integrations and 11 adapter
+integrations**. The adapter tests use the actual framed helper with a synthetic
+SDK; they are not Snowflake account tests. A deterministic barrier reproduces
+late credit/discard rejection overriding acknowledged success before the repair.
+The repaired adapter preserves original success, database/transport errors and
+unknown outcomes while treating cancellation acknowledgement separately.
+Independent review of the helper, supervisor, adapter and staged-startup check
+has no unresolved material finding.
+
+Runtime preparation passes **9/9 tests** and the actual offline command above.
+It extracts npm from the verified Node archive, installs locked dependencies
+with scripts disabled and isolated configuration, preserves relative internal
+symlinks, and atomically promotes the stage. Post-promotion backup-cleanup
+warnings do not rewrite the promoted manifest or falsely report install failure.
+The staged startup check imports the actual installed SDK, detects no attempted
+Node socket/DNS traffic, emits one valid hello and exits cleanly on EOF without
+authentication/SQL requests. This is not an OS network sandbox or SSO evidence.
+
+Local logs now live under `.cache/verification/snowflake-foundation/`:
+`validate.log`, `helper.log`, `process.log`, `runtime-tests.log`,
+`offline-prepare.log`, `staged-startup-final.log`, and
+`adapter-race-before-fix.log`. `stage-identity.json` records the current staged
+identity. The 183-package stage manifest SHA-256 is
+`1a7b068a85f4d085c8415b8fd6256acb54b803ab0e22b668068541de26bb182d`;
+the Node binary hash is
+`b6fb419f0f43bb2fbca273700294dd2f3b685a64b60e8417c295f47646a70e4a`.
+The original Node signature identifies the Node.js Foundation, team
+`HX7739G8FX`. These hashes identify a developer stage, not a signed Joinery
+bundle. Earlier `/tmp` paths in this ledger are historical evidence references;
+those files did not survive the environment refresh and are not currently
+available for inspection. Earlier recorded outcomes are not fresh reruns.
+
+The SDK retransmits after a lost successful response using the same request ID
+and body hash. A deduplicating simulator applies one effect; a simulator without
+deduplication applies two. Persistent loss again has no terminal within the
+bounded observation; the observed POST count varies and is not an exhaustion
+guarantee. Real Snowflake deduplication, write/commit outcomes and rollback remain
+unqualified, so writes, DDL and transaction controls stay disabled in this route.
+
+Application profile/SSO integration, pending-auth shutdown, metadata, actual
+Snowflake million-row behavior, resource bundling, complete notices,
+signing/notarization, installation and owner acceptance remain open. No real
+Snowflake login/query, billable work, remote write, push, publication or
+deployment occurred. The latest stable DataGrip release API was rechecked on
+10 November: still 2026.3, build `263.7307.216`.

@@ -71,6 +71,12 @@ jobs:
           node-version-file: .nvmrc
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
+      - name: Snowflake helper and process regressions
+        run: |
+          npm ci --prefix snowflake-helper --ignore-scripts --no-audit --no-fund
+          pnpm test:snowflake:helper
+          pnpm test:snowflake:process
+          pnpm test:snowflake:runtime
       - run: python3 scripts/mysql-tls-fixture.py
       - run: docker compose --profile mysql --profile mysql-folded --profile redis up -d --wait
       - run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test mysql_guard --test redis --test transaction_transport --test postgres_protocol --test postgres_identity_permissions --test large_results -- --ignored --test-threads=1

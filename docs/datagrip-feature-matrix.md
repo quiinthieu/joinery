@@ -18,6 +18,13 @@ passes actual PostgreSQL million-row paging/export and browser acceptance.
 Native preference/restart checks pass. Actual Snowflake behavior remains
 unqualified.
 
+On 10 November, the stateful SDK foundation passes local helper, supervisor and
+read-adapter checks, offline macOS arm64 staging and actual SDK import/startup.
+It is not connected to application profiles or packaged. The required externalbrowser
+workflow, metadata, writes, transactions and actual account behavior remain open;
+these implementation checks do not advance them to replacement-ready. See the
+[runtime guide](snowflake-runtime.md) and [verification ledger](replacement-verification.md).
+
 Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
 the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
 session with writes/transactions. Browser login alone does not prove equivalent

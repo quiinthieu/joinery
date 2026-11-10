@@ -1055,7 +1055,7 @@ mod tests {
                             serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
                         assert_eq!(
                             payload.get("statement").and_then(Value::as_str),
-                            Some("SELECT ?, CAST(? AS DATE), PARSE_JSON(?)")
+                            Some("SELECT CAST(? AS NUMBER(38,0)), CAST(? AS DATE), PARSE_JSON(?)")
                         );
                         assert_eq!(
                             payload.get("bindings"),

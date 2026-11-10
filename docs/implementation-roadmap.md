@@ -28,6 +28,16 @@ Snowflake acceptance. External account qualification needs explicit non-producti
 scope and permission for any billable activity/writes; no private DataGrip state
 or credentials will be inspected.
 
+The stateful transport foundation is now in the repository: a pinned SDK helper
+passes 31 local tests (six use the actual SDK against loopback HTTP), and its
+Rust supervisor passes eight unit and 30 integration tests. The latter includes
+explicit cleanup receipts for unused/failed launches and actual child reaping.
+The read adapter adds 11 integration tests, including exact typed binding and
+terminal/cancellation ordering. Nine runtime-preparation tests, actual offline
+macOS arm64 staging and staged SDK startup pass; the stage is not an app bundle.
+The [driver design](snowflake-driver-design.md) records the observed SDK retry
+behavior and remaining gates. Application auth cancellation, resource packaging,
+SSO session integration, writes and transaction qualification remain incomplete.
 
 The active 9 November 2026 Goal and next qualification queue are in
 [daily replacement acceptance](replacement-acceptance.md). The required Snowflake externalbrowser/macOS target is confirmed above;
