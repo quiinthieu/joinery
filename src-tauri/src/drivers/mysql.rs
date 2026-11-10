@@ -15,6 +15,8 @@ use tokio_util::sync::CancellationToken;
 mod catalog;
 mod explorer;
 pub mod guard;
+#[cfg(test)]
+mod startup_tests;
 mod values;
 pub(crate) use catalog::browse_sql;
 pub(crate) use values::MysqlDialect;
@@ -108,6 +110,8 @@ impl Mysql {
             .prefer_socket(false)
             .client_found_rows(true)
             .max_allowed_packet(Some(16 * 1024 * 1024))
+            // This caches mysql_async's client-side default; it does not set the server timeout.
+            .wait_timeout(Some(28_800))
             .stmt_cache_size(32);
         if forwarded_port.is_some() {
             builder = builder.resolved_ips(Some(vec![std::net::Ipv4Addr::LOCALHOST.into()]));
