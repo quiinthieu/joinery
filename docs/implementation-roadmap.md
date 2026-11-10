@@ -79,7 +79,8 @@ process-local boundary against SDK retransmission and passes local qualification
 fresh SDK-bearing macOS packaging/startup and 19 hidden native check categories.
 The browsing contract now has a local catalog/column-inspection/preview
 implementation. Typed schema switching and truthful session observation remain
-planned; the complete browsing/session workflow is not finished. Neither is
+planned under the reviewed [session observation/switching contract](snowflake-sdk-session-design.md);
+the complete browsing/session workflow is not finished. Neither is
 account qualified. The guard's actual pinned-SDK fault, redirect, proxy and cleanup
 evidence establishes a bounded submission foundation; that foundation alone
 must not enable writes or transactions.
