@@ -175,6 +175,7 @@ let sqlFormatSaveTail: Promise<void> = Promise.resolve();
 let sqlFormatSaveSequence = 0;
 let sqlFormatPending = 0;
 let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
+const contextRequests = new Map<string, symbol>();
 
 interface StudioState {
   bootstrap: Bootstrap | null;
@@ -466,7 +467,48 @@ export function sessionHasOpenTransaction(
 ): boolean {
   if (!sessionId) return false;
   const txState = sessionStates[sessionId]?.transactionState;
-  return txState === "inTransaction" || txState === "failed";
+  return (
+    txState === undefined ||
+    txState === "unknown" ||
+    txState === "inTransaction" ||
+    txState === "failed"
+  );
+}
+function sessionInfoById(
+  state: Pick<StudioState, "sessions" | "sessionPool" | "tabs">,
+  sessionId: string,
+): SessionInfo | undefined {
+  return (
+    Object.values(state.sessions).find((session) => session.id === sessionId) ??
+    Object.values(state.sessionPool)
+      .flat()
+      .find((entry) => entry.info.id === sessionId)?.info ??
+    state.tabs.find((tab) => tab.querySession?.id === sessionId && !tab.querySessionClosed)
+      ?.querySession ??
+    undefined
+  );
+}
+function unknownSdkRuntime(sessionId: string): SessionRuntimeState {
+  return {
+    sessionId,
+    transactionMode: "unknown",
+    transactionState: "unknown",
+    contextKind: "schema",
+    activeContext: null,
+    database: "",
+    role: null,
+    searchPath: [],
+    transactionObservation: { status: "unavailable" },
+  };
+}
+function hasSdkObservation(
+  state: Pick<StudioState, "sessions" | "sessionPool" | "tabs" | "sessionStates">,
+  sessionId: string,
+): boolean {
+  return (
+    state.sessionStates[sessionId]?.transactionObservation !== undefined ||
+    sessionInfoById(state, sessionId)?.capabilities.relationBrowsing === true
+  );
 }
 function sessionRuntimeContextChanged(
   previous: SessionRuntimeState | undefined,
@@ -515,6 +557,7 @@ function purgeSessionRuntimeMaps(
   const sessionContexts = { ...state.sessionContexts };
   const sessionContextRevision = { ...state.sessionContextRevision };
   for (const id of sessionIds) {
+    contextRequests.delete(id);
     delete sessionStates[id];
     delete sessionContexts[id];
     delete sessionContextRevision[id];
@@ -867,20 +910,50 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   async refreshSessionContexts(sessionId, throwOnError = false) {
-    const options = await client
-      .call<SessionContextOptions | null>("session_contexts", {
-        sessionId,
-      })
-      .catch((error) => {
-        if (throwOnError) throw error;
-        return null;
-      });
-    if (!options?.state) return false;
+    const request = Symbol();
+    contextRequests.set(sessionId, request);
+    const previous = get().sessionStates[sessionId];
+    const sdk = hasSdkObservation(get(), sessionId);
+    if (sdk && isSessionActive(get(), sessionId)) {
+      set((state) => ({
+        sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+        sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+      }));
+    }
+    let options: SessionContextOptions | null;
+    try {
+      options = await client.call<SessionContextOptions | null>("session_contexts", { sessionId });
+      if (!options?.state || options.state.sessionId !== sessionId)
+        throw new Error("Session observation is unavailable");
+    } catch (error) {
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+        return false;
+      set((state) => ({
+        sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+        ...(sdk
+          ? {
+              sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+              ...(sessionRuntimeContextChanged(previous, unknownSdkRuntime(sessionId))
+                ? {
+                    sessionContextRevision: {
+                      ...state.sessionContextRevision,
+                      [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                    },
+                  }
+                : {}),
+            }
+          : {}),
+      }));
+      if (throwOnError) throw error;
+      return false;
+    }
+    if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+      return false;
     set((state) => {
-      if (!isSessionActive(state, sessionId)) return {};
-      const prev = state.sessionStates[sessionId];
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+        return {};
       const runtime = options.state;
-      const contextChanged = sessionRuntimeContextChanged(prev, runtime);
+      const contextChanged = sessionRuntimeContextChanged(previous, runtime);
       return {
         sessionStates: { ...state.sessionStates, [sessionId]: runtime },
         sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
@@ -894,7 +967,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           : {}),
       };
     });
-    return isSessionActive(get(), sessionId);
+    return contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId);
   },
   async switchSessionContext(sessionId, target) {
     const options = await client.call<SessionContextOptions>("switch_session_context", {
@@ -2136,24 +2209,33 @@ export const useStudio = create<StudioState>((set, get) => ({
         get().notify(event.reason);
       }
       if (event.type === "notice") get().notify(event.message);
-      if (event.type === "sessionState") runtimeUpdates.push(event.state);
+      if (event.type === "sessionState") {
+        const source = get().tabs.find((tab) => tab.id === tabId && tab.revision === revision);
+        const sourceSession = source && querySessionForTab(source, get().sessions);
+        if (sourceSession?.id === event.state.sessionId) {
+          contextRequests.delete(event.state.sessionId);
+          runtimeUpdates.push(event.state);
+        }
+      }
     }
     if (runtimeUpdates.length > 0) {
       set((state) => {
         let changed = false;
         const sessionStates = { ...state.sessionStates };
+        const sessionContexts = { ...state.sessionContexts };
         const sessionContextRevision = { ...state.sessionContextRevision };
         for (const runtime of runtimeUpdates) {
           if (!isSessionActive(state, runtime.sessionId)) continue;
           const prev = sessionStates[runtime.sessionId];
           sessionStates[runtime.sessionId] = runtime;
+          if (runtime.transactionObservation !== undefined) sessionContexts[runtime.sessionId] = [];
           changed = true;
           if (sessionRuntimeContextChanged(prev, runtime)) {
             sessionContextRevision[runtime.sessionId] =
               (sessionContextRevision[runtime.sessionId] ?? 0) + 1;
           }
         }
-        return changed ? { sessionStates, sessionContextRevision } : {};
+        return changed ? { sessionStates, sessionContexts, sessionContextRevision } : {};
       });
     }
     set((state) => {

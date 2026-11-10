@@ -98,6 +98,21 @@ qualification plan excludes existing-table data reads. Without approval, use the
 synthetic test flow documented in the contract and do not authenticate to
 Snowflake for this walkthrough.
 
+The SDK query console also observes settings and transaction activity on its
+existing connection: ten fixed reads per state observation, or eleven with a
+bounded schema-options read. These reads also require separate account scope.
+Studio automatically requests the ten-read observation after each qualifying
+serialized SQL action while the session stays open and the run was not cancelled,
+including some database-error outcomes; an early observer failure can use fewer
+reads. Include this cadence and editor refreshes in the approved account scope.
+An unavailable observation displays **Transaction state unknown**; a nonnull
+transaction ID displays **Open transaction · usability unknown**. Neither
+means rollback has happened or that an open transaction can still accept work.
+The schema selector and transaction controls remain disabled. Closing an open
+or unknown console requires confirmation and verification of remote state;
+local closure does not promise immediate remote rollback. See the
+[observer contract](snowflake-sdk-session-observation.md).
+
 The SDK SQL route remains ReadOnly, and authoritative constraints, schema
 switching, writes, DDL, transactions and the required million-row result/export
 workflow remain open. Keep the existing DataGrip connection available while the

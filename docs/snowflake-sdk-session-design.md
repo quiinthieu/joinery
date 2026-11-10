@@ -1,8 +1,10 @@
-# Proposed Snowflake SDK session observation and schema switching
+# Snowflake SDK session observation and proposed schema switching
 
-This is a proposed next increment, not implemented behavior or Snowflake account
-qualification. It adds truthful session observation and typed schema switching on
-the existing SDK connection. The current read-only policy remains: writes, DDL,
+The observation and bounded schema-options portion is now implemented; see its
+[current contract and qualification](snowflake-sdk-session-observation.md).
+Typed schema switching below remains proposed. Neither portion establishes
+Snowflake account qualification. Both use the existing SDK connection.
+The current read-only policy remains: writes, DDL,
 autocommit changes, BEGIN, COMMIT, and ROLLBACK stay disabled. It does not complete
 the [DataGrip replacement scope](snowflake-datagrip-replacement.md).
 
@@ -112,10 +114,12 @@ switching safely within an active transaction remain later requirements.
    the current schema separately must not authorize switching to a name omitted
    from the freshly validated choices. Visibility is privilege-filtered.
    The fixed state observation uses ten executions; inserting one bounded schema
-   list between its five-statement samples uses eleven. A typed switch can use
-   twelve: before sample, schema list, one USE, and after sample, reusing the typed
-   helper's context readback in that final sample. An extra readback increases
-   this budget and must be explicit. Samples detect sampled drift; they are not
+   list between its five-statement samples uses eleven. The planned typed switch
+   uses thirteen: before sample (five), schema list (one), USE (one), the helper's
+   existing six-column identity readback (one), and a full after sample (five).
+   The Rust context read has eight columns plus a separate identifier-policy
+   read; the six-column helper result cannot replace it. Any extra verification
+   reads must increase the budget explicitly. Samples detect sampled drift; they are not
    an atomic snapshot and cannot detect every change between statements.
    SqlEditor also currently prepends its current schema to choices; remove that
    behavior for revision-bound SDK options. An omitted current schema may be
@@ -158,6 +162,10 @@ switching safely within an active transaction remain later requirements.
 
    Read back the same SDK session before publishing success: require the target
    schema, unchanged database/principal/session, and expected remaining context.
+   Preserve the observed nullable role, warehouse, secondary roles, identifier
+   policy, AUTOCOMMIT, abort-on-error policy and idle activity. The resolved search
+   path may legitimately change with the selected schema; retain and fingerprint
+   the complete newly observed path instead of requiring the old path verbatim.
    A definitive rejection leaves targets revoked and requires fresh observation.
    A lost, cancelled, timed-out, malformed, or mismatched post-dispatch result
    leaves context Unknown and retires the session. Never replay the switch or
@@ -174,6 +182,15 @@ switching safely within an active transaction remain later requirements.
    abandonment, and cancellation handling. Each USE and readback execution keeps
    its own submit-guard ticket through consumption; operation success requires
    final readback, not just an earlier USE acknowledgement.
+
+   Keep operation-level USE dispatch/acknowledgement evidence separate from the
+   per-execute readback state. A definitive USE rejection may report a database
+   rejection. Once USE succeeds, even a definitive permission error on readback
+   means final context is unverified: retire and publish Unknown, retaining the
+   known USE acknowledgement without claiming the USE was rejected. The final
+   operation acknowledgement must follow validated readback. Cancellation and
+   abandonment after dispatch follow ContextChange uncertainty; only proven
+   local unsent cancellation can be NotSubmitted.
 
    Audit all context callers and migrate schema-bearing helper tests before
    making ordinary context observation read-only. Preserve startup's profile

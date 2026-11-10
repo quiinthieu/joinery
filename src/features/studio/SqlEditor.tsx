@@ -1176,7 +1176,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const currentContext = runtimeState?.activeContext ?? "";
   const contextOptions =
     availableContexts && availableContexts.length > 0
-      ? currentContext && !availableContexts.includes(currentContext)
+      ? currentContext &&
+        !availableContexts.includes(currentContext) &&
+        runtimeState?.transactionObservation === undefined
         ? [currentContext, ...availableContexts]
         : availableContexts
       : [];
@@ -1198,7 +1200,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 className="context-switcher"
                 aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
                 value={currentContext}
-                disabled={switchingContext}
+                disabled={switchingContext || runtimeState?.transactionObservation !== undefined}
                 onChange={(event) => {
                   const target = event.target.value;
                   if (!target || !props.sessionId || target === currentContext) return;
@@ -1211,6 +1213,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 }}
               >
                 {!currentContext && <option value="">No active context</option>}
+                {currentContext && !contextOptions.includes(currentContext) && (
+                  <option value={currentContext} disabled>
+                    {currentContext} (unavailable)
+                  </option>
+                )}
                 {contextOptions.map((item) => (
                   <option key={item} value={item}>
                     {item}

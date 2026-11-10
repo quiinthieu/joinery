@@ -767,9 +767,10 @@ impl Driver for Snowflake {
             context_kind: SessionContextKind::Schema,
             active_context: Some(schema),
             database: self.database.clone(),
-            role: self.role.clone(),
+            role: Some(self.role.clone()),
             search_path: vec![qualified_schema],
             context_fingerprint: None,
+            transaction_observation: None,
         })
     }
     async fn list_contexts(&self) -> AppResult<Vec<String>> {

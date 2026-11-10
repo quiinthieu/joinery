@@ -754,9 +754,10 @@ impl Driver for Mysql {
                 context_kind: SessionContextKind::Database,
                 active_context,
                 database,
-                role,
+                role: Some(role),
                 search_path,
                 context_fingerprint: None,
+                transaction_observation: None,
             })
         })
         .await
@@ -810,6 +811,11 @@ impl Driver for Mysql {
         .await
     }
     async fn set_transaction_mode(&self, mode: TransactionMode) -> AppResult<()> {
+        if mode == TransactionMode::Unknown {
+            return Err(AppError::invalid(
+                "Unknown is not a requested transaction mode",
+            ));
+        }
         self.bounded(async {
             let mut conn = self.editor.connection.lock().await;
             let in_trans = observe_status_flags(&mut conn)
@@ -824,6 +830,11 @@ impl Driver for Mysql {
             let sql = match mode {
                 TransactionMode::AutoCommit => "SET SESSION autocommit = 1",
                 TransactionMode::Manual => "SET SESSION autocommit = 0",
+                TransactionMode::Unknown => {
+                    return Err(AppError::invalid(
+                        "Unknown is not a requested transaction mode",
+                    ));
+                }
             };
             conn.query_drop(sql).await.map_err(mysql_error)
         })

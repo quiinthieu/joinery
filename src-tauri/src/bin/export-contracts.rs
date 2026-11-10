@@ -36,6 +36,8 @@ fn main() {
         RelationPreview::decl(),
         TransactionMode::decl(),
         TransactionState::decl(),
+        TransactionUsability::decl(),
+        TransactionObservation::decl(),
         SessionContextKind::decl(),
         SessionRuntimeState::decl(),
         SessionContextOptions::decl(),

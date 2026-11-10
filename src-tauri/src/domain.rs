@@ -1559,6 +1559,8 @@ pub enum TransactionMode {
     #[default]
     AutoCommit,
     Manual,
+    /// Observation only; never a valid requested transaction mode.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1568,6 +1570,69 @@ pub enum TransactionState {
     Idle,
     InTransaction,
     Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionUsability {
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum TransactionObservation {
+    Unavailable,
+    Observed {
+        #[serde(rename = "transactionId")]
+        transaction_id: Option<String>,
+        #[serde(rename = "abortOnError")]
+        abort_on_error: bool,
+        usability: TransactionUsability,
+    },
+}
+
+impl<'de> Deserialize<'de> for TransactionObservation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+        enum Wire {
+            Unavailable {},
+            Observed {
+                #[serde(
+                    rename = "transactionId",
+                    deserialize_with = "deserialize_required_nullable"
+                )]
+                transaction_id: Option<String>,
+                #[serde(rename = "abortOnError")]
+                abort_on_error: bool,
+                usability: TransactionUsability,
+            },
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Unavailable {} => Self::Unavailable,
+            Wire::Observed {
+                transaction_id,
+                abort_on_error,
+                usability,
+            } => Self::Observed {
+                transaction_id,
+                abort_on_error,
+                usability,
+            },
+        })
+    }
+}
+
+fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1588,11 +1653,14 @@ pub struct SessionRuntimeState {
     pub context_kind: SessionContextKind,
     pub active_context: Option<String>,
     pub database: String,
-    pub role: String,
+    pub role: Option<String>,
     pub search_path: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub context_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub transaction_observation: Option<TransactionObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1600,6 +1668,9 @@ pub struct SessionRuntimeState {
 pub struct SessionContextOptions {
     pub state: SessionRuntimeState,
     pub available: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub revision: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -1942,6 +2013,48 @@ pub struct DataCompareReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transaction_observation_requires_complete_tagged_evidence() {
+        let observed = serde_json::json!({
+            "status":"observed", "transactionId":null,
+            "abortOnError":true, "usability":"unknown"
+        });
+        assert_eq!(
+            serde_json::from_value::<TransactionObservation>(observed.clone()).unwrap(),
+            TransactionObservation::Observed {
+                transaction_id: None,
+                abort_on_error: true,
+                usability: TransactionUsability::Unknown
+            }
+        );
+        for key in ["transactionId", "abortOnError", "usability"] {
+            let mut incomplete = observed.clone();
+            incomplete.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<TransactionObservation>(incomplete).is_err(),
+                "{key}"
+            );
+        }
+        assert!(
+            serde_json::from_value::<TransactionObservation>(
+                serde_json::json!({"status":"unavailable","transactionId":null})
+            )
+            .is_err()
+        );
+        let opaque = TransactionObservation::Observed {
+            transaction_id: Some("18446744073709551616:opaque".into()),
+            abort_on_error: false,
+            usability: TransactionUsability::Unknown,
+        };
+        assert_eq!(
+            serde_json::from_value::<TransactionObservation>(
+                serde_json::to_value(&opaque).unwrap()
+            )
+            .unwrap(),
+            opaque
+        );
+    }
 
     fn diagram_column(name: &str, primary_key: bool) -> DiagramColumn {
         DiagramColumn {

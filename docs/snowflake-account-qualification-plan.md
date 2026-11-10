@@ -106,6 +106,16 @@ automatic dispatch through a reviewed implementation. A1/A3 approval alone does
 not authorize those background reads. Use the helper-only route until the app's
 complete automatic SQL scope is enforceable and approved.
 
+The later [session observer](snowflake-sdk-session-observation.md) adds more
+automatic SQL: ten fixed reads after each qualifying serialized SQL action,
+including some database-error outcomes, plus eleven per coherent context-options
+refresh. Its AUTOCOMMIT, abort-on-error and current-transaction reads are not
+silently included in the older A1–A3 templates or allowances below. Before any
+application qualification, revise the exact manifest/templates and enforce the
+complete observer, completion and browsing cadence within a newly reviewed
+budget. The current caps remain proposed helper-stage caps, not permission to
+execute additional observer SQL. The earlier two-query canary is unchanged.
+
 Authentication wait is at most 120 seconds per session. Small qualification SQL
 gets a 30-second local wait; current adapter read/metadata operations also have a
 65-second operation deadline, so the earlier effective limit applies. No live

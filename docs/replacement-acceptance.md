@@ -48,6 +48,15 @@ This provides same-session relation/column suggestions, not browsing or complete
 inspection. Actual account metadata and the full required workflow remain open;
 the [ledger](replacement-verification.md) records exact evidence and limits.
 
+Later local source adds revision-bound relation browsing and the
+[session observer](snowflake-sdk-session-observation.md): bounded same-connection
+settings/activity/context observations with explicit Unknown state. Current
+qualification is recorded in the ledger, separately from the earlier counts.
+Generic editable browsing, complete object inspection, typed schema switching,
+write/DDL/transaction workflows and account/owner acceptance remain required and
+open. Account scope must include automatic post-SQL observations and editor
+metadata; the earlier two-query canary does not authorize them.
+
 ## Target definition and open questions
 
 Replacement means the owner's required daily workflows succeed on their target

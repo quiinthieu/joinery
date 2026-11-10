@@ -529,8 +529,8 @@ export function App() {
             (tab.querySession && !tab.querySessionClosed),
         ) ||
         Object.values(snap.sessionPool).some((entries) => entries.length > 0) ||
-        Object.values(snap.sessionStates).some(
-          (st) => st.transactionState === "inTransaction" || st.transactionState === "failed",
+        Object.values(snap.sessions).some((session) =>
+          sessionHasOpenTransaction(snap.sessionStates, session.id),
         )
       );
     };
@@ -901,8 +901,8 @@ export function App() {
           ? `Close ${active.fileName ?? "this workspace"}?`
           : "Close this workspace?",
         description: dirtyFile
-          ? `Unsaved changes in ${active.fileName} will be lost and running queries cancelled. Closing an isolated session rolls back its open transactions.`
-          : "Pending edits will be discarded and running queries cancelled. Closing an isolated session rolls back its open transactions. Completed writes are not undone.",
+          ? `Unsaved changes in ${active.fileName} will be lost and running queries cancelled. Verify any open or unknown transaction on the database after closing an isolated session.`
+          : "Pending edits will be discarded and running queries cancelled. Verify any open or unknown transaction on the database after closing an isolated session. Completed writes are not undone.",
         action,
       });
     else action();
@@ -951,7 +951,7 @@ export function App() {
         kind: "confirm",
         title: `Disconnect ${profile.name}?`,
         description:
-          "This closes all its sessions and results, discards pending edits, cancels running queries, and rolls back open transactions.",
+          "This closes all its sessions and results, discards pending edits, and cancels running queries. Verify any open or unknown transaction on the database; remote rollback may not be immediate.",
         action,
       });
     else void action().catch((error) => state.notify(messageOf(error)));
@@ -2130,24 +2130,28 @@ export function App() {
             ...(current?.kind === "query" && session?.capabilities.transactions
               ? (() => {
                   const runtime = state.sessionStates[session.id];
-                  const txMode = runtime?.transactionMode ?? "autoCommit";
-                  const txState = runtime?.transactionState ?? "idle";
+                  const txMode = runtime?.transactionMode ?? "unknown";
+                  const txState = runtime?.transactionState ?? "unknown";
                   return [
-                    {
-                      label:
-                        txMode === "manual"
-                          ? "Switch session to auto-commit"
-                          : "Switch session to manual commit",
-                      shortcut: "",
-                      icon: Activity,
-                      action: () =>
-                        void state
-                          .setTransactionMode(
-                            session.id,
-                            txMode === "manual" ? "autoCommit" : "manual",
-                          )
-                          .catch((error) => state.notify(messageOf(error))),
-                    },
+                    ...(txMode !== "unknown"
+                      ? [
+                          {
+                            label:
+                              txMode === "manual"
+                                ? "Switch session to auto-commit"
+                                : "Switch session to manual commit",
+                            shortcut: "",
+                            icon: Activity,
+                            action: () =>
+                              void state
+                                .setTransactionMode(
+                                  session.id,
+                                  txMode === "manual" ? "autoCommit" : "manual",
+                                )
+                                .catch((error) => state.notify(messageOf(error))),
+                          },
+                        ]
+                      : []),
                     ...(txState === "inTransaction" && profile?.safeMode !== "readOnly"
                       ? [
                           {
@@ -2161,7 +2165,7 @@ export function App() {
                           },
                         ]
                       : []),
-                    ...(txState !== "idle"
+                    ...(txState === "inTransaction" || txState === "failed"
                       ? [
                           {
                             label: "Rollback transaction",

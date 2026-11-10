@@ -812,14 +812,17 @@ async fn sdk_completion_uses_one_existing_connection_and_resolved_zero_row_colum
         h.driver.catalog().await.unwrap_err().code,
         ErrorCode::Unsupported
     );
+    // This metadata fixture intentionally has no transaction-observer result
+    // shapes. An incomplete observation must clear verified runtime context.
+    let state = h.driver.session_state("synthetic-session").await.unwrap();
+    assert_eq!(state.transaction_mode, TransactionMode::Unknown);
+    assert_eq!(state.transaction_state, TransactionState::Unknown);
     assert_eq!(
-        h.driver
-            .session_state("synthetic-session")
-            .await
-            .unwrap_err()
-            .code,
-        ErrorCode::Unsupported
+        state.transaction_observation,
+        Some(TransactionObservation::Unavailable)
     );
+    assert!(state.active_context.is_none() && state.context_fingerprint.is_none());
+    assert!(state.database.is_empty() && state.role.is_none() && state.search_path.is_empty());
     let queries = h.queries();
     assert!(
         queries[before..]

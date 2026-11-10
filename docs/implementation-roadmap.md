@@ -34,7 +34,17 @@ Snowflake acceptance. External account qualification needs explicit non-producti
 scope and permission for any billable activity/writes; no private DataGrip state
 or credentials will be inspected.
 
-The relation-browsing increment is locally qualified: **619 frontend / 338
+The current [session observer](snowflake-sdk-session-observation.md) implements
+bounded, same-connection AUTOCOMMIT/policy/opaque-transaction observations,
+nullable roles and explicit Unknown states. Stable observations preserve cached
+plans; changed or unavailable observations revoke them. Local qualification
+passes; the [ledger](replacement-verification.md#sdk-session-observation-10-november-2026)
+records current tests, packaging and native evidence. SDK schema switching and
+transaction controls remain disabled;
+actual account observation remains unqualified. Its ten/eleven additional SQL
+executions are outside the earlier two-query canary approval.
+
+The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
 application/helper browsing flow, **11** focused browser workflows and an actual
 PostgreSQL context/transaction regression pass. Fresh normal SDK macOS packaging,
@@ -78,8 +88,9 @@ process-local boundary against SDK retransmission and passes local qualification
 159 helper tests, 607 frontend / 314 standard Rust tests, focused browser flows,
 fresh SDK-bearing macOS packaging/startup and 19 hidden native check categories.
 The browsing contract now has a local catalog/column-inspection/preview
-implementation. Typed schema switching and truthful session observation remain
-planned under the reviewed [session observation/switching contract](snowflake-sdk-session-design.md);
+implementation. Truthful session observation is now locally qualified;
+typed schema switching remains planned under the
+reviewed [session observation/switching contract](snowflake-sdk-session-design.md);
 the complete browsing/session workflow is not finished. Neither is
 account qualified. The guard's actual pinned-SDK fault, redirect, proxy and cleanup
 evidence establishes a bounded submission foundation; that foundation alone

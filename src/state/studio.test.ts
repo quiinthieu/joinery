@@ -14,6 +14,7 @@ import {
   querySessionForTab,
   isTabFileDirty,
   MAX_RECENT_LOCATIONS,
+  sessionHasOpenTransaction,
 } from "./studio";
 import { workspaceSnapshot } from "./workspace";
 import { dirtyStore } from "../data/dirty-store";
@@ -1036,6 +1037,178 @@ function transactionRuntime(sessionId: string): SessionRuntimeState {
     searchPath: ["public", "pg_catalog"],
   };
 }
+
+function sdkRuntime(): SessionRuntimeState {
+  return {
+    ...transactionRuntime(session.id),
+    role: null,
+    transactionMode: "autoCommit",
+    transactionState: "idle",
+    contextFingerprint: "verified-context",
+    transactionObservation: {
+      status: "observed",
+      transactionId: null,
+      abortOnError: false,
+      usability: "unknown",
+    },
+  };
+}
+function useSdkSession() {
+  useStudio.setState({
+    sessions: {
+      profile: {
+        ...session,
+        engine: "snowflake",
+        capabilities: { ...session.capabilities, transactions: false, relationBrowsing: true },
+      },
+    },
+    sessionStates: { session: sdkRuntime() },
+    sessionContexts: { session: ["public"] },
+    sessionContextRevision: { session: 0 },
+  });
+}
+test("unknown or missing session transaction observation requires close confirmation", () => {
+  expect(sessionHasOpenTransaction({}, "session")).toBe(true);
+  expect(
+    sessionHasOpenTransaction(
+      { session: { ...sdkRuntime(), transactionState: "unknown" } },
+      "session",
+    ),
+  ).toBe(true);
+  expect(sessionHasOpenTransaction({ session: sdkRuntime() }, "session")).toBe(false);
+  expect(sessionHasOpenTransaction({}, null)).toBe(false);
+});
+test("failed SDK observation replaces old success with unknown and clears choices", async () => {
+  useSdkSession();
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("observation denied"));
+  const refresh = useStudio.getState().refreshSessionContexts("session");
+  expect(useStudio.getState().sessionStates.session.transactionState).toBe("unknown");
+  expect(useStudio.getState().sessionContexts.session).toEqual([]);
+  expect(await refresh).toBe(false);
+  expect(useStudio.getState().sessionStates.session).toMatchObject({
+    transactionMode: "unknown",
+    transactionState: "unknown",
+    role: null,
+    database: "",
+    activeContext: null,
+    transactionObservation: { status: "unavailable" },
+  });
+  expect(useStudio.getState().sessionContextRevision.session).toBe(1);
+});
+test("stable SDK refresh preserves the context revision and nullable-role changes advance it", async () => {
+  useSdkSession();
+  vi.mocked(client.call).mockResolvedValueOnce({
+    state: sdkRuntime(),
+    available: ["public"],
+    revision: "same-context-new-options",
+  });
+  expect(await useStudio.getState().refreshSessionContexts("session")).toBe(true);
+  expect(useStudio.getState().sessionContextRevision.session).toBe(0);
+  for (const role of ["NEW_ROLE", null]) {
+    vi.mocked(client.call).mockResolvedValueOnce({
+      state: { ...sdkRuntime(), role },
+      available: ["public"],
+      revision: "new-options",
+    });
+    await useStudio.getState().refreshSessionContexts("session");
+    expect(useStudio.getState().sessionStates.session.role).toBe(role);
+  }
+  expect(useStudio.getState().sessionContextRevision.session).toBe(2);
+});
+test("retiring an SDK session invalidates its pending observation", async () => {
+  useSdkSession();
+  let resolve!: (value: unknown) => void;
+  vi.mocked(client.call).mockReturnValueOnce(
+    new Promise((yes) => {
+      resolve = yes;
+    }),
+  );
+  const pending = useStudio.getState().refreshSessionContexts("session");
+  useStudio.getState().retireSession("session");
+  resolve({ state: sdkRuntime(), available: ["public"] });
+  expect(await pending).toBe(false);
+  expect(useStudio.getState().sessionStates.session).toBeUndefined();
+  expect(useStudio.getState().sessionContexts.session).toBeUndefined();
+});
+for (const lateFailure of [false, true]) {
+  test(`older SDK observation ${lateFailure ? "failure" : "success"} cannot replace newer state`, async () => {
+    useSdkSession();
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(client.call).mockReturnValueOnce(
+      new Promise((yes, no) => {
+        resolve = yes;
+        reject = no;
+      }),
+    );
+    const old = useStudio.getState().refreshSessionContexts("session", true);
+    const newest = { ...sdkRuntime(), activeContext: "newest", contextFingerprint: "newest" };
+    vi.mocked(client.call).mockResolvedValueOnce({
+      state: newest,
+      available: ["newest"],
+      revision: "new-revision",
+    });
+    expect(await useStudio.getState().refreshSessionContexts("session")).toBe(true);
+    if (lateFailure) reject(new Error("obsolete error"));
+    else resolve({ state: sdkRuntime(), available: ["public"] });
+    expect(await old).toBe(false);
+    expect(useStudio.getState().sessionStates.session).toEqual(newest);
+    expect(useStudio.getState().sessionContexts.session).toEqual(["newest"]);
+  });
+}
+test("a query state event supersedes a pending observation without losing its result", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  const tab = useStudio.getState().tabs.find((tab) => tab.id === tabId)!;
+  let resolve!: (value: unknown) => void;
+  vi.mocked(client.call).mockReturnValueOnce(
+    new Promise((yes) => {
+      resolve = yes;
+    }),
+  );
+  const old = useStudio.getState().refreshSessionContexts("session");
+  const observed = {
+    ...sdkRuntime(),
+    transactionState: "inTransaction" as const,
+    transactionObservation: {
+      status: "observed" as const,
+      transactionId: "opaque:18446744073709551616",
+      abortOnError: true,
+      usability: "unknown" as const,
+    },
+  };
+  useStudio.getState().applyEvents(
+    tabId,
+    [
+      { type: "sessionState", state: observed },
+      { type: "statementCompleted", runId: "known-run", index: 0, affectedRows: "1", elapsedMs: 2 },
+    ],
+    tab.revision,
+  );
+  resolve({ state: sdkRuntime(), available: ["public"] });
+  expect(await old).toBe(false);
+  expect(useStudio.getState().sessionStates.session).toEqual(observed);
+  expect(useStudio.getState().tabs.find((tab) => tab.id === tabId)!.metrics[0].affectedRows).toBe(
+    "1",
+  );
+});
+test("obsolete query state events cannot restore a successful SDK observation", () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  const tab = useStudio.getState().tabs.find((tab) => tab.id === tabId)!;
+  useStudio.getState().updateTab(tabId, { revision: tab.revision + 1 });
+  const unknown = {
+    ...sdkRuntime(),
+    transactionState: "unknown" as const,
+    transactionMode: "unknown" as const,
+    transactionObservation: { status: "unavailable" as const },
+  };
+  useStudio.setState({ sessionStates: { session: unknown } });
+  useStudio
+    .getState()
+    .applyEvents(tabId, [{ type: "sessionState", state: sdkRuntime() }], tab.revision);
+  expect(useStudio.getState().sessionStates.session).toEqual(unknown);
+});
 
 for (const action of ["commitTransaction", "rollbackTransaction"] as const) {
   for (const ownership of ["primary", "secondary"] as const) {

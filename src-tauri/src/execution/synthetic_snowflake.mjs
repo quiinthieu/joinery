@@ -24,7 +24,8 @@ export default {
         unsupportedPolicy = false;
       }
       return {
-        schema: profile.schema, warehouse: profile.warehouse,
+        schema: profile.schema, warehouse: profile.warehouse, role: profile.role,
+        autocommit: true, abortOnError: false, transactionId: null,
         secondaryRoles: { roles: '', value: 'NONE' }, session: 'SESSION',
         ...(existsSync(marker('metadata-state.json')) ? JSON.parse(readFileSync(marker('metadata-state.json'), 'utf8')) : {}),
         ...(shiftedSchema ? { schema: shiftedSchema } : {}),
@@ -50,7 +51,7 @@ export default {
         let failure = null;
         if (sql.startsWith('SELECT CURRENT_USER() AS PRINCIPAL')) {
           names = contextColumns;
-          values = [['SERVER_USER', profile.role, profile.database, current.schema, current.warehouse,
+          values = [['SERVER_USER', current.role, profile.database, current.schema, current.warehouse,
             current.session, JSON.stringify([`${profile.database}.PUBLIC`, `${profile.database}.OTHER`]),
             JSON.stringify(current.secondaryRoles)]];
           if (changeAfterSchemaCheck) {
@@ -76,6 +77,18 @@ export default {
             unsupportedPolicy = true;
             writeFileSync(marker('schema-policy-shifted'), 'after-driver-policy-recheck');
           }
+        } else if (sql === "SHOW PARAMETERS LIKE 'AUTOCOMMIT' IN SESSION") {
+          names = ['key', 'value'];
+          values = [['AUTOCOMMIT', current.autocommit ? 'true' : 'false']];
+          if (existsSync(marker('deny-observer'))) {
+            failure = Object.assign(Error('synthetic observer denied'), { sqlState: '42501' });
+          }
+        } else if (sql === "SHOW PARAMETERS LIKE 'TRANSACTION_ABORT_ON_ERROR' IN SESSION") {
+          names = ['key', 'value'];
+          values = [['TRANSACTION_ABORT_ON_ERROR', current.abortOnError ? 'true' : 'false']];
+        } else if (sql === 'SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID') {
+          names = ['TRANSACTION_ID'];
+          values = [[current.transactionId]];
         } else if (sql.includes('.INFORMATION_SCHEMA.SCHEMATA ')) {
           names = ['CATALOG_NAME', 'SCHEMA_NAME'];
           values = [[profile.database, 'OTHER'], [profile.database, 'PUBLIC']];

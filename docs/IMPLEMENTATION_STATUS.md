@@ -35,7 +35,17 @@ are unqualified. A separately approved two-query SDK helper canary now passes
 actual account SSO, context/session continuity, scalar values and local cleanup;
 the ledger records its initial validator failure and corrected rerun.
 
-The relation-browsing increment is locally qualified: **619 frontend / 338
+The current [session observer](snowflake-sdk-session-observation.md) implements
+same-connection settings/activity observations, nullable roles and explicit
+Unknown states. It invalidates stale context-dependent caches and preserves
+separately acknowledged query results when observation fails. Local qualification
+passes **627 frontend / 357 standard Rust** tests, focused real-engine/browser
+checks, fresh macOS packaging and 19 hidden-native check categories. See the
+[ledger](replacement-verification.md#sdk-session-observation-10-november-2026).
+SDK schema switching and transaction controls remain disabled.
+Actual account observation is unqualified and outside the old canary approval.
+
+The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
 application/helper browsing flow, **11** focused browser workflows and an actual
 PostgreSQL context/transaction regression pass. Fresh normal SDK macOS packaging,

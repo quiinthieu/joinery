@@ -167,6 +167,16 @@ errors clear its stale UI state rather than reporting a successful connection as
 an authentication failure. The existing SQL API metadata pilot does not qualify SDK
 metadata behavior.
 
+The current [session observer](snowflake-sdk-session-observation.md) adds bounded
+same-connection settings, opaque transaction activity and context observations.
+Unknown states and nullable roles are explicit; backend caches and frontend
+choices are revoked after changed or unavailable observations. Local qualification
+passes; see the [ledger](replacement-verification.md#sdk-session-observation-10-november-2026)
+for current tests, packaging and native evidence. Schema switching and transaction
+controls remain disabled.
+These ten/eleven-read operations need account authorization beyond the earlier
+two-SELECT helper canary.
+
 Writes, DDL and explicit transactions remain required and disabled; they are not
 optional. The local submission guard prevents a second admitted native query
 request for its reviewed sources, but truthful mutation/batch/transaction and

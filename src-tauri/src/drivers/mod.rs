@@ -17,6 +17,8 @@ pub mod snowflake_external;
 mod snowflake_metadata;
 #[cfg(unix)]
 pub mod snowflake_process;
+#[cfg(unix)]
+mod snowflake_session;
 
 pub trait QuerySink: Send {
     fn limit(&mut self, reason: &str);
@@ -204,6 +206,21 @@ pub trait Driver: Send + Sync {
             ErrorCode::Unsupported,
             "Database or schema switching is unavailable for this engine",
         ))
+    }
+    async fn session_context_options(&self, session_id: &str) -> AppResult<SessionContextOptions> {
+        let state = self.session_state(session_id).await?;
+        let mut available = self.list_contexts().await?;
+        if let Some(active) = &state.active_context
+            && !active.is_empty()
+            && !available.iter().any(|item| item == active)
+        {
+            available.insert(0, active.clone());
+        }
+        Ok(SessionContextOptions {
+            state,
+            available,
+            revision: None,
+        })
     }
     async fn switch_context(&self, _target: &str) -> AppResult<()> {
         Err(AppError::new(

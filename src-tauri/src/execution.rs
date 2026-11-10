@@ -62,6 +62,7 @@ struct Session {
     closed: AtomicBool,
     tunnel: Option<Arc<Tunnel>>,
     completion: Mutex<Option<CompletionCatalog>>,
+    observed_runtime: Mutex<Option<SessionRuntimeState>>,
 }
 
 struct ExplainSource {
@@ -924,6 +925,7 @@ impl Studio {
                     driver: driver.clone(),
                     lane: tokio::sync::Mutex::new(()),
                     completion: Mutex::new(None),
+                    observed_runtime: Mutex::new(None),
                     cancellation_gate: tokio::sync::Mutex::new(()),
                     active_run: Mutex::new(None),
                     closed: AtomicBool::new(false),
@@ -1459,6 +1461,9 @@ impl Studio {
             } else {
                 session.driver.session_state(&session.info.id).await.ok()
             };
+            if let Some(state) = &state {
+                self.publish_observed_runtime(&session, state);
+            }
             if !events(QueryEvent::PlanContext {
                 run_id: run_id.clone(),
                 state,
@@ -1725,6 +1730,7 @@ impl Studio {
                     reason: reason.into(),
                 });
             } else if let Some(state) = observed_state {
+                self.publish_observed_runtime(&session, &state);
                 events(QueryEvent::SessionState { state });
             }
             *session.active_run.lock() = None;
@@ -1870,6 +1876,11 @@ impl Studio {
         session_id: &str,
         mode: TransactionMode,
     ) -> AppResult<SessionRuntimeState> {
+        if mode == TransactionMode::Unknown {
+            return Err(AppError::invalid(
+                "Unknown is not a requested transaction mode",
+            ));
+        }
         let session = self.session(session_id)?;
         if !session.info.capabilities.transactions {
             return Err(AppError::new(
@@ -1896,6 +1907,11 @@ impl Studio {
         let label = match mode {
             TransactionMode::AutoCommit => "autoCommit",
             TransactionMode::Manual => "manual",
+            TransactionMode::Unknown => {
+                return Err(AppError::invalid(
+                    "Unknown is not a requested transaction mode",
+                ));
+            }
         };
         let _ = self
             .persistence
@@ -2032,15 +2048,48 @@ impl Studio {
         &self,
         session: &Arc<Session>,
     ) -> AppResult<SessionContextOptions> {
-        let state = session.driver.session_state(&session.info.id).await?;
-        let mut available = session.driver.list_contexts().await?;
-        if let Some(active) = &state.active_context
-            && !active.is_empty()
-            && !available.iter().any(|item| item == active)
-        {
-            available.insert(0, active.clone());
+        let options = session
+            .driver
+            .session_context_options(&session.info.id)
+            .await;
+        if options.is_err() && session.info.capabilities.relation_browsing {
+            *session.observed_runtime.lock() = None;
+            *session.completion.lock() = None;
+            session.driver.invalidate_relation_catalog();
+            self.plans
+                .lock()
+                .retain(|_, plan| plan.plan.session_id != session.info.id);
         }
-        Ok(SessionContextOptions { state, available })
+        let options = options?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        self.publish_observed_runtime(session, &options.state);
+        Ok(options)
+    }
+
+    /// Called on the serialized editor lane before exposing SDK observations.
+    fn publish_observed_runtime(&self, session: &Arc<Session>, state: &SessionRuntimeState) {
+        if state.transaction_observation.is_none() {
+            return;
+        }
+        let mut previous = session.observed_runtime.lock();
+        if previous.as_ref() != Some(state)
+            || matches!(
+                state.transaction_observation,
+                Some(TransactionObservation::Unavailable)
+            )
+        {
+            *session.completion.lock() = None;
+            session.driver.invalidate_relation_catalog();
+            self.plans
+                .lock()
+                .retain(|_, plan| plan.plan.session_id != session.info.id);
+        }
+        *previous = Some(state.clone());
     }
 
     /// Read a bounded context snapshot on the existing editor execution lane.
@@ -5041,6 +5090,9 @@ mod browse_classification_tests {
         relation_invalidated: AtomicBool,
         switch_saw_invalidation: AtomicBool,
         close_during_relation: bool,
+        mode_calls: std::sync::atomic::AtomicUsize,
+        runtime_override: Mutex<Option<SessionRuntimeState>>,
+        close_during_context: bool,
     }
 
     #[async_trait::async_trait]
@@ -5070,6 +5122,15 @@ mod browse_classification_tests {
             if !self.context_enabled {
                 return Err(AppError::new(ErrorCode::Unsupported, "No fixture context"));
             }
+            if self.close_during_context {
+                self.close();
+            }
+            if let Some(state) = self.runtime_override.lock().clone() {
+                return Ok(SessionRuntimeState {
+                    session_id: session_id.into(),
+                    ..state
+                });
+            }
             Ok(SessionRuntimeState {
                 session_id: session_id.into(),
                 transaction_mode: TransactionMode::AutoCommit,
@@ -5077,9 +5138,10 @@ mod browse_classification_tests {
                 context_kind: SessionContextKind::Schema,
                 active_context: Some("public".into()),
                 database: "fixture".into(),
-                role: "reader".into(),
+                role: Some("reader".into()),
                 search_path: vec!["public".into()],
                 context_fingerprint: None,
+                transaction_observation: None,
             })
         }
         async fn list_contexts(&self) -> AppResult<Vec<String>> {
@@ -5123,6 +5185,10 @@ mod browse_classification_tests {
         async fn commit_transaction(&self) -> AppResult<()> {
             self.transaction_error
                 .map_or(Ok(()), |code| Err(AppError::new(code, "control failure")))
+        }
+        async fn set_transaction_mode(&self, _mode: TransactionMode) -> AppResult<()> {
+            self.mode_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
         async fn rollback_transaction(&self) -> AppResult<()> {
             self.commit_transaction().await
@@ -5180,13 +5246,104 @@ mod browse_classification_tests {
         let profile = profile(EngineKind::Postgres, SafeMode::ReadOnly);
         let session = Arc::new(Session {
             info: SessionInfo { id: new_id(), connection_id: profile.id.clone(), engine: EngineKind::Postgres, server_version: "fixture".into(), latency_ms: 0, encrypted: false, capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"cancellation":true,"tableBrowsing":false,"relationBrowsing":enabled,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
-            profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None),
+            profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), observed_runtime: Mutex::new(None),
         });
         studio
             .sessions
             .lock()
             .insert(session.info.id.clone(), session.clone());
         session
+    }
+
+    #[tokio::test]
+    async fn sdk_observation_drift_revokes_plans_and_completion_but_stable_state_preserves_them() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let driver = Arc::new(RecordingDriver {
+            context_enabled: true,
+            ..Default::default()
+        });
+        let session = relation_test_session(&studio, driver.clone(), true);
+        let mut observed = driver.session_state(&session.info.id).await.unwrap();
+        observed.context_fingerprint = Some("A".into());
+        observed.transaction_observation = Some(TransactionObservation::Observed {
+            transaction_id: None,
+            abort_on_error: false,
+            usability: TransactionUsability::Unknown,
+        });
+        *driver.runtime_override.lock() = Some(observed.clone());
+        studio.session_contexts(&session.info.id).await.unwrap();
+        *session.completion.lock() = Some(CompletionCatalog {
+            revision: "old".into(),
+            identity: driver.relation_catalog().await.unwrap().identity,
+            tables: vec![],
+            unqualified_tables: vec![],
+        });
+        let plan = studio
+            .prepare_execution(&session.info.id, "SELECT 1")
+            .unwrap();
+        driver.relation_invalidated.store(false, Ordering::Release);
+        studio.session_contexts(&session.info.id).await.unwrap();
+        assert!(session.completion.lock().is_some());
+        assert!(studio.plans.lock().contains_key(&plan.id));
+        assert!(!driver.relation_invalidated.load(Ordering::Acquire));
+        observed.context_fingerprint = Some("B".into());
+        observed.role = None;
+        *driver.runtime_override.lock() = Some(observed);
+        studio.session_contexts(&session.info.id).await.unwrap();
+        assert!(session.completion.lock().is_none());
+        assert!(!studio.plans.lock().contains_key(&plan.id));
+        assert!(driver.relation_invalidated.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn a_session_closed_during_context_observation_cannot_publish_options() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let driver = Arc::new(RecordingDriver {
+            context_enabled: true,
+            close_during_context: true,
+            ..Default::default()
+        });
+        let session = relation_test_session(&studio, driver, true);
+        assert_eq!(
+            studio
+                .session_contexts(&session.info.id)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::ConnectionClosed
+        );
+        assert!(session.observed_runtime.lock().is_none());
+    }
+
+    #[tokio::test]
+    async fn unknown_mode_is_rejected_before_driver_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let driver = Arc::new(RecordingDriver::default());
+        let session = relation_test_session(&studio, driver.clone(), true);
+        assert_eq!(
+            studio
+                .set_transaction_mode(&session.info.id, TransactionMode::Unknown)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(driver.mode_calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -5358,6 +5515,7 @@ mod browse_classification_tests {
                             closed: AtomicBool::new(false),
                             tunnel: None,
                             completion: Mutex::new(None),
+                            observed_runtime: Mutex::new(None),
                         }),
                     );
                     let pending = studio.prepare_execution(&id, "SELECT 1").unwrap();
@@ -5451,6 +5609,7 @@ mod browse_classification_tests {
                 closed: AtomicBool::new(false),
                 tunnel: None,
                 completion: Mutex::new(None),
+                observed_runtime: Mutex::new(None),
             }),
         );
 
@@ -5639,6 +5798,7 @@ mod browse_classification_tests {
                 closed: AtomicBool::new(false),
                 tunnel: None,
                 completion: Mutex::new(None),
+                observed_runtime: Mutex::new(None),
             }),
         );
 

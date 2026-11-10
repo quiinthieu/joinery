@@ -220,8 +220,271 @@ async fn close_metadata_session(fixture: &Fixture, studio: &Studio, id: &str) {
     // none may USE/SET/ALTER/COMMIT or start an independent authentication path.
     assert!(submitted[2..].iter().all(|sql| {
         sql.starts_with("SELECT ")
-            || sql == "SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE' IN SESSION"
+            || [
+                "SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE' IN SESSION",
+                "SHOW PARAMETERS LIKE 'AUTOCOMMIT' IN SESSION",
+                "SHOW PARAMETERS LIKE 'TRANSACTION_ABORT_ON_ERROR' IN SESSION",
+            ]
+            .contains(&sql.as_str())
     }));
+}
+
+fn observation_sample_sql() -> [&'static str; 5] {
+    [
+        "SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_JSON(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES",
+        "SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE' IN SESSION",
+        "SHOW PARAMETERS LIKE 'AUTOCOMMIT' IN SESSION",
+        "SHOW PARAMETERS LIKE 'TRANSACTION_ABORT_ON_ERROR' IN SESSION",
+        "SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID",
+    ]
+}
+
+fn assert_options_reads(fixture: &Fixture, before: usize) {
+    let mut expected = observation_sample_sql().to_vec();
+    expected.push("SELECT CATALOG_NAME, SCHEMA_NAME FROM \"DB\".INFORMATION_SCHEMA.SCHEMATA WHERE CATALOG_NAME = 'DB' AND SCHEMA_NAME <> 'INFORMATION_SCHEMA' ORDER BY SCHEMA_NAME LIMIT 1001");
+    expected.extend(observation_sample_sql());
+    assert_eq!(queries(fixture)[before..], expected);
+}
+
+#[tokio::test]
+async fn sdk_studio_options_use_eleven_reads_with_null_role_and_opaque_transaction() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = metadata_session(&fixture, &studio).await;
+    metadata_state(
+        &fixture,
+        &serde_json::json!({
+            "role": null,
+            "schema": "OMITTED_CURRENT_SCHEMA",
+            "autocommit": false,
+            "abortOnError": true,
+            "transactionId": "opaque-tx:90071992547409931234567890"
+        }),
+    );
+    let before = queries(&fixture).len();
+    let options = studio.session_contexts(&info.id).await.unwrap();
+    assert_options_reads(&fixture, before);
+    assert!(
+        options
+            .revision
+            .as_deref()
+            .is_some_and(|value| { uuid::Uuid::parse_str(value).is_ok() })
+    );
+    assert_eq!(options.state.session_id, info.id);
+    assert_eq!(options.state.role, None);
+    assert_eq!(options.state.database, "DB");
+    assert_eq!(
+        options.state.active_context.as_deref(),
+        Some("OMITTED_CURRENT_SCHEMA")
+    );
+    assert_eq!(options.available, ["OTHER", "PUBLIC"]);
+    assert_eq!(options.state.transaction_mode, TransactionMode::Manual);
+    assert_eq!(
+        options.state.transaction_state,
+        TransactionState::InTransaction
+    );
+    assert_eq!(
+        options.state.transaction_observation,
+        Some(TransactionObservation::Observed {
+            transaction_id: Some("opaque-tx:90071992547409931234567890".into()),
+            abort_on_error: true,
+            usability: TransactionUsability::Unknown,
+        })
+    );
+    assert_eq!(
+        studio
+            .session(&info.id)
+            .unwrap()
+            .observed_runtime
+            .lock()
+            .as_ref(),
+        Some(&options.state)
+    );
+    close_metadata_session(&fixture, &studio, &info.id).await;
+}
+
+#[tokio::test]
+async fn sdk_studio_stable_observation_preserves_plans_but_full_runtime_drift_revokes_them() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = metadata_session(&fixture, &studio).await;
+    let retained = studio.session(&info.id).unwrap();
+    let mut options = studio.session_contexts(&info.id).await.unwrap();
+    assert_eq!(
+        options.state.transaction_observation,
+        Some(TransactionObservation::Observed {
+            transaction_id: None,
+            abort_on_error: false,
+            usability: TransactionUsability::Unknown,
+        })
+    );
+    let mut state = serde_json::json!({});
+    for (key, value) in [
+        ("warehouse", "OTHER_WH"),
+        ("transactionId", "opaque-open-tx"),
+    ] {
+        let catalog = studio.completion_catalog(&info.id).await.unwrap();
+        let plan = studio.prepare_execution(&info.id, "SELECT 1").unwrap();
+        let before = queries(&fixture).len();
+        let stable = studio.session_contexts(&info.id).await.unwrap();
+        assert_options_reads(&fixture, before);
+        assert_eq!(stable.state, options.state);
+        assert_ne!(
+            stable.revision, options.revision,
+            "options authority is a generation, not a content digest"
+        );
+        assert_eq!(
+            retained.completion.lock().as_ref().unwrap().revision,
+            catalog.revision
+        );
+        assert!(studio.plans.lock().contains_key(&plan.id));
+
+        state[key] = serde_json::json!(value);
+        metadata_state(&fixture, &state);
+        let before = queries(&fixture).len();
+        let changed = studio.session_contexts(&info.id).await.unwrap();
+        assert_options_reads(&fixture, before);
+        assert_ne!(changed.state, stable.state, "{key}");
+        assert_ne!(changed.revision, stable.revision);
+        if key == "transactionId" {
+            assert_eq!(
+                changed.state.context_fingerprint, stable.state.context_fingerprint,
+                "transaction-only drift must invalidate even when the context digest is stable"
+            );
+        } else {
+            assert_ne!(
+                changed.state.context_fingerprint,
+                stable.state.context_fingerprint
+            );
+        }
+        assert!(retained.completion.lock().is_none(), "{key}");
+        assert!(!studio.plans.lock().contains_key(&plan.id), "{key}");
+        assert_eq!(
+            retained.observed_runtime.lock().as_ref(),
+            Some(&changed.state)
+        );
+        options = changed;
+    }
+    close_metadata_session(&fixture, &studio, &info.id).await;
+}
+
+#[tokio::test]
+async fn sdk_studio_completed_result_survives_denied_post_query_observation() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = metadata_session(&fixture, &studio).await;
+    let retained = studio.session(&info.id).unwrap();
+    let prior = studio.session_contexts(&info.id).await.unwrap();
+    studio.completion_catalog(&info.id).await.unwrap();
+    let pending = studio.prepare_execution(&info.id, "SELECT 2").unwrap();
+    let plan = studio.prepare_execution(&info.id, "SELECT 1").unwrap();
+    std::fs::write(fixture.controls.join("deny-observer"), b"").unwrap();
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    let before = queries(&fixture).len();
+    let run_id = studio
+        .execute(
+            &plan.id,
+            None,
+            Arc::new(move |event| send.send(event).is_ok()),
+        )
+        .unwrap();
+    let events = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut events = Vec::new();
+        loop {
+            let event = receive
+                .recv()
+                .await
+                .expect("run must publish a terminal event");
+            let finished = matches!(&event, QueryEvent::Finished { .. });
+            events.push(event);
+            if finished {
+                return events;
+            }
+        }
+    })
+    .await
+    .expect("query and failed independent observer must finish promptly");
+    let sample = observation_sample_sql();
+    assert_eq!(
+        queries(&fixture)[before..],
+        ["SELECT 1", sample[0], sample[1], sample[2]]
+    );
+    assert!(events.iter().any(|event| matches!(event,
+        QueryEvent::Finished { run_id: id, status: RunStatus::Completed, .. } if id == &run_id)));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, QueryEvent::StatementCompleted { .. }))
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        QueryEvent::Error { .. } | QueryEvent::SessionClosed { .. }
+    )));
+    let result = events
+        .iter()
+        .filter_map(|event| match event {
+            QueryEvent::Result { result } if result.status == RetentionStatus::Complete => {
+                Some(result)
+            }
+            _ => None,
+        })
+        .next_back()
+        .expect("acknowledged result remains complete");
+    assert_eq!(result.retained_rows, 1);
+    assert_eq!(
+        studio.results.info(&result.id).unwrap().status,
+        RetentionStatus::Complete
+    );
+    assert_eq!(
+        studio.results.row(&result.id, 0).unwrap(),
+        vec![Some("1".into())]
+    );
+    let state = events
+        .iter()
+        .find_map(|event| match event {
+            QueryEvent::SessionState { state } => Some(state),
+            _ => None,
+        })
+        .expect("observer failure must publish explicit unknown state");
+    assert_eq!(state.transaction_mode, TransactionMode::Unknown);
+    assert_eq!(state.transaction_state, TransactionState::Unknown);
+    assert_eq!(
+        state.transaction_observation,
+        Some(TransactionObservation::Unavailable)
+    );
+    assert_eq!(state.role, None);
+    assert_eq!(state.database, "");
+    assert_eq!(state.active_context, None);
+    assert_eq!(state.context_fingerprint, None);
+    assert!(state.search_path.is_empty());
+    assert!(retained.completion.lock().is_none());
+    assert!(!studio.plans.lock().contains_key(&pending.id));
+    assert_eq!(retained.observed_runtime.lock().as_ref(), Some(state));
+    assert!(!retained.driver.is_closed());
+
+    // Options cannot reuse the previously successful list after an observation
+    // failure; recovery must establish a new server-held revision.
+    let before = queries(&fixture).len();
+    let denied = studio.session_contexts(&info.id).await.unwrap_err();
+    assert_eq!(denied.code, ErrorCode::Database);
+    assert_eq!(denied.completion_invalidated, Some(true));
+    assert_eq!(queries(&fixture)[before..], sample[..3]);
+    assert!(retained.observed_runtime.lock().is_none());
+    std::fs::remove_file(fixture.controls.join("deny-observer")).unwrap();
+    let before = queries(&fixture).len();
+    let recovered = studio.session_contexts(&info.id).await.unwrap();
+    assert_options_reads(&fixture, before);
+    assert_ne!(prior.revision, recovered.revision);
+    assert_eq!(prior.state, recovered.state);
+    assert_eq!(recovered.available, ["OTHER", "PUBLIC"]);
+    assert_eq!(
+        studio.results.row(&result.id, 0).unwrap(),
+        vec![Some("1".into())]
+    );
+    close_metadata_session(&fixture, &studio, &info.id).await;
 }
 
 #[tokio::test]

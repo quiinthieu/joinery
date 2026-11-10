@@ -304,8 +304,8 @@ export function Workbench({
     : undefined;
   const sessionLabel = activePoolEntry?.label ?? null;
   const runtimeState = session ? state.sessionStates[session.id] : undefined;
-  const txMode: TransactionMode = runtimeState?.transactionMode ?? "autoCommit";
-  const txState = runtimeState?.transactionState ?? "idle";
+  const txMode: TransactionMode = runtimeState?.transactionMode ?? "unknown";
+  const txState = runtimeState?.transactionState ?? "unknown";
   const fileDirty = isTabFileDirty(tab);
   const bookmarkCandidate = bookmarkTargetForTab(tab, state.catalog);
   const activeBookmark = bookmarkCandidate
@@ -340,7 +340,7 @@ export function Workbench({
     if (lastOwner)
       onConfirm(
         "Change query connection?",
-        "This closes the isolated SQL session and rolls back its open transactions.",
+        "This closes the isolated SQL session. Verify any open or unknown transaction on the database; remote rollback may not be immediate.",
         apply,
       );
     else apply();
@@ -567,7 +567,7 @@ export function Workbench({
                         if (sessionHasOpenTransaction(state.sessionStates, targetSessionId))
                           onConfirm(
                             "Disconnect console session?",
-                            "Disconnecting this session rolls back its open transaction.",
+                            "Disconnecting closes this session. Verify any open or unknown transaction on the database; remote rollback may not be immediate.",
                             runDisconnect,
                           );
                         else runDisconnect();
@@ -592,70 +592,93 @@ export function Workbench({
               )}
             </>
           )}
-          {tab.kind === "query" && session?.capabilities.transactions && (
-            <>
-              <select
-                aria-label="Transaction mode"
-                value={txMode}
-                disabled={running || txBusy}
-                onChange={(event) => {
-                  const nextMode = event.target.value as TransactionMode;
-                  setTxBusy(true);
-                  void state
-                    .setTransactionMode(session.id, nextMode)
-                    .catch((error) => state.notify(messageOf(error)))
-                    .finally(() => setTxBusy(false));
-                }}
-              >
-                <option value="autoCommit">Auto-commit</option>
-                <option value="manual">Manual commit</option>
-              </select>
-              {txState !== "idle" && (
-                <span className={`tx-badge ${txState}`} aria-live="polite">
-                  {txState === "failed" ? "Failed transaction" : "In transaction"}
-                </span>
-              )}
-              {(txMode === "manual" || txState !== "idle") && (
-                <>
-                  <button
-                    className="button ghost small"
-                    aria-label="Commit transaction"
-                    disabled={
-                      running ||
-                      txBusy ||
-                      txState !== "inTransaction" ||
-                      profile?.safeMode === "readOnly"
-                    }
-                    onClick={() => {
-                      setTxBusy(true);
-                      void state
-                        .commitTransaction(session.id)
-                        .catch((error) => state.notify(messageOf(error)))
-                        .finally(() => setTxBusy(false));
-                    }}
-                  >
-                    <Check size={12} />
-                    Commit
-                  </button>
-                  <button
-                    className="button ghost small"
-                    aria-label="Rollback transaction"
-                    disabled={running || txBusy || txState === "idle"}
-                    onClick={() => {
-                      setTxBusy(true);
-                      void state
-                        .rollbackTransaction(session.id)
-                        .catch((error) => state.notify(messageOf(error)))
-                        .finally(() => setTxBusy(false));
-                    }}
-                  >
-                    <RotateCcw size={12} />
-                    Rollback
-                  </button>
-                </>
-              )}
-            </>
-          )}
+          {tab.kind === "query" &&
+            session &&
+            (session.capabilities.transactions || session.engine === "snowflake") && (
+              <>
+                <select
+                  aria-label="Transaction mode"
+                  value={txMode}
+                  disabled={
+                    running || txBusy || !session.capabilities.transactions || txMode === "unknown"
+                  }
+                  onChange={(event) => {
+                    const nextMode = event.target.value as TransactionMode;
+                    if (nextMode === "unknown") return;
+                    setTxBusy(true);
+                    void state
+                      .setTransactionMode(session.id, nextMode)
+                      .catch((error) => state.notify(messageOf(error)))
+                      .finally(() => setTxBusy(false));
+                  }}
+                >
+                  {txMode === "unknown" && (
+                    <option value="unknown" disabled>
+                      Mode unknown
+                    </option>
+                  )}
+                  <option value="autoCommit">Auto-commit</option>
+                  <option value="manual">Manual commit</option>
+                </select>
+                {txState !== "idle" && (
+                  <span className={`tx-badge ${txState}`} aria-live="polite">
+                    {txState === "unknown"
+                      ? "Transaction state unknown"
+                      : txState === "failed"
+                        ? "Failed transaction"
+                        : runtimeState?.transactionObservation?.status === "observed"
+                          ? "Open transaction · usability unknown"
+                          : "In transaction"}
+                  </span>
+                )}
+                {(txMode === "manual" || txState !== "idle") && (
+                  <>
+                    <button
+                      className="button ghost small"
+                      aria-label="Commit transaction"
+                      disabled={
+                        running ||
+                        txBusy ||
+                        !session.capabilities.transactions ||
+                        txState !== "inTransaction" ||
+                        profile?.safeMode === "readOnly"
+                      }
+                      onClick={() => {
+                        setTxBusy(true);
+                        void state
+                          .commitTransaction(session.id)
+                          .catch((error) => state.notify(messageOf(error)))
+                          .finally(() => setTxBusy(false));
+                      }}
+                    >
+                      <Check size={12} />
+                      Commit
+                    </button>
+                    <button
+                      className="button ghost small"
+                      aria-label="Rollback transaction"
+                      disabled={
+                        running ||
+                        txBusy ||
+                        !session.capabilities.transactions ||
+                        txState === "idle" ||
+                        txState === "unknown"
+                      }
+                      onClick={() => {
+                        setTxBusy(true);
+                        void state
+                          .rollbackTransaction(session.id)
+                          .catch((error) => state.notify(messageOf(error)))
+                          .finally(() => setTxBusy(false));
+                      }}
+                    >
+                      <RotateCcw size={12} />
+                      Rollback
+                    </button>
+                  </>
+                )}
+              </>
+            )}
         </div>
         <div className="query-actions">
           {bookmarkCandidate && (

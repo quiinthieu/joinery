@@ -654,9 +654,10 @@ impl Driver for Postgres {
             context_kind: SessionContextKind::Schema,
             active_context: active_postgres_schema(&identity.search_path),
             database: identity.database,
-            role: identity.role,
+            role: Some(identity.role),
             search_path: identity.search_path,
             context_fingerprint: identity.context_fingerprint,
+            transaction_observation: None,
         })
     }
 
@@ -727,6 +728,11 @@ impl Driver for Postgres {
     }
 
     async fn set_transaction_mode(&self, mode: TransactionMode) -> AppResult<()> {
+        if mode == TransactionMode::Unknown {
+            return Err(AppError::invalid(
+                "Unknown is not a requested transaction mode",
+            ));
+        }
         let state = self.observe_transaction_state().await?;
         if mode == TransactionMode::AutoCommit && state != TransactionState::Idle {
             return Err(AppError::new(
@@ -744,6 +750,10 @@ impl Driver for Postgres {
             .await
             .map_err(|error| self.transaction_connection_error(error))?;
         match state {
+            TransactionState::Unknown => Err(AppError::new(
+                ErrorCode::Conflict,
+                "Observe transaction state before committing",
+            )),
             TransactionState::Idle => Err(AppError::new(
                 ErrorCode::Conflict,
                 "No transaction is currently open",

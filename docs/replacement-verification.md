@@ -8,6 +8,126 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK session observation (10 November 2026)
+
+Status: **locally qualified; account and owner acceptance open**. Source
+follows `5d242d2`, with the separate persistence repair `a27865c`. The [observer contract](snowflake-sdk-session-observation.md)
+defines ten fixed reads for state, eleven for coherent bounded schema options,
+opaque transaction IDs, nullable roles and explicit Unknown state. SDK schema
+switching and transaction controls remain disabled. The earlier two-query
+account canary does not authorize or qualify this operation.
+
+Evidence under `.cache/verification/connection-attempts/`:
+
+- `sdk-session-state-reproduced.log`: restoring the preceding store source
+  makes four new stale-response/failed-observation regressions fail; the current
+  source is restored byte for byte. `sdk-session-ui-final.log` passes **101**
+  focused store/shell tests, including stable refresh generations and retired
+  session responses. Standard combined qualification is recorded separately.
+- `sdk-session-pure-final.log`: **12/12** pure observation-parser tests pass.
+  `sdk-session-dto-final.log` passes the strict tagged evidence contract test;
+  development caught and repaired incomplete/extra-field acceptance before
+  qualification. `sdk-session-studio-drift-final.log` passes stable-versus-changed
+  runtime cache invalidation, including nullable-role changes.
+- `sdk-session-adapter-first.log`: **8/8** actual Node/core-helper observer tests
+  using a synthetic SDK pass. The exact ten/eleven-read sequences, NULL role,
+  opaque/open transaction, disagreement, denial, schema omission and superseded
+  options authority are checked. This is not actual SDK transport/account evidence.
+- `sdk-session-real-drivers-final.log`: one admission regression passes on all
+  three real disposable engines: PostgreSQL, MySQL and MariaDB. Requesting the
+  observation-only Unknown mode is rejected before driver/session access, keeps
+  runtime state unchanged, and remains InvalidInput after closure.
+  `sdk-session-postgres-final.log` and `sdk-session-mysql-final.log` also pass the
+  actual manual-transaction/grid-isolation/schema-or-database-switch regressions.
+- `sdk-session-browser-first.log`: seven existing focused browser workflows
+  pass; the new synthetic SDK session test reaches its expected UI states but
+  fails on a hidden disconnect-action locator. The test is repaired to hover
+  the profile row, matching the actual interaction. The affected workflow then
+  passes in `sdk-session-browser-final.log`: explicit open/usability-unknown and
+  unavailable states, disabled transaction/schema actions, unavailable current
+  schema, bounded refreshes and conservative close confirmation. No Snowflake
+  account or SSO is used by this test.
+
+`sdk-session-studio-final.log` passes all **13** actual Node/core-helper Studio
+fixtures in 267.18 seconds, including the three added observation cases. One
+retained connection executes the exact eleven-read options sequence with a NULL
+role and opaque open transaction. Stable observations preserve prepared plans;
+warehouse and transaction-only drift revoke them. A completed SELECT retains its
+terminal status and exact result after a denied observer, failed options, and
+fresh-revision recovery. Existing completion, browsing and cleanup fixtures pass.
+These fixtures use a synthetic SDK, not actual transport or account behavior.
+
+`sdk-session-validate-first.log` passes 627 frontend and 354 standard Rust tests,
+contracts/types and the production build, then fails strict Clippy on a new
+test's `DoubleEndedIterator::last`. The test now uses `next_back`; the final
+combined validation was interrupted by the pre-existing concurrent SQLite WAL
+startup race described below. After its separate repair,
+`sdk-session-validate-after-wal.log` passes the full `pnpm validate`: **627
+frontend / 357 standard Rust** tests, contracts/types, production web build,
+formatting, desktop compilation and strict all-target/all-feature Clippy.
+`sdk-session-bundle-final.log` passes a fresh normal SDK-bearing macOS arm64
+bundle build (**223.94 MiB**), strict ad-hoc signature/resource checks and actual
+packaged SDK hello/EOF startup with **zero authentication and SQL requests**.
+`sdk-session-bundle-artifact.json` records executable SHA-256
+`e7d32b39ab46e3aaf47e33a72ecc72ce0e276ef9fa4c1d0adc1ca9dc5839b9c6`
+and runtime manifest
+`8dfda76a001b44c51f84a3cb298b085c674ca75cc35661c5b643524f1af8ab9c`.
+Developer ID signing,
+notarization, installation and ordinary account-connected app workflows remain
+open. The toolchain's existing missing-libLLVM debug-strip warning is nonfatal.
+`sdk-session-lint-freeze-transition.json` records the iterator test-only change.
+Independent source review clears the parser,
+adapter publication and shared state changes. Review caught a missing successful
+runtime-drift invalidation; the final implementation preserves plans only for
+identical stable observations and revokes them after changed or unavailable
+observations. A separately acknowledged query outcome is never rewritten by an
+observer failure. No new Snowflake account authentication or SQL has run.
+No installation or publication has run.
+
+The separate startup repair is committed as `a27865c`; its
+[reproduction and verification](local-metadata-wal-admission.md) preserve the
+failed combined run, raw synthetic SQLite diagnosis, before-fix sensitivity,
+ten focused tests, 100 four-connection runs and actual abrupt-backend-restart
+browser workflow. No private application data was accessed.
+
+`sdk-session-read-adapter-first.log` passes 28 of 29 existing adapter fixtures,
+then encounters the old Unsupported-session-state expectation. That metadata
+fixture lacks the new observer shapes; the updated assertion requires explicit
+Unknown/Unavailable with every verified context field cleared. Final
+`sdk-session-read-adapter-final.log` passes **29/29** actual Node/core-helper
+read/completion/browsing fixtures using the synthetic SDK. The related
+`SDK session observation` parser/helper cases retain separate evidence above.
+The test-only transition is recorded in
+`sdk-session-adapter-test-freeze-transition.json`. The earlier full 13-fixture
+Studio run precedes the iterator and separate persistence repair;
+`sdk-session-studio-completed-final.log` reruns the affected acknowledged-result/
+observer-denial workflow on final source: **1/1** passes in 16.45 seconds.
+The complete Studio suite is not claimed as rerun after those changes.
+
+`sdk-session-native-build-final.log` passes a fresh SDK-bearing hidden-native
+build and packaged helper startup with zero authentication/SQL. The isolated
+hidden app then passes all **19** check categories and **10** cleanup cycles in
+`sdk-session-native-final.log` / `sdk-session-native-runs.json`: 4,077 ms native
+fixture elapsed, 98.55 MiB sampled main-process peak RSS. The launched bundle
+executable SHA-256 is
+`4167a5235e207ff28e8e949828909af8d6fa9f74af01da7a086a8b4bc068d9cf`;
+the separate fixture executable is
+`1309d60baf7b683a50a87bb061fded39ffbc705a6c69f78cc17d5586191e7c06`.
+All six checkpoints report SDK runtime availability and zero connect/execute/
+prepare invocations. These synthetic checks do not establish normal-app SSO,
+cold visible startup, total application idle memory or account acceptance.
+`sdk-session-final-source-freeze.json` / `sdk-session-qualified-source.json`
+verify **319** application/runtime/test inputs unchanged through qualification,
+including the regenerated contract. The snapshots describe the dirty observer
+increment on `a27865c`, not a clean earlier commit. Final
+`sdk-session-rust-final.log` passes formatting, desktop check and strict
+all-target/all-feature Clippy after the last adapter-test-only migration.
+
+Documentation review also records automatic cadence: Studio requests up to ten
+observer reads after each qualifying serialized SQL action, including some
+database-error outcomes, while the run/session remain eligible. Account scope
+must include these reads and explicit editor/context refreshes.
+
 ### SDK relation browsing (10 November 2026)
 
 Status: **locally qualified**, with account and owner acceptance still open.
