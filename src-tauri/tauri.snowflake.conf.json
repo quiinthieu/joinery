@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "../.cache/snowflake-runtime/macos-arm64/": "snowflake-runtime/"
+    }
+  }
+}
