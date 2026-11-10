@@ -80,6 +80,8 @@ fn main() {
             "session_contexts",
             "switch_session_context",
             "switch_session_schema",
+            "prepare_transaction_control",
+            "execute_transaction_control",
             "set_transaction_mode",
             "commit_transaction",
             "rollback_transaction",

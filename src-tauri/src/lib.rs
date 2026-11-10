@@ -226,6 +226,8 @@ pub fn run() {
             commands::session_contexts,
             commands::switch_session_context,
             commands::switch_session_schema,
+            commands::prepare_transaction_control,
+            commands::execute_transaction_control,
             commands::set_transaction_mode,
             commands::commit_transaction,
             commands::rollback_transaction,

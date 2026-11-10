@@ -156,6 +156,10 @@ pub struct SessionInfo {
 pub struct EngineCapabilities {
     pub sql: bool,
     pub transactions: bool,
+    /// Reviewed explicit boundaries, independently of AUTOCOMMIT mode changes.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub explicit_transaction_controls: bool,
     pub cancellation: bool,
     pub table_browsing: bool,
     /// Session-bound relation inspection and bounded read-only previews.
@@ -1579,6 +1583,63 @@ pub enum TransactionUsability {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExplicitTransactionAction {
+    Begin,
+    Commit,
+    Rollback,
+}
+
+impl ExplicitTransactionAction {
+    pub fn sql(self) -> &'static str {
+        match self {
+            Self::Begin => "BEGIN TRANSACTION",
+            Self::Commit => "COMMIT",
+            Self::Rollback => "ROLLBACK",
+        }
+    }
+}
+
+/// Opaque one-use authority; never a claim about transaction usability/effects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum TransactionControlAuthority {
+    Observed {
+        revision: String,
+        #[serde(rename = "allowedActions")]
+        allowed_actions: Vec<ExplicitTransactionAction>,
+    },
+    RollbackOnly {
+        revision: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransactionControlRequest {
+    pub action: ExplicitTransactionAction,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionBoundaryOutcome {
+    Acknowledged,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionControlResult {
+    pub action: ExplicitTransactionAction,
+    pub boundary_outcome: TransactionBoundaryOutcome,
+    pub state: SessionRuntimeState,
+    pub retired: bool,
+    pub error: Option<AppError>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum TransactionObservation {
@@ -1661,6 +1722,9 @@ pub struct SessionRuntimeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub transaction_observation: Option<TransactionObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub transaction_control_authority: Option<TransactionControlAuthority>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

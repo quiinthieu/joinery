@@ -202,6 +202,15 @@ async fn metadata_session(fixture: &Fixture, studio: &Studio) -> SessionInfo {
 }
 
 async fn close_metadata_session(fixture: &Fixture, studio: &Studio, id: &str) {
+    close_synthetic_session(fixture, studio, id, &[]).await;
+}
+
+async fn close_synthetic_session(
+    fixture: &Fixture,
+    studio: &Studio,
+    id: &str,
+    boundaries: &[&str],
+) {
     // A generation change logically closes the driver before explicit removal;
     // retain its exact published owner even though session() now rejects it.
     let retained = studio.sessions.lock().get(id).cloned().unwrap();
@@ -216,8 +225,8 @@ async fn close_metadata_session(fixture: &Fixture, studio: &Studio, id: &str) {
     );
     let submitted = queries(fixture);
     assert_eq!(submitted[1], "SELECT CURRENT_VERSION()");
-    // Every post-setup statement is an observed metadata read. In particular,
-    // none may USE/SET/ALTER/COMMIT or start an independent authentication path.
+    // Existing metadata tests allow no boundary SQL. Transaction tests separately
+    // assert their exact fixed ledger and explicitly opt into only those names.
     assert!(submitted[2..].iter().all(|sql| {
         sql.starts_with("SELECT ")
             || [
@@ -226,7 +235,14 @@ async fn close_metadata_session(fixture: &Fixture, studio: &Studio, id: &str) {
                 "SHOW PARAMETERS LIKE 'TRANSACTION_ABORT_ON_ERROR' IN SESSION",
             ]
             .contains(&sql.as_str())
+            || boundaries.contains(&sql.as_str())
     }));
+}
+
+fn observation_without_authority(state: &SessionRuntimeState) -> SessionRuntimeState {
+    let mut state = state.clone();
+    state.transaction_control_authority = None;
+    state
 }
 
 fn observation_sample_sql() -> [&'static str; 5] {
@@ -244,6 +260,308 @@ fn assert_options_reads(fixture: &Fixture, before: usize) {
     expected.push("SELECT CATALOG_NAME, SCHEMA_NAME FROM \"DB\".INFORMATION_SCHEMA.SCHEMATA WHERE CATALOG_NAME = 'DB' AND SCHEMA_NAME <> 'INFORMATION_SCHEMA' ORDER BY SCHEMA_NAME LIMIT 1001");
     expected.extend(observation_sample_sql());
     assert_eq!(queries(fixture)[before..], expected);
+}
+
+async fn transaction_session(fixture: &Fixture, studio: &Studio) -> SessionInfo {
+    let mut configured = profile();
+    configured.safe_mode = SafeMode::Confirm;
+    let configured = studio.save_profile(configured, None).unwrap();
+    let info = studio
+        .connect(&configured.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    assert!(info.capabilities.explicit_transaction_controls);
+    assert!(!info.capabilities.transactions);
+    assert_eq!(queries(fixture).len(), 2);
+    info
+}
+
+fn transaction_request(
+    state: &SessionRuntimeState,
+    action: ExplicitTransactionAction,
+) -> TransactionControlRequest {
+    let revision = match state
+        .transaction_control_authority
+        .as_ref()
+        .expect("observer must expose authority")
+    {
+        TransactionControlAuthority::Observed {
+            revision,
+            allowed_actions,
+        } => {
+            assert!(allowed_actions.contains(&action));
+            revision.clone()
+        }
+        TransactionControlAuthority::RollbackOnly { revision } => {
+            assert_eq!(action, ExplicitTransactionAction::Rollback);
+            revision.clone()
+        }
+    };
+    TransactionControlRequest { action, revision }
+}
+
+async fn reviewed_transaction(
+    studio: &Studio,
+    fixture: &Fixture,
+    id: &str,
+    request: &TransactionControlRequest,
+) -> TransactionControlResult {
+    let before = queries(fixture).len();
+    let plan = studio.prepare_transaction_control(id, request).unwrap();
+    assert_eq!(plan.statements.len(), 1);
+    assert_eq!(plan.statements[0].sql, request.action.sql());
+    assert_eq!(plan.statements[0].kind, StatementKind::Transaction);
+    assert_eq!(
+        plan.requires_approval,
+        request.action != ExplicitTransactionAction::Rollback,
+        "Confirm reviews BEGIN/COMMIT while preserving the existing rollback recovery exemption"
+    );
+    let approval = studio.authorize(&plan.id, None, None).unwrap();
+    assert_eq!(
+        queries(fixture).len(),
+        before,
+        "prepare and authorization never send SQL"
+    );
+    let result = studio
+        .execute_transaction_control(&plan.id, Some(&approval))
+        .await
+        .unwrap();
+    assert!(
+        studio
+            .execute_transaction_control(&plan.id, Some(&approval))
+            .await
+            .is_err()
+    );
+    result
+}
+
+fn assert_boundary_reads(fixture: &Fixture, before: usize, action: ExplicitTransactionAction) {
+    let mut expected = Vec::new();
+    if action != ExplicitTransactionAction::Rollback {
+        expected.extend(observation_sample_sql());
+    }
+    expected.push(action.sql());
+    expected.extend(observation_sample_sql());
+    assert_eq!(
+        queries(fixture)[before..],
+        expected,
+        "Studio must not append another independent observer"
+    );
+}
+
+#[tokio::test]
+async fn sdk_studio_reviewed_begin_commit_and_rollback_publish_without_extra_observation() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = transaction_session(&fixture, &studio).await;
+    let retained = studio.session(&info.id).unwrap();
+    metadata_state(
+        &fixture,
+        &serde_json::json!({"role":null,"abortOnError":true}),
+    );
+    let before = queries(&fixture).len();
+    let options = studio.session_contexts(&info.id).await.unwrap();
+    assert_options_reads(&fixture, before);
+    assert_eq!(options.state.role, None);
+    let begin = transaction_request(&options.state, ExplicitTransactionAction::Begin);
+    let count = queries(&fixture).len();
+    let unapproved = studio
+        .prepare_transaction_control(&info.id, &begin)
+        .unwrap();
+    assert_eq!(
+        studio
+            .execute_transaction_control(&unapproved.id, None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+    assert_eq!(queries(&fixture).len(), count);
+    let mut state = options.state;
+    for action in [
+        ExplicitTransactionAction::Begin,
+        ExplicitTransactionAction::Commit,
+        ExplicitTransactionAction::Rollback,
+    ] {
+        let request = transaction_request(&state, action);
+        let before = queries(&fixture).len();
+        let result = reviewed_transaction(&studio, &fixture, &info.id, &request).await;
+        assert_boundary_reads(&fixture, before, action);
+        assert_eq!(
+            result.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert!(!result.retired && result.error.is_none());
+        assert_eq!(result.state.role, None);
+        assert_eq!(
+            result.state.transaction_state,
+            if action == ExplicitTransactionAction::Begin {
+                TransactionState::InTransaction
+            } else {
+                TransactionState::Idle
+            }
+        );
+        if action == ExplicitTransactionAction::Begin {
+            assert!(
+                matches!(result.state.transaction_observation, Some(TransactionObservation::Observed {transaction_id: Some(ref id), ..}) if id == "opaque-studio-tx:90071992547409931234567890")
+            );
+        }
+        assert_eq!(
+            retained.observed_runtime.lock().as_ref(),
+            Some(&result.state)
+        );
+        assert!(retained.completion.lock().is_none());
+        assert!(
+            studio
+                .prepare_transaction_control(&info.id, &request)
+                .is_err()
+        );
+        state = result.state;
+    }
+    assert_eq!(
+        std::fs::read_to_string(fixture.controls.join("transaction-effects"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"]
+    );
+    close_synthetic_session(
+        &fixture,
+        &studio,
+        &info.id,
+        &["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sdk_studio_acknowledged_begin_denial_keeps_recovery_and_rollback_has_no_preread() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = transaction_session(&fixture, &studio).await;
+    let retained = studio.session(&info.id).unwrap();
+    let options = studio.session_contexts(&info.id).await.unwrap();
+    std::fs::write(fixture.controls.join("deny-observer-after-boundary"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let begun = reviewed_transaction(
+        &studio,
+        &fixture,
+        &info.id,
+        &transaction_request(&options.state, ExplicitTransactionAction::Begin),
+    )
+    .await;
+    let mut expected = observation_sample_sql().to_vec();
+    expected.push("BEGIN TRANSACTION");
+    expected.extend(&observation_sample_sql()[..3]);
+    assert_eq!(queries(&fixture)[before..], expected);
+    assert_eq!(
+        begun.boundary_outcome,
+        TransactionBoundaryOutcome::Acknowledged
+    );
+    assert_eq!(begun.error.as_ref().unwrap().code, ErrorCode::Database);
+    assert!(!begun.retired && !retained.driver.is_closed());
+    assert_eq!(begun.state.transaction_state, TransactionState::Unknown);
+    assert_eq!(
+        retained.observed_runtime.lock().as_ref(),
+        Some(&begun.state)
+    );
+    let rollback = transaction_request(&begun.state, ExplicitTransactionAction::Rollback);
+    for _ in 0..2 {
+        let before = queries(&fixture).len();
+        let failed = studio.session_contexts(&info.id).await.unwrap();
+        assert_eq!(queries(&fixture)[before..], observation_sample_sql()[..3]);
+        assert!(failed.available.is_empty() && failed.revision.is_none());
+        assert_eq!(
+            transaction_request(&failed.state, ExplicitTransactionAction::Rollback),
+            rollback
+        );
+    }
+    let before = queries(&fixture).len();
+    assert!(
+        studio
+            .prepare_transaction_control(
+                &info.id,
+                &TransactionControlRequest {
+                    action: ExplicitTransactionAction::Commit,
+                    revision: rollback.revision.clone()
+                }
+            )
+            .is_err()
+    );
+    assert!(studio.completion_catalog(&info.id).await.is_err());
+    assert_eq!(queries(&fixture).len(), before);
+    std::fs::remove_file(fixture.controls.join("deny-observer")).unwrap();
+    let before = queries(&fixture).len();
+    let recovered = reviewed_transaction(&studio, &fixture, &info.id, &rollback).await;
+    assert_boundary_reads(&fixture, before, ExplicitTransactionAction::Rollback);
+    assert_eq!(queries(&fixture)[before], "ROLLBACK");
+    assert_eq!(
+        recovered.boundary_outcome,
+        TransactionBoundaryOutcome::Acknowledged
+    );
+    assert_eq!(recovered.state.transaction_state, TransactionState::Idle);
+    assert!(!recovered.retired && recovered.error.is_none());
+    assert_eq!(
+        retained.observed_runtime.lock().as_ref(),
+        Some(&recovered.state)
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.controls.join("transaction-effects"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["BEGIN TRANSACTION", "ROLLBACK"]
+    );
+    close_synthetic_session(
+        &fixture,
+        &studio,
+        &info.id,
+        &["BEGIN TRANSACTION", "ROLLBACK"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sdk_studio_lost_boundary_ack_retires_once_and_cleans_exact_helper_root() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = transaction_session(&fixture, &studio).await;
+    let retained = studio.session(&info.id).unwrap();
+    let options = studio.session_contexts(&info.id).await.unwrap();
+    let request = transaction_request(&options.state, ExplicitTransactionAction::Begin);
+    std::fs::write(fixture.controls.join("lose-transaction-ack"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let result = reviewed_transaction(&studio, &fixture, &info.id, &request).await;
+    let mut expected = observation_sample_sql().to_vec();
+    expected.push("BEGIN TRANSACTION");
+    assert_eq!(queries(&fixture)[before..], expected);
+    assert_eq!(result.boundary_outcome, TransactionBoundaryOutcome::Unknown);
+    assert!(result.retired && retained.driver.is_closed());
+    assert_eq!(result.error.unwrap().code, ErrorCode::OutcomeUnknown);
+    assert!(result.state.transaction_control_authority.is_none());
+    assert!(studio.sessions.lock().is_empty());
+    assert!(
+        studio
+            .prepare_transaction_control(&info.id, &request)
+            .is_err()
+    );
+    studio.shutdown_and_wait().await.unwrap();
+    no_roots(&fixture);
+    assert_eq!(
+        std::fs::read_to_string(fixture.controls.join("transaction-effects")).unwrap(),
+        "BEGIN TRANSACTION\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.controls.join("sdk-events"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["create", "connect"],
+        "abrupt helper loss has no logout receipt"
+    );
 }
 
 #[tokio::test]
@@ -330,7 +648,10 @@ async fn sdk_studio_stable_observation_preserves_plans_but_full_runtime_drift_re
         let before = queries(&fixture).len();
         let stable = studio.session_contexts(&info.id).await.unwrap();
         assert_options_reads(&fixture, before);
-        assert_eq!(stable.state, options.state);
+        assert_eq!(
+            observation_without_authority(&stable.state),
+            observation_without_authority(&options.state)
+        );
         assert_ne!(
             stable.revision, options.revision,
             "options authority is a generation, not a content digest"
@@ -346,7 +667,11 @@ async fn sdk_studio_stable_observation_preserves_plans_but_full_runtime_drift_re
         let before = queries(&fixture).len();
         let changed = studio.session_contexts(&info.id).await.unwrap();
         assert_options_reads(&fixture, before);
-        assert_ne!(changed.state, stable.state, "{key}");
+        assert_ne!(
+            observation_without_authority(&changed.state),
+            observation_without_authority(&stable.state),
+            "{key}"
+        );
         assert_ne!(changed.revision, stable.revision);
         if key == "transactionId" {
             assert_eq!(
@@ -468,17 +793,31 @@ async fn sdk_studio_completed_result_survives_denied_post_query_observation() {
     // Options cannot reuse the previously successful list after an observation
     // failure; recovery must establish a new server-held revision.
     let before = queries(&fixture).len();
-    let denied = studio.session_contexts(&info.id).await.unwrap_err();
-    assert_eq!(denied.code, ErrorCode::Database);
-    assert_eq!(denied.completion_invalidated, Some(true));
+    let denied = studio.session_contexts(&info.id).await.unwrap();
+    assert_eq!(denied.state.transaction_state, TransactionState::Unknown);
+    assert!(matches!(
+        denied.state.transaction_control_authority,
+        Some(TransactionControlAuthority::RollbackOnly { .. })
+    ));
+    assert_eq!(
+        denied.state.transaction_control_authority,
+        state.transaction_control_authority
+    );
+    assert!(denied.available.is_empty() && denied.revision.is_none());
     assert_eq!(queries(&fixture)[before..], sample[..3]);
-    assert!(retained.observed_runtime.lock().is_none());
+    assert_eq!(
+        retained.observed_runtime.lock().as_ref(),
+        Some(&denied.state)
+    );
     std::fs::remove_file(fixture.controls.join("deny-observer")).unwrap();
     let before = queries(&fixture).len();
     let recovered = studio.session_contexts(&info.id).await.unwrap();
     assert_options_reads(&fixture, before);
     assert_ne!(prior.revision, recovered.revision);
-    assert_eq!(prior.state, recovered.state);
+    assert_eq!(
+        observation_without_authority(&prior.state),
+        observation_without_authority(&recovered.state)
+    );
     assert_eq!(recovered.available, ["OTHER", "PUBLIC"]);
     assert_eq!(
         studio.results.row(&result.id, 0).unwrap(),

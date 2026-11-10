@@ -29,7 +29,7 @@ fn profile() -> ConnectionProfile {
 }
 
 #[test]
-fn studio_accepts_only_read_only_verified_snowflake_profiles() {
+fn studio_accepts_only_read_only_verified_snowflake_oauth_profiles() {
     let root = tempfile::tempdir().unwrap();
     let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
     assert!(
@@ -350,6 +350,52 @@ fn authentication_survives_restart_and_metadata_restore() {
             .authentication,
         SnowflakeAuthentication::ExternalBrowser
     );
+}
+
+#[test]
+fn explicit_boundary_policies_survive_restart_and_backup_without_elevating_read_only() {
+    for mode in [
+        SafeMode::ReadOnly,
+        SafeMode::Confirm,
+        SafeMode::Silent,
+        SafeMode::Guard,
+        SafeMode::PasswordGated,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(MemorySecrets::default());
+        let studio = Studio::with_secrets(root.path(), secrets.clone()).unwrap();
+        let mut sdk = profile();
+        sdk.group_id = "local".into();
+        sdk.environment = Environment::Local;
+        sdk.safe_mode = mode;
+        sdk.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+        let saved = studio.save_profile(sdk, None).unwrap();
+        let backup = studio.create_metadata_backup().unwrap();
+        drop(studio);
+        let studio = Studio::with_secrets(root.path(), secrets).unwrap();
+        assert_eq!(studio.bootstrap().unwrap().profiles[0].safe_mode, mode);
+        let mut read_only = saved;
+        read_only.safe_mode = SafeMode::ReadOnly;
+        studio.save_profile(read_only.clone(), None).unwrap();
+        studio
+            .restore_metadata_backup(&backup.id, &backup.digest, "RESTORE", None)
+            .unwrap();
+        let restored = studio.bootstrap().unwrap().profiles.remove(0);
+        assert_eq!(restored.safe_mode, mode);
+        assert_eq!(
+            restored.snowflake.unwrap().authentication,
+            SnowflakeAuthentication::ExternalBrowser
+        );
+        if mode != SafeMode::ReadOnly {
+            let mut production = read_only;
+            production.id = new_id();
+            production.group_id = "production".into();
+            production.safe_mode = mode;
+            let saved = studio.save_profile(production, None).unwrap();
+            assert_eq!(saved.environment, Environment::Production);
+            assert_eq!(saved.safe_mode, SafeMode::PasswordGated);
+        }
+    }
 }
 
 #[tokio::test]

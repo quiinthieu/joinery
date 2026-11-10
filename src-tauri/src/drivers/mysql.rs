@@ -224,6 +224,7 @@ impl Mysql {
                 capabilities: EngineCapabilities {
                     sql: true,
                     transactions: true,
+                    explicit_transaction_controls: false,
                     cancellation: true,
                     table_browsing: true,
                     relation_browsing: false,
@@ -758,6 +759,7 @@ impl Driver for Mysql {
                 search_path,
                 context_fingerprint: None,
                 transaction_observation: None,
+                transaction_control_authority: None,
             })
         })
         .await

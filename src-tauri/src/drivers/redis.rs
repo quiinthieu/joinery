@@ -110,6 +110,7 @@ impl Redis {
             capabilities: EngineCapabilities {
                 sql: false,
                 transactions: false,
+                explicit_transaction_controls: false,
                 cancellation: true,
                 table_browsing: false,
                 relation_browsing: false,

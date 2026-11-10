@@ -872,6 +872,26 @@ pub async fn set_transaction_mode(
 }
 
 #[tauri::command]
+pub fn prepare_transaction_control(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: TransactionControlRequest,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_transaction_control(&session_id, &request)
+}
+
+#[tauri::command]
+pub async fn execute_transaction_control(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<TransactionControlResult> {
+    studio
+        .execute_transaction_control(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
 pub async fn commit_transaction(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

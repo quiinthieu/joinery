@@ -9,6 +9,7 @@ import type {
   ResultInfo,
   TableChanges,
   SwitchSchemaRequest,
+  TransactionControlRequest,
 } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -187,6 +188,16 @@ export async function runNativeSmoke() {
         },
       ],
       [
+        "prepare_transaction_control",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            action: "rollback",
+            revision: "00000000-0000-4000-8000-000000000001",
+          } satisfies TransactionControlRequest,
+        },
+      ],
+      [
         "set_transaction_mode",
         {
           sessionId: "missing-native-fixture",
@@ -270,6 +281,12 @@ export async function runNativeSmoke() {
       assert(denied, `Native ${command} must reach the Rust disconnected-session guard`);
     }
     for (const [command, expectedCode, invokeCommand] of [
+      [
+        "execute_transaction_control",
+        "approvalExpired",
+        () =>
+          client.call("execute_transaction_control", { planId: "missing-native-boundary-plan" }),
+      ],
       [
         "pick_export_destination",
         "invalidInput",
@@ -848,6 +865,7 @@ export async function runNativeSmoke() {
     report.checks = [
       "native bootstrap",
       "completion IPC disconnected-session guards",
+      "explicit transaction IPC admission guards",
       "CSV required preview ownership IPC",
       "raw binary channel",
       "Arrow worker",

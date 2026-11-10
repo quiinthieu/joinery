@@ -45,6 +45,7 @@ import type {
   SessionInfo,
   TableInfo,
   TransactionMode,
+  ExplicitTransactionAction,
 } from "../ipc/generated";
 import type { StudioTab } from "../state/studio";
 import {
@@ -95,6 +96,7 @@ interface Props {
   onAnalyze(): void;
   onOpenParameters(slots: QueryParamSlot[]): void;
   onReview(): void;
+  onTransactionControl(action: ExplicitTransactionAction): Promise<void>;
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
@@ -121,6 +123,7 @@ export function Workbench({
   onAnalyze,
   onOpenParameters,
   onReview,
+  onTransactionControl,
   onConfirm,
   onSelect,
   onOpenValue,
@@ -154,6 +157,7 @@ export function Workbench({
     [renameDraft, setRenameDraft] = useState(""),
     [txBusy, setTxBusy] = useState(false),
     [relationBrowserSession, setRelationBrowserSession] = useState<string | null>(null),
+    [relationBrowserRevision, setRelationBrowserRevision] = useState<number | null>(null),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const objectExplorerSupported = Boolean(session?.capabilities.objectExplorer);
@@ -180,7 +184,18 @@ export function Workbench({
   const activeTableDetailsLoading = Boolean(
     tableObjectKey && tableDetailsLoadingKey === tableObjectKey,
   );
-  const running = tab.status === "running" || tab.status === "queued";
+  const controlPending = !!session && !!state.sessionTransactionPending[session.id];
+  const sessionQueryPending =
+    !!session &&
+    state.tabs.some(
+      (item) =>
+        querySessionForTab(item, state.sessions)?.id === session.id &&
+        (item.status === "queued" || item.status === "running"),
+    );
+  const rollbackOnly =
+    session &&
+    state.sessionStates[session.id]?.transactionControlAuthority?.status === "rollbackOnly";
+  const running = tab.status === "running" || tab.status === "queued" || controlPending;
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const queryResultEditable =
     tab.kind === "query" &&
@@ -304,6 +319,9 @@ export function Workbench({
     : undefined;
   const sessionLabel = activePoolEntry?.label ?? null;
   const runtimeState = session ? state.sessionStates[session.id] : undefined;
+  useEffect(() => {
+    if (controlPending) setRelationBrowserSession(null);
+  }, [controlPending]);
   const txMode: TransactionMode = runtimeState?.transactionMode ?? "unknown";
   const txState = runtimeState?.transactionState ?? "unknown";
   const fileDirty = isTabFileDirty(tab);
@@ -631,52 +649,91 @@ export function Workbench({
                           : "In transaction"}
                   </span>
                 )}
-                {(txMode === "manual" || txState !== "idle") && (
+                {session.capabilities.explicitTransactionControls && (
                   <>
-                    <button
-                      className="button ghost small"
-                      aria-label="Commit transaction"
-                      disabled={
-                        running ||
-                        txBusy ||
-                        !session.capabilities.transactions ||
-                        txState !== "inTransaction" ||
-                        profile?.safeMode === "readOnly"
-                      }
-                      onClick={() => {
-                        setTxBusy(true);
-                        void state
-                          .commitTransaction(session.id)
-                          .catch((error) => state.notify(messageOf(error)))
-                          .finally(() => setTxBusy(false));
-                      }}
-                    >
-                      <Check size={12} />
-                      Commit
-                    </button>
-                    <button
-                      className="button ghost small"
-                      aria-label="Rollback transaction"
-                      disabled={
-                        running ||
-                        txBusy ||
-                        !session.capabilities.transactions ||
-                        txState === "idle" ||
-                        txState === "unknown"
-                      }
-                      onClick={() => {
-                        setTxBusy(true);
-                        void state
-                          .rollbackTransaction(session.id)
-                          .catch((error) => state.notify(messageOf(error)))
-                          .finally(() => setTxBusy(false));
-                      }}
-                    >
-                      <RotateCcw size={12} />
-                      Rollback
-                    </button>
+                    {runtimeState?.transactionControlAuthority?.status === "rollbackOnly" && (
+                      <span role="status">Only rollback recovery is available</span>
+                    )}
+                    {(["begin", "commit", "rollback"] as const).map((action) => {
+                      const authority = runtimeState?.transactionControlAuthority;
+                      const allowed =
+                        authority?.status === "rollbackOnly"
+                          ? action === "rollback"
+                          : authority?.allowedActions.includes(action) === true;
+                      const label =
+                        action === "begin" ? "Begin" : action === "commit" ? "Commit" : "Rollback";
+                      return (
+                        <button
+                          key={action}
+                          className="button ghost small"
+                          aria-label={`${label} transaction`}
+                          disabled={
+                            running ||
+                            sessionQueryPending ||
+                            txBusy ||
+                            !allowed ||
+                            (action !== "rollback" && profile?.safeMode === "readOnly")
+                          }
+                          onClick={() => {
+                            setTxBusy(true);
+                            void onTransactionControl(action)
+                              .catch((error) => state.notify(messageOf(error)))
+                              .finally(() => setTxBusy(false));
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
                   </>
                 )}
+                {session.capabilities.transactions &&
+                  (txMode === "manual" || txState !== "idle") && (
+                    <>
+                      <button
+                        className="button ghost small"
+                        aria-label="Commit transaction"
+                        disabled={
+                          running ||
+                          txBusy ||
+                          !session.capabilities.transactions ||
+                          txState !== "inTransaction" ||
+                          profile?.safeMode === "readOnly"
+                        }
+                        onClick={() => {
+                          setTxBusy(true);
+                          void state
+                            .commitTransaction(session.id)
+                            .catch((error) => state.notify(messageOf(error)))
+                            .finally(() => setTxBusy(false));
+                        }}
+                      >
+                        <Check size={12} />
+                        Commit
+                      </button>
+                      <button
+                        className="button ghost small"
+                        aria-label="Rollback transaction"
+                        disabled={
+                          running ||
+                          txBusy ||
+                          !session.capabilities.transactions ||
+                          txState === "idle" ||
+                          txState === "unknown"
+                        }
+                        onClick={() => {
+                          setTxBusy(true);
+                          void state
+                            .rollbackTransaction(session.id)
+                            .catch((error) => state.notify(messageOf(error)))
+                            .finally(() => setTxBusy(false));
+                        }}
+                      >
+                        <RotateCcw size={12} />
+                        Rollback
+                      </button>
+                    </>
+                  )}
               </>
             )}
         </div>
@@ -698,7 +755,10 @@ export function Workbench({
                 <button
                   className="button ghost small"
                   disabled={running}
-                  onClick={() => setRelationBrowserSession(session.id)}
+                  onClick={() => {
+                    setRelationBrowserRevision(state.sessionContextRevision[session.id] ?? 0);
+                    setRelationBrowserSession(session.id);
+                  }}
                 >
                   <Table2 size={13} /> Browse relations
                 </button>
@@ -751,7 +811,7 @@ export function Workbench({
                 <Code2 size={13} />
                 Format
               </button>
-              {running ? (
+              {running && !controlPending ? (
                 <button
                   className="button cancel-query"
                   onClick={() =>
@@ -768,7 +828,7 @@ export function Workbench({
                 <button
                   className="button primary run-button"
                   onClick={() => onRun()}
-                  disabled={!session}
+                  disabled={!session || controlPending || rollbackOnly}
                 >
                   <Play size={12} fill="currentColor" />
                   Run<kbd>⌘ ↵</kbd>
@@ -777,7 +837,7 @@ export function Workbench({
               {profile && ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
                 <button
                   className="button ghost small"
-                  disabled={running || !session}
+                  disabled={running || !session || rollbackOnly}
                   title="Estimate the selected query or current statement without ANALYZE"
                   onClick={onExplain}
                 >
@@ -795,7 +855,7 @@ export function Workbench({
               ) && (
                 <button
                   className="button ghost small"
-                  disabled={running || !session}
+                  disabled={running || !session || rollbackOnly}
                   title="Executes the selected query or current statement after review to collect actual measurements"
                   onClick={onAnalyze}
                 >
@@ -807,7 +867,7 @@ export function Workbench({
                 className="icon-button run-all"
                 title="Run all statements · ⇧⌘↵"
                 aria-label="Run all statements"
-                disabled={running || !session}
+                disabled={running || !session || rollbackOnly}
                 onClick={() => onRun(tab.sql, 0)}
               >
                 <ChevronDown size={13} />
@@ -875,13 +935,16 @@ export function Workbench({
           )}
         </div>
       </div>
-      {relationBrowserSession && session?.id === relationBrowserSession && !running && (
-        <RelationBrowser
-          key={`${session.id}:${state.sessionContextRevision[session.id] ?? 0}:${tab.revision}`}
-          sessionId={session.id}
-          onClose={() => setRelationBrowserSession(null)}
-        />
-      )}
+      {relationBrowserSession &&
+        session?.id === relationBrowserSession &&
+        relationBrowserRevision === (state.sessionContextRevision[session.id] ?? 0) &&
+        !running && (
+          <RelationBrowser
+            key={`${session.id}:${state.sessionContextRevision[session.id] ?? 0}:${tab.revision}`}
+            sessionId={session.id}
+            onClose={() => setRelationBrowserSession(null)}
+          />
+        )}
       {tab.kind === "query" && profile?.engine === "redis" && (
         <RedisTools
           sessionId={session?.id ?? null}

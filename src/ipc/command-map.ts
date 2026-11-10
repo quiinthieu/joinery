@@ -71,6 +71,8 @@ import type {
   TableRef,
   TableSchema,
   TransactionMode,
+  TransactionControlRequest,
+  TransactionControlResult,
 } from "./generated";
 
 /**
@@ -447,6 +449,14 @@ export interface JoineryCommandMap {
   switch_session_schema: {
     args: { sessionId: string; request: SwitchSchemaRequest };
     result: SessionContextOptions;
+  };
+  prepare_transaction_control: {
+    args: { sessionId: string; request: TransactionControlRequest };
+    result: PreparedPlan;
+  };
+  execute_transaction_control: {
+    args: { planId: string; approval?: string | null };
+    result: TransactionControlResult;
   };
   set_transaction_mode: {
     args: { sessionId: string; mode: TransactionMode };

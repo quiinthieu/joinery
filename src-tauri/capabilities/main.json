@@ -85,6 +85,8 @@
     "allow-session-contexts",
     "allow-switch-session-context",
     "allow-switch-session-schema",
+    "allow-prepare-transaction-control",
+    "allow-execute-transaction-control",
     "allow-set-transaction-mode",
     "allow-commit-transaction",
     "allow-rollback-transaction",

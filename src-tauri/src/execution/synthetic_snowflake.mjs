@@ -17,6 +17,7 @@ export default {
     let shiftedSchema;
     let policyAfterSchemaCheck = false;
     let unsupportedPolicy = false;
+    let transactionId = null;
     const context = () => {
       if (!existsSync(marker('change-after-schema-recheck')) && !existsSync(marker('drift-during-schema'))) shiftedSchema = undefined;
       if (!existsSync(marker('policy-error-after-schema-recheck'))) {
@@ -25,7 +26,7 @@ export default {
       }
       return {
         schema: profile.schema, warehouse: profile.warehouse, role: profile.role,
-        autocommit: true, abortOnError: false, transactionId: null,
+        autocommit: true, abortOnError: false, transactionId,
         secondaryRoles: { roles: '', value: 'NONE' }, session: 'SESSION',
         ...(existsSync(marker('metadata-state.json')) ? JSON.parse(readFileSync(marker('metadata-state.json'), 'utf8')) : {}),
         ...(shiftedSchema ? { schema: shiftedSchema } : {}),
@@ -45,11 +46,19 @@ export default {
         const id = ++sequence;
         const sql = options.sqlText;
         const current = context();
+        const boundary = ['BEGIN TRANSACTION', 'COMMIT', 'ROLLBACK'].includes(sql);
         let names = ['C0'];
         let types = ['TEXT'];
         let values = [['1']];
         let failure = null;
-        if (sql.startsWith('SELECT CURRENT_USER() AS PRINCIPAL')) {
+        if (boundary) {
+          names = []; values = [];
+          transactionId = sql === 'BEGIN TRANSACTION' ? 'opaque-studio-tx:90071992547409931234567890' : null;
+          appendFileSync(marker('transaction-effects'), sql + '\n');
+          if (sql === 'BEGIN TRANSACTION' && existsSync(marker('deny-observer-after-boundary'))) {
+            writeFileSync(marker('deny-observer'), 'synthetic aborted-observer recovery');
+          }
+        } else if (sql.startsWith('SELECT CURRENT_USER() AS PRINCIPAL')) {
           names = contextColumns;
           values = [['SERVER_USER', current.role, profile.database, current.schema, current.warehouse,
             current.session, JSON.stringify([`${profile.database}.PUBLIC`, `${profile.database}.OTHER`]),
@@ -137,7 +146,12 @@ export default {
           streamRows: () => Readable.from(values),
           cancel: callback => callback(null),
         };
-        setImmediate(() => options.complete(failure, statement));
+        setImmediate(() => {
+          // Test-only loss after synthetic execution and before its response.
+          // This never claims logout or real Snowflake transaction effects.
+          if (boundary && existsSync(marker('lose-transaction-ack'))) process.exit(0);
+          options.complete(failure, statement);
+        });
         return statement;
       },
     };

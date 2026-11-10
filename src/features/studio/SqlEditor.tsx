@@ -341,8 +341,17 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     props.sessionId ? s.sessionContextAuthorities[props.sessionId] : undefined,
   );
   const contextSwitchPending = useStudio((s) =>
-    props.sessionId ? (s.sessionContextSwitching[props.sessionId] ?? false) : false,
+    props.sessionId ? s.sessionContextSwitching[props.sessionId] === true : false,
   );
+  const transactionPending = useStudio((s) =>
+    props.sessionId ? s.sessionTransactionPending[props.sessionId] === true : false,
+  );
+  const rollbackOnly = runtimeState?.transactionControlAuthority?.status === "rollbackOnly";
+  const metadataRefreshRequired = useStudio((s) =>
+    props.sessionId ? s.sessionMetadataRefreshRequired[props.sessionId] === true : false,
+  );
+  const metadataBlocked =
+    contextSwitchPending || transactionPending || rollbackOnly || metadataRefreshRequired;
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
@@ -1118,7 +1127,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     if (props.engine === "redis") return;
     completion.current?.configure(configure());
     if (view.current) closeCompletion(view.current);
-    if (contextSwitchPending) return;
+    if (metadataBlocked) return;
     if (props.sessionId) {
       const isCurrent = () =>
         !cancelled &&
@@ -1169,7 +1178,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       cancelled = true;
     };
   }, [
-    contextSwitchPending,
+    metadataBlocked,
     props.engine,
     props.sessionId,
     props.tables,
@@ -1235,7 +1244,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 value={currentContext}
                 disabled={
                   switchingContext ||
-                  contextSwitchPending ||
+                  metadataBlocked ||
                   (runtimeState?.transactionObservation !== undefined &&
                     (!contextAuthority?.revision ||
                       contextAuthority.state !== runtimeState ||
@@ -1270,7 +1279,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             {showContextSwitcher &&
               runtimeState?.transactionObservation !== undefined &&
               !contextAuthority &&
-              !contextSwitchPending && <span>Refresh to change schema</span>}
+              !metadataBlocked && <span>Refresh to change schema</span>}
             <div
               aria-live="polite"
               aria-atomic="true"
@@ -1296,13 +1305,19 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
               >
                 {!props.sessionId
                   ? "Connect to run parameterized SQL"
-                  : contextSwitchPending
-                    ? "Changing schema…"
-                    : contextError
-                      ? `Completion unavailable: ${contextError}`
-                      : live
-                        ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                        : "Loading completion context…"}
+                  : transactionPending
+                    ? "Transaction action in progress…"
+                    : rollbackOnly
+                      ? "Only rollback recovery is available"
+                      : metadataRefreshRequired
+                        ? "Refresh completion context after the transaction action"
+                        : contextSwitchPending
+                          ? "Changing schema…"
+                          : contextError
+                            ? `Completion unavailable: ${contextError}`
+                            : live
+                              ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                              : "Loading completion context…"}
               </span>
               {paramSlots.length > 0 && props.onOpenParameters && (
                 <button
@@ -1368,7 +1383,17 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                   className="button ghost small"
                   style={{ flexShrink: 0 }}
                   aria-label="Refresh completion context"
-                  onClick={() => setRefresh((n) => n + 1)}
+                  disabled={transactionPending || contextSwitchPending || rollbackOnly}
+                  onClick={() => {
+                    if (props.sessionId)
+                      useStudio.setState((s) => ({
+                        sessionMetadataRefreshRequired: {
+                          ...s.sessionMetadataRefreshRequired,
+                          [props.sessionId!]: false,
+                        },
+                      }));
+                    setRefresh((n) => n + 1);
+                  }}
                 >
                   Refresh
                 </button>

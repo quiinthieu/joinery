@@ -52,6 +52,8 @@ mod snowflake_connection_tests;
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
+mod transaction_controls;
+
 struct Session {
     info: SessionInfo,
     profile: ConnectionProfile,
@@ -104,6 +106,9 @@ enum Action {
     CancelProcess {
         id: String,
         identity: String,
+    },
+    TransactionControl {
+        request: TransactionControlRequest,
     },
 }
 
@@ -1306,6 +1311,10 @@ impl Studio {
                 serde_json::to_vec(bound)
                     .map_err(|_| AppError::internal("Could not fingerprint bound parameters"))?,
             ),
+            Action::TransactionControl { request } => fingerprint.update(
+                serde_json::to_vec(request)
+                    .map_err(|_| AppError::internal("Could not fingerprint transaction action"))?,
+            ),
         }
         let digest = hex::encode(fingerprint.finalize());
         plans.insert(
@@ -1369,9 +1378,12 @@ impl Studio {
         if stored.deadline <= Instant::now() {
             return Err(expired());
         }
-        if matches!(stored.action, Action::Browse { .. }) {
+        if matches!(
+            stored.action,
+            Action::Browse { .. } | Action::TransactionControl { .. }
+        ) {
             return Err(AppError::invalid(
-                "Use browse_table to execute an approved table filter",
+                "Use the dedicated typed command to execute this prepared action",
             ));
         }
         if stored.plan.requires_approval
@@ -1688,7 +1700,7 @@ impl Studio {
                     });
                 }
             }
-            Action::Browse { .. } => {}
+            Action::Browse { .. } | Action::TransactionControl { .. } => {}
         }
         if serialized {
             let observed_state = if matches!(stored.action, Action::Sql { .. })
@@ -2127,7 +2139,14 @@ impl Studio {
             return;
         }
         let mut previous = session.observed_runtime.lock();
-        if previous.as_ref() != Some(state)
+        let mut observed = state.clone();
+        observed.transaction_control_authority = None;
+        let previous_observed = previous.as_ref().map(|state| {
+            let mut state = state.clone();
+            state.transaction_control_authority = None;
+            state
+        });
+        if previous_observed.as_ref() != Some(&observed)
             || matches!(
                 state.transaction_observation,
                 Some(TransactionObservation::Unavailable)
@@ -5147,6 +5166,9 @@ mod browse_classification_tests {
         schema_switch_calls: Mutex<Vec<SwitchSchemaRequest>>,
         schema_switch_options: Mutex<Option<SessionContextOptions>>,
         close_during_schema_switch: bool,
+        boundary_calls: Mutex<Vec<TransactionControlRequest>>,
+        boundary_result: Mutex<Option<TransactionControlResult>>,
+        boundary_barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     }
 
     #[async_trait::async_trait]
@@ -5197,6 +5219,7 @@ mod browse_classification_tests {
                 search_path: vec!["public".into()],
                 context_fingerprint: None,
                 transaction_observation: None,
+                transaction_control_authority: None,
             })
         }
         async fn list_contexts(&self) -> AppResult<Vec<String>> {
@@ -5257,6 +5280,47 @@ mod browse_classification_tests {
         }
         async fn cancel(&self) -> AppResult<()> {
             Ok(())
+        }
+        fn validate_transaction_control(
+            &self,
+            request: &TransactionControlRequest,
+        ) -> AppResult<()> {
+            let state = self.runtime_override.lock();
+            let authority = state
+                .as_ref()
+                .and_then(|state| state.transaction_control_authority.as_ref());
+            let valid = match authority {
+                Some(TransactionControlAuthority::Observed {
+                    revision,
+                    allowed_actions,
+                }) => revision == &request.revision && allowed_actions.contains(&request.action),
+                Some(TransactionControlAuthority::RollbackOnly { revision }) => {
+                    revision == &request.revision
+                        && request.action == ExplicitTransactionAction::Rollback
+                }
+                None => false,
+            };
+            if valid {
+                Ok(())
+            } else {
+                Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "Stale fixture authority",
+                ))
+            }
+        }
+        async fn transaction_control(
+            &self,
+            _session_id: &str,
+            request: &TransactionControlRequest,
+        ) -> AppResult<TransactionControlResult> {
+            self.boundary_calls.lock().push(request.clone());
+            let result = self.boundary_result.lock().clone().unwrap();
+            if let Some((started, release)) = &self.boundary_barrier {
+                started.notify_one();
+                release.notified().await;
+            }
+            Ok(result)
         }
         async fn commit_transaction(&self) -> AppResult<()> {
             self.transaction_error
@@ -5329,6 +5393,344 @@ mod browse_classification_tests {
             .lock()
             .insert(session.info.id.clone(), session.clone());
         session
+    }
+
+    fn explicit_control_fixture(
+        mode: SafeMode,
+        action: ExplicitTransactionAction,
+        barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    ) -> (
+        tempfile::TempDir,
+        Arc<Studio>,
+        Arc<RecordingDriver>,
+        Arc<Session>,
+        TransactionControlRequest,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+        let profile = profile(EngineKind::Snowflake, mode);
+        // Persistence/policy fixture only; actual SDK profile validation is
+        // covered separately, and no database connection is created here.
+        studio.persistence.save_profile(&profile).unwrap();
+        let id = new_id();
+        let request = TransactionControlRequest {
+            action,
+            revision: new_id(),
+        };
+        let state = SessionRuntimeState {
+            session_id: id.clone(),
+            transaction_mode: TransactionMode::AutoCommit,
+            transaction_state: TransactionState::Unknown,
+            context_kind: SessionContextKind::Schema,
+            active_context: Some("PUBLIC".into()),
+            database: "DB".into(),
+            role: None,
+            search_path: vec!["DB.PUBLIC".into()],
+            context_fingerprint: Some("context".into()),
+            transaction_observation: Some(TransactionObservation::Unavailable),
+            transaction_control_authority: Some(if action == ExplicitTransactionAction::Rollback {
+                TransactionControlAuthority::RollbackOnly {
+                    revision: request.revision.clone(),
+                }
+            } else {
+                TransactionControlAuthority::Observed {
+                    revision: request.revision.clone(),
+                    allowed_actions: vec![action],
+                }
+            }),
+        };
+        let driver = Arc::new(RecordingDriver {
+            runtime_override: Mutex::new(Some(state.clone())),
+            boundary_result: Mutex::new(Some(TransactionControlResult {
+                action,
+                boundary_outcome: TransactionBoundaryOutcome::Acknowledged,
+                state,
+                retired: false,
+                error: None,
+            })),
+            boundary_barrier: barrier,
+            ..Default::default()
+        });
+        let session = Arc::new(Session {
+            info: SessionInfo { id: id.clone(), connection_id: profile.id.clone(), engine: EngineKind::Snowflake,
+                server_version: "synthetic".into(), latency_ms: 0, encrypted: true,
+                capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"explicitTransactionControls":true,"cancellation":true,"tableBrowsing":false,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
+            profile, driver: driver.clone(), lane: tokio::sync::Mutex::new(()),
+            cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None),
+            closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), observed_runtime: Mutex::new(None),
+        });
+        studio.sessions.lock().insert(id, session.clone());
+        (root, studio, driver, session, request)
+    }
+
+    #[tokio::test]
+    async fn explicit_boundary_policy_review_and_one_use_are_enforced_without_extra_observers() {
+        for mode in [
+            SafeMode::ReadOnly,
+            SafeMode::Confirm,
+            SafeMode::Guard,
+            SafeMode::Silent,
+        ] {
+            for action in [
+                ExplicitTransactionAction::Begin,
+                ExplicitTransactionAction::Commit,
+                ExplicitTransactionAction::Rollback,
+            ] {
+                let (_root, studio, driver, session, request) =
+                    explicit_control_fixture(mode, action, None);
+                let prepared = studio.prepare_transaction_control(&session.info.id, &request);
+                if mode == SafeMode::ReadOnly && action != ExplicitTransactionAction::Rollback {
+                    assert_eq!(prepared.unwrap_err().code, ErrorCode::PolicyBlocked);
+                    assert!(driver.boundary_calls.lock().is_empty());
+                    continue;
+                }
+                let plan = prepared.unwrap();
+                assert_eq!(plan.statements[0].sql, action.sql());
+                let approval = if plan.requires_approval {
+                    assert_eq!(
+                        studio
+                            .execute_transaction_control(&plan.id, None)
+                            .await
+                            .unwrap_err()
+                            .code,
+                        ErrorCode::ApprovalRequired
+                    );
+                    assert!(driver.boundary_calls.lock().is_empty());
+                    let next = studio
+                        .prepare_transaction_control(&session.info.id, &request)
+                        .unwrap();
+                    let approval = studio.authorize(&next.id, None, None).unwrap();
+                    Some((next, approval))
+                } else {
+                    None
+                };
+                let (plan, token) = approval
+                    .as_ref()
+                    .map_or((&plan, None), |(plan, token)| (plan, Some(token.as_str())));
+                let result = studio
+                    .execute_transaction_control(&plan.id, token)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    result.boundary_outcome,
+                    TransactionBoundaryOutcome::Acknowledged
+                );
+                assert_eq!(*driver.boundary_calls.lock(), vec![request]);
+                assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);
+                assert!(
+                    studio
+                        .execute_transaction_control(&plan.id, token)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(driver.boundary_calls.lock().len(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_boundary_generic_route_and_changed_persisted_policy_never_dispatch() {
+        for scenario in ["generic", "policy", "stale", "foreign-plan"] {
+            let (_root, studio, driver, session, request) =
+                explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Begin, None);
+            let plan = studio
+                .prepare_transaction_control(&session.info.id, &request)
+                .unwrap();
+            if scenario == "generic" {
+                assert!(studio.execute(&plan.id, None, Arc::new(|_| true)).is_err());
+            } else {
+                if scenario == "policy" {
+                    let mut profile = session.profile.clone();
+                    profile.safe_mode = SafeMode::ReadOnly;
+                    studio.persistence.save_profile(&profile).unwrap();
+                } else if scenario == "stale" {
+                    driver
+                        .runtime_override
+                        .lock()
+                        .as_mut()
+                        .unwrap()
+                        .transaction_control_authority = None;
+                } else {
+                    let other = studio
+                        .prepare_execution(&session.info.id, "SELECT 1")
+                        .unwrap();
+                    assert!(
+                        studio
+                            .execute_transaction_control(&other.id, None)
+                            .await
+                            .is_err()
+                    );
+                }
+                assert!(
+                    studio
+                        .execute_transaction_control(&plan.id, None)
+                        .await
+                        .is_err()
+                );
+            }
+            assert!(driver.boundary_calls.lock().is_empty(), "{scenario}");
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_boundary_unknown_outcome_cannot_publish_live_authority() {
+        let (_root, studio, driver, session, request) =
+            explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Begin, None);
+        driver
+            .boundary_result
+            .lock()
+            .as_mut()
+            .unwrap()
+            .boundary_outcome = TransactionBoundaryOutcome::Unknown;
+        let plan = studio
+            .prepare_transaction_control(&session.info.id, &request)
+            .unwrap();
+        let result = studio
+            .execute_transaction_control(&plan.id, None)
+            .await
+            .unwrap();
+        assert_eq!(result.boundary_outcome, TransactionBoundaryOutcome::Unknown);
+        assert!(result.retired);
+        assert!(result.state.transaction_control_authority.is_none());
+        assert!(studio.session(&session.info.id).is_err());
+        assert!(driver.is_closed());
+        assert_eq!(driver.boundary_calls.lock().len(), 1);
+        assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn explicit_boundary_late_disconnect_keeps_ack_and_removes_authority() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (_root, studio, driver, session, request) = explicit_control_fixture(
+            SafeMode::Silent,
+            ExplicitTransactionAction::Begin,
+            Some((entered.clone(), release.clone())),
+        );
+        let plan = studio
+            .prepare_transaction_control(&session.info.id, &request)
+            .unwrap();
+        let owner = studio.clone();
+        let task =
+            tokio::spawn(async move { owner.execute_transaction_control(&plan.id, None).await });
+        entered.notified().await;
+        studio.disconnect(&session.info.id);
+        release.notify_one();
+        let result = task.await.unwrap().unwrap();
+        assert_eq!(
+            result.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert!(result.retired);
+        assert!(result.state.transaction_control_authority.is_none());
+        assert_eq!(driver.boundary_calls.lock().len(), 1);
+        assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn explicit_boundary_audit_failure_cannot_trap_rollback_recovery() {
+        for action in [
+            ExplicitTransactionAction::Begin,
+            ExplicitTransactionAction::Rollback,
+        ] {
+            let (root, studio, driver, session, request) =
+                explicit_control_fixture(SafeMode::Silent, action, None);
+            let plan = studio
+                .prepare_transaction_control(&session.info.id, &request)
+                .unwrap();
+            let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
+            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+            let result = studio.execute_transaction_control(&plan.id, None).await;
+            assert_eq!(
+                driver.boundary_calls.lock().len(),
+                usize::from(action == ExplicitTransactionAction::Rollback)
+            );
+            if action == ExplicitTransactionAction::Rollback {
+                assert_eq!(
+                    result.unwrap().boundary_outcome,
+                    TransactionBoundaryOutcome::Acknowledged
+                );
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_boundary_queued_passphrase_change_revokes_prepared_action() {
+        let (_root, studio, driver, session, request) =
+            explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Begin, None);
+        let plan = studio
+            .prepare_transaction_control(&session.info.id, &request)
+            .unwrap();
+        let lane = session.lane.lock().await;
+        let owner = studio.clone();
+        let task =
+            tokio::spawn(async move { owner.execute_transaction_control(&plan.id, None).await });
+        tokio::task::yield_now().await;
+        studio
+            .set_passphrase("synthetic-long-passphrase", None)
+            .unwrap();
+        drop(lane);
+        assert!(task.await.unwrap().is_err());
+        assert!(driver.boundary_calls.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn explicit_boundary_production_requires_exact_plan_passphrase_authorization() {
+        let (_root, studio, driver, session, request) =
+            explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Begin, None);
+        studio
+            .set_passphrase("synthetic-protected-boundary", None)
+            .unwrap();
+        let mut profile = session.profile.clone();
+        profile.environment = Environment::Production;
+        studio.persistence.save_profile(&profile).unwrap();
+        let plan = studio
+            .prepare_transaction_control(&session.info.id, &request)
+            .unwrap();
+        assert!(plan.requires_approval && plan.requires_passphrase);
+        assert!(
+            studio
+                .authorize(&plan.id, Some("wrong-passphrase"), None)
+                .is_err()
+        );
+        assert!(driver.boundary_calls.lock().is_empty());
+        let token = studio
+            .authorize(&plan.id, Some("synthetic-protected-boundary"), None)
+            .unwrap();
+        let other = studio
+            .prepare_transaction_control(&session.info.id, &request)
+            .unwrap();
+        assert_eq!(
+            studio
+                .execute_transaction_control(&other.id, Some(&token))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalRequired
+        );
+        assert!(driver.boundary_calls.lock().is_empty());
+        let plan = studio
+            .prepare_transaction_control(&session.info.id, &request)
+            .unwrap();
+        let token = studio
+            .authorize(&plan.id, Some("synthetic-protected-boundary"), None)
+            .unwrap();
+        let result = studio
+            .execute_transaction_control(&plan.id, Some(&token))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert_eq!(driver.boundary_calls.lock().len(), 1);
+        assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -5459,6 +5861,15 @@ mod browse_classification_tests {
             .prepare_execution(&session.info.id, "SELECT 1")
             .unwrap();
         driver.relation_invalidated.store(false, Ordering::Release);
+        studio.session_contexts(&session.info.id).await.unwrap();
+        assert!(session.completion.lock().is_some());
+        assert!(studio.plans.lock().contains_key(&plan.id));
+        assert!(!driver.relation_invalidated.load(Ordering::Acquire));
+        observed.transaction_control_authority = Some(TransactionControlAuthority::Observed {
+            revision: new_id(),
+            allowed_actions: vec![ExplicitTransactionAction::Begin],
+        });
+        *driver.runtime_override.lock() = Some(observed.clone());
         studio.session_contexts(&session.info.id).await.unwrap();
         assert!(session.completion.lock().is_some());
         assert!(studio.plans.lock().contains_key(&plan.id));
@@ -5663,6 +6074,7 @@ mod browse_classification_tests {
                                 capabilities: EngineCapabilities {
                                     sql: true,
                                     transactions: true,
+                                    explicit_transaction_controls: false,
                                     cancellation: true,
                                     table_browsing: false,
                                     relation_browsing: false,
@@ -5758,6 +6170,7 @@ mod browse_classification_tests {
                         sql: true,
                         actual_plan: None,
                         transactions: true,
+                        explicit_transaction_controls: false,
                         cancellation: true,
                         table_browsing: true,
                         relation_browsing: false,
@@ -5947,6 +6360,7 @@ mod browse_classification_tests {
                         sql: true,
                         actual_plan: None,
                         transactions: true,
+                        explicit_transaction_controls: false,
                         cancellation: true,
                         table_browsing: false,
                         relation_browsing: false,

@@ -91,6 +91,23 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       // @ts-expect-error — wrong argument shape for connect
       void c.call("connect", { id: 123 });
 
+      void c.call("prepare_transaction_control", {
+        sessionId: "session-1",
+        request: { action: "rollback", revision: "one-use" },
+      });
+      void c.call("prepare_transaction_control", {
+        sessionId: "session-1",
+        // @ts-expect-error — explicit controls cannot carry arbitrary SQL
+        request: { action: "begin", revision: "one-use", sql: "DROP TABLE x" },
+      });
+      void c.call("prepare_transaction_control", {
+        sessionId: "session-1",
+        // @ts-expect-error — action is a closed typed enumeration
+        request: { action: "autocommit", revision: "one-use" },
+      });
+      // @ts-expect-error — executing a boundary requires its prepared plan
+      void c.call("execute_transaction_control", { sessionId: "session-1", action: "commit" });
+
       // @ts-expect-error — wrong argument shape for generate_schema_ddl
       void c.call("generate_schema_ddl", { snapshot: "invalid" });
 

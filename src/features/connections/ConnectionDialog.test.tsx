@@ -360,6 +360,9 @@ test("new Snowflake profiles default to external browser SSO and explain both mo
 
   const authentication = screen.getByLabelText("Snowflake authentication") as HTMLSelectElement;
   expect(authentication.value).toBe("externalBrowser");
+  const safeMode = screen.getByLabelText("Safe Mode") as HTMLSelectElement;
+  expect(safeMode.value).toBe("readOnly");
+  expect(safeMode.disabled).toBe(false);
   expect(screen.getByText(/metadata browsing is temporarily unavailable/i)).toBeTruthy();
   expect(screen.getByText(/will not fall back to local application OAuth/i)).toBeTruthy();
 
@@ -369,6 +372,89 @@ test("new Snowflake profiles default to external browser SSO and explain both mo
     screen.getByText(/bounded table previews require the account’s OAuth integration/i),
   ).toBeTruthy();
   expect(screen.getByText(/will not fall back to external browser SSO/i)).toBeTruthy();
+});
+
+test("Snowflake OAuth transitions reset policy and never restore an earlier elevation", () => {
+  enableSnowflakeEngine();
+  render(<ConnectionDialog onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Database engine"), {
+    target: { value: "snowflake" },
+  });
+
+  const authentication = screen.getByLabelText("Snowflake authentication") as HTMLSelectElement;
+  const safeMode = screen.getByLabelText("Safe Mode") as HTMLSelectElement;
+  fireEvent.change(safeMode, { target: { value: "confirm" } });
+  expect(safeMode.value).toBe("confirm");
+
+  fireEvent.change(authentication, { target: { value: "localApplicationOauth" } });
+  expect(safeMode.value).toBe("readOnly");
+  expect(safeMode.disabled).toBe(true);
+
+  fireEvent.change(authentication, { target: { value: "externalBrowser" } });
+  expect(safeMode.value).toBe("readOnly");
+  expect(safeMode.disabled).toBe(false);
+  expect(
+    screen.getByText(
+      /safe mode applies only to separately reviewed explicit transaction boundaries/i,
+    ),
+  ).toBeTruthy();
+});
+
+test("Snowflake group changes preserve read-only and nonproduction choices, and normalize production", () => {
+  enableSnowflakeEngine();
+  const bootstrap = useStudio.getState().bootstrap!;
+  useStudio.setState({
+    bootstrap: {
+      ...bootstrap,
+      groups: [
+        { id: "local", name: "Local", environment: "local", parentId: null },
+        { id: "staging", name: "Staging", environment: "staging", parentId: null },
+        { id: "production", name: "Production", environment: "production", parentId: null },
+      ],
+    },
+  });
+  render(<ConnectionDialog onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Database engine"), {
+    target: { value: "snowflake" },
+  });
+
+  const group = screen.getByLabelText("Connection group");
+  const safeMode = screen.getByLabelText("Safe Mode") as HTMLSelectElement;
+  fireEvent.change(safeMode, { target: { value: "guard" } });
+  fireEvent.change(group, { target: { value: "staging" } });
+  expect(safeMode.value).toBe("guard");
+  fireEvent.change(group, { target: { value: "local" } });
+  expect(safeMode.value).toBe("guard");
+
+  fireEvent.change(safeMode, { target: { value: "readOnly" } });
+  fireEvent.change(group, { target: { value: "production" } });
+  expect(safeMode.value).toBe("readOnly");
+  expect(Array.from(safeMode.options, (option) => option.value)).toEqual([
+    "passwordGated",
+    "readOnly",
+  ]);
+
+  fireEvent.change(group, { target: { value: "local" } });
+  expect(safeMode.value).toBe("readOnly");
+  fireEvent.change(safeMode, { target: { value: "confirm" } });
+  expect(safeMode.value).toBe("confirm");
+  fireEvent.change(group, { target: { value: "production" } });
+  expect(safeMode.value).toBe("passwordGated");
+});
+
+test.each([
+  ["local application OAuth", "localApplicationOauth" as const],
+  ["legacy missing authentication", undefined],
+])("editing a Snowflake %s profile stays read-only", (_label, authentication) => {
+  const existing = {
+    ...snowflakeProfile(authentication),
+    safeMode: "confirm" as const,
+  };
+  render(<ConnectionDialog profile={existing} onClose={vi.fn()} />);
+
+  const safeMode = screen.getByLabelText("Safe Mode") as HTMLSelectElement;
+  expect(safeMode.value).toBe("readOnly");
+  expect(safeMode.disabled).toBe(true);
 });
 
 for (const [name, configured, expected] of [

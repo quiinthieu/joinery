@@ -238,6 +238,23 @@ pub trait Driver: Send + Sync {
             "Revision-bound schema switching is unavailable for this engine",
         ))
     }
+    /// Pure validation only: preparation must never consume authority or send SQL.
+    fn validate_transaction_control(&self, _request: &TransactionControlRequest) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed explicit transaction controls are unavailable for this engine",
+        ))
+    }
+    async fn transaction_control(
+        &self,
+        _session_id: &str,
+        _request: &TransactionControlRequest,
+    ) -> AppResult<TransactionControlResult> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed explicit transaction controls are unavailable for this engine",
+        ))
+    }
     async fn set_transaction_mode(&self, _mode: TransactionMode) -> AppResult<()> {
         Err(AppError::new(
             ErrorCode::Unsupported,

@@ -51,12 +51,17 @@ export function ConnectionDialog({
   const [draft, setDraft] = useState<ConnectionProfile>(() => {
     if (profile) {
       if (profile.engine === "snowflake" && profile.snowflake) {
+        const authentication = snowflakeAuthentication(profile.snowflake);
+        const environment = initialGroup?.environment ?? profile.environment;
         return {
           ...profile,
-          snowflake: withSnowflakeAuthentication(
-            profile.snowflake,
-            snowflakeAuthentication(profile.snowflake),
-          ),
+          safeMode:
+            authentication !== "externalBrowser"
+              ? "readOnly"
+              : environment === "production" && profile.safeMode !== "readOnly"
+                ? "passwordGated"
+                : profile.safeMode,
+          snowflake: withSnowflakeAuthentication(profile.snowflake, authentication),
         };
       }
       return profile;
@@ -286,7 +291,12 @@ export function ConnectionDialog({
                   environment: group?.environment ?? "local",
                   safeMode:
                     draft.engine === "snowflake"
-                      ? "readOnly"
+                      ? snowflakeAuthentication(draft.snowflake) !== "externalBrowser" ||
+                        draft.safeMode === "readOnly"
+                        ? "readOnly"
+                        : group?.environment === "production"
+                          ? "passwordGated"
+                          : draft.safeMode
                       : group?.environment === "production"
                         ? "passwordGated"
                         : group?.environment === "staging"
@@ -322,15 +332,20 @@ export function ConnectionDialog({
                 <select
                   aria-label="Snowflake authentication"
                   value={snowflakeAuthentication(draft.snowflake)}
-                  onChange={(event) =>
-                    change(
-                      "snowflake",
-                      withSnowflakeAuthentication(
-                        draft.snowflake!,
-                        event.target.value as SnowflakeAuthentication,
-                      ),
-                    )
-                  }
+                  onChange={(event) => {
+                    const authentication = event.target.value as SnowflakeAuthentication;
+                    setDraft((current) => ({
+                      ...current,
+                      safeMode:
+                        authentication === "externalBrowser" &&
+                        snowflakeAuthentication(current.snowflake) === "externalBrowser"
+                          ? current.safeMode
+                          : "readOnly",
+                      snowflake: current.snowflake
+                        ? withSnowflakeAuthentication(current.snowflake, authentication)
+                        : null,
+                    }));
+                  }}
                 >
                   <option value="externalBrowser">External browser SSO (Snowflake SDK)</option>
                   <option value="localApplicationOauth">Local application OAuth (SQL API)</option>
@@ -596,9 +611,25 @@ export function ConnectionDialog({
             <select
               aria-label="Safe Mode"
               value={draft.safeMode}
-              disabled={draft.engine === "snowflake"}
+              disabled={
+                draft.engine === "snowflake" &&
+                snowflakeAuthentication(draft.snowflake) !== "externalBrowser"
+              }
               onChange={(e) => change("safeMode", e.target.value as SafeMode)}
             >
+              {draft.engine === "snowflake" &&
+              snowflakeAuthentication(draft.snowflake) === "externalBrowser" ? (
+                <>
+                  {!production && (
+                    <>
+                      <option value="silent">Silent · no boundary confirmation</option>
+                      <option value="confirm">Confirm · review explicit boundaries</option>
+                      <option value="guard">Guard · review explicit boundaries</option>
+                    </>
+                  )}
+                  <option value="passwordGated">Password gated · authorize each boundary</option>
+                </>
+              ) : null}
               {!production && draft.engine !== "snowflake" && (
                 <>
                   <option value="silent">Silent · run without confirmations</option>
@@ -612,6 +643,13 @@ export function ConnectionDialog({
               <option value="readOnly">Read only · block writes</option>
             </select>
           </label>
+          {draft.engine === "snowflake" && (
+            <p className="form-note span-2">
+              {snowflakeAuthentication(draft.snowflake) === "externalBrowser"
+                ? "Safe Mode applies only to separately reviewed explicit transaction boundaries. SQL writes and DDL remain blocked."
+                : "This authentication route supports read-only SQL."}
+            </p>
+          )}
           <label className="checkbox-label span-2">
             <input
               type="checkbox"

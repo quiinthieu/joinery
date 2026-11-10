@@ -537,6 +537,13 @@ async fn rpc(
                     )
                     .await?
             ),
+            "prepare_transaction_control" => json!(studio.prepare_transaction_control(
+                &arg::<String>(&args, "sessionId")?, &arg(&args, "request")?
+            )?),
+            "execute_transaction_control" => json!(studio.execute_transaction_control(
+                &arg::<String>(&args, "planId")?,
+                arg::<Option<String>>(&args, "approval")?.as_deref()
+            ).await?),
             "set_transaction_mode" => json!(
                 studio
                     .set_transaction_mode(

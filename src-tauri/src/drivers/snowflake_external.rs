@@ -2,7 +2,7 @@
 //! Each instance owns one helper connection; no query or connection is automatically recreated.
 use super::snowflake_process::{
     Bounds, Certainty, CleanupObserver, Column, Impact, Launch, Operation, OperationToken, Report,
-    ShutdownReport, Supervisor,
+    ShutdownReport, Supervisor, TransactionAction,
 };
 use super::{
     BrowseRows, CompletionRelations, Driver, QuerySink, RowMutation,
@@ -76,6 +76,35 @@ struct SessionOptionsSnapshot {
     available: Vec<String>,
 }
 
+#[derive(Default)]
+struct TransactionAuthorityState {
+    generation: String,
+    grant: Option<TransactionGrant>,
+    // Independent of options/catalog generations. The helper pins this same
+    // principal/session at startup; ordinary failed reads cannot erase recovery.
+    recovery: Option<TransactionRecovery>,
+}
+struct TransactionGrant {
+    revision: String,
+    sample: ObservationSample,
+}
+struct TransactionRecovery {
+    revision: String,
+    restricted: bool,
+}
+struct TransactionLease<'a> {
+    driver: &'a SnowflakeExternal,
+    operation: Option<Operation>,
+    settled: bool,
+}
+impl Drop for TransactionLease<'_> {
+    fn drop(&mut self) {
+        if self.operation.is_some() && !self.settled {
+            self.driver.start_shutdown();
+        }
+    }
+}
+
 // Keep the switch ticket, and its independent USE receipt, alive through the
 // final observation and publication. Dropping any admitted workflow closes it.
 struct SchemaSwitchLease<'a> {
@@ -100,6 +129,7 @@ pub struct SnowflakeExternal {
     active: Mutex<Option<Active>>,
     browsing: Mutex<BrowseState>,
     session_options: Mutex<SessionOptionsState>,
+    transaction_authority: Mutex<TransactionAuthorityState>,
     closed: CancellationToken,
     shutdown_started: AtomicBool,
     shutdown: watch::Sender<Option<Arc<ShutdownReport>>>,
@@ -215,6 +245,7 @@ impl SnowflakeExternal {
             active: Mutex::new(None),
             browsing: Mutex::new(BrowseState::default()),
             session_options: Mutex::new(SessionOptionsState::default()),
+            transaction_authority: Mutex::new(TransactionAuthorityState::default()),
             closed: CancellationToken::new(),
             shutdown_started: AtomicBool::new(false),
             shutdown,
@@ -243,6 +274,7 @@ impl SnowflakeExternal {
             capabilities: EngineCapabilities {
                 sql: true,
                 transactions: false,
+                explicit_transaction_controls: true,
                 cancellation: true,
                 table_browsing: false,
                 relation_browsing: true,
@@ -276,6 +308,7 @@ impl SnowflakeExternal {
         self.shutdown.subscribe()
     }
     fn start_shutdown(&self) {
+        *self.transaction_authority.lock() = TransactionAuthorityState::default();
         self.closed.cancel();
         self.invalidate_session_options();
         if self.shutdown_started.swap(true, Ordering::SeqCst) {
@@ -376,6 +409,164 @@ impl SnowflakeExternal {
         Ok(())
     }
 
+    fn require_unrestricted(&self) -> AppResult<()> {
+        if self.is_closed() {
+            return Err(closed_error());
+        }
+        if self
+            .transaction_authority
+            .lock()
+            .recovery
+            .as_ref()
+            .is_some_and(|r| r.restricted)
+        {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Snowflake transaction state is unavailable; use the reviewed rollback control or disconnect",
+            ));
+        }
+        Ok(())
+    }
+
+    fn revoke_transaction_grant(&self) -> String {
+        let mut state = self.transaction_authority.lock();
+        let generation = new_id();
+        state.generation = generation.clone();
+        state.grant = None;
+        generation
+    }
+
+    fn require_transaction_generation(&self, generation: &str) -> AppResult<()> {
+        if self.is_closed() {
+            return Err(closed_error());
+        }
+        if self.transaction_authority.lock().generation != generation {
+            return Err(stale_transaction());
+        }
+        Ok(())
+    }
+
+    fn restrict_transaction_recovery(&self, generation: &str) -> bool {
+        let mut state = self.transaction_authority.lock();
+        if state.generation != generation || self.is_closed() {
+            return false;
+        }
+        state.grant = None;
+        if let Some(recovery) = &mut state.recovery {
+            // Preserve an already exposed recovery revision through any number
+            // of failed refreshes; each admitted rollback consumes it once.
+            recovery.restricted = true;
+            return true;
+        }
+        false
+    }
+
+    fn transaction_authority(&self) -> Option<TransactionControlAuthority> {
+        let state = self.transaction_authority.lock();
+        if let Some(recovery) = &state.recovery
+            && recovery.restricted
+        {
+            return Some(TransactionControlAuthority::RollbackOnly {
+                revision: recovery.revision.clone(),
+            });
+        }
+        state
+            .grant
+            .as_ref()
+            .map(|grant| TransactionControlAuthority::Observed {
+                revision: grant.revision.clone(),
+                allowed_actions: self.transaction_actions(&grant.sample),
+            })
+    }
+
+    fn transaction_actions(&self, sample: &ObservationSample) -> Vec<ExplicitTransactionAction> {
+        let mut actions = vec![ExplicitTransactionAction::Rollback];
+        if self.profile.safe_mode != SafeMode::ReadOnly {
+            actions.insert(
+                0,
+                if sample.transaction_id.is_some() {
+                    ExplicitTransactionAction::Commit
+                } else {
+                    ExplicitTransactionAction::Begin
+                },
+            );
+        }
+        actions
+    }
+
+    fn validate_transaction_locked(
+        &self,
+        state: &TransactionAuthorityState,
+        request: &TransactionControlRequest,
+    ) -> AppResult<()> {
+        if self.is_closed() {
+            return Err(closed_error());
+        }
+        if request.action != ExplicitTransactionAction::Rollback
+            && self.profile.safe_mode == SafeMode::ReadOnly
+        {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "This Snowflake profile allows read-only operations",
+            ));
+        }
+        if let Some(recovery) = &state.recovery
+            && recovery.restricted
+        {
+            return if request.action == ExplicitTransactionAction::Rollback
+                && request.revision == recovery.revision
+            {
+                Ok(())
+            } else {
+                Err(stale_transaction())
+            };
+        }
+        let grant = state
+            .grant
+            .as_ref()
+            .filter(|grant| grant.revision == request.revision)
+            .ok_or_else(stale_transaction)?;
+        if !self
+            .transaction_actions(&grant.sample)
+            .contains(&request.action)
+        {
+            return Err(stale_transaction());
+        }
+        Ok(())
+    }
+
+    fn publish_transaction_sample(
+        &self,
+        sample: &ObservationSample,
+        generation: &str,
+    ) -> AppResult<SessionRuntimeState> {
+        let mut runtime = self.observed_session_state(sample)?;
+        let mut state = self.transaction_authority.lock();
+        if self.is_closed() || state.generation != generation {
+            return Err(stale_transaction());
+        }
+        let revision = new_id();
+        state.grant = Some(TransactionGrant {
+            revision: revision.clone(),
+            sample: sample.clone(),
+        });
+        state.recovery = Some(TransactionRecovery {
+            revision: revision.clone(),
+            restricted: false,
+        });
+        runtime.transaction_control_authority = Some(TransactionControlAuthority::Observed {
+            revision,
+            allowed_actions: self.transaction_actions(sample),
+        });
+        Ok(runtime)
+    }
+
+    fn observer_failed(&self, generation: &str, error: &AppError) {
+        if error.code == ErrorCode::Database {
+            self.restrict_transaction_recovery(generation);
+        }
+    }
+
     /// Revocation precedes lane acquisition. A failed or abandoned refresh can
     /// never leave a previous options revision authoritative.
     fn invalidate_session_options(&self) -> String {
@@ -474,6 +665,7 @@ impl SnowflakeExternal {
                 .map(|path| path.raw.clone())
                 .collect(),
             context_fingerprint: Some(sample.context.fingerprint()?),
+            transaction_control_authority: None,
             transaction_observation: Some(TransactionObservation::Observed {
                 transaction_id: sample.transaction_id.clone(),
                 abort_on_error: sample.abort_on_error,
@@ -494,10 +686,28 @@ impl SnowflakeExternal {
             search_path: vec![],
             context_fingerprint: None,
             transaction_observation: Some(TransactionObservation::Unavailable),
+            transaction_control_authority: self.transaction_authority().filter(|authority| {
+                matches!(authority, TransactionControlAuthority::RollbackOnly { .. })
+            }),
         }
     }
 
     async fn metadata_operation<T: Send>(
+        &self,
+        work: impl std::future::Future<Output = AppResult<T>> + Send,
+    ) -> AppResult<T> {
+        self.require_unrestricted()?;
+        self.revoke_transaction_grant();
+        self.metadata_operation_inner(async {
+            self.require_unrestricted()?;
+            let generation = self.revoke_transaction_grant();
+            work.await
+                .inspect_err(|error| self.observer_failed(&generation, error))
+        })
+        .await
+    }
+
+    async fn metadata_operation_inner<T: Send>(
         &self,
         work: impl std::future::Future<Output = AppResult<T>> + Send,
     ) -> AppResult<T> {
@@ -663,6 +873,7 @@ impl SnowflakeExternal {
         bound: Option<&BoundStatement>,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
+        self.require_unrestricted()?;
         self.validate_read(sql, kind, bound)?;
         // BoundStatement is public: accept generated casts/functions only when
         // recompiling the classified template produces exactly this wire query.
@@ -725,11 +936,11 @@ impl SnowflakeExternal {
             ));
         }
         let binds = binds_json(bound.map_or(&[], |b| b.binds.as_slice()))?;
+        self.revoke_transaction_grant();
         self.invalidate_session_options();
         let _lane = self.lane.lock().await;
-        if self.is_closed() {
-            return Err(closed_error());
-        }
+        self.require_unrestricted()?;
+        let generation = self.revoke_transaction_grant();
         let outcome =
             tokio::time::timeout(Duration::from_secs(65), self.stream(wire, binds, sink)).await;
         match outcome {
@@ -742,7 +953,7 @@ impl SnowflakeExternal {
                 }) {
                     self.start_shutdown();
                 }
-                result
+                result.inspect_err(|error| self.observer_failed(&generation, error))
             }
             Err(_) => {
                 self.start_shutdown();
@@ -892,11 +1103,154 @@ impl Drop for SnowflakeExternal {
 
 #[async_trait]
 impl Driver for SnowflakeExternal {
+    fn validate_transaction_control(&self, request: &TransactionControlRequest) -> AppResult<()> {
+        self.validate_transaction_locked(&self.transaction_authority.lock(), request)
+    }
+
+    async fn transaction_control(
+        &self,
+        session_id: &str,
+        request: &TransactionControlRequest,
+    ) -> AppResult<TransactionControlResult> {
+        if session_id != self.session_id {
+            return Err(AppError::invalid("Invalid Snowflake session"));
+        }
+        // Consume once synchronously; neither a queued request nor a dropped
+        // future can replay the public revision against another operation.
+        let (baseline, generation) = {
+            let mut state = self.transaction_authority.lock();
+            self.validate_transaction_locked(&state, request)?;
+            let baseline = state.grant.take().map(|grant| grant.sample);
+            let generation = new_id();
+            state.generation = generation.clone();
+            if let Some(recovery) = &mut state.recovery {
+                recovery.revision = new_id();
+            }
+            (baseline, generation)
+        };
+        self.invalidate_session_options();
+        self.invalidate_relation_catalog();
+        let action = match request.action {
+            ExplicitTransactionAction::Begin => TransactionAction::Begin,
+            ExplicitTransactionAction::Commit => TransactionAction::Commit,
+            ExplicitTransactionAction::Rollback => TransactionAction::Rollback,
+        };
+        let mut lease = TransactionLease {
+            driver: self,
+            operation: None,
+            settled: false,
+        };
+        let result = self.metadata_operation_inner(async {
+            self.require_transaction_generation(&generation)?;
+            if action != TransactionAction::Rollback {
+                let expected = baseline.as_ref().ok_or_else(stale_transaction)?;
+                let before = self.session_sample().await?;
+                if &before != expected || (action == TransactionAction::Begin) != before.transaction_id.is_none() {
+                    self.restrict_transaction_recovery(&generation);
+                    return Err(stale_transaction());
+                }
+            }
+            {
+                let state = self.transaction_authority.lock();
+                if state.generation != generation || self.is_closed() { return Err(stale_transaction()); }
+                lease.operation = Some(self.process.request("transaction-control", "transaction",
+                    json!({"action": action.as_str(), "expected": {"user": self.identity["user"], "session": self.identity["session"]}}),
+                    action.impact()).map_err(control_error)?);
+            }
+            let report = {
+                let operation = lease.operation.as_mut().ok_or_else(protocol_error)?;
+                *self.active.lock() = Some(Active { token: operation.token(), terminal: operation.terminal_receiver() });
+                let _active = ActiveLease(&self.active);
+                operation.wait().await
+            };
+            check_report(&report)?;
+            if report.boundary_acknowledged.as_ref().is_none_or(|ack| ack.action != action) { return Err(protocol_error()); }
+            self.require_transaction_generation(&generation)?;
+            let after = self.session_sample().await?;
+            if let Some(before) = &baseline {
+                let mut comparable = after.clone();
+                comparable.transaction_id = before.transaction_id.clone();
+                if comparable != *before { return Err(stale_transaction()); }
+            }
+            if (action == TransactionAction::Begin) != after.transaction_id.is_some() { return Err(stale_transaction()); }
+            self.require_transaction_generation(&generation)?;
+            self.publish_transaction_sample(&after, &generation)
+        }).await;
+        match result {
+            Ok(state) => {
+                lease.settled = true;
+                Ok(TransactionControlResult {
+                    action: request.action,
+                    boundary_outcome: TransactionBoundaryOutcome::Acknowledged,
+                    state,
+                    retired: false,
+                    error: None,
+                })
+            }
+            Err(error) => {
+                self.observer_failed(&generation, &error);
+                let Some(operation) = &lease.operation else {
+                    return Err(error.with_completion_invalidated());
+                };
+                let acknowledged = operation.boundary_acknowledged().is_some();
+                let report = operation.report();
+                let rejected = !acknowledged
+                    && report.as_ref().is_some_and(|report| {
+                        !report.ok
+                            && report.retirement.is_none()
+                            && report.error_code.as_deref() == Some("database")
+                            && report.certainty == Certainty::ServerTerminal
+                    });
+                // A completed boundary plus ordinary observer denial leaves the
+                // exact same helper available solely for reviewed rollback.
+                let recoverable = ((acknowledged
+                        && report.as_ref().is_some_and(|r| r.ok)
+                        && error.code == ErrorCode::Database)
+                        || rejected)
+                    // This lock is the recovery publication point. An observer
+                    // admitted after the earlier check cannot revive old work.
+                    && self.restrict_transaction_recovery(&generation);
+                if recoverable {
+                    lease.settled = true;
+                } else {
+                    self.start_shutdown();
+                }
+                let error = if acknowledged && !recoverable {
+                    AppError::new(
+                        ErrorCode::ConnectionClosed,
+                        "Snowflake acknowledged the transaction command, but its final session state could not be verified. The session was closed; reconnect before continuing.",
+                    )
+                } else if !acknowledged && !rejected {
+                    AppError::new(
+                        ErrorCode::OutcomeUnknown,
+                        "Snowflake transaction command outcome is unknown; inspect query history before retrying",
+                    )
+                } else {
+                    error
+                };
+                Ok(TransactionControlResult {
+                    action: request.action,
+                    boundary_outcome: if acknowledged {
+                        TransactionBoundaryOutcome::Acknowledged
+                    } else if rejected {
+                        TransactionBoundaryOutcome::Rejected
+                    } else {
+                        TransactionBoundaryOutcome::Unknown
+                    },
+                    state: self.unavailable_session_state(),
+                    retired: !recoverable,
+                    error: Some(error.with_completion_invalidated()),
+                })
+            }
+        }
+    }
+
     async fn switch_schema(
         &self,
         session_id: &str,
         request: &SwitchSchemaRequest,
     ) -> AppResult<SessionContextOptions> {
+        self.require_unrestricted()?;
         if session_id != self.session_id {
             return Err(AppError::invalid("Invalid Snowflake session"));
         }
@@ -1052,9 +1406,11 @@ impl Driver for SnowflakeExternal {
             return Err(AppError::invalid("Invalid Snowflake session"));
         }
         let revision = self.invalidate_session_options();
+        let generation = self.revoke_transaction_grant();
         let result = self
-            .metadata_operation(async {
+            .metadata_operation_inner(async {
                 self.require_session_options_revision(&revision)?;
+                self.require_transaction_generation(&generation)?;
                 let before = self.session_sample().await?;
                 let after = self.session_sample().await?;
                 if session::compare_samples(Some(&before), Some(&after))
@@ -1063,12 +1419,13 @@ impl Driver for SnowflakeExternal {
                     return Err(stale_session_options());
                 }
                 self.require_session_options_revision(&revision)?;
-                self.observed_session_state(&after)
+                self.publish_transaction_sample(&after, &generation)
             })
             .await;
         match result {
             Ok(state) => Ok(state),
             Err(error) => {
+                self.observer_failed(&generation, &error);
                 self.invalidate_session_options_revision(&revision);
                 self.invalidate_relation_catalog();
                 if self.is_closed()
@@ -1092,45 +1449,67 @@ impl Driver for SnowflakeExternal {
             return Err(AppError::invalid("Invalid Snowflake session"));
         }
         let revision = self.invalidate_session_options();
-        self.metadata_operation(async {
-            self.require_session_options_revision(&revision)?;
-            let before = self.session_sample().await?;
-            let rows = self
-                .metadata_read(
-                    &metadata::schemas_sql(&before.context)?,
-                    metadata::SCHEMA_LIMIT + 1,
-                    metadata::RELATION_MAX_BYTES,
-                )
-                .await?;
-            let available = metadata::parse_schemas(&before.context, &rows)?;
-            let after = self.session_sample().await?;
-            if session::compare_samples(Some(&before), Some(&after)) != SampleConsistency::Stable {
-                return Err(stale_session_options());
-            }
-            let mut options = self.session_options.lock();
-            if options.revision != revision {
-                return Err(stale_session_options());
-            }
-            options.snapshot = Some(SessionOptionsSnapshot {
-                sample: after,
-                available,
-            });
-            let snapshot = options
-                .snapshot
-                .as_ref()
-                .ok_or_else(stale_session_options)?;
-            Ok(SessionContextOptions {
-                state: self.observed_session_state(&snapshot.sample)?,
-                available: snapshot.available.clone(),
-                revision: Some(revision.clone()),
+        let generation = self.revoke_transaction_grant();
+        let result = self
+            .metadata_operation_inner(async {
+                self.require_session_options_revision(&revision)?;
+                self.require_transaction_generation(&generation)?;
+                let before = self.session_sample().await?;
+                let rows = self
+                    .metadata_read(
+                        &metadata::schemas_sql(&before.context)?,
+                        metadata::SCHEMA_LIMIT + 1,
+                        metadata::RELATION_MAX_BYTES,
+                    )
+                    .await?;
+                let available = metadata::parse_schemas(&before.context, &rows)?;
+                let after = self.session_sample().await?;
+                if session::compare_samples(Some(&before), Some(&after))
+                    != SampleConsistency::Stable
+                {
+                    return Err(stale_session_options());
+                }
+                let mut options = self.session_options.lock();
+                if options.revision != revision {
+                    return Err(stale_session_options());
+                }
+                options.snapshot = Some(SessionOptionsSnapshot {
+                    sample: after,
+                    available,
+                });
+                let snapshot = options
+                    .snapshot
+                    .as_ref()
+                    .ok_or_else(stale_session_options)?;
+                Ok(SessionContextOptions {
+                    state: self.publish_transaction_sample(&snapshot.sample, &generation)?,
+                    available: snapshot.available.clone(),
+                    revision: Some(revision.clone()),
+                })
             })
-        })
-        .await
-        .inspect_err(|_| {
-            self.invalidate_session_options_revision(&revision);
-            self.invalidate_relation_catalog();
-        })
-        .map_err(AppError::with_completion_invalidated)
+            .await
+            .inspect_err(|_| {
+                self.invalidate_session_options_revision(&revision);
+                self.invalidate_relation_catalog();
+            })
+            .map_err(AppError::with_completion_invalidated);
+        if let Err(error) = &result {
+            self.observer_failed(&generation, error);
+            if error.code == ErrorCode::Database
+                && !self.is_closed()
+                && matches!(
+                    self.transaction_authority(),
+                    Some(TransactionControlAuthority::RollbackOnly { .. })
+                )
+            {
+                return Ok(SessionContextOptions {
+                    state: self.unavailable_session_state(),
+                    available: vec![],
+                    revision: None,
+                });
+            }
+        }
+        result
     }
 
     fn invalidate_relation_catalog(&self) {
@@ -1645,6 +2024,12 @@ fn stale_browse() -> AppError {
         "Snowflake relation context changed; refresh relations and inspect again",
     )
 }
+fn stale_transaction() -> AppError {
+    AppError::new(
+        ErrorCode::Conflict,
+        "Snowflake transaction authority changed; refresh session state before reviewing another control",
+    )
+}
 
 fn stale_session_options() -> AppError {
     AppError::new(
@@ -1763,7 +2148,7 @@ const file = name => new URL(name, import.meta.url);
 // coercion in the production template. This models routing, not Snowflake typing.
 const normalizedContextSql = 'SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES';
 const oldContextSql = normalizedContextSql.replace('TO_VARCHAR(CURRENT_SCHEMAS())', 'TO_JSON(CURRENT_SCHEMAS())');
-let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false;
+let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, currentTransaction = null;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
   appendFileSync(file('connections'), '1');
@@ -1781,9 +2166,16 @@ const sdk = { createConnection() {
       const unsupportedContext = sql === oldContextSql;
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
       const use = sql.startsWith('USE SCHEMA ');
+      const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
       const readback = sql.startsWith('SELECT CURRENT_USER(),') && switched;
       let names = ['VALUE'], rows = [['1']], parameter;
-      if (use) {
+      if (boundary) {
+        if (!settings.rejectBoundary) {
+          currentTransaction = sql === 'BEGIN TRANSACTION' ? 'opaque-TX-雪' : null;
+          boundarySeen = true;
+        }
+        names = []; rows = [];
+      } else if (use) {
         const parts = /^USE SCHEMA "((?:[^"]|"")*)"\."((?:[^"]|"")*)"$/u.exec(sql);
         if (!parts || parts[1] !== 'DB') throw new Error('unexpected fixture switch SQL');
         if (!settings.failUse) { currentSchema = parts[2].replaceAll('""','"'); switched = true; }
@@ -1798,16 +2190,16 @@ const sdk = { createConnection() {
       } else if (context) {
         contextReads++;
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
-        rows = [[value('principal','SERVER_USER'),switched ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),switched ? value('afterDatabase',value('database','DB')) : value('database','DB'),switched ? value('afterSchema',currentSchema) : value('schema',currentSchema),switched ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),switched ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),switched ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
+        rows = [[value('principal','SERVER_USER'),(switched || boundarySeen) ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),(switched || boundarySeen) ? value('afterDatabase',value('database','DB')) : value('database','DB'),(switched || boundarySeen) ? value('afterSchema',currentSchema) : value('schema',currentSchema),(switched || boundarySeen) ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),(switched || boundarySeen) ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),(switched || boundarySeen) ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
       } else if (sql.startsWith('SHOW PARAMETERS LIKE ')) {
         parameter = sql.split("'")[1];
         names = ['key','value','default','level'];
-        const observed = parameter === 'AUTOCOMMIT' ? switched ? value('afterAutocommit',value('autocommit','true')) : value('autocommit','true') : parameter === 'TRANSACTION_ABORT_ON_ERROR' ? switched ? value('afterAbortOnError',value('abortOnError','false')) : value('abortOnError','false') : switched ? value('afterPolicy','false') : 'false';
+        const observed = parameter === 'AUTOCOMMIT' ? (switched || boundarySeen) ? value('afterAutocommit',value('autocommit','true')) : value('autocommit','true') : parameter === 'TRANSACTION_ABORT_ON_ERROR' ? (switched || boundarySeen) ? value('afterAbortOnError',value('abortOnError','false')) : value('abortOnError','false') : (switched || boundarySeen) ? value('afterPolicy','false') : 'false';
         rows = [[parameter,observed,observed === 'true' ? 'false' : 'true','ACCOUNT']];
       } else if (sql === 'SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID') {
         transactionReads++;
         names = ['TRANSACTION_ID'];
-        rows = [[switched ? value('afterTransactionId',value('transactionId',null)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',null)]];
+        rows = [[boundarySeen ? value('afterBoundaryTransactionId',currentTransaction) : switched ? value('afterTransactionId',value('transactionId',currentTransaction)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',currentTransaction)]];
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
         rows = value('schemas',['OTHER','PUBLIC']).map(name => ['DB',name]);
@@ -1819,8 +2211,12 @@ const sdk = { createConnection() {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
         getColumns: () => names.map(name => ({ getName: () => name, getType: () => settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
         streamRows() {
-          if (context && (settings.holdContext && contextReads === 1 || switched && settings.holdAfterContext) || schemas && settings.holdSchemas) {
-            writeFileSync(file(switched && context ? 'held-after-context' : schemas ? 'held-schemas' : 'held'), '');
+          if (boundary && settings.protocolBoundary) {
+            send.flush().then(() => process.stdout.write(Buffer.alloc(4)));
+            return Readable.from((async function*() { await new Promise(() => {}); })());
+          }
+          if (context && (settings.holdContext && contextReads === 1 || (switched || boundarySeen) && settings.holdAfterContext) || schemas && settings.holdSchemas || boundary && settings.holdBoundaryDrain) {
+            writeFileSync(file(boundary ? 'held-boundary-drain' : (switched || boundarySeen) && context ? 'held-after-context' : schemas ? 'held-schemas' : 'held'), '');
             return Readable.from((async function*() {
               while (!existsSync(file('release')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5));
               if (cancelled) throw { sqlState: '57014' };
@@ -1831,10 +2227,10 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      const denied = boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
       setImmediate(() => {
-        if (use && settings.holdUse || readback && settings.holdReadback) {
-          writeFileSync(file(use ? 'held-use' : 'held-readback'), '');
+        if (boundary && settings.holdBoundary || use && settings.holdUse || readback && settings.holdReadback) {
+          writeFileSync(file(boundary ? 'held-boundary' : use ? 'held-use' : 'held-readback'), '');
           return;
         }
         options.complete(denied ? {sqlState:unsupportedContext ? '42883' : '42501'} : null, statement);
@@ -1860,6 +2256,10 @@ process.stdin.on('end', retire);
 
     impl Harness {
         async fn open() -> Self {
+            Self::open_mode(SafeMode::ReadOnly).await
+        }
+
+        async fn open_mode(safe_mode: SafeMode) -> Self {
             let scripts = tempfile::tempdir().unwrap();
             let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -1903,7 +2303,7 @@ process.stdin.on('end', retire);
                 database: "DB".into(),
                 username: "different-login@example.test".into(),
                 environment: Environment::Local,
-                safe_mode: SafeMode::ReadOnly,
+                safe_mode,
                 tls_mode: TlsMode::VerifyFull,
                 ca_cert_path: None,
                 ssh: None,
@@ -1986,6 +2386,7 @@ process.stdin.on('end', retire);
                     ]
                     .contains(&sql.as_str())
                     || sql.starts_with("USE SCHEMA \"DB\".")
+                    || ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"].contains(&sql.as_str())
             }));
         }
     }
@@ -2030,6 +2431,521 @@ process.stdin.on('end', retire);
         assert_eq!(error.code, ErrorCode::Database);
         assert_eq!(h.queries()[baseline + 2..], [old]);
         drop(lane);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn transaction_observation_issues_pure_one_use_authority() {
+        let h = Harness::open().await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let Some(TransactionControlAuthority::Observed {
+            revision,
+            allowed_actions,
+        }) = state.transaction_control_authority
+        else {
+            panic!("a complete stable observation must issue transaction authority");
+        };
+        assert!(allowed_actions.contains(&ExplicitTransactionAction::Rollback));
+        let request = TransactionControlRequest {
+            action: ExplicitTransactionAction::Rollback,
+            revision,
+        };
+        let baseline = h.queries().len();
+        h.driver.validate_transaction_control(&request).unwrap();
+        h.driver.validate_transaction_control(&request).unwrap();
+        assert_eq!(
+            h.queries().len(),
+            baseline,
+            "validation neither queries nor consumes"
+        );
+        h.finish().await;
+    }
+
+    fn transaction_request(
+        state: &SessionRuntimeState,
+        action: ExplicitTransactionAction,
+    ) -> TransactionControlRequest {
+        let revision = match state.transaction_control_authority.as_ref().unwrap() {
+            TransactionControlAuthority::Observed { revision, .. }
+            | TransactionControlAuthority::RollbackOnly { revision } => revision.clone(),
+        };
+        TransactionControlRequest { action, revision }
+    }
+
+    #[tokio::test]
+    async fn transaction_begin_commit_and_rollback_use_exact_fixed_counts_with_null_role() {
+        let h = Harness::open_mode(SafeMode::Confirm).await;
+        h.settings(json!({"role":null,"warehouse":null,"abortOnError":"true"}));
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let begin = transaction_request(&state, ExplicitTransactionAction::Begin);
+        let baseline = h.queries().len();
+        let begun = h
+            .driver
+            .transaction_control("observer-session", &begin)
+            .await
+            .unwrap();
+        assert_eq!(
+            begun.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert!(!begun.retired);
+        assert!(begun.error.is_none());
+        assert_eq!(begun.state.role, None);
+        assert!(
+            matches!(begun.state.transaction_observation, Some(TransactionObservation::Observed { transaction_id:Some(ref id), .. }) if id == "opaque-TX-雪")
+        );
+        let mut expected = sample_sql();
+        expected.push("BEGIN TRANSACTION".into());
+        expected.extend(sample_sql());
+        assert_eq!(h.queries()[baseline..], expected);
+        let no_replay = h.queries().len();
+        assert!(
+            h.driver
+                .transaction_control("observer-session", &begin)
+                .await
+                .is_err()
+        );
+        assert_eq!(h.queries().len(), no_replay);
+        let commit = transaction_request(&begun.state, ExplicitTransactionAction::Commit);
+        let baseline = h.queries().len();
+        let committed = h
+            .driver
+            .transaction_control("observer-session", &commit)
+            .await
+            .unwrap();
+        let mut expected = sample_sql();
+        expected.push("COMMIT".into());
+        expected.extend(sample_sql());
+        assert_eq!(h.queries()[baseline..], expected);
+        assert_eq!(committed.state.transaction_state, TransactionState::Idle);
+        let rollback = transaction_request(&committed.state, ExplicitTransactionAction::Rollback);
+        let baseline = h.queries().len();
+        let rolled = h
+            .driver
+            .transaction_control("observer-session", &rollback)
+            .await
+            .unwrap();
+        let mut expected = vec!["ROLLBACK".to_owned()];
+        expected.extend(sample_sql());
+        assert_eq!(h.queries()[baseline..], expected);
+        assert_eq!(
+            rolled.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert_eq!(rolled.state.transaction_state, TransactionState::Idle);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn transaction_known_begin_ack_and_repeated_denied_observers_keep_zero_preread_rollback()
+    {
+        let h = Harness::open_mode(SafeMode::Confirm).await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let begin = transaction_request(&state, ExplicitTransactionAction::Begin);
+        h.settings(json!({"failBoundaryObserver":"AUTOCOMMIT"}));
+        let begun = h
+            .driver
+            .transaction_control("observer-session", &begin)
+            .await
+            .unwrap();
+        assert_eq!(
+            begun.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert_eq!(begun.error.as_ref().unwrap().code, ErrorCode::Database);
+        assert!(!begun.retired);
+        assert_unavailable(&begun.state);
+        let rollback = transaction_request(&begun.state, ExplicitTransactionAction::Rollback);
+        let count = h.queries().len();
+        let mut sink = ScalarSink::default();
+        assert_eq!(
+            h.driver
+                .execute("SELECT 1", StatementKind::Read, &mut sink)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
+        );
+        assert!(h.driver.completion_identity().await.is_err());
+        assert!(h.driver.relation_catalog().await.is_err());
+        assert!(
+            h.driver
+                .validate_transaction_control(&TransactionControlRequest {
+                    action: ExplicitTransactionAction::Begin,
+                    revision: rollback.revision.clone()
+                })
+                .is_err()
+        );
+        assert_eq!(h.queries().len(), count);
+        for _ in 0..2 {
+            let failed = h
+                .driver
+                .session_context_options("observer-session")
+                .await
+                .unwrap();
+            assert_unavailable(&failed.state);
+            assert!(failed.available.is_empty() && failed.revision.is_none());
+            assert_eq!(
+                transaction_request(&failed.state, ExplicitTransactionAction::Rollback),
+                rollback
+            );
+            let failed = h.driver.session_state("observer-session").await.unwrap();
+            assert_eq!(
+                transaction_request(&failed, ExplicitTransactionAction::Rollback),
+                rollback
+            );
+        }
+        h.settings(json!({}));
+        let baseline = h.queries().len();
+        let recovered = h
+            .driver
+            .transaction_control("observer-session", &rollback)
+            .await
+            .unwrap();
+        let mut expected = vec!["ROLLBACK".to_owned()];
+        expected.extend(sample_sql());
+        assert_eq!(h.queries()[baseline..], expected);
+        assert_eq!(
+            recovered.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert!(!recovered.retired);
+        assert_eq!(recovered.state.transaction_state, TransactionState::Idle);
+        assert!(
+            h.driver
+                .transaction_control("observer-session", &rollback)
+                .await
+                .is_err()
+        );
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn transaction_stale_cross_session_readonly_and_public_boundaries_dispatch_nothing() {
+        let h = Harness::open().await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let rollback = transaction_request(&state, ExplicitTransactionAction::Rollback);
+        let baseline = h.queries().len();
+        assert_eq!(
+            h.driver
+                .validate_transaction_control(&TransactionControlRequest {
+                    action: ExplicitTransactionAction::Begin,
+                    revision: rollback.revision.clone()
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
+        );
+        assert!(
+            h.driver
+                .transaction_control("different-session", &rollback)
+                .await
+                .is_err()
+        );
+        assert!(
+            h.driver
+                .transaction_control(
+                    "observer-session",
+                    &TransactionControlRequest {
+                        action: ExplicitTransactionAction::Rollback,
+                        revision: new_id()
+                    }
+                )
+                .await
+                .is_err()
+        );
+        for sql in ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"] {
+            let mut sink = ScalarSink::default();
+            assert!(
+                h.driver
+                    .execute(sql, StatementKind::Read, &mut sink)
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(h.queries().len(), baseline);
+        h.driver.validate_transaction_control(&rollback).unwrap();
+        let mut sink = ScalarSink::default();
+        h.driver
+            .execute("SELECT 1", StatementKind::Read, &mut sink)
+            .await
+            .unwrap();
+        assert!(h.driver.validate_transaction_control(&rollback).is_err());
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn transaction_baseline_full_sample_drift_and_queued_closure_never_submit_boundary() {
+        for changed in [
+            json!({"warehouse":"OTHER"}),
+            json!({"role":null}),
+            json!({"autocommit":"false"}),
+            json!({"abortOnError":"true"}),
+            json!({"transactionId":"external-TX"}),
+            json!({"searchPath":"[\"DB.OTHER\"]"}),
+        ] {
+            let h = Harness::open_mode(SafeMode::Confirm).await;
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            h.settings(changed);
+            let request = transaction_request(&state, ExplicitTransactionAction::Begin);
+            let baseline = h.queries().len();
+            assert_eq!(
+                h.driver
+                    .transaction_control("observer-session", &request)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Conflict
+            );
+            assert_eq!(h.queries()[baseline..], sample_sql());
+            assert!(h.driver.validate_transaction_control(&request).is_err());
+            h.finish().await;
+        }
+        let h = Harness::open_mode(SafeMode::Confirm).await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let request = transaction_request(&state, ExplicitTransactionAction::Begin);
+        let lane = h.driver.lane.lock().await;
+        let baseline = h.queries().len();
+        let driver = h.driver.clone();
+        let task = tokio::spawn(async move {
+            driver
+                .transaction_control("observer-session", &request)
+                .await
+        });
+        h.wait_until(|| h.driver.transaction_authority.lock().grant.is_none())
+            .await;
+        h.driver.close();
+        drop(lane);
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(h.queries().len(), baseline);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn transaction_definitive_rejection_retains_recovery_without_replay() {
+        let h = Harness::open_mode(SafeMode::Confirm).await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let request = transaction_request(&state, ExplicitTransactionAction::Begin);
+        h.settings(json!({"rejectBoundary":true}));
+        let baseline = h.queries().len();
+        let rejected = h
+            .driver
+            .transaction_control("observer-session", &request)
+            .await
+            .unwrap();
+        assert_eq!(
+            rejected.boundary_outcome,
+            TransactionBoundaryOutcome::Rejected
+        );
+        assert!(!rejected.retired);
+        let mut expected = sample_sql();
+        expected.push("BEGIN TRANSACTION".into());
+        assert_eq!(h.queries()[baseline..], expected);
+        assert!(matches!(
+            rejected.state.transaction_control_authority,
+            Some(TransactionControlAuthority::RollbackOnly { .. })
+        ));
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn transaction_known_ack_final_drift_retires_without_losing_ack() {
+        for settings in [
+            json!({"afterWarehouse":"OTHER"}),
+            json!({"afterRole":null}),
+            json!({"afterAutocommit":"false"}),
+            json!({"afterBoundaryTransactionId":null}),
+        ] {
+            let h = Harness::open_mode(SafeMode::Confirm).await;
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            h.settings(settings);
+            let result = h
+                .driver
+                .transaction_control(
+                    "observer-session",
+                    &transaction_request(&state, ExplicitTransactionAction::Begin),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                result.boundary_outcome,
+                TransactionBoundaryOutcome::Acknowledged
+            );
+            assert!(result.retired && h.driver.is_closed());
+            assert_eq!(result.error.unwrap().code, ErrorCode::ConnectionClosed);
+            assert!(result.state.transaction_control_authority.is_none());
+            assert_eq!(
+                h.queries()
+                    .iter()
+                    .filter(|sql| *sql == "BEGIN TRANSACTION")
+                    .count(),
+                1
+            );
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_lost_ack_is_unknown_and_known_ack_drain_cancel_is_acknowledged() {
+        for acknowledged in [false, true] {
+            let h = Harness::open_mode(SafeMode::Confirm).await;
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            h.settings(if acknowledged {
+                json!({"holdBoundaryDrain":true})
+            } else {
+                json!({"holdBoundary":true})
+            });
+            let request = transaction_request(&state, ExplicitTransactionAction::Begin);
+            let driver = h.driver.clone();
+            let task = tokio::spawn(async move {
+                driver
+                    .transaction_control("observer-session", &request)
+                    .await
+            });
+            h.wait_until(|| {
+                h.scripts
+                    .path()
+                    .join(if acknowledged {
+                        "held-boundary-drain"
+                    } else {
+                        "held-boundary"
+                    })
+                    .exists()
+            })
+            .await;
+            if acknowledged {
+                assert_eq!(
+                    h.driver.cancel().await.unwrap_err().code,
+                    ErrorCode::ConnectionClosed
+                );
+            } else {
+                h.driver.close();
+            }
+            let result = task.await.unwrap().unwrap();
+            assert_eq!(
+                result.boundary_outcome,
+                if acknowledged {
+                    TransactionBoundaryOutcome::Acknowledged
+                } else {
+                    TransactionBoundaryOutcome::Unknown
+                }
+            );
+            assert!(result.retired);
+            assert_eq!(
+                result.error.unwrap().code,
+                if acknowledged {
+                    ErrorCode::ConnectionClosed
+                } else {
+                    ErrorCode::OutcomeUnknown
+                }
+            );
+            assert_eq!(
+                h.queries()
+                    .iter()
+                    .filter(|sql| *sql == "BEGIN TRANSACTION")
+                    .count(),
+                1
+            );
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_post_ack_drop_and_supersession_retire_original_owner() {
+        for supersede in [false, true] {
+            let h = Harness::open_mode(SafeMode::Confirm).await;
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            h.settings(json!({"holdAfterContext":true}));
+            let request = transaction_request(&state, ExplicitTransactionAction::Begin);
+            let driver = h.driver.clone();
+            let task = tokio::spawn(async move {
+                driver
+                    .transaction_control("observer-session", &request)
+                    .await
+            });
+            h.wait_until(|| h.scripts.path().join("held-after-context").exists())
+                .await;
+            if supersede {
+                h.driver.revoke_transaction_grant();
+                std::fs::write(h.scripts.path().join("release"), "").unwrap();
+                let result = task.await.unwrap().unwrap();
+                assert_eq!(
+                    result.boundary_outcome,
+                    TransactionBoundaryOutcome::Acknowledged
+                );
+                assert!(result.retired);
+            } else {
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+            }
+            h.wait_until(|| h.driver.is_closed()).await;
+            assert_eq!(
+                h.queries()
+                    .iter()
+                    .filter(|sql| *sql == "BEGIN TRANSACTION")
+                    .count(),
+                1
+            );
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_known_ack_protocol_failure_never_becomes_unknown_or_rejected() {
+        let h = Harness::open_mode(SafeMode::Confirm).await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        h.settings(json!({"protocolBoundary":true}));
+        let result = h
+            .driver
+            .transaction_control(
+                "observer-session",
+                &transaction_request(&state, ExplicitTransactionAction::Begin),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert!(result.retired && h.driver.is_closed());
+        assert_eq!(result.error.unwrap().code, ErrorCode::ConnectionClosed);
+        assert!(result.state.transaction_control_authority.is_none());
+        assert_eq!(
+            h.queries()
+                .iter()
+                .filter(|sql| *sql == "BEGIN TRANSACTION")
+                .count(),
+            1
+        );
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn transaction_authority_is_independent_of_options_and_catalog_but_rejects_aba() {
+        let h = Harness::open_mode(SafeMode::Confirm).await;
+        let first = h.driver.session_state("observer-session").await.unwrap();
+        let old = transaction_request(&first, ExplicitTransactionAction::Begin);
+        h.driver.invalidate_session_options();
+        h.driver.invalidate_relation_catalog();
+        h.driver.validate_transaction_control(&old).unwrap();
+        let current = h.driver.session_state("observer-session").await.unwrap();
+        let fresh = transaction_request(&current, ExplicitTransactionAction::Begin);
+        assert_ne!(old.revision, fresh.revision);
+        assert!(
+            h.driver
+                .unavailable_session_state()
+                .transaction_control_authority
+                .is_none()
+        );
+        let baseline = h.queries().len();
+        assert!(
+            h.driver
+                .transaction_control("observer-session", &old)
+                .await
+                .is_err()
+        );
+        assert_eq!(h.queries().len(), baseline);
+        h.driver.validate_transaction_control(&fresh).unwrap();
         h.finish().await;
     }
 
@@ -2622,21 +3538,25 @@ process.stdin.on('end', retire);
     }
 
     #[tokio::test]
-    async fn list_failure_is_an_error_and_user_execution_revokes_prior_options() {
+    async fn list_failure_projects_recovery_and_user_execution_revokes_prior_options() {
         let h = Harness::open().await;
         h.driver
             .session_context_options("observer-session")
             .await
             .unwrap();
         h.settings(json!({"failSchemas":true}));
-        assert_eq!(
-            h.driver
-                .session_context_options("observer-session")
-                .await
-                .unwrap_err()
-                .code,
-            ErrorCode::Database
-        );
+        let failed = h
+            .driver
+            .session_context_options("observer-session")
+            .await
+            .unwrap();
+        assert_unavailable(&failed.state);
+        assert!(failed.available.is_empty());
+        assert!(failed.revision.is_none());
+        assert!(matches!(
+            failed.state.transaction_control_authority,
+            Some(TransactionControlAuthority::RollbackOnly { .. })
+        ));
         assert!(h.driver.session_options.lock().snapshot.is_none());
         h.settings(json!({}));
         h.driver

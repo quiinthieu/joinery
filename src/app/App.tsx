@@ -77,6 +77,7 @@ import type {
   QueryParamSlot,
   ResourceUsage,
   TableChanges,
+  ExplicitTransactionAction,
 } from "../ipc/generated";
 import {
   useStudio,
@@ -598,6 +599,8 @@ export function App() {
       if (
         document.visibilityState === "hidden" ||
         current.isSessionContextPending(session.id) ||
+        current.sessionStates[session.id]?.transactionControlAuthority?.status === "rollbackOnly" ||
+        current.sessionMetadataRefreshRequired[session.id] ||
         current.tabs.some(
           (tab) =>
             ["queued", "running"].includes(tab.status) &&
@@ -697,6 +700,52 @@ export function App() {
               performance.now()),
           error: appErrorOf(error),
         });
+    }
+  }
+  async function runExplicitTransaction(action: ExplicitTransactionAction) {
+    const snapshot = useStudio.getState();
+    const active = snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId);
+    if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
+    const selected = querySessionForTab(active, snapshot.sessions);
+    if (!selected?.capabilities.explicitTransactionControls)
+      throw new Error("Explicit transaction controls are unavailable for this session");
+    if (snapshot.sessionTransactionPending[selected.id])
+      throw new Error("Wait for the transaction action to finish first");
+    if (
+      snapshot.tabs.some(
+        (tab) =>
+          querySessionForTab(tab, snapshot.sessions)?.id === selected.id &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    const authority = snapshot.sessionStates[selected.id]?.transactionControlAuthority;
+    const allowed =
+      authority?.status === "rollbackOnly"
+        ? action === "rollback"
+        : authority?.allowedActions.includes(action) === true;
+    if (!authority || !allowed) throw new Error("Refresh transaction state before continuing");
+    const plan = await client.call("prepare_transaction_control", {
+      sessionId: selected.id,
+      request: { action, revision: authority.revision },
+    });
+    const latest = useStudio.getState();
+    const owner = latest.tabs.find((tab) => tab.id === active.id);
+    if (!owner || querySessionForTab(owner, latest.sessions)?.id !== selected.id)
+      throw new Error("The owning query session changed; prepare this action again");
+    if (plan.requiresApproval) {
+      setDialog({
+        kind: "review",
+        plan,
+        tabId: active.id,
+        profile: latest.bootstrap?.profiles.find((profile) => profile.id === selected.connectionId),
+        onApprove: async (approval) => {
+          await useStudio.getState().executeTransactionControl(plan, approval);
+        },
+      });
+    } else {
+      setDialog(null);
+      await useStudio.getState().executeTransactionControl(plan);
     }
   }
   async function prepareAndExecuteSql(
@@ -1383,6 +1432,7 @@ export function App() {
                   });
                 }}
                 onReview={() => void reviewEdits()}
+                onTransactionControl={runExplicitTransaction}
                 onConfirm={(title, description, action) =>
                   setDialog({ kind: "confirm", title, description, action })
                 }
@@ -2202,6 +2252,32 @@ export function App() {
                       : []),
                   ];
                 })()
+              : []),
+            ...(current?.kind === "query" &&
+            session?.capabilities.explicitTransactionControls &&
+            !state.sessionTransactionPending[session.id]
+              ? (["begin", "commit", "rollback"] as const).flatMap((action) => {
+                  const authority = state.sessionStates[session.id]?.transactionControlAuthority;
+                  const allowed =
+                    authority?.status === "rollbackOnly"
+                      ? action === "rollback"
+                      : authority?.allowedActions.includes(action) === true;
+                  if (!allowed || (action !== "rollback" && profile?.safeMode === "readOnly"))
+                    return [];
+                  const label =
+                    action === "begin" ? "Begin" : action === "commit" ? "Commit" : "Rollback";
+                  return [
+                    {
+                      label: `${label} transaction`,
+                      shortcut: "",
+                      icon: action === "rollback" ? RotateCcw : Check,
+                      action: () =>
+                        void runExplicitTransaction(action).catch((error) =>
+                          state.notify(messageOf(error)),
+                        ),
+                    },
+                  ];
+                })
               : []),
             ...tableCommands,
           ]}

@@ -28,6 +28,8 @@ import type {
   TableRef,
   TableSchema,
   TransactionMode,
+  TransactionControlResult,
+  TransactionControlAuthority,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
 import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
@@ -203,6 +205,8 @@ interface StudioState {
   sessionContextRevision: Record<string, number>;
   sessionContextAuthorities: Record<string, SessionContextOptions>;
   sessionContextSwitching: Record<string, boolean>;
+  sessionTransactionPending: Record<string, boolean>;
+  sessionMetadataRefreshRequired: Record<string, boolean>;
   catalog: Record<string, TableInfo[]>;
   objects: Record<string, DatabaseObjectSummary[]>;
   selectedConnectionId: string | null;
@@ -244,6 +248,10 @@ interface StudioState {
   setTransactionMode(sessionId: string, mode: TransactionMode): Promise<void>;
   commitTransaction(sessionId: string): Promise<void>;
   rollbackTransaction(sessionId: string): Promise<void>;
+  executeTransactionControl(
+    plan: PreparedPlan,
+    approval?: string | null,
+  ): Promise<TransactionControlResult>;
   retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
@@ -508,7 +516,10 @@ function sessionInfoById(
     undefined
   );
 }
-function unknownSdkRuntime(sessionId: string): SessionRuntimeState {
+function unknownSdkRuntime(
+  sessionId: string,
+  authority?: TransactionControlAuthority,
+): SessionRuntimeState {
   return {
     sessionId,
     transactionMode: "unknown",
@@ -519,6 +530,7 @@ function unknownSdkRuntime(sessionId: string): SessionRuntimeState {
     role: null,
     searchPath: [],
     transactionObservation: { status: "unavailable" },
+    ...(authority?.status === "rollbackOnly" ? { transactionControlAuthority: authority } : {}),
   };
 }
 function hasSdkObservation(
@@ -577,6 +589,8 @@ function purgeSessionRuntimeMaps(
     | "sessionContextRevision"
     | "sessionContextAuthorities"
     | "sessionContextSwitching"
+    | "sessionTransactionPending"
+    | "sessionMetadataRefreshRequired"
   >,
   sessionIds: Iterable<string>,
 ) {
@@ -585,11 +599,15 @@ function purgeSessionRuntimeMaps(
   const sessionContextRevision = { ...state.sessionContextRevision };
   const sessionContextAuthorities = { ...state.sessionContextAuthorities };
   const sessionContextSwitching = { ...state.sessionContextSwitching };
+  const sessionTransactionPending = { ...state.sessionTransactionPending };
+  const sessionMetadataRefreshRequired = { ...state.sessionMetadataRefreshRequired };
   for (const id of sessionIds) {
     contextRequests.delete(id);
     pendingContextRequests.delete(id);
     schemaSwitchRequests.delete(id);
     delete sessionContextSwitching[id];
+    delete sessionTransactionPending[id];
+    delete sessionMetadataRefreshRequired[id];
     delete sessionContextAuthorities[id];
     delete sessionStates[id];
     delete sessionContexts[id];
@@ -601,6 +619,8 @@ function purgeSessionRuntimeMaps(
     sessionContextRevision,
     sessionContextAuthorities,
     sessionContextSwitching,
+    sessionTransactionPending,
+    sessionMetadataRefreshRequired,
   };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
@@ -652,11 +672,25 @@ function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
 }
 
 /** Frontend scheduling only; the driver independently validates one-use authority. */
-export function revokeSchemaSelectionBeforeWork(sessionId: string) {
+export function revokeSchemaSelectionBeforeWork(sessionId: string, transactionControl = false) {
   const state = useStudio.getState();
   if (state.sessionContextSwitching[sessionId])
     throw new Error("Wait for the schema change to finish first");
+  if (state.sessionTransactionPending[sessionId])
+    throw new Error("Wait for the transaction action to finish first");
+  if (
+    !transactionControl &&
+    state.sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly"
+  )
+    throw new Error("Only rollback recovery is available. Roll back or disconnect this session.");
   state.invalidateSessionContextAuthority(sessionId);
+  const runtime = useStudio.getState().sessionStates[sessionId];
+  if (runtime?.transactionControlAuthority?.status === "observed") {
+    const { transactionControlAuthority: _authority, ...observed } = runtime;
+    useStudio.setState((current) => ({
+      sessionStates: { ...current.sessionStates, [sessionId]: observed },
+    }));
+  }
 }
 
 /** Guard a template's observation without changing the editor being validated. */
@@ -695,6 +729,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   sessionContextRevision: {},
   sessionContextAuthorities: {},
   sessionContextSwitching: {},
+  sessionTransactionPending: {},
+  sessionMetadataRefreshRequired: {},
   catalog: {},
   objects: {},
   selectedConnectionId: null,
@@ -997,9 +1033,17 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   isSessionContextPending(sessionId) {
-    return (pendingContextRequests.get(sessionId)?.size ?? 0) > 0;
+    return (
+      get().sessionTransactionPending[sessionId] === true ||
+      (pendingContextRequests.get(sessionId)?.size ?? 0) > 0
+    );
   },
   async refreshSessionContexts(sessionId, throwOnError = false) {
+    if (get().sessionMetadataRefreshRequired[sessionId] && !throwOnError) return false;
+    if (get().sessionTransactionPending[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the transaction action to finish first");
+      return false;
+    }
     if (get().sessionContextSwitching[sessionId]) {
       if (throwOnError) throw new Error("Wait for the schema change to finish first");
       return false;
@@ -1011,7 +1055,10 @@ export const useStudio = create<StudioState>((set, get) => ({
     try {
       if (sdk && isSessionActive(get(), sessionId)) {
         set((state) => ({
-          sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+          sessionStates: {
+            ...state.sessionStates,
+            [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
+          },
           sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
         }));
       }
@@ -1031,7 +1078,7 @@ export const useStudio = create<StudioState>((set, get) => ({
             ? {
                 sessionStates: {
                   ...state.sessionStates,
-                  [sessionId]: unknownSdkRuntime(sessionId),
+                  [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
                 },
                 ...(sessionRuntimeContextChanged(previous, unknownSdkRuntime(sessionId))
                   ? {
@@ -1081,6 +1128,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
   },
   async switchSessionContext(sessionId, target) {
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the transaction action to finish first");
     const sdk = hasSdkObservation(get(), sessionId);
     const authority = get().sessionContextAuthorities[sessionId];
     const runtime = get().sessionStates[sessionId];
@@ -1164,6 +1213,82 @@ export const useStudio = create<StudioState>((set, get) => ({
           sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: false },
         }));
       }
+    }
+  },
+  async executeTransactionControl(plan, approval) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    revokeSchemaSelectionBeforeWork(sessionId, true);
+    const request = beginContextRequest(sessionId);
+    set((state) => ({
+      sessionTransactionPending: { ...state.sessionTransactionPending, [sessionId]: true },
+      sessionMetadataRefreshRequired: {
+        ...state.sessionMetadataRefreshRequired,
+        [sessionId]: true,
+      },
+      // Earlier query events carry the old tab revision. Keep their delayed
+      // runtime observations from replacing this boundary's final authority.
+      tabs: state.tabs.map((tab) =>
+        querySessionForTab(tab, state.sessions)?.id === sessionId
+          ? { ...tab, revision: tab.revision + 1 }
+          : tab,
+      ),
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    try {
+      const result = await client.call("execute_transaction_control", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.state.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid transaction action response");
+      }
+      if (result.retired || result.boundaryOutcome === "unknown") get().retireSession(sessionId);
+      else if (contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId)) {
+        set((state) => ({ sessionStates: { ...state.sessionStates, [sessionId]: result.state } }));
+      }
+      // Keep command evidence truthful even when the owning tab has closed.
+      const label =
+        result.action === "begin" ? "BEGIN" : result.action === "commit" ? "COMMIT" : "ROLLBACK";
+      const outcome =
+        result.boundaryOutcome === "acknowledged"
+          ? "acknowledged"
+          : result.boundaryOutcome === "rejected"
+            ? "rejected"
+            : "outcome unknown";
+      get().notify(
+        `${label} ${outcome}${result.retired ? "; session retired" : result.state.transactionControlAuthority?.status === "rollbackOnly" ? "; only rollback recovery is available" : ""}${result.error ? `. ${result.error.message}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      // Do not issue an automatic observer or replay a boundary. An owner can
+      // explicitly refresh after an admission failure on a still-live session.
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      set((state) => {
+        const pending = { ...state.sessionTransactionPending };
+        delete pending[sessionId];
+        return { sessionTransactionPending: pending };
+      });
     }
   },
   async setTransactionMode(sessionId, mode) {
@@ -2392,7 +2517,10 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (event.type === "sessionState") {
         const source = get().tabs.find((tab) => tab.id === tabId && tab.revision === revision);
         const sourceSession = source && querySessionForTab(source, get().sessions);
-        if (sourceSession?.id === event.state.sessionId) {
+        if (
+          sourceSession?.id === event.state.sessionId &&
+          !get().sessionTransactionPending[event.state.sessionId]
+        ) {
           get().invalidateSessionContextAuthority(event.state.sessionId);
           contextRequests.delete(event.state.sessionId);
           runtimeUpdates.push(event.state);

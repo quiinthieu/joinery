@@ -7,6 +7,7 @@ import type {
   SessionRuntimeState,
   TablePage,
   TableSchema,
+  TransactionControlResult,
 } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import {
@@ -104,6 +105,8 @@ beforeEach(() => {
     sessionContextRevision: {},
     sessionContextAuthorities: {},
     sessionContextSwitching: {},
+    sessionTransactionPending: {},
+    sessionMetadataRefreshRequired: {},
     savedQueries: [],
     bookmarks: [],
     sqlFormatSettings: {
@@ -1072,6 +1075,167 @@ function useSdkSession() {
     sessionContextRevision: { session: 0 },
   });
 }
+
+function transactionControlPlan(): PreparedPlan {
+  return {
+    id: "typed-boundary-plan",
+    sessionId: session.id,
+    statements: [{ sql: "BEGIN TRANSACTION", kind: "transaction", missingWhere: false }],
+    warnings: [],
+    requiresApproval: false,
+    requiresPassphrase: false,
+    confirmationText: null,
+    expiresAt: Date.now() + 60_000,
+  };
+}
+function boundaryResult(
+  overrides: Partial<TransactionControlResult> = {},
+): TransactionControlResult {
+  return {
+    action: "begin",
+    boundaryOutcome: "acknowledged",
+    retired: false,
+    error: null,
+    state: {
+      ...sdkRuntime(),
+      transactionState: "inTransaction",
+      transactionControlAuthority: {
+        status: "observed",
+        revision: "after-boundary",
+        allowedActions: ["commit", "rollback"],
+      },
+    },
+    ...overrides,
+  };
+}
+
+test("typed transaction execution blocks competing work, dispatches once, and publishes its final observation without extra reads", async () => {
+  useSdkSession();
+  let resolve!: (value: TransactionControlResult) => void;
+  const response = new Promise<TransactionControlResult>((done) => {
+    resolve = done;
+  });
+  vi.mocked(client.call).mockReturnValue(response);
+  const pending = useStudio.getState().executeTransactionControl(transactionControlPlan());
+  expect(useStudio.getState().isSessionContextPending(session.id)).toBe(true);
+  expect(() => revokeSchemaSelectionBeforeWork(session.id)).toThrow("transaction action");
+  expect(await useStudio.getState().refreshSessionContexts(session.id)).toBe(false);
+  await expect(
+    useStudio.getState().executeTransactionControl(transactionControlPlan()),
+  ).rejects.toThrow("transaction action");
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("execute_transaction_control", {
+    planId: "typed-boundary-plan",
+    approval: undefined,
+  });
+  const result = boundaryResult();
+  resolve(result);
+  expect(await pending).toEqual(result);
+  expect(useStudio.getState().sessionStates.session).toEqual(result.state);
+  expect(useStudio.getState().isSessionContextPending(session.id)).toBe(false);
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+
+test("rollback-only recovery blocks ordinary work but permits a typed rollback with truthful command evidence", async () => {
+  useSdkSession();
+  const recovery: SessionRuntimeState = {
+    ...sdkRuntime(),
+    transactionState: "unknown",
+    transactionObservation: { status: "unavailable" },
+    transactionControlAuthority: { status: "rollbackOnly", revision: "recovery" },
+  };
+  useStudio.setState({ sessionStates: { session: recovery } });
+  expect(() => revokeSchemaSelectionBeforeWork(session.id)).toThrow("Only rollback recovery");
+  const result = boundaryResult({ action: "rollback", state: sdkRuntime() });
+  vi.mocked(client.call).mockResolvedValue(result);
+  const notify = vi.spyOn(useStudio.getState(), "notify");
+  await useStudio.getState().executeTransactionControl(transactionControlPlan());
+  expect(client.call).toHaveBeenCalledTimes(1);
+  expect(notify).toHaveBeenCalledWith("ROLLBACK acknowledged");
+  expect(useStudio.getState().sessionStates.session).toEqual(result.state);
+});
+
+test("late acknowledged transaction results cannot resurrect a disconnected session", async () => {
+  useSdkSession();
+  let resolve!: (value: TransactionControlResult) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise<TransactionControlResult>((done) => {
+      resolve = done;
+    }),
+  );
+  const pending = useStudio.getState().executeTransactionControl(transactionControlPlan());
+  useStudio.getState().retireSession(session.id);
+  resolve(boundaryResult());
+  expect((await pending).boundaryOutcome).toBe("acknowledged");
+  expect(useStudio.getState().sessions.profile).toBeUndefined();
+  expect(useStudio.getState().sessionStates.session).toBeUndefined();
+  expect(useStudio.getState().sessionTransactionPending.session).toBeUndefined();
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+
+test("unknown boundary outcomes retire locally without replay or automatic observation", async () => {
+  useSdkSession();
+  vi.mocked(client.call).mockResolvedValue(
+    boundaryResult({ boundaryOutcome: "unknown", retired: false }),
+  );
+  await useStudio.getState().executeTransactionControl(transactionControlPlan());
+  expect(useStudio.getState().sessions.profile).toBeUndefined();
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+
+test("delayed prior query state cannot steal a pending boundary's rollback recovery publication", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  const tab = useStudio.getState().tabs.find((item) => item.id === tabId)!;
+  let resolve!: (value: TransactionControlResult) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise<TransactionControlResult>((done) => {
+      resolve = done;
+    }),
+  );
+  const pending = useStudio.getState().executeTransactionControl(transactionControlPlan());
+  useStudio
+    .getState()
+    .applyEvents(tabId, [{ type: "sessionState", state: sdkRuntime() }], tab.revision);
+  expect(useStudio.getState().sessionStates.session.transactionState).toBe("unknown");
+  const result = boundaryResult({
+    state: {
+      ...sdkRuntime(),
+      transactionState: "unknown",
+      transactionObservation: { status: "unavailable" },
+      transactionControlAuthority: { status: "rollbackOnly", revision: "recovery-after-ack" },
+    },
+  });
+  resolve(result);
+  await pending;
+  useStudio
+    .getState()
+    .applyEvents(tabId, [{ type: "sessionState", state: sdkRuntime() }], tab.revision);
+  expect(useStudio.getState().sessionStates.session).toEqual(result.state);
+  expect(useStudio.getState().sessionMetadataRefreshRequired.session).toBe(true);
+  expect(await useStudio.getState().refreshSessionContexts(session.id)).toBe(false);
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+
+test("an unsettled query in another owning tab prevents typed control without discarding its completion", async () => {
+  useSdkSession();
+  const other = useStudio.getState().openQuery("profile");
+  useStudio.getState().updateTab(other, { status: "running", runId: "prior-run" });
+  const prior = useStudio.getState().tabs.find((tab) => tab.id === other)!;
+  useStudio.getState().openQuery("profile");
+  await expect(
+    useStudio.getState().executeTransactionControl(transactionControlPlan()),
+  ).rejects.toThrow("queries to finish");
+  expect(client.call).not.toHaveBeenCalled();
+  expect(useStudio.getState().tabs.find((tab) => tab.id === other)?.revision).toBe(prior.revision);
+  useStudio
+    .getState()
+    .applyEvents(
+      other,
+      [{ type: "finished", runId: "prior-run", status: "completed", elapsedMs: 1 }],
+      prior.revision,
+    );
+  expect(useStudio.getState().tabs.find((tab) => tab.id === other)?.status).not.toBe("running");
+});
 
 const quotedSchemaTarget = 'Quoted.雪"schema';
 function schemaAuthority(overrides: Partial<SessionContextOptions> = {}): SessionContextOptions {
