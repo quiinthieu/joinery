@@ -4,6 +4,14 @@ The observation and bounded schema-options portion is now implemented; see its
 [current contract and qualification](snowflake-sdk-session-observation.md).
 Typed schema switching below remains proposed. Neither portion establishes
 Snowflake account qualification. Both use the existing SDK connection.
+The helper/supervisor transport foundation is implemented and locally qualified;
+see its [verification evidence](replacement-verification.md#sdk-schema-switch-transport-10-november-2026). It is not yet exposed through the application
+adapter, typed IPC or schema selector. Ordinary helper `context {}` is now a
+strict read-only operation. The separate `switchSchema` operation retains known
+USE acknowledgement independently of final context verification, quotes each
+identifier component and retires on uncertainty. Definitive USE rejection is
+also conservatively retired in this foundation. It does not enable public SQL
+session commands or bypass ReadOnly.
 The current read-only policy remains: writes, DDL,
 autocommit changes, BEGIN, COMMIT, and ROLLBACK stay disabled. It does not complete
 the [DataGrip replacement scope](snowflake-datagrip-replacement.md).
@@ -172,14 +180,52 @@ switching safely within an active transaction remain later requirements.
    reconnect to infer its result. Known statement acknowledgement remains evidence
    without becoming a claim of verified final context.
 
+   The dependent adapter method returns `SessionContextOptions` directly. One
+   lane and one bounded operation contain exactly thirteen SQL executions:
+   first five-read sample, one bounded schema inventory, USE, helper identity
+   readback and final five-read sample. Before the first await, atomically consume
+   the matching options snapshot and replace its public revision with a private
+   workflow generation. Check generation again before USE admission and final
+   publication. The first sample must equal the consumed baseline and be idle;
+   the fresh schema inventory must contain the selected target.
+
+   Arm an adapter retirement guard before admitting the helper switch, and
+   disarm it only after final verification and generation-safe publication.
+   Supervisor operation ownership covers USE/readback, but its successful
+   terminal no longer owns cancellation or abandonment during the last five
+   reads. Those later interruptions must also retire an unverified switched
+   session. Studio publishes the returned options directly: another options
+   refresh would add eleven SQL executions and revoke the returned revision.
+   Frontend state must retain that opaque revision, revoke it before dispatch
+   and reject late success/failure by the exact request and session generation.
+
+   Options authority needs its own request ownership, separate from the UI
+   context revision that triggers editor metadata effects. Revoke it before
+   SQL preparation and again before approved execution, automatic health,
+   completion catalog/lazy columns, relation catalog/inspection/preview, and
+   template-context observation. Those operations either revoke the backend
+   revision unconditionally or can discover drift/error without a runtime event.
+   A pending older options response cannot restore it. Do not increment the
+   editor context revision merely to clear authority: that can cause a metadata
+   refresh loop. Initial editor metadata must settle before its existing options
+   refresh; do not add hidden refresh/retry SQL to restore choices. Template
+   observation must use the same guarded options path. Automatic health skips
+   pending context work and queued/running queries, and clears authority before
+   any admitted read. Session retirement clears all ownership.
+
+   If USE is known acknowledged but later verification fails, preserve that
+   distinction in the fixed application error message. Close the session without
+   describing USE as rejected or its execution as unknown. Final context remains
+   unverified, and no reconnect/replay may be used to infer it.
+
 5. **Migrate the existing helper setup callers explicitly.**
 
-   `helper.mjs` already has a `context { schema }` path that can issue USE followed
-   by readback, while `snowflake_process.rs` classifies context as `Impact::Read`.
-   Do not enable that path unchanged. Introduce a dedicated typed `switchSchema`
-   helper operation and distinct context-change interruption semantics, such as
-   `Impact::ContextChange`. Update admission, statement-count/phase checks,
-   abandonment, and cancellation handling. Each USE and readback execution keeps
+   The preceding `helper.mjs` had a `context { schema }` path that could issue USE
+   followed by readback, while `snowflake_process.rs` classified context as
+   `Impact::Read`. The transport foundation replaces it with strict `context {}`
+   and a dedicated typed `switchSchema` operation using
+   `Impact::ContextChange`, with updated admission, statement-count/phase checks,
+   abandonment and cancellation handling. Each USE and readback execution keeps
    its own submit-guard ticket through consumption; operation success requires
    final readback, not just an earlier USE acknowledgement.
 
@@ -191,6 +237,49 @@ switching safely within an active transaction remain later requirements.
    operation acknowledgement must follow validated readback. Cancellation and
    abandonment after dispatch follow ContextChange uncertainty; only proven
    local unsent cancellation can be NotSubmitted.
+
+   The reviewed helper payload is exactly:
+
+   ```json
+   {
+     "database": "DB",
+     "schema": "Selected.Schema",
+     "expected": {
+       "user": "SERVER_USER_NAME",
+       "role": null,
+       "warehouse": "WH",
+       "session": "opaque-session-id"
+     }
+   }
+   ```
+
+   Every key is required; unknown keys are rejected. Role and warehouse may be
+   SQL NULL, independently of the configured profile. Rust retains revision,
+   fingerprint and generation authority. The helper receives the fresh baseline
+   rather than making an additional pre-read. Identifiers are actual nonempty
+   strings, bounded to the documented 255 characters and a local byte limit,
+   with no NUL or malformed Unicode. Quote database and schema independently,
+   doubling internal quotes; dots remain part of one component.
+   [Identifier requirements](https://docs.snowflake.com/en/sql-reference/identifiers-syntax)
+
+   The operation event sequence is accepted → dispatching → first statement
+   identity → `useAcknowledged` → readback statement identity → final acknowledged
+   → terminal. Keep `Report.use_acknowledged: Option<StatementIdentity>` and the
+   pending equivalent through retirement. The USE event is legal only once for
+   `switchSchema`, while dispatching, and must identify the first registered
+   statement. It must precede result drain so a later drain failure cannot erase
+   already received acknowledgement. Two distinct statements and at most four
+   identity publications are allowed. Final acknowledgement requires exactly one
+   bounded six-field readback row with matching target/expected identity. Final
+   acknowledgement and successful terminal events must name the readback's
+   registered SDK request ID; neither may reuse the USE ID or omit association.
+
+   `Impact::ContextChange` distinguishes a proven locally unsent operation from
+   every uncertain post-dispatch interruption. A cancel-control acknowledgement
+   does not settle the switch. Abandonment retires instead of using read-result
+   discard semantics. Definitive USE rejection can remain a database rejection;
+   after USE acknowledgement, a readback rejection is final-context uncertainty
+   and retirement, with the USE evidence retained.
 
    Audit all context callers and migrate schema-bearing helper tests before
    making ordinary context observation read-only. Preserve startup's profile
@@ -236,5 +325,5 @@ Account acceptance remains separately authorized and unresolved: actual observer
 wire shapes, observation inside aborted transactions, schema privilege/drop races,
 and any future switching within an active transaction. Rechecks do not create an
 atomic server snapshot. Observer and metadata statements advance session history;
-history-sensitive SQL stays disabled. No account queries, builds, or SQL execution
-were performed to write this proposal.
+history-sensitive SQL stays disabled. The original proposal required no account
+queries; later implementation and local builds retain their separate evidence.

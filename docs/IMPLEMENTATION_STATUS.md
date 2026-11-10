@@ -45,6 +45,17 @@ checks, fresh macOS packaging and 19 hidden-native check categories. See the
 SDK schema switching and transaction controls remain disabled.
 Actual account observation is unqualified and outside the old canary approval.
 
+The separate [schema-switch transport foundation](snowflake-sdk-session-design.md)
+now passes **627 frontend / 363 standard Rust** tests, 169 Node helper/guard/
+actual-SDK loopback tests, 33 process fixtures, 30 synthetic-SDK adapter fixtures
+and three focused browser workflows. Strict `context {}` cannot change schema;
+the new typed helper operation retains USE acknowledgement through uncertain
+readback and retires safely. Fresh normal SDK macOS packaging, ad-hoc signature
+and packaged hello/EOF startup pass with zero authentication/SQL; hidden-native
+checks will accompany the dependent IPC/UI slice.
+The application adapter, typed IPC and revision-bound UI workflow remain
+incomplete and disabled; no account switching or broader authorization is claimed.
+
 The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
 application/helper browsing flow, **11** focused browser workflows and an actual

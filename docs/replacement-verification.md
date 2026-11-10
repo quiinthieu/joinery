@@ -8,6 +8,69 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK schema-switch transport (10 November 2026)
+
+Status: **transport locally qualified; application switching incomplete**.
+The [transport contract](snowflake-sdk-session-design.md) separates strict
+read-only `context {}` from a typed `switchSchema` operation. The latter quotes
+database/schema independently, retains USE acknowledgement separately from
+final readback and retires uncertain context changes. Its supervisor requires
+distinct USE/readback statement identities, final readback association and exact
+operation ownership. Public SQL USE/ALTER, the application adapter and schema
+selector remain disabled. This foundation does not qualify account switching.
+
+Evidence under `.cache/verification/connection-attempts/`:
+
+- `sdk-schema-transport-before-fix.log` reproduces the preceding helper's strict
+  context/new-operation failures. `sdk-schema-transport-association-before-fix.log`
+  reproduces a missing final acknowledgement SDK request ID being accepted;
+  the supervisor now requires association with the registered readback.
+- `sdk-schema-transport-node-final.log`: **169/169** Node tests pass: 47 helper,
+  60 submit-guard and 62 actual pinned-SDK loopback cases. Twelve added cases
+  exercise switch success, lost USE acknowledgement, readback denial and lost
+  readback acknowledgement over HTTP, verified TLS and CONNECT. These owned
+  fixtures use synthetic login and a preconnected helper seam; they do not
+  establish Snowflake account semantics or external-browser authentication.
+- `sdk-schema-transport-association-final.log`: **14/14** supervisor unit tests
+  pass. `sdk-schema-transport-process-final.log`: **33/33** process tests pass,
+  including cancellation, retained USE evidence, abandonment and child cleanup.
+- `sdk-schema-transport-startup-negative.log`: one regression covers **eight**
+  startup identity mismatches/NULLs (configured role, warehouse, database and
+  schema). Each is rejected before version SQL; only the initial identity read
+  runs, and child/auth-root cleanup is confirmed. The full actual Node/core-helper
+  adapter fixture suite passes **30/30** in
+  `sdk-schema-transport-adapter-final.log`; its SDK is synthetic.
+- `sdk-switch-transport-validate-final.log`: full `pnpm validate` passes
+  **627 frontend / 363 standard Rust** tests, contracts/types, production web
+  build, formatting, desktop compilation and strict all-target/all-feature Clippy.
+  The final Rust-only association regression follows the 169-test Node run;
+  helper sources are unchanged between those checks.
+
+`sdk-switch-transport-browser-final.log` passes all **three** focused headless
+browser workflows: new SDK profile persistence, legacy OAuth preservation and
+explicit observed/unavailable transaction state with unsupported controls blocked.
+The SDK state case is synthetic, not account evidence.
+`sdk-switch-transport-bundle-final.log` passes a fresh **223.95 MiB** normal SDK
+macOS arm64 bundle, strict ad-hoc signature/resource checks and packaged SDK
+hello/EOF startup with **zero authentication and SQL requests**.
+`sdk-switch-transport-bundle-artifact.json` records the 31,469,152-byte executable
+SHA-256 `2f9646c1e086a2ec1603b30076cd8c8c03c90f1b294a2c70ef1a5687210b1fcf`.
+The existing missing-libLLVM debug-strip warning remains nonfatal. Developer ID,
+notarization, installation and normal app/account workflows remain open.
+`sdk-switch-transport-source-freeze.json` /
+`sdk-switch-transport-qualified-source.json` confirm **321** existing application/
+runtime/test inputs unchanged through qualification on `d8f4011` plus this dirty
+transport increment. Two new pure offline qualification-result tooling files
+were developed separately during the build and are outside this artifact scope.
+Hidden-native fixtures are deferred to the dependent typed IPC/UI slice; the public IPC/UI did not change in this transport foundation. No new
+hidden-native qualification is claimed here. Offline resource
+preparation passes; the current runtime manifest is
+`f863ea753dbd2908ea7f63f60604f162c888f6a65d3301a593187f32ab35fbbe`.
+Independent substantial source review finds no material unresolved issue.
+No account authentication/SQL, installation, publication or hub update occurs.
+The private canonical hub cannot be updated without the prohibited publication
+step; this repository retains the durable status.
+
 ### Offline account qualification manifest (10 November 2026)
 
 The [compiler contract](snowflake-qualification-manifest.md) is implemented and

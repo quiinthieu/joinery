@@ -427,6 +427,7 @@ impl Default for Bounds {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Impact {
     Read,
+    ContextChange,
     Mutating,
     Commit,
     Rollback,
@@ -468,6 +469,8 @@ pub struct Report {
     pub error_code: Option<String>,
     pub retirement: Option<Retirement>,
     pub statements: Vec<StatementIdentity>,
+    /// The USE succeeded, independently of whether final context was verified.
+    pub use_acknowledged: Option<StatementIdentity>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatementIdentity {
@@ -511,6 +514,7 @@ struct Pending {
     op: String,
     accepted: bool,
     statements: Vec<StatementIdentity>,
+    use_acknowledged: Option<StatementIdentity>,
     statement_events: u8,
     wire_id: Option<String>,
     terminal: watch::Sender<Option<Report>>,
@@ -601,6 +605,20 @@ impl Operation {
     pub fn report(&self) -> Option<Report> {
         self.terminal.borrow().clone()
     }
+    /// Observed USE success, not verification of the final operation context.
+    pub fn use_acknowledged(&self) -> Option<StatementIdentity> {
+        if let Some(report) = self.report() {
+            return report.use_acknowledged;
+        }
+        self.owner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .get(&self.id)
+            .filter(|pending| pending.ticket == self.token.ticket)
+            .and_then(|pending| pending.use_acknowledged.clone())
+    }
     /// Observe completion while independently consuming columns and queued rows.
     /// A terminal report does not imply the row receiver has been drained.
     pub fn terminal_receiver(&self) -> watch::Receiver<Option<Report>> {
@@ -621,6 +639,7 @@ impl Operation {
                     error_code: Some("connectionClosed".into()),
                     retirement: Some(Retirement::Protocol),
                     statements: vec![],
+                    use_acknowledged: None,
                 };
             }
         }
@@ -637,8 +656,11 @@ impl Operation {
 }
 impl Operation {
     fn cleanup_unfinished(&self) {
-        if matches!(self.op.as_str(), "connect" | "context" | "close") {
-            self.owner.retire(Retirement::Dropped);
+        if matches!(
+            self.op.as_str(),
+            "connect" | "context" | "switchSchema" | "close"
+        ) {
+            self.owner.retire_target(&self.token, Retirement::Dropped);
             return;
         }
         if self.op != "query" {
@@ -806,6 +828,7 @@ impl Supervisor {
     ) -> Result<Operation, &'static str> {
         if (op == "context" && impact != Impact::Read)
             || (op == "connect" && impact != Impact::Control)
+            || ((op == "switchSchema") != (impact == Impact::ContextChange))
         {
             return Err("invalid non-statement impact");
         }
@@ -876,7 +899,8 @@ impl Supervisor {
                         .pending
                         .iter()
                         .filter(|(_, p)| {
-                            p.phase == Phase::Queued && matches!(p.op.as_str(), "query" | "context")
+                            p.phase == Phase::Queued
+                                && matches!(p.op.as_str(), "query" | "context" | "switchSchema")
                         })
                         .map(|(id, _)| id.clone())
                         .collect();
@@ -890,6 +914,7 @@ impl Supervisor {
                             error_code: Some("connectionClosed".into()),
                             retirement: None,
                             statements: pending.statements,
+                            use_acknowledged: pending.use_acknowledged,
                         }));
                     }
                 }
@@ -987,7 +1012,8 @@ impl Inner {
             .filter(|pending| pending.ticket == target.ticket)
             .ok_or(TargetError::Inactive)?;
         let is_connect = pending.op == "connect";
-        if pending.op != "query" && !(allow_connect && is_connect) {
+        if pending.op != "query" && !(allow_connect && (is_connect || pending.op == "switchSchema"))
+        {
             return Err(TargetError::Control("invalid query target"));
         }
         if pending.phase != Phase::Queued {
@@ -1003,6 +1029,7 @@ impl Inner {
             error_code: Some("cancelled".into()),
             retirement: None,
             statements: pending.statements,
+            use_acknowledged: pending.use_acknowledged,
         }));
         Ok((None, is_connect))
     }
@@ -1072,11 +1099,14 @@ impl Inner {
             || id.len() > 128
             || !matches!(
                 op,
-                "connect" | "query" | "context" | "credit" | "cancel" | "close"
+                "connect" | "query" | "context" | "switchSchema" | "credit" | "cancel" | "close"
             )
             || !payload.is_object()
         {
             return Err("invalid request");
+        }
+        if (op == "switchSchema") != (impact == Impact::ContextChange) {
+            return Err("invalid context-change impact");
         }
         let priority = matches!(op, "credit" | "cancel" | "close");
         if priority && impact != Impact::Control {
@@ -1143,6 +1173,7 @@ impl Inner {
                 op: op.into(),
                 accepted: false,
                 statements: vec![],
+                use_acknowledged: None,
                 statement_events: 0,
                 wire_id: None,
                 terminal,
@@ -1185,6 +1216,19 @@ impl Inner {
     }
     fn retire(&self, reason: Retirement) {
         let mut state = self.state.lock().unwrap();
+        self.retire_locked(&mut state, reason);
+    }
+    fn retire_target(&self, target: &OperationToken, reason: Retirement) {
+        let mut state = self.state.lock().unwrap();
+        if state
+            .pending
+            .get(&target.id)
+            .is_some_and(|p| p.ticket == target.ticket)
+        {
+            self.retire_locked(&mut state, reason);
+        }
+    }
+    fn retire_locked(&self, state: &mut State, reason: Retirement) {
         if state.retired.is_some() {
             return;
         }
@@ -1206,6 +1250,7 @@ impl Inner {
                 ),
                 retirement: Some(reason),
                 statements: pending.statements,
+                use_acknowledged: pending.use_acknowledged,
             }));
         }
         state.wire_ids.clear();
@@ -1244,7 +1289,7 @@ impl Inner {
             Some("phase") => match event.get("phase").and_then(Value::as_str) {
                 Some("dispatching")
                     if pending.accepted
-                        && matches!(pending.op.as_str(), "query" | "context")
+                        && matches!(pending.op.as_str(), "query" | "context" | "switchSchema")
                         && pending.phase < Phase::Dispatching =>
                 {
                     pending.phase = Phase::Dispatching;
@@ -1254,20 +1299,41 @@ impl Inner {
                     if !validate_latest_statement(pending, &event) {
                         return false;
                     }
+                    if pending.op == "switchSchema"
+                        && (pending.use_acknowledged.is_none()
+                            || pending.statements.len() != 2
+                            || event.get("sdkRequestId").and_then(Value::as_str).is_none())
+                    {
+                        return false;
+                    }
                     pending.phase = Phase::Acknowledged;
                     true
                 }
                 _ => false,
             },
+            Some("useAcknowledged") => {
+                if pending.op != "switchSchema"
+                    || !pending.accepted
+                    || pending.phase != Phase::Dispatching
+                    || pending.use_acknowledged.is_some()
+                    || pending.statements.len() != 1
+                    || event.get("sdkRequestId").is_none()
+                    || !validate_latest_statement(pending, &event)
+                {
+                    return false;
+                }
+                pending.use_acknowledged = pending.statements.first().cloned();
+                true
+            }
             Some("statement") => {
                 if !pending.accepted
                     || pending.phase < Phase::Dispatching
-                    || !matches!(pending.op.as_str(), "query" | "context")
+                    || !matches!(pending.op.as_str(), "query" | "context" | "switchSchema")
                 {
                     return false;
                 }
                 pending.statement_events += 1;
-                let limit = if pending.op == "context" { 4 } else { 2 };
+                let limit = if pending.op == "switchSchema" { 4 } else { 2 };
                 pending.statement_events <= limit && update_statement(pending, &event)
             }
             Some("columns") => {
@@ -1340,6 +1406,12 @@ impl Inner {
                 let Some(ok) = event.get("ok").and_then(Value::as_bool) else {
                     return false;
                 };
+                if ok
+                    && pending.op == "switchSchema"
+                    && event.get("sdkRequestId").and_then(Value::as_str).is_none()
+                {
+                    return false;
+                }
                 let (code, result) = if ok {
                     if event.get("error").is_some() || event.get("result").is_none() {
                         return false;
@@ -1369,16 +1441,22 @@ impl Inner {
                     (Some(code.to_owned()), None)
                 };
                 if ok
-                    && matches!(pending.op.as_str(), "query" | "context")
+                    && matches!(pending.op.as_str(), "query" | "context" | "switchSchema")
                     && pending.phase != Phase::Acknowledged
                 {
                     return false;
                 }
+                let unverified_use =
+                    pending.use_acknowledged.is_some() && pending.phase != Phase::Acknowledged;
+                let cancelled_context =
+                    pending.impact == Impact::ContextChange && code.as_deref() == Some("cancelled");
                 let certainty = if pending.phase == Phase::Acknowledged {
                     acknowledged_certainty(pending.impact)
-                } else if code
-                    .as_deref()
-                    .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"))
+                } else if unverified_use
+                    || cancelled_context
+                    || code
+                        .as_deref()
+                        .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"))
                 {
                     interrupted_certainty(pending.impact, pending.phase)
                 } else {
@@ -1400,7 +1478,9 @@ impl Inner {
                 }
                 let terminal_connection_loss = code
                     .as_deref()
-                    .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"));
+                    .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"))
+                    || unverified_use
+                    || cancelled_context;
                 pending.terminal.send_replace(Some(Report {
                     ok,
                     certainty,
@@ -1409,6 +1489,7 @@ impl Inner {
                     error_code: code,
                     retirement: None,
                     statements: pending.statements,
+                    use_acknowledged: pending.use_acknowledged,
                 }));
                 let closing = state.pending.values().any(|p| p.op == "close");
                 drop(state);
@@ -1467,8 +1548,19 @@ fn update_statement(pending: &mut Pending, event: &Value) -> bool {
             }
             existing.query_id = Some(query_id);
         }
+        if pending
+            .use_acknowledged
+            .as_ref()
+            .is_some_and(|ack| ack.sdk_request_id == request_id)
+        {
+            pending.use_acknowledged = Some(existing.clone());
+        }
     } else {
-        if pending.statements.len() >= if pending.op == "context" { 2 } else { 1 } {
+        if pending.statements.len() >= if pending.op == "switchSchema" { 2 } else { 1 }
+            || (pending.op == "switchSchema"
+                && pending.statements.len() == 1
+                && pending.use_acknowledged.is_none())
+        {
             return false;
         }
         pending.statements.push(StatementIdentity {
@@ -1488,6 +1580,7 @@ fn local_report(result: Value) -> Report {
         error_code: None,
         retirement: None,
         statements: vec![],
+        use_acknowledged: None,
     }
 }
 
@@ -1506,7 +1599,9 @@ fn interrupted_certainty(impact: Impact, phase: Phase) -> Certainty {
         return acknowledged_certainty(impact);
     }
     match impact {
-        Impact::Mutating | Impact::Commit | Impact::Rollback => Certainty::OutcomeUnknown,
+        Impact::ContextChange | Impact::Mutating | Impact::Commit | Impact::Rollback => {
+            Certainty::OutcomeUnknown
+        }
         _ => Certainty::ReadInterrupted,
     }
 }
@@ -1699,6 +1794,211 @@ mod tests {
             logout_acknowledged: AtomicBool::new(false),
         });
         (inner, normal_rx, control_rx)
+    }
+    const USE_ID: &str = "00000000-0000-4000-8000-000000000011";
+    const READBACK_ID: &str = "00000000-0000-4000-8000-000000000012";
+    fn switch_event(inner: &Inner, extra: Value) -> bool {
+        let mut event = json!({"v":1,"generation":inner.generation,"id":"1"});
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        inner.event(event)
+    }
+    fn dispatched_switch() -> (Arc<Inner>, Operation) {
+        let (inner, _normal, _control) = isolated();
+        let op = inner
+            .request("switch", "switchSchema", json!({}), Impact::ContextChange)
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.pending.get_mut("switch").unwrap().phase = Phase::Sent;
+            state.wire_ids.insert("1".into(), "switch".into());
+        }
+        assert!(switch_event(&inner, json!({"type":"accepted"})));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"dispatching"})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":USE_ID})
+        ));
+        (inner, op)
+    }
+    #[tokio::test]
+    async fn context_change_unsent_cancel_is_not_submitted_and_cannot_discard() {
+        let (inner, _normal, _control) = isolated();
+        let mut op = inner
+            .request("switch", "switchSchema", json!({}), Impact::ContextChange)
+            .unwrap();
+        assert!(inner.discard(&op.token()).is_err());
+        assert!(inner.cancel(&op.token()).unwrap().wait().await.ok);
+        let report = op.wait().await;
+        assert_eq!(report.certainty, Certainty::NotSubmitted);
+        assert!(report.use_acknowledged.is_none());
+        assert!(inner.state.lock().unwrap().retired.is_none());
+    }
+    #[tokio::test]
+    async fn use_acknowledgement_survives_all_retirement_causes_without_final_success() {
+        for reason in [
+            Retirement::Eof,
+            Retirement::Protocol,
+            Retirement::Deadline,
+            Retirement::Dropped,
+            Retirement::Requested,
+            Retirement::Write,
+        ] {
+            let (inner, mut op) = dispatched_switch();
+            assert!(switch_event(
+                &inner,
+                json!({"type":"useAcknowledged","sdkRequestId":USE_ID})
+            ));
+            assert!(switch_event(
+                &inner,
+                json!({"type":"statement","sdkRequestId":USE_ID,"queryId":"00000000-0000-4000-8000-000000000111"})
+            ));
+            assert!(switch_event(
+                &inner,
+                json!({"type":"statement","sdkRequestId":READBACK_ID})
+            ));
+            inner.retire(reason);
+            let report = op.wait().await;
+            assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+            assert_eq!(report.phase, Phase::Dispatching);
+            assert_eq!(
+                report.use_acknowledged.as_ref().unwrap().sdk_request_id,
+                USE_ID
+            );
+            assert_eq!(report.statements.len(), 2);
+            assert_eq!(report.use_acknowledged, report.statements.first().cloned());
+            assert!(!report.ok);
+        }
+    }
+    #[tokio::test]
+    async fn readback_database_failure_cannot_reclassify_acknowledged_use_as_rejected() {
+        let (inner, mut op) = dispatched_switch();
+        assert!(switch_event(
+            &inner,
+            json!({"type":"useAcknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":READBACK_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":false,"error":{"code":"database"},"sdkRequestId":READBACK_ID})
+        ));
+        let report = op.wait().await;
+        assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+        assert!(report.use_acknowledged.is_some());
+        assert_eq!(
+            inner.state.lock().unwrap().retired,
+            Some(Retirement::Requested)
+        );
+    }
+    #[test]
+    fn use_ack_and_readback_order_and_statement_budgets_are_strict() {
+        let (inner, op) = dispatched_switch();
+        assert!(!switch_event(&inner, json!({"type":"useAcknowledged"})));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"useAcknowledged","sdkRequestId":READBACK_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":READBACK_ID})
+        ));
+        // Invalid events retire in the read loop. Recreate rather than accepting
+        // follow-up traffic after a deliberately invalid event mutated counters.
+        inner.retire(Retirement::Protocol);
+        drop(op);
+        let (inner, op) = dispatched_switch();
+        assert!(switch_event(
+            &inner,
+            json!({"type":"useAcknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"useAcknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":READBACK_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":"00000000-0000-4000-8000-000000000013"})
+        ));
+        inner.retire(Retirement::Protocol);
+        drop(op);
+    }
+    #[test]
+    fn completed_switch_cleanup_cannot_retire_replacement_work() {
+        let (inner, _normal, _control) = isolated();
+        let old = inner
+            .request("same", "switchSchema", json!({}), Impact::ContextChange)
+            .unwrap();
+        // Model terminal publication between Drop's report check and cleanup.
+        assert!(old.report().is_none());
+        let pending = inner.state.lock().unwrap().pending.remove("same").unwrap();
+        pending.terminal.send_replace(Some(local_report(json!({}))));
+        let replacement = inner
+            .request("same", "switchSchema", json!({}), Impact::ContextChange)
+            .unwrap();
+        old.cleanup_unfinished();
+        assert!(replacement.report().is_none());
+        assert!(inner.state.lock().unwrap().retired.is_none());
+        inner.retire(Retirement::Requested);
+    }
+    #[tokio::test]
+    async fn switch_final_ack_and_success_terminal_require_readback_identity() {
+        let (inner, mut op) = dispatched_switch();
+        assert!(switch_event(
+            &inner,
+            json!({"type":"useAcknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":READBACK_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged"})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":READBACK_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"terminal","ok":true,"result":{}})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"terminal","ok":true,"result":{},"sdkRequestId":USE_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":true,"result":{},"sdkRequestId":READBACK_ID})
+        ));
+        let report = op.wait().await;
+        assert!(report.ok);
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        assert_eq!(report.use_acknowledged.unwrap().sdk_request_id, USE_ID);
+        assert_eq!(
+            report.statements.last().unwrap().sdk_request_id,
+            READBACK_ID
+        );
     }
     #[tokio::test]
     async fn cancelled_unsent_handle_reuse_cannot_execute_old_outbound_payload() {

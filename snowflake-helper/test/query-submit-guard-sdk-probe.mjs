@@ -41,6 +41,10 @@ const allowed = new Set([
   "helper-lost-ack",
   "helper-ack-drain",
   "helper-database",
+  "helper-switch-success",
+  "helper-switch-lost-use",
+  "helper-switch-readback-denied",
+  "helper-switch-lost-readback",
   "untrusted-tls",
   "fixture-boundary",
 ]);
@@ -89,6 +93,12 @@ const firstQuery = new Promise((resolve) => {
   resolveFirstQuery = resolve;
 });
 const SQL = "SELECT ? AS EXACT_VALUE, ? AS ENABLED, ? AS EMPTY_VALUE";
+const switchScenario = scenario.startsWith("helper-switch-");
+const SWITCH_SCHEMA = 'Quoted."雪';
+const SWITCH_SQL = `USE SCHEMA "SYNTHETIC"."${SWITCH_SCHEMA.replaceAll('"', '""')}"`;
+const CONTEXT_SQL =
+  "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()";
+const switchIds = new Set();
 const binds = ["9007199254740993", true, null];
 const expectedBindings = {
   1: { type: "TEXT", value: binds[0] },
@@ -251,10 +261,48 @@ try {
         firstQueryTime = Date.now();
         firstQueryProxyConnects = report.proxyConnects;
       } else report.queryIdsSame &&= firstId === id;
-      report.intendedSQLOnly &&= body.sqlText === SQL;
-      report.scalarBindsExact &&=
-        JSON.stringify(body.bindings) === JSON.stringify(expectedBindings);
+      report.intendedSQLOnly &&=
+        body.sqlText ===
+        (switchScenario ? (report.queryPosts === 1 ? SWITCH_SQL : CONTEXT_SQL) : SQL);
+      report.scalarBindsExact &&= switchScenario
+        ? body.bindings === undefined || JSON.stringify(body.bindings) === "{}"
+        : JSON.stringify(body.bindings) === JSON.stringify(expectedBindings);
       resolveFirstQuery();
+      if (switchScenario) {
+        switchIds.add(id);
+        report.switchIdsDistinct = switchIds.size === report.queryPosts;
+        if (report.queryPosts === 1) report.effects++;
+        if (
+          (scenario === "helper-switch-lost-use" && report.queryPosts === 1) ||
+          (scenario === "helper-switch-lost-readback" && report.queryPosts === 2)
+        )
+          return request.socket.destroy();
+        if (scenario === "helper-switch-readback-denied" && report.queryPosts === 2)
+          return json(response, {
+            success: false,
+            code: "100038",
+            message: "synthetic readback rejection",
+            data: { sqlState: "42501", queryId: "11111111-1111-4111-8111-111111111112" },
+          });
+        const reply = success();
+        const use = report.queryPosts === 1;
+        reply.data.queryId = use
+          ? "11111111-1111-4111-8111-111111111111"
+          : "11111111-1111-4111-8111-111111111112";
+        reply.data.rowtype = use
+          ? []
+          : ["user", "role", "database", "schema", "warehouse", "session"].map((name) => ({
+              name,
+              type: "text",
+              length: 1024,
+              nullable: true,
+            }));
+        reply.data.rowset = use
+          ? []
+          : [["SERVER_USER", null, "SYNTHETIC", SWITCH_SCHEMA, null, "OPAQUE-SESSION"]];
+        reply.data.total = reply.data.returned = use ? 0 : 1;
+        return json(response, reply);
+      }
       if (scenario.startsWith("redirect-")) {
         const status = Number(scenario.slice("redirect-".length));
         // Each tested redirect simultaneously changes path and authority. The
@@ -553,6 +601,7 @@ try {
     report.helperTerminals = 0;
     report.helperRetired = 0;
     report.helperAcknowledged = false;
+    if (switchScenario) report.helperUseAcknowledged = false;
     let resolveTerminal, resolveAcknowledged;
     const terminal = new Promise((resolve) => {
       resolveTerminal = resolve;
@@ -579,6 +628,7 @@ try {
           report.helperAcknowledged = true;
           resolveAcknowledged();
         }
+        if (event.type === "useAcknowledged") report.helperUseAcknowledged = true;
         if (event.type === "rows") report.rows += event.rows.length;
         if (
           event.type === "statement" &&
@@ -595,6 +645,10 @@ try {
           report.helperTerminals++;
           report.helperTerminal = event.ok ? "success" : event.error.code;
           report.outcome = `helper-${report.helperTerminal}`;
+          if (switchScenario && event.ok) {
+            report.switchSchemaMatches = event.result.schema === SWITCH_SCHEMA;
+            report.switchRoleNull = event.result.role === null && event.result.warehouse === null;
+          }
           resolveTerminal();
         }
       },
@@ -609,19 +663,31 @@ try {
     helper.connection = connection;
     helper.state = "connected";
     helper.generation = "11111111-1111-4111-8111-111111111111";
+    if (switchScenario) helper.expectedProfile = { database: "SYNTHETIC" };
     helper.receive({
       v: 1,
       generation: helper.generation,
       id: "1",
-      op: "query",
-      payload: {
-        sql: SQL,
-        binds,
-        classification: "read",
-        credits: scenario === "helper-ack-drain" ? 0 : 1,
-        maxRows: 4,
-        maxBytes: 4096,
-      },
+      op: switchScenario ? "switchSchema" : "query",
+      payload: switchScenario
+        ? {
+            database: "SYNTHETIC",
+            schema: SWITCH_SCHEMA,
+            expected: {
+              user: "SERVER_USER",
+              role: null,
+              warehouse: null,
+              session: "OPAQUE-SESSION",
+            },
+          }
+        : {
+            sql: SQL,
+            binds,
+            classification: "read",
+            credits: scenario === "helper-ack-drain" ? 0 : 1,
+            maxRows: 4,
+            maxBytes: 4096,
+          },
     });
     if (scenario === "helper-ack-drain") {
       await bounded(acknowledged);
@@ -629,9 +695,13 @@ try {
       nativeStale(firstId);
     }
     await bounded(terminal);
-    if (scenario !== "helper-success") await bounded(violated);
+    if (scenario !== "helper-success" && (!switchScenario || scenario.includes("lost-")))
+      await bounded(violated);
     await pause(350);
-    assert.equal(report.queryPosts, 1);
+    assert.equal(
+      report.queryPosts,
+      switchScenario && scenario !== "helper-switch-lost-use" ? 2 : 1,
+    );
     assert(report.intendedSQLOnly && report.scalarBindsExact);
     assert.equal(report.helperTerminals, 1);
     const expected = {
@@ -639,11 +709,22 @@ try {
       "helper-lost-ack": "outcomeUnknown",
       "helper-ack-drain": "connectionClosed",
       "helper-database": "database",
+      "helper-switch-success": "success",
+      "helper-switch-lost-use": "outcomeUnknown",
+      "helper-switch-readback-denied": "connectionClosed",
+      "helper-switch-lost-readback": "connectionClosed",
     }[scenario];
     assert.equal(report.helperTerminal, expected);
-    assert.equal(report.helperRetired, scenario === "helper-success" ? 0 : 1);
-    if (scenario === "helper-success") {
-      assert.equal(report.rows, 1);
+    assert.equal(report.helperRetired, expected === "success" ? 0 : 1);
+    if (switchScenario) {
+      assert.equal(report.helperUseAcknowledged, scenario !== "helper-switch-lost-use");
+      assert.equal(report.helperAcknowledged, expected === "success");
+      assert.equal(report.switchIdsDistinct, true);
+      assert.equal(report.effects, 1);
+      if (expected === "success") assert(report.switchSchemaMatches && report.switchRoleNull);
+    }
+    if (expected === "success") {
+      assert.equal(report.rows, switchScenario ? 0 : 1);
       helper.stop();
     }
     report.guardFailed = guard.snapshot().failed;

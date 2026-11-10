@@ -51,6 +51,17 @@ output. The distinct observer/options/scalar workflow has a complete 24-SQL
 ledger. An executable runner and fresh account approval remain open; this tooling
 does not qualify the account or normal application.
 
+The [schema-switch transport foundation](snowflake-sdk-session-design.md) is
+implemented: strict read-only context, separate typed USE/readback operation,
+retained USE acknowledgement and conservative retirement on uncertainty. Full
+validation passes **627 frontend / 363 standard Rust** tests; 169 helper/guard/
+actual-SDK loopback tests, 33 process fixtures, 30 synthetic-SDK adapter fixtures
+and three focused browser workflows pass. Fresh normal SDK macOS packaging,
+ad-hoc signature and packaged hello/EOF startup pass with zero authentication/SQL;
+hidden-native checks will accompany the dependent IPC/UI slice. The revision-bound
+adapter, typed IPC, guarded UI selector and account switch acceptance remain required and incomplete. No public writes,
+DDL or transaction actions are enabled by this foundation.
+
 The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
 application/helper browsing flow, **11** focused browser workflows and an actual

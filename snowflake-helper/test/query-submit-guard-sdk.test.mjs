@@ -23,6 +23,10 @@ for (const transport of ["http", "tls", "proxy"]) {
     "helper-lost-ack",
     "helper-ack-drain",
     "helper-database",
+    "helper-switch-success",
+    "helper-switch-lost-use",
+    "helper-switch-readback-denied",
+    "helper-switch-lost-readback",
   ])
     cases.push([scenario, transport]);
 }
@@ -187,9 +191,16 @@ for (const [scenario, transport] of cases) {
         assert.equal(result.connected, true);
         assert.equal(result.intendedSQLOnly, true);
         assert.equal(result.scalarBindsExact, true);
+        const switchScenario = scenario.startsWith("helper-switch-");
         assert.equal(
           result.queryPosts,
-          scenario === "cancel-before" ? 0 : scenario === "mutation-no-guard" ? 2 : 1,
+          switchScenario && scenario !== "helper-switch-lost-use"
+            ? 2
+            : scenario === "cancel-before"
+              ? 0
+              : scenario === "mutation-no-guard"
+                ? 2
+                : 1,
         );
         const effectful = new Set([
           "success",
@@ -204,7 +215,13 @@ for (const [scenario, transport] of cases) {
         ]);
         assert.equal(
           result.effects,
-          scenario === "mutation-no-guard" ? 2 : effectful.has(scenario) ? 1 : 0,
+          switchScenario
+            ? 1
+            : scenario === "mutation-no-guard"
+              ? 2
+              : effectful.has(scenario)
+                ? 1
+                : 0,
         );
         if (scenario.startsWith("helper-")) {
           const expected = {
@@ -212,6 +229,10 @@ for (const [scenario, transport] of cases) {
             "helper-lost-ack": "outcomeUnknown",
             "helper-ack-drain": "connectionClosed",
             "helper-database": "database",
+            "helper-switch-success": "success",
+            "helper-switch-lost-use": "outcomeUnknown",
+            "helper-switch-readback-denied": "connectionClosed",
+            "helper-switch-lost-readback": "connectionClosed",
           }[scenario];
           assert.equal(result.helperFixturePreconnected, true);
           assert.equal(result.externalBrowserConnectSkipped, true);
@@ -219,8 +240,21 @@ for (const [scenario, transport] of cases) {
           assert.equal(result.helperTerminals, 1);
           assert.equal(result.helperRetired, 1);
           assert.equal(result.outcome, `helper-${expected}`);
-          assert.equal(result.violations, scenario === "helper-success" ? 0 : 1);
-          if (scenario !== "helper-success") assert.equal(result.helperSettledSynchronously, true);
+          const violation = switchScenario
+            ? scenario.includes("lost-")
+            : scenario !== "helper-success";
+          assert.equal(result.violations, violation ? 1 : 0);
+          if (violation) assert.equal(result.helperSettledSynchronously, true);
+          if (switchScenario) {
+            assert.equal(result.helperUseAcknowledged, scenario !== "helper-switch-lost-use");
+            assert.equal(result.helperAcknowledged, expected === "success");
+            assert.equal(result.switchIdsDistinct, true);
+            assert.equal(result.guardAdmitted, result.queryPosts);
+            if (expected === "success") {
+              assert.equal(result.switchSchemaMatches, true);
+              assert.equal(result.switchRoleNull, true);
+            }
+          }
           if (scenario === "helper-ack-drain") assert.equal(result.helperAcknowledged, true);
           if (scenario === "helper-database") assert.equal(result.helperReentrantFailure, true);
         } else if (scenario === "success" || scenario === "mutation-no-guard") {

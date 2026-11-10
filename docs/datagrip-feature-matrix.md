@@ -25,6 +25,17 @@ separate 24-statement observer/options/scalar workflow. There is no executable
 runner, inherited approval or new account evidence; required capabilities below
 retain their incomplete/unqualified states.
 
+The [schema-switch transport foundation](snowflake-sdk-session-design.md) now
+separates observation from typed schema mutation and preserves acknowledged USE
+evidence through uncertain readback. Full validation passes **627 frontend / 363
+standard Rust** tests, with 169 Node/helper/actual-SDK loopback tests, 33 process
+fixtures, 30 synthetic-SDK adapter fixtures and three focused browser workflows.
+Fresh normal SDK macOS packaging, ad-hoc signature and packaged hello/EOF
+startup pass with zero authentication/SQL; hidden-native checks will accompany
+the dependent IPC/UI slice. The required revision-bound application
+adapter, IPC, schema selector and actual-account qualification are incomplete;
+this foundation does not change replacement readiness or enable public SQL USE.
+
 On 10 November, explicit SDK external-browser profiles and retained helper cleanup
 are implemented. New profiles select the SDK route; existing profiles retain local
 application OAuth. Focused local profile, actual-child lifecycle and browser checks

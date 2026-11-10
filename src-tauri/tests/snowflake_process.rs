@@ -532,17 +532,13 @@ async fn actual_node_helper_interoperability_context_and_graceful_close() {
     let mut connect=supervisor.request("connect","connect",json!({"account":"org-account","host":"org-account.snowflakecomputing.com","username":"LOGIN_NAME","role":"ROLE","warehouse":"WH","database":"DB","schema":"PUBLIC"}),Impact::Control).unwrap();
     assert!(connect.wait_bounded(LIMIT).await.ok);
     let mut context = supervisor
-        .request(
-            "context",
-            "context",
-            json!({"schema":"OTHER"}),
-            Impact::Read,
-        )
+        .request("context", "context", json!({}), Impact::Read)
         .unwrap();
     let report = context.wait_bounded(LIMIT).await;
     assert!(report.ok, "{report:?}");
-    assert_eq!(report.statements.len(), 2);
-    assert_eq!(report.result.unwrap()["schema"], "OTHER");
+    assert_eq!(report.statements.len(), 1);
+    assert!(report.use_acknowledged.is_none());
+    assert_eq!(report.result.unwrap()["schema"], "PUBLIC");
     let mut query = query(&supervisor, "query", Impact::Read, 0);
     columns(&mut query).await;
     // Helper emits this query's connectionClosed before awaiting destroy. Do not kill early.
@@ -606,45 +602,234 @@ async fn close_before_connect_transmission_never_violates_first_connect_envelope
     assert!(supervisor.wait_exited().await);
 }
 
-#[tokio::test]
-async fn abandoned_inflight_context_retires_instead_of_silently_switching_schema() {
-    let node = explicit_node();
-    let launch = Launch::new(
-        node,
-        Some(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/support/snowflake_node_fixture.mjs"),
-        ),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-        tempfile::tempdir().unwrap(),
+fn switch_payload(schema: &str) -> serde_json::Value {
+    json!({"database":"DB","schema":schema,"expected":{"user":"SERVER_USER","role":null,"warehouse":null,"session":"OPAQUE-SESSION"}})
+}
+
+// Real Node/framing/Helper, injected local SDK only. This private script lives in
+// the owned auth root and performs no account access or external network work.
+fn switch_launch(scenario: &str) -> Launch {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("switch-fixture.mjs");
+    let helper = serde_json::to_string(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../snowflake-helper/src/helper.mjs"),
     )
     .unwrap();
+    let framing = serde_json::to_string(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../snowflake-helper/src/framing.mjs"),
+    )
+    .unwrap();
+    let body = r#"
+import { Readable } from 'node:stream';
+import { writeFileSync } from 'node:fs';
+const { Helper } = await import(HELPER_PATH);
+const { Decoder, writer } = await import(FRAMING_PATH);
+const scenario = SCENARIO;
+const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+let count = 0, schema = 'PUBLIC', stopping = false;
+const sdk = { createConnection: () => ({
+  connectAsync(cb) { queueMicrotask(() => cb(null)); return Promise.resolve(); },
+  destroy(cb) { cb(null); },
+  execute(options) {
+    const n = ++count, use = options.sqlText.startsWith('USE SCHEMA');
+    if (use) {
+      const parts = /^USE SCHEMA "((?:[^"]|"")*)"\."((?:[^"]|"")*)"$/u.exec(options.sqlText);
+      if (!parts || parts[1] !== 'DB') throw Error('fixture SQL mismatch');
+      schema = parts[2].replaceAll('""','"');
+    }
+    writeFileSync(process.env.JOINERY_SNOWFLAKE_STATE_DIR + '/stage', use ? 'use' : 'readback');
+    let acknowledged = false;
+    const stmt = {
+      getRequestId: () => uuid(n), getQueryId: () => acknowledged ? uuid(n+100) : undefined,
+      getColumns: () => Array.from({length:use?0:6},(_,i)=>({getName:()=>`c${i}`,getType:()=> 'TEXT'})),
+      streamRows: () => Readable.from(use ? [] : [['SERVER_USER',null,'DB',scenario==='mismatch'?'WRONG':schema,null,'OPAQUE-SESSION']]),
+      cancel(cb) { cb(null); }
+    };
+    if ((use && scenario==='use_pending') || (!use && scenario==='readback_pending')) return stmt;
+    setImmediate(() => {
+      if ((use && scenario==='use_denied') || (!use && scenario==='readback_denied')) options.complete({sqlState:'42501'},stmt);
+      else { acknowledged = true; options.complete(null,stmt); }
+    });
+    return stmt;
+  }
+})};
+const send = writer(process.stdout.write.bind(process.stdout),()=>process.exit(2));
+const stop = () => { if (!stopping) { stopping=true; send.flush().then(()=>process.exit(0)); } };
+const helper = new Helper(sdk,send,stop,{clientConfigFile:'/nonexistent/local-fixture',closeTimeoutMs:20});
+const decoder = new Decoder();
+process.stdin.on('data', chunk=> { try { for (const frame of decoder.push(chunk)) helper.receive(frame); } catch { stop(); } });
+process.stdin.on('end',stop);
+"#;
+    std::fs::write(
+        &script,
+        body.replace("HELPER_PATH", &helper)
+            .replace("FRAMING_PATH", &framing)
+            .replace("SCENARIO", &serde_json::to_string(scenario).unwrap()),
+    )
+    .unwrap();
+    Launch::new(
+        explicit_node(),
+        Some(script),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        root,
+    )
+    .unwrap()
+}
+async fn switch_supervisor(scenario: &str) -> (Supervisor, PathBuf) {
+    let launch = switch_launch(scenario);
+    let root = launch.state_directory().to_owned();
     let supervisor = Supervisor::spawn(launch, GENERATION, Bounds::default())
         .await
         .unwrap();
-    let mut connect=supervisor.request("connect","connect",json!({"account":"org-account","host":"org-account.snowflakecomputing.com","username":"LOGIN_NAME","role":"ROLE","warehouse":"WH","database":"DB","schema":"PUBLIC"}),Impact::Control).unwrap();
+    let mut connect = supervisor.request("connect","connect",json!({"account":"org-account","host":"org-account.snowflakecomputing.com","username":"LOGIN_NAME","role":"ROLE","warehouse":"WH","database":"DB","schema":"PUBLIC"}),Impact::Control).unwrap();
     assert!(connect.wait_bounded(LIMIT).await.ok);
-    let context = supervisor
-        .request(
-            "abandoned",
-            "context",
-            json!({"schema":"WAIT"}),
-            Impact::Read,
-        )
-        .unwrap();
+    (supervisor, root)
+}
+async fn wait_switch_stage(root: &std::path::Path, expected: &str) {
     timeout(LIMIT, async {
-        while context.phase() < Phase::Dispatching {
+        loop {
+            if std::fs::read_to_string(root.join("stage")).is_ok_and(|stage| stage == expected) {
+                break;
+            }
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    drop(context);
+}
+#[tokio::test]
+async fn actual_node_switch_quotes_names_preserves_null_role_and_owns_two_statements() {
+    let (supervisor, root) = switch_supervisor("healthy").await;
     assert!(
-        supervisor.is_closed(),
-        "abandoned USE SCHEMA can silently mutate the live console"
+        supervisor
+            .request(
+                "bad-impact",
+                "switchSchema",
+                switch_payload("OTHER"),
+                Impact::Read
+            )
+            .is_err()
     );
-    assert!(supervisor.wait_exited().await);
+    assert!(
+        supervisor
+            .request("bad-read", "context", json!({}), Impact::ContextChange)
+            .is_err()
+    );
+    let schema = "Sales.\"雪; --";
+    let mut op = supervisor
+        .request(
+            "switch",
+            "switchSchema",
+            switch_payload(schema),
+            Impact::ContextChange,
+        )
+        .unwrap();
+    let report = op.wait_bounded(LIMIT).await;
+    assert!(report.ok, "{report:?}");
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    assert_eq!(report.phase, Phase::Acknowledged);
+    assert_eq!(report.statements.len(), 2);
+    assert_eq!(report.use_acknowledged, report.statements.first().cloned());
+    let result = report.result.unwrap();
+    assert_eq!(result["schema"], schema);
+    assert_eq!(result["role"], serde_json::Value::Null);
+    assert_eq!(result["warehouse"], serde_json::Value::Null);
+    assert!(
+        supervisor
+            .shutdown()
+            .await
+            .cleanup
+            .unwrap()
+            .temporary_root_removed
+    );
+    assert!(!root.exists());
+}
+#[tokio::test]
+async fn actual_node_switch_rejection_differs_from_unverified_acknowledged_use() {
+    for scenario in ["use_denied", "readback_denied", "mismatch"] {
+        let (supervisor, root) = switch_supervisor(scenario).await;
+        let mut op = supervisor
+            .request(
+                "switch",
+                "switchSchema",
+                switch_payload("OTHER"),
+                Impact::ContextChange,
+            )
+            .unwrap();
+        let report = op.wait_bounded(LIMIT).await;
+        assert!(!report.ok, "{scenario}: {report:?}");
+        if scenario == "use_denied" {
+            assert_eq!(report.certainty, Certainty::ServerTerminal);
+            assert_eq!(report.error_code.as_deref(), Some("database"));
+            assert!(report.use_acknowledged.is_none());
+            assert_eq!(report.statements.len(), 1);
+        } else {
+            assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+            assert_eq!(report.error_code.as_deref(), Some("connectionClosed"));
+            assert_eq!(report.use_acknowledged, report.statements.first().cloned());
+            assert_eq!(report.statements.len(), 2);
+            assert_eq!(report.phase, Phase::Dispatching);
+        }
+        assert!(supervisor.wait_exited().await);
+        assert!(!root.exists());
+    }
+}
+#[tokio::test]
+async fn actual_node_switch_cancel_and_abandon_preserve_ack_evidence_and_reap() {
+    for after_use in [false, true] {
+        for abandon in [false, true] {
+            let (supervisor, root) = switch_supervisor(if after_use {
+                "readback_pending"
+            } else {
+                "use_pending"
+            })
+            .await;
+            let mut op = supervisor
+                .request(
+                    "switch",
+                    "switchSchema",
+                    switch_payload("OTHER"),
+                    Impact::ContextChange,
+                )
+                .unwrap();
+            wait_switch_stage(&root, if after_use { "readback" } else { "use" }).await;
+            timeout(LIMIT, async {
+                while op.phase() != Phase::Dispatching
+                    || (after_use && op.use_acknowledged().is_none())
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let mut receiver = op.terminal_receiver();
+            if abandon {
+                drop(op);
+            } else {
+                let mut cancel = supervisor.cancel(&op.token()).unwrap();
+                assert!(cancel.wait_bounded(LIMIT).await.ok);
+                assert_eq!(
+                    op.wait_bounded(LIMIT).await.certainty,
+                    Certainty::OutcomeUnknown
+                );
+            }
+            let report = timeout(LIMIT, async {
+                loop {
+                    if let Some(report) = receiver.borrow_and_update().clone() {
+                        break report;
+                    }
+                    receiver.changed().await.unwrap();
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+            assert_eq!(report.use_acknowledged.is_some(), after_use);
+            assert_eq!(report.phase, Phase::Dispatching);
+            assert!(supervisor.wait_exited().await);
+            assert!(!root.exists());
+        }
+    }
 }
 
 #[tokio::test]

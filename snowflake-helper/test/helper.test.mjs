@@ -130,6 +130,44 @@ async function connected(opts) {
   await tick();
   return s;
 }
+const switchPayload = (overrides = {}) => ({
+  database: profile.database,
+  schema: "OTHER",
+  expected: {
+    user: "FIXTURE",
+    role: profile.role,
+    warehouse: profile.warehouse,
+    session: "opaque-session",
+  },
+  ...overrides,
+});
+test("ordinary context strictly rejects schema payload before SQL", async () => {
+  const s = await connected();
+  const id = s.send("context", { schema: "OTHER" });
+  assert.equal(s.terminal(id)?.error.code, "invalidInput");
+  assert.equal(s.calls.length, 0);
+});
+test("switchSchema retains USE acknowledgement and accepts a nullable live role", async () => {
+  const s = await connected();
+  s.streams.push(
+    Readable.from([], { objectMode: true }),
+    Readable.from([["FIXTURE", null, "TEST", "OTHER", null, "opaque-session"]], {
+      objectMode: true,
+    }),
+  );
+  s.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
+  const id = s.send(
+    "switchSchema",
+    switchPayload({
+      expected: { user: "FIXTURE", role: null, warehouse: null, session: "opaque-session" },
+    }),
+  );
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(s.terminal(id)?.ok, true);
+  assert.equal(s.terminal(id).result.role, null);
+  assert.equal(s.events.filter((e) => e.id === id && e.type === "useAcknowledged").length, 1);
+  assert.equal(s.calls.length, 2);
+});
 test("length-prefixed decoder handles fragmentation and coalescing", () => {
   const bytes = Buffer.concat([encode({ a: "é" }), encode({ b: 2 })]),
     d = new Decoder();
@@ -308,7 +346,7 @@ test("duplicate ID and wrong generation retire rather than execute or accept suc
   assert.equal(other.calls.length, 0);
 });
 
-test("context changes and identity queries use the same connection queue", async () => {
+test("schema switching and identity queries use the same connection queue", async () => {
   const s = await connected();
   s.streams.push(
     Readable.from([], { objectMode: true }),
@@ -317,7 +355,17 @@ test("context changes and identity queries use the same connection queue", async
     }),
   );
   s.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
-  const id = s.send("context", { schema: "OTHER" });
+  const id = s.send(
+    "switchSchema",
+    switchPayload({
+      expected: {
+        user: "FIXTURE",
+        role: profile.role,
+        warehouse: profile.warehouse,
+        session: "123456789012345678",
+      },
+    }),
+  );
   await tick();
   await tick();
   await tick();
@@ -341,7 +389,7 @@ test("context changes and identity queries use the same connection queue", async
     s.events.filter((e) => e.id === id && e.type === "phase").map((e) => e.phase),
     ["dispatching", "acknowledged"],
   );
-  assert.equal(s.calls[0].sqlText, 'USE SCHEMA "OTHER"');
+  assert.equal(s.calls[0].sqlText, 'USE SCHEMA "TEST"."OTHER"');
   assert(s.calls[1].sqlText.startsWith("SELECT CURRENT_USER()"));
   assert.equal(
     s.events.some((e) => e.id === id && e.type === "rows"),
@@ -445,7 +493,7 @@ test("real row batches use one credit per <=128 rows and flush first row promptl
   slow.end();
   await tick();
 });
-test("context emits one operation phase pair and mismatched identity retires", async () => {
+test("switch emits one operation phase pair and mismatched identity retires", async () => {
   const s = await connected();
   s.streams.push(
     Readable.from([], { objectMode: true }),
@@ -454,7 +502,7 @@ test("context emits one operation phase pair and mismatched identity retires", a
     }),
   );
   s.columnSets.push([], ["u", "r", "d", "s", "w", "i"]);
-  const id = s.send("context", { schema: "OTHER" });
+  const id = s.send("switchSchema", switchPayload());
   await tick();
   await tick();
   await tick();
@@ -462,7 +510,7 @@ test("context emits one operation phase pair and mismatched identity retires", a
     s.events.filter((e) => e.id === id && e.type === "phase").map((e) => e.phase),
     ["dispatching"],
   );
-  assert.equal(s.terminal(id).error.code, "database");
+  assert.equal(s.terminal(id).error.code, "connectionClosed");
   assert.equal(s.retired(), 1);
 });
 
@@ -609,7 +657,7 @@ test("synchronous completion is processed only after exact returned ID registrat
   );
 });
 
-test("context USE and readback each own a distinct ticket under one operation", async () => {
+test("switch USE and readback each own a distinct ticket under one operation", async () => {
   const guard = trackingGuard();
   const x = setup({ submitGuard: guard });
   x.send("connect", profile);
@@ -617,12 +665,12 @@ test("context USE and readback each own a distinct ticket under one operation", 
   x.streams.push(
     Readable.from([], { objectMode: true }),
     Readable.from(
-      [["principal", profile.role, profile.database, "OTHER", profile.warehouse, "opaque-session"]],
+      [["FIXTURE", profile.role, profile.database, "OTHER", profile.warehouse, "opaque-session"]],
       { objectMode: true },
     ),
   );
   x.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
-  const context = x.send("context", { schema: "OTHER" });
+  const context = x.send("switchSchema", switchPayload());
   for (let i = 0; i < 5; i++) await tick();
   assert.equal(x.terminal(context).ok, true);
   assert.deepEqual(
@@ -695,7 +743,7 @@ test("submission violation before current statement acknowledgement remains unkn
   assert.equal(x.retired(), 1);
 });
 
-test("preceding context USE acknowledgement cannot settle pending readback outcome", async () => {
+test("USE acknowledgement survives pending readback violation without claiming verified context", async () => {
   const x = setup();
   x.send("connect", profile);
   await tick();
@@ -708,12 +756,17 @@ test("preceding context USE acknowledgement cannot settle pending readback outco
     if (statements === 2) x.connection.holdComplete = true;
     return execute(options);
   };
-  const context = x.send("context", { schema: "OTHER" });
+  const context = x.send("switchSchema", switchPayload());
   for (let i = 0; i < 3; i++) await tick();
   assert.equal(statements, 2);
   assert.equal(x.terminal(context), undefined);
   x.helper.submissionViolation();
-  assert.equal(x.terminal(context).error.code, "outcomeUnknown");
+  assert.equal(x.terminal(context).error.code, "connectionClosed");
+  assert.equal(x.events.filter((e) => e.id === context && e.type === "useAcknowledged").length, 1);
+  assert.equal(
+    x.events.some((e) => e.id === context && e.phase === "acknowledged"),
+    false,
+  );
   assert.equal(x.retired(), 1);
 });
 
@@ -756,4 +809,216 @@ test("a prior definitive SQL failure cannot settle a later pending query", async
   assert.equal(x.terminal(next).error.code, "outcomeUnknown");
   assert.equal(x.terminal(first).error.code, "database");
   assert.equal(x.retired(), 1);
+});
+
+function identityRows(s, rows) {
+  s.streams.push(Readable.from(rows, { objectMode: true }));
+  s.columnSets.push(["user", "role", "database", "schema", "warehouse", "session"]);
+}
+test("empty context observes NULL live fields without profile fallback and pins only identity", async () => {
+  const s = await connected();
+  identityRows(s, [["SERVER_NAME", null, null, null, null, "session-alpha"]]);
+  const id = s.send("context", {});
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(s.terminal(id).ok, true);
+  assert.equal(s.terminal(id).result.role, null);
+  assert.equal(s.calls.length, 1);
+  identityRows(s, [["OTHER_USER", null, null, null, null, "session-alpha"]]);
+  const changed = s.send("context", {});
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(s.terminal(changed).error.code, "database");
+  assert.equal(s.retired(), 1);
+});
+test("switch quotes each Unicode identifier component without interpreting punctuation", async () => {
+  const s = await connected({ synchronousComplete: true });
+  const schema = 'Sales.\"雪; --';
+  s.streams.push(Readable.from([], { objectMode: true }));
+  s.columnSets.push([]);
+  identityRows(s, [["FIXTURE", "READER", "TEST", schema, "TINY", "opaque-session"]]);
+  const id = s.send("switchSchema", switchPayload({ schema }));
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(s.terminal(id).ok, true);
+  assert.equal(s.calls[0].sqlText, `USE SCHEMA "TEST"."${schema.replaceAll('"', '""')}"`);
+  assert.equal(s.calls.length, 2);
+  const events = s.events.filter((e) => e.id === id);
+  assert(
+    events.findIndex((e) => e.type === "useAcknowledged") <
+      events.findIndex((e) => e.phase === "acknowledged"),
+  );
+});
+test("switch payload rejects coercible, malformed, oversized and cross-database names before SQL", async () => {
+  const invalid = [
+    null,
+    [],
+    ["OTHER"],
+    1,
+    true,
+    {},
+    "",
+    "bad\0name",
+    "x".repeat(256),
+    "\ud800",
+    "😀".repeat(256),
+  ];
+  for (const key of ["database", "schema"])
+    for (const value of invalid) {
+      const s = await connected();
+      const id = s.send("switchSchema", switchPayload({ [key]: value }));
+      assert.equal(s.terminal(id)?.error.code, "invalidInput");
+      assert.equal(s.calls.length, 0);
+    }
+  for (const payload of [
+    switchPayload({ database: "OTHER" }),
+    switchPayload({ extra: true }),
+    { database: "TEST", schema: "OTHER" },
+    switchPayload({ expected: { user: "FIXTURE", session: "opaque-session" } }),
+    switchPayload({ expected: { ...switchPayload().expected, role: [] } }),
+  ]) {
+    const s = await connected();
+    const id = s.send("switchSchema", payload);
+    assert.equal(s.terminal(id)?.error.code, "invalidInput");
+    assert.equal(s.calls.length, 0);
+  }
+});
+test("255 Unicode codepoints remain valid and UTF-8 bounded", async () => {
+  const s = await connected();
+  const schema = "😀".repeat(255);
+  s.streams.push(Readable.from([], { objectMode: true }));
+  s.columnSets.push([]);
+  identityRows(s, [["FIXTURE", "READER", "TEST", schema, "TINY", "opaque-session"]]);
+  const id = s.send("switchSchema", switchPayload({ schema }));
+  for (let i = 0; i < 4; i++) await tick();
+  assert.equal(s.terminal(id).ok, true);
+});
+for (const failure of ["denied", "empty", "duplicate", "mismatch", "opaqueType", "nontext"]) {
+  test(`acknowledged USE followed by ${failure} readback retires with retained evidence`, async () => {
+    const s = await connected();
+    s.streams.push(Readable.from([], { objectMode: true }));
+    s.columnSets.push([]);
+    const row = ["FIXTURE", "READER", "TEST", "OTHER", "TINY", "opaque-session"];
+    if (failure === "mismatch") row[3] = "WRONG";
+    if (failure === "opaqueType") row[5] = 123;
+    identityRows(s, failure === "empty" ? [] : failure === "duplicate" ? [row, row] : [row]);
+    const original = s.connection.execute.bind(s.connection);
+    s.connection.execute = (options) => {
+      if (s.calls.length === 1 && failure === "denied")
+        s.connection.nextError = { sqlState: "42501", message: "private" };
+      const statement = original(options);
+      if (s.calls.length === 2 && failure === "nontext")
+        statement.getColumns = () =>
+          row.map((_, i) => ({ getName: () => `c${i}`, getType: () => "fixed" }));
+      return statement;
+    };
+    const id = s.send("switchSchema", switchPayload());
+    for (let i = 0; i < 5; i++) await tick();
+    assert.equal(s.terminal(id).error.code, "connectionClosed");
+    assert.equal(s.events.filter((e) => e.id === id && e.type === "useAcknowledged").length, 1);
+    assert.equal(
+      s.events.some((e) => e.id === id && e.phase === "acknowledged"),
+      false,
+    );
+    assert.equal(s.retired(), 1);
+    assert.equal(s.calls.filter((c) => typeof c === "object").length, 2);
+  });
+}
+test("definitive USE rejection is distinguishable from a failed post-USE readback", async () => {
+  const s = await connected();
+  s.connection.nextError = { sqlState: "42501" };
+  const id = s.send("switchSchema", switchPayload());
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(s.terminal(id).error.code, "database");
+  assert.equal(
+    s.events.some((e) => e.id === id && e.type === "useAcknowledged"),
+    false,
+  );
+  assert.equal(s.calls.filter((c) => typeof c === "object").length, 1);
+});
+for (const afterUse of [false, true]) {
+  test(`switch cancellation ${afterUse ? "after" : "before"} USE acknowledgement retires without replay`, async () => {
+    const s = await connected();
+    s.streams.push(Readable.from([], { objectMode: true }));
+    s.columnSets.push([]);
+    const original = s.connection.execute.bind(s.connection);
+    s.connection.execute = (options) => {
+      if (!afterUse || s.calls.length === 1) s.connection.holdComplete = true;
+      return original(options);
+    };
+    const id = s.send("switchSchema", switchPayload());
+    for (let i = 0; i < 3; i++) await tick();
+    const cancel = s.send("cancel", { target: id });
+    assert.equal(s.terminal(cancel).ok, true);
+    assert.equal(s.terminal(id).error.code, afterUse ? "connectionClosed" : "outcomeUnknown");
+    assert.equal(
+      s.events.some((e) => e.id === id && e.type === "useAcknowledged"),
+      afterUse,
+    );
+    assert.equal(
+      s.events.some((e) => e.id === id && e.phase === "acknowledged"),
+      false,
+    );
+    assert.equal(s.calls.filter((c) => typeof c === "object").length, afterUse ? 2 : 1);
+    assert.equal(s.retired(), 1);
+  });
+}
+test("USE acknowledgement is emitted before its drain and survives a reentrant guard violation", async () => {
+  const s = await connected();
+  const stream = new PassThrough({ objectMode: true });
+  s.streams.push(stream);
+  s.columnSets.push([]);
+  const id = s.send("switchSchema", switchPayload());
+  await tick();
+  assert.equal(
+    s.events.some((e) => e.id === id && e.type === "useAcknowledged"),
+    true,
+  );
+  s.helper.submissionViolation();
+  assert.equal(s.terminal(id).error.code, "connectionClosed");
+  stream.end();
+  await tick();
+  assert.equal(s.calls.filter((c) => typeof c === "object").length, 1);
+  assert.equal(s.events.filter((e) => e.id === id && e.type === "terminal").length, 1);
+});
+
+test("registered USE acknowledgement precedes reentrant completion-record violation", async () => {
+  const s = await connected();
+  s.streams.push(Readable.from([], { objectMode: true }));
+  s.columnSets.push([]);
+  const emit = s.helper.emit;
+  s.helper.emit = (event) => {
+    const result = emit(event);
+    if (event.type === "statement" && event.queryId) s.helper.submissionViolation();
+    return result;
+  };
+  const id = s.send("switchSchema", switchPayload());
+  for (let i = 0; i < 4; i++) await tick();
+  const events = s.events.filter((e) => e.id === id);
+  const ack = events.findIndex((e) => e.type === "useAcknowledged");
+  const terminal = events.findIndex((e) => e.type === "terminal");
+  assert(ack >= 0 && ack < terminal);
+  assert.equal(events[ack].sdkRequestId, events.find((e) => e.type === "statement").sdkRequestId);
+  assert.equal(s.terminal(id).error.code, "connectionClosed");
+  assert.equal(s.calls.filter((c) => typeof c === "object").length, 1);
+  assert.equal(s.retired(), 1);
+});
+test("readback definitive failure plus immediate guard violation preserves USE evidence", async () => {
+  const s = await connected();
+  s.streams.push(Readable.from([], { objectMode: true }));
+  s.columnSets.push([]);
+  const original = s.connection.execute.bind(s.connection);
+  s.connection.execute = (options) => {
+    if (s.calls.length === 1) {
+      s.connection.nextError = { sqlState: "42501" };
+      const complete = options.complete;
+      options.complete = (...args) => {
+        complete(...args);
+        s.helper.submissionViolation();
+      };
+    }
+    return original(options);
+  };
+  const id = s.send("switchSchema", switchPayload());
+  for (let i = 0; i < 4; i++) await tick();
+  assert.equal(s.terminal(id).error.code, "connectionClosed");
+  assert.equal(s.events.filter((e) => e.id === id && e.type === "useAcknowledged").length, 1);
+  assert.equal(s.events.filter((e) => e.id === id && e.type === "terminal").length, 1);
 });

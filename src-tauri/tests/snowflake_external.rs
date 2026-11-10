@@ -49,6 +49,9 @@ const sdk = { createConnection(options) {
         values = [['DB','SERVER_USER','synthetic-version']];
       }
       const context = sql.includes(' AS PRINCIPAL');
+      if (identity && !context && settings.startupIdentity) {
+        values = [['SERVER_USER', 'ROLE', 'DB', 'PUBLIC', 'WH', 'SESSION'].map((value, index) => Object.hasOwn(settings.startupIdentity, index) ? settings.startupIdentity[index] : value)];
+      }
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
       const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ');
       const columnMetadata = sql.includes('.INFORMATION_SCHEMA.COLUMNS AS C ');
@@ -325,6 +328,51 @@ async fn count(driver: &SnowflakeExternal) -> u64 {
         .await
         .unwrap();
     sink.rows[0][0].as_ref().unwrap().parse().unwrap()
+}
+
+#[tokio::test]
+async fn startup_context_mismatch_or_null_rejects_before_version_and_reaps() {
+    for index in [1, 2, 3, 4] {
+        for value in [serde_json::json!("DIFFERENT"), serde_json::Value::Null] {
+            let (launch, scripts) = launch();
+            let cleanup = launch.cleanup_observer();
+            let mut identity = serde_json::Map::new();
+            identity.insert(index.to_string(), value);
+            std::fs::write(
+                scripts.path().join("metadata-settings.json"),
+                serde_json::to_vec(&serde_json::json!({"startupIdentity":identity})).unwrap(),
+            )
+            .unwrap();
+            let opened = tokio::time::timeout(
+                LIMIT,
+                SnowflakeExternal::open(
+                    &profile(),
+                    "startup-context-rejection",
+                    launch,
+                    ExternalBrowserOptions::default(),
+                ),
+            )
+            .await
+            .unwrap();
+            let Err(error) = opened else {
+                panic!("mismatched startup field {index} was admitted");
+            };
+            assert_eq!(error.code, ErrorCode::PolicyBlocked);
+            let queries: Vec<String> = std::fs::read_to_string(scripts.path().join("queries"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                queries,
+                vec![
+                    "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()"
+                ]
+            );
+            let cleaned = cleanup.wait(LIMIT).await.unwrap();
+            assert!(cleaned.child_started && cleaned.reaped && cleaned.temporary_root_removed);
+        }
+    }
 }
 
 #[tokio::test]

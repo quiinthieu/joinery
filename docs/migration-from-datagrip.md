@@ -113,6 +113,13 @@ or unknown console requires confirmation and verification of remote state;
 local closure does not promise immediate remote rollback. See the
 [observer contract](snowflake-sdk-session-observation.md).
 
+The helper's [schema-switch transport](snowflake-sdk-session-design.md) now has
+local regression coverage, with a separate typed USE/readback operation and
+retained acknowledgement on uncertain final context. The application adapter,
+IPC and revision-bound selector are still incomplete. Do not use the helper
+operation manually as a migration workaround; it has no account qualification
+or inherited authorization from the earlier read canary.
+
 The SDK SQL route remains ReadOnly, and authoritative constraints, schema
 switching, writes, DDL, transactions and the required million-row result/export
 workflow remain open. Keep the existing DataGrip connection available while the

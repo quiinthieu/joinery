@@ -30,8 +30,14 @@ const WIRE_ID = /^[1-9][0-9]{0,19}$/;
 const IDENT = /^[A-Z_][A-Z0-9_]{0,254}$/;
 const own = (p, keys) =>
   p && typeof p === "object" && !Array.isArray(p) && Object.keys(p).every((k) => keys.includes(k));
+const exact = (p, keys) => own(p, keys) && Object.keys(p).length === keys.length;
 const text = (s, max = 256) =>
   typeof s === "string" && s.length > 0 && Buffer.byteLength(s) <= max && !s.includes("\0");
+const identifier = (s) => text(s, 1020) && s.isWellFormed() && [...s].length <= 255;
+const nullableIdentifier = (s) => s === null || identifier(s);
+const quoteIdentifier = (s) => `"${s.replaceAll('"', '""')}"`;
+const CONTEXT_SQL =
+  "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()";
 const integer = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
 const sdkFailure = (failure, acknowledged = false) => {
   const state = failure?.sqlState;
@@ -106,7 +112,8 @@ export class Helper {
     if (this.active)
       this.finish(
         this.active.request,
-        this.active.knownFailure ??
+        (this.active.useAcknowledged ? "connectionClosed" : undefined) ??
+          this.active.knownFailure ??
           (this.active.acknowledged ? "connectionClosed" : "outcomeUnknown"),
       );
     if (this.state === "connecting" && this.connectRequest)
@@ -148,7 +155,7 @@ export class Helper {
     if (r.op === "close") return this.close(r);
     if (r.op === "cancel") return this.cancel(r);
     if (r.op === "credit") return this.credit(r);
-    if (!["query", "context"].includes(r.op)) return this.finish(r, "unsupported");
+    if (!["query", "context", "switchSchema"].includes(r.op)) return this.finish(r, "unsupported");
     if (this.state !== "connected") return this.finish(r, "connectionClosed");
     if (!this.validateWork(r)) return;
     if (this.queue.length >= LIMITS.queued) return this.finish(r, "busy");
@@ -202,7 +209,28 @@ export class Helper {
   validateWork(r) {
     const p = r.payload;
     if (r.op === "context") {
-      if (!own(p, ["schema"]) || (p.schema !== undefined && !IDENT.test(p.schema))) {
+      if (!exact(p, [])) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
+    if (r.op === "switchSchema") {
+      if (
+        !exact(p, ["database", "schema", "expected"]) ||
+        !identifier(p.database) ||
+        !identifier(p.schema) ||
+        !exact(p.expected, ["user", "role", "warehouse", "session"]) ||
+        !identifier(p.expected.user) ||
+        !nullableIdentifier(p.expected.role) ||
+        !nullableIdentifier(p.expected.warehouse) ||
+        !text(p.expected.session, 1024) ||
+        !p.expected.session.isWellFormed() ||
+        p.database !== this.expectedProfile.database ||
+        (this.identityPin &&
+          (p.expected.user !== this.identityPin.user ||
+            p.expected.session !== this.identityPin.session))
+      ) {
         this.finish(r, "invalidInput");
         return false;
       }
@@ -252,24 +280,49 @@ export class Helper {
         this.finish(r, null, { ...result, ...this.idsFor(a) });
       } else {
         this.send(r, "phase", { phase: "dispatching" });
-        if (r.payload.schema) await this.execute(a, `USE SCHEMA "${r.payload.schema}"`, [], false);
-        const result = await this.execute(
-          a,
-          "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()",
-          [],
-          false,
-        );
+        if (r.op === "switchSchema")
+          await this.execute(
+            a,
+            `USE SCHEMA ${quoteIdentifier(r.payload.database)}.${quoteIdentifier(r.payload.schema)}`,
+            [],
+            false,
+            true,
+          );
+        if (this.retired || this.done.has(r)) return;
+        const result = await this.execute(a, CONTEXT_SQL, [], false);
         const row = result.values?.[0];
-        if (!row || row.length !== 6 || row.some((v) => typeof v !== "string"))
-          throw error("database");
-        const p = this.expectedProfile;
         if (
-          row[1] !== p.role ||
-          row[2] !== p.database ||
-          row[3] !== (r.payload.schema ?? this.currentSchema) ||
-          row[4] !== p.warehouse
+          result.rowsSeen !== 1 ||
+          result.values?.length !== 1 ||
+          result.columns?.length !== 6 ||
+          result.columns.some((c) => c.type.toLowerCase() !== "text") ||
+          !row ||
+          row.length !== 6 ||
+          !identifier(row[0]) ||
+          !nullableIdentifier(row[1]) ||
+          !nullableIdentifier(row[2]) ||
+          !nullableIdentifier(row[3]) ||
+          !nullableIdentifier(row[4]) ||
+          !text(row[5], 1024) ||
+          !row[5].isWellFormed()
         )
           throw error("database");
+        if (
+          this.identityPin &&
+          (row[0] !== this.identityPin.user || row[5] !== this.identityPin.session)
+        )
+          throw error("database");
+        if (
+          r.op === "switchSchema" &&
+          (row[0] !== r.payload.expected.user ||
+            row[1] !== r.payload.expected.role ||
+            row[2] !== r.payload.database ||
+            row[3] !== r.payload.schema ||
+            row[4] !== r.payload.expected.warehouse ||
+            row[5] !== r.payload.expected.session)
+        )
+          throw error("database");
+        this.identityPin ??= { user: row[0], session: row[5] };
         this.currentSchema = row[3];
         this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
         this.finish(r, null, {
@@ -285,11 +338,15 @@ export class Helper {
     } catch (e) {
       this.finish(
         r,
-        ["resultLimitReached", "outcomeUnknown", "connectionClosed", "database"].includes(e?.code)
-          ? e.code
-          : "database",
+        a.useAcknowledged
+          ? "connectionClosed"
+          : ["resultLimitReached", "outcomeUnknown", "connectionClosed", "database"].includes(
+                e?.code,
+              )
+            ? e.code
+            : "database",
       );
-      if (e?.retire || r.op === "context") this.stop();
+      if (e?.retire || r.op === "context" || r.op === "switchSchema") this.stop();
     } finally {
       if (a.submitOwner) {
         try {
@@ -343,7 +400,7 @@ export class Helper {
     a.statements.set(sdkRequestId, identity);
     this.send(a.request, "statement", identity);
   }
-  execute(a, sql, binds, publish) {
+  execute(a, sql, binds, publish, use = false) {
     // This is per execute: a preceding USE acknowledgement cannot settle the
     // following context readback's outcome before that statement acknowledges.
     a.acknowledged = false;
@@ -375,8 +432,18 @@ export class Helper {
           return reject(failure);
         }
         a.acknowledged = true;
+        // Operation evidence survives the following readback's per-execute reset.
+        // Establish it before record/send can reenter submissionViolation().
+        if (use) {
+          a.useAcknowledged = true;
+          // This ID was registered and recorded from execute's return value.
+          // Publish ACK before record's query-ID upgrade can reenter the guard.
+          this.send(a.request, "useAcknowledged", this.idsFor(a));
+          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+        }
         a.statement = statement;
         this.record(a, statement);
+        if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
         if (publish)
           this.send(a.request, "phase", {
             phase: "acknowledged",
@@ -508,7 +575,7 @@ export class Helper {
         rowsSeen,
         rowsRetained,
         truncated,
-        ...(!publish ? { values } : {}),
+        ...(!publish ? { values, columns } : {}),
       };
     } finally {
       clearTimeout(timer);
@@ -535,7 +602,9 @@ export class Helper {
     this.finish(r, null, {});
   }
   removeQueued(control, target) {
-    const index = this.queue.findIndex((r) => r.op === "query" && r.id === target);
+    const index = this.queue.findIndex(
+      (r) => ["query", "switchSchema"].includes(r.op) && r.id === target,
+    );
     if (index < 0) return false;
     const [queued] = this.queue.splice(index, 1);
     this.send(control, "accepted");
@@ -556,6 +625,15 @@ export class Helper {
     const a = this.active;
     if (!a || a.request.id !== p.target || !a.statement) return this.finish(r, "invalidInput");
     this.send(r, "accepted");
+    if (a.request.op === "switchSchema") {
+      // A cancel ACK cannot verify either the USE outcome or final context.
+      try {
+        a.statement.cancel(() => {});
+      } catch {}
+      this.finish(r, null, { requested: true });
+      this.finish(a.request, a.useAcknowledged ? "connectionClosed" : "outcomeUnknown");
+      return this.stop();
+    }
     a.discard = true;
     this.wake?.();
     try {

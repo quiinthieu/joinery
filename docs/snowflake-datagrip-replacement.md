@@ -42,6 +42,10 @@ relation catalog, column inspection and bounded read-only preview locally.
 The [session observer](snowflake-sdk-session-observation.md) now implements
 bounded settings/activity observations and explicit Unknown states locally;
 account observation and typed schema switching remain unqualified/incomplete.
+The [typed switch transport](snowflake-sdk-session-design.md) now has separate
+USE/readback acknowledgement and retirement handling with local regression
+coverage. Its application adapter, IPC and selector remain incomplete; no account
+switching or additional account authorization is established.
 Complete object/constraint inspection, generic editable browsing, schema/session
 switching, writes, DDL and transactions remain incomplete. The preceding
 SDK integration qualification passes, including all 143 browser workflows,
