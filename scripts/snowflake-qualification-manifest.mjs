@@ -448,7 +448,7 @@ function localPath(root, value) {
   }
   return filename;
 }
-function readLocal(root, filename, { privateFile = false, maximum = MAX_JSON_BYTES } = {}) {
+export function readLocal(root, filename, { privateFile = false, maximum = MAX_JSON_BYTES } = {}) {
   filename = localPath(root, filename);
   if (privateFile && !inside(path.join(root, ".cache"), filename)) throw fail("unsafeLocalPath");
   const before = lstatSync(filename);
@@ -514,7 +514,7 @@ export function validateSourceTemplates(sources) {
   )
     throw fail("sourceTemplateDrift");
 }
-function currentEvidence(root) {
+export function currentEvidence(root) {
   const bytes = Object.fromEntries(
     SOURCE_PATHS.map((file) => [file, readLocal(root, file, { maximum: 1024 * 1024 })]),
   );
@@ -534,7 +534,7 @@ function currentEvidence(root) {
     },
   };
 }
-function emitExclusive(root, filename, manifest) {
+export function emitExclusive(root, filename, manifest) {
   filename = localPath(root, filename);
   const outputRoot = path.join(root, ".cache/snowflake-qualification");
   if (!inside(outputRoot, filename)) throw fail("unsafeLocalPath");

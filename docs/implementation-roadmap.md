@@ -48,8 +48,11 @@ An [offline qualification manifest](snowflake-qualification-manifest.md) is now
 implemented and locally verified: 12 synthetic tests and actual CLI checks with
 synthetic identifiers, current source/runtime validation and private exclusive
 output. The distinct observer/options/scalar workflow has a complete 24-SQL
-ledger. An executable runner and fresh account approval remain open; this tooling
-does not qualify the account or normal application.
+ledger. A separately reviewed [execution boundary](snowflake-qualification-runner.md)
+now implements one-use approval consumption, source/runtime validation, bounded
+child lifecycle and private evidence. Its 18 runner tests and the complete
+113-test qualification suite pass. Fresh account approval and the actual run
+remain open; this tooling does not qualify the account or normal application.
 
 The [schema-switch transport foundation](snowflake-sdk-session-design.md) is
 implemented: strict read-only context, separate typed USE/readback operation,

@@ -113,6 +113,11 @@ reviewed and locally tested. Historical canary approval does not apply. Lost
 responses, process exit, local cancellation or cleanup alone do not establish
 remote cancellation, logout, rollback or a rejected statement.
 
+The separately [implemented execution boundary](snowflake-qualification-runner.md)
+now supplies those outer responsibilities and has independent local review and
+synthetic coverage. Its exact private execution plan and fresh explicit approval
+remain prerequisites to an account attempt; these modules grant no authority.
+
 ## Local checks
 
 Run with the repository's Node 24 toolchain:

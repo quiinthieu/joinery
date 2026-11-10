@@ -28,8 +28,11 @@ and locally tested for the distinct `session-options-scalar-state-v1` workflow: 
 24 potential SQL executions on one helper connection, including the new observer
 reads and bounded schema-name inventory. It is not A1/A2 approval, an executable
 runner or application acceptance. Pure result/protocol validation is now
-[implemented and reviewed](snowflake-qualification-protocol.md); physical dispatch,
-approval enforcement and process lifecycle still require an executable runner.
+[implemented and reviewed](snowflake-qualification-protocol.md). A distinct
+[execution boundary](snowflake-qualification-runner.md) now implements physical
+dispatch, one-use approval records, runtime/source validation and process
+lifecycle, with local synthetic verification. Fresh explicit approval for its
+exact private execution plan is still required; no account run is implied.
 The older stage envelopes below remain
 proposed; they do not silently absorb this workflow.
 

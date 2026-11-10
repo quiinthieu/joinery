@@ -8,6 +8,56 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Qualification execution boundary (10 November 2026)
+
+Status: **locally verified and independently reviewed; fresh account approval pending**.
+The [runner contract](snowflake-qualification-runner.md) binds the unchanged
+offline-v1 24-statement ledger, five executable-module hashes, runtime evidence,
+profile/window and physical caps in a separate execution-plan envelope. No
+authentication, SQL or execution consent is granted by producing that envelope.
+The private approval record must match the complete plan and explicit scope;
+the operator may create it only after fresh owner consent. A deterministic
+exclusive consumed marker is synced before launch and is never removed or reused.
+
+Independent review found three P2 issues, all repaired with regressions:
+directory sync was missing for the new consumption marker; an actual failed OS
+launch was conservatively but inaccurately reported as a spawned/unreaped child;
+and emergency cleanup could leave pipes open after an already observed exit.
+The final implementation syncs the validated directory before auth allocation,
+distinguishes spawn return/launch/no-child/exit evidence, and closes owned pipes
+before the emergency early return. Replacement authentication roots are preserved.
+
+The first runner test run passed 11/12; the failure was a test's overly specific
+ordering expectation for actual stdout-end versus process-exit events. Both
+legitimate first-failure codes are now accepted while reaping, redaction and
+cleanup remain mandatory. Subsequent **18/18 runner tests** pass, including an
+actual subprocess/production-helper full-24 workflow with a synthetic SDK, drift,
+approval reuse, failed directory sync, permission/symlink rejection, actual
+ENOENT, evidence collision and emergency cleanup. Independent combined
+result/protocol/framing/child/runner checks pass **101/101**. Root's
+`pnpm test:snowflake:qualification` passes **113/113**, adding the 12 manifest
+tests. Scoped format and `git diff --check` pass.
+
+Logs: `.cache/verification/connection-attempts/`
+`sdk-qualification-runner-{first,second,review,final,independent}.log`,
+`sdk-qualification-all-{lead,independent}.log`,
+`sdk-qualification-{format-final,runner-child-independent-format}.log`.
+Final runner SHA-256:
+`63e2fd8b085ce7890d1a25fbc043a06f35286d1c94f52fe6eac2b7de89563c64`.
+The actual CLI dry-run, emit and verify paths pass with a synthetic profile and
+the current prepared runtime, with no helper/authentication/SQL. Safe recorded
+dry-run evidence: `sdk-qualification-runner-cli.json`; runtime manifest hash:
+`375e0639ee6d2285b25fd4e9646a1078b6302faa1630a9bcd002ed653ab23114`.
+The recorded synthetic plan is not an owner-account execution plan or approval.
+
+These tests establish local orchestration and evidence behavior. They cannot
+establish actual Snowflake descriptors, account/session settings, schema metadata,
+transaction effects, million-row behavior, packaged-app usage or owner acceptance.
+Source verification is pathname-based pre/post checking, not an OS sandbox or a
+defense against hostile same-user mutation. SQL admissions do not bound every SDK
+authentication/result/logout HTTP request or account charges. Prior canary
+approval remains consumed and authorizes no further attempt.
+
 ### Qualification child lifecycle (10 November 2026)
 
 Status: **locally tested and independently reviewed supplied-child engine**;
