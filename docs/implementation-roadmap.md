@@ -51,8 +51,13 @@ output. The distinct observer/options/scalar workflow has a complete 24-SQL
 ledger. A separately reviewed [execution boundary](snowflake-qualification-runner.md)
 now implements one-use approval consumption, source/runtime validation, bounded
 child lifecycle and private evidence. Its 18 runner tests and the complete
-113-test qualification suite pass. Fresh account approval and the actual run
-remain open; this tooling does not qualify the account or normal application.
+113-test qualification suite pass. One freshly approved account attempt passed
+SSO and the two startup queries, then stopped on a definitive rejection of its
+session-context query. Logout, child reaping and temporary-state removal passed.
+The approval is consumed; no retry was attempted. Diagnose and locally repair
+the context query before preparing any new approved attempt. Account and normal
+application qualification remain open; see the
+[attempt evidence](replacement-verification.md#approved-account-qualification-attempt-10-november-2026).
 
 The [schema-switch transport foundation](snowflake-sdk-session-design.md) is
 implemented: strict read-only context, separate typed USE/readback operation,
@@ -73,6 +78,14 @@ acknowledgement from verified database disposition. The dependent adapter must
 retain same-session rollback recovery when an aborted transaction rejects
 observer reads. Application actions remain disabled until their authority,
 policy, recovery and UI workflows are implemented.
+
+At `c543ef5`, the transaction transport and synthetic-function policy repairs
+also pass fresh normal SDK macOS packaging, ad-hoc signing/resources and guarded
+hello/EOF startup with zero authentication/SQL. Three hidden native runs pass
+19 check categories and ten cleanup cycles each, with all 322 frozen inputs
+unchanged. This does not qualify actual transactions or enable their UI; current
+[artifact evidence](replacement-verification.md#transaction-increment-package-and-native-checks-10-november-2026)
+records the runnable local bundle and its limits.
 
 The preceding relation-browsing increment is locally qualified: **619 frontend / 338
 standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the

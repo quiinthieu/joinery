@@ -21,9 +21,12 @@ unqualified.
 The [offline qualification compiler](snowflake-qualification-manifest.md) now
 passes 12 synthetic tests and actual local CLI/resource checks using synthetic
 connection identifiers. It records exact SQL and local resource bounds for a
-separate 24-statement observer/options/scalar workflow. There is no executable
-runner, inherited approval or new account evidence; required capabilities below
-retain their incomplete/unqualified states.
+separate 24-statement observer/options/scalar workflow. The separately reviewed
+execution runner is implemented. Its one owner-approved account attempt passed
+SSO and startup checks but failed at the third session-context statement; it
+stopped and cleaned up without retry. See the
+[account evidence](replacement-verification.md#approved-account-qualification-attempt-10-november-2026).
+Required capabilities below retain their incomplete/unqualified states.
 
 The [schema-switch transport foundation](snowflake-sdk-session-design.md) now
 separates observation from typed schema mutation and preserves acknowledged USE

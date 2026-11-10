@@ -66,6 +66,14 @@ private application state.
 
 ## Current Snowflake evaluation boundary
 
+The separately approved helper-only read/metadata attempt on 10 November passed
+SSO and startup checks but failed at its third session-context query. It stopped,
+logged out and cleaned up without retry. Its approval is consumed; it does not
+authorize the application workflows below. See the
+[attempt evidence](replacement-verification.md#approved-account-qualification-attempt-10-november-2026).
+The locally built `c543ef5` SDK bundle passes packaging and hidden native checks;
+its account session-observation workflow is still unqualified.
+
 Create a Snowflake profile with **External browser SSO**, the existing account
 hostname and approved role/warehouse/database/schema. Existing OAuth profiles
 keep their prior authentication mode; select the SDK explicitly rather than

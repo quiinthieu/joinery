@@ -8,9 +8,66 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Approved account qualification attempt (10 November 2026)
+
+The owner explicitly approved one helper-direct attempt for execution plan
+`356b09068ff09f6096ee83e443f7aac0775a21e6bcfec700220e2fe27240da3c`,
+ledger `5acab6327c378b055d2c99c7a7645eae1f0be2249f8e7450454fcb216ba8a3d1`,
+inside the 12:26:22–12:36:22 UTC window, including external-browser SSO,
+up to 24 fixed read/SHOW statements, bounded schema names and possible billing.
+The single attempt ended at **12:31:29 UTC** with **qualification failed**.
+Actual SSO/startup identity and server-version queries succeeded and validated.
+The third statement, `options.before.context`, received a definitive database
+rejection before acknowledgement. No later ledger statement was admitted, so
+schema discovery, settings observations and the scalar group were not tested.
+The helper intentionally retains no raw database error text; the receipt alone
+does not establish which expression caused rejection.
+
+The runner stopped at the first failure. Logout and close were acknowledged,
+stdin/stdout/stderr closed, the child exited normally and was reaped, and the
+original temporary authentication root was removed after identity verification.
+No TERM/KILL or cancellation was needed. Source/runtime revalidation and private
+receipt persistence passed. These are local cleanup observations, not an
+account-wide session inventory or proof of remote transaction disposition.
+
+Safe evidence: `.cache/verification/connection-attempts/`
+`sdk-qualification-owner-attempt.log`. The exclusive consumed marker and private
+result remain under `.cache/snowflake-qualification`; no profile, schema names,
+tokens, query IDs or raw diagnostics are committed. **Approval is consumed; no
+retry was attempted.** Any corrected account attempt needs a new exact plan and
+fresh owner approval. The required daily account workflow remains unqualified.
+
+### Transaction increment package and native checks (10 November 2026)
+
+At source `c543ef5`, `pnpm desktop:snowflake:bundle:mac` passes a fresh normal
+**224.02 MiB** macOS arm64 bundle, strict ad-hoc signature/resource checks and
+actual packaged SDK hello/EOF startup with **zero authentication/SQL requests**.
+The executable is 31,548,464 bytes, SHA-256
+`99e2d0cbc922a997ba258002f50fa1f25504b6f3a8f320efe38098ae4cebdf48`.
+It includes the synthetic-function policy repair and typed transaction transport;
+application transaction actions remain disabled. Developer ID signing,
+notarization, installation and normal visible/account startup are still open.
+
+`pnpm desktop:snowflake:smoke:build` and `python3 scripts/native-smoke.py` pass:
+three isolated hidden runs, each with **19 check categories / ten cleanup cycles**.
+Native fixture elapsed times are 3,756 / 3,051 / 3,040 ms and sampled main-process
+peak RSS is 100.88 / 100.61 / 100.97 MiB. These synthetic fixture measurements do
+not qualify visible cold startup, total application memory or Snowflake workloads.
+The hidden bundle executable SHA-256 is
+`092285b00697eb36e045657053e2c0fff605f87a106144f781f75d840611acd5`.
+Packaged runtime manifest:
+`375e0639ee6d2285b25fd4e9646a1078b6302faa1630a9bcd002ed653ab23114`.
+
+All **322 frozen application/runtime/test inputs** remain unchanged through both
+builds. Logs and safe artifacts under `.cache/verification/connection-attempts/`:
+`sdk-transaction-{bundle-final,native-build-final,native-final}.log`,
+`sdk-transaction-{bundle-artifact,qualified-source,source-freeze}.json`.
+The pre-existing missing-`libLLVM.dylib` debug-strip warning remains nonfatal;
+release compilation and subsequent signature/resource/startup checks pass.
+
 ### Qualification execution boundary (10 November 2026)
 
-Status: **locally verified and independently reviewed; fresh account approval pending**.
+Status: **locally verified and independently reviewed; approved account attempt failed above**.
 The [runner contract](snowflake-qualification-runner.md) binds the unchanged
 offline-v1 24-statement ledger, five executable-module hashes, runtime evidence,
 profile/window and physical caps in a separate execution-plan envelope. No
