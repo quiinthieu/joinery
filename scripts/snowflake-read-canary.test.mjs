@@ -60,9 +60,15 @@ process.stdin.on("data",chunk=>{for(const r of decoder.push(chunk)) {
   } else if(r.op==="query") {
     query++;
     const names=query===1?["USER","ROLE","DATABASE","SCHEMA","WAREHOUSE","SESSION"]:["USER","SESSION","INTEGER","TEXT","BOOLEAN","NULL"];
-    const types=query===1?["text","text","text","text","text","fixed"]:["text","fixed","fixed","text","boolean","text"];
-    const row=query===1?["DIFFERENT_PRINCIPAL",profile.role,profile.database,profile.schema,profile.warehouse,"9001"]:["DIFFERENT_PRINCIPAL","9001","42","joinery-read-canary","TRUE",null];
+    const types=query===1?["text","text","text","text","text","text"]:["text","text","fixed","text","boolean","text"];
+    const row=query===1?["DIFFERENT_PRINCIPAL",profile.role,profile.database,profile.schema,profile.warehouse,"session-A9b7"]:["DIFFERENT_PRINCIPAL","session-A9b7","42","joinery-read-canary","TRUE",null];
     if(mode==="wrong-session"&&query===2)row[1]="9002";
+    if(mode==="wrong-session-type"&&query===1)types[5]="fixed";
+    if(mode==="wrong-session-type-second"&&query===2)types[1]="fixed";
+    if(mode==="empty-session"&&query===1)row[5]="";
+    if(mode==="wrong-shape"&&query===2)row.pop();
+    if(mode==="wrong-name"&&query===2)names[2]="UNEXPECTED";
+    if(mode==="wrong-context"&&query===1)row[1]="OTHER_ROLE";
     if(mode==="wrong-principal"&&query===2)row[0]="CHANGED_PRINCIPAL";
     if(mode==="empty-principal")row[0]="";
     if(mode==="oversized-principal")row[0]="x".repeat(257);
@@ -124,8 +130,16 @@ test("default plan never spawns, authenticates, writes evidence, or exposes cont
   assert.match(plan.billing, /automatically resume/);
   assert.match(plan.connectionSetup, /not a bound on physical SQL/);
   assert.match(plan.identity, /not an independent binding/);
+  assert.match(plan.session, /VARCHAR.*opaque string/);
   assert.deepEqual(readdirSync(path.join(root, ".cache")), ["owner-snowflake-context.json"]);
   assert.doesNotMatch(JSON.stringify(plan), /synthetic-account/);
+});
+
+test("documented VARCHAR session accepts an opaque alphanumeric identifier", async () => {
+  const { child } = childFixture("opaque-session");
+  const result = await exerciseChild(child, validateContext(context()), { bounds });
+  assert.equal(result.passed, true);
+  assert.equal(result.checks.sessionContinuity, true);
 });
 
 test("context identifiers reject coercible non-string values", () => {
@@ -177,7 +191,19 @@ test("a principal distinct from the configured login passes with exactly two fix
   assert.notEqual(requests[0].payload.username, "DIFFERENT_PRINCIPAL");
   assert.deepEqual(result.checks, {
     connected: true,
+    query1RowShape: true,
+    query1ResultBytes: true,
+    query1ColumnNames: true,
+    query1ColumnTypes: true,
+    query1Principal: true,
+    query1Session: true,
     context: true,
+    query2RowShape: true,
+    query2ResultBytes: true,
+    query2ColumnNames: true,
+    query2ColumnTypes: true,
+    query2Principal: true,
+    query2Session: true,
     sessionContinuity: true,
     principalContinuity: true,
     scalarTypesAndValues: true,
@@ -200,7 +226,43 @@ test("a principal distinct from the configured login passes with exactly two fix
         (r) => r.payload.maxRows === 1 && r.payload.maxBytes === 8192 && r.payload.credits === 1,
       ),
   );
-  assert.doesNotMatch(JSON.stringify(result), /SECRET_TOKEN|private-browser-url|9001|CANARY_USER/);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /SECRET_TOKEN|private-browser-url|session-A9b7|CANARY_USER/,
+  );
+});
+
+test("safe validation failures distinguish contract categories and retain completed checks", async () => {
+  const cases = [
+    ["wrong-session-type", "query1ColumnTypes", 1],
+    ["wrong-session-type-second", "query2ColumnTypes", 2],
+    ["empty-session", "query1Session", 1],
+    ["wrong-type", "query2ColumnTypes", 2],
+    ["wrong-shape", "query2RowShape", 2],
+    ["wrong-name", "query2ColumnNames", 2],
+    ["wrong-context", "context", 1],
+    ["wrong-session", "sessionContinuity", 2],
+    ["wrong-principal", "principalContinuity", 2],
+    ["wrong-scalar", "scalarTypesAndValues", 2],
+  ];
+  for (const [mode, check, queryCount] of cases) {
+    const { child } = childFixture(mode);
+    const result = await exerciseChild(child, validateContext(context()), { bounds });
+    assert.equal(result.failure, `${check}Mismatch`, mode);
+    assert.equal(result.checks[check], false, mode);
+    assert.equal(result.checks.connected, true, mode);
+    assert.equal(result.checks.query1RowShape, true, mode);
+    assert.equal(result.helperQueryRequestsSent, queryCount, mode);
+    if (queryCount === 2) {
+      assert.equal(result.checks.query1ColumnTypes, true, mode);
+      assert.equal(result.checks.context, true, mode);
+    }
+    assert.equal(result.checks.childReaped, true, mode);
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /OTHER_ROLE|DIFFERENT_PRINCIPAL|session-A9b7|SECRET_TOKEN|private-browser-url/,
+    );
+  }
 });
 
 test("session, principal, scalar type/value and extra-row failures cannot pass qualification", async () => {
@@ -298,7 +360,7 @@ test(
     const saved = readFileSync(path.join(root, result.evidence), "utf8");
     assert.doesNotMatch(
       saved,
-      /SECRET_TOKEN|private-browser-url|synthetic-account|CANARY_USER|9001/,
+      /SECRET_TOKEN|private-browser-url|synthetic-account|CANARY_USER|DIFFERENT_PRINCIPAL|session-A9b7/,
     );
     assert.deepEqual(JSON.parse(saved).checks, result.checks);
   },

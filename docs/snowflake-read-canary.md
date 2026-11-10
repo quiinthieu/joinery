@@ -1,9 +1,9 @@
 # Snowflake SDK read canary
 
-This is a prepared, opt-in qualification runner. No real account authentication
-or SQL execution was performed while implementing it. Synthetic tests establish
-the runner's protocol checks and local cleanup behavior, not Snowflake account
-behavior or application replacement readiness.
+This is an opt-in qualification runner. Synthetic tests establish the runner's
+protocol checks and local cleanup behavior, not Snowflake account behavior or
+application replacement readiness. The prior approved live attempt and the
+current offline-only repair are described below.
 
 Run the default command to review its exact plan:
 
@@ -87,7 +87,12 @@ SELECT CURRENT_USER() AS CANARY_USER, CURRENT_SESSION() AS CANARY_SESSION, CAST(
 ```
 
 The first checks exact configured role/database/schema/warehouse values, a
-bounded nonempty principal and a numeric session identifier. The second requires
+bounded nonempty principal and an opaque session identifier. Snowflake documents
+[CURRENT_SESSION](https://docs.snowflake.com/en/sql-reference/functions/current_session)
+as returning VARCHAR and describes the identifier as generally alphanumeric.
+Both session columns must therefore have SDK type `text`. The runner requires a
+nonempty string of at most 256 bytes without control characters, without imposing
+numeric syntax. That size bound is this runner's local acceptance policy. The second requires
 the same principal and session identifier, exact column names/types, and the
 scalar strings `42`, `joinery-read-canary`, `TRUE`, and SQL NULL. Numbers and
 booleans are fetched as strings by the original helper. Each response must
@@ -146,6 +151,32 @@ omits account/context values, rows, session/query/request IDs, raw frames,
 browser URLs, credentials, tokens and helper error messages. Child stderr is
 drained and discarded. No new tracked file receives connection information.
 
+Validation records booleans incrementally: per-query row shape, result-byte
+bound, column names/types, principal and session shape; configured context;
+principal/session continuity; and scalar values/types. A failing check is false
+and produces its fixed category plus `Mismatch`, for example
+`query1ColumnTypesMismatch`, `query2RowShapeMismatch`, `contextMismatch` or
+`sessionContinuityMismatch`. Completed earlier checks remain present; omitted
+checks were not reached. The first response is validated before dispatching the
+second SELECT, so a first-query validation failure submits only one helper query.
+These codes and booleans contain no actual returned values.
+
+## Current qualification evidence
+
+A prior separately approved live attempt authenticated and submitted both fixed
+helper queries, then failed with the generic `resultMismatch` code. Its child
+was cleanly reaped and private auth state was removed. That evidence did not
+retain enough detail to identify the exact failing validation.
+
+Offline review subsequently found that the runner incorrectly required a
+numeric/fixed session column. A synthetic regression using the documented
+VARCHAR type and an alphanumeric session identifier reproduced this local bug
+before repair. This does not prove it was the sole cause of the live failure.
+The repaired runner has not yet been rerun against the real account. The owner's
+existing approval covers repeating the same two SQL strings and network scope
+after this validator repair. Additional queries or expanded scope require
+separate authorization. The verification ledger records live outcomes.
+
 ## Offline verification
 
 ```sh
@@ -157,5 +188,8 @@ They cover plan-only behavior, rejected inputs, the exact query sequence,
 distinct login/principal acceptance, principal/session/type/value mismatches,
 non-string context rejection, oversized results, sanitized failures,
 cancellation, timeout escalation, actual child exit and private-state cleanup.
+They also cover opaque VARCHAR session identifiers and distinguish safe
+row-shape, column-name/type, context, continuity and scalar failure categories
+while preserving earlier successful checks.
 The seams are programmatic test interfaces; the CLI never accepts them.
 These tests do not invoke the real helper, authenticate or contact Snowflake.

@@ -111,6 +111,8 @@ export function makePlan(profile, runtime) {
       "The official SDK performs authentication and session setup separately from these two helper query requests. Two is a runner query count, not a bound on physical SQL/HTTP submissions or SDK setup work.",
     identity:
       "The SDK authenticates using the configured login. This canary checks bounded nonempty CURRENT_USER() and its continuity, not an independent binding between that user NAME and the configured LOGIN_NAME.",
+    session:
+      "CURRENT_SESSION() is VARCHAR: require SDK text type and a nonempty opaque string of at most 256 bytes without control characters, with exact continuity across both queries.",
     execution: "node scripts/snowflake-read-canary.mjs --run (only after explicit approval)",
   };
 }
@@ -222,14 +224,21 @@ export async function exerciseChild(child, profile, { signal, bounds = BOUNDS } 
         )
           throw fail("invalidProtocol");
         if (frame.type === "columns") {
+          if (pending.queryNumber === undefined) throw fail("invalidProtocol");
           if (pending.columns || !Array.isArray(frame.columns) || frame.columns.length > 6)
             throw fail("invalidProtocol");
           pending.columns = frame.columns;
         } else if (frame.type === "rows") {
+          if (pending.queryNumber === undefined) throw fail("invalidProtocol");
           if (!pending.columns || !Array.isArray(frame.rows)) throw fail("invalidProtocol");
           pending.rows.push(...frame.rows);
-          if (pending.rows.length > 1 || Buffer.byteLength(JSON.stringify(pending.rows)) > 8192)
-            throw fail("invalidProtocol");
+          if (pending.rows.length > 1)
+            recordCheck(outcome.checks, `query${pending.queryNumber}RowShape`, false);
+          recordCheck(
+            outcome.checks,
+            `query${pending.queryNumber}ResultBytes`,
+            Buffer.byteLength(JSON.stringify(pending.rows)) <= 8192,
+          );
         } else if (frame.type === "terminal") {
           if (frame.ok !== true) pending.reject(fail("helperRejected"));
           else
@@ -238,8 +247,8 @@ export async function exerciseChild(child, profile, { signal, bounds = BOUNDS } 
         } else if (!["accepted", "phase", "statement"].includes(frame.type))
           throw fail("invalidProtocol");
       }
-    } catch {
-      rejectAll("invalidProtocol");
+    } catch (error) {
+      rejectAll(error.safeCode ?? "invalidProtocol");
     }
   });
   async function request(op, payload, timeout) {
@@ -248,7 +257,13 @@ export async function exerciseChild(child, profile, { signal, bounds = BOUNDS } 
     const currentId = String(++id);
     if (op === "query") outcome.helperQueryRequestsSent += 1;
     const response = new Promise((resolve, reject) => {
-      pending = { id: currentId, resolve, reject, rows: [] };
+      pending = {
+        id: currentId,
+        resolve,
+        reject,
+        rows: [],
+        queryNumber: op === "query" ? outcome.helperQueryRequestsSent : undefined,
+      };
     });
     const bounded = deadline(
       response,
@@ -274,27 +289,15 @@ export async function exerciseChild(child, profile, { signal, bounds = BOUNDS } 
     const connection = await request("connect", profile, bounds.authMs);
     if (connection.result?.connected !== true) throw fail("invalidProtocol");
     outcome.checks.connected = true;
-    const answers = [];
-    for (const sql of STATEMENTS) {
+    let continuity;
+    for (const [index, sql] of STATEMENTS.entries()) {
       const answer = await request(
         "query",
         { sql, binds: [], classification: "read", credits: 1, maxRows: 1, maxBytes: 8192 },
         bounds.queryMs,
       );
-      if (
-        answer.result?.rowsSeen !== 1 ||
-        answer.result?.rowsRetained !== 1 ||
-        answer.result?.truncated !== false ||
-        answer.rows.length !== 1
-      )
-        throw fail("resultMismatch");
-      answers.push(answer);
+      continuity = validateAnswer(answer, index, profile, outcome.checks, continuity);
     }
-    validateAnswers(answers, profile);
-    outcome.checks.context = true;
-    outcome.checks.sessionContinuity = true;
-    outcome.checks.principalContinuity = true;
-    outcome.checks.scalarTypesAndValues = true;
     const close = await request("close", {}, bounds.closeMs);
     if (fatalCode) throw fail(fatalCode);
     outcome.checks.logoutAcknowledged = close.result?.logoutAcknowledged === true;
@@ -346,8 +349,12 @@ export async function exerciseChild(child, profile, { signal, bounds = BOUNDS } 
   return outcome;
 }
 
-function validateAnswers(answers, profile) {
-  const [context, scalar] = answers;
+function recordCheck(checks, name, passed) {
+  checks[name] = Boolean(passed);
+  if (!passed) throw fail(`${name}Mismatch`);
+}
+
+function validateAnswer(answer, index, profile, checks, prior) {
   const expectedNames = [
     [
       "CANARY_USER",
@@ -367,28 +374,54 @@ function validateAnswers(answers, profile) {
     ],
   ];
   const expectedTypes = [
-    ["text", "text", "text", "text", "text", "fixed"],
-    ["text", "fixed", "fixed", "text", "boolean", "text"],
+    ["text", "text", "text", "text", "text", "text"],
+    ["text", "text", "fixed", "text", "boolean", "text"],
   ];
-  for (const [i, answer] of answers.entries()) {
-    if (
-      JSON.stringify(answer.columns?.map((c) => c.name)) !== JSON.stringify(expectedNames[i]) ||
-      JSON.stringify(answer.columns?.map((c) => c.type)) !== JSON.stringify(expectedTypes[i]) ||
-      answer.rows[0].length !== expectedNames[i].length
-    )
-      throw fail("resultMismatch");
+  const prefix = `query${index + 1}`;
+  recordCheck(
+    checks,
+    `${prefix}RowShape`,
+    answer.result?.rowsSeen === 1 &&
+      answer.result?.rowsRetained === 1 &&
+      answer.result?.truncated === false &&
+      answer.rows.length === 1 &&
+      Array.isArray(answer.rows[0]) &&
+      answer.rows[0].length === expectedNames[index].length &&
+      answer.rows[0].every((value) => value === null || typeof value === "string"),
+  );
+  recordCheck(
+    checks,
+    `${prefix}ColumnNames`,
+    JSON.stringify(answer.columns?.map((column) => column?.name)) ===
+      JSON.stringify(expectedNames[index]),
+  );
+  recordCheck(
+    checks,
+    `${prefix}ColumnTypes`,
+    JSON.stringify(answer.columns?.map((column) => column?.type)) ===
+      JSON.stringify(expectedTypes[index]),
+  );
+  const row = answer.rows[0];
+  recordCheck(checks, `${prefix}Principal`, text(row[0]));
+  const session = row[index === 0 ? 5 : 1];
+  recordCheck(checks, `${prefix}Session`, text(session));
+  if (index === 0) {
+    recordCheck(
+      checks,
+      "context",
+      JSON.stringify(row.slice(1, 5)) ===
+        JSON.stringify([profile.role, profile.database, profile.schema, profile.warehouse]),
+    );
+    return { principal: row[0], session };
   }
-  const row = context.rows[0];
-  if (
-    !text(row[0]) ||
-    JSON.stringify(row.slice(1, 5)) !==
-      JSON.stringify([profile.role, profile.database, profile.schema, profile.warehouse]) ||
-    typeof row[5] !== "string" ||
-    !/^[0-9]{1,38}$/.test(row[5]) ||
-    JSON.stringify(scalar.rows[0]) !==
-      JSON.stringify([row[0], row[5], "42", "joinery-read-canary", "TRUE", null])
-  )
-    throw fail("resultMismatch");
+  recordCheck(checks, "principalContinuity", row[0] === prior.principal);
+  recordCheck(checks, "sessionContinuity", session === prior.session);
+  recordCheck(
+    checks,
+    "scalarTypesAndValues",
+    JSON.stringify(row.slice(2)) === JSON.stringify(["42", "joinery-read-canary", "TRUE", null]),
+  );
+  return prior;
 }
 
 export async function main(
