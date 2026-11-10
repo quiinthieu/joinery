@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("local metadata can be backed up, restored, undone and deleted", async ({ page, request }) => {
   const response = await request.post("http://127.0.0.1:1422/rpc/disconnect_fixtures", {

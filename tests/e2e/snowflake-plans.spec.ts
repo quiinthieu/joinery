@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { Table, Utf8, vectorFromArray, tableToIPC } from "apache-arrow";
 import type {
   ConnectionProfile,

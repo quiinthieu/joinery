@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "./fixtures";
 import type { QueryEvent, SavedWorkspace, SessionInfo } from "../../src/ipc/generated";
 
 const bridge = "http://127.0.0.1:1422";

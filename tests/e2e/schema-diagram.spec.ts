@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 const PG_PORT = Number(process.env.JOINERY_POSTGRES_PORT ?? "55432");
 

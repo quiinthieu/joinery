@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 async function rpc<T>(page: Page, command: string, args: Record<string, unknown> = {}): Promise<T> {
   const response = await page.request.post(`http://127.0.0.1:1422/rpc/${command}`, {

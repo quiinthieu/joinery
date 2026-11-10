@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("opted-in drafts and preferences recover without reconnecting or executing", async ({
   page,

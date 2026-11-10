@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 async function connect(page: Page, engine: "PostgreSQL" | "MySQL" | "MariaDB") {
   await page.goto("/");

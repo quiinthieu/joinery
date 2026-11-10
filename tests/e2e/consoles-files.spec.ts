@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 const BRIDGE_URL = "http://127.0.0.1:1422";
 const BRIDGE_TOKEN = "joinery-disposable-browser-tests-only";

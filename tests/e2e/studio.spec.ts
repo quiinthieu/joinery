@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 import { tableFromIPC } from "apache-arrow";
 
 test("workspace tabs and editor size are keyboard accessible", async ({ page }) => {

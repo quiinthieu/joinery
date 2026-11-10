@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 for (const [engine, port] of [
   ["MySQL", 53306],

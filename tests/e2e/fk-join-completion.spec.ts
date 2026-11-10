@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from "@playwright/test";
+import { expect, test, type Locator } from "./fixtures";
 import { tableFromIPC } from "apache-arrow";
 
 async function complete(editor: Locator, sql: string) {

@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from "@playwright/test";
+import { expect, test, type Locator } from "./fixtures";
 import { mkdir, writeFile } from "node:fs/promises";
 
 async function caret(editor: Locator, offset: number) {

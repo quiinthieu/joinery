@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "./fixtures";
 
 const PG_PORT = Number(process.env.JOINERY_POSTGRES_PORT ?? "55432");
 const BRIDGE = "http://127.0.0.1:1422";
