@@ -172,10 +172,17 @@ Offline review subsequently found that the runner incorrectly required a
 numeric/fixed session column. A synthetic regression using the documented
 VARCHAR type and an alphanumeric session identifier reproduced this local bug
 before repair. This does not prove it was the sole cause of the live failure.
-The repaired runner has not yet been rerun against the real account. The owner's
-existing approval covers repeating the same two SQL strings and network scope
-after this validator repair. Additional queries or expanded scope require
-separate authorization. The verification ledger records live outcomes.
+The repaired runner, committed as `9e39e51`, passed the same approved live scope
+at `2026-11-10T05:49:42.148Z`. Both query result contracts, configured context,
+principal/session continuity, synthetic scalar values, logout acknowledgement,
+clean child exit and private authentication-state removal passed. Safe evidence:
+`.cache/snowflake-read-canary/437fd1f6-c2b7-4164-a360-b31782e26b14.json`.
+The first failed attempt remains recorded in the verification ledger.
+
+The owner's existing approval covered repeating these same two SQL strings and
+network scope after the validator repair. Additional queries or expanded scope
+require separate authorization. This helper canary does not qualify normal
+packaged application sign-in, table reads, metadata, writes or transactions.
 
 ## Offline verification
 

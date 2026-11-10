@@ -8,10 +8,12 @@ Keep DataGrip available until your required workflows are accepted.
 
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.
-The current local-application OAuth/SQL-API read-only pilot does not satisfy that
-target. The fixture walkthrough below qualifies existing paths only; do not retire
-DataGrip on that basis. Stateful Snowflake authentication/session implementation
-and actual authorized-account qualification are required next.
+The current SDK external-browser route is integrated for read-only SQL; its local
+browser, native and package qualification passes. Existing profiles retain their OAuth/SQL API
+route. Neither route satisfies the complete target: SDK metadata, writes, DDL,
+transactions and actual account qualification remain open. The fixture walkthrough
+below qualifies existing paths only; keep DataGrip until the required walkthrough
+is accepted. See [SDK integration and limits](snowflake-sdk-integration.md).
 
 For the confirmed million-row workload, see the
 [large-result walkthrough](large-results.md). Temporary result storage requires

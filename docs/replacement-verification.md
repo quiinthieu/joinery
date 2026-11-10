@@ -1236,3 +1236,153 @@ signing/notarization, installation and owner acceptance remain open. No real
 Snowflake login/query, billable work, remote write, push, publication or
 deployment occurred. The latest stable DataGrip release API was rechecked on
 10 November: still 2026.3, build `263.7307.216`.
+
+## 10 November 2026: explicit SDK profiles and retained cleanup
+
+Current integration status and bounded proof are in
+[Snowflake SDK application integration](snowflake-sdk-integration.md).
+The required all-applicable-DataGrip target, including Snowflake writes, DDL,
+transactions and one-million-row results, remains open.
+
+The local application source implements explicit authentication modes, immutable
+native runtime selection, reserved cleanup permits, identity-retaining removal
+authority and command-facing cleanup receipts. New Snowflake profiles select SDK
+external browser; old missing-mode profiles retain OAuth. Focused tests cover
+restart and metadata backup/restore, failure without native resources, cancellation
+during actual-helper synthetic authentication, abandoned futures and shutdown.
+No automatic authentication fallback or SQL replay was introduced.
+
+`pnpm validate` passes **604 frontend / 297 standard Rust tests**, frontend build,
+desktop compilation, formatting and strict all-target/all-feature Clippy.
+Additional focused evidence:
+
+| Command/check | Result | Local evidence |
+|---|---|---|
+| Runtime factory units | 18 pass | `sdk-runtime-factory.log` |
+| Cleanup authority/registry units | 15 focused pass | `sdk-cleanup-owned-final.log` |
+| Actual Node/helper through Studio | Four pass | `sdk-studio-after-apfs.log` |
+| Actual-child supervisor/read adapter | 31 / 11 pass | `sdk-child-adapter.log` |
+| Profile persistence | Six pass | `sdk-profile-interim.log` |
+| Focused browser | Six pass | `sdk-browser-focused-final.log` |
+| Preparation/startup script regressions | 48 pass | `sdk-runtime-scripts.log` |
+| Resource validator/copy regressions | Seven pass | `sdk-native-resources-final.log` |
+| Actual staged resources | Pass; 15,104 entries / five contained links | `sdk-stage-resources.json` |
+| Actual staged SDK hello/EOF | Pass; zero authentication/SQL requests | `sdk-stage-startup.log` |
+| Actual isolated database fixtures | 124 pass | `sdk-real-fixtures.log`; eight sequential suites on synthetic local engines |
+| Normal SDK macOS bundle | Pass; 223.41 MiB, strict ad-hoc signature, resources and actual SDK hello/EOF | `sdk-bundle.log`, `sdk-bundle-artifact.json`; no authentication/SQL |
+| Full browser suite | All 143 pass in 9.5 minutes | `sdk-browser-all-final.log`; 264-file source comparison unchanged |
+| Hidden SDK native application | All 19 checks / ten cleanup cycles pass | `sdk-native-runs.json`, `sdk-native-summary.json`; packaged runtime available at all six checkpoints, zero connect/execution calls |
+| Native recovery runner | Six tests pass | `sdk-native-recovery-runner.log` |
+| Standalone hidden native PostgreSQL recovery | Two pairs / four processes pass | `sdk-native-recovery-runs.json`; pending-close exit 74.24ms / 50.61ms, actual rollback, restored drafts/preferences, zero reconnect/replay before observation |
+
+These logs are in `.cache/verification/connection-attempts/`; `sdk-validate.log`
+records full validation. The four actual Node/helper tests use a synthetic SDK;
+the two offline browser-profile flows use actual persistence but the harness
+refuses Snowflake authentication. Other Snowflake browser flows explicitly
+intercept the API boundary. Neither is an actual account qualification.
+
+The APFS receipt defect was reproduced: successful `remove_dir_all` did not make
+an open directory handle's link count zero. The corrected receipt accepts the
+successful removal after original-directory/parent identity checks. Replacements
+remain untouched; a failed removal retains retry ownership after child reaping.
+Initial failures are preserved in `sdk-cleanup-owned-interim.log` and
+`sdk-studio-interim.log`. A subsequent rerun caught a test-local missing variable
+before the final four tests passed. An initial browser run correctly failed the
+local-only harness guard; the offline Snowflake fixture now permits one synthetic
+profile shape while continuing to forbid both authentication routes.
+
+Independent review cleared the runtime/profile/lifecycle integration after the
+APFS repair. Packaging review found unchecked source, supplements/provenance,
+Node LICENSE and permission bits plus the regular bundle route bypassing checks.
+Those findings were fixed and reviewed again. A root wrapper return-shape error
+was corrected before the actual stage gate passed. Source and manifest checks
+do not authenticate all dependency bytes or resolve the remaining proxy notice
+applicability gap. Initial filesystem deletion is synchronous, so async deadlines
+do not bound blocked local filesystem I/O. Same-user hostile pathname mutation
+is outside the trusted-parent boundary. Forced promotion rollback has source
+review but no injected rename-failure test.
+
+Notice preparation is committed separately as `daa4203`. Its offline stage has
+manifest SHA-256 `e99ae96378b685b7a49027c77fe36039d6a32a6f2f470b9353ae36ad27307d76`;
+the unchanged production lock has 183 dependencies. See
+[notice evidence](snowflake-sdk-licenses.md). Those local integration checks ran
+without Snowflake authentication or SQL. The separately approved live read
+canary is recorded below. No remote write, installation, push, publication or
+deployment ran.
+
+Application integration is committed as `521b086`; packaging is `cdfba88`. The
+normal and hidden native build provenance predates these commits and records
+`daa4203` with `sourceDirty=true`. The normal application source was unchanged;
+the first browser comparison saw only package-script changes. After correcting
+the old sign-in-copy assertion, the final browser comparison found no changed
+paths among its 264 recorded files. New canary preparation files and documentation
+were independent of the compiled application.
+
+The normal SDK bundle is 223.41 MiB; its executable SHA-256 is
+`a6b09c0b0a73d9626cbf7bab9e9a5bdb1c69ffeda0172f0f04dd96b5f50ad1f2`.
+The hidden bundle executable SHA-256 is
+`2fad04be58bc700ab3807cb9240c52b843030c3668efcc463030a4a26879235b`.
+The runtime manifest is the same `e99ae963…07d76` above. Normal Tauri packaging
+dereferenced the five dependency links, retaining 15,104 validated entries;
+hidden preparation preserved them. Both actual packaged SDK startup checks
+reported zero authentication/SQL requests. The hidden native smoke passed in
+4374ms; all six checkpoints reported runtime availability. Its 97.98MiB peak
+main-process RSS is a smoke observation, not representative performance evidence.
+The standalone PostgreSQL recovery route does not qualify bundled SDK discovery
+or Snowflake transactions. Normal-owner-state startup/restart is still open.
+Both release builds succeeded with the existing `rust-objcopy`/`libLLVM.dylib`
+stripping warning; no global toolchain change or hook bypass was used.
+
+## 10 November 2026: approved two-query Snowflake read canary
+
+The owner approved the concrete plan committed as `f43f24f`, including possible
+warehouse billing and SDK retransmission. The scope is the existing connection,
+external-browser SSO and exactly two fixed SELECT requests: session/context and
+synthetic scalar values. It excludes object reads, writes, DDL, transactions,
+metadata enumeration and million-row workloads. See
+[the plan and command](snowflake-read-canary.md).
+
+The first live invocation at `2026-11-10T05:39:15.569Z` failed with the safe code
+`resultMismatch`. It authenticated and submitted two helper query requests;
+the child was reaped with a clean exit and its private local authentication
+directory was removed. This is a failed qualification, not an account-readiness
+pass. The SDK may retransmit, so the helper-request count is not an assertion
+about the number of physical server submissions or charges.
+
+Safe evidence: `.cache/snowflake-read-canary/0ad5c2eb-079f-4bb5-8add-ddf095053939.json`;
+runner output: `.cache/verification/connection-attempts/sdk-read-canary-live.log`.
+Runtime manifest SHA-256 is `e99ae96378b685b7a49027c77fe36039d6a32a6f2f470b9353ae36ad27307d76`;
+context fingerprint is `e0298912a552c903ee975103eb0549d55076f22cea478d0b5310aaad1815eec7`.
+No profile values, query rows, session IDs, URLs or raw SDK errors are retained
+in this evidence. Consequently the original failure cannot be conclusively
+attributed from its discarded result values.
+
+Source inspection found a local validator contract defect: it expected a fixed
+numeric session ID, but Snowflake documents `CURRENT_SESSION()` as an alphanumeric
+VARCHAR. A synthetic regression with text-typed `session-A9b7` reproduced failure
+before correction. This establishes the local defect, not the sole cause of the
+live failure. [Official function contract](https://docs.snowflake.com/en/sql-reference/functions/current_session).
+
+The corrected runner was independently reviewed, passed all 11 synthetic tests
+and actual default PLANONLY, and was committed as `9e39e51`. Both approved SQL
+strings were verified byte-for-byte unchanged against `f43f24f`. The same-scope
+live rerun at `2026-11-10T05:49:42.148Z` **passed**, using the same runtime and
+context fingerprints above. The owner had already explicitly approved this
+scope and possible billing; no new query scope was introduced.
+
+All recorded booleans passed: connection, per-query byte bounds/row
+shapes/column names/types/principal/session, configured context, principal/session
+continuity, exact synthetic scalar strings/NULL, logout acknowledgement, actual
+child reaping, clean exit and original private authentication-state removal.
+Safe evidence: `.cache/snowflake-read-canary/437fd1f6-c2b7-4164-a360-b31782e26b14.json`;
+runner log: `.cache/verification/connection-attempts/sdk-read-canary-session-fix-live.log`.
+Offline evidence: `sdk-read-canary-session-fix-tests.log` (11 pass),
+`sdk-read-canary-session-fix-plan.json` (PLANONLY, no helper/auth/SQL).
+
+This is actual account evidence for the two-query SDK helper read workflow. It
+does not qualify normal packaged application login/restart, object metadata or
+data, cancellation/interruption, expired authentication, million-row results,
+writes, DDL, transactions or owner replacement acceptance. Logout acknowledgement
+is the helper/SDK response, not an independent server-session inventory check.
+No object reads or remote writes were requested, and no additional account
+queries are authorized by this canary plan.

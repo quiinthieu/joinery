@@ -15,20 +15,35 @@ The owner also requires the **latest stable DataGrip release** and Snowflake
 query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
 released 5 November 2026. Complete million-row paging/export with bounded memory
 is required. The [opt-in temporary result store](large-results.md) now targets
-one million rows with bounded memory/disk. Actual PostgreSQL paging/export and
-all 138 browser workflows pass. Native preference/restart checks also pass.
+one million rows with bounded memory/disk. Earlier actual PostgreSQL paging/export
+and browser/native preference checks pass; their source and artifact identities
+are recorded in the verification ledger.
 Actual Snowflake million-row behavior remains unqualified.
 
-Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
-the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
-session with writes/transactions. Browser login alone does not prove equivalent
-SSO setup or session behavior. These are primary replacement blockers. Local
+Current Joinery implements explicit local-application OAuth/SQL API and stateful
+SDK external-browser profile routes. Both enforce ReadOnly. SDK metadata, writes,
+DDL and transactions remain disabled; real account/session compatibility remains
+unqualified. These are primary replacement blockers. Local
 PostgreSQL/MySQL safety repairs remain useful application work but do not close
 Snowflake acceptance. External account qualification needs explicit non-production
 scope and permission for any billable activity/writes; no private DataGrip state
 or credentials will be inspected.
 
-The stateful transport foundation is now in the repository: a pinned SDK helper
+The current [SDK application integration](snowflake-sdk-integration.md) adds explicit
+authentication modes, fixed native runtime selection, retained cleanup authority,
+pending launch permits and a reviewed opt-in resource-packaging route. Focused
+checks and combined validation pass (604 frontend / 297 standard Rust tests),
+as do 124 actual fixture tests and normal SDK resource-bearing macOS packaging,
+ad-hoc signature and packaged SDK hello/EOF startup. All 143 browser workflows and 19 hidden SDK native checks with ten cleanup
+cycles pass, as do two standalone PostgreSQL native recovery pairs.
+Next are account qualification, [SDK metadata/session context](snowflake-sdk-metadata-design.md)
+and the still-required write/transaction workflows. No target capability was made optional.
+A separately approved two-query SDK helper canary now passes actual SSO,
+configured context, session continuity, synthetic scalar values and local
+cleanup. The ledger preserves its first validator failure and corrected rerun;
+broader account SQL and writes still require concrete authorization.
+
+The preceding stateful transport foundation is in the repository: a pinned SDK helper
 passes 31 local tests (six use the actual SDK against loopback HTTP), and its
 Rust supervisor passes eight unit and 30 integration tests. The latter includes
 explicit cleanup receipts for unused/failed launches and actual child reaping.
@@ -36,10 +51,11 @@ The read adapter adds 11 integration tests, including exact typed binding and
 terminal/cancellation ordering. Nine runtime-preparation tests, actual offline
 macOS arm64 staging and staged SDK startup pass; the stage is not an app bundle.
 The [driver design](snowflake-driver-design.md) records the observed SDK retry
-behavior and remaining gates. Application auth cancellation, resource packaging,
-SSO session integration, writes and transaction qualification remain incomplete.
+behavior and remaining gates. Those foundation counts predate the current profile/cleanup integration. Current
+resource packaging now passes locally. Normal packaged SSO/session behavior,
+writes and transactions retain separate open qualification gates.
 
-The active increment adds reserved connection-attempt identifiers, cancellation
+The preceding lifecycle increment added reserved connection-attempt identifiers, cancellation
 before/during authentication, exact retirement of late responses, and a native
 shutdown publication barrier. Focused UI tests pass; independent review exposed
 startup socket/task ownership gaps in PostgreSQL, SSH and MySQL. Their focused
@@ -50,9 +66,9 @@ bundle. This is prerequisite lifecycle work for
 SDK integration; it does not implement externalbrowser SSO. See the
 [active verification record](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
 The [connection ownership contract](connection-lifecycle.md) records cancellation,
-preflight, resource bounds and shutdown limits. Next are packaged runtime/profile
-integration, retained helper cleanup authority and
-session metadata, followed by the still-required write/transaction workflows.
+preflight, resource bounds and shutdown limits. The current SDK integration implements profile routing and retained cleanup;
+hidden native qualification now passes. Next implement SDK session metadata and the
+still-required write/transaction workflows.
 
 The active 9 November 2026 Goal and next qualification queue are in
 [daily replacement acceptance](replacement-acceptance.md). The required Snowflake externalbrowser/macOS target is confirmed above;

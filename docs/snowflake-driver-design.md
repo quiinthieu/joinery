@@ -1,10 +1,11 @@
 # Snowflake stateful driver design
 
-Status: implemented and locally tested transport/read-driver foundation;
-application integration and external qualification remain open. This document
-records the route and the proof required before enabling it. The
-current application still uses Snowflake's SQL API with local-application
-OAuth and read-only behavior; this design does not change that implementation.
+Status: transport/read-driver foundation and explicit application profile
+integration are implemented and locally qualified. The application offers SDK
+external-browser and legacy local-application OAuth/SQL API routes; both are
+read-only. The approved two-query SDK helper canary passes actual SSO and bounded
+read contracts. Normal packaged account sign-in and the remaining daily workflows
+are unqualified. This document records the route and its remaining safety gates.
 See the [replacement inventory](snowflake-datagrip-replacement.md) and
 [official capability baseline](snowflake-official-baseline.md) for the owner's
 requested workflow and current product boundary.
@@ -53,7 +54,8 @@ bound to the exact supervisor and operation ticket. A stale control cannot bind
 to a later operation that reused the same local name. Its reproduced late-Drop
 race is repaired: cleanup of a completed operation is a no-op, while genuine
 control failures still retire the child. This reviewed transport is now in
-`src-tauri/src/drivers/snowflake_process.rs`; application integration remains open.
+`src-tauri/src/drivers/snowflake_process.rs`; its application integration is
+recorded in [SDK integration evidence](snowflake-sdk-integration.md).
 
 Keep all commands for a console serialized on the same SDK connection. On
 connect, verify the expected server identity and role/database/schema/warehouse
@@ -193,10 +195,12 @@ of retry safety. Test session loss and unresolved outcomes separately; short fau
 tests cannot establish an undocumented long-outage recovery guarantee. This adds
 a concrete acceptance design without claiming any external test has run.
 
-No real Snowflake account, browser SSO, external IdP, remote statement,
-transaction or remote cancellation was exercised. There is no current macOS
-package qualification for this driver. Before implementation can
-replace the current mode, require at least:
+The transport-foundation checks above did not exercise a real Snowflake account.
+Subsequent local macOS resource/package/native qualification passes, and the
+separately approved two-query SDK helper canary passes real external-browser SSO,
+context/session continuity, scalar values and local cleanup. Neither closes
+normal packaged account sign-in, remote cancellation, transactions or full daily
+acceptance. Before replacement readiness, require at least:
 
 1. Owner-authorized macOS externalbrowser sign-in, callback lifecycle, account
    identity, role and warehouse checks, and clean disconnect.
@@ -216,13 +220,17 @@ replace the current mode, require at least:
    does not imply those workflows are implemented or equivalent.
 
 The owner's SSO and workflow requirements remain acceptance criteria. This
-design does not narrow them or assert that any gate has passed.
+design does not narrow them; the integration guide and ledger distinguish the
+completed narrow checks from open gates.
 
 
-## Next integration increment: explicit SDK sessions
+## Application integration contract: explicit SDK sessions
 
-This is an implementation contract, not completed qualification. The reviewed
-sequence after connection-attempt qualification is:
+The current [application integration](snowflake-sdk-integration.md) implements
+profile routing, fixed runtime selection and retained cleanup from this contract.
+Combined local native/package qualification passes. SDK metadata, normal packaged
+account qualification and the write/transaction gates remain open. The reviewed
+integration sequence was:
 
 1. Add an immutable runtime factory using the packaged `snowflake-runtime`
    resource directory. Development may explicitly select the repository's

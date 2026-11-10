@@ -72,8 +72,14 @@ change the server's timeout.
 
 This drain establishes local setup retirement. It does not prove that a remote
 write failed or a transaction rolled back. SQL outcome checks and actual database
-observers remain required. SDK helper cleanup receipts must be integrated with
-shutdown before externalbrowser application qualification.
+observers remain required. The SDK integration now retains cleanup receipts
+independently of connection futures and driver references. It reserves a pending
+slot before allocating a helper state root; cancel, disconnect and shutdown wait
+for no-child/reaped disposition and original-root removal. Failed removal remains
+tracked for bounded, serialized retries. Reset snapshots include pending permits
+and cannot discard a newer slot. See [SDK integration](snowflake-sdk-integration.md)
+for APFS identity/removal evidence and filesystem-bound limits. Local process
+cleanup does not prove remote logout, cancellation or rollback.
 
 ## Regression and acceptance evidence
 

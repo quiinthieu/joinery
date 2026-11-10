@@ -1,10 +1,12 @@
 # Snowflake runtime preparation
 
-The externalbrowser driver foundation uses its own pinned Node runtime and
-locked SDK dependencies. Application profile integration, Tauri resource
-packaging, signing/notarization and actual Snowflake qualification are still
-open. A prepared stage is not an installed or usable application capability.
-The existing application continues to use the OAuth/SQL API route.
+The external-browser driver uses its own pinned Node runtime and locked SDK
+dependencies. Explicit application profile integration and local package/native
+qualification pass. New Snowflake profiles choose the SDK route;
+existing profiles retain OAuth/SQL API. Both remain read-only. A prepared stage
+alone does not establish a usable packaged workflow. See the
+[integration evidence](snowflake-sdk-integration.md) for resource packaging,
+verification commands and the remaining required account/write/transaction gates.
 
 ## Prepare and check on macOS arm64
 
@@ -50,6 +52,24 @@ version, starts the absolute staged Node/helper with an isolated parent-owned
 temporary state directory, reads one bounded hello frame and checks clean EOF
 exit. A Node socket/DNS guard detects attempted traffic. This guard is not an OS
 sandbox or evidence about SSO, TLS, native addons, subprocesses or account behavior.
+
+For the resource-bearing local application and hidden native fixture:
+
+```sh
+pnpm desktop:snowflake:bundle:mac
+pnpm test:snowflake:startup --bundle src-tauri/target/release/bundle/macos/Joinery.app
+pnpm desktop:snowflake:smoke:build
+pnpm test:native --runs 1 --attributed-memory
+```
+
+The first build uses the explicit `tauri.snowflake.conf.json` resource mapping.
+Release startup selects only the bundle's `Resources/snowflake-runtime`; debug
+startup selects only the checkout's fixed stage. Missing or invalid resources
+produce an unsupported SDK connection error. Standard bundle/smoke commands
+remain available without a stage and cannot connect SDK profiles in that case.
+The bundled startup check submits neither authentication nor SQL. The native
+checkpoint's runtime-availability field proves loading, not account suitability.
+These commands do not install, publish, notarize or authorize external queries.
 
 ## Protocol and driver checks
 

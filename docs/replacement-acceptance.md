@@ -27,18 +27,19 @@ The owner also requires the **latest stable DataGrip release** and Snowflake
 query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
 released 5 November 2026. Complete million-row paging/export with bounded memory
 is required. The [opt-in temporary result store](large-results.md) now targets
-one million rows with bounded memory/disk. Actual PostgreSQL paging/export and
-all 138 browser workflows pass. Native preference/restart checks also pass.
+one million rows with bounded memory/disk. Earlier actual PostgreSQL paging/export
+and browser/native preference checks pass; the ledger identifies their source.
 Actual Snowflake million-row behavior remains unqualified.
 
-Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
-the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
-session with writes/transactions. Browser login alone does not prove equivalent
-SSO setup or session behavior. These are primary replacement blockers. Local
-PostgreSQL/MySQL safety repairs remain useful application work but do not close
-Snowflake acceptance. External account qualification needs explicit non-production
-scope and permission for any billable activity/writes; no private DataGrip state
-or credentials will be inspected.
+Explicit SDK external-browser profiles and retained helper lifecycle are now
+implemented. New profiles select the SDK; existing profiles retain OAuth/SQL API.
+Both remain read-only. Current local validation passes 604 frontend / 297 standard
+Rust tests; focused profile, actual-child lifecycle and browser checks pass.
+All 124 actual fixtures and normal SDK resource-bundle/signature/startup checks
+pass. All 143 browser workflows, 19 hidden SDK native checks with ten cleanup cycles
+and two standalone PostgreSQL native recovery pairs pass.
+See [SDK integration evidence](snowflake-sdk-integration.md). Actual Snowflake
+account behavior, metadata, writes, DDL and transactions remain required and open.
 
 ## Target definition and open questions
 
@@ -52,7 +53,17 @@ engine list. PostgreSQL, MySQL/MariaDB and Redis are secondary existing adapters
 they are not substitutes for required Snowflake behavior. No feature is optional
 merely because it is currently unsupported or externally unqualified.
 
-Remaining details: Snowflake account/version/environment, role/warehouse policy,
+The owner authorized reusing the current Snowflake connection. Its allowlisted
+non-secret account/role/warehouse/database/schema settings have been located in
+an ignored owner-only repository cache; they need not be provided again. The owner
+approved the bounded two-query read canary including possible billing. Its first
+run authenticated and submitted both reads, then failed local validation. After
+a reproduced validator-contract repair, the same-scope live rerun passed context,
+session continuity, scalar values and cleanup. [The ledger](replacement-verification.md)
+records both attempts. This does not authorize object reads or writes or qualify
+packaged application sign-in.
+Remaining details: server version/environment,
+warehouse policy,
 representative sanitized tasks/column widths, CSV import sizes, accessibility/performance expectations,
 and an authorized non-production qualification scope. These refine acceptance;
 they do not narrow the confirmed all-applicable-DataGrip target.
@@ -67,10 +78,10 @@ fresh outcomes separately.
 
 | Workflow | Observable acceptance | Initial state / remaining evidence |
 |---|---|---|
-| Connect securely | Existing Snowflake externalbrowser SSO; inspect identity/context; reject TLS/auth failures; reconnect deliberately without replay | Required externalbrowser path missing; current local-application OAuth pilot is not equivalent |
+| Connect securely | Existing Snowflake externalbrowser SSO; inspect identity/context; reject TLS/auth failures; reconnect deliberately without replay | SDK profile/lifecycle integration implemented with focused local evidence; actual externalbrowser account/native acceptance remains open |
 | Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Snowflake partial catalog pilot; required object explorer/DDL/dependency coverage and daily role qualification incomplete |
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
-| Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | Read-only SQL API pilot; required stateful write/transaction path missing. Other-engine fixture evidence does not qualify it |
+| Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | Read-only SDK route integrated; metadata, reviewed writes/DDL, transactions and remote outcomes remain open. Other-engine fixtures do not qualify Snowflake |
 | Inspect and move data | Browse and export complete results up to 1,000,000 rows with bounded memory; filter/sort/page, copy exact values; cancelled export clearly incomplete | Opt-in temporary result storage passes actual PostgreSQL million-row paging/export and browser acceptance. Native preference/restart checks pass. Actual Snowflake types/transport/size, wide-result export and independent copy/import limits remain open; see [large results](large-results.md) |
 | Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; stale/replaced targets reject atomically; ineligible results stay read-only | PostgreSQL original relation identity and MySQL/MariaDB retained guards implemented. Final source checks pass 581 frontend / 193 Rust, 124 actual fixtures, 27/27 strict scenarios and 137/137 browser workflows, including exact CSV ownership and TLS-over-SSH. Snowflake grid/CSV editing is still disabled and requires separate identity proof. Normal packaged restart/credentials and owner applicability/acceptance remain open |
 | Transactions | Snowflake consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives deliberate reconnect; DDL implicit commits and interrupted acknowledgements are truthful | Required Snowflake stateful transaction path missing. Fifteen local transaction transport tests qualify existing SQL adapters only |

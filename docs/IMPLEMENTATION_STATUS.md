@@ -15,38 +15,37 @@ The owner also requires the **latest stable DataGrip release** and Snowflake
 query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
 released 5 November 2026. Complete million-row paging/export with bounded memory
 is required. The [opt-in temporary result store](large-results.md) now targets
-one million rows with bounded memory/disk. Actual PostgreSQL paging/export and
-all 138 browser workflows pass. Native preference/restart checks also pass.
+one million rows with bounded memory/disk. Earlier actual PostgreSQL paging/export
+and browser/native preference checks pass; the ledger identifies their source.
 Actual Snowflake million-row behavior remains unqualified.
 
-Current Joinery Snowflake uses local-application OAuth authorization-code/PKCE and
-the SQL API, enforces ReadOnly, and does not implement a stateful externalbrowser
-session with writes/transactions. Browser login alone does not prove equivalent
-SSO setup or session behavior. These are primary replacement blockers. Local
-PostgreSQL/MySQL safety repairs remain useful application work but do not close
-Snowflake acceptance. External account qualification needs explicit non-production
-scope and permission for any billable activity/writes; no private DataGrip state
-or credentials will be inspected.
+Current local source integrates explicit external-browser SDK profiles, fixed
+native runtime selection and retained helper cleanup. New profiles choose the SDK;
+existing profiles preserve local-application OAuth. Both routes enforce ReadOnly.
+SDK metadata, writes, DDL and transactions remain disabled and required. Actual
+packaged application authentication, million-row behavior and owner suitability
+are unqualified. A separately approved two-query SDK helper canary now passes
+actual account SSO, context/session continuity, scalar values and local cleanup;
+the ledger records its initial validator failure and corrected rerun.
 
-The stateful transport foundation is now in the repository: a pinned SDK helper
-passes 31 local tests (six use the actual SDK against loopback HTTP), and its
-Rust supervisor passes eight unit and 30 integration tests. The latter includes
-explicit cleanup receipts for unused/failed launches and actual child reaping.
-The read adapter adds 11 integration tests, including exact typed binding and
-terminal/cancellation ordering. Nine runtime-preparation tests, actual offline
-macOS arm64 staging and staged SDK startup pass; the stage is not an app bundle.
-The [driver design](snowflake-driver-design.md) records the observed SDK retry
-behavior and remaining gates. Application auth cancellation, resource packaging,
-SSO session integration, writes and transaction qualification remain incomplete.
+The current [SDK integration evidence](snowflake-sdk-integration.md) records 604
+frontend / 297 standard Rust tests passing with build, desktop compilation,
+formatting and strict Clippy. Focused profile, actual-child lifecycle and browser
+checks also pass, together with 124 actual fixture tests. Packaging review's
+source, notice/provenance and mode findings are resolved. The normal SDK macOS
+bundle passes strict ad-hoc signature, packaged-resource and actual SDK hello/EOF
+checks with zero authentication/SQL requests. All 143 browser workflows, 19 hidden SDK native checks with ten cleanup cycles,
+and two standalone PostgreSQL native recovery pairs pass. All six bundled native
+checkpoints report the packaged runtime available. Actual account qualification
+remains separate.
 
-The active lifecycle increment adds tracked connection setup/cancellation and
-native shutdown ordering. Startup socket/task repairs, focused regressions and
-124 actual database fixtures pass. Combined qualification passes 598 frontend /
-262 standard Rust tests, all 141 browser workflows, three native smoke runs,
-two actual PostgreSQL native recovery pairs and the normal ad-hoc macOS bundle.
-These are local lifecycle checks, not Snowflake acceptance. See
-the [active verification record](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
-This work does not yet expose externalbrowser authentication in the application.
+The preceding connection-lifecycle increment passed 598 frontend / 262 standard
+Rust tests, 124 actual fixtures, 141 browser workflows, three native smoke runs,
+two actual PostgreSQL recovery pairs and the normal ad-hoc macOS bundle. Those
+counts/artifacts belong to the preceding source. See the
+[ledger](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
+No installation, push or publication occurred. The current helper canary's
+narrow actual-account evidence is separate from those preceding local checks.
 
 ## Daily replacement qualification (9 November 2026)
 

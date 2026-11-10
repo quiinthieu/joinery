@@ -31,33 +31,31 @@ records connector alternatives and the expanded latest-release inventory.
 
 ## Current application boundary
 
-The existing Snowflake adapter uses hardcoded `LOCAL_APPLICATION` OAuth
-code/PKCE, a loopback callback, token refresh and SQL API requests. README requires
-`SNOWFLAKE$LOCAL_APPLICATION` to be enabled on the account. This differs from the
-owner's confirmed externalbrowser connector path; a similar IdP browser screen
-does not establish protocol, account setup or credential-lifecycle compatibility.
+Application profiles now select explicitly between the stateful SDK external-browser
+route and the existing local-application OAuth/SQL API route. New profiles choose
+external browser; missing mode on an existing profile defaults to its prior OAuth
+route. No automatic fallback occurs. Both remain ReadOnly. The SDK route currently
+advertises SQL and cancellation, with metadata, writes, DDL and transactions
+disabled. Combined local qualification passes, including all 143 browser workflows,
+124 actual local database fixtures and the packaged SDK runtime checks. These
+checks do not qualify the actual account workflow. See
+[integration evidence](snowflake-sdk-integration.md).
 
-Profiles enforce ReadOnly. Execution rejects non-read SQL, row editing is disabled,
-transactions are unsupported, and request-scoped context is stateless. The role,
-warehouse and database are configured per profile; schema switching is bounded.
-Most transport/browser qualification is synthetic. A historical live browser-SSO
-canary does not establish the required externalbrowser, write or transaction path.
-
-Source evidence: `src-tauri/src/drivers/snowflake_auth.rs`,
-`src-tauri/src/drivers/snowflake.rs`, `src-tauri/tests/snowflake_profile.rs`,
-Snowflake transport/lifecycle fixture tests and `tests/e2e/snowflake.spec.ts`.
-The bounded Tier 2 audit used project generation `2026-11-09T12:48:17Z`, checked
-coverage and read exact source. This is scoped evidence, not an exhaustive audit.
+Local tests cover persisted modes, backup/restore, immutable runtime/source pins,
+retained child cleanup and pending-auth cancellation/shutdown. The native opt-in
+resource route passes package/startup verification and 19 hidden native checks
+with ten cleanup cycles. Historical SQL API
+browser-SSO canaries do not establish the required SDK account behavior.
 
 ## Required workflow inventory
 
 | Area | Observable replacement acceptance | Current state |
 |---|---|---|
-| Connections and authentication | Existing account externalbrowser SSO; correct original account/host identity, TLS validation, browser cancellation/timeouts, expired login, explicit reconnect and logout; no credential leakage or automatic SQL replay | Required externalbrowser path missing; local-application OAuth pilot only |
-| Session context | Observe current user/role/warehouse/database/schema; switch each deliberately, update metadata/completion, retain temporary/session objects and variables; isolate consoles when requested | Stateless configured context; stateful session missing |
+| Connections and authentication | Existing account externalbrowser SSO; correct original account/host identity, TLS validation, browser cancellation/timeouts, expired login, explicit reconnect and logout; no credential leakage or automatic SQL replay | SDK profile route implemented; local lifecycle checks pass; actual account and native package acceptance open |
+| Session context | Observe current user/role/warehouse/database/schema; switch each deliberately, update metadata/completion, retain temporary/session objects and variables; isolate consoles when requested | SDK connection retains verified initial context; switching, temporary/session objects and actual account continuity unqualified |
 | Metadata and search | Browse/find and inspect every required Snowflake object type with DDL/keys/dependencies, bounded paging, denied-role behavior and refresh after external changes | Partial catalog pilot; exact object inventory and live qualification open |
 | SQL editing | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools | Bounded common editor; full Snowflake feature inventory/qualification open |
-| Execution | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes | Read-only SQL API exists; required stateful write path missing |
+| Execution | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes | Read-only SDK route integrated; required write/batch/session semantics and remote outcome qualification open |
 | Results and data movement | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data | Shared store passes actual PostgreSQL million-row paging/export and browser acceptance with opt-in bounded temporary storage. Native preference/restart checks pass. Actual Snowflake retention/types/performance remain unqualified |
 | Data editing | Review and commit/rollback row changes with conflict/identity safeguards and truthful affected-row counts; support required keyless workflows safely or record a blocking gap | Disabled; no accepted narrowing |
 | Transactions | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully | Unsupported; primary blocker |
@@ -107,9 +105,13 @@ and [SQL API limits](https://docs.snowflake.com/en/developer-guide/sql-api/intro
 The repository now contains a versioned bounded child protocol and a
 Rust supervisor (31 helper tests, 8 supervisor unit and 30 integration tests),
 plus a read adapter with 11 integration tests. Offline macOS arm64 runtime
-staging, nine preparation tests and actual SDK staged startup also pass. They
-are not yet integrated into application profiles or packaged and do not enable
-an application capability. See the [preparation guide](snowflake-runtime.md).
+staging and actual SDK startup pass. Explicit profile routing and retained cleanup
+are now integrated, with focused actual-child and offline UI/persistence tests.
+Combined validation passes 604 frontend / 297 standard Rust tests plus 124 actual
+fixtures. The normal SDK macOS bundle passes resource/signature and actual SDK
+hello/EOF checks; all 143 browser workflows and 19 hidden SDK native checks pass.
+See the [integration evidence](snowflake-sdk-integration.md) and
+[preparation guide](snowflake-runtime.md).
 One child owns one console generation; cancellation
 bypasses row backpressure, and process loss never causes automatic SQL replay.
 Actual SDK loopback fault injection observes retransmission after a lost response
@@ -126,7 +128,8 @@ logout completion, context continuity and exact result types also require proof.
 
 The shared [opt-in temporary result store](large-results.md) now implements
 bounded memory/disk retention and passes an actual PostgreSQL million-row
-paging/export fixture, all 124 combined fixtures and all 138 browser workflows.
+paging/export fixture. The earlier qualification passed 124 combined fixtures and
+138 browser workflows on its recorded source.
 Native preference/restart qualification passes on `c860a78`; see the ledger. This does not
 qualify Snowflake SDK buffering, transport or types.
 The UI must distinguish retained, complete, truncated, failed and cancelled
@@ -149,9 +152,17 @@ latency thresholds and CSV import sizes remain to be established.
 The owner authorized reuse of the existing Snowflake connection. Only allowlisted
 non-secret settings from the locally configured default profile were inspected;
 they are retained in an ignored, owner-only local cache. No private DataGrip
-settings, OS credential state, Snowflake account or production resources were
-accessed. The confirmed workflow and profile reuse are not blanket
-authorization for paid queries or external writes. A canary must name its account,
+settings or OS credential state were inspected. The owner subsequently approved
+the [two-query read canary](snowflake-read-canary.md), including possible billing.
+The initial run authenticated and submitted both fixed reads, then failed local
+result validation; child exit and local authentication-state removal succeeded.
+The validator incorrectly required a numeric session ID even though Snowflake
+documents `CURRENT_SESSION()` as VARCHAR. That reproduced local defect was
+corrected in `9e39e51`; it does not establish the sole cause of the first failure.
+The same-scope rerun passed both result contracts, context/session continuity,
+logout acknowledgement and local cleanup. See the verification ledger.
+The confirmed workflow and profile reuse are not blanket
+authorization for additional paid queries or external writes. A canary must name its account,
 role, warehouse policy and disposable objects, bound its work and specify cleanup.
 Authentication occurs through the app/browser; secrets must never be pasted into
 source, logs or the repository. Do all local implementation and review first so

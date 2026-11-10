@@ -24,24 +24,36 @@ provides blank inventory fields. Transfer these manually into the app; the
 frontend does not load or automatically import them.
 
 In New connection, choose Snowflake and enter the account hostname, username,
-database, uppercase role, warehouse, and schema. Joinery opens the system browser
-using local-application OAuth; no password or token is entered in Joinery. The
-account must enable `SNOWFLAKE$LOCAL_APPLICATION`. Use a database-enforced
-read-only role and a bounded warehouse/query budget.
+database, uppercase role, warehouse, and schema. New profiles select **External
+browser SSO (Snowflake SDK)**; existing profiles retain **Local application OAuth
+(SQL API)** unless explicitly changed. The SDK route needs the prepared runtime
+and opt-in macOS ARM64 resource build in the [runtime guide](docs/snowflake-runtime.md).
+Current application integration has [separate evidence and open gates](docs/snowflake-sdk-integration.md).
+Neither route accepts a password/token in the form. Use a database-enforced
+read-only role and a bounded warehouse/query budget. Actual account qualification
+for the SDK route remains open.
 
-Snowflake supports read-only SQL, catalog discovery, lazy column completion,
+The local-application OAuth route requires the account to enable
+`SNOWFLAKE$LOCAL_APPLICATION`. It supports read-only SQL, catalog discovery, lazy column completion,
 structure inspection, and unordered table previews capped at 500 rows or 2 MiB.
 Use SQL for larger or ordered results. Catalog discovery covers the configured
 database and rejects inventories beyond 10,000 objects. Editing stays disabled.
 The live canary covered browser SSO, context verification and `SELECT 1`;
 catalog/table tests use synthetic fixtures and live table qualification is open.
 
-Snowflake refreshes expiring OAuth credentials under a shared lock and retains
+This OAuth route refreshes expiring credentials under a shared lock and retains
 rotated refresh tokens in memory. Expired or revoked sign-ins retire the session
 and require reconnecting; statements are never replayed automatically. Cancelled
 sessions also require reconnecting. Disconnect interrupts local HTTP work;
 already submitted remote reads may continue until Snowflake's statement timeout
 if the connection closes before a statement handle can be cancelled.
+
+The stateful SDK route currently supports read-only SQL and cancellation;
+metadata browsing, writes, DDL and transactions are disabled pending their full
+implementation and qualification. These remain required replacement capabilities.
+The SDK can retransmit a statement request after a lost response; local tests do
+not prove Snowflake server deduplication. Neither route automatically falls back
+to the other authentication mode.
 
 ## Development
 
