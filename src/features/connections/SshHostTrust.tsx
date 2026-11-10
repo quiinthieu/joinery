@@ -9,15 +9,25 @@ export function useSshTrust() {
     [error, setError] = useState<string | null>(null),
     [busy, setBusy] = useState(false);
   const pending = useRef<{ resolve(): void; reject(error: Error): void } | null>(null);
+  const generation = useRef(0);
   useEffect(
     () => () => {
+      generation.current += 1;
       pending.current?.reject(new Error("SSH host verification cancelled"));
+      pending.current = null;
     },
     [],
   );
-  async function verify(profile: ConnectionProfile) {
+  async function verify(
+    profile: ConnectionProfile,
+    attemptId: string,
+    active: () => boolean = () => true,
+  ) {
     if (!profile.ssh) return;
-    const key = await client.call<SshHostKey>("probe_ssh", { profileId: profile.id });
+    const started = generation.current;
+    const key = await client.call<SshHostKey>("probe_ssh", { profileId: profile.id, attemptId });
+    if (started !== generation.current || !active())
+      throw new Error("SSH host verification cancelled");
     if (key.previousFingerprint && key.previousFingerprint !== key.fingerprint)
       throw new Error(
         `SSH host key changed. Connection blocked. Expected ${key.previousFingerprint}; received ${key.fingerprint}. Verify the server identity with its administrator.`,

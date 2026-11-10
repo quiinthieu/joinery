@@ -72,6 +72,19 @@ import type {
  * command with its exact argument payload and result DTO.
  */
 export interface JoineryCommandMap {
+  prepare_connection: {
+    args: { id: string };
+    result: string;
+  };
+  connect_prepared: {
+    args: { attemptId: string; secrets: ConnectionSecrets };
+    result: SessionInfo;
+  };
+  cancel_connection_attempt: {
+    args: { attemptId: string };
+    result: void;
+  };
+  app_shutdown: { args: undefined; result: void };
   set_temporary_result_storage: {
     args: { enabled: boolean };
     result: boolean;
@@ -142,7 +155,7 @@ export interface JoineryCommandMap {
     result: void;
   };
   probe_ssh: {
-    args: { profileId: string };
+    args: { profileId: string; attemptId?: string | null };
     result: SshHostKey;
   };
   trust_ssh_key: {

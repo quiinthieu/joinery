@@ -32,7 +32,9 @@ async function connectUI(
   await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
   await page.getByLabel("Require TLS and verify the server certificate").uncheck();
   await page.getByLabel("Safe Mode", { exact: true }).selectOption("silent");
-  const connected = page.waitForResponse((response) => response.url().endsWith("/rpc/connect"));
+  const connected = page.waitForResponse((response) =>
+    response.url().endsWith("/rpc/connect_prepared"),
+  );
   await page.getByRole("button", { name: "Save and connect", exact: true }).click();
   const payload = await (await connected).json();
   expect(payload.error).toBeUndefined();

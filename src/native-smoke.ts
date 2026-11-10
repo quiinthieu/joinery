@@ -1,9 +1,10 @@
-import { client, messageOf } from "./ipc/client";
+import { appErrorOf, client, messageOf } from "./ipc/client";
 import { resultCache } from "./data/result-cache";
 import { useStudio } from "./state/studio";
 import type {
   Bootstrap,
   BrowseQuery,
+  ConnectionProfile,
   ResourceUsage,
   ResultInfo,
   TableChanges,
@@ -764,6 +765,57 @@ export async function runNativeSmoke() {
     await new Promise((resolve) => setTimeout(resolve, options.idleMs));
     await checkpoint("idle");
     report.checkpoints = checkpoints;
+    // Exercise the actual native command permissions without opening a socket.
+    // Shutdown comes last because its publication barrier is irreversible.
+    const setupProfile: ConnectionProfile = {
+      id: crypto.randomUUID(),
+      name: "Native connection cancellation fixture",
+      groupId: "local",
+      engine: "redis",
+      host: "127.0.0.1",
+      port: 9,
+      database: "0",
+      username: "",
+      environment: "local",
+      safeMode: "readOnly",
+      tlsMode: "disable",
+      caCertPath: null,
+      ssh: null,
+      rememberPassword: false,
+      storeQueryText: false,
+      storeDrafts: false,
+      snowflake: null,
+    };
+    const expectCancelled = async (operation: Promise<unknown>) => {
+      let failure: unknown;
+      try {
+        await operation;
+      } catch (error) {
+        failure = error;
+      }
+      assert(failure && appErrorOf(failure).code === "cancelled", "Native setup was not cancelled");
+    };
+    await client.call("save_profile", { profile: setupProfile });
+    try {
+      const attemptId = await client.call("prepare_connection", { id: setupProfile.id });
+      await client.call("cancel_connection_attempt", { attemptId });
+      const secrets = { password: null, sshPassword: null, keyPassphrase: null };
+      await expectCancelled(client.call("connect_prepared", { attemptId, secrets }));
+      const closingAttempt = await client.call("prepare_connection", { id: setupProfile.id });
+      await client.call("app_shutdown");
+      await client.call("app_shutdown");
+      await expectCancelled(
+        client.call("connect_prepared", { attemptId: closingAttempt, secrets }),
+      );
+      await expectCancelled(client.call("prepare_connection", { id: setupProfile.id }));
+      const usage = await client.call("resource_usage");
+      assert(
+        usage.sessionCount === 0 && usage.activeRuns === 0,
+        "Native shutdown leaked a session",
+      );
+    } finally {
+      await client.call("delete_profile", { id: setupProfile.id });
+    }
     report.passed = true;
     report.checks = [
       "native bootstrap",
@@ -783,6 +835,8 @@ export async function runNativeSmoke() {
       "native close guard",
       "repeated result/tab cleanup",
       "in-flight Arrow release",
+      "native connection reservation and cancellation IPC",
+      "native shutdown publication barrier and idempotence",
     ];
     report.frontendElapsedMs = performance.now() - started;
   } catch (error) {

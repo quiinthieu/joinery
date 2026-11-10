@@ -20,6 +20,8 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
         primaryKey: false,
         foreignKey: false,
         editable: false,
+        insertable: false,
+        hasDefault: false,
       },
       {
         id: "c1",
@@ -30,6 +32,8 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
         primaryKey: false,
         foreignKey: false,
         editable: false,
+        insertable: false,
+        hasDefault: false,
       },
     ],
     primaryKey: [],
@@ -48,7 +52,10 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
         profile = route.request().postDataJSON().profile;
         result = profile;
         break;
-      case "connect":
+      case "prepare_connection":
+        result = "sf-attempt";
+        break;
+      case "connect_prepared":
         result = {
           id: "sf-session",
           connectionId: profile.id,
@@ -234,7 +241,9 @@ test("approved Snowflake sign-in remains connected when table discovery fails", 
     if (command === "save_profile") {
       profile = route.request().postDataJSON().profile;
       await route.fulfill({ json: { result: profile } });
-    } else if (command === "connect") {
+    } else if (command === "prepare_connection") {
+      await route.fulfill({ json: { result: "approved-sso-attempt" } });
+    } else if (command === "connect_prepared") {
       await route.fulfill({
         json: {
           result: {
@@ -305,6 +314,7 @@ test("approved Snowflake sign-in remains connected when table discovery fails", 
   await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
   await page.getByRole("button", { name: /^PUBLIC/ }).click();
   await expect(page.getByRole("button", { name: "ORDERS", exact: true })).toBeVisible();
-  expect(calls.filter((command) => command === "connect")).toHaveLength(1);
+  expect(calls.filter((command) => command === "prepare_connection")).toHaveLength(1);
+  expect(calls.filter((command) => command === "connect_prepared")).toHaveLength(1);
   expect(calls).not.toContain("prepare_execution");
 });

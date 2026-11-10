@@ -446,7 +446,9 @@ test("stages, reviews, and commits row inserts and deletes in one transaction", 
     expect(payload.error).toBeUndefined();
     return payload.result;
   }
-  const connected = page.waitForResponse((response) => response.url().endsWith("/rpc/connect"));
+  const connected = page.waitForResponse((response) =>
+    response.url().endsWith("/rpc/connect_prepared"),
+  );
   await connect(page, `Row mutations ${randomUUID()}`, "confirm");
   const actor = (await (await connected).json()).result as SessionInfo;
   const bootstrap = await rpc<Bootstrap>("bootstrap");

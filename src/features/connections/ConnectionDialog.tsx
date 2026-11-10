@@ -6,6 +6,7 @@ import type { ConnectionProfile, SafeMode, SessionInfo } from "../../ipc/generat
 import { useStudio } from "../../state/studio";
 import { useSshTrust } from "./SshHostTrust";
 import { orderedGroups } from "./GroupManager";
+import { useConnectionSetup } from "./connectionSetup";
 
 function completeConnection(profile: ConnectionProfile, session: SessionInfo, onClose: () => void) {
   const state = useStudio.getState();
@@ -65,6 +66,11 @@ export function ConnectionDialog({
   const [sshPassword, setSshPassword] = useState(""),
     [keyPassphrase, setKeyPassphrase] = useState("");
   const trust = useSshTrust();
+  const setup = useConnectionSetup();
+  function close() {
+    setup.cancel();
+    onClose();
+  }
   const [deleting, setDeleting] = useState(false);
   const production =
     bootstrap?.groups.find((g) => g.id === draft.groupId)?.environment === "production";
@@ -73,6 +79,8 @@ export function ConnectionDialog({
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
+    const attempt = setup.begin();
+    if (!attempt) return;
     setBusy(true);
     setError(null);
     try {
@@ -80,27 +88,33 @@ export function ConnectionDialog({
         profile: draft,
         passphrase: passphrase || null,
       });
+      if (!attempt.active) return;
       setProfile(saved);
       useStudio.getState().resetConnectionResults(saved.id);
       useStudio.getState().updateProfile(saved);
-      await trust.verify(saved);
-      const session = await client.call<SessionInfo>("connect", {
-        id: saved.id,
-        secrets: {
+      const attemptId = await attempt.prepare(saved.id);
+      if (!attemptId) return;
+      await trust.verify(saved, attemptId, () => attempt.active);
+      await attempt.connect(
+        saved.id,
+        {
           password: password || null,
           sshPassword: sshPassword || null,
           keyPassphrase: keyPassphrase || null,
         },
-      });
-      completeConnection(saved, session, onClose);
+        (session) => completeConnection(saved, session, onClose),
+      );
     } catch (error) {
-      setError(messageOf(error));
+      if (attempt.active) setError(messageOf(error));
     } finally {
-      setPassword("");
-      setPassphrase("");
-      setSshPassword("");
-      setKeyPassphrase("");
-      setBusy(false);
+      if (attempt.active) {
+        setPassword("");
+        setPassphrase("");
+        setSshPassword("");
+        setKeyPassphrase("");
+        setBusy(false);
+      }
+      setup.finish(attempt);
     }
   }
   if (trust.dialog) return trust.dialog;
@@ -164,8 +178,7 @@ export function ConnectionDialog({
       key="edit"
       title={profile ? "Edit connection" : "New connection"}
       subtitle="A direct line to your data."
-      onClose={onClose}
-      busy={busy}
+      onClose={close}
     >
       <form onSubmit={(event) => void submit(event)}>
         <div className="modal-body form-grid">
@@ -591,7 +604,7 @@ export function ConnectionDialog({
               Delete connection
             </button>
           )}
-          <button type="button" className="button ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="button ghost" onClick={close}>
             Cancel
           </button>
           <button type="submit" className="button primary" disabled={busy || !desktopAvailable}>
@@ -619,31 +632,45 @@ export function ConnectDialog({
   const [sshPassword, setSshPassword] = useState(""),
     [keyPassphrase, setKeyPassphrase] = useState("");
   const trust = useSshTrust();
+  const setup = useConnectionSetup();
+  function close() {
+    setup.cancel();
+    onClose();
+  }
   async function connect(event: FormEvent) {
     event.preventDefault();
+    const attempt = setup.begin();
+    if (!attempt) return;
     setBusy(true);
     setError(null);
     try {
-      await trust.verify(profile);
-      const session = await client.call<SessionInfo>("connect", {
-        id: profile.id,
-        secrets: {
+      const attemptId = await attempt.prepare(profile.id);
+      if (!attemptId) return;
+      await trust.verify(profile, attemptId, () => attempt.active);
+      await attempt.connect(
+        profile.id,
+        {
           password: password || null,
           sshPassword: sshPassword || null,
           keyPassphrase: keyPassphrase || null,
         },
-      });
-      if (onConnected) {
-        onConnected(session);
-        onClose();
-      } else completeConnection(profile, session, onClose);
+        (session) => {
+          if (onConnected) {
+            onConnected(session);
+            onClose();
+          } else completeConnection(profile, session, onClose);
+        },
+      );
     } catch (error) {
-      setError(messageOf(error));
+      if (attempt.active) setError(messageOf(error));
     } finally {
-      setPassword("");
-      setSshPassword("");
-      setKeyPassphrase("");
-      setBusy(false);
+      if (attempt.active) {
+        setPassword("");
+        setSshPassword("");
+        setKeyPassphrase("");
+        setBusy(false);
+      }
+      setup.finish(attempt);
     }
   }
   if (trust.dialog) return trust.dialog;
@@ -651,8 +678,7 @@ export function ConnectDialog({
     <Modal
       title={onConnected ? `New SQL session for ${profile.name}` : `Connect to ${profile.name}`}
       subtitle={`${profile.username}@${profile.host}:${profile.port}/${profile.database}`}
-      onClose={onClose}
-      busy={busy}
+      onClose={close}
     >
       <form onSubmit={(e) => void connect(e)}>
         <div className="modal-body">
@@ -700,7 +726,7 @@ export function ConnectDialog({
           <InlineError message={error} />
         </div>
         <footer className="modal-footer">
-          <button type="button" className="button ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="button ghost" onClick={close}>
             Cancel
           </button>
           <button className="button primary" type="submit" disabled={busy}>

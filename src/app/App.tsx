@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { planSourceForExecution } from "../features/studio/plan-snapshots";
+import { createWindowCloser, lockWindowInteraction } from "./windowClose";
 import {
   Activity,
   ArrowDownLeft,
@@ -42,6 +43,10 @@ import {
 } from "lucide-react";
 import { Sidebar } from "../features/connections/Sidebar";
 import { ConnectionDialog, ConnectDialog } from "../features/connections/ConnectionDialog";
+import {
+  cancelPendingConnections,
+  hasPendingConnections,
+} from "../features/connections/connectionSetup";
 import { Preferences } from "../features/studio/Preferences";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
@@ -515,6 +520,7 @@ export function App() {
     const hasPendingWork = () => {
       const snap = useStudio.getState();
       return (
+        hasPendingConnections() ||
         snap.tabs.some(
           (tab) =>
             pendingCountFor(tab) > 0 ||
@@ -539,41 +545,37 @@ export function App() {
       return () => window.removeEventListener("beforeunload", beforeUnload);
     }
     const windowHandle = getCurrentWindow();
-    const closeSafely = async () => {
-      await flushWorkspace();
-      await windowHandle.destroy();
-    };
+    const requestClose = createWindowCloser({
+      hasPendingWork,
+      flush: flushWorkspace,
+      cancelConnections: cancelPendingConnections,
+      shutdown: () => client.call("app_shutdown"),
+      destroy: () => windowHandle.destroy(),
+      lockInteraction: lockWindowInteraction,
+      confirm: (approve) =>
+        setDialog({
+          kind: "confirm",
+          title: "Close Joinery?",
+          description:
+            "Pending edits will be discarded and active sessions closed. Running statements and open transactions may need verification on the database. Completed writes are not undone.",
+          action: approve,
+        }),
+    });
     const unsubscribe = windowHandle.onCloseRequested((event) => {
       event.preventDefault();
-      if (!hasPendingWork()) {
-        void closeSafely().catch((error) => useStudio.getState().notify(messageOf(error)));
-        return;
-      }
-      setDialog({
-        kind: "confirm",
-        title: "Close Joinery?",
-        description:
-          "Pending edits will be discarded, running queries cancelled, and open SQL transactions rolled back. Completed writes are not undone.",
-        action: closeSafely,
-      });
+      void requestClose().catch((error) => useStudio.getState().notify(messageOf(error)));
     });
     const quit = windowHandle.listen<number>("joinery:quit-requested", (event) => {
       void client.call("acknowledge_quit", { generation: event.payload });
-      if (!hasPendingWork()) {
-        void closeSafely().catch((error) => useStudio.getState().notify(messageOf(error)));
-        return;
-      }
-      setDialog({
-        kind: "confirm",
-        title: "Close Joinery?",
-        description:
-          "Pending edits will be discarded, running queries cancelled, and open SQL transactions rolled back. Completed writes are not undone.",
-        action: closeSafely,
-      });
+      void requestClose().catch((error) => useStudio.getState().notify(messageOf(error)));
+    });
+    const shutdownFailed = windowHandle.listen<string>("joinery:shutdown-failed", (event) => {
+      useStudio.getState().notify(event.payload);
     });
     return () => {
       void unsubscribe.then((off) => off());
       void quit.then((off) => off());
+      void shutdownFailed.then((off) => off());
     };
   }, []);
   useEffect(() => {

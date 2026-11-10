@@ -25,7 +25,10 @@ async function fixture(page: Page, raw: string) {
         profile = args.profile;
         result = profile;
         break;
-      case "connect":
+      case "prepare_connection":
+        result = "sf-plan-attempt";
+        break;
+      case "connect_prepared":
         result = {
           id: "sf-plan-session",
           connectionId: profile.id,

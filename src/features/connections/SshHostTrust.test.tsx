@@ -22,7 +22,7 @@ function Harness() {
         <button
           onClick={() =>
             void trust
-              .verify({ id: "fixture", ssh: {} } as ConnectionProfile)
+              .verify({ id: "fixture", ssh: {} } as ConnectionProfile, "fixture-attempt")
               .then(() => setResult("verified"))
               .catch(() => setResult("blocked"))
           }
@@ -48,6 +48,10 @@ test("an unknown host needs explicit approval of the displayed fingerprint", asy
   fireEvent.click(screen.getByRole("button", { name: /^Verify$/ }));
   expect(await screen.findByText("SHA256:fixture")).toBeTruthy();
   expect(client.call).toHaveBeenCalledTimes(1);
+  expect(client.call).toHaveBeenCalledWith("probe_ssh", {
+    profileId: "fixture",
+    attemptId: "fixture-attempt",
+  });
   fireEvent.click(screen.getByRole("button", { name: "Trust this host key" }));
   expect(await screen.findByText("verified")).toBeTruthy();
   expect(client.call).toHaveBeenLastCalledWith("trust_ssh_key", {
