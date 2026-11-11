@@ -2,7 +2,7 @@
 //! No SQL, object selection, account policy, or qualification runner lives here.
 
 use super::{snowflake_browsing::BrowseRelation, snowflake_metadata::LiveContext};
-use crate::domain::{AppError, AppResult};
+use crate::domain::{AppError, AppResult, SessionRuntimeState};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -46,6 +46,12 @@ pub(crate) trait MetadataObserver: Send + Sync {
     fn check(&self) -> AppResult<()>;
     fn observe_schemas(&self, observation: SchemaObservation<'_>) -> AppResult<()>;
     fn observe_relations(&self, observation: RelationObservation<'_>) -> AppResult<()>;
+    /// The actual runtime and candidate authority revision at publication, from
+    /// an already parsed/budgeted sample. No I/O or adapter/Studio/registry reentry.
+    /// Rejection prevents installation/publication of that authority.
+    fn observe_runtime(&self, _state: &SessionRuntimeState) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -91,6 +97,12 @@ impl MetadataAttachment {
     pub(crate) fn observe_relations(&self, observation: RelationObservation<'_>) -> AppResult<()> {
         self.check()?;
         self.retain(self.observer.observe_relations(observation))?;
+        self.check()
+    }
+
+    pub(crate) fn observe_runtime(&self, state: &SessionRuntimeState) -> AppResult<()> {
+        self.check()?;
+        self.retain(self.observer.observe_runtime(state))?;
         self.check()
     }
 }

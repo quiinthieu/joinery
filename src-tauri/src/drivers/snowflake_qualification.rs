@@ -9,7 +9,7 @@ use super::{
         PhysicalRequest, PhysicalTerminal, TransportAttachment, TransportLimits, TransportPolicy,
     },
 };
-use crate::domain::{AppError, AppResult};
+use crate::domain::{AppError, AppResult, SessionRuntimeState};
 use parking_lot::Mutex;
 use std::{future::Future, pin::Pin, sync::Arc};
 
@@ -112,6 +112,12 @@ impl<T: TransportPolicy + MetadataObserver> MetadataObserver for SharedPolicy<T>
     fn observe_relations(&self, observation: RelationObservation<'_>) -> AppResult<()> {
         self.check()?;
         self.record(self.policy.observe_relations(observation))?;
+        self.check()
+    }
+
+    fn observe_runtime(&self, state: &SessionRuntimeState) -> AppResult<()> {
+        self.check()?;
+        self.record(self.policy.observe_runtime(state))?;
         self.check()
     }
 }

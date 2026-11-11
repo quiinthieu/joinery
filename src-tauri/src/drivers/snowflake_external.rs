@@ -979,7 +979,7 @@ impl SnowflakeExternal {
         #[cfg(all(unix, feature = "test-harness"))]
         self.check_metadata_observer()?;
         let mut runtime = self.observed_session_state(sample)?;
-        let mut state = self.transaction_authority.lock();
+        let state = self.transaction_authority.lock();
         if self.is_closed() || state.generation != generation {
             return Err(stale_transaction());
         }
@@ -987,17 +987,33 @@ impl SnowflakeExternal {
         #[cfg(all(unix, feature = "test-harness"))]
         self.check_metadata_observer()?;
         let revision = new_id();
+        runtime.transaction_control_authority = Some(TransactionControlAuthority::Observed {
+            revision: revision.clone(),
+            allowed_actions: self.transaction_actions(sample),
+        });
+        #[cfg(all(unix, feature = "test-harness"))]
+        let state = if let Some(observer) = &self.metadata_observer {
+            // Observers cannot reenter the adapter. Still release authority
+            // state around callbacks, and revalidate after reacquiring it.
+            drop(state);
+            observer.observe_runtime(&runtime)?;
+            let state = self.transaction_authority.lock();
+            if self.is_closed() || state.generation != generation {
+                return Err(stale_transaction());
+            }
+            self.check_metadata_observer()?;
+            state
+        } else {
+            state
+        };
+        let mut state = state;
         state.grant = Some(TransactionGrant {
             revision: revision.clone(),
             sample: sample.clone(),
         });
         state.recovery = Some(TransactionRecovery {
-            revision: revision.clone(),
-            restricted: false,
-        });
-        runtime.transaction_control_authority = Some(TransactionControlAuthority::Observed {
             revision,
-            allowed_actions: self.transaction_actions(sample),
+            restricted: false,
         });
         Ok(runtime)
     }
@@ -3244,6 +3260,9 @@ mod session_tests {
 
     mod qualification_metadata_tests {
         include!("snowflake_qualification_metadata_adapter_tests.rs");
+    }
+    mod qualification_runtime_tests {
+        include!("snowflake_qualification_runtime_adapter_tests.rs");
     }
     mod read_spec_tests {
         include!("snowflake_read_spec_adapter_tests.rs");
