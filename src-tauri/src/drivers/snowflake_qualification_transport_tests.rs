@@ -2,12 +2,220 @@
 use super::*;
 use crate::domain::{AppError, AppResult};
 use crate::drivers::snowflake_qualification_transport::{
-    Disposition, PhysicalRequest, Stream, TransportLimits, TransportPolicy,
+    Disposition, PhysicalRequest, PhysicalTerminal, Stream, TransportLimits, TransportPolicy,
 };
 use std::{future::Future, pin::Pin, sync::atomic::AtomicUsize};
 use tokio::sync::Notify;
 
 type ObservedRequest = (String, u64, String, Vec<u8>);
+type ObservedTerminal = (String, u64, String, String, Certainty);
+
+#[derive(Default)]
+struct TerminalPolicy {
+    inner: Mutex<Option<std::sync::Weak<Inner>>>,
+    operation: Mutex<Option<std::sync::Weak<Operation>>>,
+    receiver: Mutex<Option<watch::Receiver<Option<Report>>>>,
+    observed: Mutex<Vec<ObservedTerminal>>,
+    metadata_denied: AtomicBool,
+    retire: AtomicBool,
+    reuse: AtomicBool,
+    replacement: Mutex<Option<Operation>>,
+}
+impl crate::drivers::snowflake_qualification_metadata::MetadataObserver for TerminalPolicy {
+    fn check(&self) -> AppResult<()> {
+        if self.metadata_denied.load(Ordering::SeqCst) {
+            Err(AppError::invalid("synthetic metadata failure"))
+        } else {
+            Ok(())
+        }
+    }
+    fn observe_schemas(
+        &self,
+        _: crate::drivers::snowflake_qualification_metadata::SchemaObservation<'_>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    fn observe_relations(
+        &self,
+        _: crate::drivers::snowflake_qualification_metadata::RelationObservation<'_>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+impl TransportPolicy for TerminalPolicy {
+    fn admit<'a>(
+        &'a self,
+        _request: PhysicalRequest<'a>,
+    ) -> Pin<Box<dyn Future<Output = AppResult<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn terminal(&self, terminal: PhysicalTerminal<'_>) -> AppResult<()> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upgrade()
+            .unwrap();
+        let state = inner
+            .state
+            .try_lock()
+            .expect("terminal callback must run outside process mutex");
+        assert!(!state.pending.contains_key(terminal.operation_id));
+        assert!(
+            self.receiver
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .is_none()
+        );
+        assert_eq!(terminal.generation, inner.generation);
+        assert_eq!(terminal.impact, Impact::Mutating);
+        drop(state);
+        let operation = self
+            .operation
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upgrade()
+            .unwrap();
+        let retire = self.retire.load(Ordering::SeqCst);
+        let reuse = self.reuse.load(Ordering::SeqCst);
+        // A second caller races the unpublished terminal, with no sleeps. The
+        // callback cannot finish until this caller has inspected the outcome.
+        let replacement = std::thread::spawn(move || {
+            let replacement = reuse.then(|| {
+                inner
+                    .request("write", "query", json!({}), Impact::Read)
+                    .unwrap()
+            });
+            if let Some(replacement) = &replacement {
+                assert_ne!(operation.token.ticket, replacement.token.ticket);
+                assert!(replacement.dml_acknowledged().is_none());
+            }
+            if retire {
+                inner.retire(Retirement::Requested);
+            }
+            assert!(
+                operation.dml_acknowledged().is_some(),
+                "known ACK remains visible during callback"
+            );
+            assert_eq!(operation.phase(), Phase::Acknowledged);
+            replacement
+        })
+        .join()
+        .unwrap();
+        *self.replacement.lock().unwrap() = replacement;
+        self.observed.lock().unwrap().push((
+            terminal.operation_id.into(),
+            terminal.ticket,
+            terminal.wire_id.into(),
+            terminal.operation.into(),
+            terminal.report.certainty,
+        ));
+        Err(AppError::invalid("synthetic terminal policy denial"))
+    }
+}
+
+#[tokio::test]
+async fn qualification_terminal_observation_precedes_publication_and_preserves_original_ack() {
+    terminal_observation(false, false, false).await;
+}
+
+#[tokio::test]
+async fn qualification_terminal_observation_survives_prior_policy_failure() {
+    terminal_observation(true, false, false).await;
+}
+
+#[tokio::test]
+async fn qualification_terminal_observation_preserves_ack_during_retirement_and_id_reuse() {
+    terminal_observation(false, true, false).await;
+    terminal_observation(false, false, true).await;
+}
+
+async fn terminal_observation(prior_failure: bool, retire: bool, reuse: bool) {
+    let policy = Arc::new(TerminalPolicy::default());
+    policy.retire.store(retire, Ordering::SeqCst);
+    policy.reuse.store(reuse, Ordering::SeqCst);
+    let attachment = crate::drivers::snowflake_qualification::QualificationAttachment::new(
+        policy.clone(),
+        TransportLimits::default(),
+    )
+    .unwrap();
+    let transport = attachment.transport.clone();
+    let (inner, _normal, _control) = isolated(transport.clone());
+    *policy.inner.lock().unwrap() = Some(Arc::downgrade(&inner));
+    let operation = Arc::new(
+        inner
+            .request("write", "dml", json!({"kind":"insert"}), Impact::Mutating)
+            .unwrap(),
+    );
+    *policy.operation.lock().unwrap() = Some(Arc::downgrade(&operation));
+    *policy.receiver.lock().unwrap() = Some(operation.terminal_receiver());
+    if prior_failure {
+        policy.metadata_denied.store(true, Ordering::SeqCst);
+        assert!(attachment.metadata.check().is_err());
+        assert!(transport.check().is_err());
+    }
+    let ticket = operation.token().ticket;
+    {
+        let mut state = inner.state.lock().unwrap();
+        let pending = state.pending.get_mut("write").unwrap();
+        pending.phase = Phase::Sent;
+        pending.wire_id = Some("1".into());
+        state.wire_ids.insert("1".into(), "write".into());
+    }
+    let request_id = "00000000-0000-4000-8000-000000000011";
+    for extra in [
+        json!({"type":"accepted"}),
+        json!({"type":"phase","phase":"dispatching"}),
+        json!({"type":"statement","sdkRequestId":request_id}),
+        json!({"type":"dmlAcknowledged","sdkRequestId":request_id,"kind":"insert"}),
+        json!({"type":"phase","phase":"acknowledged","sdkRequestId":request_id}),
+        json!({"type":"terminal","ok":true,"sdkRequestId":request_id,"result":{
+            "kind":"insert","sdkRequestId":request_id,"rowsSeen":1,"rowsRetained":0,
+            "truncated":false,"columns":[{"name":"number of rows inserted","type":"fixed"}],"values":[["1"]]
+        }}),
+    ] {
+        let mut event = json!({"v":1,"generation":inner.generation,"id":"1"});
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        if event["type"] == "terminal" {
+            let mut malformed = event.clone();
+            malformed["result"]["kind"] = json!("delete");
+            assert!(!inner.event(malformed));
+            assert!(policy.observed.lock().unwrap().is_empty());
+            assert!(operation.terminal_receiver().borrow().is_none());
+        }
+        assert!(inner.event(event));
+    }
+    // The callback has completed by the time even a nonblocking caller can see
+    // its terminal. Its denial revokes future work, not the original known ACK.
+    assert_eq!(
+        *policy.observed.lock().unwrap(),
+        vec![(
+            "write".into(),
+            ticket,
+            "1".into(),
+            "dml".into(),
+            Certainty::StatementSucceeded
+        )]
+    );
+    assert!(transport.check().is_err());
+    let mut operation = Arc::try_unwrap(operation).ok().unwrap();
+    let report = operation.wait().await;
+    assert!(report.ok);
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    assert!(report.dml_acknowledged.is_some());
+    assert!(report.retirement.is_none());
+    assert!(inner.state.lock().unwrap().finalizing.is_empty());
+}
 
 #[derive(Default)]
 struct Policy {

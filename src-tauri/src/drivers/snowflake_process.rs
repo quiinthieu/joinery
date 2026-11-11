@@ -1,7 +1,7 @@
 //! Bounded Snowflake helper process transport. No remote capability is qualified here.
 #[cfg(all(unix, feature = "test-harness"))]
 use super::snowflake_qualification_transport::{
-    Disposition, PhysicalRequest, Stream, TransportAttachment,
+    Disposition, PhysicalRequest, PhysicalTerminal, Stream, TransportAttachment,
 };
 use crate::domain::{SnowflakeDdlKind, SnowflakeDmlKind};
 use serde_json::{Value, json};
@@ -642,6 +642,10 @@ struct State {
     wire_ids: HashMap<String, String>,
     next_wire_id: u64,
     pending: HashMap<String, Pending>,
+    /// Retain known outcomes while the qualification callback runs outside State.
+    /// Retirement drains pending operations, never these original terminals.
+    #[cfg(all(unix, feature = "test-harness"))]
+    finalizing: HashMap<(String, u64), Report>,
     connect_sent: bool,
     connected: bool,
     closing: bool,
@@ -703,13 +707,11 @@ impl Operation {
         self.token.clone()
     }
     pub fn phase(&self) -> Phase {
-        if let Some(report) = self.report() {
+        let state = self.owner.state.lock().unwrap();
+        if let Some(report) = self.completion_evidence(&state) {
             return report.phase;
         }
-        self.owner
-            .state
-            .lock()
-            .unwrap()
+        state
             .pending
             .get(&self.token.id)
             .filter(|p| p.ticket == self.token.ticket)
@@ -719,57 +721,63 @@ impl Operation {
     pub fn report(&self) -> Option<Report> {
         self.terminal.borrow().clone()
     }
+    /// Called under State so ACK access cannot fall between pending removal and
+    /// terminal publication. This does not publish completion to the caller.
+    fn completion_evidence(&self, state: &State) -> Option<Report> {
+        let report = self.report();
+        #[cfg(all(unix, feature = "test-harness"))]
+        let report = report.or_else(|| {
+            state
+                .finalizing
+                .get(&(self.token.id.clone(), self.token.ticket))
+                .cloned()
+        });
+        let _ = state;
+        report
+    }
     /// Observed USE success, not verification of the final operation context.
     pub fn use_acknowledged(&self) -> Option<StatementIdentity> {
-        if let Some(report) = self.report() {
+        let state = self.owner.state.lock().unwrap();
+        if let Some(report) = self.completion_evidence(&state) {
             return report.use_acknowledged;
         }
-        self.owner
-            .state
-            .lock()
-            .unwrap()
+        state
             .pending
-            .get(&self.id)
+            .get(&self.token.id)
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.use_acknowledged.clone())
     }
     /// Boundary statement ACK does not imply COMMIT/ROLLBACK disposition was observed.
     pub fn boundary_acknowledged(&self) -> Option<BoundaryAcknowledgement> {
-        if let Some(report) = self.report() {
+        let state = self.owner.state.lock().unwrap();
+        if let Some(report) = self.completion_evidence(&state) {
             return report.boundary_acknowledged;
         }
-        self.owner
-            .state
-            .lock()
-            .unwrap()
+        state
             .pending
-            .get(&self.id)
+            .get(&self.token.id)
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.boundary_acknowledged.clone())
     }
     pub fn dml_acknowledged(&self) -> Option<DmlAcknowledgement> {
-        if let Some(report) = self.report() {
+        let state = self.owner.state.lock().unwrap();
+        if let Some(report) = self.completion_evidence(&state) {
             return report.dml_acknowledged;
         }
-        self.owner
-            .state
-            .lock()
-            .unwrap()
+        state
             .pending
-            .get(&self.id)
+            .get(&self.token.id)
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.dml_acknowledged.clone())
     }
     pub fn ddl_acknowledged(&self) -> Option<DdlAcknowledgement> {
-        if let Some(report) = self.report() {
+        let state = self.owner.state.lock().unwrap();
+        if let Some(report) = self.completion_evidence(&state) {
             return report.ddl_acknowledged;
         }
-        self.owner
-            .state
-            .lock()
-            .unwrap()
+        state
             .pending
-            .get(&self.id)
+            .get(&self.token.id)
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.ddl_acknowledged.clone())
     }
@@ -1950,7 +1958,7 @@ impl Inner {
                         || pending.ddl_acknowledged.is_some())
                         && pending.phase != Phase::Acknowledged)
                     || cancelled_context;
-                pending.terminal.send_replace(Some(Report {
+                let report = Report {
                     ok,
                     certainty,
                     phase: pending.phase,
@@ -1962,8 +1970,30 @@ impl Inner {
                     boundary_acknowledged: pending.boundary_acknowledged,
                     dml_acknowledged: pending.dml_acknowledged,
                     ddl_acknowledged: pending.ddl_acknowledged,
-                }));
+                };
                 let closing = state.pending.values().any(|p| p.op == "close");
+                #[cfg(all(unix, feature = "test-harness"))]
+                if let Some(transport) = &self.transport {
+                    state
+                        .finalizing
+                        .insert((logical_id.clone(), pending.ticket), report.clone());
+                    drop(state);
+                    transport.terminal(PhysicalTerminal {
+                        generation: &self.generation,
+                        operation_id: &logical_id,
+                        ticket: pending.ticket,
+                        wire_id: id,
+                        operation: &pending.op,
+                        impact: pending.impact,
+                        report: &report,
+                    });
+                    state = self.state.lock().unwrap();
+                }
+                // A policy failure prevents future admission; it must never
+                // replace the helper's validated original outcome or ACK.
+                pending.terminal.send_replace(Some(report));
+                #[cfg(all(unix, feature = "test-harness"))]
+                state.finalizing.remove(&(logical_id, pending.ticket));
                 drop(state);
                 if terminal_connection_loss && !closing {
                     self.retire(Retirement::Requested);

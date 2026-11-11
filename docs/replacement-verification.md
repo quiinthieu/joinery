@@ -8,6 +8,72 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Offline wire/lifecycle validators and terminal evidence (11 November 2026)
+
+Local implementation adds strict final-frame matching, census/context/target
+lifecycle validation and a harness-only pre-publication helper-terminal callback.
+The validators are not an attached phase/admission policy, journal or account
+runner. No private profile was read and no account activity occurred. The permitted
+fresh-table location remains `SANDBOX.BILLIE_TESTING`; the previous setup approval
+is consumed and no new execution approval is requested here.
+
+| Check | Result and scope |
+| --- | --- |
+| Qualification definition | **31/31**: existing 14 compiler cases plus nine wire and eight lifecycle tests. One wire case matches all 393 entries for a one-schema ledger; this is not complete production-route execution. `qualification-primitives-compiler-final.log` |
+| Process/transport | **51/51**, including three terminal cases with concurrent ACK/phase access, metadata-side shared failure, retirement, logical-handle/new-ticket reuse, malformed-terminal rejection and original-report/cache assertions. `qualification-primitives-process-final.log` |
+| Final application validation | **679 frontend / 465 standard Rust tests**, **129 fixture tests ignored**. Formatting, generated contracts, frontend build, Cargo check and strict all-target/all-feature Clippy pass. `qualification-primitives-validate-final.log` |
+| Adapter regression | **66/66**, production adapter/helper with synthetic SDK, including DML/DDL/transaction acknowledgement and interruption cases. `qualification-primitives-adapter-final.log` |
+| Attached Studio route | **1/1**, production main/helper with synthetic SDK: startup, catalog, both attachments, disconnect, transport settlement and private-root cleanup. `qualification-primitives-studio-final.log`; not account SSO or SQL |
+
+The first terminal regression failed before callback wiring: the observer saw no
+event (`qualification-policy-terminal-red.log`). It passed after wiring. Review
+then found an ACK visibility gap while the callback ran outside State. Both
+terminal variants reproduced the gap before repair
+(`qualification-policy-ack-gap-red.log`). A ticket-bound in-memory report cache
+now preserves ACK/phase evidence until unchanged terminal publication and cache
+removal under State. This closes the callback window and the accessors' prior
+report-before-lock race. Normal connections retain locked terminal publication.
+Counts overlap; they are not a total of distinct tests. Existing nonfatal ts-rs
+attribute and frontend chunk-size warnings remain recorded by full validation.
+
+Initial full validation failed strict Clippy on a new test's complex tuple type
+(`qualification-primitives-validate.log`). A named test alias resolves it; no check
+was bypassed. Earlier focused passes remain recorded in
+`qualification-policy-terminal-green.log` and `qualification-primitives-process.log`.
+
+Independent source review found no remaining material finding after the ACK fix.
+The reviewed process/test SHA-256 values are
+`bd222fa377bbfac85a210b072ffe57b98fa955cfb059a411c30822af868512c3` and
+`29a11b37a1beb64974f147d3b9e8962d078ee6605ae0486938cdc6b9e9fe7e37`.
+Tier 2 coverage generation `2026-11-11T13:49:15Z` reported metadata match/no
+recorded issue, best effort, supplemented by direct source. The nine changed
+code/test files are frozen in `qualification-primitives-source-final.json`,
+SHA-256 `e6329a90fe7d877f8b1db71fc321b443be67effb828f49ff714ff6d4863f6fc2`.
+This is a bounded changed-file freeze, not a complete dependency/runtime freeze.
+
+Reproduce using the pinned toolchains from the shared SQL ledger entry below and an
+explicit helper Node executable:
+
+```sh
+export JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node"
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_process:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib qualification_studio_attaches_both_domains_before_startup_and_drains_after_close -- --test-threads=1
+pnpm validate
+```
+
+Terminal notification covers validated helper terminals only. Locally cancelled
+and retirement-synthesized reports bypass it, even when they retain an early ACK.
+The cache preserves existing caller access; it is not durable receipt capture.
+Terminal notification also does not prove row draining or phase completion.
+Exact phase/control ordering, callback correlation, complete outcome capture,
+durable intents/receipts, one-use source/runtime/profile binding and a fixed
+runner remain required. Full 393/610-entry synthetic routes, actual account
+effects, normal packaged SSO, million-row performance and owner acceptance remain
+open. The prior normal bundle/native/UI/database evidence retains its recorded
+source and scope; these focused tests do not refresh it.
+
 ### Shared SQL and offline ledger (11 November 2026)
 
 Implementation commit: `a8bcc61`, unmerged and unpublished.

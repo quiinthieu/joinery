@@ -17,6 +17,26 @@
 #[path = "snowflake_table_qualification_ledger.rs"]
 mod ledger;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Offline validation; no account runner entry point"
+    )
+)]
+#[path = "snowflake_table_qualification_wire.rs"]
+mod wire;
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Offline validation; no account runner entry point"
+    )
+)]
+#[path = "snowflake_table_qualification_lifecycle.rs"]
+mod lifecycle;
+
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
     domain::{

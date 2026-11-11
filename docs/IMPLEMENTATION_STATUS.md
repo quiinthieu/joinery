@@ -1,5 +1,27 @@
 # Implementation and release status
 
+## Offline validation primitives (11 November 2026, local integration)
+
+Strict final-frame matching and in-memory census/context/target lifecycle
+validators are implemented alongside a harness-only validated-terminal callback.
+The callback preserves original mutation reports/ACKs on policy failure. Review
+identified a concurrent ACK visibility gap, reproduced before repair; ticket-bound
+retained evidence now spans the callback, retirement and handle reuse. Independent
+review has no remaining material finding. Focused checks pass 31 qualification
+definition and 51 process/transport cases; see the
+[verification ledger](replacement-verification.md) for scope and failed runs.
+Full application validation passes 679 frontend / 465 standard Rust tests, with
+129 fixture tests explicitly ignored; formatting/build/check/strict Clippy pass.
+
+The pure validators are not yet an owning physical SQL/phase policy. Durable
+intent/outcome recording, complete retirement receipt capture, the one-use
+source/runtime/profile envelope and fixed runner remain open. No account access
+occurred. The next account plan must target a fresh table under
+`SANDBOX.BILLIE_TESTING` and receive fresh exact execution/billing approval.
+Actual Snowflake effects, normal packaged SSO, million-row account performance,
+broader DataGrip workflows and owner acceptance remain required. The Goal stays
+active and incomplete; nothing is pushed, merged, published or installed.
+
 ## Shared SQL and offline ledger (11 November 2026, local integration)
 
 The [SQL contract and ledger](snowflake-qualification-sql-ledger.md) now share

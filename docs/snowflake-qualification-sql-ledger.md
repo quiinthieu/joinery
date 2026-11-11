@@ -64,12 +64,44 @@ earlier. No allowance crosses a phase, authorizes replay, adds rollback, or
 admits cleanup SQL. A definitive rejected statement is distinct from unknown
 delivery, which must retire without replay.
 
+## Offline wire and lifecycle validators (11 November 2026)
+
+The harness now includes pure validators for final writer envelopes and lifecycle
+observations. They do not attach an admission policy or enable execution.
+
+Wire matching requires exact envelope fields and canonical bytes, a resolved
+nonzero decimal wire ID, exact SQL/binds/retention/classification, matching typed
+operation/impact and expected mutation user/session. The logical handle and
+zero-based ticket are distinct from the wire ID; ticket zero is valid. Connection
+matching accepts only the owner's separately frozen seven-field payload. It does
+not itself establish that a profile is trusted, one-use or approved.
+
+Lifecycle validation freezes the first CREATE-preflight census and complete live
+context. Later observations require the same ordered census, principal, role,
+warehouse, session, search path, secondary roles and identifier policy. The new
+target must be absent before CREATE, present with ordinary base-table traits and
+creation/DDL markers after CREATE, and absent after DROP. Creation markers and
+traits remain fixed; only the first post-ADD observation may repin LAST_DDL, even
+when its timestamp is unchanged. These are best-effort drift checks, not immutable
+object identities or protection from concurrent external DDL.
+
+A harness-only transport callback observes each validated helper terminal after
+pending-state removal and outside the process mutex, before caller publication.
+Failure revokes future admission while preserving the original report and typed
+ACK. It still runs after an earlier policy failure. Malformed terminals cannot
+reach it. A ticket-bound in-memory terminal cache keeps original ACKs accessible
+to concurrent callers during the callback, including retirement and logical-ID
+reuse. Publication and cache removal occur together under the process mutex.
+Local cancellation and retirement-synthesized reports bypass this hook;
+it is not complete receipt capture, a row-drain barrier or phase completion.
+
 ## Remaining integration gates
 
 The next increment must bind these entries to the existing
 [transport and metadata attachments](snowflake-qualification-attachments.md).
-Freeze the first CREATE schema census in memory; before the next dependent write,
-asynchronous admission must durably record the census-bound expansion. Enforce
+Integrate the pure wire/lifecycle validators with an owning phase policy; before
+the next dependent write, asynchronous admission must durably record the
+census-bound expansion. Enforce
 phase ownership, result validation and original receipt persistence before
 advancement, plus frozen lifecycle context/traits/creation markers. Metadata
 callbacks remain synchronous and cannot perform I/O or reenter the adapter.

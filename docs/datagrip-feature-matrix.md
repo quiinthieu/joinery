@@ -1,5 +1,18 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Offline validation primitives (11 November 2026)
+
+The [qualification contract](snowflake-qualification-sql-ledger.md#offline-wire-and-lifecycle-validators-11-november-2026)
+now includes strict final-frame matching, frozen census/context and target-marker
+validation, and a harness-only validated-terminal callback that preserves original
+ACKs on policy failure. Pure validators are implemented; integrated physical
+SQL/phase enforcement, durable receipts and the fixed account runner remain
+incomplete. See the [verification ledger](replacement-verification.md).
+
+These local checks add no externally qualified product capability. Actual
+Snowflake writes/DDL/transaction effects, normal packaged SSO, million-row account
+performance, broader DataGrip workflows and owner acceptance remain required.
+
 ## Shared SQL and offline qualification ledger (11 November 2026)
 
 The [contract increment](snowflake-qualification-sql-ledger.md) implements shared

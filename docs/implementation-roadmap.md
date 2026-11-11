@@ -1,5 +1,23 @@
 # Joinery implementation roadmap
 
+## Offline validation primitives (11 November 2026)
+
+Implemented pure final-wire matching and in-memory lifecycle validation, plus a
+harness-only callback for validated helper terminals before caller publication.
+The original mutation report/ACK survives callback rejection and prior policy
+failure. Wire/lifecycle validators remain unattached to an owning execution
+policy. See the [contract](snowflake-qualification-sql-ledger.md#offline-wire-and-lifecycle-validators-11-november-2026)
+and [verification evidence](replacement-verification.md).
+
+Next bind these primitives to phase ownership, exact SQL/control order and
+callback correlation. Phase completion must include drained/validated results
+and durable original receipts; helper terminal alone is insufficient. Capture
+retirement outcomes as well as helper terminals before claiming complete receipt
+capture. Then finish one-use source/runtime/profile binding, durable journaling
+and the fixed runner. Complete synthetic routes and failure paths precede a
+fresh exact account plan for `SANDBOX.BILLIE_TESTING`. No account access or new
+execution approval occurs in this increment. Full replacement remains incomplete.
+
 ## Shared SQL and offline ledger (11 November 2026)
 
 Implemented [shared production definitions and census-bound expansion](snowflake-qualification-sql-ledger.md):

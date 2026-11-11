@@ -26,6 +26,18 @@ pub(crate) struct PhysicalRequest<'a> {
     /// Exact serialized envelope, excluding the four-byte length prefix.
     pub wire_payload: &'a [u8],
 }
+/// A validated helper terminal, after removal from the process pending map and
+/// before publication to its caller. Local cancellation/retirement reports do
+/// not pass this seam. The original report is always published unchanged.
+pub(crate) struct PhysicalTerminal<'a> {
+    pub generation: &'a str,
+    pub operation_id: &'a str,
+    pub ticket: u64,
+    pub wire_id: &'a str,
+    pub operation: &'a str,
+    pub impact: Impact,
+    pub report: &'a super::snowflake_process::Report,
+}
 pub(crate) trait TransportPolicy: Send + Sync {
     /// Synchronous, no IO or adapter/Studio/registry reentry. Publication may
     /// call this while holding connection registry and session-map locks.
@@ -34,6 +46,12 @@ pub(crate) trait TransportPolicy: Send + Sync {
     }
     /// Latch-only notification for cross-domain revocation. Never perform IO here.
     fn failed(&self, _error: AppError) {}
+    /// Synchronous in-memory observation, outside the process state mutex. No
+    /// I/O or reentry. Rejection revokes subsequent admission without replacing
+    /// the original terminal or its independently retained mutation ACK.
+    fn terminal(&self, _terminal: PhysicalTerminal<'_>) -> AppResult<()> {
+        Ok(())
+    }
     /// May sync a private intent. No process-state mutex is held across this await.
     /// An admitted intent is consumed even if later revalidation prevents writing.
     fn admit<'a>(
@@ -273,6 +291,13 @@ impl TransportAttachment {
         }
         self.update(|state| state.report.admitted_writes += 1);
         self.check()
+    }
+    pub(super) fn terminal(&self, terminal: PhysicalTerminal<'_>) {
+        // Do not precheck: a known original outcome must still be observed after
+        // another failure has revoked admission.
+        if let Err(error) = self.inner.policy.terminal(terminal) {
+            self.fail(error);
+        }
     }
     pub(super) fn write_started(&self) {
         self.update(|state| state.report.started_writes += 1);
