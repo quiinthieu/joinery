@@ -38,6 +38,8 @@ const HELPER_FILES = [
   "query-submit-guard.mjs",
   "transport-source-pins.mjs",
   "disposable-setup-ledger.mjs",
+  "sql-contract.json",
+  "sql-contract.mjs",
 ];
 const NOTICE_NAME = /^(?:license|licence|copying|notice)(?:\..*)?$/i;
 const README_NAME = /^readme(?:\..*)?$/i;

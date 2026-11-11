@@ -18,6 +18,170 @@ pub(crate) const RELATION_LIMIT: usize = 10_000;
 pub(crate) const RELATION_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const COLUMN_LIMIT: usize = 1000;
 pub(crate) const COLUMN_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const STANDARD_QUERY_MAX_ROWS: u64 = 1_000_000;
+pub(crate) const STANDARD_QUERY_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum ReadKind {
+    Context,
+    QuotedIdentifierPolicy,
+    Autocommit,
+    AbortOnError,
+    CurrentTransaction,
+    Version,
+    Schemas,
+    Relations,
+    ExactRelation,
+    Columns,
+    Describe,
+    ZeroRowResolution,
+}
+
+/// An immutable production read. Only closed factories below construct it;
+/// callers cannot supply SQL, binds, or independently chosen retention bounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReadSpec {
+    kind: ReadKind,
+    sql: String,
+    max_rows: u64,
+    max_bytes: u64,
+}
+
+impl ReadSpec {
+    fn bounded(kind: ReadKind, sql: impl Into<String>, rows: u64, bytes: u64) -> Self {
+        Self {
+            kind,
+            sql: sql.into(),
+            max_rows: rows,
+            max_bytes: bytes,
+        }
+    }
+    #[cfg(feature = "test-harness")]
+    pub(crate) fn kind(&self) -> ReadKind {
+        self.kind
+    }
+    pub(crate) fn sql(&self) -> &str {
+        &self.sql
+    }
+    pub(crate) fn max_rows(&self) -> u64 {
+        self.max_rows
+    }
+    pub(crate) fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+    pub(crate) fn binds(&self) -> &[serde_json::Value] {
+        &[]
+    }
+}
+
+pub(crate) fn context_reads() -> [ReadSpec; 2] {
+    [
+        ReadSpec::bounded(ReadKind::Context, CONTEXT_SQL, 1, CONTEXT_MAX_BYTES as u64),
+        ReadSpec::bounded(
+            ReadKind::QuotedIdentifierPolicy,
+            QUOTED_IDENTIFIER_POLICY_SQL,
+            1,
+            CONTEXT_MAX_BYTES as u64,
+        ),
+    ]
+}
+
+pub(crate) fn sample_reads() -> [ReadSpec; 5] {
+    use super::snowflake_session as session;
+    let bytes = session::OBSERVATION_MAX_BYTES as u64;
+    [
+        ReadSpec::bounded(ReadKind::Context, CONTEXT_SQL, 1, bytes),
+        ReadSpec::bounded(
+            ReadKind::QuotedIdentifierPolicy,
+            QUOTED_IDENTIFIER_POLICY_SQL,
+            1,
+            bytes,
+        ),
+        ReadSpec::bounded(ReadKind::Autocommit, session::AUTOCOMMIT_SQL, 1, bytes),
+        ReadSpec::bounded(
+            ReadKind::AbortOnError,
+            session::ABORT_ON_ERROR_SQL,
+            1,
+            bytes,
+        ),
+        ReadSpec::bounded(
+            ReadKind::CurrentTransaction,
+            session::CURRENT_TRANSACTION_SQL,
+            1,
+            bytes,
+        ),
+    ]
+}
+
+pub(crate) fn version_read() -> ReadSpec {
+    ReadSpec::bounded(
+        ReadKind::Version,
+        super::snowflake_sql_contract::VERSION_SQL,
+        STANDARD_QUERY_MAX_ROWS,
+        STANDARD_QUERY_MAX_BYTES,
+    )
+}
+
+pub(crate) fn schemas_read(context: &LiveContext) -> AppResult<ReadSpec> {
+    use super::snowflake_browsing as browsing;
+    Ok(ReadSpec::bounded(
+        ReadKind::Schemas,
+        browsing::schemas_sql(context)?,
+        (browsing::SCHEMA_LIMIT + 1) as u64,
+        browsing::CATALOG_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn relations_read(context: &LiveContext, schema: &str) -> AppResult<ReadSpec> {
+    use super::snowflake_browsing as browsing;
+    Ok(ReadSpec::bounded(
+        ReadKind::Relations,
+        browsing::relations_sql(context, schema)?,
+        (browsing::RELATION_LIMIT + 1) as u64,
+        browsing::CATALOG_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn exact_relation_read(
+    context: &LiveContext,
+    target: &super::snowflake_browsing::BrowseRelation,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_browsing as browsing;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExactRelation,
+        browsing::relation_sql(context, target)?,
+        3,
+        browsing::CATALOG_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn inspection_reads(
+    target: &super::snowflake_browsing::BrowseRelation,
+) -> AppResult<[ReadSpec; 3]> {
+    use super::snowflake_browsing as browsing;
+    let rows = (browsing::COLUMN_LIMIT + 1) as u64;
+    let bytes = browsing::COLUMN_MAX_BYTES as u64;
+    Ok([
+        ReadSpec::bounded(
+            ReadKind::Columns,
+            browsing::columns_sql(target)?,
+            rows,
+            bytes,
+        ),
+        ReadSpec::bounded(
+            ReadKind::Describe,
+            browsing::describe_sql(target)?,
+            rows,
+            bytes,
+        ),
+        ReadSpec::bounded(
+            ReadKind::ZeroRowResolution,
+            browsing::resolved_columns_sql(target)?,
+            0,
+            bytes,
+        ),
+    ])
+}
 
 // CURRENT_SESSION is VARCHAR, not a numeric identity. CURRENT_SECONDARY_ROLES
 // returns JSON with string fields `roles` and `value`; do not split their commas.

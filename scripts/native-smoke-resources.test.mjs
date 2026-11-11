@@ -31,6 +31,8 @@ import {
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const sourceNames = [
   "disposable-setup-ledger.mjs",
+  "sql-contract.json",
+  "sql-contract.mjs",
   "framing.mjs",
   "helper.mjs",
   "main.mjs",

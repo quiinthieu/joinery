@@ -15,6 +15,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateSnowflakeResourceTree } from "./native-smoke-resources.mjs";
+import { SQL_CONTRACT, validateSqlContract } from "../snowflake-helper/src/sql-contract.mjs";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 export const WORKFLOW = "session-options-scalar-state-v1";
@@ -32,15 +33,18 @@ export const SOURCE_PATHS = Object.freeze([
   "snowflake-helper/src/framing.mjs",
   "snowflake-helper/src/query-submit-guard.mjs",
   "snowflake-helper/src/transport-source-pins.mjs",
+  "snowflake-helper/src/sql-contract.json",
+  "snowflake-helper/src/sql-contract.mjs",
   "snowflake-helper/package-lock.json",
+  "src-tauri/build.rs",
+  "src-tauri/src/drivers/snowflake_sql_contract.rs",
   "src-tauri/src/drivers/snowflake_external.rs",
   "src-tauri/src/drivers/snowflake_metadata.rs",
   "src-tauri/src/drivers/snowflake_session.rs",
 ]);
 const SQL = Object.freeze({
-  startupIdentity:
-    "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()",
-  version: "SELECT CURRENT_VERSION()",
+  startupIdentity: SQL_CONTRACT.bootstrapContext,
+  version: SQL_CONTRACT.version,
   context:
     "SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES",
   quotedIdentifierPolicy: "SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE' IN SESSION",
@@ -502,6 +506,12 @@ export function validateSourceTemplates(sources) {
     throw fail("invalidSources");
   const session = sources["src-tauri/src/drivers/snowflake_session.rs"];
   const metadata = sources["src-tauri/src/drivers/snowflake_metadata.rs"];
+  let contract;
+  try {
+    contract = validateSqlContract(JSON.parse(sources["snowflake-helper/src/sql-contract.json"]));
+  } catch {
+    throw fail("sourceTemplateDrift");
+  }
   for (const [name, template] of [
     ["AUTOCOMMIT_SQL", "autocommit"],
     ["ABORT_ON_ERROR_SQL", "abortOnError"],
@@ -514,8 +524,17 @@ export function validateSourceTemplates(sources) {
     rustConstant(metadata, "QUOTED_IDENTIFIER_POLICY_SQL") !== SQL.quotedIdentifierPolicy ||
     !metadata.includes(JSON.stringify(SQL.schemas)) ||
     !/const SCHEMA_LIMIT: usize = 1000;/.test(metadata) ||
-    !sources["snowflake-helper/src/helper.mjs"].includes(JSON.stringify(SQL.startupIdentity)) ||
-    !sources["src-tauri/src/drivers/snowflake_external.rs"].includes(JSON.stringify(SQL.version))
+    contract.bootstrapContext !== SQL.startupIdentity ||
+    contract.version !== SQL.version ||
+    !sources["snowflake-helper/src/helper.mjs"].includes(
+      "const CONTEXT_SQL = SQL_CONTRACT.bootstrapContext;",
+    ) ||
+    !metadata.includes("super::snowflake_sql_contract::VERSION_SQL") ||
+    !sources["src-tauri/src/drivers/snowflake_external.rs"].includes("metadata::version_read()") ||
+    !sources["src-tauri/src/drivers/snowflake_sql_contract.rs"].includes(
+      'include!(concat!(env!("OUT_DIR"), "/snowflake_sql_contract.rs"));',
+    ) ||
+    !sources["src-tauri/build.rs"].includes('join("../snowflake-helper/src/sql-contract.json")')
   )
     throw fail("sourceTemplateDrift");
 }

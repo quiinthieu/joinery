@@ -108,6 +108,8 @@ function makeFixture({ nodeMode = 0o755 } = {}) {
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",
     "disposable-setup-ledger.mjs",
+    "sql-contract.json",
+    "sql-contract.mjs",
   ])
     writeFileSync(path.join(helperRoot, "src", filename), `// ${filename}\n`);
   writeFileSync(
@@ -445,6 +447,13 @@ test("stages only runtime/helper/dependencies with exact hashes and honest notic
   assert.equal(manifest.runtime.version, NODE_VERSION);
   assert.equal(manifest.runtime.npmVersion, NPM_VERSION);
   assert.equal(existsSync(path.join(result.target, "helper", "main.mjs")), true);
+  for (const name of ["sql-contract.json", "sql-contract.mjs"]) {
+    assert.equal(
+      readFileSync(path.join(result.target, "helper", name), "utf8"),
+      readFileSync(path.join(fixture.repoRoot, "snowflake-helper", "src", name), "utf8"),
+    );
+    assert.equal(typeof manifest.helper.sourceSha256[name], "string");
+  }
   assert.deepEqual(manifest.notices.packagesWithNoNoticeFile, ["proxy-agent-negotiate@1.1.0"]);
   assert.deepEqual(manifest.notices.packagesWithReadmeOnly, ["readme-only@1.0.0"]);
   assert.deepEqual(manifest.notices.packagesWithIncompleteNotice, [

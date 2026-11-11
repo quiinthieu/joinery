@@ -1,4 +1,5 @@
 // Pure closed SQL templates. Importing this file never authenticates or executes.
+import { SQL_CONTRACT } from "./sql-contract.mjs";
 export const SETUP_WORKFLOW = "disposable-setup-v1";
 const fail = () => Object.assign(new Error("invalidSetupRunId"), { safeCode: "invalidSetupRunId" });
 
@@ -50,13 +51,8 @@ export function deriveSetupLedger(runId) {
     for (const [name, sql, maximumColumns] of sample)
       add(`${prefix}.${name}`, sql, phase, { maximumColumns });
   }
-  add(
-    "startup.identity",
-    "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()",
-    "initial",
-    { maximumColumns: 6 },
-  );
-  add("startup.version", "SELECT CURRENT_VERSION()", "initial");
+  add("startup.identity", SQL_CONTRACT.bootstrapContext, "initial", { maximumColumns: 6 });
+  add("startup.version", SQL_CONTRACT.version, "initial");
   observe("before", "initial");
   add(
     "create.database",

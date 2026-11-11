@@ -32,6 +32,8 @@ const HELPER_FILES = [
   "query-submit-guard.mjs",
   "transport-source-pins.mjs",
   "disposable-setup-ledger.mjs",
+  "sql-contract.json",
+  "sql-contract.mjs",
 ];
 const HELPER_PACKAGE = "joinery-snowflake-helper";
 const HELPER_VERSION = "0.0.0";

@@ -402,12 +402,12 @@ test("independent current-source check rejects observer,metadata,setup and schem
       "SCHEMATA WHERE OTHER_NAME",
     ],
     [
-      "snowflake-helper/src/helper.mjs",
+      "snowflake-helper/src/sql-contract.json",
       "SELECT CURRENT_USER(), CURRENT_ROLE(),",
       "SELECT CURRENT_USER(), CURRENT_DATE(),",
     ],
     [
-      "src-tauri/src/drivers/snowflake_external.rs",
+      "snowflake-helper/src/sql-contract.json",
       '"SELECT CURRENT_VERSION()"',
       '"SELECT CURRENT_DATE()"',
     ],

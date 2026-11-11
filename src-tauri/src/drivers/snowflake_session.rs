@@ -22,6 +22,10 @@ pub(crate) const ABORT_ON_ERROR_SQL: &str =
 pub(crate) const CURRENT_TRANSACTION_SQL: &str =
     "SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID";
 
+pub(crate) fn sample_reads() -> [metadata::ReadSpec; 5] {
+    metadata::sample_reads()
+}
+
 /// A successfully parsed five-statement sample. SQL NULL transaction_id means
 /// no transaction was observed; a failed/unavailable sample is not this value.
 /// Nullable role and other context fields are never filled from the profile.

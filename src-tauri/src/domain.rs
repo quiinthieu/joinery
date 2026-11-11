@@ -1622,9 +1622,9 @@ pub enum ExplicitTransactionAction {
 impl ExplicitTransactionAction {
     pub fn sql(self) -> &'static str {
         match self {
-            Self::Begin => "BEGIN TRANSACTION",
-            Self::Commit => "COMMIT",
-            Self::Rollback => "ROLLBACK",
+            Self::Begin => crate::drivers::snowflake_sql_contract::BEGIN_SQL,
+            Self::Commit => crate::drivers::snowflake_sql_contract::COMMIT_SQL,
+            Self::Rollback => crate::drivers::snowflake_sql_contract::ROLLBACK_SQL,
         }
     }
 }

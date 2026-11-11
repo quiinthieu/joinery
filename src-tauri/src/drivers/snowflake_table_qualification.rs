@@ -2,10 +2,20 @@
 //! executable manifest, approval, SQL admission gate, or account runner.
 //!
 //! Only `Plan::generate` creates a plan. There is no caller-selected target,
-//! SQL, transaction, or deserialization entry point. Metadata families below
-//! are production-derived templates, not a complete physical invocation ledger.
-//! In particular startup SQL, inbound counters, raw census interception, source/
+//! SQL, transaction, or deserialization entry point. The census-bound expansion
+//! describes exact production-derived SQL order and route-specific rejection
+//! suffixes. Physical admission enforcement, lifecycle observations, source/
 //! binary/private-connection binding and durable receipts still need integration.
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Offline ledger contract; no account runner entry point"
+    )
+)]
+#[path = "snowflake_table_qualification_ledger.rs"]
+mod ledger;
 
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
@@ -110,7 +120,7 @@ pub enum Presence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Operation {
-    /// Two helper-internal reads; their actual SQL is not yet exported to this module.
+    /// The shared helper identity SQL followed by the adapter's version read.
     StartupIdentityAndVersion,
     DdlPreflight(StatementId),
     ReviewedDdl(StatementId),
@@ -206,8 +216,9 @@ impl Phase {
 }
 
 /// These are shared SQL templates, NOT an expanded per-phase physical ledger.
-/// Each generated schema expansion must later be privately recorded before its
-/// physical write. Startup and all dispatch/order/count enforcement remain absent.
+/// The separate census-bound ledger expands these into ordered invocations.
+/// Every expansion must still be privately recorded before its physical write;
+/// physical dispatch/order/count enforcement remains absent.
 #[derive(Debug, Clone, Serialize)]
 pub struct MetadataTemplates {
     observation: [String; 5],
@@ -465,19 +476,13 @@ impl Plan {
             statements,
             phases: phases(),
             metadata: MetadataTemplates {
-                observation: [
-                    metadata::CONTEXT_SQL.into(),
-                    metadata::QUOTED_IDENTIFIER_POLICY_SQL.into(),
-                    snowflake_session::AUTOCOMMIT_SQL.into(),
-                    snowflake_session::ABORT_ON_ERROR_SQL.into(),
-                    snowflake_session::CURRENT_TRANSACTION_SQL.into(),
-                ],
+                observation: snowflake_session::sample_reads().map(|spec| spec.sql().into()),
                 schemas: browsing::schemas_sql(&context)?,
                 exact_relation: browsing::relation_sql(&context, &relation)?,
                 columns: browsing::columns_sql(&relation)?,
                 describe: browsing::describe_sql(&relation)?,
                 zero_row_resolution: browsing::resolved_columns_sql(&relation)?,
-                startup_sql_exported: false,
+                startup_sql_exported: true,
                 physical_ledger_expanded: false,
                 bounds: MetadataBounds {
                     schema_sql_sentinel: browsing::SCHEMA_LIMIT + 1,
@@ -496,7 +501,7 @@ impl Plan {
             },
             max_schemas: MAX_SCHEMAS,
             limits: IntegrationLimits {
-                startup_sql_not_exported: true,
+                startup_sql_not_exported: false,
                 physical_sql_admission_and_census_callback_missing: true,
                 inbound_byte_frame_counters_missing: true,
                 raw_catalog_creation_marker_pinning_missing: true,

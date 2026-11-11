@@ -158,7 +158,7 @@ fn development_root() -> PathBuf {
 struct ExpectedPins {
     node_sha256: String,
     lock_sha256: String,
-    sources: [(&'static str, String); 6],
+    sources: [(&'static str, String); 8],
 }
 
 impl ExpectedPins {
@@ -199,6 +199,18 @@ impl ExpectedPins {
                     "disposable-setup-ledger.mjs",
                     digest_bytes(include_bytes!(
                         "../../snowflake-helper/src/disposable-setup-ledger.mjs"
+                    )),
+                ),
+                (
+                    "sql-contract.json",
+                    digest_bytes(include_bytes!(
+                        "../../snowflake-helper/src/sql-contract.json"
+                    )),
+                ),
+                (
+                    "sql-contract.mjs",
+                    digest_bytes(include_bytes!(
+                        "../../snowflake-helper/src/sql-contract.mjs"
                     )),
                 ),
             ],
@@ -253,6 +265,8 @@ fn validate_resources(root: &Path, pins: &ExpectedPins) -> io::Result<()> {
         "helper/query-submit-guard.mjs",
         "helper/transport-source-pins.mjs",
         "helper/disposable-setup-ledger.mjs",
+        "helper/sql-contract.json",
+        "helper/sql-contract.mjs",
         "helper/node_modules/snowflake-sdk/package.json",
     ] {
         let metadata = fs::symlink_metadata(root.join(file))?;
@@ -458,6 +472,11 @@ mod tests {
                 ("query-submit-guard.mjs", "synthetic guard"),
                 ("transport-source-pins.mjs", "synthetic source verifier"),
                 ("disposable-setup-ledger.mjs", "synthetic setup ledger"),
+                (
+                    "sql-contract.json",
+                    include_str!("../../snowflake-helper/src/sql-contract.json"),
+                ),
+                ("sql-contract.mjs", "synthetic SQL contract loader"),
             ];
             for (name, source) in sources {
                 fs::write(root.join("helper").join(name), source).unwrap();
@@ -561,6 +580,8 @@ mod tests {
             "helper/query-submit-guard.mjs",
             "helper/transport-source-pins.mjs",
             "helper/disposable-setup-ledger.mjs",
+            "helper/sql-contract.json",
+            "helper/sql-contract.mjs",
             "helper/node_modules/snowflake-sdk/package.json",
         ] {
             let fixture = Fixture::new();
@@ -579,6 +600,8 @@ mod tests {
             "helper/query-submit-guard.mjs",
             "helper/transport-source-pins.mjs",
             "helper/disposable-setup-ledger.mjs",
+            "helper/sql-contract.json",
+            "helper/sql-contract.mjs",
         ] {
             let fixture = Fixture::new();
             fs::write(fixture.root.join(file), b"replacement").unwrap();
@@ -923,6 +946,14 @@ pub(crate) mod studio_fixture {
                     "disposable-setup-ledger.mjs",
                     include_bytes!("../../snowflake-helper/src/disposable-setup-ledger.mjs")
                         .as_slice(),
+                ),
+                (
+                    "sql-contract.json",
+                    include_bytes!("../../snowflake-helper/src/sql-contract.json").as_slice(),
+                ),
+                (
+                    "sql-contract.mjs",
+                    include_bytes!("../../snowflake-helper/src/sql-contract.mjs").as_slice(),
                 ),
             ] {
                 fs::write(root.join("helper").join(name), bytes).unwrap();

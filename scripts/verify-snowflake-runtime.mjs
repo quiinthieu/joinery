@@ -59,12 +59,14 @@ export function verifySnowflakeRuntime({
     throw new Error("The Node hash did not match the pinned binary");
   const expectedFiles = [
     "disposable-setup-ledger.mjs",
+    "sql-contract.json",
+    "sql-contract.mjs",
     "framing.mjs",
     "helper.mjs",
     "main.mjs",
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",
-  ];
+  ].sort();
   if (
     JSON.stringify(Object.keys(manifest.helper.sourceSha256 ?? {}).sort()) !==
     JSON.stringify(expectedFiles)

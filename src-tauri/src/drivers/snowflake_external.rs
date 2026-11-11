@@ -35,8 +35,6 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::sync::CancellationToken;
 
 const SQL_BYTES: usize = 262_144;
-const QUERY_ROWS: u64 = 1_000_000;
-const QUERY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const DDL_GRANT_TTL: Duration = Duration::from_secs(60);
 
 /// LOGIN_NAME need not equal CURRENT_USER. Only enforce a principal when explicitly configured.
@@ -357,10 +355,17 @@ impl SnowflakeExternal {
         });
         // Obtain the version on the same SDK session rather than infer it from the local package.
         let mut version = ScalarSink::default();
+        let version_read = metadata::version_read();
         // Fixed internal metadata SQL is not an owner-supplied classification hint.
         tokio::time::timeout(
             Duration::from_secs(65),
-            driver.stream("SELECT CURRENT_VERSION()", vec![], &mut version),
+            driver.stream_bounded(
+                version_read.sql(),
+                version_read.binds().to_vec(),
+                &mut version,
+                version_read.max_rows(),
+                version_read.max_bytes(),
+            ),
         )
         .await
         .map_err(|_| closed_error())??;
@@ -471,18 +476,17 @@ impl SnowflakeExternal {
         Ok(sink.data)
     }
 
+    async fn read_spec(&self, spec: &metadata::ReadSpec) -> AppResult<MetadataResult> {
+        let rows = usize::try_from(spec.max_rows()).map_err(|_| metadata_limit())?;
+        let bytes = usize::try_from(spec.max_bytes()).map_err(|_| metadata_limit())?;
+        self.metadata_read(spec.sql(), rows, bytes).await
+    }
+
     async fn live_metadata_context(&self) -> AppResult<LiveContext> {
         async {
-            let context = self
-                .metadata_read(metadata::CONTEXT_SQL, 1, metadata::CONTEXT_MAX_BYTES)
-                .await?;
-            let policy = self
-                .metadata_read(
-                    metadata::QUOTED_IDENTIFIER_POLICY_SQL,
-                    1,
-                    metadata::CONTEXT_MAX_BYTES,
-                )
-                .await?;
+            let [context_read, policy_read] = metadata::context_reads();
+            let context = self.read_spec(&context_read).await?;
+            let policy = self.read_spec(&policy_read).await?;
             let observed = metadata::parse_context(&context, &policy)?;
             self.require_session_identity(&observed)?;
             // An unset database is valid session state, but cannot identify this
@@ -851,13 +855,7 @@ impl SnowflakeExternal {
                         "Reviewed Snowflake DDL cannot create tables in INFORMATION_SCHEMA",
                     ));
                 }
-                let schema_rows = self
-                    .metadata_read(
-                        &browsing::schemas_sql(context)?,
-                        browsing::SCHEMA_LIMIT + 1,
-                        browsing::CATALOG_MAX_BYTES,
-                    )
-                    .await?;
+                let schema_rows = self.read_spec(&metadata::schemas_read(context)?).await?;
                 let schemas = browsing::parse_schemas(context, &schema_rows)?;
                 #[cfg(all(unix, feature = "test-harness"))]
                 self.observe_schemas(
@@ -873,11 +871,7 @@ impl SnowflakeExternal {
                     ));
                 }
                 let relation_rows = self
-                    .metadata_read(
-                        &browsing::relations_sql(context, schema)?,
-                        browsing::RELATION_LIMIT + 1,
-                        browsing::CATALOG_MAX_BYTES,
-                    )
+                    .read_spec(&metadata::relations_read(context, schema)?)
                     .await?;
                 let relations = browsing::parse_relations(context, schema, &relation_rows)?;
                 #[cfg(all(unix, feature = "test-harness"))]
@@ -903,27 +897,11 @@ impl SnowflakeExternal {
                 let expected_columns = inspected_columns.ok_or_else(stale_ddl)?;
                 require_plain_base_table(target)?;
                 self.require_browse_relation(context, target).await?;
-                let columns = self
-                    .metadata_read(
-                        &browsing::columns_sql(target)?,
-                        browsing::COLUMN_LIMIT + 1,
-                        browsing::COLUMN_MAX_BYTES,
-                    )
-                    .await?;
-                let describe = self
-                    .metadata_read(
-                        &browsing::describe_sql(target)?,
-                        browsing::COLUMN_LIMIT + 1,
-                        browsing::COLUMN_MAX_BYTES,
-                    )
-                    .await?;
-                let resolved = self
-                    .metadata_read(
-                        &browsing::resolved_columns_sql(target)?,
-                        0,
-                        browsing::COLUMN_MAX_BYTES,
-                    )
-                    .await?;
+                let [columns_read, describe_read, resolved_read] =
+                    metadata::inspection_reads(target)?;
+                let columns = self.read_spec(&columns_read).await?;
+                let describe = self.read_spec(&describe_read).await?;
+                let resolved = self.read_spec(&resolved_read).await?;
                 let live_columns =
                     browsing::parse_inspection(target, &columns, &describe, &resolved)?;
                 if live_columns.as_slice() != expected_columns {
@@ -1059,38 +1037,23 @@ impl SnowflakeExternal {
     /// Called with the SDK lane held. Five fixed, bounded reads form one sample;
     /// they do not change parameters, start a transaction or repair an observation.
     async fn session_sample(&self) -> AppResult<ObservationSample> {
-        let context = self
-            .metadata_read(metadata::CONTEXT_SQL, 1, session::OBSERVATION_MAX_BYTES)
-            .await?;
-        let policy = self
-            .metadata_read(
-                metadata::QUOTED_IDENTIFIER_POLICY_SQL,
-                1,
-                session::OBSERVATION_MAX_BYTES,
-            )
-            .await?;
+        let [
+            context_read,
+            policy_read,
+            autocommit_read,
+            abort_read,
+            transaction_read,
+        ] = session::sample_reads();
+        let context = self.read_spec(&context_read).await?;
+        let policy = self.read_spec(&policy_read).await?;
         let observed = metadata::parse_context(&context, &policy)?;
         self.require_session_identity(&observed)?;
         if observed.database.as_deref() != Some(self.profile.database.as_str()) {
             return Err(stale_session_options());
         }
-        let autocommit = self
-            .metadata_read(session::AUTOCOMMIT_SQL, 1, session::OBSERVATION_MAX_BYTES)
-            .await?;
-        let abort_on_error = self
-            .metadata_read(
-                session::ABORT_ON_ERROR_SQL,
-                1,
-                session::OBSERVATION_MAX_BYTES,
-            )
-            .await?;
-        let transaction = self
-            .metadata_read(
-                session::CURRENT_TRANSACTION_SQL,
-                1,
-                session::OBSERVATION_MAX_BYTES,
-            )
-            .await?;
+        let autocommit = self.read_spec(&autocommit_read).await?;
+        let abort_on_error = self.read_spec(&abort_read).await?;
+        let transaction = self.read_spec(&transaction_read).await?;
         let sample = session::parse_sample(
             &context,
             &policy,
@@ -1329,11 +1292,7 @@ impl SnowflakeExternal {
         target: &BrowseRelation,
     ) -> AppResult<()> {
         let result = self
-            .metadata_read(
-                &browsing::relation_sql(context, target)?,
-                3,
-                browsing::CATALOG_MAX_BYTES,
-            )
+            .read_spec(&metadata::exact_relation_read(context, target)?)
             .await?;
         browsing::require_relation(context, target, &result)
             .map_err(AppError::with_completion_invalidated)?;
@@ -1455,8 +1414,14 @@ impl SnowflakeExternal {
         binds: Vec<Value>,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
-        self.stream_bounded(wire, binds, sink, QUERY_ROWS, QUERY_BYTES)
-            .await
+        self.stream_bounded(
+            wire,
+            binds,
+            sink,
+            metadata::STANDARD_QUERY_MAX_ROWS,
+            metadata::STANDARD_QUERY_MAX_BYTES,
+        )
+        .await
     }
 
     async fn stream_bounded(
@@ -2283,11 +2248,7 @@ impl Driver for SnowflakeExternal {
                     return Err(stale_session_options());
                 }
                 let rows = self
-                    .metadata_read(
-                        &metadata::schemas_sql(&before.context)?,
-                        metadata::SCHEMA_LIMIT + 1,
-                        metadata::RELATION_MAX_BYTES,
-                    )
+                    .read_spec(&metadata::schemas_read(&before.context)?)
                     .await?;
                 let available = metadata::parse_schemas(&before.context, &rows)?;
                 #[cfg(all(unix, feature = "test-harness"))]
@@ -2459,11 +2420,7 @@ impl Driver for SnowflakeExternal {
                 self.require_transaction_generation(&generation)?;
                 let before = self.session_sample().await?;
                 let rows = self
-                    .metadata_read(
-                        &metadata::schemas_sql(&before.context)?,
-                        metadata::SCHEMA_LIMIT + 1,
-                        metadata::RELATION_MAX_BYTES,
-                    )
+                    .read_spec(&metadata::schemas_read(&before.context)?)
                     .await?;
                 let available = metadata::parse_schemas(&before.context, &rows)?;
                 #[cfg(all(unix, feature = "test-harness"))]
@@ -2542,13 +2499,7 @@ impl Driver for SnowflakeExternal {
                 return Err(stale_browse());
             }
             let context = self.browse_context(None).await?;
-            let rows = self
-                .metadata_read(
-                    &browsing::schemas_sql(&context)?,
-                    browsing::SCHEMA_LIMIT + 1,
-                    browsing::CATALOG_MAX_BYTES,
-                )
-                .await?;
+            let rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
             let schemas = browsing::parse_schemas(&context, &rows)?;
             #[cfg(all(unix, feature = "test-harness"))]
             self.observe_schemas(
@@ -2561,11 +2512,7 @@ impl Driver for SnowflakeExternal {
             let mut bytes = 0usize;
             for schema in &schemas {
                 let rows = self
-                    .metadata_read(
-                        &browsing::relations_sql(&context, schema)?,
-                        browsing::RELATION_LIMIT + 1,
-                        browsing::CATALOG_MAX_BYTES,
-                    )
+                    .read_spec(&metadata::relations_read(&context, schema)?)
                     .await?;
                 let batch = browsing::parse_relations(&context, schema, &rows)?;
                 #[cfg(all(unix, feature = "test-harness"))]
@@ -2677,27 +2624,10 @@ impl Driver for SnowflakeExternal {
             self.require_inspection_attempt(&request.revision, &request.target_id, &inspection)?;
             self.browse_context(Some(&context)).await?;
             self.require_browse_relation(&context, &target).await?;
-            let columns = self
-                .metadata_read(
-                    &browsing::columns_sql(&target)?,
-                    browsing::COLUMN_LIMIT + 1,
-                    browsing::COLUMN_MAX_BYTES,
-                )
-                .await?;
-            let describe = self
-                .metadata_read(
-                    &browsing::describe_sql(&target)?,
-                    browsing::COLUMN_LIMIT + 1,
-                    browsing::COLUMN_MAX_BYTES,
-                )
-                .await?;
-            let resolved = self
-                .metadata_read(
-                    &browsing::resolved_columns_sql(&target)?,
-                    0,
-                    browsing::COLUMN_MAX_BYTES,
-                )
-                .await?;
+            let [columns_read, describe_read, resolved_read] = metadata::inspection_reads(&target)?;
+            let columns = self.read_spec(&columns_read).await?;
+            let describe = self.read_spec(&describe_read).await?;
+            let resolved = self.read_spec(&resolved_read).await?;
             let columns = browsing::parse_inspection(&target, &columns, &describe, &resolved)?;
             self.require_browse_relation(&context, &target).await?;
             self.browse_context(Some(&context)).await?;
@@ -2795,13 +2725,7 @@ impl Driver for SnowflakeExternal {
                     "Snowflake context changed; refresh suggestions",
                 ));
             }
-            let schemas = self
-                .metadata_read(
-                    &metadata::schemas_sql(&context)?,
-                    metadata::SCHEMA_LIMIT + 1,
-                    metadata::RELATION_MAX_BYTES,
-                )
-                .await?;
+            let schemas = self.read_spec(&metadata::schemas_read(&context)?).await?;
             let mut relations = Vec::new();
             let mut relation_bytes = 0usize;
             let parsed_schemas = metadata::parse_schemas(&context, &schemas)?;
@@ -3321,6 +3245,9 @@ mod session_tests {
     mod qualification_metadata_tests {
         include!("snowflake_qualification_metadata_adapter_tests.rs");
     }
+    mod read_spec_tests {
+        include!("snowflake_read_spec_adapter_tests.rs");
+    }
 
     // The real framed helper runs in a child with a synthetic SDK. No SDK import,
     // external-browser login, socket or account is used by this fixture.
@@ -3479,7 +3406,10 @@ let stopping = false;
 const retire = () => { if (stopping) return; stopping = true; send.flush().then(() => process.exit(0)); };
 const helper = new Helper(sdk, send, retire, { clientConfigFile:'/nonexistent/synthetic', closeTimeoutMs:200 });
 const decoder = new Decoder();
-process.stdin.on('data', chunk => { try { for (const frame of decoder.push(chunk)) helper.receive(frame); } catch { retire(); } });
+process.stdin.on('data', chunk => { try { for (const frame of decoder.push(chunk)) {
+  if (frame.op === 'query') appendFileSync(file('query-specs'), JSON.stringify(frame.payload) + '\n');
+  helper.receive(frame);
+} } catch { retire(); } });
 process.stdin.on('end', retire);
 "#;
 

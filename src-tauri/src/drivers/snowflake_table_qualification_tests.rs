@@ -1,3 +1,4 @@
+use super::ledger::{Retention, SqlKind};
 use super::*;
 use crate::domain::{CompletionIdentity, SnowflakeDmlSummary, TransactionUsability};
 use crate::relation_inspection::{
@@ -251,9 +252,9 @@ fn metadata_templates_use_production_sources_and_disclose_unexpanded_limits() {
     );
     assert_eq!(metadata.bounds().schema_sql_sentinel, 1001);
     assert_eq!(metadata.bounds().qualification_schema_cap, 32);
-    assert!(!metadata.startup_sql_exported);
+    assert!(metadata.startup_sql_exported);
     assert!(!metadata.physical_ledger_expanded);
-    assert!(plan.limits().startup_sql_not_exported);
+    assert!(!plan.limits().startup_sql_not_exported);
     assert!(
         plan.limits()
             .physical_sql_admission_and_census_callback_missing
@@ -283,6 +284,289 @@ fn deterministic_snapshot_hash_detects_byte_digest_and_plan_substitution() {
     let tampered = serde_json::to_vec(&value).unwrap();
     let recomputed = format!("{:x}", Sha256::digest(&tampered));
     assert!(plan.verify_snapshot(&tampered, &recomputed).is_err());
+}
+
+fn ledger_tag(kind: SqlKind) -> &'static str {
+    use metadata::ReadKind::*;
+    match kind {
+        SqlKind::BootstrapContext => "H",
+        SqlKind::Read(Context) => "C",
+        SqlKind::Read(QuotedIdentifierPolicy) => "Q",
+        SqlKind::Read(Autocommit) => "A",
+        SqlKind::Read(AbortOnError) => "E",
+        SqlKind::Read(CurrentTransaction) => "T",
+        SqlKind::Read(Version) => "V",
+        SqlKind::Read(Schemas) => "G",
+        SqlKind::Read(Relations) => "B",
+        SqlKind::Read(ExactRelation) => "R",
+        SqlKind::Read(Columns) => "I",
+        SqlKind::Read(Describe) => "D",
+        SqlKind::Read(ZeroRowResolution) => "Z",
+        SqlKind::Readback(_) => "SELECT",
+        SqlKind::Ddl(SnowflakeDdlKind::CreateTable) => "CREATE",
+        SqlKind::Ddl(SnowflakeDdlKind::AddColumn) => "ADD",
+        SqlKind::Ddl(SnowflakeDdlKind::DropTable) => "DROP",
+        SqlKind::Dml(SnowflakeDmlKind::Insert) => "INSERT",
+        SqlKind::Dml(SnowflakeDmlKind::Update) => "UPDATE",
+        SqlKind::Dml(SnowflakeDmlKind::Delete) => "DELETE",
+        SqlKind::Transaction(ExplicitTransactionAction::Begin) => "BEGIN",
+        SqlKind::Transaction(ExplicitTransactionAction::Commit) => "COMMIT",
+        SqlKind::Transaction(ExplicitTransactionAction::Rollback) => "ROLLBACK",
+    }
+}
+
+#[test]
+fn expanded_ledger_orders_all_production_reads_and_writes_for_each_phase() {
+    // O = one five-read observation; K = the two-read live context.
+    // These are the independently reviewed production call sequences, including
+    // the readback's SELECT-before-observation and ROLLBACK's missing pre-sample.
+    let expected = [
+        "H V",
+        "O G B O",
+        "O G B O CREATE O",
+        "O G O K G B K O G O",
+        "SELECT O O",
+        "K G B K",
+        "K R I D Z R K",
+        "O R I D Z R O",
+        "O R I D Z R O ADD O",
+        "O G O K G B K O G O",
+        "K G B K",
+        "K R I D Z R K",
+        "SELECT O O",
+        "O BEGIN O",
+        "O INSERT O",
+        "SELECT O O",
+        "ROLLBACK O",
+        "SELECT O O",
+        "O BEGIN O",
+        "O INSERT O",
+        "O COMMIT O",
+        "SELECT O O",
+        "O UPDATE O",
+        "SELECT O O",
+        "O DELETE O",
+        "SELECT O O",
+        "O G O",
+        "K G B K",
+        "O R O",
+        "O R O DROP O",
+        "O G O K G B K O G O",
+        "K G B K",
+    ];
+    let plan = plan();
+    let ledger = plan.expand_physical_ledger(&census(1)).unwrap();
+    assert_eq!(ledger.entries().len(), 393);
+    for (index, expected) in expected.iter().enumerate() {
+        let entries: Vec<_> = ledger
+            .entries()
+            .iter()
+            .filter(|entry| entry.phase() as usize == index + 1)
+            .collect();
+        let actual = entries
+            .iter()
+            .map(|entry| ledger_tag(entry.kind()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let expected = expected
+            .split_ascii_whitespace()
+            .map(|tag| match tag {
+                "O" => "C Q A E T",
+                "K" => "C Q",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(actual, expected, "phase {}", index + 1);
+        for (ordinal, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.phase_ordinal() as usize, ordinal + 1);
+        }
+    }
+    for (index, entry) in ledger.entries().iter().enumerate() {
+        assert_eq!(entry.ordinal() as usize, index + 1);
+        assert!(entry.binds().is_empty());
+        assert_eq!(
+            entry.kind().operation(),
+            match entry.kind() {
+                SqlKind::BootstrapContext => "context",
+                SqlKind::Ddl(_) => "ddl",
+                SqlKind::Dml(_) => "dml",
+                SqlKind::Transaction(_) => "transaction",
+                _ => "query",
+            }
+        );
+    }
+}
+
+#[test]
+fn expanded_ledger_covers_census_extremes_without_widening_targets_or_bounds() {
+    let plan = plan();
+    for count in 1..=MAX_SCHEMAS {
+        let census = census(count);
+        let ledger = plan.expand_physical_ledger(&census).unwrap();
+        assert_eq!(ledger.entries().len(), 386 + 7 * count);
+        assert_eq!(ledger.census(), &census);
+        assert_eq!(ledger.plan_sha256(), plan.sha256().unwrap());
+        for phase in plan.phases() {
+            let entries: Vec<_> = ledger
+                .entries()
+                .iter()
+                .filter(|entry| entry.phase() == phase.number())
+                .collect();
+            assert_eq!(entries.len(), usize::from(phase.budget().total(&census)));
+            if matches!(
+                phase.operation(),
+                Operation::Catalog(_) | Operation::CoherentReconciliation(_)
+            ) {
+                let actual: Vec<_> = entries
+                    .iter()
+                    .filter(|entry| entry.kind() == SqlKind::Read(metadata::ReadKind::Relations))
+                    .map(|entry| entry.sql().to_owned())
+                    .collect();
+                assert_eq!(actual, census.catalog_relation_templates().unwrap());
+            }
+        }
+        for entry in ledger.entries() {
+            use metadata::ReadKind::*;
+            match entry.kind() {
+                SqlKind::Read(ExactRelation) => assert_eq!(entry.retention().unwrap().max_rows, 3),
+                SqlKind::Read(ZeroRowResolution) => {
+                    assert_eq!(entry.retention().unwrap().max_rows, 0)
+                }
+                SqlKind::Read(Schemas) => assert_eq!(entry.retention().unwrap().max_rows, 1001),
+                SqlKind::Read(Relations) => assert_eq!(
+                    entry.retention().unwrap(),
+                    Retention {
+                        max_rows: 10001,
+                        max_bytes: 2 * 1024 * 1024
+                    }
+                ),
+                SqlKind::Read(Columns | Describe) => assert_eq!(
+                    entry.retention().unwrap(),
+                    Retention {
+                        max_rows: 1001,
+                        max_bytes: 1024 * 1024
+                    }
+                ),
+                SqlKind::Read(Version) | SqlKind::Readback(_) => assert_eq!(
+                    entry.retention().unwrap(),
+                    Retention {
+                        max_rows: 1_000_000,
+                        max_bytes: 8 * 1024 * 1024 * 1024
+                    }
+                ),
+                SqlKind::Read(_) => assert_eq!(
+                    entry.retention().unwrap(),
+                    Retention {
+                        max_rows: 1,
+                        max_bytes: 64 * 1024
+                    }
+                ),
+                _ => assert_eq!(entry.retention(), None),
+            }
+            if matches!(
+                entry.kind(),
+                SqlKind::Ddl(_) | SqlKind::Dml(_) | SqlKind::Readback(_)
+            ) {
+                assert!(entry.sql().contains(plan.table()));
+            }
+        }
+    }
+    let escaped = SchemaCensus::freeze(&["A\"'quote".into(), SCHEMA.into()]).unwrap();
+    let ledger = plan.expand_physical_ledger(&escaped).unwrap();
+    assert_eq!(
+        ledger
+            .entries()
+            .iter()
+            .filter(|entry| entry.sql().contains("TABLE_SCHEMA = 'A\"''quote'"))
+            .count(),
+        7
+    );
+    // Defense in depth against a future internal constructor bypass.
+    let forged = SchemaCensus {
+        names: vec!["OTHER".into()],
+    };
+    assert!(plan.expand_physical_ledger(&forged).is_err());
+}
+
+#[test]
+fn definitive_rejections_allow_only_route_specific_read_only_suffix_prefixes() {
+    let ledger = plan().expand_physical_ledger(&census(32)).unwrap();
+    let mut suffix_lengths = Vec::new();
+    for (index, entry) in ledger.entries().iter().enumerate() {
+        let suffix = ledger.rejection_suffix(index).unwrap();
+        let expected = match entry.kind() {
+            SqlKind::Readback(_) => 10,
+            SqlKind::Ddl(_) => 5,
+            _ => 0,
+        };
+        assert_eq!(suffix.len(), expected);
+        if expected != 0 {
+            suffix_lengths.push(expected);
+            assert!(suffix.iter().all(
+                |next| next.phase() == entry.phase() && matches!(next.kind(), SqlKind::Read(_))
+            ));
+            assert_eq!(
+                suffix
+                    .iter()
+                    .map(|next| ledger_tag(next.kind()))
+                    .collect::<Vec<_>>(),
+                (0..expected / 5)
+                    .flat_map(|_| ["C", "Q", "A", "E", "T"])
+                    .collect::<Vec<_>>()
+            );
+            // A failure at any suffix read itself has no continuation allowance.
+            for next in suffix {
+                assert!(
+                    ledger
+                        .rejection_suffix(usize::from(next.ordinal()) - 1)
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+    }
+    assert_eq!(suffix_lengths, [5, 10, 5, 10, 10, 10, 10, 10, 10, 5]);
+    assert!(ledger.rejection_suffix(ledger.entries().len()).is_err());
+}
+
+#[test]
+fn expanded_ledger_snapshot_binds_exact_plan_census_and_invocations() {
+    let plan = plan();
+    let first = plan.expand_physical_ledger(&census(1)).unwrap();
+    assert_eq!(
+        first.canonical_json().unwrap(),
+        plan.expand_physical_ledger(&census(1))
+            .unwrap()
+            .canonical_json()
+            .unwrap()
+    );
+    assert_ne!(
+        first.sha256().unwrap(),
+        plan.expand_physical_ledger(&census(2))
+            .unwrap()
+            .sha256()
+            .unwrap()
+    );
+    assert_ne!(
+        first.sha256().unwrap(),
+        Plan::compile_run("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
+            .unwrap()
+            .expand_physical_ledger(&census(1))
+            .unwrap()
+            .sha256()
+            .unwrap()
+    );
+    let mut modified =
+        serde_json::from_slice::<serde_json::Value>(&first.canonical_json().unwrap()).unwrap();
+    modified["entries"][0]["sql"] = serde_json::json!("SELECT 1");
+    assert_ne!(
+        first.sha256().unwrap(),
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&modified).unwrap())
+        )
+    );
 }
 
 fn runtime() -> SessionRuntimeState {

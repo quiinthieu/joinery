@@ -38,6 +38,8 @@ function fixture(t) {
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",
     "disposable-setup-ledger.mjs",
+    "sql-contract.json",
+    "sql-contract.mjs",
   ]) {
     sources[name] = `// synthetic fixture ${name}\n`;
     writeFileSync(path.join(repoRoot, "snowflake-helper/src", name), sources[name]);
@@ -230,6 +232,22 @@ test("source drift is rejected even when resource and manifest agree", (t) => {
   writeFileSync(path.join(f.stage, "manifest.json"), JSON.stringify(f.manifest));
   assert.throws(() => verify(f, []), /does not match this checkout/);
 });
+
+for (const name of ["sql-contract.json", "sql-contract.mjs"]) {
+  test(`contract resource ${name} cannot drift even with a matching manifest`, (t) => {
+    const f = fixture(t);
+    writeFileSync(path.join(f.stage, "helper", name), "changed contract");
+    f.manifest.helper.sourceSha256[name] = digest("changed contract");
+    writeFileSync(path.join(f.stage, "manifest.json"), JSON.stringify(f.manifest));
+    assert.throws(() => verify(f, []), /does not match this checkout/);
+  });
+  test(`contract resource ${name} must be present in the closed source hashes`, (t) => {
+    const f = fixture(t);
+    delete f.manifest.helper.sourceSha256[name];
+    writeFileSync(path.join(f.stage, "manifest.json"), JSON.stringify(f.manifest));
+    assert.throws(() => verify(f, []), /exactly the reviewed source hashes/);
+  });
+}
 
 test("extra helper hash entries and SDK version drift are rejected", (t) => {
   const f = fixture(t);

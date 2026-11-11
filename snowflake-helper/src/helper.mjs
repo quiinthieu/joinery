@@ -1,4 +1,5 @@
 import { deriveSetupLedger } from "./disposable-setup-ledger.mjs";
+import { SQL_CONTRACT } from "./sql-contract.mjs";
 
 export function connectionOptions(profile, clientConfigFile) {
   return {
@@ -38,12 +39,11 @@ const text = (s, max = 256) =>
 const identifier = (s) => text(s, 1020) && s.isWellFormed() && [...s].length <= 255;
 const nullableIdentifier = (s) => s === null || identifier(s);
 const quoteIdentifier = (s) => `"${s.replaceAll('"', '""')}"`;
-const CONTEXT_SQL =
-  "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE(), CURRENT_SESSION()";
+const CONTEXT_SQL = SQL_CONTRACT.bootstrapContext;
 const TRANSACTIONS = Object.freeze({
-  begin: "BEGIN TRANSACTION",
-  commit: "COMMIT",
-  rollback: "ROLLBACK",
+  begin: SQL_CONTRACT.begin,
+  commit: SQL_CONTRACT.commit,
+  rollback: SQL_CONTRACT.rollback,
 });
 const DML_KINDS = new Set(["insert", "update", "delete"]);
 const DDL_KINDS = new Set(["createTable", "addColumn", "dropTable"]);
@@ -122,7 +122,7 @@ export class Helper {
         request.op === "query" &&
         this.setupBootstrap === 1 &&
         exact(p, ["sql", "binds", "classification", "credits", "maxRows", "maxBytes"]) &&
-        p.sql === "SELECT CURRENT_VERSION()" &&
+        p.sql === SQL_CONTRACT.version &&
         p.binds.length === 0 &&
         p.classification === "read" &&
         p.credits === 1 &&

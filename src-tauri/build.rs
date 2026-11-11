@@ -1,5 +1,67 @@
-#[cfg(feature = "desktop")]
 fn main() {
+    generate_snowflake_sql_contract()
+        .unwrap_or_else(|error| panic!("Invalid bundled Snowflake SQL contract: {error}"));
+    #[cfg(feature = "desktop")]
+    build_desktop();
+}
+
+fn generate_snowflake_sql_contract() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../snowflake-helper/src/sql-contract.json");
+    println!("cargo:rerun-if-changed={}", path.display());
+    let bytes = std::fs::read(&path)?;
+    if bytes.len() > 8192 {
+        return Err("contract exceeds 8192 bytes".into());
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let keys = [
+        "contractVersion",
+        "bootstrapContext",
+        "version",
+        "begin",
+        "commit",
+        "rollback",
+    ];
+    let object = value.as_object().ok_or("expected a contract object")?;
+    if object.len() != keys.len()
+        || !keys.iter().all(|key| object.contains_key(*key))
+        || value["contractVersion"].as_u64() != Some(1)
+    {
+        return Err("expected the closed version 1 contract schema".into());
+    }
+    let mut generated = String::from("// Generated from snowflake-helper/src/sql-contract.json.\n");
+    for (key, name) in [
+        ("bootstrapContext", "BOOTSTRAP_CONTEXT_SQL"),
+        ("version", "VERSION_SQL"),
+        ("begin", "BEGIN_SQL"),
+        ("commit", "COMMIT_SQL"),
+        ("rollback", "ROLLBACK_SQL"),
+    ] {
+        let sql = value[key].as_str().ok_or("SQL values must be strings")?;
+        if sql.is_empty()
+            || sql.len() > 1024
+            || !sql.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+            || sql.trim() != sql
+            || sql.contains(';')
+        {
+            return Err(format!("invalid SQL value for {key}").into());
+        }
+        match name {
+            "BOOTSTRAP_CONTEXT_SQL" => {
+                generated.push_str("#[cfg(any(test, all(unix, feature = \"test-harness\")))]\n")
+            }
+            "VERSION_SQL" => generated.push_str("#[cfg(any(unix, test))]\n"),
+            _ => {}
+        }
+        generated.push_str(&format!("pub(crate) const {name}: &str = {sql:?};\n"));
+    }
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing OUT_DIR")?);
+    std::fs::write(output.join("snowflake_sql_contract.rs"), generated)?;
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+fn build_desktop() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "app_info",
@@ -109,6 +171,3 @@ fn main() {
     ))
     .expect("Tauri build configuration must be valid");
 }
-
-#[cfg(not(feature = "desktop"))]
-fn main() {}

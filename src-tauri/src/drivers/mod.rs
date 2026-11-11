@@ -47,6 +47,7 @@ pub(crate) mod snowflake_qualification_metadata;
 pub(crate) mod snowflake_qualification_transport;
 #[cfg(unix)]
 mod snowflake_session;
+pub(crate) mod snowflake_sql_contract;
 #[cfg(all(unix, feature = "test-harness"))]
 pub mod snowflake_table_qualification;
 
