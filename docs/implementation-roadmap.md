@@ -2,6 +2,20 @@
 
 ## Reviewed table DDL (11 November 2026, local integration)
 
+Final evidence: 679 frontend / 456 standard Rust tests, 356 helper cases,
+14 browser workflows, 43 isolated PostgreSQL tests and three hidden native runs
+pass. The final 224.88 MiB normal bundle passes signature/resources/guarded SDK
+startup; all 426 frozen source/config/test inputs remain unchanged. No install or
+account mutation qualification is claimed. Details and artifact hashes are in
+the [ledger](replacement-verification.md).
+
+Next local reliability work: reproduce DML/transaction terminal persistence
+failures and extend retained original receipts/local-only recovery to those
+routes, including dropped callers and failed normal shutdown. The independent
+existing-schema plan review found that gap and the need to specify automatic
+post-failure observations before building its executable account runner. This
+work needs no account activity; no fresh execution approval is pending yet.
+
 The SDK external-browser route now includes a separate opt-in for generated
 CREATE TABLE, nullable ADD COLUMN and DROP TABLE. Every statement uses its own
 short-lived review and one-use authority; DROP also requires the exact fully

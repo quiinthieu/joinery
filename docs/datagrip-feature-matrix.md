@@ -1,6 +1,22 @@
 # DataGrip workflow comparison and Joinery evidence
 
-## Reviewed SQL writes (11 November 2026, local verification)
+## Reviewed table DDL (11 November 2026, local verification)
+
+Commits `2864282`, `93d5e26` and `00ca4af` integrate separately opted-in generated
+CREATE TABLE, nullable ADD COLUMN and exact-target DROP TABLE through the native
+application. This bounded subset has one-use review, idle-session checks, retained
+typed outcomes and explicit catalog reconciliation; broader Snowflake DDL remains
+required. Final checks pass 679 frontend and 456 standard Rust tests (129 fixture
+tests ignored), 356 helper tests, 14 browser workflows, 43 isolated PostgreSQL
+tests and three hidden native runs. These are local fixture results, not account
+DDL or full replacement qualification. See the
+[verification ledger](replacement-verification.md) and
+[new existing-schema proposal](snowflake-existing-schema-qualification.md).
+Review also identifies a required DML/transaction terminal-persistence recovery
+repair before account mutation qualification; DDL's passing retained-receipt
+cases do not close that gap.
+
+## Recorded SQL writes (11 November 2026, sources `eae1e81` / `fb091db`)
 
 The SDK external-browser route now implements a separately opted-in, individually
 reviewed single INSERT/UPDATE/DELETE workflow with scalar parameters, exact status
@@ -38,8 +54,11 @@ received a definitive database rejection (`remoteOutcome: rejected`); the runner
 stopped immediately without admitting steps 9–28, switching roles, falling back
 to the configured database/schema, or retrying, and permanently consumed the
 one-use approval and run token. The
-[DDL design](snowflake-sdk-ddl-design.md) has a locally verified pure generator
-(11 tests), without an application execution route. A separate million-row
+[DDL design](snowflake-sdk-ddl-design.md) began with a locally verified pure
+generator (11 tests); its application execution route is now recorded above.
+The owner permits new test tables under `SANDBOX.BILLIE_TESTING`. A new executable
+plan and possible-billing approval remain required; the consumed database setup
+must not be retried. A separate million-row
 helper/driver/store/CSV bridge passes with a synthetic SDK, and a separate
 actual-SDK `3.4.1` loopback test streams 1,000,000 exact rows across 100
 gzip-compressed chunks (`2/2` pass, including cancellation after 128 rows);
@@ -157,10 +176,12 @@ separate [integration evidence](snowflake-sdk-integration.md). Hidden native SDK
 checks now pass; real Snowflake daily workflows remain **incomplete**.
 
 Current Joinery offers explicit local-application OAuth/SQL API and stateful SDK
-external-browser routes. Both restrict public SQL to reads; only SDK typed controls may use an explicitly
-selected boundary policy. SDK same-session relation/column
+external-browser routes. OAuth restricts SQL to reads. SDK ordinary execution is
+read-only; typed transaction controls, strict single DML and the three generated
+DDL actions use their separate reviewed routes and required opt-ins. SDK same-session relation/column
 completion is implemented; its [qualification](snowflake-sdk-metadata-design.md)
-is separate from the preceding SDK integration counts above. SDK writes and DDL remain disabled. The explicit transaction adapter, policy,
+is separate from the preceding SDK integration counts above. Broader writes and
+DDL remain incomplete. The explicit transaction adapter, policy,
 recovery and UI now pass local qualification on `929ae06`; actual account effects
 remain unqualified.
 Command acknowledgements remain separate from verified database effects. A distinct

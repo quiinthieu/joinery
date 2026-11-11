@@ -148,7 +148,7 @@ Require the exact column/types/nullability contract, no extra rows and the
 expected contents in the phase table. Two-row bounds detect an unexpected
 second row; the isolated fixture contains at most one row. No data read,
 DESCRIBE or zero-row schema-resolution query may name an existing table. All
-column inspection and `SELECT * ... WHERE 1 = 0` adapter work names only `F`.
+column inspection and `SELECT * ... LIMIT 0` adapter work names only `F`.
 
 ## Metadata expansion and complete SQL budget
 
@@ -257,13 +257,17 @@ plan. At S=32 the cap is 599 reads plus 11 DDL/DML/boundary statements.
 
 ## Failure, DROP and evidence boundaries
 
-Stop all subsequent SQL at the first rejected/unknown operation, inconsistent
+Never advance to a later phase after a rejected/unknown operation, inconsistent
 result, context or policy drift, denied/overflowing metadata, expired grant,
-admission deadline, or failed durable receipt. Never retry, reconnect-and-replay,
-poll for completion, perform automatic rollback, or continue to DROP after a
-failed phase. Planned ROLLBACK A is a qualification step, not generic failure
-cleanup. A possibly submitted mutation permanently consumes that phase and
-the run; no new approval may adopt its same table token for another try.
+admission deadline, or failed durable receipt. The active production call may
+finish only its frozen, already-budgeted read-only post-observation suffix,
+including after a statement rejection. Its SQL/deadline bounds still apply;
+these reads are not a new diagnostic branch or a retry. Validate the completed
+call and sync its original receipt before any phase advancement. Never retry,
+reconnect-and-replay, poll for completion, perform automatic rollback, or continue
+to DROP after a failed phase. Planned ROLLBACK A is a qualification step, not
+generic failure cleanup. A possibly submitted mutation permanently consumes that
+phase and the run; no new approval may adopt its same table token for another try.
 
 DROP is authorized only as phase 30 of a fresh fully approved ledger and only
 for the table whose CREATE receipt and following checks passed. It is not
@@ -273,8 +277,9 @@ does not prove dependency absence or object identity. On failure, preserve the
 remaining new table and privately report the exact known/unknown state for owner
 intervention; this document supplies no later cleanup execution permission.
 
-Persist a synced intent before each physical SQL write, and retain/sync known
-DDL/DML/boundary acknowledgements before admitting later SQL. Preserve the first
+Persist a synced intent before each physical SQL write. Retain known
+DDL/DML/boundary acknowledgements during the active call, and sync the original
+receipt before admitting any later phase, including its first SQL. Preserve the first
 failure and known statement outcomes if observers, IPC delivery, audit/history,
 journal close or final directory sync fail. Local pending-receipt retries may
 write only original local evidence; graceful shutdown must report failure while
@@ -303,6 +308,8 @@ storage/retention charges, the four typed transaction boundaries, and the
 single conditional end-of-successful-run DROP. It grants no second attempt,
 existing data access or later cleanup. Old canary/read/setup approvals remain
 consumed; consent to fresh tables alone is not this execution/billing grant.
+Explicitly disclose the active call's bounded read-only post-observation suffix
+after rejection; no later phase or mutation is permitted after that failure.
 
 No resource settings are changed to control spend. Snowflake bills warehouse
 compute per second with a 60-second minimum when it starts; metadata/readbacks
@@ -360,9 +367,16 @@ The minimum complete increment has these parts:
    rejects unexpected operation kinds, bytes, binds, schema/object identities,
    duplicate/extra SQL, excess counts or overlap. It does not rely solely on a
    command’s nominal budget. Startup and automatic observers pass the same gate.
-   Reuse the established one-submission SDK guard and retained ACK machinery;
-   do not add a generic classification bypass. The owner task outlives dropped
-   callers and must drain receipts before graceful shutdown succeeds.
+   Permit only the active call's fixed observer suffix after rejection, never
+   phase advancement. Add a narrow callback after production schema-list parsing
+   to freeze/compare S<=32; CREATE preflight does not expose that list publicly.
+   Count inbound frames/bytes/results/stderr at their receiving paths. A general
+   inbound semantic/journal gate is unnecessary under this bounded suffix policy.
+   The retained workflow owner validates the completed call and syncs its original
+   receipt before any later phase. Reuse the established one-submission SDK guard;
+   do not add a generic classification bypass. DML/transaction terminal local
+   failures must be visible and retained rather than discarded. The owner task
+   outlives dropped callers and drains receipts before graceful shutdown succeeds.
 4. **Execution envelope and local lifecycle.** Reuse the established private
    file, exclusive marker, hash-chained journal and identity-checked cleanup
    rules where suitable, without pretending the old helper-direct child driver
@@ -383,7 +397,8 @@ The minimum complete increment has these parts:
    schema-set drift, collision/owner/traits/shape mismatch, wrong role/context,
    missing opt-ins, ReadOnly, generic-route bypass, changed SQL/binds, expiry,
    reused tokens and tampered sources/runtime. Include rejection and lost-ACK
-   stops at every mutation, final-observer/catalog failure preserving ACK,
+   stops at every mutation, allowing exactly the active call's approved read-only
+   suffix but zero later-phase SQL. Test final-observer/catalog failure preserving ACK,
    dropped waiters, history/audit/journal/final-sync failure, local-only receipt
    retry, failed launch, cleanup identity replacement, actual reaping, redaction
    and offline modes having zero account side effects. Run relevant repository

@@ -45,6 +45,8 @@ hold. Later transaction/DML holds cannot downgrade it to runtime-only refresh.
 | Production-helper Studio fixtures | **5/5** pass together on final source in 97.84 seconds, `ddl-studio-helper-final-all.log`. Synthetic SDK with actual framed helper; includes lost ACK, final observer denial, dropped caller and after-ACK disconnect/shutdown. Earlier denied-catalog retry failure was repaired and rerun; its initial log remains `ddl-studio-helper.log` |
 | Browser workflows | **14/14** in 55.8 seconds, `ddl-browser-rerun.log`: CREATE/nullable ADD/DROP, reviewed DML, typed boundaries, relation browsing, schema selection and session observations. New DDL cases exercise exact target confirmation, pending disconnect, two 31-second quiet windows, denied reconciliation retaining the hold and explicit successful retry. Real UI with intercepted synthetic RPCs; no SSO/account effects claimed |
 | Actual disposable PostgreSQL regression | **43/43**, `JOINERY_TEST_PORT=56432 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres -- --ignored --test-threads=1`. Fresh owned Compose project `joinery-ddl-20261111-0948`; real rollback/commit, schema DDL, cancellation, exact values, paging/export/import and conflict checks. `ddl-postgres-final.log`; this does not qualify Snowflake. Owned container, volume and network removed afterward (`ddl-postgres-cleanup.log`); browser servers also stopped |
+| Hidden native application | SDK smoke build passes, then `python3 scripts/native-smoke.py --runs 3` passes **3/3**, 20 check categories and ten cleanup cycles each. The five new DDL commands reach Rust missing-session/missing-plan guards rather than command/ACL failures. `ddl-native-build.log`, `ddl-native-runs.log`, frozen `ddl-native-build.json` and `ddl-native-runs.json`. Synthetic native app; no account or normal packaged UI qualification |
+| Final normal macOS package | Final `pnpm desktop:snowflake:bundle:mac`, exit 0, **224.88 MiB**. Strict ad-hoc signature, 15,107 runtime entries, zero symlinks and guarded SDK 3.4.1 startup pass with zero authentication/SQL requests. `ddl-normal-bundle-final.log`, `ddl-final-artifacts.json`. Local version 0.1.0; not installed, Developer ID/notarization and normal-app SSO remain open |
 | Independent review | Helper, adapter and Studio reviews; retained-receipt finding fixed and re-reviewed. Final bounded UI/native enrollment review found no material issue. Bounded Tier 2 graph traces plus changed-source reads, best-effort coverage with no recorded issues on the reviewed paths; final generation `2026-11-11T10:16:17Z` |
 
 Logs above are under `.cache/verification/connection-attempts/`. The first aggregate
@@ -66,7 +68,17 @@ pointing to that Node executable:
 pnpm test:snowflake:helper
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib ddl_studio -- --nocapture
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib sdk_studio_ddl -- --nocapture
+JOINERY_POSTGRES_PORT=56432 pnpm test:e2e tests/e2e/snowflake-sdk-ddl.spec.ts tests/e2e/snowflake-sdk-dml.spec.ts tests/e2e/snowflake-sdk-transactions.spec.ts tests/e2e/snowflake-sdk-browsing.spec.ts tests/e2e/snowflake-sdk-schema-switch.spec.ts tests/e2e/snowflake-sdk-session.spec.ts
+pnpm desktop:snowflake:smoke:build
+python3 scripts/native-smoke.py --runs 3
 ```
+
+The browser command uses an isolated local PostgreSQL fixture already running on
+56432 and requires free 1421/1422 test-server ports. The SDK route responses in
+these six files are intercepted synthetic RPCs; use the separate actual-driver
+fixtures above for framed-helper evidence. Never substitute an account URL or
+real connection in these commands. The owned database fixture was removed after
+this run, so recreate it with a new owned Compose project for reproduction.
 
 The first browser run passed 10/14 and reproduced an enabled Browse relations
 button while catalog reconciliation was held. Rust already rejected that path;
@@ -75,6 +87,46 @@ run found an older session fixture expecting disabled generic transaction button
 that the current capability UI correctly omits; it now asserts absence and zero
 both generic/typed transaction requests. `ddl-browser-final.log` retains that
 initial result. Fresh browser and packaging results are recorded separately.
+
+The hidden executable SHA-256 is
+`77464d86608fe76d4ad3b357ad3b519b5d5db775e14db8b7bb8be7b0eb190f31`;
+its isolated bundle executable is
+`ad22ff70dac2c6b0b815afe52092092498edec6101695ad8ec988dbc84d21263`.
+Native resources/startup checks pass with SDK 3.4.1, manifest
+`dd08932407ed6a540379dc5711a464fa51600498196a8637af671e23ea9256a0`,
+15,107 entries and five deliberate native-fixture symlinks. Guarded SDK startup
+records zero authentication/SQL requests. The intermediate normal bundle also
+passed signature/resources/startup, but preceded the final Workbench repair;
+`ddl-normal-bundle.log` is not qualification of the final UI. The toolchain emits
+a pre-existing `rust-objcopy`/missing `libLLVM.dylib` stripping warning; it does
+not prevent successful builds. Global toolchain configuration was not changed.
+
+The final normal bundle executable SHA-256 is
+`7dab01832b4ea8c153c2a3b65aec2a06bf429787a7bd434fc1bf0b8e4688080d`.
+All **426** frozen source/config/test inputs remain unchanged after native runs
+and final packaging, including the last browser repair. The input manifest is
+`ddl-source-qualified.json`, SHA-256
+`6ed9640b83871fbc3578141c6c4246d1e6aebd3046829603b97986ff5be622c3`.
+Documentation changed during these checks; it is outside that source manifest.
+This does not qualify installation, normal packaged SSO, restart with live
+Snowflake sessions, or complete application memory with one million account rows.
+
+An independent existing-schema plan review confirms the successful budget
+`386 + 7S` (393 at one schema, 610 at 32), but identifies prerequisites for the
+next runner: automatic observations can occur inside an application call after a
+rejected statement, and current DML/transaction terminal persistence does not
+have DDL's retained-receipt recovery. DML returns local persistence failure;
+transaction controls currently discard a failed terminal audit append. These
+are required follow-ups, not covered by the passing DDL receipt cases. The new
+plan must disclose and enforce its failure-observation policy, retain original
+acknowledgements without remote replay, and report unfinished local recording
+through graceful shutdown. Source review used Tier 2 generation
+`2026-11-11T10:26:13Z` and direct reads; it did not execute account SQL.
+The revised proposal permits only the active call's already-budgeted read-only
+post-observation suffix after rejection, then stops before every later phase.
+This preserves the production path and the 610 maximum. It still requires a
+schema-census callback and inbound resource counters; it does not claim an
+outbound gate alone can freeze hidden schema results or enforce inbound caps.
 
 The [migration walkthrough](migration-from-datagrip.md#reviewed-sdk-table-ddl-prepared-acceptance-walkthrough)
 records owner acceptance steps, including explicit catalog reconciliation. Complete

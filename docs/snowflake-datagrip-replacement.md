@@ -37,6 +37,12 @@ external browser; missing mode on an existing profile defaults to its prior OAut
 route. No automatic fallback occurs. Ordinary SDK execution stays read-only;
 strict single INSERT/UPDATE/DELETE uses a separate reviewed opt-in and typed path.
 Typed transaction controls use their own boundary policy. The SDK route currently
+also supports separately opted-in generated CREATE TABLE, nullable ADD COLUMN
+and DROP TABLE through the [dedicated DDL workflow](snowflake-sdk-ddl-design.md).
+This subset requires review in every writable Safe Mode, exact-target DROP confirmation,
+idle-session admission and explicit coherent metadata reconciliation afterward.
+It does not establish complete Snowflake DDL or account mutation effects.
+The SDK route currently
 advertises SQL and cancellation. Subsequent same-session completion is implemented
 with [separate qualification](snowflake-sdk-metadata-design.md). The later
 [browsing slice](snowflake-sdk-browsing-design.md) implements a revision-bound
@@ -56,8 +62,13 @@ Complete object/constraint inspection, generic editable browsing, schema/session
 switching, broader writes, DDL and complete transaction workflows remain incomplete.
 The [reviewed DML workflow](snowflake-sdk-dml-design.md) and explicit boundaries
 are locally implemented; none qualifies actual account mutation effects. The owner
-requested the [disposable setup proposal](snowflake-disposable-setup.md); no setup
-activity is authorized or executed. The preceding
+requested the [disposable setup proposal](snowflake-disposable-setup.md). Its
+approved single account attempt passed SSO and initial observations, then stopped
+on definitive CREATE DATABASE rejection without creating a schema or table.
+That approval is consumed. The owner now permits new tables under
+`SANDBOX.BILLIE_TESTING`; the [existing-schema lifecycle proposal](snowflake-existing-schema-qualification.md)
+still needs its executable runner, review and fresh possible-billing approval.
+The preceding
 SDK integration qualification passes, including all 143 browser workflows,
 124 actual local database fixtures and the packaged SDK runtime checks. These
 checks do not qualify the actual account workflow. See
@@ -78,12 +89,12 @@ browser-SSO canaries do not establish the required SDK account behavior.
 | Metadata and search | Browse/find and inspect every required Snowflake object type with DDL/keys/dependencies, bounded paging, denied-role behavior and refresh after external changes | Partial catalog pilot; exact object inventory and live qualification open |
 | SQL editing | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools | Bounded common editor; full Snowflake feature inventory/qualification open |
 | Execution | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes | Read execution plus strict reviewed SQL INSERT/UPDATE/DELETE locally implemented; broader write/batch/session semantics and remote outcomes remain open |
-| Results and data movement | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data | Shared store passes actual PostgreSQL million-row paging/export and browser acceptance with opt-in bounded temporary storage. The synthetic-SDK Snowflake helper/driver/store/full-CSV bridge now passes one million rows and an independent export hash. Native preference/restart checks pass. Actual Snowflake retention/types/performance and SDK chunk memory remain unqualified |
+| Results and data movement | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data | Shared store passes actual PostgreSQL million-row paging/export and browser acceptance with opt-in bounded temporary storage. The synthetic-SDK Snowflake helper/driver/store/full-CSV bridge passes one million rows and an independent export hash. Actual SDK 3.4.1 loopback qualification separately passes one million rows across 100 compressed chunks plus cancellation. Native preference/restart checks pass. Actual account retention/types/performance and complete packaged-app memory remain unqualified |
 | Data editing | Review and commit/rollback row changes with conflict/identity safeguards and truthful affected-row counts; support required keyless workflows safely or record a blocking gap | SQL-name reviewed DML with exact status strings is locally implemented. Safe grid editing, conflict/immutable identity safeguards and account effects remain incomplete; no accepted narrowing |
-| Transactions | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully | Explicit typed controls and recovery locally qualified on `929ae06`. Reviewed DML is now locally implemented; SDK AUTOCOMMIT changes and DDL remain blocked. Actual account effects and complete transaction workflow remain primary blockers |
+| Transactions | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully | Explicit typed controls and recovery locally qualified on `929ae06`. Reviewed DML and the separate three-action generated DDL route are now locally implemented; DDL requires idle AUTOCOMMIT=true state and is not rollbackable. SDK AUTOCOMMIT changes and broader DDL remain unavailable. Actual account effects and complete transaction workflow remain primary blockers |
 | History and scripts | Reuse scripts, query history and session-independent drafts with chosen privacy/persistence, no automatic reconnect/execute after restart | Common library exists; Snowflake lifecycle/native acceptance open |
 | Performance | Appropriate Snowflake estimated/actual plans, query history/profile/timing and required monitoring/cancellation workflow | Synthetic estimated logical plans; live features and full inventory open |
-| Schema and engine behavior | Required Snowflake DDL/object operations, schema compare/migration and session/role behavior, with explicit implicit-commit warnings and stale-target checks | Reviewed SQL DML and a pure structured table-DDL generator are locally implemented; application DDL remains disabled pending lifecycle/transport/UI integration. The separate fixed disposable setup runner confers no application DDL authority. Metadata, broad object operations and engine semantics remain incomplete |
+| Schema and engine behavior | Required Snowflake DDL/object operations, schema compare/migration and session/role behavior, with explicit implicit-commit warnings and stale-target checks | Reviewed SQL DML and generated CREATE TABLE/nullable ADD COLUMN/exact-target DROP are locally integrated with typed native routes, revision-bound admission and explicit metadata reconciliation. The separate fixed disposable setup runner confers no application DDL authority. Actual account effects, complete metadata, broader object operations and engine semantics remain incomplete |
 | Everyday macOS use | Full applicable keyboard/accessibility workflows, native installation/update/startup/quit/relaunch, secure credential/session lifecycle and local persistence | macOS bundle/build smoke exists; normal packaged and owner acceptance open |
 | Other DataGrip facilities | Identify remaining applicable features in current official documentation, including integrations/AI where provided by the non-commercial context; explicitly track provider/entitlement limits | Required applicability inventory open; not silently optional |
 
@@ -124,7 +135,7 @@ between separate console actions. See [Node authentication](https://docs.snowfla
 [pinned package and license](https://github.com/snowflakedb/snowflake-connector-nodejs/tree/v3.4.1),
 and [SQL API limits](https://docs.snowflake.com/en/developer-guide/sql-api/intro).
 
-The repository now contains a versioned bounded child protocol and a
+The initial SDK integration checkpoint contained a versioned bounded child protocol and a
 Rust supervisor (31 helper tests, 8 supervisor unit and 30 integration tests),
 plus a read adapter with 11 integration tests. Offline macOS arm64 runtime
 staging and actual SDK startup pass. Explicit profile routing and retained cleanup
@@ -144,7 +155,8 @@ A subsequent original [submission guard](snowflake-sdk-submit-guard-design.md)
 now enforces one admitted native query submission per exact returned statement
 ID for the reviewed transport sources. Its local qualification is separate from
 the unguarded baseline and does not establish server effects or transaction
-semantics. Writes, DDL and transaction controls remain disabled.
+semantics. Writes, DDL and transaction controls were disabled at that checkpoint;
+their current bounded local implementations are recorded above.
 Preserve SDK query/request IDs, distinguish statement acknowledgement from commit,
 and prove fail-after-commit behavior before enabling mutations. Browser-auth abort,
 logout completion, context continuity and exact result types also require proof.
