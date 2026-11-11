@@ -8,6 +8,26 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Million-row Snowflake driver/store/export bridge (11 November 2026)
+
+New integration test `synthetic_million_rows_stream_through_driver_store_and_csv_hash`
+passes **1/1 in 6.91 seconds** using pinned Node 24.22.2, the real framed helper
+child and Rust Snowflake driver with an injected lazy synthetic SDK stream.
+All one million rows enter an 8 MiB RAM-budget ResultStore with anonymous disk
+spooling explicitly enabled. Exact values above 2^53 survive sparse/random reads
+and the final page; a complete CSV export matches an independently generated
+SHA-256 and exact row count. Release returns store/disk accounting to zero.
+Log `.cache/verification/connection-attempts/snowflake-million-bridge.log`.
+Rust formatting and strict all-target/all-feature Clippy pass separately.
+
+Reproduce: `JOINERY_TEST_NODE=/absolute/path/to/pinned/node cargo test
+--manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness
+--test snowflake_external synthetic_million_rows_stream_through_driver_store_and_csv_hash
+-- --exact`. No account activity or existing data is used. This bridges previously
+separate helper/driver and result-store/export tests; it is not a Studio/UI run,
+a remote Snowflake benchmark, pinned SDK chunk/decompression-memory measurement,
+or proof of total-process RSS bounds. Those required performance gates stay open.
+
 ### Pure Snowflake DDL syntax foundation (11 November 2026)
 
 The separately enrolled `safety::snowflake_ddl` module generates exactly one

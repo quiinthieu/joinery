@@ -1,6 +1,8 @@
 #![cfg(all(unix, feature = "test-harness"))]
 //! Local child-process adapter checks using the real helper and an injected fake SDK.
 //! These do not authenticate to Snowflake or qualify server behavior, TLS, retries, or writes.
+use arrow_array::{Array, StringArray};
+use arrow_ipc::reader::StreamReader;
 use joinery_core::{
     domain::*,
     drivers::{
@@ -8,11 +10,15 @@ use joinery_core::{
         snowflake_external::{ExternalBrowserOptions, SnowflakeExternal},
         snowflake_process::{CleanupObserver, Launch},
     },
+    export::{ExportStreamWriter, ExportWriterOptions},
     params,
+    results::ResultStore,
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 const LIMIT: Duration = Duration::from_secs(10);
+const MILLION_ROWS: usize = 1_000_000;
 const STARTER: &str =
     "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();";
 const SYNTHETIC_READ: &str = "WITH SYNTHETIC AS (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) AS N FROM TABLE(GENERATOR(ROWCOUNT => 12))) SELECT N AS ORDINAL, CAST(9007199254740992 + N AS NUMBER(38,0)) AS EXACT_INTEGER, CASE WHEN MOD(N, 2) = 0 THEN CAST(NULL AS VARCHAR) ELSE '' END AS NULL_OR_EMPTY, REPEAT('x', 96) AS PAD FROM SYNTHETIC ORDER BY N";
@@ -38,8 +44,9 @@ const sdk = { createConnection(options) {
       if (sql === 'SELECT TRANSPORT_FAILURE') appendFileSync(new URL('./transport-submits',import.meta.url),'1');
       executions++;
       let cancelled = false;
+      const million = sql === 'SELECT SYNTHETIC_MILLION';
       const identity = sql.startsWith('SELECT CURRENT_USER');
-      let names = identity ? ['U','R','D','S','W','ID'] : sql === 'SELECT EXACT_VALUES' ? ['DUP','DUP','N','EMPTY','UTF8','JSON','DECIMAL','DATE'] : options.binds.length > 0 ? options.binds.map((_,i) => `B${i}`) : ['VALUE'];
+      let names = identity ? ['U','R','D','S','W','ID'] : sql === 'SELECT EXACT_VALUES' ? ['DUP','DUP','N','EMPTY','UTF8','JSON','DECIMAL','DATE'] : million ? ['ORDINAL','EXACT_INTEGER'] : options.binds.length > 0 ? options.binds.map((_,i) => `B${i}`) : ['VALUE'];
       let values = identity ? [['SERVER_USER','ROLE','DB','PUBLIC','WH','SESSION']]
         : sql === 'SELECT CURRENT_VERSION()' ? [['synthetic-version']]
         : sql === 'SELECT EXACT_VALUES' ? [['9007199254740993','-99999999999999999999999999999999999999',null,'','東京😀','{"x":1}','1.2300','2026-11-09']]
@@ -103,8 +110,11 @@ const sdk = { createConnection(options) {
       }
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> ((columns||preview)&&index===0)||(synthetic&&index<2)?'FIXED':'TEXT'})),
+        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> ((columns||preview)&&index===0)||(synthetic&&index<2)||(million&&index===0)?'FIXED':'TEXT'})),
         streamRows() {
+          if (million) return Readable.from((async function*() {
+            for (let i=1;i<=1000000;i++) yield [String(i),(9007199254740992n+BigInt(i)).toString()];
+          })(), {objectMode:true, highWaterMark:1});
           if(describe && settings.holdDescribe) {
             writeFileSync(new URL('./active',import.meta.url),'');
             return Readable.from((async function*() {
@@ -324,6 +334,60 @@ impl QuerySink for Sink {
         Ok(())
     }
 }
+
+struct ResultStoreSink<'a> {
+    store: &'a ResultStore,
+    result_id: Option<String>,
+}
+
+impl QuerySink for ResultStoreSink<'_> {
+    fn limit(&mut self, _: &str) {}
+
+    fn describe(&mut self, columns: Vec<ColumnInfo>) -> AppResult<()> {
+        self.result_id = Some(self.store.create("synthetic-million", 0, columns, None)?.id);
+        Ok(())
+    }
+
+    fn rows(&mut self, rows: Vec<TextRow>) -> AppResult<bool> {
+        self.store.append(
+            self.result_id
+                .as_deref()
+                .ok_or_else(|| AppError::internal("Rows arrived before columns"))?,
+            rows,
+        )
+    }
+
+    fn complete(&mut self, rows_seen: u64) -> AppResult<()> {
+        let id = self
+            .result_id
+            .as_deref()
+            .ok_or_else(|| AppError::internal("Result completed before columns"))?;
+        if self.store.info(id)?.retained_rows as u64 != rows_seen {
+            return Err(AppError::internal("Synthetic result row count diverged"));
+        }
+        self.store.finish(id, false)?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct HashWriter {
+    digest: Sha256,
+    bytes: u64,
+}
+
+impl Write for HashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.digest.update(bytes);
+        self.bytes += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 async fn execute(driver: &SnowflakeExternal, sql: &str, sink: &mut Sink) -> AppResult<u64> {
     tokio::time::timeout(LIMIT, driver.execute(sql, StatementKind::Read, sink))
         .await
@@ -418,6 +482,98 @@ async fn exact_values_duplicate_columns_and_credit_driven_stream() {
     assert_eq!(many.rows.len(), 5000);
     assert_eq!(many.rows[4999][0].as_deref(), Some("4999"));
     assert_eq!(many.completed, [5000]);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn synthetic_million_rows_stream_through_driver_store_and_csv_hash() {
+    let h = Harness::open().await;
+    let store = ResultStore::new(8 * 1024 * 1024, MILLION_ROWS);
+    store.set_temporary_disk_enabled(true);
+    let mut sink = ResultStoreSink {
+        store: &store,
+        result_id: None,
+    };
+    let rows_seen = tokio::time::timeout(
+        Duration::from_secs(120),
+        h.driver
+            .execute("SELECT SYNTHETIC_MILLION", StatementKind::Read, &mut sink),
+    )
+    .await
+    .expect("million-row Snowflake adapter deadline")
+    .unwrap();
+    let result_id = sink.result_id.as_deref().unwrap();
+    let result = store.info(result_id).unwrap();
+    assert_eq!(rows_seen, MILLION_ROWS as u64);
+    assert_eq!(result.retained_rows, MILLION_ROWS);
+    assert_eq!(result.status, RetentionStatus::Complete);
+    assert!(store.usage().0 <= 8 * 1024 * 1024);
+    assert!(
+        store.disk_usage() > 0,
+        "synthetic result should exercise disk spill"
+    );
+
+    for index in [0, 1, 127, 128, 8_191, 123_456, MILLION_ROWS - 1] {
+        assert_eq!(
+            store.row(result_id, index).unwrap(),
+            vec![
+                Some((index + 1).to_string()),
+                Some((9_007_199_254_740_992u64 + index as u64 + 1).to_string()),
+            ]
+        );
+    }
+    let end_page = store.range(result_id, MILLION_ROWS - 10, 512).unwrap();
+    let mut reader = StreamReader::try_new(std::io::Cursor::new(end_page), None).unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    assert_eq!(batch.num_rows(), 10);
+    let ordinals = batch.columns()[0]
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(ordinals.value(0), "999991");
+    assert_eq!(ordinals.value(9), "1000000");
+
+    let mut csv = ExportStreamWriter::try_new(
+        HashWriter::default(),
+        ExportWriterOptions::new(
+            ExportFormat::Csv,
+            result.columns.clone(),
+            true,
+            Some(EngineKind::Snowflake),
+            None,
+        ),
+    )
+    .unwrap();
+    for batch_index in 0..store.batch_count(result_id).unwrap() {
+        let rows = store
+            .batch_rows(result_id, batch_index, &[0, 1])
+            .unwrap()
+            .unwrap();
+        csv.write_rows(&rows).unwrap();
+    }
+    let (csv, exported_rows, exported_bytes) = csv.finish().unwrap();
+    assert_eq!(exported_rows, MILLION_ROWS as u64);
+    assert_eq!(exported_bytes, csv.bytes);
+
+    let mut expected = Sha256::new();
+    expected.update(b"ORDINAL,EXACT_INTEGER\n");
+    for index in 0..MILLION_ROWS {
+        if index > 0 {
+            expected.update(b"\n");
+        }
+        expected.update((index + 1).to_string().as_bytes());
+        expected.update(b",");
+        expected.update(
+            (9_007_199_254_740_992u64 + index as u64 + 1)
+                .to_string()
+                .as_bytes(),
+        );
+    }
+    assert_eq!(csv.digest.finalize(), expected.finalize());
+
+    store.release(result_id);
+    assert_eq!(store.usage(), (0, 0));
+    assert_eq!(store.disk_usage(), 0);
     h.close().await;
 }
 
