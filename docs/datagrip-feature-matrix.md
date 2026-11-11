@@ -1,6 +1,37 @@
 # DataGrip workflow comparison and Joinery evidence
 
-## Reviewed table DDL (11 November 2026, local verification)
+## Mutation receipt recovery (11 November 2026, local verification)
+
+Commits `b06f030` and `3039975` add shared retained SDK DDL/DML/transaction
+outcomes and a harness-only offline lifecycle definition. Failed local audit or
+history writes now retry locally without repeating SQL. Pending receipts block
+new reviewed mutations, BEGIN/COMMIT and normal shutdown; explicit rollback keeps
+its recovery policy, with at most one unrecorded rollback per console. A dropped
+transaction caller no longer abandons terminal recording. Pending memory is not
+forced-exit durability while local storage cannot write.
+
+Final `pnpm validate` passes **679 frontend and 463 standard Rust tests**, with
+129 fixture tests explicitly ignored. Separate checks pass **9 receipt cases**
+(including two actual-helper/synthetic-SDK cases), **56 Studio cases**, **10 offline
+compiler cases**, **43 actual isolated PostgreSQL tests** and **16 browser flows**.
+Independent source review found no material findings. See the
+[ledger](replacement-verification.md) for commands, failed runs, source pins and
+the narrower scope of each result.
+
+Three hidden native runs and the final **224.90 MiB** normal macOS bundle pass
+local checks. All 430 frozen source/config/test inputs remain unchanged. Strict
+ad-hoc signing, runtime resources and guarded SDK startup are verified; startup
+makes zero authentication/SQL requests. Installation, Developer ID/notarization
+and normal packaged account behavior remain open.
+
+The offline definition covers the proposed new-table lifecycle in
+`SANDBOX.BILLIE_TESTING`; it does not execute SQL or constitute an approved plan.
+Physical SQL/resource gates, a source/runtime-bound execution envelope and the
+fixed account runner remain required. Actual account writes, transaction effects,
+normal packaged SSO, million-row account performance and all other applicable
+DataGrip gaps remain open. No install, publication or full replacement is claimed.
+
+## Recorded table DDL (11 November 2026, local verification)
 
 Commits `2864282`, `93d5e26` and `00ca4af` integrate separately opted-in generated
 CREATE TABLE, nullable ADD COLUMN and exact-target DROP TABLE through the native
@@ -12,9 +43,9 @@ tests and three hidden native runs. These are local fixture results, not account
 DDL or full replacement qualification. See the
 [verification ledger](replacement-verification.md) and
 [new existing-schema proposal](snowflake-existing-schema-qualification.md).
-Review also identifies a required DML/transaction terminal-persistence recovery
-repair before account mutation qualification; DDL's passing retained-receipt
-cases do not close that gap.
+That review identified the DML/transaction terminal-persistence gap repaired in
+the subsequent receipt increment above. The recorded DDL-only cases did not
+qualify those other routes.
 
 ## Recorded SQL writes (11 November 2026, sources `eae1e81` / `fb091db`)
 
@@ -294,7 +325,7 @@ native recovery/smoke and normal ad-hoc macOS bundle qualification also pass;
 see the [ledger](replacement-verification.md). Historical unsafe observations on
 `ff59ca6` remain evidence of the original defect, not the current fixture result.
 
-## Current replacement assessment (10 November 2026)
+## Current replacement assessment (11 November 2026)
 
 DataGrip's non-commercial license has the same core IDE feature set as its
 commercial license; the [official baseline](datagrip-official-baseline.md)
@@ -304,16 +335,13 @@ which may require separate access. This current summary sits above the historica
 feature records below so their older verification dates cannot be mistaken for current
 replacement acceptance.
 
-The first frozen-source qualification through `6e16433` passed standard
-validation, 91 real fixture tests, macOS packaging and hidden native smoke;
-116/118 browser tests passed. Follow-up repairs now pass validation (542 frontend
-and 179 standard Rust tests), 97 real fixtures and focused browser repeats;
-combined runtime qualification also passed: normal macOS bundle/signature,
-three isolated native processes and all 120 browser workflows (5.7 minutes). All applicable DataGrip capabilities are required for the confirmed Snowflake
-workflow.
-Locally verified subsets do not imply every DataGrip operation, engine or authentication
-method works. See the [ledger](replacement-verification.md) for commands,
-reproduced failures and exact qualification limits.
+Earlier frozen-source and follow-up qualifications are historical evidence in the
+[ledger](replacement-verification.md), including their failures and repairs.
+The current receipt increment's counts and narrower rerun scopes are recorded at
+the top of this matrix; older broad suite results are not current-source reruns.
+All applicable DataGrip capabilities remain required for the confirmed Snowflake
+workflow. Locally verified subsets do not imply every DataGrip operation, engine
+or authentication method works.
 
 | Area | Joinery implementation and current evidence | Incomplete or blocked acceptance |
 |---|---|---|
@@ -322,8 +350,8 @@ reproduced failures and exact qualification limits.
 | SQL editing, completion, formatting, diagnostics | Bounded dialect-aware completion, formatting, parameters, diagnostics, navigation and refactoring with frontend/real browser coverage | Fresh-result completion synchronization is repaired (`f9abce0`); unsupported semantic forms remain explicit. Full applicable Snowflake authoring inventory and representative performance remain unqualified |
 | Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks; stateful SDK read execution and local one-submission guard. SDK settings/activity/context observer locally qualified with explicit Unknown and nullable role | Fifteen real local-engine transaction-transport tests cover outcomes and retirement. Guarded schema selection locally qualified; account switching remains unqualified. Typed reviewed single-statement DML and explicit boundaries are locally implemented; broader writes, full batches, other session commands and actual-account cancellation/outcomes remain incomplete |
 | Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector race repaired with delayed real Arrow coverage. The required million-row Snowflake paging/export workflow, export destinations and accessibility remain unqualified |
-| Editing, transactions, commit/rollback | SDK reviewed SQL DML and typed boundaries pass local synthetic tests; grid editing and account effects remain unqualified. Other engines: reviewed atomic grid changes and conflict checks; PostgreSQL original relation identity and MySQL/MariaDB bounded retained guards carry target ownership through review and every CSV batch. Exact preview generations are mandatory. Strict diagnostic passes 27/27 on its recorded source; current combined validation and all 145 browser workflows pass | Guard lifetime is 60 seconds, at most 32 live targets per session; expired/disconnected/released targets require a fresh read/preview. External DDL may wait for the lease. All target engine/auth pairs, representative workloads and owner acceptance remain open. See [identity investigation](table-identity-safety.md). Query snapshots in other tabs do not auto-refresh; grid writer remains separate from console transaction |
-| History and saved scripts | Typed SDK DML history retains exact count strings and outcome across a local SQLite restart without bound values. Typed DDL history retains acknowledged/rejected/unknown outcomes; failed persistence retains the original receipt and blocks normal exit until local retry succeeds. Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
+| Editing, transactions, commit/rollback | SDK reviewed SQL DML and typed boundaries pass local synthetic tests, including retained original outcomes and local-only recording recovery; grid editing and account effects remain unqualified. Other engines: reviewed atomic grid changes and conflict checks; PostgreSQL original relation identity and MySQL/MariaDB bounded retained guards carry target ownership through review and every CSV batch. Exact preview generations are mandatory. The earlier identity-safety source passes 27/27 strict diagnostic checks and 145 browser workflows; those are recorded-source results, not a full-suite rerun for this increment | Guard lifetime is 60 seconds, at most 32 live targets per session; expired/disconnected/released targets require a fresh read/preview. External DDL may wait for the lease. All target engine/auth pairs, representative workloads and owner acceptance remain open. See [identity investigation](table-identity-safety.md). Query snapshots in other tabs do not auto-refresh; grid writer remains separate from console transaction |
+| History and saved scripts | Typed SDK DML history retains exact count strings and outcome across a local SQLite restart without bound values. Typed DDL history retains acknowledged/rejected/unknown outcomes. DDL/DML and transaction audit failures retain original typed receipts and block normal exit/new reviewed mutations until local-only retry succeeds; explicit rollback recovery is bounded to one unrecorded result per console. Transactions keep existing audit evidence without new script history. Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
 | Plans and performance investigation | Estimated/actual SQL-engine plan workflows, snapshots/comparison, timing and monitoring exercised in local fixtures | Engine-specific bounds remain; Snowflake live plans and representative workload/latency targets unqualified |
 | Schema changes and engine behavior | PostgreSQL/MySQL reviewed object/column/index/constraint DDL, snapshots/diff and migration workflow; fixture coverage. SDK separately opted-in generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE are integrated with one-use review, catalog holds and typed retained history; local verification is in the ledger | Actual-account DDL remains unqualified. Broader objects, compare/migration, implicit commits, concurrent actor behavior and account privileges remain required gaps |
 | Keyboard, accessibility, everyday use | Keyboard navigation/dialog/focus browser coverage and preferences/layout exist | Screen-reader/canvas usability and the owner's complete daily task sequence need hands-on evaluation |

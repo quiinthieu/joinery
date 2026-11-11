@@ -1,8 +1,42 @@
 # Implementation and release status
 
-## Reviewed table DDL (11 November 2026, local integration)
+## Retained mutation outcomes (11 November 2026, local integration)
 
-Current source commits are `2864282`, `93d5e26` and `00ca4af`. Final application
+Commits `b06f030` and `3039975` repair local outcome recording across SDK DDL,
+DML and explicit transaction controls, and add a test-harness-only offline
+new-table lifecycle definition. Failed audit/history stages retain the original
+typed outcome and retry locally without another SQL submission. Pending receipts
+block new reviewed mutations, BEGIN/COMMIT and normal shutdown. Typed rollback
+keeps its recovery policy, bounded to one unrecorded rollback per console.
+Transaction execution outlives a dropped caller. Pending receipts are in memory;
+forced-exit durability during unwritable local storage is not established.
+
+Full `pnpm validate` passes **679 frontend / 463 standard Rust tests** with
+**129 ignored** fixture tests. Separate checks pass **9 receipt cases**, **56 Studio
+cases**, **10 offline compiler cases**, **43 actual isolated PostgreSQL tests**
+and **16 browser workflows**. The helper/UI Snowflake cases use synthetic remote
+behavior and do not qualify account writes. Independent review found no material
+findings. See the [verification ledger](replacement-verification.md) for evidence
+and failed runs.
+
+Three hidden native runs pass, with 20 check categories and ten cleanup cycles
+each. The final normal macOS SDK bundle is **224.90 MiB** and passes strict ad-hoc
+signature, runtime resources and guarded SDK startup with zero authentication or
+SQL requests. All **430** frozen source/config/test inputs remain unchanged.
+The bundle is local version 0.1.0, uninstalled; this is not normal-app account
+qualification or Developer ID/notarization evidence.
+
+The offline definition targets a fresh table in `SANDBOX.BILLIE_TESTING` with
+production-compiled SQL and typed expectations. The physical SQL/resource gates,
+runtime/source-bound executable plan, one-use journal and fixed account runner
+are still missing. No account authentication or SQL occurred in this increment.
+Normal packaged SSO, actual account effects, installation/signing, million-row
+account results and complete DataGrip/owner acceptance remain open. Nothing is
+merged, published or installed; the Goal stays active and incomplete.
+
+## Recorded table DDL (11 November 2026, local integration)
+
+Recorded source commits are `2864282`, `93d5e26` and `00ca4af`. Final application
 validation passes 679 frontend and 456 standard Rust tests (129 fixture tests
 ignored by that command). Separate checks pass 356 helper cases, 14 browser
 workflows and 43 actual isolated PostgreSQL tests. See the

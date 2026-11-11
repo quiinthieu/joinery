@@ -1,6 +1,67 @@
 # Joinery implementation roadmap
 
-## Reviewed table DDL (11 November 2026, local integration)
+## Receipt recovery and qualification definition (11 November 2026)
+
+Implemented and independently reviewed in `b06f030` / `3039975`: shared original
+SDK DDL/DML/transaction outcome retention, local-only recording recovery, owned
+transaction execution after a dropped caller, and a pure offline table-lifecycle
+definition. Final validation passes 679 frontend / 463 standard Rust tests
+(129 fixture tests ignored). Separate receipt, Studio, compiler, actual isolated
+PostgreSQL and browser checks pass; see the [ledger](replacement-verification.md)
+for scope and reproducible evidence. Account behavior remains unqualified.
+
+Three hidden native runs and the final 224.90 MiB normal SDK bundle pass local
+checks; all 430 frozen inputs remain unchanged through packaging. Strict ad-hoc
+signing/resources and guarded SDK startup pass with zero authentication/SQL.
+Installation, Developer ID/notarization and normal packaged account behavior
+remain open.
+
+Next useful local work is the existing-schema qualification infrastructure:
+
+1. Export and enforce the exact physical SQL order/counts around production calls,
+   including the bounded automatic read-only suffix after a rejected operation.
+2. Intercept and freeze the raw schema census and created-object identity markers;
+   enforce inbound frame/byte/stderr resource limits as well as outbound admission.
+3. Bind the fixed runner to reviewed source, binary, runtime and private profile
+   identities, with one-use approval consumption and a durable execution journal.
+4. Regress interruption, rejected statements, local-recording failure, lost ACKs
+   and partial runs without account access; independently review the result.
+5. Prepare the exact executable plan for the owner's permitted new table under
+   `SANDBOX.BILLIE_TESTING`, then request fresh possible-billing approval.
+
+The [offline definition](snowflake-existing-schema-qualification.md) is not an
+account runner or approval. In parallel, the complete metadata, SQL authoring,
+grid/import, schema/performance, native lifecycle and million-row account gaps
+remain required. Do not reinterpret this lifecycle check as replacement acceptance.
+
+Bounded read-only integration review (Tier 2 generation
+`2026-11-11T11:11:15Z`, best-effort coverage plus exact source) identifies these
+next implementation seams; none is implemented by the offline compiler:
+
+- Attach an opaque harness-only attempt capability through
+  `Studio::connect_prepared_inner` / `SnowflakeExternal::open` before startup.
+  Keep it out of desktop IPC and stored profiles.
+- Admit and consume physical operations in `snowflake_process::write_loop`
+  immediately before writing, after durable intent and ownership rechecks.
+  Queue insertion is insufficient. Bootstrap includes the helper's hidden fixed
+  context SELECT and version query; export their definitions instead of copying.
+- Observe validated wire-order census rows before `parse_schemas` sorting hides
+  order, and parsed `BrowseRelation` creation/DDL markers before public summaries
+  discard them. Enforce these observations before dependent dispatch/publication.
+- Count actual stdout bytes from handshake onward, complete frames and partial
+  failures; concurrently drain/count stderr without retaining contents. Reap and
+  counter-task completion are separate evidence. Preserve known ACKs on later
+  read failure. The existing native query-submit guard remains mandatory and
+  does not replace exact SQL/phase admission.
+
+Split transport/observation plumbing, closed ledger enforcement, and the private
+execution envelope/runner into reviewable increments. Required synthetic coverage
+includes complete 393/610-execution production routes, census/marker drift,
+rejected-operation suffixes, intent failure, cancellation/partial writes, resource
+overflow after ACK and dropped callers with failed local recording. These tests
+must precede any executable approval request.
+
+## Recorded table DDL (11 November 2026, local integration)
 
 Final evidence: 679 frontend / 456 standard Rust tests, 356 helper cases,
 14 browser workflows, 43 isolated PostgreSQL tests and three hidden native runs
@@ -9,12 +70,10 @@ startup; all 426 frozen source/config/test inputs remain unchanged. No install o
 account mutation qualification is claimed. Details and artifact hashes are in
 the [ledger](replacement-verification.md).
 
-Next local reliability work: reproduce DML/transaction terminal persistence
-failures and extend retained original receipts/local-only recovery to those
-routes, including dropped callers and failed normal shutdown. The independent
-existing-schema plan review found that gap and the need to specify automatic
-post-failure observations before building its executable account runner. This
-work needs no account activity; no fresh execution approval is pending yet.
+That review identified DML/transaction terminal persistence failures and the need
+to specify automatic post-failure observations. The subsequent receipt increment
+above reproduces and repairs the recording gap without account activity. A fresh
+execution approval is not pending yet; the executable runner remains unfinished.
 
 The SDK external-browser route now includes a separate opt-in for generated
 CREATE TABLE, nullable ADD COLUMN and DROP TABLE. Every statement uses its own

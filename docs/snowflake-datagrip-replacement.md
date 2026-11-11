@@ -31,6 +31,14 @@ records connector alternatives and the expanded latest-release inventory.
 
 ## Current application boundary
 
+The latest local increment (`b06f030` / `3039975`) retains original typed SDK
+DDL/DML/transaction outcomes when local recording fails, retries missing local
+stages without SQL replay and keeps dropped transaction callers owned through
+recording. Pending receipts block new reviewed mutations, BEGIN/COMMIT and normal
+shutdown; explicit rollback retains bounded recovery. This is in-process recovery,
+not forced-exit durability while local storage is unwritable. Current validation
+and source-scoped evidence are in the [ledger](replacement-verification.md).
+
 Application profiles now select explicitly between the stateful SDK external-browser
 route and the existing local-application OAuth/SQL API route. New profiles choose
 external browser; missing mode on an existing profile defaults to its prior OAuth
@@ -67,7 +75,9 @@ approved single account attempt passed SSO and initial observations, then stoppe
 on definitive CREATE DATABASE rejection without creating a schema or table.
 That approval is consumed. The owner now permits new tables under
 `SANDBOX.BILLIE_TESTING`; the [existing-schema lifecycle proposal](snowflake-existing-schema-qualification.md)
-still needs its executable runner, review and fresh possible-billing approval.
+now has a tested harness-only offline definition. It still needs physical SQL and
+inbound resource gates, raw census/creation-marker interception, a source/runtime-
+bound executable plan, a fixed runner, review and fresh possible-billing approval.
 The preceding
 SDK integration qualification passes, including all 143 browser workflows,
 124 actual local database fixtures and the packaged SDK runtime checks. These

@@ -8,6 +8,129 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Mutation receipt recovery and offline lifecycle definition (11 November 2026)
+
+Implementation commits: `b06f030` (shared receipt recovery and regression coverage)
+and `3039975` (harness-only offline lifecycle definition), unmerged and unpublished.
+
+The shared in-process receipt outbox now covers original typed SDK DDL, DML and
+transaction results. Transaction execution has an owned task that outlives a
+dropped caller. Failed local audit/history stages remain pending independently;
+retries write only the missing local stages and never repeat remote SQL. Pending
+recording blocks new reviewed mutations, BEGIN/COMMIT and normal shutdown.
+Explicit typed rollback retains its existing recovery policy; one unrecorded
+rollback per console is allowed, then another requires its earlier receipt to
+record. Primary remote errors keep their code/location and message prefix, with
+an appended local-recording notice rather than a fabricated unknown outcome.
+
+Transaction boundaries retain their existing audit evidence, without adding
+script history. If only a rollback's started audit fails, its terminal ACK can
+record immediately and the missing started stage can record later. Insertion
+timestamps therefore need not follow action chronology. An adapter rejection
+before submission preserves its original error and creates no invented terminal
+receipt; an unrecordable start in that no-submit case is not retained. Once the
+SDK operation is queued, failures become typed outcomes under the reviewed
+adapter contract. These are in-memory pending receipts, not forced-exit/power-loss
+durability while SQLite is unwritable.
+
+The separate harness-only offline compiler generates a definition for one fresh
+table in `SANDBOX.BILLIE_TESTING`: production-compiled DDL/DML, the closed 32-phase
+order, and validators for typed outcomes, state, readbacks and a stable bounded
+schema census.
+Its budget is `386 + 7S`: 393 at one schema, 610 at 32. Its snapshot hash binds the
+offline definition only. It has no helper, executable manifest, physical SQL
+admission/counters, raw census/creation-marker interception, private connection
+or runtime binding, durable execution journal, approval or account runner.
+The official [TABLES view reference](https://docs.snowflake.com/en/sql-reference/info-schema/tables)
+was rechecked on 11 November: the ownership projection's owner, type, transience,
+temporary status and creation fields are documented. This verifies the reference
+contract, not successful account execution.
+
+| Check | Result and evidence scope |
+| --- | --- |
+| Reproduction before repair | **0/2**, expected failures: DML dropped waiter plus unavailable local recording, and discarded transaction terminal audit. `receipts-red.log` |
+| Final receipt unit tests | **7/7**, default-feature compile also checks the owned transaction command receiver. `receipts-focused-final.log` |
+| Actual production-helper receipt fixtures | **9/9**, including the same seven unit cases and two actual framed-helper/synthetic-SDK dropped-caller/storage-failure cases, 32.03 seconds. Both assert one remote submission and zero SQL during repeated local recovery/close attempts. `receipts-helper-final.log`; no account effects claimed |
+| Complete focused Studio suite | **56/56**, including existing DDL, policy, observer holds and new receipt regressions. `receipts-studio-final.log` |
+| Offline lifecycle compiler | **10/10**, exact generated SQL, phase budgets/order, census bounds/drift, snapshot tampering and selected runtime/effect/readback/inspection/catalog validators. Final formatted source: `table-qualification-unit-formatted.log`; earlier tightened-validator pass: `table-qualification-unit-final.log`. Selective validator tests do not qualify an executable workflow |
+| Actual isolated PostgreSQL regression | **43/43**, 26.16 seconds, `receipts-postgres-final.log`; same command below, fresh owned Compose project `joinery-receipts-20261111-1040` on 56432. This does not qualify Snowflake |
+| Affected browser workflows | **16/16**, 1.3 minutes, `receipts-browser-final.log`; reviewed DDL/DML/boundaries, browsing, schema selection and session observations. New DML/COMMIT local-recording warnings preserve known ACKs and quiet-window/no-replay assertions. Headless real UI with synthetic RPC interceptions; no account effects claimed |
+| Combined application validation | Final `pnpm validate`, exit 0: **679 frontend / 463 standard Rust**, **129 ignored** fixture tests; formatting, contracts/types, production frontend build, desktop check and strict all-target/all-feature Clippy pass. `receipts-validate-rerun.log`; separate strict Clippy also passes (`receipts-clippy-final.log`) |
+| Hidden native application | SDK build passes, followed by **3/3** hidden native runs, 20 check categories and ten cleanup cycles each. `receipts-native-build.log`, `receipts-native-runs.log`, frozen build/run JSON files with the same prefixes. Synthetic isolated application, not normal-app SSO or account qualification |
+| Final normal macOS package | `pnpm desktop:snowflake:bundle:mac`, exit 0, **224.90 MiB**. Strict ad-hoc signature, 15,107 runtime entries, zero symlinks and guarded SDK 3.4.1 startup pass with zero authentication/SQL requests. `receipts-normal-bundle.log`, `receipts-final-artifacts.json`. Version/build 0.1.0; not installed, Developer ID/notarization and normal-app SSO remain open |
+| Independent review | Bounded final source reviews found no material findings in receipt recovery or the offline definition. Tier 2 generation `2026-11-11T10:46:27Z`, best-effort `metadata_match`/`no_recorded_issue` coverage on relied paths plus direct final source reads. Reviewer ran no tests/account activity |
+
+Focused commands use pinned Rust 1.99.1 and Node 24.22.2 in PATH, with
+`JOINERY_TEST_NODE` set to the pinned Node executable for actual-helper fixtures:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --lib receipt_ -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib receipt_ -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib browse_classification_tests -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_table_qualification
+JOINERY_TEST_PORT=56432 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres -- --ignored --test-threads=1
+pnpm validate
+pnpm desktop:snowflake:smoke:build
+python3 scripts/native-smoke.py --runs 3
+pnpm desktop:snowflake:bundle:mac
+```
+
+Logs are under `.cache/verification/connection-attempts/`. Initial compiler compilation
+found a fixture's boolean field mismatch; it was corrected before the final pass.
+Final review tightened idle authority and unknown-column validation, with another
+10-case passing run. The first full validation (`receipts-validate-final.log`)
+passed the frontend and standard Rust tests but failed Cargo formatting in the two
+new compiler files. The earlier standalone formatting command used edition 2021;
+Cargo uses edition 2024. Running the pinned Cargo formatter changed only those two
+files, then the compiler tests and full validation passed again. No failed run is
+counted as a passing validation.
+
+The final source manifest `receipts-source-qualified-final.json` freezes **430**
+source/config/test inputs, SHA-256
+`9030148f476674ec875ebd9632c41151f55c574fe1e3d8c08b53a92c521ee666`.
+Its predecessor `receipts-source-qualified.json` differs in only the two offline
+compiler files' formatting. The production receipt, helper and UI paths exercised
+by the earlier focused/database/browser runs did not change during formatting.
+Documentation is outside this manifest.
+
+The hidden executable SHA-256 is
+`1ff415d65064178e8f28baf56ed5a135bb03b2873ccd275e6e008e76cd4f6716`;
+its isolated bundle executable is
+`8dee1ae86cb8af944dcf817dbdb173ec0c183826b860238440f9e9f773b13520`.
+Build metadata records source `3039975` and `sourceDirty: true` because the status
+documentation was being updated; the frozen source/config/test inputs remain
+unchanged. The SDK 3.4.1 resource manifest remains
+`dd08932407ed6a540379dc5711a464fa51600498196a8637af671e23ea9256a0`.
+Native resource checks cover 15,107 entries and five deliberate fixture symlinks;
+guarded helper startup records zero authentication and SQL requests. The existing
+`rust-objcopy` / missing `libLLVM.dylib` stripping warning remains nonfatal; no
+global toolchain settings were changed.
+
+The final normal bundle executable SHA-256 is
+`243e09c2c9555690a5b574c4794f87a72b7bfd598b8da2f079877e8a4ecaac11`.
+All 430 frozen inputs still match after native runs and final packaging.
+`receipts-final-artifacts.json` binds these source and artifact pins to code
+revision `3039975`. This does not qualify installation, normal packaged SSO or
+restart with live Snowflake sessions, account mutations or complete application
+memory/performance with one million account rows. The private project hub was
+not updated because this Goal explicitly forbids publishing; repository status
+and evidence are maintained locally.
+
+The owned PostgreSQL project, volume and network were removed after verification
+(`receipts-postgres-cleanup.log`); owned browser servers on 1421/1422 were stopped.
+During low disk space, eight older synthetic browser fixture roots generated by
+this Goal were archived with every file hash verified and no open handles before
+their originals were removed. The 105 files remain recoverable in private
+`.cache/verification/browser-fixture-archives/` archives and inventories; the
+summary/restore example is `receipts-fixture-archives.json`. No blanket cache
+cleanup, user data or account evidence removal occurred.
+
+No account authentication or SQL occurred for this increment.
+The [existing-schema proposal](snowflake-existing-schema-qualification.md) still
+requires complete runner/gate regression tests and a fresh exact executable plan
+with possible-billing approval. Full DataGrip replacement and owner acceptance
+remain open.
+
 ### Integrated reviewed table DDL (11 November 2026)
 
 Implementation commits: `2864282` (helper transport), `93d5e26` (native core,
@@ -111,13 +234,14 @@ Documentation changed during these checks; it is outside that source manifest.
 This does not qualify installation, normal packaged SSO, restart with live
 Snowflake sessions, or complete application memory with one million account rows.
 
-An independent existing-schema plan review confirms the successful budget
-`386 + 7S` (393 at one schema, 610 at 32), but identifies prerequisites for the
-next runner: automatic observations can occur inside an application call after a
-rejected statement, and current DML/transaction terminal persistence does not
-have DDL's retained-receipt recovery. DML returns local persistence failure;
-transaction controls currently discard a failed terminal audit append. These
-are required follow-ups, not covered by the passing DDL receipt cases. The new
+An independent existing-schema plan review confirmed the successful budget
+`386 + 7S` (393 at one schema, 610 at 32), but identified prerequisites for the
+next runner on that recorded source: automatic observations can occur inside an
+application call after a rejected statement, and DML/transaction terminal
+persistence lacked DDL's retained-receipt recovery. DML returned local persistence
+failure; transaction controls discarded a failed terminal audit append. Those
+recording defects were subsequently reproduced and repaired in the receipt
+increment above, with separate coverage. The new
 plan must disclose and enforce its failure-observation policy, retain original
 acknowledgements without remote replay, and report unfinished local recording
 through graceful shutdown. Source review used Tier 2 generation
