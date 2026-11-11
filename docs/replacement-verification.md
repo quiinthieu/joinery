@@ -27,6 +27,7 @@ consumed and grant no setup authority. See the
 | Compiler/resources | **75/75** read/setup compiler and runtime-resource cases. Closed SQL/shape/hash binding, deep immutability, private exclusive CLI output, file allowlists, setup windows up to 24 hours and unchanged ten-minute read window pass. `setup-compiler-resources-final.log` |
 | Offline runtime | Rebuilt from the repository-owned npm cache with `pnpm snowflake:prepare --cache-dir .cache/snowflake-helper-dev/npm-cache --offline`; staged startup passes SDK 3.4.1 hello/EOF with **zero authentication / SQL requests**. `setup-runtime-prepare.log`, `setup-staged-startup.log` |
 | Actual offline owner plan | Emission and exact-plan verification pass with the retained current-connection allowlist and original proposal token; no helper is launched. `setup-owner-offline-emission.log`, `setup-owner-offline-verified.log` |
+| Current normal SDK macOS bundle | **224.33 MiB**, strict ad-hoc signature valid, **15,107 resource entries / zero symlinks**. Packaged SDK 3.4.1 hello/EOF sends **zero authentication / SQL requests**. `setup-bundle.log`, exit 0. Built but not installed; no normal-app sign-in or new hidden-native run is claimed |
 | Independent review | Helper and runtime reviews found and resolved the close-before-ACK outcome distinction and receipt durability findings below; final bounded re-review has no unresolved material finding. This is local evidence, not remote exactly-once or account-effect proof |
 
 Logs without a directory prefix above are under
@@ -59,6 +60,16 @@ The proposed single-attempt window is **11 November 2026 03:57:48.859 UTC throug
 not approval. Source drift, consumed markers, expiry or changed profile deny
 execution. This helper-only setup does not enable application DDL, qualify DML
 or transaction effects, or close the broader DataGrip replacement Goal.
+
+Commits `fa0fd45` (helper/resources) and `4f787a1` (runner/tests/documentation)
+are local only. All **347 frozen source/tooling/test inputs** are unchanged
+through final packaging (`setup-source-freeze.json`, `setup-source-qualified.json`).
+The normal application executable SHA-256 is
+`339799ebfe1d10f4d6e6970a5a2e9dcda53003f4fdba1e06583f93cbaed364c5`.
+The existing missing-`libLLVM.dylib` debug-strip warning repeats; Cargo and bundle
+verification still finish successfully. Developer ID/notarization, installation,
+normal-app credentials/restart and owner acceptance remain open. The private
+project hub was not published because this Goal explicitly forbids publishing.
 
 ### Million-row Snowflake driver/store/export bridge (11 November 2026)
 
