@@ -1,330 +1,207 @@
-# Snowflake SDK reviewed DDL proposal
+# Snowflake SDK reviewed DDL
 
-**Status: execution workflow proposed; pure syntax foundation implemented
-locally and verified. No application DDL execution route or account
-qualification.**
-This is a bounded design for the next Snowflake SDK schema-change workflow. It
-does not authorize account activity, enable DDL execution, or complete the Snowflake
-DataGrip replacement. The full replacement still requires broader object
-creation and editing, schema comparison, reviewed migration and synchronization
-workflows, and hands-on qualification. Read alongside the
-[reviewed DML contract](snowflake-sdk-dml-design.md), the
-[explicit transaction contract](snowflake-sdk-transactions-design.md), and the
-[Snowflake replacement inventory](snowflake-datagrip-replacement.md).
+**Status: generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE are
+implemented locally, with helper and pinned-SDK loopback verification. Real
+account DDL and normal application external-browser SSO are not qualified.**
+This integrated local contract does not authorize account activity or establish
+full DataGrip replacement. Read alongside the
+[reviewed DML contract](snowflake-sdk-dml-design.md),
+[explicit transaction contract](snowflake-sdk-transactions-design.md), and
+[replacement inventory](snowflake-datagrip-replacement.md).
 
-## Pure syntax foundation (11 November 2026)
+## Earlier pure syntax checkpoint (11 November 2026)
 
-`safety/snowflake_ddl.rs` compiles the existing structured table action and an
-explicit database into one canonical statement. It has no raw-SQL entry point
-and grants no execution, catalog, transaction or object-identity authority.
-Closed types are NUMBER, VARCHAR, BINARY, BOOLEAN, FLOAT, DATE, TIME and
-TIMESTAMP_NTZ; parameters and output are bounded. Numeric precision is 1–38,
-scale is 0–37 and no greater than precision. Aliases, expressions, defaults,
-identity, keys, comments, unsupported actions and supplied forbidden fields fail
-closed. CREATE may specify NOT NULL on its empty new table; ADD remains nullable.
-Identifier values are quoted independently and round-tripped through the whole
-AST; quoted case semantics still require runtime qualification before execution.
+The first checkpoint implemented only `safety/snowflake_ddl.rs`, with no
+application execution route. Its eleven inline tests passed; full validation at
+that checkpoint passed 671 frontend and 437 standard Rust tests, with 129 fixture
+tests ignored. Review reproduced and fixed scale-38 admission and plain DROP's
+default CASCADE behavior. DROP explicitly emits RESTRICT. Those counts describe
+that earlier generator checkpoint, not validation totals for the integrated
+workflow. See the [verification ledger](replacement-verification.md#pure-snowflake-ddl-syntax-foundation-11-november-2026).
 
-All eleven inline tests pass in the complete crate. Independent review found the
-scale-38 admission and lead review found plain DROP's default CASCADE behavior;
-new regressions reproduced both before the fixes. DROP now explicitly emits
-RESTRICT. The full validation passes 671 frontend / 437 standard Rust tests;
-129 fixture tests are ignored, not passes. No UI or account DDL route is enabled.
-See the [verification ledger](replacement-verification.md#pure-snowflake-ddl-syntax-foundation-11-november-2026).
-Snowflake's [numeric limits](https://docs.snowflake.com/en/sql-reference/data-types-numeric)
-and [DROP semantics](https://docs.snowflake.com/en/sql-reference/sql/drop-table)
-were verified against current official documentation.
+## Supported workflow and grammar
 
-## Integration prerequisites identified in review
+The relation browser opens a dedicated `SnowflakeDdlDialog` for the exact owning
+console session. The form previews generated SQL and submits a typed, reviewed
+plan. It does not choose a primary session or use generic console execution.
+One plan admits one action:
 
-The 11 November source review found three dependencies that must precede an
-enabled application workflow:
+- **CREATE TABLE:** an exact database, schema and new name, with 1–256 columns.
+  NOT NULL is allowed on the new empty table. The adapter observes schema
+  availability and exact-name absence; a concurrent collision still depends on
+  Snowflake rejecting CREATE.
+- **ADD COLUMN:** one nullable column, with no default, on the exact observed and
+  inspected supported table. Existing rows receive NULL; see
+  [ALTER TABLE](https://docs.snowflake.com/en/sql-reference/sql/alter-table).
+- **DROP TABLE:** the exact observed table, with explicit RESTRICT and a separate
+  destructive confirmation repeating the fully qualified target. There is no
+  CASCADE, PURGE or IF EXISTS. RESTRICT does not protect dependent views or prove
+  dependency absence; see [DROP TABLE](https://docs.snowflake.com/en/sql-reference/sql/drop-table).
 
-- **One coherent DDL grant.** Existing metadata operations revoke transaction
-  grants before and inside the serialized adapter lane. Independently obtained
-  browse and transaction revisions cannot be combined as DDL authority. Collect
-  bounded target/catalog evidence and coherent idle context under one owning
-  lane, bind them to the structured action, canonical SQL, all three identifier
-  components, principal/session, revision and expiry, then consume once. Recheck
-  target evidence and a final idle sample before dispatch. The existing session
-  sample already checks quoted-case policy; DDL additionally requires AUTOCOMMIT
-  true, no observed transaction and unrestricted authority. DML's allowance for
-  open transactions and its rollback-only recovery are not DDL policy.
-- **A catalog-specific hold.** The current boolean metadata hold can clear after
-  runtime/options observations alone. DDL needs a hold kind/revision that clears
-  only after successful explicit bounded catalog reconciliation plus a coherent
-  idle observation. Capture the held revision before waiting; an older queued
-  refresh must never clear a newer hold. Denial or incomplete inspection retains
-  the hold. Preserve command acknowledgement independently of reconciliation.
-- **A dedicated typed UI/execution route.** The existing table dialog calls
-  generic SQL execution, automatically refreshes catalog and can select a primary
-  session. Its SDK branch must use the exact owning browser session, strict new
-  recursively closed DTOs, an independent default-false opt-in, one-use review,
-  retained DDL acknowledgement, tracked execution ownership/history and explicit
-  reconciliation. Broad `ddlEditing` stays false. The fixed disposable-setup
-  operation is not this route and grants no application authority.
+The compiler accepts NUMBER, VARCHAR, BINARY, BOOLEAN, FLOAT, DATE, TIME and
+TIMESTAMP_NTZ, with bounded parameters and output. Numeric precision is 1–38;
+scale is 0–37 and cannot exceed precision. See Snowflake's
+[numeric limits](https://docs.snowflake.com/en/sql-reference/data-types-numeric).
+Each identifier component is independently quoted and the complete statement is
+round-tripped through strict AST admission. Quoted dots and case remain part of
+the identifier. There is no raw-SQL entry point or parser fallback.
 
-Implement in dependent groups: contracts/policy and helper/adapter transport;
-composite preflight authority; Studio execution/history/hold reconciliation;
-then the constrained table dialog and typed IPC registration. Each enabled
-operation needs compiler, adapter, Studio, actual pinned-SDK loopback and browser
-coverage, including pre/post-ACK close, dropped waiter, shutdown, policy/catalog
-drift, failed reconciliation and old-refresh/new-hold races. Declare its complete
-observer/catalog SQL budget before account qualification; the existing eleven-SQL
-DML cadence does not cover DDL target qualification.
+Defaults, expressions, identity, keys, policies, tags, comments, table options,
+rename/drop/type changes to columns, multi-action ALTER, CREATE OR ALTER, CREATE
+OR REPLACE, IF NOT EXISTS, CTAS, cloning, temporary/dynamic/external/hybrid/Iceberg
+tables, views, schema/database DDL, grants and ownership changes are excluded.
+Broad `ddlEditing` stays false; the narrow reviewed capability grants no general
+DDL or write-classification bypass.
 
-Current constraints are `NotFetched`, and a visible catalog snapshot cannot prove
-complete visibility, dependency absence or immutable identity. Define bounded
-qualification for supported table kind, schema eligibility and required metadata;
-deny unknown evidence. A preflight name-absence sample is advisory and does not
-replace CREATE's collision error. Names, catalog UUIDs and timestamp comparisons
-do not eliminate concurrent replacement or temporary shadowing. Preserve the
-dedicated disposable-schema/no-concurrent-actors qualification boundary and
-explicit warnings. Broader schema tools remain required after this increment.
+ADD and DROP require an available `BASE TABLE` with known permanent or transient
+status and known false temporary, Iceberg, dynamic, hybrid and immutable traits.
+Unknown traits or incomplete/denied catalog evidence fail closed. CREATE emits
+ordinary CREATE TABLE syntax, but a transient parent schema/database can make the
+new table transient. Transient tables have zero or one day of Time Travel and
+**no Fail-safe**. After retention expires, Snowflake cannot recover their
+historical data. The workflow warns about this and does not verify the target's
+configured retention or provide UNDROP/recovery. See
+[temporary and transient tables](https://docs.snowflake.com/en/user-guide/tables-temp-transient)
+and [transient schema semantics](https://docs.snowflake.com/en/sql-reference/sql/create-schema).
 
-## Database contract and first workflow
+## Policy, review and authority
 
-Snowflake DDL has its own transaction semantics. Each DDL statement executes as
-a separate transaction. If a transaction is already active, Snowflake commits
-that transaction before executing the DDL. A later `ROLLBACK` cannot undo the
-DDL. Do not place DDL inside a user transaction, describe it as rollbackable,
-or treat the transaction toolbar state as protection. Initially require a fresh,
-coherent observation of an idle SDK session in automatic-commit mode; reject
-open, failed, unknown, stale, or manually managed transaction state. Do not
-change `AUTOCOMMIT` as a side effect. See Snowflake's
-[transaction rules](https://docs.snowflake.com/en/sql-reference/transactions).
+`reviewedDdl` is an independent persistent opt-in, default false for new and
+missing values. Reviewed DML consent, transaction controls and a writable policy
+do not supply it. Only Snowflake SDK external-browser profiles can enable it;
+ReadOnly denies DDL. Authentication and policy transitions clear the opt-in and
+revoke pending authority; switching back does not restore consent. Existing
+production-profile and Password-Gated normalization rules still apply.
 
-The initial usable flow should cover one operation at a time against a
-user-prepared disposable schema:
+Every statement requires deliberate approval of a fresh plan, including Silent
+mode. Review shows the operation, fully qualified target, canonical SQL, column
+changes and transaction warnings. Safe Mode's connection-name confirmation and
+Password-Gated passphrase remain independent of DROP's exact-target confirmation.
 
-1. **Create a table.** Choose the exact database, schema and new table name;
-   enter a bounded list of columns using an allowlist of supported scalar types.
-   Require at least one column. Explicit NOT NULL is allowed on this newly
-   created empty table. The first version should not accept defaults, other
-   constraints, policies, tags, comments, identity/sequence behavior, table
-   options or expressions. Require that the target table name is currently
-   unused, then show the fully qualified generated statement.
-2. **Add a column.** Select an existing supported table in that same schema and
-   add exactly one nullable column with an allowlisted scalar type and no
-   default. Snowflake documents that a newly added column without a default
-   appears as `NULL` for existing rows. Do not expose drop/rename/type-change,
-   multi-action `ALTER`, or `CREATE OR ALTER` in this first slice. See
-   [ALTER TABLE](https://docs.snowflake.com/en/sql-reference/sql/alter-table).
-3. **Drop a table.** Select one exact table and require a separate destructive
-   confirmation that repeats its fully qualified name. Do not generate
-   `CASCADE`, `PURGE`, or `IF EXISTS`; generate explicit `RESTRICT` because
-   standard tables otherwise default to CASCADE for foreign-key references.
-   RESTRICT does not protect dependent views or prove complete dependency
-   absence. The action must fail if the reviewed
-   target is absent or no longer matches the observed catalog. Explain that a
-   dropped table may be recoverable only during its configured Time Travel
-   retention, and that recovery is separate from transaction rollback. Snowflake
-   notes that dropping a table can invalidate views that reference it and that
-   retention and recovery depend on the object's type and settings. See
-   [DROP TABLE](https://docs.snowflake.com/en/sql-reference/sql/drop-table).
+DDL executes in its own transaction and can implicitly commit pre-existing work;
+ROLLBACK cannot undo it. Joinery requires a coherent idle SDK session with
+AUTOCOMMIT true, no observed active transaction and unrestricted authority. It
+rejects manual, open, failed, unknown or stale transaction state and never changes
+AUTOCOMMIT to make DDL eligible. See
+[Snowflake transaction rules](https://docs.snowflake.com/en/sql-reference/transactions).
 
-Use one exact DDL statement per reviewed plan. Initially reject raw SQL input,
-multiple statements, parser fallback, comments/directives that change meaning,
-unqualified identifiers, `CREATE OR REPLACE`, `IF NOT EXISTS`, `IF EXISTS`, CTAS,
-cloning, temporary/dynamic/external/hybrid/Iceberg tables, views, schema/database
-DDL, grants, ownership changes and any syntax outside the three operations
-above. `CREATE OR REPLACE` is explicitly excluded because Snowflake describes it
-as equivalent to dropping the existing database object and creating a new one.
-This generated-only slice is an explicit usability limit, not a claim of DDL
-parity.
+Preflight owns the serialized session lane. A single expiring adapter grant binds
+the structured action, canonical SQL, all three target components, current
+principal/session, catalog and inspection evidence, transaction generation and
+coherent idle observation. Studio binds this to the current persisted policy and
+one-use reviewed plan. The adapter grant expires after 60 seconds. Dispatch
+consumes it once, rechecks target evidence, takes another complete idle sample
+immediately before submission and checks generation/expiry again at that point.
+Intervening metadata, session, authentication or policy changes revoke authority.
 
-The intended UI pattern follows the useful parts of DataGrip 2026.3: create or
-modify an object from the database explorer, review generated SQL in a preview,
-then make an explicit submission. DataGrip also supports structure comparison,
-selecting migration changes, reviewing a generated migration script, and
-executing or opening it in a console. The bounded Joinery flow should adopt
-review-before-submit while retaining its narrower grammar; it does not deliver
-the full DataGrip migration workflow. See JetBrains'
-[Create and Modify dialogs](https://www.jetbrains.com/help/datagrip/2026.3/create-and-modify-dialogs.html),
-[schema comparison and migration](https://www.jetbrains.com/help/datagrip/2026.3/schema-comparison-and-migration.html),
-and [updating database object source](https://www.jetbrains.com/help/datagrip/2026.3/update-source-code-of-database-objects.html).
+Names and catalog observations are not immutable object identities. Constraints
+remain `NotFetched`; dependencies, hidden objects and temporary shadows are not
+exhaustively inspected. Concurrent rename/replacement can change what an exact
+name resolves to between observation and execution. The first account workflow
+therefore requires a dedicated disposable schema with least-privilege ownership
+and no concurrent DDL actors. This boundary reduces exposure without making the
+name-resolution race atomic or proving dependency absence.
 
-## Policy, review and execution
+## Submission, evidence and lifetime
 
-DDL needs a separate persistent opt-in, such as `reviewedDdl`, defaulting to
-false for both new profiles and profiles that lack the field. Do not infer DDL
-consent from a non-ReadOnly boundary policy, the reviewed-DML opt-in, or prior
-transaction controls. Only the supported Snowflake SDK external-browser route
-may expose the opt-in. ReadOnly always denies DDL; OAuth/local-application and
-legacy/missing-auth profiles remain read-only. Switching authentication or
-policy clears the opt-in and revokes pending plans. Switching back never
-restores it automatically. Preserve the existing production-profile and
-password-gated normalization rules.
+The private helper payload is closed to `kind`, canonical `sql` and expected
+`user`/`session`, with no binds. Rust owns grammar, policy and catalog authority;
+the helper checks payload bounds and exact connected identity. The native guard
+allows only the exact reviewed query submission and blocks repeated query POSTs
+for that identity. There is no automatic retry, reconnect/replay, resubmission by
+request ID, or automatic post-DDL catalog refresh.
 
-The opt-in is only an eligibility gate. Every statement still requires a fresh
-plan and deliberate per-plan approval, including in Silent mode. The review
-must display the operation, exact fully qualified target, generated SQL,
-column changes and transaction warning. `DROP TABLE` gets its own destructive
-confirmation that repeats the exact target. Apply the existing Safe Mode
-confirmation rules, including passphrase entry in Password-Gated mode; never
-weaken approval because SQL was generated by a form. Bind the one-use plan to
-the exact SQL, structured action, effective policy, database/schema/table
-identifier components, observed principal/session, transaction and catalog
-revision, and expiry. Revalidate these at consumption and invalidate the plan
-after any intervening session, policy, authentication or metadata change.
+Statement evidence is `succeeded`, `rejected` or `unknown`, independently of later
+session/catalog visibility. The helper emits the exact DDL acknowledgement before
+draining its private bounded status result; it publishes no query rowset or
+affected-row count. An acknowledgement survives drain/protocol failure,
+cancellation, disconnect, dropped IPC waiters and shutdown. Retirement before
+acknowledgement after possible dispatch is unknown; retirement afterwards
+preserves success while reporting the unusable session. A definitive server
+rejection stays rejected even if later observation fails. An acknowledged DDL
+is not rollback-protected or proof of later catalog visibility.
 
-Use a dedicated typed SDK operation and private plan shape. Rust performs strict
-AST admission for exactly one supported action and emits the canonical SQL;
-the helper validates the closed payload, exact session identity and bounds.
-Do not turn the DDL opt-in into a general `Write`/`DDL` SQL classification bypass.
-Consume authority once, serialize the SDK lane through completion, and retain a
-native one-submission latch for the exact statement identity. Never automatically
-retry, reconnect and replay, or resubmit by request ID after possible dispatch.
-The Node SDK's internal retry behavior remains a release gate: fault-test the
-pinned execution path for DDL and keep the feature unavailable if a lost
-response can cause an unreviewed replay. The existing DML proposal describes
-the related SDK request-ID and retry concern.
+A tracked native owner continues through completion when the UI or IPC waiter
+goes away. Studio records the operation, target, outcome and retirement evidence
+in history/audit, subject to the existing query-text storage policy. A failed
+local history/audit write retains the receipt in memory and blocks normal
+shutdown until pending receipt writes succeed. Retrying persistence never
+resubmits SQL. If SQLite cannot write, this retention does **not** provide crash,
+forced-exit or power-loss durability; keep the application open and restore local
+storage before closing. Local persistence errors do not erase an acknowledged
+statement outcome.
 
-Represent terminal evidence as `succeeded`, `rejected` or `unknown` separately
-from later session/catalog observation. Preserve a known statement
-acknowledgement if draining, event delivery, local history or catalog refresh
-fails. A successful DDL acknowledgement does not independently prove what a
-later catalog observer will see; do not label it `committed` or use a later
-`ROLLBACK` as recovery. Once dispatch may have occurred, cancellation or
-disconnect may leave the outcome unknown and must never trigger replay. Any
-retry is a new user-reviewed plan after explicit state reconciliation.
+## Catalog hold and explicit reconciliation
 
-## Object identity and metadata effects
+Before dispatch, Studio establishes a catalog-specific metadata hold, invalidates
+completion, browse/inspection grants and pending plans, advances owning-tab
+revisions and blocks conflicting work on tabs sharing the session. Prior query
+results remain prior evidence rather than being presented as the DDL result.
+No automatic catalog query follows success, rejection or unknown delivery.
 
-Bind all actions to a fully qualified and losslessly parsed
-`database.schema.object` identifier. Preserve quoted spelling and case; do not
-split dots inside quoted names, normalize away case, or assemble SQL by string
-concatenation. Bind the database to the fresh observed current database and the
-schema/object to the corresponding catalog observation. A browser label or a
-matching name is not an immutable Snowflake object ID. Between observation and
-execution, another actor can rename, replace or create an object with the same
-name, and name resolution can therefore identify a different object. Plans
-cannot make that race atomic. Keep the first workflow restricted to a dedicated
-disposable schema with least-privilege ownership and no concurrent DDL actors;
-state that this operational boundary reduces exposure but does not prove
-immutable object identity. Fail closed on ambiguous object kinds, hidden or
-denied metadata, incomplete catalog results, a changed revision or observed
-dependency outside the disposable target.
+The hold clears only through the explicit DDL catalog-reconciliation command:
+coherent idle session/options observation, bounded catalog refresh, then a second
+coherent idle observation matching the catalog context. The hold revision is
+captured before waiting for the lane; an older queued refresh cannot clear a
+newer hold. Ordinary runtime/options refresh cannot clear a catalog hold. Denial,
+overflow, session drift or incomplete observation retains it. A retired session
+requires reconnecting, and an unknown statement requires external outcome
+inspection before any new reviewed mutation. Reconciliation describes current
+visibility; it cannot retroactively prove exactly-once remote execution.
 
-DDL changes catalog state, so set a durable metadata-refresh hold before
-dispatch. Revoke completion, browse, inspection and stale plan grants that
-depend on the affected schema; advance owning-tab revisions and block
-conflicting work on every tab sharing the session. Do not issue background
-catalog queries while the statement is pending or its outcome is unknown. After
-a known terminal result, keep the hold until the owner explicitly requests a
-fresh catalog refresh. A catalog readback may describe current visibility but
-cannot retroactively prove that the original DDL executed exactly once.
+## SQL budgets and billing boundary
 
-## Tests and account qualification
+These are complete successful-path SQL submission budgets for each named command,
+excluding earlier browser/catalog/column inspection and initial connection work.
+There are no hidden transaction or session-setting statements:
 
-Before enabling the feature, add focused coverage for:
+| Command | CREATE | ADD | DROP |
+| --- | ---: | ---: | ---: |
+| Preflight | 12 reads | 15 reads | 11 reads |
+| Execute an approved plan | 17 reads + 1 DDL | 20 reads + 1 DDL | 16 reads + 1 DDL |
 
-* Profile persistence and migration: new and missing `reviewedDdl` values are
-  false; DML consent does not imply DDL; OAuth and policy transitions clear it;
-  restored credentials or profile normalization cannot elevate it.
-* Grammar and identity: exact positive cases for supported CREATE, one-column
-  ADD, and DROP; rejection of all excluded forms, multiple statements,
-  unqualified/quoted-dot edge cases, parser fallback, identifier collisions,
-  wrong catalog revision and wrong object kind.
-* Approval and single use: ReadOnly denial; per-plan review under each Safe Mode;
-  exact destructive DROP confirmation; stale/revoked/expired plans; one-use
-  consume and no second SDK submission.
-* Transaction and delivery behavior: active/manual/failed/unknown transaction
-  blocks; no hidden `BEGIN`, `COMMIT`, `ROLLBACK`, `USE`, or `ALTER SESSION`;
-  DDL is never described as rollback-protected; rejection, acknowledged success,
-  response loss, cancellation, disconnect, malformed trailing data and helper
-  exit preserve truthful evidence without a retry.
-* Metadata and history: hold precedes dispatch and survives all terminal/error
-  paths; no hidden refresh SQL runs; owner refresh restores grants only against
-  a new observation; durable history keeps operation and outcome without
-  recording credentials or unrelated SQL text.
-* End-to-end UI: create, add column and deliberately drop only in disposable
-  schema fixtures, with accessible review copy, exact SQL preview, resulting
-  catalog state and prior-results labeling. Include conflicts from a second
-  actor to demonstrate the documented object-name race and safe failure path.
+Each idle sample is five reads (context, quoted-identifier policy, AUTOCOMMIT,
+abort-on-error and current transaction). Preflight takes two samples and target
+checks of 2/5/1 reads. Execute repeats those checks between two samples, submits
+one DDL, then takes a five-read terminal sample. A terminal rejection can also
+take that final sample; early failures may stop sooner. No automatic retry adds
+another mutation.
 
-Local pure, mock-helper and disposable-database tests establish grammar,
-policy, evidence, and UI behavior only. Before any real-account qualification,
-obtain explicit approval for a named non-production account, role, warehouse,
-fresh disposable database/schema, statements and cleanup scope. Verify effective
-role privileges, transaction state and the exact target before the first
-statement; stop on unexpected account, object collision, privilege mismatch or
-metadata ambiguity without escalating privileges or selecting a fallback
-target. Capture statement IDs and outcome evidence without secrets, inspect
-resulting catalog state independently, and record storage/warehouse/cloud-service
-cost observations. Exercise lost-response and cancellation cases without
-replaying mutations. Do not use a production schema or infer account approval
-from this proposal, local fixtures, previous read canaries, or a DDL opt-in.
+Explicit reconciliation costs `27 + S` reads, where `S` is the visible schema
+count: two eleven-read session/options observations and a `5 + S` catalog read.
+The schema bound is 1,000, so the maximum is 1,027 reads. Catalog output is also
+bounded at 10,000 relations and 2 MiB. This can inspect the current database, not
+just the changed table. Review account/billing approval against this complete
+budget; metadata and DDL can resume the already selected billable warehouse.
 
-This slice is only an initial table lifecycle in a disposable schema. It does
-not remove the full replacement requirements for object browsing/inspection,
-DataGrip-style table and object editors, dependencies, schema compare/diff,
-multi-object migration preview and selection, drift checks, synchronization,
-broader DDL, or authorized account acceptance. Keep those gaps visible in the
+## Local verification and remaining qualification
+
+The complete pinned helper suite passes **356/356**, with evidence at
+`.cache/verification/connection-attempts/ddl-helper-all-pinned.log`. It covers
+strict payload/identity admission, DDL acknowledgement and bounded private status
+results, definitive rejection, pre/post-ACK retirement, reentrant close and
+single-submission behavior. Actual SDK 3.4.1 loopback cases exercise HTTP,
+verified TLS and CONNECT transport with synthetic local login and preconnected
+production Helper fixtures. The unguarded SDK control demonstrates internal
+retries; guarded cases show the query guard preventing a second submission.
+
+These tests establish the pinned local path, not Snowflake account deduplication,
+remote DDL effects or normal application SSO. Helper EOF-seam tests using
+`Helper.stop()` do not qualify every framed-process EOF path. Source pins cover
+selected SDK/Axios/follow-redirects seams rather than every dependency or an
+operating-system network sandbox. See [runtime checks](snowflake-runtime.md).
+
+Before account qualification, approve the exact non-production account, role,
+warehouse, disposable target, full observer/DDL/reconciliation budget and cleanup
+scope. Stop on unexpected identity, privilege denial, collision or metadata
+ambiguity without escalating privileges or selecting a fallback target. Record
+statement IDs, statement outcomes, independent catalog evidence and cost
+observations without secrets. No local test, opt-in or previous read canary grants
+that approval. Real-account CREATE/ADD/DROP and normal-app external-browser SSO
+remain unqualified.
+
+This is a bounded table lifecycle. Object editors, dependencies, schema compare,
+multi-object migration preview/selection, drift checks, synchronization, broader
+DDL and authorized account acceptance remain open in the
 [replacement acceptance inventory](replacement-acceptance.md) and
 [DataGrip replacement scope](snowflake-datagrip-replacement.md).
-
-## Implementation seams found in current source
-
-The following is a proposed implementation plan, not implemented DDL support
-or authorization to connect to an account. Preserve the current SDK read gate
-and the PostgreSQL/MySQL DDL paths while adding this bounded workflow.
-
-* **Policy and capability:** Add independent `reviewedDdl` persistence and
-  transition handling in `domain.rs`, `drivers/snowflake.rs` and
-  `ConnectionDialog.tsx`. Add a narrow capability for these reviewed table
-  actions; keep SDK `ddlEditing` false because that flag also exposes index,
-  constraint and migration editing.
-* **Structured input and compiler:** Reuse the supported `TableObjectAction`
-  variants and `TableColumnDraft`, but wrap them in an SDK request with an
-  explicit observed database and server-held catalog/transaction revisions.
-  `TableRef` and `DatabaseObjectRef` have no database component; never pack one
-  into `schema` or split quoted identifiers on dots. A dedicated pure compiler
-  must reject unsupported variants and fields, enforce the scalar type
-  allowlist, and emit exactly one canonical, strictly admitted statement.
-* **Constrained form and execution:** Reuse `TableObjectDialog.tsx` and
-  `ReviewDialog`, with SDK entry points from `RelationBrowser.tsx` and the exact
-  owning session. Remove identity, primary-key, default, comment and arbitrary
-  type controls in SDK mode; ADD remains nullable. The existing form executes
-  generic SQL and automatically calls `refreshCatalog` after success. Its SDK
-  branch instead needs dedicated preview/prepare/execute commands and typed
-  result handling; opening generated SQL in a console must not bypass the raw
-  DDL rejection. Register contracts in `commands.rs`, `lib.rs`,
-  `bin/test-harness.rs`, the contract exporter and `ipc/command-map.ts`.
-* **Independent confirmations:** Always require per-plan approval, including
-  Silent mode. Preserve Safe Mode's connection-name confirmation and
-  Password-Gated passphrase check. `PreparedPlan.confirmationText` currently
-  represents that policy confirmation; add a separate bound and validated
-  exact-target confirmation for DROP rather than overwriting it.
-* **Composite observation grant:** A new `execution/snowflake_ddl.rs` path
-  should bind the canonical action, current persisted policy, principal/session,
-  target scope, catalog state and full idle/autocommit observation in one
-  expiring server-held grant. Browsing revokes normal transaction grants, so a
-  browse revision plus cached Studio runtime is insufficient. Existing
-  `RelationInspection.constraints` is `NotFetched`; it is not evidence that
-  constraints or dependencies are absent. Ownership, hidden metadata, unused
-  names and dependency completeness require explicit bounded qualification;
-  unknown or incomplete evidence keeps the feature unavailable. Revalidate
-  the grant and consume it once after acquiring the execution lane, while
-  retaining the documented non-atomic object-name semantics.
-* **Typed evidence and owner lifetime:** Extend the driver trait, SDK adapter,
-  process protocol and helper with a dedicated closed DDL operation and exact
-  statement acknowledgement. Reject generic execution of its private plan;
-  retain succeeded/rejected/unknown evidence separately from later observation
-  and avoid affected-row summaries. Use a tracked Studio owner task so dropped
-  waiters and graceful shutdown cannot discard retained ACK/history evidence;
-  a bounded shutdown timeout must keep the owner alive and the app open.
-* **Catalog-aware metadata resume:** Reuse the native hold and shared-session
-  pending/revision invalidation before dispatch. Add a hold kind or dedicated
-  catalog-resume command: current `session_contexts_with_refresh(..., true)`
-  clears the hold after runtime/options observation alone. A DDL hold must
-  survive that path and clear only after an explicit owner request completes
-  the bounded affected-catalog refresh and coherent observation against the
-  captured hold revision. No automatic refresh follows the DDL result.
-
-Focused regressions should cover forbidden action/form fields, quoted-dot
-identifiers, both DROP and policy confirmations, stale composite grants,
-manual/open/unknown transaction denial, second-actor drift, ACK preservation
-through cancellation/drop/shutdown, and failed catalog resume retaining the
-hold. Local fixtures do not close the account qualification or dependency
-visibility gates above.

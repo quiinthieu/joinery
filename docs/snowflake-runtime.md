@@ -4,16 +4,19 @@ The external-browser driver uses its own pinned Node runtime and locked SDK
 dependencies. Explicit application profile integration and local package/native
 qualification pass. New Snowflake profiles choose the SDK route;
 existing profiles retain OAuth/SQL API. OAuth remains read-only. The SDK also
-provides separately reviewed SQL DML and explicit transaction controls locally;
-actual account mutation effects remain unqualified. A prepared stage
+provides separately reviewed SQL DML, explicit transaction controls and generated
+CREATE TABLE / nullable ADD COLUMN / DROP TABLE locally. Actual account mutation
+effects and the normal application external-browser SSO path remain unqualified.
+A prepared stage
 alone does not establish a usable packaged workflow. See the
 [integration evidence](snowflake-sdk-integration.md) for resource packaging,
 verification commands and the remaining required account/write/transaction gates.
 
 ## Prepare and check on macOS arm64
 
-Use Node 24 or newer and the repository's pnpm version for development commands.
-The prepared runtime itself is exactly Node 24.22.2 and SDK 3.4.1. The preparation
+Use the repository's pnpm version and the pinned Node 24.22.2 for helper checks;
+the default Node 22 is incompatible with the pinned dependency path. The prepared
+runtime itself is exactly Node 24.22.2 and SDK 3.4.1. The preparation
 script supports macOS arm64 only; it never changes global Node/npm settings.
 
 Obtain the archive and checksum list from the official
@@ -78,26 +81,53 @@ These commands do not install, publish, notarize or authorize external queries.
 
 ## Protocol and driver checks
 
+The helper is npm-managed. Install its exact `package-lock.json` dependencies
+with lifecycle scripts disabled, using the verified pinned toolchain:
+
+```sh
+export PATH="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin:$PATH"
+npm --prefix snowflake-helper ci --ignore-scripts
+```
+
+Do not substitute a pnpm install in this package. pnpm 11's `--dir` handling can
+change the npm-managed dependency tree; the repository helper-test wrapper runs
+`npm --prefix snowflake-helper test` to preserve the locked npm layout.
+
 ```sh
 pnpm test:snowflake:helper
 pnpm test:snowflake:process
 ```
 
-Helper tests require the helper package's locked dependencies installed first
-with lifecycle scripts disabled. The suite separates pure/native guard and
-source-pin tests, synthetic-SDK Helper/process tests, and actual-SDK loopback
-transport. The unchanged baseline has six actual-SDK HTTP cases. The guarded
-matrix adds 49 actual-SDK HTTP/verified-TLS/CONNECT scenarios and one fixture
-network-boundary self-check; these use synthetic local login, not Snowflake SSO.
-Explicitly identified cases drive the production Helper with a preconnected
-actual SDK connection. Rust supervisor and
-adapter tests use real child processes and a synthetic SDK, with Node selected
-explicitly by the runner. They do not authenticate to Snowflake.
+The complete pinned helper suite passes **356/356**, recorded in
+`.cache/verification/connection-attempts/ddl-helper-all-pinned.log`. The suite
+separates pure/native guard and source-pin tests, synthetic-SDK Helper/process
+tests, and actual SDK 3.4.1 HTTP/verified-TLS/CONNECT loopback transport. Actual-SDK
+fixtures use synthetic local login; identified production Helper cases use a
+preconnected SDK connection. Neither path performs Snowflake external-browser
+SSO. Rust supervisor and adapter tests use real child processes and a synthetic
+SDK, with Node selected explicitly by the runner. They do not authenticate to
+Snowflake.
 
 These tests demonstrate local framing, bounded streaming, exact binding
-transport, cancellation/terminal ordering and process cleanup. They do not
-prove remote request deduplication, write outcomes, rollback or a million-row
-Snowflake workflow. Broader DML, grid editing, DDL and actual transaction effects
-remain required gaps. See the
+transport, cancellation/terminal ordering, process cleanup and guarded DDL
+submission. DDL coverage includes closed payloads, session identity, private
+bounded status results, acknowledgement before drain, definitive rejection,
+pre/post-ACK retirement, reentrant close and no second query submission. The
+unguarded SDK control retries in fault cases; guarded cases test prevention of
+that second POST. Helper EOF-seam tests that call `Helper.stop()` do not qualify
+every framed-process EOF path. Source pins cover selected SDK/Axios/
+follow-redirects seams, not all dependencies or an OS network sandbox.
+
+These checks do not prove remote request deduplication, account write outcomes,
+rollback, normal-app SSO or a million-row Snowflake workflow. The local reviewed
+DDL workflow retains acknowledgement separately from catalog visibility and
+requires explicit bounded catalog reconciliation. Failed local receipt writes
+are retained in memory and block normal shutdown; if SQLite cannot write, crash
+or forced-exit durability is unavailable. Known transient BASE TABLE targets are
+supported with a warning: zero or one day of Time Travel and no Fail-safe; recovery
+is not guaranteed or provided by Joinery. See the
+[reviewed DDL contract](snowflake-sdk-ddl-design.md) for exact SQL budgets and
+recovery limits. Broader DML, grid editing, schema/migration tools and actual
+account DDL/transaction effects remain required gates. See the
 [driver design](snowflake-driver-design.md), [license audit](snowflake-sdk-licenses.md)
 and [required acceptance inventory](snowflake-datagrip-replacement.md).

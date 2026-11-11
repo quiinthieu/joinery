@@ -1,6 +1,38 @@
 # Joinery implementation roadmap
 
-## Reviewed SQL writes (11 November 2026, local verification)
+## Reviewed table DDL (11 November 2026, local integration)
+
+The SDK external-browser route now includes a separate opt-in for generated
+CREATE TABLE, nullable ADD COLUMN and DROP TABLE. Every statement uses its own
+short-lived review and one-use authority; DROP also requires the exact fully
+qualified target name. ReadOnly and OAuth deny this route. Admission requires a
+coherent idle AUTOCOMMIT session, supported catalog traits and fresh context.
+Permanent and transient ordinary base tables are supported; transient objects
+have no Fail-safe. DDL cannot be rolled back and can race with external actors.
+This is a bounded implemented subset, not complete Snowflake DDL parity.
+
+The UI binds drafts and approval to the owning console, retains acknowledgement
+separately from metadata reconciliation, pauses automatic observers, and requires
+an explicit successful catalog/context refresh before normal metadata resumes.
+Unknown delivery retires without replay. Original typed outcome receipts survive
+a dropped caller; failed local history/audit recording blocks further DDL and
+normal shutdown until a local-only retry succeeds. Abrupt loss while SQLite cannot
+write is not claimed crash-durable. See the [DDL contract](snowflake-sdk-ddl-design.md),
+[walkthrough](migration-from-datagrip.md#reviewed-sdk-table-ddl-prepared-acceptance-walkthrough)
+and [current verification](replacement-verification.md).
+
+The earlier approved database-creation setup was consumed: SSO and initial
+observations passed, CREATE DATABASE was rejected, and no later schema/table SQL
+was dispatched. The owner now permits newly created tables in
+`SANDBOX.BILLIE_TESTING`. The [new lifecycle proposal](snowflake-existing-schema-qualification.md)
+records the complete budget and remaining runner work. A fresh exact plan and
+possible-billing approval are required before account activity; the prior setup must not be replayed. Actual
+account writes/DDL/transaction effects, normal packaged SSO, million-row account
+performance, broader DDL/grid/import/authoring workflows and hands-on acceptance
+remain required. The Goal stays active and incomplete; nothing is merged,
+published or installed.
+
+## Recorded SQL-write increment (11 November 2026, sources `eae1e81` / `fb091db`)
 
 The SDK external-browser route now implements a separately opted-in, individually
 reviewed single INSERT/UPDATE/DELETE workflow with scalar parameters, exact status
@@ -29,10 +61,9 @@ all remaining applicable DataGrip capabilities remain required gaps.
 The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
 The separate helper-only runner implements a fixed 28-SQL ledger with three
 CREATEs, permanent one-use consumption and private acknowledgement receipts.
-Its final local qualification and exact owner-private execution plan precede any
-new execution/billing request; no setup has executed. The
-[DDL design](snowflake-sdk-ddl-design.md) has a locally verified pure generator
-(11 tests), without an application execution route. A separate million-row
+Its recorded local qualification preceded the consumed account attempt described
+above. The original pure DDL generator checkpoint had 11 tests; the current
+application workflow is recorded in the section above. A separate million-row
 helper/driver/store/CSV bridge passes with a synthetic SDK; actual Snowflake
 performance and complete account workflows remain unqualified.
 The Goal remains active and incomplete; nothing is merged, published or installed.
@@ -91,14 +122,15 @@ are recorded in the verification ledger.
 Actual Snowflake million-row behavior remains unqualified.
 
 Current Joinery implements explicit local-application OAuth/SQL API and stateful
-SDK external-browser profile routes. Both restrict public SQL to reads; only SDK typed controls may use an explicitly
-selected boundary policy. SDK same-session
+SDK external-browser profile routes. OAuth restricts SQL to reads. SDK typed controls, separately opted-in bounded
+SQL DML and separately opted-in generated table DDL use their dedicated review
+paths; broader SQL/session commands remain restricted. SDK same-session
 completion is implemented and locally qualified separately. A distinct
 revision-bound relation catalog/inspection/read-only preview is now implemented
 locally; see the [browsing contract](snowflake-sdk-browsing-design.md) and
 [current qualification](replacement-verification.md#sdk-relation-browsing-10-november-2026).
-Generic editable browsing, complete object/constraint inspection, writes, DDL
-and transactions remain incomplete. Full account/session compatibility remains
+Generic editable browsing, complete object/constraint inspection, broader writes/DDL
+and complete transaction behavior remain incomplete. Full account/session compatibility remains
 unqualified. These are primary replacement blockers. Local
 PostgreSQL/MySQL safety repairs remain useful application work but do not close
 Snowflake acceptance. External account qualification needs explicit non-production

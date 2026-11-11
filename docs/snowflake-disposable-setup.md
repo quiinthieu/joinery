@@ -15,6 +15,12 @@ permanently consumed. See the
 The prior read approvals and this setup approval are consumed; they grant no
 write, DDL, transaction, interruption or further billing permission.
 
+The owner subsequently permitted creating new tables under
+`SANDBOX.BILLIE_TESTING`. The [new existing-schema qualification proposal](snowflake-existing-schema-qualification.md)
+replaces database/schema creation for the next attempt; its executable runner,
+exact plan and fresh billing approval remain pending. The original workflow below
+is retained as a historical consumed contract, not a retry instruction.
+
 Use the existing external-browser connection and its configured role and
 warehouse. Create a fresh transient database named `JOINERY_ACCEPTANCE_<RUN>`,
 where `RUN` is one newly generated 32-character uppercase hexadecimal token.

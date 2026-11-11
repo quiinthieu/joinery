@@ -9,7 +9,8 @@ Keep DataGrip available until your required workflows are accepted.
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.
 The SDK external-browser route supports reads, separately reviewed bounded SQL
-INSERT/UPDATE/DELETE, and explicit transaction controls locally. Account mutation
+INSERT/UPDATE/DELETE, generated CREATE TABLE/nullable ADD COLUMN/DROP TABLE,
+and explicit transaction controls locally. Account mutation
 effects remain unqualified. The preceding
 profile/runtime increment passed its local browser, native and package checks;
 the later browsing increment has separate [qualification evidence](replacement-verification.md#sdk-relation-browsing-10-november-2026). Existing profiles retain their OAuth/SQL API
@@ -17,7 +18,7 @@ route. SDK same-session completion is implemented and locally qualified under it
 [qualification contract](snowflake-sdk-metadata-design.md). Neither route satisfies
 the complete target. A distinct SDK relation catalog, column inspection and
 read-only preview is implemented locally; complete object/constraint inspection,
-editable browsing, broader writes, DDL, complete transactions and account qualification remain
+editable browsing, broader writes/DDL, complete transactions and account qualification remain
 open. The fixture walkthrough
 below qualifies existing paths only; keep DataGrip until the required walkthrough
 is accepted. See [SDK integration and limits](snowflake-sdk-integration.md).
@@ -34,8 +35,8 @@ Keep an existing profile ReadOnly unless deliberately evaluating boundary contro
 in an approved isolated scope. An external-browser SDK profile can select Confirm,
 Guard, Silent or Password gated; production normalizes non-ReadOnly policy to
 Password gated. Switching to OAuth resets ReadOnly. This authorizes only the
-separate buttons. SQL writes require an additional reviewed-DML opt-in; DDL and
-raw transaction statements remain blocked. The Auto-commit/Manual dropdown remains
+separate buttons. SQL writes require an additional reviewed-DML opt-in; generated
+table DDL requires a separate reviewed-DDL opt-in. Raw transaction statements remain blocked. The Auto-commit/Manual dropdown remains
 disabled for SDK sessions.
 
 After a fresh context observation, an idle console offers **Begin transaction**.
@@ -54,6 +55,53 @@ inspect the remote state before reconnecting or repeating work. No automatic
 retry or reconnect occurs. These steps are a prepared walkthrough, not account
 transaction acceptance: no transaction/write approval has been consumed for this
 increment. See the [contract and required checks](snowflake-sdk-transactions-design.md).
+
+## Reviewed SDK table DDL (prepared acceptance walkthrough)
+
+These steps require a fresh exact account plan and possible-billing approval.
+The owner permits **new test tables under `SANDBOX.BILLIE_TESTING`**; the consumed
+CREATE DATABASE setup is not reusable. No existing table should be modified or
+dropped. Keep DataGrip available for independent inspection and recovery.
+
+1. Use an External browser SSO profile with a deliberately selected writable
+   Safe Mode, current database `SANDBOX` and schema `BILLIE_TESTING`. Separately
+   enable **Allow separately reviewed CREATE TABLE, nullable ADD COLUMN, and DROP
+   TABLE**. This defaults off and is independent of reviewed SQL DML. OAuth and
+   ReadOnly cannot enable it. Use a dedicated idle AUTOCOMMIT console; the app
+   never changes AUTOCOMMIT to permit DDL.
+2. Open **Browse relations** in that console. Choose **Create table…** and the
+   fresh name from the approved plan. Enter only the approved scalar columns,
+   preserving identifier case. **Generate & review SQL** performs bounded server
+   checks; it can incur charges even before dispatch. Inspect the fully qualified
+   SQL and transient/implicit-commit warnings. Approve once using the configured
+   confirmation/passphrase. Even Silent mode requires DDL review.
+3. While pending, **Disconnect to stop write** retires local ownership. It does
+   not prove that Snowflake did not execute the statement. Never repeat a write
+   based only on a closed dialog, lost connection or missing acknowledgement.
+4. **Statement acknowledged** means Snowflake acknowledged the statement, not
+   that the catalog is reconciled. Prior results remain snapshots. Background
+   metadata stays paused. Use **Refresh completion context** explicitly; denied
+   or inconsistent reconciliation retains the hold and can be retried locally
+   by the owner. A runtime-only observation cannot release the catalog hold.
+5. Browse and inspect the newly created table. Choose **Add nullable column…**
+   for the exact approved column, review and authorize again, then explicitly
+   reconcile. For **Drop table…**, also type the full quoted target name exactly;
+   connection-name confirmation alone is insufficient. DROP uses RESTRICT and
+   can fail on dependencies. DDL is never part of rollback recovery.
+6. Confirm each new object/effect independently and check typed History after
+   application restart. A failed local history/audit write retains the original
+   receipt and blocks further DDL and normal exit until local recording works.
+   It does not promise crash durability while local storage cannot write.
+
+Only ordinary permanent/transient base tables with known supported traits are
+admitted. Temporary, dynamic, hybrid, Iceberg and immutable tables, arbitrary
+SQL, rename/type changes, defaults, keys/indexes, broader objects and migrations
+remain outside this implementation and remain required replacement gaps.
+Concurrent object replacement or temporary-name shadows can change effects;
+reviewed names do not establish immutable remote object identity. Transient
+objects have no Fail-safe and at most one day of Time Travel. Treat unknown
+delivery as unknown: inspect remote state before reconnecting or planning another
+action. Local synthetic/browser checks are not account or owner acceptance.
 
 ## Reviewed SDK SQL writes (prepared acceptance walkthrough)
 

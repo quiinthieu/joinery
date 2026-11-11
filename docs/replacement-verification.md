@@ -8,6 +8,80 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Integrated reviewed table DDL (11 November 2026)
+
+Implementation commits: `2864282` (helper transport), `93d5e26` (native core,
+adapter, typed contracts and enrollment), and `00ca4af` (UI, native guards and
+browser coverage), all on `feat/datagrip-replacement`, unmerged and unpublished.
+
+The SDK external-browser route now connects generated CREATE TABLE, nullable ADD
+COLUMN and DROP TABLE through typed native IPC, separate profile consent, exact
+SQL/target review, one-use adapter grants and bounded private helper status. Broad
+`ddlEditing` remains false: these three actions have a separate capability. This
+is local integration evidence; no new Snowflake account SQL has been dispatched.
+The owner permits new tables under `SANDBOX.BILLIE_TESTING`; the prior database
+setup approval is consumed. A fresh reviewed executable plan and billing approval
+are still required. Normal-app SSO and owner acceptance remain open.
+
+Reproduced and repaired defects include close before DDL acknowledgement being
+misclassified, reentrant close dispatching after the request was settled, adapter
+lock-order inconsistency, stale context after catalog revalidation, cross-console
+form ownership, stale result notices, and lost terminal evidence when a dropped
+waiter coincides with failed local persistence. A retained receipt now retries only
+SQLite audit/history writes and blocks normal exit/further DDL until recording
+succeeds. No SQL is retried. Abrupt loss while SQLite cannot write is not claimed
+durable. A denied catalog refresh is recoverable by explicit coherent observation,
+catalog reload and final observation; partial or stale reconciliation retains the
+hold. Later transaction/DML holds cannot downgrade it to runtime-only refresh.
+
+| Check | Result and evidence scope |
+| --- | --- |
+| Combined application validation | Final `pnpm validate` after the browser repair, exit 0: **679 frontend / 456 standard Rust**, **129 ignored** fixture tests; formatting, production frontend build, desktop check and strict all-target/all-feature Clippy pass. `ddl-validate-post-browser.log`; earlier passing run retained as `ddl-validate-final.log` |
+| Frontend focused | **181/181**, dialog/profile/store tests. `ddl-ui-unit-final.log`; final combined application validation is recorded below |
+| Complete pinned helper | **356/356**, `pnpm test:snowflake:helper`, Node 24.22.2 with the checked-in npm lockfile. `ddl-helper-all-pinned.log` |
+| Actual pinned SDK DDL | **33/33** across HTTP, trusted TLS and CONNECT proxy; full actual-SDK guard run **179/179**. `ddl-helper-sdk.log`, `ddl-helper-sdk-full.log`. Loopback, preconnected identity seam; no SSO/account effects claimed |
+| Adapter focused | **43/43**, then driver regressions **143/143**. `ddl-adapter-focused.log`, `ddl-adapter-shared-regression.log`; grant/policy/generation/expiry/catalog/context/cancel/ACK preservation |
+| Studio DDL ownership | **13/13**, `ddl-studio-unit-receipts-final.log`; includes dropped waiter plus history/audit/both failures, blocked shutdown and local retry without another SQL call |
+| Production-helper Studio fixtures | **5/5** pass together on final source in 97.84 seconds, `ddl-studio-helper-final-all.log`. Synthetic SDK with actual framed helper; includes lost ACK, final observer denial, dropped caller and after-ACK disconnect/shutdown. Earlier denied-catalog retry failure was repaired and rerun; its initial log remains `ddl-studio-helper.log` |
+| Browser workflows | **14/14** in 55.8 seconds, `ddl-browser-rerun.log`: CREATE/nullable ADD/DROP, reviewed DML, typed boundaries, relation browsing, schema selection and session observations. New DDL cases exercise exact target confirmation, pending disconnect, two 31-second quiet windows, denied reconciliation retaining the hold and explicit successful retry. Real UI with intercepted synthetic RPCs; no SSO/account effects claimed |
+| Actual disposable PostgreSQL regression | **43/43**, `JOINERY_TEST_PORT=56432 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres -- --ignored --test-threads=1`. Fresh owned Compose project `joinery-ddl-20261111-0948`; real rollback/commit, schema DDL, cancellation, exact values, paging/export/import and conflict checks. `ddl-postgres-final.log`; this does not qualify Snowflake. Owned container, volume and network removed afterward (`ddl-postgres-cleanup.log`); browser servers also stopped |
+| Independent review | Helper, adapter and Studio reviews; retained-receipt finding fixed and re-reviewed. Final bounded UI/native enrollment review found no material issue. Bounded Tier 2 graph traces plus changed-source reads, best-effort coverage with no recorded issues on the reviewed paths; final generation `2026-11-11T10:16:17Z` |
+
+Logs above are under `.cache/verification/connection-attempts/`. The first aggregate
+helper invocation used pnpm 11 inside the npm-managed helper, which replaced its
+dependency layout and caused failures (`ddl-helper-all.log`). Restoring the
+checked-in `package-lock.json` using offline `npm ci --ignore-scripts` and changing
+the root helper test wrapper to `npm --prefix snowflake-helper test` produced the
+356-case passing run. No failing run is counted as a pass. Initial combined
+validation found formatting and one missing fixture `primary` field; both were
+corrected before the final validation run. Strict Clippy also found a complex
+new return type; a named type alias resolved it without changing behavior. Native
+command enrollment checks found the five new commands absent from the Tauri build
+manifest/window ACL; both lists were updated and native guard coverage was added.
+
+Reproduce focused checks with pinned Node/Rust in PATH and `JOINERY_TEST_NODE`
+pointing to that Node executable:
+
+```sh
+pnpm test:snowflake:helper
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib ddl_studio -- --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib sdk_studio_ddl -- --nocapture
+```
+
+The first browser run passed 10/14 and reproduced an enabled Browse relations
+button while catalog reconciliation was held. Rust already rejected that path;
+the UI now disables/hides browsing until the explicit refresh succeeds. The same
+run found an older session fixture expecting disabled generic transaction buttons
+that the current capability UI correctly omits; it now asserts absence and zero
+both generic/typed transaction requests. `ddl-browser-final.log` retains that
+initial result. Fresh browser and packaging results are recorded separately.
+
+The [migration walkthrough](migration-from-datagrip.md#reviewed-sdk-table-ddl-prepared-acceptance-walkthrough)
+records owner acceptance steps, including explicit catalog reconciliation. Complete
+Snowflake DDL, grid/import, broader SQL/session behavior, actual cloud cancellation,
+normal packaged restarts and million-row account workflows remain unqualified.
+The private project hub is not published because this Goal forbids publishing.
+
 ### Approved disposable setup attempt (11 November 2026)
 
 The owner explicitly approved one helper-direct disposable setup attempt for
@@ -52,10 +126,12 @@ Both permanent consumption markers (`setup-consumed-plan-*` and
 `setup-consumed-run-*`), the private journal and the private result remain under
 `.cache/snowflake-qualification`; no profile, object names, session/query IDs,
 tokens or raw diagnostics are committed. **Approval and the generated run token
-are permanently consumed; no retry was attempted.** Creating an isolated
-disposable target requires either a role with `CREATE DATABASE` privilege or an
-administrator-provisioned disposable database/schema and a new exact plan and
-approval. Actual account writes, DDL and transaction effects remain unqualified.
+are permanently consumed; no retry was attempted.** The owner subsequently
+permitted new tables in `SANDBOX.BILLIE_TESTING`; the
+[new existing-schema proposal](snowflake-existing-schema-qualification.md) avoids
+database/schema creation. Its executable runner, exact plan and fresh approval
+remain to be completed. Actual account writes, DDL and transaction effects remain
+unqualified.
 
 ### Actual-SDK million-row gzip chunk streaming (11 November 2026)
 
@@ -96,8 +172,8 @@ At the owner's request, prepared a separate helper-only setup workflow. It has
 exactly 28 fixed SQL statements, including three CREATEs for one fresh transient
 database, its SCRATCH schema and empty ROW_CHECKS table. There is no arbitrary
 SQL, DML, transaction command, existing-table read, role/grant/warehouse change,
-retry or cleanup SQL. No account activity has run; prior read approvals are
-consumed and grant no setup authority. See the
+retry or cleanup SQL. At this recorded offline checkpoint no setup had run. The later consumed owner
+attempt and failure are recorded above; prior approvals grant no retry authority. See the
 [exact ledger, charges and execution gate](snowflake-disposable-setup.md).
 
 | Check | Result and evidence scope |

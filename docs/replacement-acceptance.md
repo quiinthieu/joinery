@@ -1,6 +1,38 @@
 # Daily DataGrip replacement acceptance
 
-## Reviewed SQL writes (11 November 2026, local verification)
+## Reviewed table DDL (11 November 2026, local integration)
+
+The SDK external-browser route now includes a separate opt-in for generated
+CREATE TABLE, nullable ADD COLUMN and DROP TABLE. Every statement uses its own
+short-lived review and one-use authority; DROP also requires the exact fully
+qualified target name. ReadOnly and OAuth deny this route. Admission requires a
+coherent idle AUTOCOMMIT session, supported catalog traits and fresh context.
+Permanent and transient ordinary base tables are supported; transient objects
+have no Fail-safe. DDL cannot be rolled back and can race with external actors.
+This is a bounded implemented subset, not complete Snowflake DDL parity.
+
+The UI binds drafts and approval to the owning console, retains acknowledgement
+separately from metadata reconciliation, pauses automatic observers, and requires
+an explicit successful catalog/context refresh before normal metadata resumes.
+Unknown delivery retires without replay. Original typed outcome receipts survive
+a dropped caller; failed local history/audit recording blocks further DDL and
+normal shutdown until a local-only retry succeeds. Abrupt loss while SQLite cannot
+write is not claimed crash-durable. See the [DDL contract](snowflake-sdk-ddl-design.md),
+[walkthrough](migration-from-datagrip.md#reviewed-sdk-table-ddl-prepared-acceptance-walkthrough)
+and [current verification](replacement-verification.md).
+
+The earlier approved database-creation setup was consumed: SSO and initial
+observations passed, CREATE DATABASE was rejected, and no later schema/table SQL
+was dispatched. The owner now permits newly created tables in
+`SANDBOX.BILLIE_TESTING`. The [new lifecycle proposal](snowflake-existing-schema-qualification.md)
+records the complete budget and remaining runner work. A fresh exact plan and
+possible-billing approval are required before account activity; the prior setup must not be replayed. Actual
+account writes/DDL/transaction effects, normal packaged SSO, million-row account
+performance, broader DDL/grid/import/authoring workflows and hands-on acceptance
+remain required. The Goal stays active and incomplete; nothing is merged,
+published or installed.
+
+## Recorded SQL-write increment (11 November 2026, sources `eae1e81` / `fb091db`)
 
 The SDK external-browser route now implements a separately opted-in, individually
 reviewed single INSERT/UPDATE/DELETE workflow with scalar parameters, exact status
@@ -28,10 +60,9 @@ all remaining applicable DataGrip capabilities remain required gaps.
 
 The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
 A separate helper-only runner now implements a fixed 28-SQL ledger with three
-CREATEs and durable one-use receipts. Local qualification and the exact private
-plan must pass before any execution/billing approval request; none has executed.
-The [DDL design](snowflake-sdk-ddl-design.md) has a pure syntax foundation but no
-application execution route. Actual account setup and mutation effects remain
+CREATEs and durable one-use receipts. The one approved account attempt is recorded above and in the ledger.
+The original pure DDL syntax foundation has since gained the separately reviewed
+application execution route described above. Actual account setup and mutation effects remain
 required gates.
 The Goal remains active and incomplete; nothing is merged, published or installed.
 
@@ -175,18 +206,18 @@ Each applicable engine/authentication pair needs its own evidence. Existing
 historical evidence is linked in the engineering matrix; this run must record
 fresh outcomes separately.
 
-| Workflow | Observable acceptance | Initial state / remaining evidence |
+| Workflow | Observable acceptance | Current implementation / remaining evidence |
 |---|---|---|
 | Connect securely | Existing Snowflake externalbrowser SSO; inspect identity/context; reject TLS/auth failures; reconnect deliberately without replay | SDK profile/lifecycle integration implemented with focused local evidence; actual externalbrowser account/native acceptance remains open |
 | Navigate metadata | Find table/view/routine, inspect columns, keys, DDL and dependencies; refresh after external DDL; handle denied privileges | Snowflake partial catalog pilot; required object explorer/DDL/dependency coverage and daily role qualification incomplete |
 | Write SQL | Complete quoted names in active context; format without changing literals/binds; show Unicode diagnostic at correct statement | Bounded implementation; unsupported semantic forms remain explicit |
-| Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | Read-only SDK route integrated; same-session completion implemented with separate local qualification. Browsing, authoritative inspection, reviewed writes/DDL, transactions and remote outcomes remain open. Other-engine fixtures do not qualify Snowflake |
+| Execute SQL | Snowflake statement/selection/reviewed batch, typed parameters, writes and session commands produce expected outcomes; cancellation/interruption and reconnect are truthful | SDK reads, bounded completion/browsing, separately reviewed single SQL DML, typed boundaries and generated table DDL are integrated locally. Complete inspection, broader SQL/DDL/session behavior and actual account outcomes remain unqualified. Other-engine fixtures do not qualify Snowflake |
 | Inspect and move data | Browse and export complete results up to 1,000,000 rows with bounded memory; filter/sort/page, copy exact values; cancelled export clearly incomplete | Opt-in temporary result storage passes actual PostgreSQL million-row paging/export and browser acceptance. Native preference/restart checks pass. Actual Snowflake types/transport/size, wide-result export and independent copy/import limits remain open; see [large results](large-results.md) |
 | Edit safely | Review SQL/bindings; edit/insert/delete disposable rows; stale/replaced targets reject atomically; ineligible results stay read-only | PostgreSQL original relation identity and MySQL/MariaDB retained guards implemented. Final source checks pass 581 frontend / 193 Rust, 124 actual fixtures, 27/27 strict scenarios and 137/137 browser workflows, including exact CSV ownership and TLS-over-SSH. Snowflake grid/CSV editing is still disabled and requires separate identity proof. Normal packaged restart/credentials and owner applicability/acceptance remain open |
 | Transactions | Snowflake consoles demonstrate shared versus isolated ownership; rollback leaves original rows; commit survives deliberate reconnect; DDL implicit commits and interrupted acknowledgements are truthful | SDK explicit controls and rollback recovery locally qualified on `929ae06`; see the verification ledger. Actual Snowflake data effects, mode changes, DML/DDL interaction and owner acceptance remain open. Other-engine tests cannot close this gate |
 | Reuse work | Save/reopen scripts and history according to opt-in policy; draft/profile/preferences survive backend/app restart without autoexecute/reconnect | Abrupt backend restart and two isolated actual native close/reopen pairs pass, including pending-save flush and real PostgreSQL rollback; normal packaged/credential evaluation remains open |
 | Investigate performance | Explain appropriate engine query; actual execution requires review; cancel safely; compare compatible captures without rerunning SQL | Bounded plan implementation; Snowflake live qualification open |
-| Change schema | Review generated migration, reject stale target snapshot, demonstrate Snowflake implicit commits and refresh metadata | Existing other-engine workflow does not qualify Snowflake; required Snowflake DDL/schema diff/object coverage incomplete |
+| Change schema | Review generated migration, reject stale target snapshot, demonstrate Snowflake implicit commits and refresh metadata | SDK reviewed CREATE TABLE, nullable ADD COLUMN and DROP TABLE are integrated locally with catalog holds and retained outcomes. Actual account DDL, schema diff/migration, broader objects and concurrent actor behavior remain unqualified; other-engine fixtures cannot close these gates |
 | Everyday access | Complete daily workflow by keyboard; focus visible; dialogs traversable; required assistive technology usable | Keyboard tests exist; canvas accessibility/hands-on evaluation open |
 | Run locally | Build normal app, verify bundle, launch using isolated app data, quit/relaunch; preserve profiles/preferences; prove supported update/install path | Normal local bundle/signature and hidden native smoke pass; packaged restart/install/signing/platform qualification open |
 
