@@ -44,8 +44,28 @@ mod lifecycle;
         reason = "Internal qualification integration; no account runner entry point"
     )
 )]
+#[path = "snowflake_table_qualification_controls.rs"]
+mod controls;
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Internal qualification integration; no account runner entry point"
+    )
+)]
 #[path = "snowflake_table_qualification_journal.rs"]
 mod journal;
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Internal qualification integration; no account runner entry point"
+    )
+)]
+#[path = "snowflake_table_qualification_sequence.rs"]
+mod sequence;
 
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
