@@ -8,6 +8,199 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Consumed runner admission and final evidence (12 November 2026)
+
+The retained internal runner now accepts the non-cloneable consumed envelope by
+value. Its guard compares exact canonical Plan bytes/digest and frozen seven-field
+profile with the owning policy. The same guard wraps physical admissions and
+metadata/runtime publication. A full filesystem revalidation precedes helper
+launch/authentication and each physical request; synchronous callbacks perform
+only memory/time checks. No filesystem scan occurs under process or policy locks.
+
+Authentication is bounded to 120 seconds; each complete guard wait, including
+single-slot acquisition, scan and durable admission, is bounded to 30 seconds.
+The existing process writer retains its stricter three-second deadline. The
+15-minute monotonic execution deadline and wall window remain checked at
+publication. Cancellation, timeout or an unpolled dropped check revokes the
+attempt. A retained blocking worker owns the sole scan permit until its actual
+OS work returns; late completion cannot admit SQL. An overdue worker may be
+reported unsettled rather than represented as cancelled.
+
+Review found that a final integrity error retained only in `RunnerReceipt`
+could disappear if its caller dropped. The corrected runner records exactly one
+`executionEnvelopeFinal` journal event after cleanup, containing the original
+integrity result and scanner settlement, before final evidence persistence.
+Storage status is separate from the retained policy failure. Original helper/
+local reports and typed operation completions, including successful CREATE
+acknowledgements, remain unchanged. Interrupted/failed final writes reserve the
+original event and cannot replace it with success. This is filesystem consistency
+evidence, not a simulated power-loss durability guarantee.
+
+Independent bounded source review is clean, including the final-record repair.
+Tier2 graph coverage reports matching metadata/no recorded issue for the changed
+paths; direct source reads cover the complete deltas. The process driver's known
+partial parse at lines 1314–1318 was read directly. Graph metadata is best-effort
+and does not prove exhaustive correctness.
+
+Root-owned optimized Guard/consumed-runner/module tests, explicit packaged-runtime
+inventory timing and final `pnpm validate` pass. Release mode
+measures real deadlines rather than inferring them from earlier debug timings.
+New tests use actual envelope consumption and the running Rust test executable;
+source/runtime/compiler/profile inputs are synthetic. Runner tests exercise the
+actual Studio/Node/helper route with a synthetic SDK. They cover preauth drift,
+post-CREATE drift, dropped waiters and stalled authentication, not account effects.
+
+Initial optimized checks are retained under
+`.cache/verification/connection-attempts/`:
+
+- `consumed-runner-guard-release.log`: exit **0**, **8 passed**, 1.86 seconds.
+- `consumed-runner-studio-release.log`: exit **101**, **2 passed / 2 failed**,
+  20.93 seconds. Preauth drift and actual stalled-authentication cleanup pass;
+  post-CREATE drift and dropped-waiter tests exit before their phase-three pause,
+  reporting only a closed oneshot. These are failed checks, not successful
+  CREATE coverage.
+- `consumed-runner-create-diagnostic-release.log`: exit **101**, **0 passed /
+  1 failed**, 2.39 seconds, after adding test-only early-exit receipt diagnostics.
+  Both startup SQL statements succeed, then a queued result-stream credit is
+  rejected after the query terminal has already arrived. The original phase-one
+  failure is `Physical Snowflake control does not match its qualification owner`;
+  final integrity failure and cleanup are retained durably. The slower awaited
+  admission exposes a terminal/control race. The reviewed correction is now
+  frozen; final corrected checks are recorded below. No production deadline
+  or control payload grammar was relaxed.
+- `consumed-runner-final-policy-release.log` and
+  `consumed-runner-final-policy-cancel-release.log`: exit **0**, **3 + 1 passed**,
+  0.03/0.01 seconds. Final fsync, original ACK/first-error retention, unsettled
+  scans, duplicate rejection, poisoned journal and interrupted write pass.
+- `consumed-runner-packaged-runtime-release.log`: exit **0**, **1 passed**, 3.28
+  seconds, running the existing optimized test binary directly while the next
+  diagnostic test source was being prepared. Actual unchanged packaged runtime:
+  **15,110 entries / 202,538,012 bytes**, SHA-256
+  `4f768186a648e14233d18d31941b96c20818176c2c075c8fdecb5f146df4e699`;
+  capture **2,185 ms**, verify **1,081 ms**. This measures runtime inventory only,
+  not the complete envelope, real account latency or worst-case deadline margin.
+  No Node/helper/SSO is executed by this test.
+
+The correction introduces an explicit inactive-only reservation when the exact
+query completes while its queued credit/discard awaits admission. It requires
+the same generation, logical identity, query ticket, physical target and phase;
+the later control ticket establishes completed-target provenance, not a new
+global monotonic-ticket rule. It consumes the candidate once without advancing
+SQL, creating an active query or metadata debt. Pending local completion blocks
+phase advancement. A helper terminal is rejected while retaining its original
+report; only the exact local inactive receipt with no actual wire ID can settle
+the reservation. Process already suppresses the stale write after admission.
+
+Three sequence regression functions cover credit/discard completion and nine
+identity/grammar/replay negatives. Actual helper adapter tests cover both the
+existing after-durable-admission ordering and a new deterministic pause before
+inner admission. The new pause models the guard await; it does not itself scan
+the envelope. These cases check the exact 14-SQL prefix, skipped candidate,
+original query receipt and durable settlement. Independent bounded review finds
+no material issue in the frozen correction.
+
+Corrected frozen-source focused checks exit **0**:
+
+- `consumed-runner-inactive-sequence-release.log`: **13 passed**, 0.02 seconds,
+  including the three new sequence functions.
+- `consumed-runner-inactive-adapter-release.log`: **2 passed**, 0.62 seconds,
+  with both deterministic actual-helper orderings.
+- `consumed-runner-studio-final-release.log`: **4 passed**, 20.94 seconds,
+  including the two CREATE cases that failed before the correction. These use
+  actual Studio/helper processes with a synthetic SDK and consumed synthetic
+  artifacts; they do not establish account effects.
+
+The corrected complete qualification module exits **0**, **200 passed / 0 failed /
+1 ignored**, **160.50 seconds**, normal three-thread execution,
+`consumed-runner-qualification-final-release.log`. It includes all 179 preceding
+cases and 21 new default cases. The default ignore is the separately executed
+packaged-runtime inventory benchmark. Focused counts overlap the module and must
+not be added to it.
+
+The first full validation, `consumed-runner-validate.log`, exits **101** at strict
+Clippy after passing **679 frontend / 467 standard Rust tests**, with **129
+fixture cases ignored** across 21 Rust summaries. Clippy rejects a new test's
+literal `Err(...).unwrap_err()` assertion at policy-tests line 407. The correction
+names the original `AppError`, clones it into the same error result and compares
+the durable JSON against that named value directly. It changes no production
+code or assertion coverage. The complete optimized qualification rerun exits
+**0**, **200 passed / 0 failed / 1 ignored**, **162.32 seconds**, in
+`consumed-runner-qualification-post-clippy-release.log`, on the final source
+hashes below. Formatting, contracts,
+TypeScript, production frontend build and Cargo check had passed before Clippy;
+the first full validation is not reported as successful.
+
+The final `pnpm validate` exits **0**, `consumed-runner-validate-final.log`, on the
+same frozen source: **679 frontend / 467 standard Rust tests pass**, with **129
+fixture cases ignored** across 21 Rust result summaries. Formatting, contracts,
+TypeScript, production frontend build, Cargo fmt/check and strict all-target/
+all-feature Clippy pass. Existing ts-rs attribute/frontend chunk warnings remain
+nonfatal. Optimized Cargo checks also retain the existing nonfatal rust-objcopy
+stripping warning for missing libLLVM; it does not prevent test execution. The
+ignored database/native/account cases and earlier browser/package checks retain
+their separate revision/scope. No changed UI workflow or external database is
+claimed by these qualification-only checks.
+
+The code is committed locally as `f80c8c5`. All 12 committed source blobs match
+the frozen hashes below. No source changes follow the final checks.
+
+Documentation checks: the complete migration guide and all newly added sections
+pass Prettier; `git diff --check` passes. Whole-file formatting of the five other
+documents also fails on their unchanged HEAD versions, so historical formatting
+is preserved. Scoped results are in `consumed-runner-docs-scoped-format.log`;
+the initial whole-document failure is `consumed-runner-docs-format-initial.log`.
+
+```sh
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification::guard::tests -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib sequence_local_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib owning_adapter_real_helper_stale_credit_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_studio_runner_consumed_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification -- --test-threads=3
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_table_qualification::inventory::tests::inventory_packaged_runtime_complete_content_capture_and_verify -- --ignored --exact --nocapture
+pnpm validate
+```
+
+The fixed account executable/private manifest/approval/output lifecycle is still
+absent. Construction of Studio/runtime/profile exclusively from the bound roots
+remains to be implemented and verified, as does complete runtime/envelope latency
+against the existing process limit. A fresh concrete `SANDBOX.BILLIE_TESTING`
+plan and one-attempt billing approval remain necessary before account activity.
+No private connection, SSO, billable SQL, normal UI/package change, installation,
+push, publication or merge occurs in this increment. Live effects, packaged SSO,
+million-row performance, all applicable DataGrip workflows and owner acceptance
+remain gates. The Goal remains active/incomplete.
+
+The next performance acceptance must use actual repository fixed scopes, current
+optimized executable, pinned compiler and unchanged full packaged runtime for
+the offline Envelope benchmark. Separately, S=1/32 routes must inventory the exact
+full runtime copies actually used by Studio, with synthetic SDK/verifier changes
+finished before capture. Current fixture logs/controls live inside its helper
+tree; they must move to separate private mutable output rather than be excluded
+from inventory. Runtime copies with synthetic replacements are not genuine SDK
+or sealed account-factory evidence. Record every complete scan/admission duration,
+including policy fsync, and consumption-to-final-persistence time without changing
+deadlines. Even excluding controls and other work, the 900-second limit allows
+less than about 2.29 seconds per SQL for S=1 (393 SQL) or 1.48 seconds for S=32
+(610 SQL); actual allowed averages are lower. No complete-envelope or real-content
+route performance pass is claimed yet.
+
+Frozen reviewed/tested Rust source SHA-256 values (committed as `f80c8c5`):
+
+| Source under `src-tauri/src/drivers/`                   | SHA-256                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------ |
+| `snowflake_table_qualification.rs`                      | `8dad18a728072babfcf1db1ec1069998149c3512385a29e611fdbe5d38c6a5ea` |
+| `snowflake_table_qualification_envelope.rs`             | `f7caf792bb76b9053ae01adf812719b8058d0302486ee3dabfe03348a0fdffdd` |
+| `snowflake_table_qualification_envelope_tests.rs`       | `b6d302f24b438e6586a9d079d2c911bfcab53be75f9e8f4ee63cc4d937871e56` |
+| `snowflake_table_qualification_policy.rs`               | `1ec3973d65ee688d11bf72e81d260b76c2cf7df64087942409d1d576327d263a` |
+| `snowflake_table_qualification_policy_tests.rs`         | `0534048d900741ea698776ce72c0858467f3bd45c8101992e07f340eaf5a0650` |
+| `snowflake_table_qualification_policy_adapter_tests.rs` | `d4b8472697431b293989065ae2a444bd3e7e16b8dc30e17bd2971e884421bc74` |
+| `snowflake_table_qualification_runner.rs`               | `bfc595c68e0c6fc4d8ba497ac9f74d66ee06c5e80dba774b5f0acbcd3d8df30f` |
+| `snowflake_table_qualification_runner_tests.rs`         | `8bd326a68347969c7888431c5829693554d9be1f826d1c20f5ddabc0c7f61d78` |
+| `snowflake_table_qualification_sequence.rs`             | `67a47915406e1ec1fc539727a58ba3680c185295054e858e3de25ee6b65900c8` |
+| `snowflake_table_qualification_sequence_tests.rs`       | `4fe89fb99a6e3ccc28c08cb8e95b969d69d37b45cd4348a0e97fae7c37e3f4b8` |
+| `snowflake_table_qualification_guard.rs`                | `1bf8495b45af757d087f392f9ac3b29c38e85fcfeab84fc6879ffc06f2511042` |
+| `snowflake_table_qualification_guard_tests.rs`          | `8275b124e12791c267dcd24270d65ca1729bad023fac853e3ede0f0e6e84c464` |
+
 ### Offline artifact binding and one-use consumption (12 November 2026)
 
 This harness-only increment adds an offline envelope for the existing closed

@@ -1,5 +1,56 @@
 # Joinery implementation roadmap
 
+## Consumed runner guard (12 November 2026, local verification)
+
+The retained runner now accepts the consumed envelope by value and checks exact
+Plan/profile identity against its owning policy. Full artifact checks precede
+authentication and every physical admission; synchronous publication callbacks
+check only retained failure, wall time and the monotonic deadline. Authentication
+is bounded to 120 seconds and the guard to 30 seconds, preserving the process
+writer's stricter three-second admission limit. A timed-out or dropped scanner
+retains its blocking-work permit until the OS read actually returns, while the
+attempt is immediately revoked.
+
+Final integrity and scanner settlement are journaled once, independently of
+original operation outcomes. Review found and resolved a receipt-only final
+failure that could disappear with a dropped waiter. New regressions cover this
+case, pre-authentication drift, drift after CREATE acknowledgement, stalled
+authentication and interrupted/failed final evidence storage. Source review is
+clean; the final optimized module passes **200 tests / 1 default ignore**. The
+reproduced terminal/control race is corrected with both actual-helper orderings
+covered. Full validation passes **679 frontend / 467 standard Rust tests**, with
+**129 fixture cases ignored**, plus formatting/build/check/strict Clippy. See the
+[verification ledger](replacement-verification.md) for final results.
+Code is committed locally as `f80c8c5`; nothing is pushed or published.
+
+Next, in dependency order:
+
+1. Measure complete optimized Envelope capture/restore/consume/revalidation with
+   actual fixed repository scopes, executable/compiler and unchanged full packaged
+   runtime, using a synthetic private profile. Then run S=1/32 consumed routes on
+   full runtime copies actually used by Studio, with synthetic SDK changes frozen
+   before capture and all mutable logs/controls outside the inventory. Record
+   complete admission count/total/maximum and consumption-to-persistence time;
+   preserve the three-second admission and 15-minute workflow limits. Runtime-only
+   timing and the current minimal synthetic runtime do not prove this gate.
+2. Add a dedicated fixed binary with offline emit/verify and approved execute
+   modes; bind its actual build recipe rather than the HTTP fixture binary.
+3. Use one permanent consumption-store root and fresh exclusive per-attempt
+   private output/state directories. A different output directory must not allow
+   RUN reuse. Add a closed 16 MiB envelope reader; keep smaller profile/approval
+   bounds and do not generate approval in the executable.
+4. Construct Studio/runtime/profile exclusively from the consumed bound roots
+   through one private factory. Retain execution, private resources and terminal
+   output ownership together; journal originals remain independent of reporting.
+5. Verify offline zero-launch behavior, reuse/unsafe-file rejection, failed launch,
+   dropped waiters and terminal-output failures through that same entry/factory.
+6. Emit/review the concrete fresh-table plan for `SANDBOX.BILLIE_TESTING` and
+   obtain fresh execution/billing approval.
+
+Live account effects, packaged SSO, million-row behavior, all applicable DataGrip
+workflows and owner acceptance remain required. The Goal remains active and
+incomplete; this increment changes no normal application or package workflow.
+
 ## Offline execution envelope (12 November 2026)
 
 The local envelope now binds the exact closed Plan, fixed Rust/helper/build

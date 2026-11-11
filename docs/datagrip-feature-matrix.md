@@ -1,5 +1,20 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Consumed runner guard (12 November 2026, local verification)
+
+| Capability                        | Implemented locally                                                                                                                            | Verification/remaining gate                                                                                                                                     |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Consumed envelope placement       | Same owning runner takes the non-cloneable capability; exact Plan/profile match; full checks before authentication and each physical admission | Independent source review clean; 200 module tests pass, 1 default ignore; fixed account entry and construction exclusively from bound roots remain open         |
+| Deadlines and interrupted scans   | 120-second authentication/30-second guard bounds; memory/time publication checks; sticky revocation with retained blocking-worker ownership    | Existing stricter three-second process admission limit preserved; full optimized runtime latency remains to be measured                                         |
+| Final durable integrity evidence  | Exactly one final integrity/settlement journal event, separate from original ACKs and operation completions                                    | Dropped-waiter, interruption and storage-failure regressions pass; no power-loss durability claim                                                               |
+| Terminal/control ordering         | Completed query permits only exact local inactive credit/discard settlement; no helper write or SQL advancement                                | Both actual-helper orderings and identity/grammar/replay negatives pass; synthetic SDK, no account effects                                                      |
+| Account and replacement readiness | No new account or product UI capability qualified here                                                                                         | Fresh concrete plan/billing approval, live effects, packaged SSO, million-row results, remaining applicable DataGrip workflows and hands-on acceptance required |
+
+Full validation passes **679 frontend / 467 standard Rust tests**, with **129
+fixture cases ignored**, plus formatting/build/check/strict Clippy. Code is local
+commit `f80c8c5`. See the [verification ledger](replacement-verification.md). Earlier entries below
+retain their recorded scope; the Goal remains active and incomplete.
+
 ## Offline execution identity and one-use markers (12 November 2026)
 
 | Capability | Implemented locally | Verification/remaining gate |

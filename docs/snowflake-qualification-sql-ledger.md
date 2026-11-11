@@ -7,6 +7,40 @@ connect to Snowflake, enable an account runner or authorize account activity.
 The complete replacement Goal and all unqualified DataGrip workflows remain
 required.
 
+## Consumed runner guard (12 November 2026)
+
+`Runner::consumed` takes the consumed envelope by value and compares its exact
+canonical Plan/digest and seven-field profile with the owning policy. The same
+guard is attached to transport and metadata. Full revalidation runs before
+authentication and each physical admission, outside process/policy locks. Final
+publication callbacks perform only retained-failure/time checks; they cannot
+scan files or reenter filesystem callbacks while publication locks are held.
+
+The authentication wait is at most 120 seconds; a complete guard scan/admission
+wait is at most 30 seconds. Existing stricter process limits, including the
+three-second writer admission wait, still apply. Timeout, cancellation and even
+an unpolled dropped check revoke the attempt. One blocking scanner owns the
+permit until the actual OS work returns; its late completion cannot admit SQL.
+Settlement is reported separately and may be false.
+
+Cleanup records exactly one `executionEnvelopeFinal` event containing
+`revalidation: {ok, error?}` and `scannerSettled`, before final evidence flush.
+Storage success is separate from admission failure. Failed or interrupted writes
+reserve the original event, prevent replacement and preserve the first error.
+Original helper/local reports and operation completions, including known ACKs,
+are forwarded and recorded independently after guard failure. This prevents a
+dropped caller from losing the final integrity observation while retaining only
+successful phase records. No phase advances or SQL retries occur during cleanup.
+
+Source review is clean; the final optimized module passes 200 tests with one
+default ignore. The corrected terminal/control race reserves only exact local
+inactive credit/discard completion, consumes its candidate once and blocks phase
+advancement until settlement; it cannot authorize a helper write. See the
+[verification ledger](replacement-verification.md). A fixed account executable,
+exclusive private-file handling and construction exclusively from bound roots
+remain required. These components supply no account approval or verified live
+effects; full optimized scan latency must fit the stricter process deadline.
+
 ## Offline execution envelope (12 November 2026)
 
 The private inventory/envelope/consumption modules add byte identity and local

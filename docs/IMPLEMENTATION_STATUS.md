@@ -1,5 +1,34 @@
 # Implementation and release status
 
+## Consumed runner guard (12 November 2026, local verification)
+
+The internal runner now consumes the sealed envelope, compares exact Plan/profile
+identity, and performs full artifact checks before authentication and each
+physical admission. Publication callbacks remain memory/time-only. Existing
+process limits are preserved alongside the 120-second authentication and
+30-second guard bounds. Timed-out/dropped blocking scans retain ownership until
+they actually finish and cannot later admit SQL.
+
+Original operation outcomes remain separate from the final integrity/settlement
+record. The latter is now journaled once before final evidence persistence, even
+when the caller drops. A reproduced terminal/control race now settles only the
+exact inactive credit/discard locally, without an extra helper write or SQL
+advancement. Independent review has no outstanding material findings. The final
+optimized module passes **200 tests / 1 default ignore**. Full application
+validation passes **679 frontend / 467 standard Rust tests**, with **129 fixture
+cases ignored**, plus formatting/build/check/strict Clippy. These are internal qualification changes, not
+proof of account or daily application behavior. Code is committed locally as
+`f80c8c5`. See the
+[verification ledger](replacement-verification.md).
+
+The fixed executable/private-file lifecycle and construction from the exact bound
+runtime/profile roots remain open. Full optimized scan latency must fit the
+stricter three-second process admission limit. A fresh reviewed plan and billing
+approval must precede any new account attempt under `SANDBOX.BILLIE_TESTING`.
+Live writes/DDL/transactions, packaged SSO, 1M-row account behavior, all applicable
+DataGrip workflows and owner acceptance remain required. No account activity,
+package build, installation, push, merge or publication occurs in this increment.
+
 ## Offline execution envelope (12 November 2026, local only)
 
 The new private qualification modules bind complete content inventories to the

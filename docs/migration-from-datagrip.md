@@ -41,10 +41,13 @@ preserves the original generated table across processes. These are local test
 results, with no account execution authority. The retained 32-phase core is now
 shared by the synthetic route/fault fixtures, with typed durable incomplete-read
 evidence and a conservative qualification-only 32 MiB inbound body cap. Normal
-million-row queries do not use that cap. Its constructor remains test-only;
-the source/binary/full-runtime/profile-bound executable plan, one-use consumption,
-fixed account entry and fresh possible-billing approval remain prerequisites to
-the account walkthrough.
+million-row queries do not use that cap. Offline source/binary/full-runtime/profile
+binding and one-use consumption are implemented. The internal runner now accepts
+the consumed envelope and guards authentication/admission; its latest verification
+state is in the ledger. There is still no account command: the fixed executable,
+exclusive private-file lifecycle and construction exclusively from bound roots
+remain open. Complete optimized scan latency, a fresh concrete plan and fresh
+possible-billing approval remain prerequisites to the account walkthrough.
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 
