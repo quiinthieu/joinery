@@ -19,33 +19,29 @@ finalizing-operation race is now repaired: inactive credit/discard waits for tha
 exact operation's original public completion. Four deterministic regressions and
 the original journal-failure case pass; independent review has no material finding.
 The complete repaired-source qualification module passes all 122 tests; 131
-process/adapter cases and strict Rust checks also pass. Both full application runs
-fail the previously recorded PostgreSQL startup timeouts, although the target
-passes unchanged serially. That diagnosis and the earlier generic helper-start
-cause remain open.
+process/adapter cases and strict Rust checks also pass. The two later full runs
+fail the previously recorded PostgreSQL startup timeouts. A timing reproduction
+now attributes those failures to synchronous native trust enumeration with TLS
+disabled; the bounded correction passes the normal parallel protocol target and
+45 real PostgreSQL/SSH/TLS fixture tests. Two new full-route tests also pass all
+14 actual helper-child-exit scenarios, retaining unknown versus acknowledged
+mutation outcomes without replay. Current full validation passes 679 frontend/
+467 standard Rust tests and strict checks. The earlier generic Snowflake helper-
+start cause remains unconfirmed; exact evidence is in the ledger.
+The complete combined-source qualification module passes all 124 tests in normal
+three-thread execution, including both new child-exit loops and existing faults.
 
 Remaining work, in dependency order:
 
-1. Resolve the recurrent full-validation PostgreSQL startup timeout without
-   relaxing deadlines or skipping checks. Source review identifies unnecessary
-   synchronous native-root loading with TLS disabled before connection, but
-   elapsed attribution is unproven. Capture stage timing before selecting a
-   bounded repair; preserve explicit CA validation and enabled-TLS trust behavior.
-   All 122 qualification tests now pass, including full-route rejection,
-   callback-loss, cancellation, caller-drop and post-ACK journal failure; original
-   outcomes remain retained without later phase SQL, replay, recovery SQL or
-   cleanup DROP.
-2. Add actual helper wire interruption/EOF and remaining census/context drift
-   cases. SDK callback errors after simulated effects do not prove wire EOF.
-   The runner's test-owned SDK wrapper can intercept the selected exact mutation's
-   successful callback, record a synthetic-effect marker, then exit the child
-   before forwarding it. For retained-ACK coverage, forward that callback unchanged
-   and exit on the first subsequent parent-originated observer SQL callback; an
-   immediate exit after forwarding leaves an ACK-versus-reaper race. Exercise all
-   seven mutation phases, exact SQL prefixes, original unknown/acknowledged typed
-   results and local retirement reports, with no replay, later phase or cleanup
-   DROP. Require actual child exit/reap and local settlement; the child waiter can
-   win before the stdout reader observes EOF. No production hook is needed.
+1. Close remaining full-route census/context drift cases: first census overflow
+   and original wire order; same-count schema-set changes before CREATE and during
+   catalog refresh; pre-pin role/warehouse mismatch; and later ordered search-path
+   or secondary-role mismatch. Require exact SQL stopping prefixes and original
+   completions, retaining prior CREATE ACKs where applicable. Existing seven-
+   mutation observer failures cover later role drift, not these cases.
+2. Keep actual helper child-exit evidence distinct from SDK callback errors and
+   account interruption. The 14 local child-exit scenarios pass; complete the
+   integrated fault suite after drift coverage without relaxing deadlines.
 3. Bind one non-resumable executable attempt to reviewed source, binary, runtime
    and private profile; consume a one-use approval envelope. The current harness
    accepts no account/profile/SQL/target selector.

@@ -4,16 +4,19 @@
 
 | Capability | Implemented locally | Verification/remaining gate |
 | --- | --- | --- |
-| Complete fixed lifecycle route | All 32 actual Studio/adapter/helper phases, same-call reconciliation, observed transaction authority, local Arrow readback | S=1/32 pass in the final 122-test module with exact 393/610 SQL; no real SDK/account behavior claim |
+| Complete fixed lifecycle route | All 32 actual Studio/adapter/helper phases, same-call reconciliation, observed transaction authority, local Arrow readback | S=1/32 pass in the current 124-test module with exact 393/610 SQL; no real SDK/account behavior claim |
 | Original completion recording | Typed result/error retained before validation, fsynced before advancement; ACKs survive later observation failures | All seven mutation rejection/callback-loss/observer-failure cases and dropped-waiter case pass; full-route post-ACK storage-failure check passes after a reproduced finalization race is repaired; no power-loss durability claim |
-| Finalizing result controls | Inactive credit/discard waits for the exact operation's original public completion while terminal observation finishes | Four deterministic cases, all 122 qualification tests, 131 process/adapter tests and strict Rust checks pass; both full application runs fail the previously recorded PostgreSQL startup timeouts |
+| Finalizing result controls | Inactive credit/discard waits for the exact operation's original public completion while terminal observation finishes | Four deterministic cases, all 122 qualification tests and 131 process/adapter tests pass on the preceding increment; current full validation passes 679 frontend/467 standard Rust tests and strict checks |
+| Actual helper-process interruption | Full-route child exit before mutation callback or during the first subsequent observation | Two tests cover all seven mutations each and pass in the complete 124-test module; original unknown versus acknowledged-success outcomes, exact SQL prefix, no replay/cleanup DROP and local reap/settlement pass; remote Snowflake effects remain unqualified |
+| PostgreSQL disabled-TLS startup | Native trust enumeration skipped only when TLS is disabled; explicit CA validation preserved | Timing reproduces the original two failures; repaired normal parallel target passes 9/1 ignored, and 43 real PostgreSQL plus 2 SSH/TLS fixtures pass |
 | Read cancellation ownership | Collector stays alive until original `Finished`; overflow cannot become a complete capture | Clean EOF and SQLSTATE-57014 stalled-read cases pass in focused reruns; overflow regressions pass; helper-start failures in expanded parallel run remain recorded |
 | Independent fixture SQL oracle | All nine exact SQL strings and generated target checked separately from supplied Plan dictionary | Ten Node tests pass, including wrong targets, key swaps, altered SQL/binds and stalled-read release |
 
 See the [verification ledger](replacement-verification.md) for final results.
-Real wire interruption, source/runtime/binary/private-profile binding and a one-use
-account entry remain incomplete. Actual Snowflake effects, packaged SSO, million-row
-account performance and every applicable DataGrip workflow remain acceptance gates.
+Full-route census/context drift, source/runtime/binary/private-profile binding
+and a one-use account entry remain incomplete. Actual Snowflake effects and
+account interruption, packaged SSO, million-row account performance and every
+applicable DataGrip workflow remain acceptance gates.
 This is internal qualification infrastructure; the Goal remains incomplete.
 Earlier sections retain their original scope.
 

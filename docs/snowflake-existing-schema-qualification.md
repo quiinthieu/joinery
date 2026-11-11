@@ -27,10 +27,14 @@ is now composed in a synthetic-only harness; initial S=1/32 success runs match
 reruns pass success/cancellation. The post-ACK storage-failure case initially
 closes early; a separately reproduced finalization race is repaired and that
 case now passes, as do all 122 qualification and 131 process/adapter tests. Strict
-Rust checks pass separately; both full application runs fail the previously
-recorded PostgreSQL startup timeouts. See the verification
-ledger for failed attempts and the four deterministic repair regressions.
-Final fault verification, real wire interruption,
+Rust checks pass separately; both earlier full application runs fail the recorded
+PostgreSQL startup timeouts. A subsequent timing reproduction and bounded repair
+pass the normal parallel protocol target and 45 real PostgreSQL/SSH/TLS fixtures.
+Two new tests pass all 14 actual helper-child-exit scenarios across the seven
+mutations, before and after ACK, preserving original outcomes without SQL replay.
+The complete combined-source qualification module passes all 124 tests.
+See the verification ledger for current full validation and failed attempts.
+Remaining full-route census/context drift and final integrated fault verification,
 source/runtime/private connection binding and the account entry remain incomplete.
 No normal desktop command exposes this module.
 See the

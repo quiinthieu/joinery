@@ -74,8 +74,13 @@ S=1/32, with exact 393/610 SQL vectors. Pre-repair full application validation
 passes; the first expanded qualification run passes 119/122. Focused reruns pass success and
 cancellation. The post-ACK storage-failure case passes after a reproduced
 finalization race is repaired, and all 122 qualification and 131 process/adapter
-tests pass. Strict Rust checks pass separately; both full application runs fail
-the previously recorded PostgreSQL startup timeouts.
+tests pass. Both earlier full application runs fail the recorded PostgreSQL
+startup timeouts. A subsequent timing reproduction and repair pass the normal
+parallel protocol target and 45 real PostgreSQL/SSH/TLS fixtures. Two additional
+tests pass all 14 actual helper-child-exit scenarios across the seven mutations,
+before and after ACK, preserving original outcomes without replay. The complete
+combined-source qualification module passes all 124 tests. Current full validation
+is recorded in the verification ledger.
 Earlier startup failures remain recorded in the ledger. No
 account SDK or account qualification is involved.
 
@@ -173,8 +178,10 @@ completion, and full production-route outcome qualification remains required.
 
 The policy is attached in local fixtures, including complete synthetic 32-phase
 Studio/adapter/helper composition. Original operation completions are durably
-recorded before validation, separately from validated phase evidence. Final fault
-verification and real wire interruption remain open. Source/runtime/binary/private-
+recorded before validation, separately from validated phase evidence. Actual
+helper child exit passes before/after ACK across all seven mutations; remaining
+census/context drift and final integrated fault verification are open. Account
+interruption remains unqualified. Source/runtime/binary/private-
 profile binding, one-use approval consumption and an account entry are still
 unimplemented. Preserve early ACKs, actual same-call results and collector evidence
 through that integration; local filesystem tests do not prove power-loss durability.

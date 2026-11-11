@@ -15,12 +15,15 @@ retain ordered events through `Finished` and decode retained Arrow rows locally.
 Cancellation waits for the original terminal event; bounded capture overflow
 fails the harness rather than presenting a truncated capture as complete.
 
-Current checks pass 122 qualification tests, 131 process/adapter tests and
-separate formatting/Cargo check/strict Clippy. Both repaired-source full validation
-attempts stop at the two previously recorded PostgreSQL startup-cleanup timeouts;
-679 frontend and the 418-test main Rust library pass in each failed run. The
-unchanged PostgreSQL target passes serially. Its cause remains unproven; the
-pre-repair full application pass is historical evidence in the ledger.
+The preceding increment passes 122 qualification and 131 process/adapter tests.
+Its two failed full-validation runs remain recorded. A new timing reproduction
+attributes those PostgreSQL startup failures to synchronous macOS native trust
+enumeration with TLS disabled. The driver now skips that unnecessary work while
+preserving explicit CA validation and verified TLS. The normal parallel protocol
+target passes 9 tests, and isolated real fixtures pass 43 PostgreSQL plus 2 SSH/TLS
+tests. Current full validation passes 679 frontend and 467 standard Rust tests,
+formatting, contracts, TypeScript, production build, Cargo check and strict Clippy.
+The 129 ignored fixture cases remain separate from this application check.
 The first expanded qualification run passes 119 of 122 tests; three actual-helper
 cases fail at startup. Focused reruns expose a separate real result-credit race:
 an original response undergoing terminal observation appears inactive before its
@@ -29,13 +32,19 @@ on inactive credit/discard, preserving callback ordering and observer rejection.
 Four deterministic actual-helper regressions pass after reproducing the defect;
 the original post-ACK journal-failure case now reaches its fault and passes too.
 Independent review has no material finding. The repaired-source qualification
-module passes all 122 tests in normal three-thread execution. The recurrent
-PostgreSQL timeout diagnosis remains open; the earlier generic helper-start
-cause also remains unconfirmed.
+module passes all 122 tests in normal three-thread execution. The earlier generic
+helper-start cause remains unconfirmed. Two additional tests now cover all seven
+mutations each with actual helper child exit before and after acknowledgement.
+All 14 scenarios preserve original outcomes, exact SQL prefixes and local
+settlement without replay or cleanup DROP; no remote Snowflake effect is claimed.
+The complete combined-source module passes all 124 tests in normal three-thread
+execution, including both census-extreme success routes and all existing fault
+loops. Independent source/evidence review has no remaining material finding.
 See the [verification ledger](replacement-verification.md) for final results,
 reproducible commands and scope. This advances internal qualification only.
-Real wire interruption, the one-use source/runtime/binary/private-profile envelope
-and the fixed account entry remain open before a fresh executable account plan.
+Remaining full-route census/context drift, the one-use source/runtime/binary/
+private-profile envelope and the fixed account entry remain open before a fresh
+executable account plan. Account interruption is not qualified by local child exit.
 Live writes/DDL/transactions under `SANDBOX.BILLIE_TESTING`, normal packaged SSO,
 million-row account performance, all applicable DataGrip workflows and owner
 acceptance remain required. The Goal is active and incomplete. Nothing is pushed,

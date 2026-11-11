@@ -8,6 +8,136 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Combined startup and child-exit validation (11 November 2026)
+
+**`pnpm validate` exits 0** on the combined source,
+`startup-and-child-exit-validate.log`: **679 frontend / 467 standard Rust tests
+pass**, with **129 fixtures ignored**. Formatting, generated contracts,
+TypeScript, production frontend build, Cargo check and strict all-target/all-
+feature Clippy pass. The normal parallel PostgreSQL protocol target passes in
+this full run, including both original startup-cleanup cases. Existing ts-rs
+attribute and frontend chunk-size warnings remain nonfatal. This is current
+source evidence; the preceding failed full runs remain recorded below.
+
+The PostgreSQL correction is committed locally as `6a5c65e`, and the helper-exit
+tests as `3d74855`. Frozen reviewed SHA-256: `postgres.rs`
+`4766c12c45655b01b59aefb2387fd27ff7da6911ea2e8c73f96872d72ed8998c`;
+`postgres_protocol.rs`
+`19bf543fc64b52f05c1a8aefdbb39f30a77809254e8b21829b613e3ed4f6405b`;
+`snowflake_table_qualification_runner_tests.rs`
+`eb284910a2e7d3631a30988dd7f9ab5fd4cbb52658620e7214b3789553ca96e3`.
+The source bytes are unchanged after these checks; commit metadata does not
+change the tested source. Earlier runner hashes below describe their recorded
+preceding increment.
+
+The isolated PostgreSQL/SSH/TLS and actual-helper interruption checks below are
+separate scopes. No desktop UI end-to-end workflow, installed application,
+package, real Snowflake SSO, account SQL, the user's private credentials or billing
+is exercised in this increment. The Goal remains active/incomplete; packaged
+Snowflake daily workflows, million-row account behavior, all applicable DataGrip capabilities and owner
+acceptance remain gates.
+
+The complete combined-source Snowflake qualification module subsequently exits
+**0**, **124/124 passed**, **281.16 seconds**, normal three-thread execution,
+`qualification-with-actual-child-exit-all.log`. This includes all 122 preceding
+cases and the two new seven-mutation child-exit loops: both complete census-
+extreme success routes, cancellation, definitive rejection, SDK callback loss,
+observer failure, dropped waiter, post-ACK storage failure and offline policy/
+wire/lifecycle validators. Counts overlap the focused tests below. No application
+or test source changed after full validation or while running this module.
+
+```sh
+pnpm validate
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+```
+
+### PostgreSQL startup timing and disabled TLS (11 November 2026)
+
+The two startup-cleanup failures below are reproduced with temporary, fixed-stage
+timing probes, without changing deadlines or scheduling. The normal parallel
+PostgreSQL protocol target exits **101**, **6 passed / 2 failed / 1 ignored**, in
+3.79 seconds, `postgres-startup-stage-diagnostic.log`. Native-root enumeration
+takes approximately **3.745 / 3.770 seconds** in the two failing calls. Both peer
+timelines stop at listener-ready/accept-wait; neither connection is accepted
+before the unchanged three-second dispatch deadline expires. This attributes
+these reproduced failures to synchronous native trust loading with TLS disabled;
+it does not explain the separate earlier Snowflake helper-start failures.
+
+The driver now enumerates native roots only for `VerifyFull`. Explicit CA-file
+bounded reading, PEM validation and root insertion remain outside that condition.
+TLS configuration, authentication and startup task ownership are unchanged. The
+temporary driver prints are removed. The existing socket-cleanup regressions
+retain bounded peer-stage diagnostics; a new actual-open regression rejects empty
+and malformed explicit CA files under both TLS modes before any connection.
+
+The repaired normal parallel target exits **0**, **9 passed / 1 ignored**, in
+4.18 seconds, `postgres-startup-repaired-protocol.log`. This includes both original
+startup cancellation/drop tests and the new CA-validation case. The latter does
+not prove a valid TLS handshake or count native-loader calls. Independent bounded
+review finds no material issue. Tier 2 generation `2026-11-11T16:25:18Z` reports
+matching metadata/no recorded gap for both changed files; exact source/diffs are
+also reviewed. Heuristic cross-domain graph call edges are discarded.
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --test postgres_protocol -- --nocapture
+```
+
+Logs are under `.cache/verification/connection-attempts/`. The earlier full
+validation failures remain historical failed runs, not erased or reclassified.
+
+The isolated real-database run passes **43 PostgreSQL tests** in **12.38 seconds**
+and **2 SSH integration tests** in **4.62 seconds**, exit **0**,
+`postgres-startup-real-fixtures.log`. The latter exercise real queries/cancellation
+through the bastion and a trusted fixture TLS connection with original-hostname
+verification, including wrong-hostname rejection. The other four non-ignored SSH
+tests are filtered by this explicit fixture run. This qualifies the changed
+PostgreSQL behavior locally, not Snowflake or every TLS deployment.
+
+```sh
+JOINERY_POSTGRES_PORT=55439 docker compose -p joinery-pg-startup-20261111 up -d --wait postgres
+JOINERY_TEST_PORT=55439 cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --test postgres --test ssh -- --ignored --test-threads=1
+JOINERY_POSTGRES_PORT=55439 docker compose -p joinery-pg-startup-20261111 down -v
+```
+
+The new project used synthetic fixture data and a previously unused loopback
+port. Its container, volume and network are removed after testing. The two
+unrelated running PostgreSQL containers are preserved and checked afterward.
+
+### Actual helper child exit in the full lifecycle (11 November 2026)
+
+Two new synthetic-SDK tests pass, **2/2** in **134.94 seconds**,
+`qualification-actual-child-exit.log`. Each covers all seven mutation phases
+(CREATE, ADD, two INSERTs, UPDATE, DELETE and DROP): **14 scenarios** total.
+The generated test-owned SDK wrapper exits its actual Node helper process after
+the synthetic effect, either before delivering the mutation callback or during
+the first subsequent parent-originated observation callback. The latter causally
+establishes that the parent consumed the preceding mutation ACK. Production code
+and the standalone SDK fixture are unchanged by this test increment.
+
+The pre-ACK cases retain the original unknown typed mutation outcome, no mutation
+ACK, and the actual retirement report. The post-ACK cases retain the original
+successful mutation/report/SDK request/query IDs and the later observation
+retirement; a connection failure does not rewrite that success. Every case
+compares the exact SQL-ledger prefix, a single simulated effect/exit marker,
+original operation completion and journal records. No replay, later phase or
+cleanup DROP is admitted. Local settlement includes all transport tasks, child
+reap and removal of the owned private runtime root. Both stdout EOF and child
+wait normalize to the same retirement cause; the test does not require a
+particular stdout-task disposition.
+
+```sh
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_studio_runner_child_exit_ -- --test-threads=2
+```
+
+Independent bounded review has no material finding. Tier 2 generation
+`2026-11-11T16:25:18Z` reports matching runner/SDK metadata with no recorded gap;
+the process partial range 1314–1318 and actual retirement/reaper/reader source
+are inspected directly. These tests establish actual local child-process
+interruption with simulated Snowflake effects. They do not establish an actual
+Snowflake request, remote effect, billing or remote exactly-once execution.
+Remaining full-route census/context drift, one-use source/runtime/binary/private
+profile binding and the executable account entry remain open.
+
 ### Full Studio qualification composition (11 November 2026)
 
 The synthetic-only owner now runs the full 32-phase lifecycle through real Studio
