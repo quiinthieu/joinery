@@ -388,9 +388,69 @@ impl OfflineHarness {
             include_str!("../../tests/support/snowflake_table_qualification_sdk.mjs"),
         )
         .unwrap();
-        let options = json!({"schemaCount":schema_count,"tableName":plan.table(),"statements":statements,"fault":fault});
+        // Child exit belongs only to this generated SDK wrapper. It is not an
+        // SDK callback error, transport mock, or production runtime capability.
+        let child_exit = match fault["kind"].as_str() {
+            Some("childExitBeforeAck" | "childExitAfterAck") => {
+                let statement = fault["statement"].as_str().unwrap();
+                assert!(
+                    [
+                        "Create",
+                        "Add",
+                        "Drop",
+                        "RollbackInsert",
+                        "CommittedInsert",
+                        "Update",
+                        "Delete"
+                    ]
+                    .contains(&statement)
+                );
+                json!({"statement":statement,"afterAck":fault["kind"] == "childExitAfterAck"})
+            }
+            _ => Value::Null,
+        };
+        let sdk_fault = if child_exit.is_null() {
+            fault
+        } else {
+            Value::Null
+        };
+        let options = json!({"schemaCount":schema_count,"tableName":plan.table(),"statements":statements,"fault":sdk_fault});
         let wrapper = format!(
-            "import {{makeSdk}} from '../../lifecycle-sdk.mjs';\nimport {{appendFileSync}} from 'node:fs';\nconst options={options};\nexport default makeSdk({{...options,log:sql=>appendFileSync(new URL('../../queries',import.meta.url),JSON.stringify(sql)+'\\n')}});\n"
+            r#"import {{makeSdk}} from '../../lifecycle-sdk.mjs';
+import {{appendFileSync}} from 'node:fs';
+const options={options};
+const childExit={child_exit};
+const append=(name,value)=>appendFileSync(new URL('../../'+name,import.meta.url),JSON.stringify(value)+'\n');
+const sdk=makeSdk({{...options,log:sql=>append('queries',sql)}});
+if (childExit !== null) {{
+  const create=sdk.createConnection.bind(sdk);
+  sdk.createConnection=profile=>{{
+    const connection=create(profile);
+    const execute=connection.execute.bind(connection);
+    let armed=false;
+    connection.execute=request=>execute({{...request,complete:(error,statement)=>{{
+      if (!error && request.sqlText === options.statements[childExit.statement]) {{
+        append('child-exit-effects',{{statement:childExit.statement,sql:request.sqlText,
+          sdkRequestId:statement.getRequestId(),queryId:statement.getQueryId()}});
+        if (!childExit.afterAck) {{
+          append('child-exit-events',{{afterAck:false,observerSql:null,pid:process.pid}});
+          process.exit(0);
+        }}
+        armed=true;
+      }} else if (!error && armed) {{
+        // A new parent-originated observer request proves the preceding helper
+        // terminal/ACK was consumed. Immediate exit after forwarding complete
+        // would instead leave an ACK-vs-reaper race.
+        append('child-exit-events',{{afterAck:true,observerSql:request.sqlText,pid:process.pid}});
+        process.exit(0);
+      }}
+      request.complete(error,statement);
+    }}}});
+    return connection;
+  }};
+}}
+export default sdk;
+"#
         );
         fs::write(
             fixture
@@ -1081,6 +1141,200 @@ async fn qualification_studio_runner_definitive_rejections_stop_all_seven_mutati
 async fn qualification_studio_runner_sdk_callback_loss_stops_all_seven_mutations() {
     // SDK callback errors after fixture effects are not helper wire EOF tests.
     mutation_failures("loseMutationAck").await;
+}
+
+async fn mutation_child_exits(after_ack: bool) {
+    for (name, id, phase) in [
+        ("Create", StatementId::Create, 3),
+        ("Add", StatementId::Add, 9),
+        ("RollbackInsert", StatementId::RollbackInsert, 15),
+        ("CommittedInsert", StatementId::CommittedInsert, 20),
+        ("Update", StatementId::Update, 23),
+        ("Delete", StatementId::Delete, 25),
+        ("Drop", StatementId::Drop, 30),
+    ] {
+        let kind = if after_ack {
+            "childExitAfterAck"
+        } else {
+            "childExitBeforeAck"
+        };
+        let receipt = start(1, json!({"kind":kind,"statement":name}))
+            .await
+            .unwrap();
+        let completion = assert_stopped_at(&receipt, phase);
+        assert!(receipt.persisted.is_err());
+        let ledger = receipt
+            .harness
+            .plan
+            .expand_physical_ledger(&SchemaCensus::freeze(&[SCHEMA.into()]).unwrap())
+            .unwrap();
+        let source = receipt.harness.plan.statement(id).source_sql();
+        let primary = ledger
+            .entries()
+            .iter()
+            .position(|entry| entry.phase() == phase && entry.sql() == source)
+            .unwrap();
+        let last = primary + usize::from(after_ack);
+        if after_ack {
+            assert_eq!(ledger.entries()[last].phase(), phase);
+            assert!(ledger.entries()[last].kind().is_read());
+        }
+        assert_eq!(
+            receipt.queries,
+            ledger.entries()[..=last]
+                .iter()
+                .map(|entry| entry.sql().to_owned())
+                .collect::<Vec<_>>(),
+            "unexpected SQL prefix: {kind}/{name}"
+        );
+        // The prefix equality prohibits every retry and later phase. In
+        // particular, shutdown must never issue a compensating cleanup DROP.
+        assert_eq!(
+            receipt
+                .queries
+                .iter()
+                .filter(|sql| sql.as_str() == source)
+                .count(),
+            1
+        );
+        assert_eq!(
+            receipt
+                .queries
+                .iter()
+                .filter(|sql| sql.starts_with("DROP TABLE "))
+                .count(),
+            usize::from(id == StatementId::Drop)
+        );
+
+        let read_markers = |file: &str| {
+            fs::read_to_string(receipt.harness.fixture.controls.join(file))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let effects = read_markers("child-exit-effects");
+        assert_eq!(
+            effects.len(),
+            1,
+            "missing/duplicate simulated effect: {kind}/{name}"
+        );
+        assert_eq!(effects[0]["statement"], name);
+        assert_eq!(effects[0]["sql"], source);
+        assert!(
+            effects[0]["sdkRequestId"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty())
+        );
+        assert!(
+            effects[0]["queryId"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty())
+        );
+        let exits = read_markers("child-exit-events");
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0]["afterAck"], after_ack);
+        assert!(exits[0]["pid"].as_u64().is_some_and(|pid| pid > 0));
+        if after_ack {
+            assert_eq!(exits[0]["observerSql"], ledger.entries()[last].sql());
+        } else {
+            assert!(exits[0]["observerSql"].is_null());
+        }
+
+        // Preserve the actual typed result, not a manufactured summary of the
+        // simulated effect. Before callback delivery the result must be unknown.
+        assert_eq!(completion["status"], "returned");
+        assert_eq!(receipt.outputs.len(), usize::from(phase));
+        let original = receipt.outputs.last().unwrap().evidence().record().unwrap();
+        assert_eq!(completion["original"], original);
+        assert_eq!(
+            original["value"]["statementOutcome"],
+            if after_ack { "succeeded" } else { "unknown" }
+        );
+        assert_eq!(original["value"]["retired"], true);
+        assert_eq!(
+            original["value"]["error"]["code"],
+            if after_ack {
+                "connectionClosed"
+            } else {
+                "outcomeUnknown"
+            }
+        );
+        let reports = receipt
+            .journal
+            .iter()
+            .filter(|record| {
+                record["event"]["admission"]["kind"]["sql"]["phase"] == phase
+                    && record["event"]["admission"]["kind"]["sql"]["sql"] == source
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reports.len(),
+            1,
+            "missing/duplicate original mutation report: {kind}/{name}"
+        );
+        let event = &reports[0]["event"];
+        let report = &event["report"];
+        assert!(event["wireId"].as_str().is_some_and(|v| !v.is_empty()));
+        if after_ack {
+            assert_eq!(report["ok"], true);
+            assert_eq!(report["certainty"], "StatementSucceeded");
+            assert!(report["retirement"].is_null());
+            let ack_key = if matches!(
+                id,
+                StatementId::Create | StatementId::Add | StatementId::Drop
+            ) {
+                "ddlAcknowledged"
+            } else {
+                "dmlAcknowledged"
+            };
+            let ack = &report[ack_key]["statement"];
+            assert_eq!(ack["sdkRequestId"], effects[0]["sdkRequestId"]);
+            assert_eq!(ack["queryId"], effects[0]["queryId"]);
+            assert_eq!(report["statements"].as_array().unwrap().len(), 1);
+            assert_eq!(&report["statements"][0], ack);
+        } else {
+            assert_eq!(event["origin"]["kind"], "retirement");
+            assert_eq!(report["ok"], false);
+            assert_eq!(report["certainty"], "OutcomeUnknown");
+            assert_eq!(report["errorCode"], "outcomeUnknown");
+            assert_eq!(report["retirement"], "Eof");
+            assert!(report["ddlAcknowledged"].is_null());
+            assert!(report["dmlAcknowledged"].is_null());
+        }
+        if after_ack {
+            let observer_reports = receipt
+                .journal
+                .iter()
+                .filter(|record| {
+                    record["event"]["admission"]["kind"]["sql"]["phase"] == phase
+                        && record["event"]["admission"]["kind"]["sql"]["sql"]
+                            == ledger.entries()[last].sql()
+                        && record["event"]["origin"]["kind"] == "retirement"
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                observer_reports.len(),
+                1,
+                "original observer retirement absent: {name}"
+            );
+            assert_eq!(observer_reports[0]["event"]["report"]["retirement"], "Eof");
+            assert_eq!(observer_reports[0]["event"]["report"]["ok"], false);
+        }
+        // assert_stopped_at already requires shutdown, all transport tasks and
+        // child reap, and deletion of the exact private runtime root. Whether
+        // stdout or child.wait observed the exit first is deliberately immaterial.
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_child_exit_before_ack_preserves_unknown_for_all_mutations() {
+    mutation_child_exits(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_child_exit_after_ack_preserves_success_for_all_mutations() {
+    mutation_child_exits(true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
