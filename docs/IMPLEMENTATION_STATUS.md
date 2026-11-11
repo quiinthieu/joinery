@@ -10,6 +10,17 @@ written and synced. Cancellation permanently stops advancement; final local
 persistence can drain original records without replaying SQL or journal events.
 This is internal qualification infrastructure with no desktop/account entry point.
 
+Studio reconciliation now has a harness-only bridge returning its original
+options and catalog from the same call. The ordinary refresh still returns
+options only; context/catalog request order, hold and failure behavior are
+preserved. Focused recording-driver coverage verifies the returned identities
+and exactly two context calls plus one catalog call. Complete actual-helper
+32-phase composition remains open; this bridge adds no account qualification.
+The bridge passes 15 focused tests and independent review; full validation passes
+679 frontend / 466 standard Rust tests, with 129 fixtures ignored. An initial
+PostgreSQL startup timeout and unchanged passing reruns remain documented in the
+verification ledger; their cause is unresolved.
+
 Local completion observation also retains original reports for queued cancellation,
 queued close, inactive controls and retirement. Observers run outside process
 locks, and settlement includes their publication. Candidate request IDs remain

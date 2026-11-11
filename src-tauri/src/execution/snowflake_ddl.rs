@@ -443,6 +443,28 @@ impl Studio {
         &self,
         session_id: &str,
     ) -> AppResult<SessionContextOptions> {
+        #[cfg(all(unix, feature = "test-harness"))]
+        let reconciled = self
+            .refresh_snowflake_ddl_metadata_qualification(session_id)
+            .await;
+        #[cfg(not(all(unix, feature = "test-harness")))]
+        let reconciled = self.reconcile_snowflake_ddl_metadata(session_id).await;
+        reconciled.map(|(options, _catalog)| options)
+    }
+
+    /// Preserve both original results from the same bounded reconciliation.
+    #[cfg(all(unix, feature = "test-harness"))]
+    pub(crate) async fn refresh_snowflake_ddl_metadata_qualification(
+        &self,
+        session_id: &str,
+    ) -> AppResult<(SessionContextOptions, BrowseCatalog)> {
+        self.reconcile_snowflake_ddl_metadata(session_id).await
+    }
+
+    async fn reconcile_snowflake_ddl_metadata(
+        &self,
+        session_id: &str,
+    ) -> AppResult<(SessionContextOptions, BrowseCatalog)> {
         let session = self.session(session_id)?;
         let revision = session.metadata_gate.lock().revision.clone();
         let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
@@ -515,7 +537,7 @@ impl Studio {
             gate.check(Some(&revision), true)?;
             gate.held = false;
             gate.catalog_required = false;
-            Ok(options)
+            Ok((options, catalog))
         }
         .await;
         if reconciled.is_err() {

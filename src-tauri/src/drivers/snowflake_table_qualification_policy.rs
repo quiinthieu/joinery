@@ -1,7 +1,8 @@
 //! Owning harness-only admission and phase barriers. No account/profile entry,
 //! approval envelope, resume path, or production qualification claim lives here.
-//! The fixed runner must still supply original operation/collector evidence and
-//! capture local retirement reports omitted by the helper-terminal callback.
+//! The fixed runner must still supply original operation/collector evidence.
+//! Separate local-completion observations retain original retirement reports;
+//! complete production-route interruption qualification remains required.
 
 use super::{
     ExpectedState, Operation, RuntimePin, SCHEMA, TransactionSlot,

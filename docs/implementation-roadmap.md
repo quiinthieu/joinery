@@ -14,8 +14,9 @@ and [verification evidence](replacement-verification.md#owning-qualification-pol
 Next, in dependency order:
 
 1. Extend actual adapter/Studio composition beyond startup/preflight through the
-   complete 32-phase route and rejected/interrupted calls. Reconciliation must
-   retain the actual catalog from its own call; do not add SQL or manufacture DTOs.
+   complete 32-phase route and rejected/interrupted calls. The same-call Studio
+   reconciliation bridge now retains the original options and catalog without
+   another SQL request. Full-route composition remains open.
 2. Extend local-completion coverage into the full actual production route.
    Verify original early ACKs and final durable evidence across interruption,
    rejected calls and local storage failure; never repeat SQL during cleanup.
@@ -27,6 +28,25 @@ Next, in dependency order:
    prove cleanup does not replay SQL or evidence.
 5. Prepare the executable fresh-table plan under `SANDBOX.BILLIE_TESTING`, then
    request fresh exact execution/billing approval before account activity.
+
+The next runner increment uses existing typed Studio APIs. Share the Plan's
+closed CREATE/ADD/DROP definitions; bind ADD/DROP only to validated, fresh real
+catalog/inspection revisions. Retain each original typed completion or error
+before validation, including acknowledged mutations whose later observations
+fail. Own read events through `Finished`, preserving their arrival order and
+both result metadata events. Decode at most two locally retained Arrow rows
+through `Studio::range`; result retrieval must issue no SQL. Transaction
+authority comes from the preceding actual runtime evidence, with no extra state
+query. Keep results until their evidence is durably recorded.
+
+Start with an opaque synthetic-only harness that owns a fresh Plan, disposable
+Studio/helper and journal. Accept no SQL, target, saved-profile identifier,
+arbitrary session or account selector. Exercise all 32 actual Studio routes with
+a stateful synthetic SDK at census sizes 1 and 32, asserting exactly 393/610 SQL
+and rollback/commit visibility within the fixture. On failure retain partial
+events/original outcomes, settle and persist locally; do not advance, replay,
+issue recovery SQL or run cleanup DROP. This is required runner work, not an
+implemented or account-qualified workflow.
 
 The separate local-completion seam now carries exact ticket/generation identity,
 optional actually assigned wire ID, reserved candidate and a closed origin.
@@ -113,6 +133,13 @@ while preserving VerifyFull native/custom roots and hostname rejection. One
 existing protocol readiness wait timed out and passed unchanged in isolation;
 certificate loading is a plausible, unmeasured contributor, not an established
 cause. Keep readiness diagnosis separate from cancellation/EOF deadlines.
+The reconciliation increment reproduced both startup-cleanup dispatch timeouts
+in full validation; unchanged serial and parallel protocol reruns pass. A bounded
+follow-up can own `drivers/postgres.rs` only: gate native trust enumeration by
+VerifyFull and inject its loader in deterministic tests proving Disable never
+calls it. Preserve custom-CA validation, TLS setup, protocol assertions and
+timeouts; then rerun affected protocol and full validation checks. This fix is
+not yet implemented and must not be reported as resolving the unknown cause.
 
 ## Receipt recovery and qualification definition (11 November 2026)
 

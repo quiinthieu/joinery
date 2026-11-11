@@ -465,6 +465,92 @@ async fn ddl_studio_hold_precedes_dispatch_and_only_catalog_reconciliation_clear
 }
 
 #[tokio::test]
+async fn ddl_studio_refresh_preserves_options_only_api_and_single_reconciliation() {
+    let (_root, studio, driver, session, _) = sdk_ddl_fixture(SafeMode::Confirm, false, None);
+    let expected_state = driver.runtime_override.lock().clone().unwrap();
+    session.metadata_gate.lock().hold_catalog();
+
+    let options: SessionContextOptions = studio
+        .refresh_snowflake_ddl_metadata(&session.info.id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&options.state).unwrap(),
+        serde_json::to_value(&expected_state).unwrap()
+    );
+    assert_eq!(options.available, vec!["PUBLIC", "public"]);
+    assert!(options.revision.is_none());
+    assert_eq!(driver.state_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(driver.relation_calls.load(Ordering::Relaxed), 1);
+    assert!(driver.relation_invalidated.load(Ordering::Acquire));
+    assert!(!session.metadata_gate.lock().held);
+    assert!(!session.metadata_gate.lock().catalog_required);
+}
+
+#[cfg(all(unix, feature = "test-harness"))]
+#[tokio::test]
+async fn ddl_studio_qualification_refresh_returns_original_same_call_catalog() {
+    use crate::relation_inspection::{RelationAvailability, RelationTargetSummary, RelationTraits};
+
+    let (_root, studio, driver, session, _) = sdk_ddl_fixture(SafeMode::Confirm, false, None);
+    let mut expected_catalog = driver.relation_result.lock().clone().unwrap().unwrap();
+    expected_catalog.revision = "same-call-catalog-revision".into();
+    expected_catalog.relations.push(RelationTargetSummary {
+        target_id: "same-call-target-id".into(),
+        database: "DB".into(),
+        table: TableRef {
+            schema: "PUBLIC".into(),
+            name: "T".into(),
+        },
+        table_type: "BASE TABLE".into(),
+        traits: RelationTraits {
+            transient: Some(false),
+            temporary: Some(false),
+            iceberg: Some(false),
+            dynamic: Some(false),
+            hybrid: Some(false),
+            immutable: Some(false),
+        },
+        availability: RelationAvailability::Available,
+    });
+    *driver.relation_result.lock() = Some(Ok(expected_catalog.clone()));
+    let expected_state = driver.runtime_override.lock().clone().unwrap();
+    session.metadata_gate.lock().hold_catalog();
+
+    let (options, catalog) = studio
+        .refresh_snowflake_ddl_metadata_qualification(&session.info.id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&catalog).unwrap(),
+        serde_json::to_value(&expected_catalog).unwrap(),
+        "the original catalog revision, target IDs, identity and traits survive reconciliation"
+    );
+    assert_eq!(
+        serde_json::to_value(&options.state).unwrap(),
+        serde_json::to_value(&expected_state).unwrap()
+    );
+    assert_eq!(options.available, vec!["PUBLIC", "public"]);
+    assert!(options.revision.is_none());
+    assert_eq!(driver.state_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(driver.relation_calls.load(Ordering::Relaxed), 1);
+    assert!(!session.metadata_gate.lock().held);
+    assert!(!session.metadata_gate.lock().catalog_required);
+
+    assert!(
+        studio
+            .refresh_snowflake_ddl_metadata_qualification(&session.info.id)
+            .await
+            .is_err(),
+        "returning catalog evidence does not bypass the pending-hold requirement"
+    );
+    assert_eq!(driver.state_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(driver.relation_calls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn ddl_studio_failed_or_incoherent_catalog_reconciliation_retains_hold() {
     for scenario in [
         "catalog-denied",

@@ -8,6 +8,62 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Same-call reconciliation bridge (11 November 2026)
+
+Studio's harness-only refresh returns the original final context options and
+middle catalog from its existing options/catalog/options reconciliation. The
+ordinary API continues returning options only. The implementation shares one
+body: no extra SQL, cache lookup, authority refresh or hold-release path is added.
+The qualification owner can consume these originals without a second catalog
+request. Full 32-phase actual Studio/helper composition is still unimplemented.
+
+Focused `ddl_studio` coverage passes **15/15** in 1.05 seconds,
+`qualification-reconcile-studio-tests.log`. Two new recording-driver regressions
+verify full original catalog/revision/target/traits, returned context, exactly two
+context calls and one catalog call, and hold clearance/no-hold rejection. Existing
+incoherence, failed reconciliation and stale queued refresh checks pass in that
+run. These are local recording-driver tests, not actual-helper full-route or
+account behavior. Reproduce with the pinned environment documented below:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib ddl_studio -- --test-threads=1
+pnpm validate
+```
+
+Independent bounded review found no material issue in the two bridge files:
+lane/revision/hold checks, successful clearing and failure invalidation are
+unchanged. No new runtime, UI or account path is exposed.
+
+The first full run, `qualification-reconcile-validate.log`, passed 679 frontend
+tests, frontend build and standard library tests, then failed both unchanged
+PostgreSQL startup-cleanup tests at `tests/postgres_protocol.rs:121` waiting for
+identity dispatch. The protocol target passes unchanged both serially (**8 passed,
+one ignored**, 1.05 seconds, `qualification-reconcile-postgres-serial.log`) and
+with normal parallel execution (**8 passed, one ignored**, 1.01 seconds,
+`qualification-reconcile-postgres-parallel.log`). The earlier analogous failure
+remains recorded below. Cause is unconfirmed; strict lint was not reached in the
+failed full run. Bounded review confirms unnecessary synchronous native-trust
+enumeration for disabled PostgreSQL TLS before connection dispatch, but does not
+establish it as the timeout cause. No PostgreSQL code or deadline changed.
+
+The complete unchanged rerun, `qualification-reconcile-validate-rerun.log`, exits
+**0**: **679 frontend / 466 standard Rust tests pass**, **129 fixtures ignored**.
+Formatting, contracts, production frontend build, Cargo check and strict
+all-target/all-feature Clippy pass. The protocol target passes within that run
+(eight passed, one ignored, 1.80 seconds). Existing ts-rs/chunk-size warnings remain
+nonfatal. Passing the rerun does not resolve the recurrent timeout diagnosis.
+
+Bridge source SHA-256: `snowflake_ddl.rs`
+`9f8b27bf81ba1831b54c3d8c569140b97c19971c2cb767064dcc9469e500139d`;
+`snowflake_ddl_tests.rs`
+`2c01005127f55751bd1cc68702e5df3453a199d932d5b7c0d2a8728cb20b0586`.
+Tier 2 coverage generation `2026-11-11T15:08:17Z` reports metadata match and no
+recorded issue for both bridge files and the qualification policy; this is a
+best-effort signal, supplemented by targeted source review. The policy change is
+a stale-comment correction only. The proposal now reflects previously completed
+policy/journal work; the roadmap records the closed action/event/Arrow runner
+work still required. No private profile or account activity occurred.
+
 ### Owning qualification policy (11 November 2026)
 
 Local harness implementation now composes exact physical SQL/control admission,

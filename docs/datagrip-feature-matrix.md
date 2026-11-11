@@ -8,7 +8,7 @@
 | Metadata/runtime/phase ownership | Correlated callback sites and ordinals, frozen census/context/target markers, original typed results and transaction A/B observations | Complete synthetic owner routes; full production-route and actual account effects remain required |
 | Durable intent/evidence barriers | Private create-once hash-chained journal; fsync before admission/phase advancement; cancellation-safe record consumption and sticky failure | Local filesystem/fault tests; no power-loss or account claim |
 | Original local completion evidence | Queued cancellation/close, inactive controls and retirement reports, including original typed ACKs; candidate IDs separate from actual wire assignment | Process and synthetic composition coverage; full runner interruption and durable outcome qualification remain required |
-| Production adapter composition | Runtime publication observation and first startup/preflight integration | Synthetic SDK only; complete 32-phase production-route runner remains open |
+| Production adapter composition | Runtime publication observation, first startup/preflight integration and original same-call Studio reconciliation options/catalog | Synthetic SDK and recording-driver fixtures only; complete 32-phase production-route runner remains open |
 
 See the [verification ledger](replacement-verification.md#owning-qualification-policy-11-november-2026)
 for commands, actual results, failed attempts and evidence provenance. This adds

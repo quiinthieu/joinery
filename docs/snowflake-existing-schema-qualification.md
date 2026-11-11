@@ -19,10 +19,12 @@ not an executable approval manifest. The later
 admission/resource plumbing and validated raw census/creation-marker observation
 hooks. The [shared SQL contract and offline ledger](snowflake-qualification-sql-ledger.md)
 now export bootstrap/typed SQL and expand exact physical statement order/bounds.
-Ledger enforcement, frozen lifecycle observation policy, source/runtime/private
-connection binding, durable execution receipts and the account runner remain
-unimplemented. No normal desktop command
-exposes this module. See the
+The later owning policy implements physical ledger enforcement, frozen lifecycle
+observations and durable intent/original-outcome/phase receipts, with local fault
+and synthetic composition coverage. Complete production-route execution and
+interruption qualification, source/runtime/private connection binding and the
+account runner remain incomplete. No normal desktop command exposes this module.
+See the
 [verification ledger](replacement-verification.md) for checks and remaining gates.
 
 The earlier [database setup attempt](snowflake-disposable-setup.md) stopped on
@@ -421,6 +423,13 @@ The minimum complete increment has these parts:
    and offline modes having zero account side effects. Run relevant repository
    checks and independently review the complete manifest and guard placement.
 
-Current deliverables are this design and its tested offline definition. No new
-runner, execution manifest, approval file, authentication, account test, cleanup
-or account qualification is claimed.
+Implemented prerequisites now include the offline definition/ledger, physical
+admission and original completion observation, frozen lifecycle/runtime policy,
+and private durable journal barriers. The same-call Studio reconciliation bridge
+retains original context options and catalog without a second catalog request.
+These prerequisites do not establish the full production-route lifecycle or
+interruption behavior. A closed runner and source/runtime/profile execution
+envelope remain required before an executable approval plan can be prepared.
+No new execution manifest, approval file, authentication, account test, cleanup
+or account qualification is claimed. See the current verification ledger for
+the scope and results of each implemented prerequisite.
