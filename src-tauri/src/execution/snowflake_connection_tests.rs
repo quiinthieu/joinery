@@ -8,6 +8,9 @@ use crate::{secrets::MemorySecrets, snowflake_runtime::studio_fixture::Fixture};
 // saturating disk/CPU with nine copies must not consume the startup deadlines.
 static FIXTURE_LANE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[path = "snowflake_qualification_connection_tests.rs"]
+mod qualification;
+
 fn profile() -> ConnectionProfile {
     ConnectionProfile {
         id: new_id(),

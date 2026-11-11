@@ -319,6 +319,16 @@ impl ConnectionAttempt {
     /// Retain a rejected claim until its owner has closed any acquired driver.
     /// A shutdown drain therefore cannot finish between rejection and close.
     pub fn try_publish<T>(&mut self, publish: impl FnOnce() -> T) -> AppResult<T> {
+        self.try_publish_checked(|| Ok(publish()))
+    }
+
+    /// Revalidate after publication locks have been acquired. A rejected callback
+    /// retains the claim so its owner can close the driver before releasing it.
+    /// The synchronous callback must not reenter this registry.
+    pub(crate) fn try_publish_checked<T>(
+        &mut self,
+        publish: impl FnOnce() -> AppResult<T>,
+    ) -> AppResult<T> {
         let mut state = self.registry.inner.state.lock();
         if state.closing
             || self.cancellation.is_cancelled()
@@ -330,7 +340,7 @@ impl ConnectionAttempt {
             drop(state);
             return Err(cancelled());
         }
-        let published = publish();
+        let published = publish()?;
         state.entries.remove(&self.id);
         self.disarmed = true;
         drop(state);
@@ -383,6 +393,29 @@ mod tests {
         assert!(registry.claim("caller-chosen-id").is_err());
         drop(attempt);
         assert!(registry.claim(&first).is_err());
+    }
+
+    #[test]
+    fn checked_publication_rejection_retains_cleanup_ownership() {
+        let registry = ConnectionAttempts::with_limits(Duration::from_secs(60), 1, 1);
+        let id = registry.reserve("profile", 0, 0).unwrap();
+        let mut attempt = registry.claim(&id).unwrap();
+        let error = attempt
+            .try_publish_checked::<()>(|| {
+                Err(AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    "Publication revoked",
+                ))
+            })
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PolicyBlocked);
+        assert!(registry.has_pending());
+        assert_eq!(registry.claim(&id).err().unwrap().code, ErrorCode::Conflict);
+        assert!(registry.reserve("other", 0, 0).is_err());
+        registry.shutdown();
+        assert!(registry.has_pending());
+        drop(attempt);
+        assert!(!registry.has_pending());
     }
 
     #[test]

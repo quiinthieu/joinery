@@ -1,3 +1,5 @@
+#[cfg(all(unix, feature = "test-harness"))]
+use crate::drivers::snowflake_qualification::QualificationAttachment;
 #[cfg(feature = "desktop")]
 use crate::file_capability::NativeFileDialog;
 use crate::{
@@ -758,7 +760,49 @@ impl Studio {
         attempt_id: &str,
         secrets: ConnectionSecrets,
     ) -> AppResult<SessionInfo> {
-        let result = self.connect_prepared_inner(attempt_id, secrets).await;
+        self.connect_prepared_attached(
+            attempt_id,
+            secrets,
+            #[cfg(all(unix, feature = "test-harness"))]
+            None,
+        )
+        .await
+    }
+
+    /// Rust-only harness connection. The eventual fixed runner must establish
+    /// its execution envelope before calling; this method grants no account scope.
+    #[cfg(all(unix, feature = "test-harness"))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "Internal qualification entry; tested without exposing desktop IPC"
+        )
+    )]
+    pub(crate) async fn connect_prepared_qualification(
+        &self,
+        attempt_id: &str,
+        secrets: ConnectionSecrets,
+        qualification: QualificationAttachment,
+    ) -> AppResult<SessionInfo> {
+        self.connect_prepared_attached(attempt_id, secrets, Some(qualification))
+            .await
+    }
+
+    async fn connect_prepared_attached(
+        &self,
+        attempt_id: &str,
+        secrets: ConnectionSecrets,
+        #[cfg(all(unix, feature = "test-harness"))] qualification: Option<QualificationAttachment>,
+    ) -> AppResult<SessionInfo> {
+        let result = self
+            .connect_prepared_inner(
+                attempt_id,
+                secrets,
+                #[cfg(all(unix, feature = "test-harness"))]
+                qualification,
+            )
+            .await;
         #[cfg(unix)]
         if result.is_err() {
             self.snowflake_cleanup
@@ -772,6 +816,7 @@ impl Studio {
         &self,
         attempt_id: &str,
         secrets: ConnectionSecrets,
+        #[cfg(all(unix, feature = "test-harness"))] qualification: Option<QualificationAttachment>,
     ) -> AppResult<SessionInfo> {
         let mut attempt = self.connection_attempts.claim(attempt_id)?;
         let id = attempt.profile_id().to_owned();
@@ -779,12 +824,37 @@ impl Studio {
         let cancellation = attempt.cancellation();
         #[cfg(unix)]
         let mut sdk_preparation = None;
+        #[cfg(all(unix, feature = "test-harness"))]
+        let qualification_check = qualification
+            .as_ref()
+            .map(|attachment| attachment.transport.clone());
+        #[cfg(all(test, unix, feature = "test-harness"))]
+        let qualification_before_publication = qualification
+            .as_ref()
+            .and_then(|attachment| attachment.before_publication.clone());
         let (profile, password, known_host) = {
             let _configuration = self.configuration_gate.lock();
             if cancellation.is_cancelled() {
                 return Err(connection_cancelled());
             }
             let profile = self.persistence.profile(&id)?;
+            #[cfg(all(unix, feature = "test-harness"))]
+            if qualification.is_some()
+                && (profile.engine != EngineKind::Snowflake
+                    || profile.snowflake.as_ref().is_none_or(|config| {
+                        config.authentication != SnowflakeAuthentication::ExternalBrowser
+                    })
+                    || profile.ssh.is_some()
+                    || profile.remember_password
+                    || secrets.password.is_some()
+                    || secrets.ssh_password.is_some()
+                    || secrets.key_passphrase.is_some())
+            {
+                return Err(AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    "Qualification requires a Snowflake external-browser connection without password storage, supplied secrets or a tunnel",
+                ));
+            }
             let password = match secrets.password {
                 Some(value) => Some(Zeroizing::new(value)),
                 None if profile.remember_password => self
@@ -923,13 +993,21 @@ impl Studio {
                                 let launch = sdk_launch
                                     .take()
                                     .ok_or_else(snowflake_runtime_unavailable)?;
-                                let (d, i) = SnowflakeExternal::open(
-                                    &profile,
-                                    &session_id,
-                                    launch,
-                                    ExternalBrowserOptions::default(),
-                                )
-                                .await?;
+                                let options = ExternalBrowserOptions::default();
+                                #[cfg(feature = "test-harness")]
+                                let (launch, options) = {
+                                    let mut launch = launch;
+                                    let mut options = options;
+                                    if let Some(qualification) = qualification {
+                                        launch.attach_transport(qualification.transport.clone())?;
+                                        options.metadata_observer =
+                                            Some(qualification.metadata.clone());
+                                    }
+                                    (launch, options)
+                                };
+                                let (d, i) =
+                                    SnowflakeExternal::open(&profile, &session_id, launch, options)
+                                        .await?;
                                 (d as Arc<dyn Driver>, i)
                             }
                             #[cfg(not(unix))]
@@ -945,6 +1023,10 @@ impl Studio {
             _ = cancellation.cancelled() => return Err(connection_cancelled()),
             outcome = setup => outcome?,
         };
+        #[cfg(all(test, unix, feature = "test-harness"))]
+        if let Some(before_publication) = qualification_before_publication {
+            before_publication();
+        }
         let _configuration = self.configuration_gate.lock();
         if cancellation.is_cancelled() {
             driver.close();
@@ -970,8 +1052,19 @@ impl Studio {
             driver.close();
             return Err(error);
         }
-        let result = attempt.try_publish(|| {
-            self.sessions.lock().insert(
+        let result = attempt.try_publish_checked(|| {
+            let mut sessions = self.sessions.lock();
+            #[cfg(all(unix, feature = "test-harness"))]
+            if let Some(check) = &qualification_check {
+                check.check()?;
+                if driver.is_closed() {
+                    return Err(AppError::new(
+                        ErrorCode::ConnectionClosed,
+                        "The Snowflake helper exited before the connection could be published",
+                    ));
+                }
+            }
+            sessions.insert(
                 session_id,
                 Arc::new(Session {
                     info: info.clone(),
@@ -987,7 +1080,7 @@ impl Studio {
                     tunnel,
                 }),
             );
-            info
+            Ok(info)
         });
         if result.is_err() {
             driver.close();
