@@ -1,4 +1,4 @@
-//! Stateful external-browser adapter with separately admitted reviewed SQL DML.
+//! Stateful external-browser adapter with separately admitted reviewed DML and DDL.
 //! Packaged account workflows and actual mutation effects remain unqualified.
 //! Each instance owns one helper connection; no query or connection is automatically recreated.
 use super::snowflake_process::{
@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 const SQL_BYTES: usize = 262_144;
 const QUERY_ROWS: u64 = 1_000_000;
 const QUERY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const DDL_GRANT_TTL: Duration = Duration::from_secs(60);
 
 /// LOGIN_NAME need not equal CURRENT_USER. Only enforce a principal when explicitly configured.
 #[derive(Default)]
@@ -121,6 +122,28 @@ impl Drop for SchemaSwitchLease<'_> {
     }
 }
 
+#[derive(Default)]
+struct DdlAuthorityState {
+    generation: String,
+    grant: Option<DdlGrant>,
+}
+type CompiledDdlAction = (
+    crate::safety::snowflake_ddl::Canonical,
+    Option<(LiveContext, BrowseRelation)>,
+    Option<Vec<crate::relation_inspection::ColumnInspection>>,
+);
+
+struct DdlGrant {
+    revision: String,
+    issued_at: Instant,
+    transaction_generation: String,
+    sample: ObservationSample,
+    action: SnowflakeDdlAction,
+    canonical: crate::safety::snowflake_ddl::Canonical,
+    target: Option<BrowseRelation>,
+    inspected_columns: Option<Vec<crate::relation_inspection::ColumnInspection>>,
+}
+
 pub struct SnowflakeExternal {
     process: Arc<Supervisor>,
     profile: ConnectionProfile,
@@ -131,6 +154,7 @@ pub struct SnowflakeExternal {
     browsing: Mutex<BrowseState>,
     session_options: Mutex<SessionOptionsState>,
     transaction_authority: Mutex<TransactionAuthorityState>,
+    ddl_authority: Mutex<DdlAuthorityState>,
     closed: CancellationToken,
     shutdown_started: AtomicBool,
     shutdown: watch::Sender<Option<Arc<ShutdownReport>>>,
@@ -247,6 +271,7 @@ impl SnowflakeExternal {
             browsing: Mutex::new(BrowseState::default()),
             session_options: Mutex::new(SessionOptionsState::default()),
             transaction_authority: Mutex::new(TransactionAuthorityState::default()),
+            ddl_authority: Mutex::new(DdlAuthorityState::default()),
             closed: CancellationToken::new(),
             shutdown_started: AtomicBool::new(false),
             shutdown,
@@ -286,6 +311,8 @@ impl SnowflakeExternal {
                 schema_diagram: false,
                 schema_diff: false,
                 ddl_editing: false,
+                snowflake_reviewed_ddl: config.reviewed_ddl
+                    && profile.safe_mode != SafeMode::ReadOnly,
                 lock_inspection: false,
                 explain_analyze: false,
                 oauth_browser: false,
@@ -310,6 +337,7 @@ impl SnowflakeExternal {
     }
     fn start_shutdown(&self) {
         *self.transaction_authority.lock() = TransactionAuthorityState::default();
+        *self.ddl_authority.lock() = DdlAuthorityState::default();
         self.closed.cancel();
         self.invalidate_session_options();
         if self.shutdown_started.swap(true, Ordering::SeqCst) {
@@ -434,7 +462,27 @@ impl SnowflakeExternal {
         let generation = new_id();
         state.generation = generation.clone();
         state.grant = None;
+        drop(state);
+        self.revoke_ddl_grant();
         generation
+    }
+
+    fn revoke_ddl_grant(&self) -> String {
+        let mut state = self.ddl_authority.lock();
+        let generation = new_id();
+        state.generation = generation.clone();
+        state.grant = None;
+        generation
+    }
+
+    fn require_ddl_generation(&self, generation: &str) -> AppResult<()> {
+        if self.is_closed() {
+            return Err(closed_error());
+        }
+        if self.ddl_authority.lock().generation != generation {
+            return Err(stale_ddl());
+        }
+        Ok(())
     }
 
     fn require_transaction_generation(&self, generation: &str) -> AppResult<()> {
@@ -573,6 +621,284 @@ impl SnowflakeExternal {
         )
     }
 
+    fn require_ddl_policy(&self) -> AppResult<()> {
+        if self.is_closed() {
+            return Err(closed_error());
+        }
+        if self.profile.safe_mode == SafeMode::ReadOnly
+            || !self.profile.snowflake.as_ref().is_some_and(|config| {
+                config.authentication == SnowflakeAuthentication::ExternalBrowser
+                    && config.reviewed_ddl
+            })
+        {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Snowflake DDL requires an explicitly enabled external-browser profile with writes allowed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_ddl_session_sample(&self, sample: &ObservationSample) -> AppResult<()> {
+        if sample.context.database.as_deref() != Some(self.profile.database.as_str()) {
+            return Err(stale_ddl());
+        }
+        if !sample.autocommit || sample.transaction_id.is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Snowflake reviewed DDL requires an idle session with AUTOCOMMIT enabled; commit or roll back active transactions first",
+            ));
+        }
+        Ok(())
+    }
+
+    fn compile_ddl_action(&self, action: &SnowflakeDdlAction) -> AppResult<CompiledDdlAction> {
+        match action {
+            SnowflakeDdlAction::CreateTable {
+                database,
+                schema,
+                name,
+                columns,
+            } => {
+                if schema == "INFORMATION_SCHEMA" {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "Reviewed Snowflake DDL cannot create tables in INFORMATION_SCHEMA",
+                    ));
+                }
+                let table_action = TableObjectAction::CreateTable {
+                    table: TableRef {
+                        schema: schema.clone(),
+                        name: name.clone(),
+                    },
+                    columns: columns
+                        .iter()
+                        .map(SnowflakeDdlColumnDraft::to_table_column_draft)
+                        .collect(),
+                    comment: None,
+                };
+                let canonical =
+                    crate::safety::snowflake_ddl::compile(&table_action, &self.profile.database)?;
+                if database != &self.profile.database {
+                    return Err(stale_ddl());
+                }
+                Ok((canonical, None, None))
+            }
+            SnowflakeDdlAction::AddColumn {
+                browse_revision,
+                target_id,
+                inspection_revision,
+                column,
+            } => {
+                let (browse_ctx, target) = self.browse_target(browse_revision, target_id)?;
+                require_plain_base_table(&target)?;
+                let inspected_columns =
+                    self.browse_columns(browse_revision, target_id, inspection_revision)?;
+                if inspected_columns.len() >= browsing::COLUMN_LIMIT {
+                    return Err(metadata_limit());
+                }
+                let table_action = TableObjectAction::AddColumn {
+                    table: target.table.clone(),
+                    column: column.to_table_column_draft(),
+                };
+                let canonical =
+                    crate::safety::snowflake_ddl::compile(&table_action, &self.profile.database)?;
+                if target.database != self.profile.database {
+                    return Err(stale_ddl());
+                }
+                if inspected_columns
+                    .iter()
+                    .any(|existing| existing.name == column.name)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A column with this exact name already exists on the inspected table",
+                    ));
+                }
+                Ok((
+                    canonical,
+                    Some((browse_ctx, target)),
+                    Some(inspected_columns),
+                ))
+            }
+            SnowflakeDdlAction::DropTable {
+                browse_revision,
+                target_id,
+            } => {
+                let (browse_ctx, target) = self.browse_target(browse_revision, target_id)?;
+                require_plain_base_table(&target)?;
+                let table_action = TableObjectAction::DropObject {
+                    object: DatabaseObjectRef {
+                        schema: target.table.schema.clone(),
+                        name: target.table.name.clone(),
+                        kind: DatabaseObjectKind::Table,
+                        identity: None,
+                    },
+                    cascade: false,
+                };
+                let canonical =
+                    crate::safety::snowflake_ddl::compile(&table_action, &self.profile.database)?;
+                if target.database != self.profile.database {
+                    return Err(stale_ddl());
+                }
+                Ok((canonical, Some((browse_ctx, target)), None))
+            }
+        }
+    }
+
+    async fn verify_ddl_catalog_state(
+        &self,
+        context: &LiveContext,
+        action: &SnowflakeDdlAction,
+        target: Option<&BrowseRelation>,
+        inspected_columns: Option<&[crate::relation_inspection::ColumnInspection]>,
+    ) -> AppResult<()> {
+        match action {
+            SnowflakeDdlAction::CreateTable {
+                database,
+                schema,
+                name,
+                ..
+            } => {
+                if database != &self.profile.database
+                    || context.database.as_deref() != Some(database.as_str())
+                {
+                    return Err(stale_ddl());
+                }
+                if schema == "INFORMATION_SCHEMA" {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "Reviewed Snowflake DDL cannot create tables in INFORMATION_SCHEMA",
+                    ));
+                }
+                let schema_rows = self
+                    .metadata_read(
+                        &browsing::schemas_sql(context)?,
+                        browsing::SCHEMA_LIMIT + 1,
+                        browsing::CATALOG_MAX_BYTES,
+                    )
+                    .await?;
+                let schemas = browsing::parse_schemas(context, &schema_rows)?;
+                if !schemas.iter().any(|existing| existing == schema) {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "The target schema is not available in the current Snowflake database; refresh schemas and relations first",
+                    ));
+                }
+                let relation_rows = self
+                    .metadata_read(
+                        &browsing::relations_sql(context, schema)?,
+                        browsing::RELATION_LIMIT + 1,
+                        browsing::CATALOG_MAX_BYTES,
+                    )
+                    .await?;
+                let relations = browsing::parse_relations(context, schema, &relation_rows)?;
+                if relations
+                    .iter()
+                    .any(|relation| relation.table.name == *name)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A relation with this exact name already exists in the target schema",
+                    ));
+                }
+                Ok(())
+            }
+            SnowflakeDdlAction::AddColumn { column, .. } => {
+                let target = target.ok_or_else(stale_ddl)?;
+                let expected_columns = inspected_columns.ok_or_else(stale_ddl)?;
+                require_plain_base_table(target)?;
+                self.require_browse_relation(context, target).await?;
+                let columns = self
+                    .metadata_read(
+                        &browsing::columns_sql(target)?,
+                        browsing::COLUMN_LIMIT + 1,
+                        browsing::COLUMN_MAX_BYTES,
+                    )
+                    .await?;
+                let describe = self
+                    .metadata_read(
+                        &browsing::describe_sql(target)?,
+                        browsing::COLUMN_LIMIT + 1,
+                        browsing::COLUMN_MAX_BYTES,
+                    )
+                    .await?;
+                let resolved = self
+                    .metadata_read(
+                        &browsing::resolved_columns_sql(target)?,
+                        0,
+                        browsing::COLUMN_MAX_BYTES,
+                    )
+                    .await?;
+                let live_columns =
+                    browsing::parse_inspection(target, &columns, &describe, &resolved)?;
+                if live_columns.as_slice() != expected_columns {
+                    return Err(stale_ddl());
+                }
+                if live_columns
+                    .iter()
+                    .any(|existing| existing.name == column.name)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A column with this exact name already exists on the inspected table",
+                    ));
+                }
+                self.require_browse_relation(context, target).await
+            }
+            SnowflakeDdlAction::DropTable { .. } => {
+                let target = target.ok_or_else(stale_ddl)?;
+                require_plain_base_table(target)?;
+                self.require_browse_relation(context, target).await
+            }
+        }
+    }
+
+    fn validate_ddl_locked(
+        &self,
+        tx: &TransactionAuthorityState,
+        state: &DdlAuthorityState,
+        request: &SnowflakeDdlRequest,
+    ) -> AppResult<()> {
+        self.require_ddl_policy()?;
+        if tx
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.restricted)
+        {
+            return Err(stale_ddl());
+        }
+        let grant = state
+            .grant
+            .as_ref()
+            .filter(|grant| {
+                grant.revision == request.revision && grant.issued_at.elapsed() < DDL_GRANT_TTL
+            })
+            .ok_or_else(stale_ddl)?;
+        if grant.transaction_generation != tx.generation
+            || tx
+                .grant
+                .as_ref()
+                .is_none_or(|tx_grant| tx_grant.sample != grant.sample)
+            || grant.action != request.action
+            || grant.canonical.sql() != request.sql
+        {
+            return Err(stale_ddl());
+        }
+        let (canonical, browse_target, inspected_columns) =
+            self.compile_ddl_action(&request.action)?;
+        if canonical != grant.canonical
+            || browse_target.as_ref().map(|(_, target)| target) != grant.target.as_ref()
+            || browse_target
+                .as_ref()
+                .is_some_and(|(browse_ctx, _)| *browse_ctx != grant.sample.context)
+            || inspected_columns != grant.inspected_columns
+        {
+            return Err(stale_ddl());
+        }
+        Ok(())
+    }
+
     fn publish_transaction_sample(
         &self,
         sample: &ObservationSample,
@@ -613,6 +939,7 @@ impl SnowflakeExternal {
             revision: revision.clone(),
             snapshot: None,
         };
+        self.revoke_ddl_grant();
         revision
     }
 
@@ -808,6 +1135,8 @@ impl SnowflakeExternal {
         if state.revision == revision {
             *state = BrowseState::default();
         }
+        drop(state);
+        self.revoke_ddl_grant();
     }
 
     fn browse_target(
@@ -1299,6 +1628,344 @@ impl Driver for SnowflakeExternal {
         }
     }
 
+    async fn preflight_snowflake_ddl(
+        &self,
+        session_id: &str,
+        request: &SnowflakeDdlPreflightRequest,
+    ) -> AppResult<SnowflakeDdlPreflightResponse> {
+        if session_id != self.session_id || request.session_id != self.session_id {
+            return Err(AppError::invalid("Invalid Snowflake session"));
+        }
+        self.require_ddl_policy()?;
+        self.require_unrestricted()?;
+        let (canonical, browse_target, inspected_columns) =
+            self.compile_ddl_action(&request.action)?;
+        let tx_generation = self.revoke_transaction_grant();
+        let ddl_generation = self.revoke_ddl_grant();
+        self.metadata_operation_inner(async {
+            self.require_ddl_policy()?;
+            self.require_unrestricted()?;
+            self.require_transaction_generation(&tx_generation)?;
+            self.require_ddl_generation(&ddl_generation)?;
+            let (current_canonical, current_target, current_columns) =
+                self.compile_ddl_action(&request.action)?;
+            if current_canonical != canonical
+                || current_target != browse_target
+                || current_columns != inspected_columns
+            {
+                return Err(stale_ddl());
+            }
+            let before = self.session_sample().await?;
+            self.require_ddl_session_sample(&before)?;
+            if let Some((ref browse_ctx, ref target)) = browse_target {
+                if *browse_ctx != before.context {
+                    return Err(stale_ddl());
+                }
+                self.verify_ddl_catalog_state(
+                    &before.context,
+                    &request.action,
+                    Some(target),
+                    inspected_columns.as_deref(),
+                )
+                .await?;
+            } else {
+                self.verify_ddl_catalog_state(&before.context, &request.action, None, None)
+                    .await?;
+            }
+            let after = self.session_sample().await?;
+            if session::compare_samples(Some(&before), Some(&after)) != SampleConsistency::Stable {
+                return Err(stale_ddl());
+            }
+            self.require_ddl_session_sample(&after)?;
+            let (final_canonical, final_target, final_columns) =
+                self.compile_ddl_action(&request.action)?;
+            if final_canonical != canonical
+                || final_target != browse_target
+                || final_columns != inspected_columns
+            {
+                return Err(stale_ddl());
+            }
+            self.require_transaction_generation(&tx_generation)?;
+            self.require_ddl_generation(&ddl_generation)?;
+            let _ = self.publish_transaction_sample(&after, &tx_generation)?;
+            let components = canonical.qualified_target().clone();
+            let qualified_target = qualified_ddl_target(&components)?;
+            let kind = SnowflakeDdlKind::from(canonical.kind());
+            let warnings = ddl_warnings(
+                kind,
+                &qualified_target,
+                browse_target.as_ref().map(|(_, target)| target),
+            );
+            let sql = canonical.sql().to_owned();
+            let revision = new_id();
+            {
+                let mut ddl = self.ddl_authority.lock();
+                if self.is_closed() || ddl.generation != ddl_generation {
+                    return Err(stale_ddl());
+                }
+                ddl.grant = Some(DdlGrant {
+                    revision: revision.clone(),
+                    issued_at: Instant::now(),
+                    transaction_generation: tx_generation.clone(),
+                    sample: after,
+                    action: request.action.clone(),
+                    canonical,
+                    target: browse_target.map(|(_, target)| target),
+                    inspected_columns,
+                });
+            }
+            Ok(SnowflakeDdlPreflightResponse {
+                revision,
+                kind,
+                database: components[0].clone(),
+                schema: components[1].clone(),
+                name: components[2].clone(),
+                qualified_target,
+                sql,
+                warnings,
+            })
+        })
+        .await
+        .inspect_err(|error| {
+            self.observer_failed(&tx_generation, error);
+            self.revoke_ddl_grant();
+        })
+    }
+
+    fn validate_snowflake_ddl(&self, request: &SnowflakeDdlRequest) -> AppResult<()> {
+        // Match dispatch's transaction -> DDL lock order. Validation must never
+        // acquire transaction authority while already holding DDL authority.
+        let tx = self.transaction_authority.lock();
+        self.validate_ddl_locked(&tx, &self.ddl_authority.lock(), request)
+    }
+
+    async fn snowflake_ddl(
+        &self,
+        session_id: &str,
+        request: &SnowflakeDdlRequest,
+    ) -> AppResult<SnowflakeDdlResult> {
+        if session_id != self.session_id {
+            return Err(AppError::invalid("Invalid Snowflake session"));
+        }
+        let grant = {
+            let tx = self.transaction_authority.lock();
+            let mut ddl = self.ddl_authority.lock();
+            self.validate_ddl_locked(&tx, &ddl, request)?;
+            ddl.grant.take().ok_or_else(stale_ddl)?
+        };
+        let kind = SnowflakeDdlKind::from(grant.canonical.kind());
+        let qualified_target = qualified_ddl_target(grant.canonical.qualified_target())?;
+        self.invalidate_session_options();
+        self.invalidate_relation_catalog();
+        let tx_generation = self.revoke_transaction_grant();
+        let ddl_generation = self.revoke_ddl_grant();
+        let mut lease = TransactionLease {
+            driver: self,
+            operation: None,
+            settled: false,
+        };
+        let mut summary_status = SnowflakeDdlSummaryStatus::Unavailable;
+        let mut rejected_error: Option<AppError> = None;
+        let result = self
+            .metadata_operation_inner(async {
+                self.require_ddl_policy()?;
+                self.require_unrestricted()?;
+                self.require_transaction_generation(&tx_generation)?;
+                self.require_ddl_generation(&ddl_generation)?;
+                let before = self.session_sample().await?;
+                if before != grant.sample {
+                    return Err(stale_ddl());
+                }
+                self.require_ddl_session_sample(&before)?;
+                self.verify_ddl_catalog_state(
+                    &before.context,
+                    &grant.action,
+                    grant.target.as_ref(),
+                    grant.inspected_columns.as_deref(),
+                )
+                .await?;
+                // Catalog reads are observations too. A fresh final idle sample
+                // must still match the reviewed principal/session and options
+                // before any statement can be queued for SDK dispatch.
+                let final_sample = self.session_sample().await?;
+                if final_sample != grant.sample {
+                    return Err(stale_ddl());
+                }
+                self.require_ddl_session_sample(&final_sample)?;
+                {
+                    let tx = self.transaction_authority.lock();
+                    let ddl = self.ddl_authority.lock();
+                    if tx.generation != tx_generation
+                        || ddl.generation != ddl_generation
+                        || self.is_closed()
+                        || grant.issued_at.elapsed() >= DDL_GRANT_TTL
+                    {
+                        return Err(stale_ddl());
+                    }
+                    lease.operation = Some(
+                        self.process
+                            .request(
+                                "reviewed-ddl",
+                                "ddl",
+                                json!({
+                                    "kind": kind.as_str(),
+                                    "sql": grant.canonical.sql(),
+                                    "expected": {
+                                        "user": self.identity["user"],
+                                        "session": self.identity["session"]
+                                    }
+                                }),
+                                Impact::Mutating,
+                            )
+                            .map_err(control_error)?,
+                    );
+                }
+                let report = {
+                    let operation = lease.operation.as_mut().ok_or_else(protocol_error)?;
+                    *self.active.lock() = Some(Active {
+                        token: operation.token(),
+                        terminal: operation.terminal_receiver(),
+                    });
+                    let _active = ActiveLease(&self.active);
+                    operation.wait().await
+                };
+                if report
+                    .ddl_acknowledged
+                    .as_ref()
+                    .is_some_and(|ack| ack.kind == kind)
+                {
+                    summary_status = ddl_summary_status(kind, report.result.as_ref());
+                }
+                let acknowledged = report
+                    .ddl_acknowledged
+                    .as_ref()
+                    .is_some_and(|ack| ack.kind == kind);
+                let rejected = !acknowledged
+                    && !report.ok
+                    && report.retirement.is_none()
+                    && report.error_code.as_deref() == Some("database")
+                    && report.certainty == Certainty::ServerTerminal;
+                if rejected {
+                    let db_error = check_report(&report).err().unwrap_or_else(|| {
+                        AppError::new(ErrorCode::Database, "Snowflake rejected the DDL statement")
+                    });
+                    rejected_error = Some(db_error.clone());
+                    let post_reject = async {
+                        self.require_transaction_generation(&tx_generation)?;
+                        self.require_ddl_generation(&ddl_generation)?;
+                        let after = self.session_sample().await?;
+                        if after != grant.sample {
+                            return Err(stale_ddl());
+                        }
+                        self.require_ddl_session_sample(&after)?;
+                        self.require_transaction_generation(&tx_generation)?;
+                        self.require_ddl_generation(&ddl_generation)?;
+                        self.publish_transaction_sample(&after, &tx_generation)
+                    }
+                    .await;
+                    return match post_reject {
+                        Ok(state) => Ok((
+                            SnowflakeDdlOutcome::Rejected,
+                            state,
+                            false,
+                            Some(db_error.with_completion_invalidated()),
+                        )),
+                        Err(_) => {
+                            self.start_shutdown();
+                            Ok((
+                                SnowflakeDdlOutcome::Rejected,
+                                self.unavailable_session_state(),
+                                true,
+                                Some(db_error.with_completion_invalidated()),
+                            ))
+                        }
+                    };
+                }
+                check_report(&report)?;
+                if !acknowledged || summary_status != SnowflakeDdlSummaryStatus::Acknowledged {
+                    return Err(protocol_error());
+                }
+                self.require_transaction_generation(&tx_generation)?;
+                self.require_ddl_generation(&ddl_generation)?;
+                let after = self.session_sample().await?;
+                if after != grant.sample {
+                    return Err(stale_ddl());
+                }
+                self.require_ddl_session_sample(&after)?;
+                self.require_transaction_generation(&tx_generation)?;
+                self.require_ddl_generation(&ddl_generation)?;
+                let state = self.publish_transaction_sample(&after, &tx_generation)?;
+                Ok((SnowflakeDdlOutcome::Succeeded, state, false, None))
+            })
+            .await;
+        match result {
+            Ok((statement_outcome, state, retired, error)) => {
+                if !retired {
+                    lease.settled = true;
+                }
+                Ok(SnowflakeDdlResult {
+                    kind,
+                    qualified_target,
+                    statement_outcome,
+                    summary_status,
+                    catalog_reconciliation_required: true,
+                    state,
+                    retired,
+                    error,
+                })
+            }
+            Err(error) => {
+                let Some(operation) = &lease.operation else {
+                    self.observer_failed(&tx_generation, &error);
+                    return Err(error.with_completion_invalidated());
+                };
+                // Snowflake DDL is not transactional and cannot be rolled back;
+                // never offer rollback-only recovery after dispatching DDL.
+                self.start_shutdown();
+                let acknowledged = operation
+                    .ddl_acknowledged()
+                    .is_some_and(|ack| ack.kind == kind);
+                if let Some(rejected) = rejected_error {
+                    return Ok(SnowflakeDdlResult {
+                        kind,
+                        qualified_target,
+                        statement_outcome: SnowflakeDdlOutcome::Rejected,
+                        summary_status: SnowflakeDdlSummaryStatus::Unavailable,
+                        catalog_reconciliation_required: true,
+                        state: self.unavailable_session_state(),
+                        retired: true,
+                        error: Some(rejected.with_completion_invalidated()),
+                    });
+                }
+                let error = if acknowledged {
+                    AppError::new(
+                        ErrorCode::ConnectionClosed,
+                        "Snowflake acknowledged the DDL statement, but the final session state could not be verified. The session was closed; reconnect before continuing.",
+                    )
+                } else {
+                    AppError::new(
+                        ErrorCode::OutcomeUnknown,
+                        "Snowflake DDL outcome is unknown; inspect query history and refresh the catalog before retrying",
+                    )
+                };
+                Ok(SnowflakeDdlResult {
+                    kind,
+                    qualified_target,
+                    statement_outcome: if acknowledged {
+                        SnowflakeDdlOutcome::Succeeded
+                    } else {
+                        SnowflakeDdlOutcome::Unknown
+                    },
+                    summary_status,
+                    catalog_reconciliation_required: true,
+                    state: self.unavailable_session_state(),
+                    retired: true,
+                    error: Some(error.with_completion_invalidated()),
+                })
+            }
+        }
+    }
+
     fn validate_transaction_control(&self, request: &TransactionControlRequest) -> AppResult<()> {
         self.validate_transaction_locked(&self.transaction_authority.lock(), request)
     }
@@ -1710,6 +2377,7 @@ impl Driver for SnowflakeExternal {
 
     fn invalidate_relation_catalog(&self) {
         *self.browsing.lock() = BrowseState::default();
+        self.revoke_ddl_grant();
     }
 
     async fn relation_catalog(&self) -> AppResult<BrowseCatalog> {
@@ -2117,6 +2785,101 @@ impl Driver for SnowflakeExternal {
     }
 }
 
+fn ddl_summary_status(kind: SnowflakeDdlKind, result: Option<&Value>) -> SnowflakeDdlSummaryStatus {
+    let valid = (|| -> Option<bool> {
+        let result = result?;
+        if result.get("kind")?.as_str()? != kind.as_str() {
+            return None;
+        }
+        let columns = result.get("columns")?.as_array()?;
+        if columns.len() > 2 {
+            return None;
+        }
+        for column in columns {
+            let name = column.get("name")?.as_str()?;
+            let data_type = column.get("type")?.as_str()?;
+            if name.is_empty() || data_type.is_empty() {
+                return None;
+            }
+        }
+        let rows: Vec<TextRow> = serde_json::from_value(result.get("values")?.clone()).ok()?;
+        if rows.len() > 1
+            || rows.iter().any(|row| row.len() != columns.len())
+            || result.get("rowsSeen")?.as_u64()? != rows.len() as u64
+            || result.get("rowsRetained")?.as_u64()? != 0
+            || result.get("truncated")?.as_bool()?
+        {
+            return None;
+        }
+        Some(true)
+    })();
+    if valid == Some(true) {
+        SnowflakeDdlSummaryStatus::Acknowledged
+    } else {
+        SnowflakeDdlSummaryStatus::Unavailable
+    }
+}
+
+fn require_plain_base_table(target: &BrowseRelation) -> AppResult<()> {
+    if target.availability != crate::relation_inspection::RelationAvailability::Available
+        || target.table_type != "BASE TABLE"
+        || target.traits.transient.is_none()
+        || target.traits
+            != (crate::relation_inspection::RelationTraits {
+                transient: target.traits.transient,
+                temporary: Some(false),
+                iceberg: Some(false),
+                dynamic: Some(false),
+                hybrid: Some(false),
+                immutable: Some(false),
+            })
+    {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed Snowflake DDL requires an available permanent or transient BASE TABLE with known non-temporary traits",
+        ));
+    }
+    Ok(())
+}
+
+fn qualified_ddl_target(components: &[String; 3]) -> AppResult<String> {
+    Ok(format!(
+        "{}.{}.{}",
+        metadata::quote_identifier(&components[0])?,
+        metadata::quote_identifier(&components[1])?,
+        metadata::quote_identifier(&components[2])?,
+    ))
+}
+
+fn ddl_warnings(
+    kind: SnowflakeDdlKind,
+    qualified_target: &str,
+    target: Option<&BrowseRelation>,
+) -> Vec<String> {
+    let mut warnings = vec![
+        "Snowflake DDL is not transactional and cannot be rolled back. Running this statement implicitly commits any open transaction work on the session.".into(),
+        format!(
+            "This operation targets the exact quoted SQL name shown above ({qualified_target}). Concurrent DDL or temporary objects can change name resolution, and dependent views, tasks, streams, or policies are not enumerated locally."
+        ),
+        "Catalog, relation browser, and SQL completion caches require an explicit post-DDL reconciliation refresh before continuing.".into(),
+    ];
+    if kind == SnowflakeDdlKind::CreateTable {
+        warnings.push(
+            "A table created in a transient schema or database is transient. Transient tables have only 0 or 1 day of Time Travel retention and no Fail-safe recovery period.".into(),
+        );
+    } else if target.is_some_and(|target| target.traits.transient == Some(true)) {
+        warnings.push(
+            "The reviewed target is a transient table: Time Travel retention is limited to 0 or 1 day and there is no Fail-safe recovery period. Recovery after a drop is not guaranteed.".into(),
+        );
+    }
+    if kind == SnowflakeDdlKind::DropTable {
+        warnings.push(
+            "Dropping a Snowflake table immediately removes the table from active schemas. Time Travel recovery depends on remote object retention settings not verified here.".into(),
+        );
+    }
+    warnings
+}
+
 fn dml_summary(kind: SnowflakeDmlKind, result: Option<&Value>) -> SnowflakeDmlSummary {
     let parse = || -> Option<SnowflakeDmlSummary> {
         let result = result?;
@@ -2268,6 +3031,13 @@ fn stale_session_options() -> AppError {
     )
 }
 
+fn stale_ddl() -> AppError {
+    AppError::new(
+        ErrorCode::Conflict,
+        "Snowflake DDL context or catalog state changed; refresh session state and relations before reviewing again",
+    )
+}
+
 struct MetadataSink {
     data: MetadataResult,
     max_rows: usize,
@@ -2378,7 +3148,7 @@ const file = name => new URL(name, import.meta.url);
 // coercion in the production template. This models routing, not Snowflake typing.
 const normalizedContextSql = 'SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES';
 const oldContextSql = normalizedContextSql.replace('TO_VARCHAR(CURRENT_SCHEMAS())', 'TO_JSON(CURRENT_SCHEMAS())');
-let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, currentTransaction = null;
+let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, ddlSeen = false, currentTransaction = null;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
   appendFileSync(file('connections'), '1');
@@ -2395,12 +3165,21 @@ const sdk = { createConnection() {
       const context = sql === normalizedContextSql;
       const unsupportedContext = sql === oldContextSql;
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
+      const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ');
+      const columnMetadata = sql.includes('.INFORMATION_SCHEMA.COLUMNS AS C ');
+      const describe = sql.startsWith('DESCRIBE TABLE ');
+      const zeroRows = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
       const use = sql.startsWith('USE SCHEMA ');
       const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
       const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /u.test(sql);
+      const ddl = /^(CREATE TABLE|ALTER TABLE|DROP TABLE) /u.test(sql);
       const readback = sql.startsWith('SELECT CURRENT_USER(),') && switched;
       let names = ['VALUE'], rows = [['1']], parameter;
-      if (dml) {
+      if (ddl) {
+        ddlSeen = true;
+        names = ['status'];
+        rows = [[value('ddlStatus', 'Statement executed successfully.')]];
+      } else if (dml) {
         dmlSeen = true;
         appendFileSync(file('dml-binds'), JSON.stringify(options.binds) + '\n');
         if (!settings.rejectDml && value('autocommit','true') === 'false') currentTransaction = value('transactionId','implicit-DML-TX');
@@ -2428,33 +3207,51 @@ const sdk = { createConnection() {
       } else if (context) {
         contextReads++;
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
-        rows = [[value('principal','SERVER_USER'),(switched || boundarySeen || dmlSeen) ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),(switched || boundarySeen || dmlSeen) ? value('afterDatabase',value('database','DB')) : value('database','DB'),(switched || boundarySeen || dmlSeen) ? value('afterSchema',currentSchema) : value('schema',currentSchema),(switched || boundarySeen || dmlSeen) ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),(switched || boundarySeen || dmlSeen) ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),(switched || boundarySeen || dmlSeen) ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
+        rows = [[value('principal','SERVER_USER'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterDatabase',value('database','DB')) : value('database','DB'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSchema',currentSchema) : value('schema',currentSchema),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
       } else if (sql.startsWith('SHOW PARAMETERS LIKE ')) {
         parameter = sql.split("'")[1];
         names = ['key','value','default','level'];
-        const observed = parameter === 'AUTOCOMMIT' ? (switched || boundarySeen) ? value('afterAutocommit',value('autocommit','true')) : value('autocommit','true') : parameter === 'TRANSACTION_ABORT_ON_ERROR' ? (switched || boundarySeen) ? value('afterAbortOnError',value('abortOnError','false')) : value('abortOnError','false') : (switched || boundarySeen) ? value('afterPolicy','false') : 'false';
+        const observed = parameter === 'AUTOCOMMIT' ? (switched || boundarySeen || ddlSeen) ? value('afterAutocommit',value('autocommit','true')) : value(contextReads >= 2 ? 'finalAutocommit' : 'autocommit',value('autocommit','true')) : parameter === 'TRANSACTION_ABORT_ON_ERROR' ? (switched || boundarySeen || ddlSeen) ? value('afterAbortOnError',value('abortOnError','false')) : value('abortOnError','false') : (switched || boundarySeen || ddlSeen) ? value('afterPolicy','false') : 'false';
         rows = [[parameter,observed,observed === 'true' ? 'false' : 'true','ACCOUNT']];
       } else if (sql === 'SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID') {
         transactionReads++;
         names = ['TRANSACTION_ID'];
-        rows = [[boundarySeen ? value('afterBoundaryTransactionId',currentTransaction) : (switched || dmlSeen) ? value('afterTransactionId',value('transactionId',currentTransaction)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',currentTransaction)]];
+        rows = [[boundarySeen ? value('afterBoundaryTransactionId',currentTransaction) : (switched || dmlSeen || ddlSeen) ? value('afterTransactionId',value('transactionId',currentTransaction)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',currentTransaction)]];
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
         rows = value('schemas',['OTHER','PUBLIC']).map(name => ['DB',name]);
+      } else if (relations) {
+        names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE','CREATED','LAST_DDL'];
+        const schema = sql.includes("TABLE_SCHEMA = 'OTHER'") ? 'OTHER' : 'PUBLIC';
+        const table = schema === 'OTHER' ? 'Mixed.Name' : value('tableName','ORDERS');
+        const kind = value('tableType','BASE TABLE');
+        const transient = value('isTransient','NO');
+        const lastDdl = ddlSeen ? value('afterLastDdl','last-ddl') : value('lastDdl','last-ddl');
+        rows = settings.emptyRelations ? [] : [['DB',schema,table,kind,transient,'NO','NO','NO','NO','NO','created',lastDdl]];
+      } else if (columnMetadata) {
+        names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','COLUMN_NAME','ORDINAL_POSITION','COLUMN_DEFAULT','IS_NULLABLE','DATA_TYPE','DATA_TYPE_ALIAS','CHARACTER_MAXIMUM_LENGTH','CHARACTER_OCTET_LENGTH','NUMERIC_PRECISION','NUMERIC_PRECISION_RADIX','NUMERIC_SCALE','IS_IDENTITY','IDENTITY_GENERATION','IDENTITY_START','IDENTITY_INCREMENT','IDENTITY_ORDERED','COMMENT','EXPRESSION','KIND'];
+        const table = value('tableName','ORDERS');
+        rows = [['DB','PUBLIC',table,'ID','1','42','NO','NUMBER','BIGINT',null,null,'38','10','0','NO',null,null,null,null,'identifier',null,'COLUMN'],['DB','PUBLIC',table,'NOTES','3',null,'YES','TEXT',null,'100','400',null,null,null,'NO',null,null,null,null,null,null,'COLUMN']];
+      } else if (describe) {
+        names = ['name','type','kind','null?','default','expression','comment'];
+        rows = [['ID','NUMBER(38,0)','COLUMN','N','42',null,'identifier'],['NOTES','VARCHAR(100)','COLUMN','Y',null,null,null]];
+      } else if (zeroRows) {
+        names = ['ID','NOTES'];
+        rows = [];
       } else if (sql !== 'SELECT 1') {
         throw new Error('unexpected fixture SQL');
       }
       let cancelled = false;
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map(name => ({ getName: () => settings.badDmlName && dml ? 'unexpected' : name, getType: () => dml ? value('dmlType','FIXED') : settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
+        getColumns: () => names.map(name => ({ getName: () => settings.badDmlName && dml ? 'unexpected' : name, getType: () => (zeroRows && name === 'ID') ? 'FIXED' : dml ? value('dmlType','FIXED') : settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
         streamRows() {
-          if (dml && settings.protocolDml) {
+          if (dml && settings.protocolDml || ddl && settings.protocolDdl) {
             send.flush().then(() => process.stdout.write(Buffer.alloc(4)));
             return Readable.from((async function*() { await new Promise(() => {}); })());
           }
-          if (dml && settings.holdDmlDrain || context && dmlSeen && settings.holdDmlObserver) {
-            writeFileSync(file(dml ? 'held-dml-drain' : 'held-dml-observer'), '');
+          if (dml && settings.holdDmlDrain || context && dmlSeen && settings.holdDmlObserver || ddl && settings.holdDdlDrain || context && ddlSeen && settings.holdDdlObserver) {
+            writeFileSync(file(ddl ? 'held-ddl-drain' : context && ddlSeen ? 'held-ddl-observer' : dml ? 'held-dml-drain' : 'held-dml-observer'), '');
             return Readable.from((async function*() {
               while (!existsSync(file('release')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5));
               if (cancelled) throw { sqlState: '57014' };
@@ -2477,8 +3274,9 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      const denied = ddl && settings.rejectDdl || ddlSeen && settings.failDdlObserver === parameter && parameter !== undefined || dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
       setImmediate(() => {
+        if (ddl && settings.holdDdl) { writeFileSync(file('held-ddl'), ''); return; }
         if (dml && settings.holdDml) { writeFileSync(file('held-dml'), ''); return; }
         if (boundary && settings.holdBoundary || use && settings.holdUse || readback && settings.holdReadback) {
           writeFileSync(file(boundary ? 'held-boundary' : use ? 'held-use' : 'held-readback'), '');
@@ -2515,6 +3313,18 @@ process.stdin.on('end', retire);
         }
 
         async fn open_policy(safe_mode: SafeMode, reviewed_dml: bool) -> Self {
+            Self::open_policy_with(safe_mode, reviewed_dml, false).await
+        }
+
+        async fn open_ddl_policy(safe_mode: SafeMode, reviewed_ddl: bool) -> Self {
+            Self::open_policy_with(safe_mode, false, reviewed_ddl).await
+        }
+
+        async fn open_policy_with(
+            safe_mode: SafeMode,
+            reviewed_dml: bool,
+            reviewed_ddl: bool,
+        ) -> Self {
             let scripts = tempfile::tempdir().unwrap();
             let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -2568,6 +3378,7 @@ process.stdin.on('end', retire);
                 snowflake: Some(SnowflakeConfig {
                     authentication: SnowflakeAuthentication::ExternalBrowser,
                     reviewed_dml,
+                    reviewed_ddl,
                     role: "ROLE".into(),
                     warehouse: "WH".into(),
                     schema: "PUBLIC".into(),
@@ -2612,6 +3423,35 @@ process.stdin.on('end', retire);
                 .collect()
         }
 
+        async fn prepare_create_ddl(&self) -> SnowflakeDdlRequest {
+            let action = SnowflakeDdlAction::CreateTable {
+                database: "DB".into(),
+                schema: "PUBLIC".into(),
+                name: "NEW_ORDERS".into(),
+                columns: vec![SnowflakeDdlColumnDraft {
+                    name: "ID".into(),
+                    data_type: "NUMBER(38, 0)".into(),
+                    nullable: false,
+                }],
+            };
+            let preflight = self
+                .driver
+                .preflight_snowflake_ddl(
+                    "observer-session",
+                    &SnowflakeDdlPreflightRequest {
+                        session_id: "observer-session".into(),
+                        action: action.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            SnowflakeDdlRequest {
+                revision: preflight.revision,
+                action,
+                sql: preflight.sql,
+            }
+        }
+
         async fn wait_until(&self, ready: impl Fn() -> bool) {
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !ready() {
@@ -2642,10 +3482,18 @@ process.stdin.on('end', retire);
                     ]
                     .contains(&sql.as_str())
                     || sql.starts_with("USE SCHEMA \"DB\".")
+                    || sql.starts_with("DESCRIBE TABLE ")
                     || ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"].contains(&sql.as_str())
-                    || ["INSERT INTO ", "UPDATE ", "DELETE FROM "]
-                        .iter()
-                        .any(|prefix| sql.starts_with(prefix))
+                    || [
+                        "INSERT INTO ",
+                        "UPDATE ",
+                        "DELETE FROM ",
+                        "CREATE TABLE ",
+                        "ALTER TABLE ",
+                        "DROP TABLE ",
+                    ]
+                    .iter()
+                    .any(|prefix| sql.starts_with(prefix))
             }));
         }
     }
@@ -4340,5 +5188,557 @@ process.stdin.on('end', retire);
         assert!(h.driver.is_closed());
         assert!(h.driver.session_options.lock().snapshot.is_none());
         h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn ddl_create_add_column_and_drop_preflight_validate_and_execute_with_single_use_grant() {
+        // 1. CreateTable
+        let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+        let create_action = SnowflakeDdlAction::CreateTable {
+            database: "DB".into(),
+            schema: "PUBLIC".into(),
+            name: "NEW_ORDERS".into(),
+            columns: vec![
+                SnowflakeDdlColumnDraft {
+                    name: "ID".into(),
+                    data_type: "NUMBER(38, 0)".into(),
+                    nullable: false,
+                },
+                SnowflakeDdlColumnDraft {
+                    name: "LABEL".into(),
+                    data_type: "VARCHAR(120)".into(),
+                    nullable: true,
+                },
+            ],
+        };
+        let preflight = h
+            .driver
+            .preflight_snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlPreflightRequest {
+                    session_id: "observer-session".into(),
+                    action: create_action.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(preflight.kind, SnowflakeDdlKind::CreateTable);
+        assert_eq!(
+            preflight.qualified_target,
+            "\"DB\".\"PUBLIC\".\"NEW_ORDERS\""
+        );
+        assert_eq!(
+            preflight.sql,
+            "CREATE TABLE \"DB\".\"PUBLIC\".\"NEW_ORDERS\" (\"ID\" NUMBER(38, 0) NOT NULL, \"LABEL\" VARCHAR(120))"
+        );
+        let req = SnowflakeDdlRequest {
+            revision: preflight.revision.clone(),
+            action: create_action,
+            sql: preflight.sql.clone(),
+        };
+        h.driver.validate_snowflake_ddl(&req).unwrap();
+        h.driver.validate_snowflake_ddl(&req).unwrap();
+        let result = h
+            .driver
+            .snowflake_ddl("observer-session", &req)
+            .await
+            .unwrap();
+        assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+        assert_eq!(
+            result.summary_status,
+            SnowflakeDdlSummaryStatus::Acknowledged
+        );
+        assert!(result.catalog_reconciliation_required);
+        assert!(!result.retired && result.error.is_none());
+        assert!(
+            h.driver
+                .snowflake_ddl("observer-session", &req)
+                .await
+                .is_err()
+        );
+        h.finish().await;
+
+        // 2. AddColumn & DropTable
+        for is_add_column in [true, false] {
+            let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+            let catalog = h.driver.relation_catalog().await.unwrap();
+            let target_id = catalog
+                .relations
+                .iter()
+                .find(|r| r.table.schema == "PUBLIC" && r.table.name == "ORDERS")
+                .unwrap()
+                .target_id
+                .clone();
+            let action = if is_add_column {
+                let inspection = h
+                    .driver
+                    .inspect_relation(&InspectRelationRequest {
+                        revision: catalog.revision.clone(),
+                        target_id: target_id.clone(),
+                    })
+                    .await
+                    .unwrap();
+                SnowflakeDdlAction::AddColumn {
+                    browse_revision: catalog.revision.clone(),
+                    target_id: target_id.clone(),
+                    inspection_revision: inspection.revision,
+                    column: SnowflakeDdlColumnDraft {
+                        name: "STATUS".into(),
+                        data_type: "VARCHAR(32)".into(),
+                        nullable: true,
+                    },
+                }
+            } else {
+                SnowflakeDdlAction::DropTable {
+                    browse_revision: catalog.revision.clone(),
+                    target_id,
+                }
+            };
+            let preflight = h
+                .driver
+                .preflight_snowflake_ddl(
+                    "observer-session",
+                    &SnowflakeDdlPreflightRequest {
+                        session_id: "observer-session".into(),
+                        action: action.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            let req = SnowflakeDdlRequest {
+                revision: preflight.revision,
+                action,
+                sql: preflight.sql,
+            };
+            let result = h
+                .driver
+                .snowflake_ddl("observer-session", &req)
+                .await
+                .unwrap();
+            assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+            assert_eq!(
+                result.summary_status,
+                SnowflakeDdlSummaryStatus::Acknowledged
+            );
+            assert!(result.catalog_reconciliation_required);
+            assert!(!result.retired && result.error.is_none());
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn ddl_pre_ack_database_rejection_keeps_session_open_while_post_ack_failure_retires_without_rollback_only()
+     {
+        // Pre-ACK database rejection keeps session open if post-rejection sample is intact
+        let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+        let action = SnowflakeDdlAction::CreateTable {
+            database: "DB".into(),
+            schema: "PUBLIC".into(),
+            name: "NEW_ORDERS".into(),
+            columns: vec![SnowflakeDdlColumnDraft {
+                name: "ID".into(),
+                data_type: "NUMBER(38, 0)".into(),
+                nullable: false,
+            }],
+        };
+        let preflight = h
+            .driver
+            .preflight_snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlPreflightRequest {
+                    session_id: "observer-session".into(),
+                    action: action.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        h.settings(json!({"rejectDdl":true}));
+        let result = h
+            .driver
+            .snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlRequest {
+                    revision: preflight.revision,
+                    action: action.clone(),
+                    sql: preflight.sql,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Rejected);
+        assert_eq!(
+            result.summary_status,
+            SnowflakeDdlSummaryStatus::Unavailable
+        );
+        assert!(result.catalog_reconciliation_required);
+        assert!(!result.retired && !h.driver.is_closed());
+        assert_eq!(result.error.unwrap().code, ErrorCode::Database);
+        assert!(!matches!(
+            result.state.transaction_control_authority,
+            Some(TransactionControlAuthority::RollbackOnly { .. })
+        ));
+        h.finish().await;
+
+        // Post-ACK observer failure retires session and never exposes RollbackOnly
+        let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+        let preflight = h
+            .driver
+            .preflight_snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlPreflightRequest {
+                    session_id: "observer-session".into(),
+                    action: action.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        h.settings(json!({"failDdlObserver":"AUTOCOMMIT"}));
+        let result = h
+            .driver
+            .snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlRequest {
+                    revision: preflight.revision,
+                    action,
+                    sql: preflight.sql,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+        assert_eq!(
+            result.summary_status,
+            SnowflakeDdlSummaryStatus::Acknowledged
+        );
+        assert!(result.retired && h.driver.is_closed());
+        assert!(result.state.transaction_control_authority.is_none());
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn ddl_final_idle_observation_blocks_drift_after_catalog_recheck() {
+        for settings in [
+            json!({"contextDrift":true}),
+            json!({"finalAutocommit":"false"}),
+            json!({"transactionDrift":true}),
+        ] {
+            let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+            let request = h.prepare_create_ddl().await;
+            let baseline = h.queries().len();
+            h.settings(settings);
+            let error = h
+                .driver
+                .snowflake_ddl("observer-session", &request)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Conflict);
+            let queries = h.queries();
+            assert_eq!(
+                queries[baseline..]
+                    .iter()
+                    .filter(|sql| sql.as_str() == metadata::CONTEXT_SQL)
+                    .count(),
+                2
+            );
+            assert!(!queries[baseline..].iter().any(|sql| sql == &request.sql));
+            assert!(!h.driver.is_closed());
+            assert!(h.driver.validate_snowflake_ddl(&request).is_err());
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn ddl_expired_while_queued_cannot_dispatch_or_reuse_grant() {
+        let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+        let request = h.prepare_create_ddl().await;
+        h.driver
+            .ddl_authority
+            .lock()
+            .grant
+            .as_mut()
+            .unwrap()
+            .issued_at = Instant::now() - (DDL_GRANT_TTL - Duration::from_millis(100));
+        let lane = h.driver.lane.lock().await;
+        let driver = h.driver.clone();
+        let submitted = request.clone();
+        let task =
+            tokio::spawn(async move { driver.snowflake_ddl("observer-session", &submitted).await });
+        h.wait_until(|| h.driver.ddl_authority.lock().grant.is_none())
+            .await;
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        drop(lane);
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(!h.queries().iter().any(|sql| sql == &request.sql));
+        assert!(!h.driver.is_closed());
+        assert!(h.driver.validate_snowflake_ddl(&request).is_err());
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn ddl_grant_binds_exact_action_sql_expiry_and_metadata_generation() {
+        let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+        let request = h.prepare_create_ddl().await;
+        let count = h.queries().len();
+        let mut changed = request.clone();
+        changed.sql.push(' ');
+        assert!(h.driver.validate_snowflake_ddl(&changed).is_err());
+        let mut changed = request.clone();
+        let SnowflakeDdlAction::CreateTable { name, .. } = &mut changed.action else {
+            unreachable!();
+        };
+        *name = "OTHER_TARGET".into();
+        assert!(h.driver.validate_snowflake_ddl(&changed).is_err());
+        h.driver.validate_snowflake_ddl(&request).unwrap();
+        assert_eq!(h.queries().len(), count);
+        h.driver
+            .ddl_authority
+            .lock()
+            .grant
+            .as_mut()
+            .unwrap()
+            .issued_at = Instant::now() - DDL_GRANT_TTL;
+        assert!(h.driver.validate_snowflake_ddl(&request).is_err());
+        let request = h.prepare_create_ddl().await;
+        // Model the interval between transaction revocation and its dependent
+        // DDL revocation. Independently matching names/samples are insufficient.
+        h.driver.transaction_authority.lock().generation = new_id();
+        assert!(h.driver.validate_snowflake_ddl(&request).is_err());
+        let request = h.prepare_create_ddl().await;
+        h.driver.relation_catalog().await.unwrap();
+        assert!(h.driver.validate_snowflake_ddl(&request).is_err());
+        assert!(!h.queries().iter().any(|sql| sql == &request.sql));
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn ddl_catalog_collision_after_review_is_not_submitted() {
+        let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+        let request = h.prepare_create_ddl().await;
+        h.settings(json!({"tableName":"NEW_ORDERS"}));
+        let error = h
+            .driver
+            .snowflake_ddl("observer-session", &request)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(!h.queries().iter().any(|sql| sql == &request.sql));
+        assert!(!h.driver.is_closed());
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn ddl_permanent_and_transient_targets_bind_traits_and_warn_about_recovery() {
+        for transient in [false, true] {
+            let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+            h.settings(json!({"isTransient":if transient { "YES" } else { "NO" }}));
+            let catalog = h.driver.relation_catalog().await.unwrap();
+            let relation = catalog
+                .relations
+                .iter()
+                .find(|relation| relation.table.schema == "PUBLIC")
+                .unwrap();
+            let (_, target) = h
+                .driver
+                .browse_target(&catalog.revision, &relation.target_id)
+                .unwrap();
+            require_plain_base_table(&target).unwrap();
+            let mut unknown = target.clone();
+            unknown.traits.transient = None;
+            assert!(require_plain_base_table(&unknown).is_err());
+            let mut unknown = target.clone();
+            unknown.traits.temporary = None;
+            assert!(require_plain_base_table(&unknown).is_err());
+            let mut temporary = target.clone();
+            temporary.traits.temporary = Some(true);
+            assert!(require_plain_base_table(&temporary).is_err());
+            let action = SnowflakeDdlAction::DropTable {
+                browse_revision: catalog.revision,
+                target_id: relation.target_id.clone(),
+            };
+            let preflight = h
+                .driver
+                .preflight_snowflake_ddl(
+                    "observer-session",
+                    &SnowflakeDdlPreflightRequest {
+                        session_id: "observer-session".into(),
+                        action: action.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                preflight.warnings.iter().any(|warning| {
+                    warning.contains("reviewed target is a transient")
+                        && warning.contains("0 or 1 day")
+                        && warning.contains("no Fail-safe")
+                }),
+                transient
+            );
+            let result = h
+                .driver
+                .snowflake_ddl(
+                    "observer-session",
+                    &SnowflakeDdlRequest {
+                        revision: preflight.revision,
+                        action,
+                        sql: preflight.sql,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn ddl_preflight_requires_explicit_policy_and_idle_automatic_commit() {
+        let source = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+        let request = source.prepare_create_ddl().await;
+        source.finish().await;
+        for (safe_mode, reviewed_ddl, settings, expected) in [
+            (
+                SafeMode::ReadOnly,
+                false,
+                json!({}),
+                ErrorCode::PolicyBlocked,
+            ),
+            (
+                SafeMode::Confirm,
+                false,
+                json!({}),
+                ErrorCode::PolicyBlocked,
+            ),
+            (
+                SafeMode::Confirm,
+                true,
+                json!({"autocommit":"false"}),
+                ErrorCode::Conflict,
+            ),
+            (
+                SafeMode::Confirm,
+                true,
+                json!({"transactionId":"active-TX"}),
+                ErrorCode::Conflict,
+            ),
+        ] {
+            let h = Harness::open_ddl_policy(safe_mode, reviewed_ddl).await;
+            h.settings(settings);
+            let error = h
+                .driver
+                .preflight_snowflake_ddl(
+                    "observer-session",
+                    &SnowflakeDdlPreflightRequest {
+                        session_id: "observer-session".into(),
+                        action: request.action.clone(),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, expected);
+            assert!(h.driver.ddl_authority.lock().grant.is_none());
+            assert!(!h.queries().iter().any(|sql| sql == &request.sql));
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn ddl_cancel_and_protocol_loss_preserve_early_ack_without_replay() {
+        for (settings, barrier, expected, summary) in [
+            (
+                json!({"holdDdl":true}),
+                "held-ddl",
+                SnowflakeDdlOutcome::Unknown,
+                SnowflakeDdlSummaryStatus::Unavailable,
+            ),
+            (
+                json!({"holdDdlDrain":true}),
+                "held-ddl-drain",
+                SnowflakeDdlOutcome::Succeeded,
+                SnowflakeDdlSummaryStatus::Unavailable,
+            ),
+            (
+                json!({"holdDdlObserver":true}),
+                "held-ddl-observer",
+                SnowflakeDdlOutcome::Succeeded,
+                SnowflakeDdlSummaryStatus::Acknowledged,
+            ),
+            (
+                json!({"protocolDdl":true}),
+                "",
+                SnowflakeDdlOutcome::Succeeded,
+                SnowflakeDdlSummaryStatus::Unavailable,
+            ),
+        ] {
+            let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+            let request = h.prepare_create_ddl().await;
+            h.settings(settings);
+            let driver = h.driver.clone();
+            let submitted = request.clone();
+            let task =
+                tokio::spawn(
+                    async move { driver.snowflake_ddl("observer-session", &submitted).await },
+                );
+            if !barrier.is_empty() {
+                h.wait_until(|| h.scripts.path().join(barrier).exists())
+                    .await;
+                let _ = h.driver.cancel().await;
+            }
+            let result = tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.statement_outcome, expected, "{barrier}");
+            assert_eq!(result.summary_status, summary, "{barrier}");
+            assert!(result.retired && h.driver.is_closed());
+            assert!(result.state.transaction_control_authority.is_none());
+            assert_eq!(
+                h.queries()
+                    .iter()
+                    .filter(|sql| *sql == &request.sql)
+                    .count(),
+                1
+            );
+            assert!(h.driver.validate_snowflake_ddl(&request).is_err());
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn ddl_dropped_waiter_or_shutdown_retires_without_replay() {
+        for abort_waiter in [false, true] {
+            let h = Harness::open_ddl_policy(SafeMode::Confirm, true).await;
+            let request = h.prepare_create_ddl().await;
+            h.settings(json!({"holdDdlDrain":true}));
+            let driver = h.driver.clone();
+            let submitted = request.clone();
+            let task =
+                tokio::spawn(
+                    async move { driver.snowflake_ddl("observer-session", &submitted).await },
+                );
+            h.wait_until(|| h.scripts.path().join("held-ddl-drain").exists())
+                .await;
+            if abort_waiter {
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+            } else {
+                h.driver.close();
+                let result = task.await.unwrap().unwrap();
+                assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+                assert!(result.retired);
+            }
+            assert!(h.driver.is_closed());
+            assert_eq!(
+                h.queries()
+                    .iter()
+                    .filter(|sql| *sql == &request.sql)
+                    .count(),
+                1
+            );
+            assert!(h.driver.validate_snowflake_ddl(&request).is_err());
+            h.finish().await;
+        }
     }
 }

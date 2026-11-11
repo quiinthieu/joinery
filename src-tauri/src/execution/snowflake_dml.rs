@@ -297,6 +297,7 @@ impl Studio {
                 summary: result.summary.clone(),
                 retired: result.retired,
             }),
+            snowflake_ddl: None,
             id: new_id(),
             connection_id: session.profile.id.clone(),
             connection_name: session.profile.name.clone(),

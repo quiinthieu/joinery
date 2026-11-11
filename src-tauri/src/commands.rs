@@ -906,6 +906,64 @@ pub async fn execute_snowflake_dml(
 }
 
 #[tauri::command]
+pub async fn preflight_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeDdlPreflightRequest,
+) -> AppResult<SnowflakeDdlPreflightResponse> {
+    studio.preflight_snowflake_ddl(&request).await
+}
+
+#[tauri::command]
+pub async fn prepare_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SnowflakeDdlRequest,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_snowflake_ddl(&session_id, &request)
+}
+
+#[tauri::command]
+pub async fn authorize_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    passphrase: Option<String>,
+    confirmation: Option<String>,
+    target_confirmation: Option<String>,
+) -> AppResult<String> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let passphrase = passphrase.map(Zeroizing::new);
+        studio.authorize_snowflake_ddl(
+            &plan_id,
+            passphrase.as_deref().map(String::as_str),
+            confirmation.as_deref(),
+            target_confirmation.as_deref(),
+        )
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn execute_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<SnowflakeDdlResult> {
+    studio
+        .execute_snowflake_ddl(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn refresh_snowflake_ddl_metadata(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<SessionContextOptions> {
+    studio.refresh_snowflake_ddl_metadata(&session_id).await
+}
+
+#[tauri::command]
 pub async fn commit_transaction(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

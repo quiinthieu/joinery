@@ -104,6 +104,13 @@ impl Snowflake {
                 "Reviewed Snowflake SQL writes require explicit external-browser opt-in and a non-read-only policy",
             ));
         }
+        if config.reviewed_ddl
+            && (!explicit_boundary_policy || profile.safe_mode == SafeMode::ReadOnly)
+        {
+            return Err(AppError::invalid(
+                "Reviewed Snowflake table DDL requires explicit external-browser opt-in and a non-read-only policy",
+            ));
+        }
         if !explicit_boundary_policy && profile.safe_mode != SafeMode::ReadOnly {
             return Err(AppError::invalid(
                 "Only external browser SSO profiles may choose a non-read-only Snowflake transaction policy",
@@ -203,6 +210,7 @@ impl Snowflake {
                 schema_diagram: false,
                 schema_diff: false,
                 ddl_editing: false,
+                snowflake_reviewed_ddl: false,
                 lock_inspection: false,
                 explain_analyze: false,
                 oauth_browser: true,
@@ -921,6 +929,7 @@ mod tests {
             snowflake: Some(SnowflakeConfig {
                 authentication,
                 reviewed_dml: false,
+                reviewed_ddl: false,
                 role: "READ_ONLY".into(),
                 warehouse: "COMPUTE".into(),
                 schema: "PUBLIC".into(),

@@ -52,6 +52,7 @@ mod snowflake_connection_tests;
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
+mod snowflake_ddl;
 mod snowflake_dml;
 mod transaction_controls;
 
@@ -59,12 +60,17 @@ mod transaction_controls;
 struct MetadataGate {
     revision: String,
     held: bool,
+    catalog_required: bool,
 }
 
 impl MetadataGate {
     fn hold(&mut self) {
         self.revision = new_id();
         self.held = true;
+    }
+    fn hold_catalog(&mut self) {
+        self.hold();
+        self.catalog_required = true;
     }
     fn check(&self, revision: Option<&str>, resume: bool) -> AppResult<()> {
         if revision.is_some_and(|revision| revision != self.revision) || (self.held && !resume) {
@@ -138,6 +144,11 @@ enum Action {
         request: SnowflakeDmlRequest,
         bound: crate::params::BoundStatement,
         database: String,
+        mode: SafeMode,
+    },
+    SnowflakeDdl {
+        request: SnowflakeDdlRequest,
+        preflight: SnowflakeDdlPreflightResponse,
         mode: SafeMode,
     },
 }
@@ -239,6 +250,8 @@ pub struct Studio {
     pub file_capabilities: FileCapabilities,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     plans: Mutex<HashMap<String, StoredPlan>>,
+    ddl_preflights: Mutex<HashMap<String, snowflake_ddl::Preflight>>,
+    pending_ddl_receipts: Mutex<HashMap<String, snowflake_ddl::PendingReceipt>>,
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
@@ -342,6 +355,8 @@ impl Studio {
             results,
             connection_attempts: ConnectionAttempts::default(),
             dml_tasks: tokio_util::task::TaskTracker::new(),
+            ddl_preflights: Mutex::new(HashMap::new()),
+            pending_ddl_receipts: Mutex::new(HashMap::new()),
             configuration_gate: Mutex::new(()),
             tunnels: SshManager::default(),
             #[cfg(unix)]
@@ -477,6 +492,7 @@ impl Studio {
         }
         let undo = self.persistence.restore_metadata_backup(id, digest)?;
         self.plans.lock().clear();
+        self.ddl_preflights.lock().clear();
         // Restoration replaces settings without restarting this Studio. Fail
         // closed if the restored preference cannot be read.
         self.results.set_temporary_disk_enabled(false);
@@ -1069,6 +1085,7 @@ impl Studio {
             session.driver.close();
         }
         self.plans.lock().retain(|_, p| p.plan.session_id != id);
+        self.ddl_preflights.lock().remove(id);
         self.import_targets
             .lock()
             .retain(|(session_id, _, _), _| session_id != id);
@@ -1132,6 +1149,7 @@ impl Studio {
         self.persistence
             .set_setting("passphrase-configured", "true")?;
         self.plans.lock().clear();
+        self.ddl_preflights.lock().clear();
         Ok(())
     }
 
@@ -1368,6 +1386,14 @@ impl Studio {
                 serde_json::to_vec(request)
                     .map_err(|_| AppError::internal("Could not fingerprint transaction action"))?,
             ),
+            Action::SnowflakeDdl {
+                request,
+                preflight,
+                mode,
+            } => fingerprint.update(
+                serde_json::to_vec(&(request, preflight, mode))
+                    .map_err(|_| AppError::internal("Could not fingerprint reviewed DDL"))?,
+            ),
         }
         let digest = hex::encode(fingerprint.finalize());
         plans.insert(
@@ -1390,13 +1416,40 @@ impl Studio {
         passphrase: Option<&str>,
         confirmation: Option<&str>,
     ) -> AppResult<String> {
-        let plan = {
-            self.plans
-                .lock()
-                .get(plan_id)
-                .map(|p| p.plan.clone())
-                .ok_or_else(expired)?
-        };
+        self.authorize_plan(plan_id, passphrase, confirmation, None, false)
+    }
+
+    fn authorize_plan(
+        &self,
+        plan_id: &str,
+        passphrase: Option<&str>,
+        confirmation: Option<&str>,
+        target_confirmation: Option<&str>,
+        ddl: bool,
+    ) -> AppResult<String> {
+        let _configuration = self.configuration_gate.lock();
+        let mut plans = self.plans.lock();
+        let stored = plans.get_mut(plan_id).ok_or_else(expired)?;
+        if stored.deadline <= Instant::now() {
+            return Err(expired());
+        }
+        let plan = &stored.plan;
+        if ddl != matches!(stored.action, Action::SnowflakeDdl { .. }) {
+            return Err(AppError::new(
+                ErrorCode::ApprovalRequired,
+                "Use the dedicated Snowflake DDL review to confirm this exact target",
+            ));
+        }
+        if plan
+            .target_confirmation_text
+            .as_deref()
+            .is_some_and(|expected| Some(expected) != target_confirmation)
+        {
+            return Err(AppError::new(
+                ErrorCode::ApprovalRequired,
+                "Type the exact fully qualified target to confirm this destructive operation",
+            ));
+        }
         if plan.requires_passphrase {
             self.verify_passphrase(passphrase)?;
         }
@@ -1411,11 +1464,6 @@ impl Studio {
             ));
         }
         self.session(&plan.session_id)?;
-        let mut plans = self.plans.lock();
-        let stored = plans.get_mut(plan_id).ok_or_else(expired)?;
-        if stored.deadline <= Instant::now() {
-            return Err(expired());
-        }
         let id = new_id();
         stored.approval = Some(id.clone());
         Ok(id)
@@ -1433,7 +1481,10 @@ impl Studio {
         }
         if matches!(
             stored.action,
-            Action::Browse { .. } | Action::TransactionControl { .. } | Action::SnowflakeDml { .. }
+            Action::Browse { .. }
+                | Action::TransactionControl { .. }
+                | Action::SnowflakeDml { .. }
+                | Action::SnowflakeDdl { .. }
         ) {
             return Err(AppError::invalid(
                 "Use the dedicated typed command to execute this prepared action",
@@ -1755,7 +1806,8 @@ impl Studio {
             }
             Action::Browse { .. }
             | Action::TransactionControl { .. }
-            | Action::SnowflakeDml { .. } => {}
+            | Action::SnowflakeDml { .. }
+            | Action::SnowflakeDdl { .. } => {}
         }
         if serialized {
             let observed_state = if matches!(stored.action, Action::Sql { .. })
@@ -1833,6 +1885,7 @@ impl Studio {
         };
         let history = HistoryEntry {
             snowflake_dml: None,
+            snowflake_ddl: None,
             id: run_id.clone(),
             connection_id: session.profile.id.clone(),
             connection_name: session.profile.name.clone(),
@@ -1914,6 +1967,13 @@ impl Studio {
             .metadata_gate
             .lock()
             .check(Some(&revision), resume_metadata)?;
+        if resume_metadata && session.metadata_gate.lock().catalog_required {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "DDL metadata remains paused; explicitly reconcile the catalog to resume",
+            )
+            .with_completion_invalidated());
+        }
         let result = self.build_session_contexts(&session).await;
         if resume_metadata
             && snowflake_dml::sdk_profile(&session.profile)
@@ -2201,6 +2261,7 @@ impl Studio {
         &self,
         session: &Arc<Session>,
     ) -> AppResult<SessionContextOptions> {
+        self.ddl_preflights.lock().remove(&session.info.id);
         let options = session
             .driver
             .session_context_options(&session.info.id)
@@ -2255,6 +2316,7 @@ impl Studio {
     /// Read a bounded context snapshot on the existing editor execution lane.
     pub async fn completion_catalog(&self, session_id: &str) -> AppResult<CompletionCatalog> {
         let session = self.session(session_id)?;
+        self.ddl_preflights.lock().remove(session_id);
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
                 ErrorCode::Conflict,
@@ -2487,6 +2549,7 @@ impl Studio {
 
     pub async fn relation_catalog(&self, session_id: &str) -> AppResult<BrowseCatalog> {
         let session = self.session(session_id)?;
+        self.ddl_preflights.lock().remove(session_id);
         // Refresh revokes targets even if the outer console lane is busy.
         // Never let a failed refresh leave a previously granted target usable.
         session.driver.invalidate_relation_catalog();
@@ -4779,6 +4842,7 @@ impl Studio {
                     "A database write is still recording its outcome; keep Joinery open and try closing again",
                 )
             })?;
+        self.flush_pending_ddl_receipts()?;
         #[cfg(unix)]
         self.snowflake_cleanup
             .wait_all(Duration::from_secs(10))
@@ -5280,6 +5344,7 @@ mod browse_classification_tests {
         contexts_error: Option<ErrorCode>,
         switch_error: Option<ErrorCode>,
         relation_calls: std::sync::atomic::AtomicUsize,
+        relation_result: Mutex<Option<AppResult<BrowseCatalog>>>,
         relation_invalidated: AtomicBool,
         switch_saw_invalidation: AtomicBool,
         close_during_relation: bool,
@@ -5292,6 +5357,9 @@ mod browse_classification_tests {
         close_during_schema_switch: bool,
         dml_calls: Mutex<Vec<SnowflakeDmlRequest>>,
         dml_result: Mutex<Option<SnowflakeDmlResult>>,
+        ddl_calls: Mutex<Vec<SnowflakeDdlRequest>>,
+        ddl_preflight: Mutex<Option<(SnowflakeDdlPreflightRequest, SnowflakeDdlPreflightResponse)>>,
+        ddl_result: Mutex<Option<SnowflakeDdlResult>>,
         boundary_calls: Mutex<Vec<TransactionControlRequest>>,
         boundary_result: Mutex<Option<TransactionControlResult>>,
         boundary_barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
@@ -5306,6 +5374,9 @@ mod browse_classification_tests {
             self.relation_calls.fetch_add(1, Ordering::Relaxed);
             if self.close_during_relation {
                 self.close();
+            }
+            if let Some(result) = self.relation_result.lock().clone() {
+                return result;
             }
             Ok(BrowseCatalog {
                 revision: "r".into(),
@@ -5478,6 +5549,42 @@ mod browse_classification_tests {
             }
             Ok(result)
         }
+        async fn preflight_snowflake_ddl(
+            &self,
+            _session_id: &str,
+            request: &SnowflakeDdlPreflightRequest,
+        ) -> AppResult<SnowflakeDdlPreflightResponse> {
+            let preflight = self.ddl_preflight.lock();
+            let (expected, response) = preflight.as_ref().unwrap();
+            if expected != request {
+                return Err(AppError::invalid("Fixture preflight mismatch"));
+            }
+            Ok(response.clone())
+        }
+        fn validate_snowflake_ddl(&self, request: &SnowflakeDdlRequest) -> AppResult<()> {
+            let preflight = self.ddl_preflight.lock();
+            let (expected, response) = preflight.as_ref().ok_or_else(expired)?;
+            if request.action != expected.action
+                || request.revision != response.revision
+                || request.sql != response.sql
+            {
+                return Err(expired());
+            }
+            Ok(())
+        }
+        async fn snowflake_ddl(
+            &self,
+            _session_id: &str,
+            request: &SnowflakeDdlRequest,
+        ) -> AppResult<SnowflakeDdlResult> {
+            self.ddl_calls.lock().push(request.clone());
+            let result = self.ddl_result.lock().clone().unwrap();
+            if let Some((started, release)) = &self.boundary_barrier {
+                started.notify_one();
+                release.notified().await;
+            }
+            Ok(result)
+        }
         async fn commit_transaction(&self) -> AppResult<()> {
             self.transaction_error
                 .map_or(Ok(()), |code| Err(AppError::new(code, "control failure")))
@@ -5624,6 +5731,7 @@ mod browse_classification_tests {
     }
 
     include!("execution/snowflake_dml_tests.rs");
+    include!("execution/snowflake_ddl_tests.rs");
 
     #[tokio::test]
     async fn explicit_boundary_policy_review_and_one_use_are_enforced_without_extra_observers() {
@@ -6243,6 +6351,7 @@ mod browse_classification_tests {
                                     schema_diagram: false,
                                     schema_diff: false,
                                     ddl_editing: false,
+                                    snowflake_reviewed_ddl: false,
                                     lock_inspection: false,
                                     explain_analyze: false,
                                     oauth_browser: false,
@@ -6340,6 +6449,7 @@ mod browse_classification_tests {
                         schema_diagram: false,
                         schema_diff: false,
                         ddl_editing: false,
+                        snowflake_reviewed_ddl: false,
                         lock_inspection: false,
                         explain_analyze: false,
                         oauth_browser: false,
@@ -6531,6 +6641,7 @@ mod browse_classification_tests {
                         schema_diagram: false,
                         schema_diff: false,
                         ddl_editing: false,
+                        snowflake_reviewed_ddl: false,
                         lock_inspection: false,
                         explain_analyze: false,
                         oauth_browser: false,

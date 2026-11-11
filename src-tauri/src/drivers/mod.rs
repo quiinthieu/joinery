@@ -256,6 +256,33 @@ pub trait Driver: Send + Sync {
             "Reviewed Snowflake SQL writes are unavailable for this engine",
         ))
     }
+    async fn preflight_snowflake_ddl(
+        &self,
+        _session_id: &str,
+        _request: &SnowflakeDdlPreflightRequest,
+    ) -> AppResult<SnowflakeDdlPreflightResponse> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed Snowflake table DDL is unavailable for this engine",
+        ))
+    }
+    /// Pure validation only; this cannot consume authority or submit SQL.
+    fn validate_snowflake_ddl(&self, _request: &SnowflakeDdlRequest) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed Snowflake table DDL is unavailable for this engine",
+        ))
+    }
+    async fn snowflake_ddl(
+        &self,
+        _session_id: &str,
+        _request: &SnowflakeDdlRequest,
+    ) -> AppResult<SnowflakeDdlResult> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed Snowflake table DDL is unavailable for this engine",
+        ))
+    }
     /// Pure validation only: preparation must never consume authority or send SQL.
     fn validate_transaction_control(&self, _request: &TransactionControlRequest) -> AppResult<()> {
         Err(AppError::new(

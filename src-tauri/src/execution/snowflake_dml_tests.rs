@@ -23,6 +23,7 @@ fn sdk_dml_fixture(
     profile.snowflake = Some(SnowflakeConfig {
         authentication: SnowflakeAuthentication::ExternalBrowser,
         reviewed_dml: true,
+        reviewed_ddl: false,
         role: "ROLE".into(),
         warehouse: "WH".into(),
         schema: "PUBLIC".into(),

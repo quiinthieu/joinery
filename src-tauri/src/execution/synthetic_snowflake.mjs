@@ -18,6 +18,8 @@ export default {
     let policyAfterSchemaCheck = false;
     let unsupportedPolicy = false;
     let transactionId = null;
+    let ddlCreated = false;
+    let ddlExecuted = false;
     const context = () => {
       if (!existsSync(marker('change-after-schema-recheck')) && !existsSync(marker('drift-during-schema'))) shiftedSchema = undefined;
       if (!existsSync(marker('policy-error-after-schema-recheck'))) {
@@ -48,11 +50,27 @@ export default {
         const current = context();
         const boundary = ['BEGIN TRANSACTION', 'COMMIT', 'ROLLBACK'].includes(sql);
         const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /.test(sql);
+        const ddl = /^(CREATE TABLE|ALTER TABLE|DROP TABLE) /.test(sql);
+        const ddlFinalObserver = ddlExecuted && sql.startsWith('SELECT CURRENT_USER() AS PRINCIPAL');
+        if (ddlFinalObserver) writeFileSync(marker('ddl-final-observer-entered'), String(id));
         let names = ['C0'];
         let types = ['TEXT'];
         let values = [['1']];
         let failure = null;
-        if (dml) {
+        if (ddl) {
+          ddlExecuted = true;
+          names = ['status']; types = ['TEXT']; values = [['Statement executed successfully.']];
+          appendFileSync(marker('ddl-effects'), JSON.stringify({ sql }) + '\n');
+          writeFileSync(marker('ddl-entered'), String(id));
+          if (existsSync(marker('reject-ddl'))) {
+            failure = Object.assign(Error('synthetic DDL rejected'), { sqlState: '42501' });
+          } else if (sql.startsWith('CREATE TABLE "DB"."PUBLIC"."DDL_TEST" ')) {
+            ddlCreated = true;
+          }
+          if (existsSync(marker('deny-observer-after-ddl'))) {
+            writeFileSync(marker('deny-observer'), 'synthetic DDL final-observer denial');
+          }
+        } else if (dml) {
           const kind = sql.startsWith('INSERT') ? 'insert' : sql.startsWith('UPDATE') ? 'update' : 'delete';
           names = [`number of rows ${kind === 'insert' ? 'inserted' : kind === 'update' ? 'updated' : 'deleted'}`];
           values = [['9007199254740993']];
@@ -126,6 +144,7 @@ export default {
           const schema = sql.includes("TABLE_SCHEMA = 'PUBLIC'") ? 'PUBLIC' : 'OTHER';
           names = relationColumns;
           values = [[profile.database, schema, 'SAME_NAME', 'BASE TABLE', 'NO', 'NO', 'NO', 'NO', 'NO', 'NO']];
+          if (ddlCreated && schema === 'PUBLIC') values.push([profile.database, schema, 'DDL_TEST', 'BASE TABLE', 'NO', 'NO', 'NO', 'NO', 'NO', 'NO']);
           if (sql.includes('CREATED::VARCHAR AS CREATED')) {
             names = [...names, 'CREATED', 'LAST_DDL'];
             values = values.map(row => [...row, 'created', 'last-ddl']);
@@ -166,8 +185,17 @@ export default {
           // This never claims logout or real Snowflake transaction effects.
           if (boundary && existsSync(marker('lose-transaction-ack'))) process.exit(0);
           if (dml && existsSync(marker('lose-dml-ack'))) process.exit(0);
+          if (ddl && existsSync(marker('lose-ddl-ack'))) process.exit(0);
           const complete = () => {
             if (dml && existsSync(marker('hold-dml-ack')) && !existsSync(marker('release-dml-ack'))) {
+              setTimeout(complete, 10);
+              return;
+            }
+            if (ddl && existsSync(marker('hold-ddl-ack')) && !existsSync(marker('release-ddl-ack'))) {
+              setTimeout(complete, 10);
+              return;
+            }
+            if (ddlFinalObserver && existsSync(marker('hold-ddl-final-observer')) && !existsSync(marker('release-ddl-final-observer'))) {
               setTimeout(complete, 10);
               return;
             }

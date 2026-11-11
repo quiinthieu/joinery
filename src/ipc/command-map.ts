@@ -74,6 +74,10 @@ import type {
   TransactionControlRequest,
   TransactionControlResult,
   SnowflakeDmlResult,
+  SnowflakeDdlPreflightRequest,
+  SnowflakeDdlPreflightResponse,
+  SnowflakeDdlRequest,
+  SnowflakeDdlResult,
 } from "./generated";
 
 /**
@@ -462,6 +466,31 @@ export interface JoineryCommandMap {
   execute_snowflake_dml: {
     args: { planId: string; approval?: string | null };
     result: SnowflakeDmlResult;
+  };
+  preflight_snowflake_ddl: {
+    args: { request: SnowflakeDdlPreflightRequest };
+    result: SnowflakeDdlPreflightResponse;
+  };
+  prepare_snowflake_ddl: {
+    args: { sessionId: string; request: SnowflakeDdlRequest };
+    result: PreparedPlan;
+  };
+  authorize_snowflake_ddl: {
+    args: {
+      planId: string;
+      passphrase?: string | null;
+      confirmation?: string | null;
+      targetConfirmation?: string | null;
+    };
+    result: string;
+  };
+  execute_snowflake_ddl: {
+    args: { planId: string; approval?: string | null };
+    result: SnowflakeDdlResult;
+  };
+  refresh_snowflake_ddl_metadata: {
+    args: { sessionId: string };
+    result: SessionContextOptions;
   };
   set_transaction_mode: {
     args: { sessionId: string; mode: TransactionMode };

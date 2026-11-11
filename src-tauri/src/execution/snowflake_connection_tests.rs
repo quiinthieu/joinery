@@ -29,6 +29,7 @@ fn profile() -> ConnectionProfile {
         snowflake: Some(SnowflakeConfig {
             authentication: SnowflakeAuthentication::ExternalBrowser,
             reviewed_dml: false,
+            reviewed_ddl: false,
             role: "ROLE".into(),
             warehouse: "WH".into(),
             schema: "PUBLIC".into(),
@@ -1513,4 +1514,305 @@ async fn sdk_studio_dml_dropped_waiter_still_records_helper_ack_once() {
     );
     assert_dml_reads(&fixture, before, 5);
     close_synthetic_session(&fixture, &studio, &info.id, &[DML_WIRE_SQL]).await;
+}
+
+async fn ddl_session(fixture: &Fixture, studio: &Studio) -> SessionInfo {
+    let mut configured = profile();
+    configured.safe_mode = SafeMode::Silent;
+    configured.snowflake.as_mut().unwrap().reviewed_ddl = true;
+    let configured = studio.save_profile(configured, None).unwrap();
+    let info = studio
+        .connect(&configured.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    assert!(info.capabilities.snowflake_reviewed_ddl);
+    assert!(!info.capabilities.ddl_editing);
+    assert_eq!(queries(fixture).len(), 2);
+    info
+}
+
+async fn reviewed_ddl(studio: &Studio, fixture: &Fixture, id: &str) -> (PreparedPlan, String) {
+    let before = queries(fixture).len();
+    let preflight = SnowflakeDdlPreflightRequest {
+        session_id: id.into(),
+        action: SnowflakeDdlAction::CreateTable {
+            database: "DB".into(),
+            schema: "PUBLIC".into(),
+            name: "DDL_TEST".into(),
+            columns: vec![SnowflakeDdlColumnDraft {
+                name: "V".into(),
+                data_type: "NUMBER(10, 0)".into(),
+                nullable: true,
+            }],
+        },
+    };
+    let response = studio.preflight_snowflake_ddl(&preflight).await.unwrap();
+    assert_eq!(
+        queries(fixture).len() - before,
+        12,
+        "coherent preflight: two five-read samples and two bounded catalog reads"
+    );
+    let before = queries(fixture).len();
+    let plan = studio
+        .prepare_snowflake_ddl(
+            id,
+            &SnowflakeDdlRequest {
+                action: preflight.action,
+                revision: response.revision,
+                sql: response.sql,
+            },
+        )
+        .unwrap();
+    assert!(plan.reviewed_snowflake_ddl && plan.requires_approval);
+    let token = studio
+        .authorize_snowflake_ddl(&plan.id, None, None, None)
+        .unwrap();
+    assert_eq!(
+        queries(fixture).len(),
+        before,
+        "prepare and review stay local"
+    );
+    (plan, token)
+}
+
+fn ddl_effects(fixture: &Fixture) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(fixture.controls.join("ddl-effects"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+async fn ddl_entered(fixture: &Fixture) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture.controls.join("ddl-entered").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("real helper must enter synthetic DDL");
+}
+
+#[tokio::test]
+async fn sdk_studio_ddl_keeps_catalog_hold_until_explicit_bounded_reconciliation() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = ddl_session(&fixture, &studio).await;
+    let retained = studio.session(&info.id).unwrap();
+    let (plan, token) = reviewed_ddl(&studio, &fixture, &info.id).await;
+    let sql = plan.statements[0].sql.clone();
+    let before = queries(&fixture).len();
+    let result = studio
+        .execute_snowflake_ddl(&plan.id, Some(&token))
+        .await
+        .unwrap();
+    assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+    assert_eq!(
+        result.summary_status,
+        SnowflakeDdlSummaryStatus::Acknowledged
+    );
+    assert!(!result.retired && result.error.is_none());
+    assert!(result.catalog_reconciliation_required);
+    assert_eq!(
+        queries(&fixture).len() - before,
+        18,
+        "two five-read samples, two catalog reads, one DDL, final five-read sample"
+    );
+    assert_eq!(ddl_effects(&fixture).len(), 1);
+    assert!(retained.metadata_gate.lock().catalog_required);
+    let before = queries(&fixture).len();
+    assert!(
+        studio
+            .execute_snowflake_ddl(&plan.id, Some(&token))
+            .await
+            .is_err()
+    );
+    assert!(studio.health(&info.id).await.is_err());
+    assert!(studio.completion_catalog(&info.id).await.is_err());
+    assert!(
+        studio
+            .session_contexts_with_refresh(&info.id, true)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        queries(&fixture).len(),
+        before,
+        "terminal result must not trigger background observer/catalog work"
+    );
+    std::fs::write(fixture.controls.join("deny-catalog"), b"").unwrap();
+    assert!(
+        studio
+            .refresh_snowflake_ddl_metadata(&info.id)
+            .await
+            .is_err()
+    );
+    assert!(retained.metadata_gate.lock().held);
+    std::fs::remove_file(fixture.controls.join("deny-catalog")).unwrap();
+    studio
+        .refresh_snowflake_ddl_metadata(&info.id)
+        .await
+        .unwrap();
+    assert!(!retained.metadata_gate.lock().held);
+    let catalog = studio.relation_catalog(&info.id).await.unwrap();
+    assert!(
+        catalog
+            .relations
+            .iter()
+            .any(|relation| relation.table.name == "DDL_TEST")
+    );
+    assert_eq!(ddl_effects(&fixture).len(), 1);
+    close_synthetic_session(&fixture, &studio, &info.id, &[&sql]).await;
+    studio.shutdown_and_wait().await.unwrap();
+    let reopened = Studio::with_secrets(
+        &fixture.directory.path().join("workspace"),
+        Arc::new(MemorySecrets::default()),
+    )
+    .unwrap();
+    let history = reopened.history("").unwrap();
+    assert_eq!(history.len(), 1);
+    assert!(history[0].sql.is_none());
+    assert_eq!(
+        history[0].snowflake_ddl.as_ref().unwrap().statement_outcome,
+        SnowflakeDdlOutcome::Succeeded
+    );
+    assert!(!fixture.controls.join("transaction-effects").exists());
+}
+
+#[tokio::test]
+async fn sdk_studio_ddl_lost_ack_retires_once_with_durable_unknown() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = ddl_session(&fixture, &studio).await;
+    let (plan, token) = reviewed_ddl(&studio, &fixture, &info.id).await;
+    std::fs::write(fixture.controls.join("lose-ddl-ack"), b"").unwrap();
+    let result = studio
+        .execute_snowflake_ddl(&plan.id, Some(&token))
+        .await
+        .unwrap();
+    assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Unknown);
+    assert!(result.retired);
+    assert!(
+        studio
+            .execute_snowflake_ddl(&plan.id, Some(&token))
+            .await
+            .is_err()
+    );
+    assert_eq!(ddl_effects(&fixture).len(), 1);
+    assert_eq!(
+        studio.history("").unwrap()[0]
+            .snowflake_ddl
+            .as_ref()
+            .unwrap()
+            .statement_outcome,
+        SnowflakeDdlOutcome::Unknown
+    );
+    studio.shutdown_and_wait().await.unwrap();
+    no_roots(&fixture);
+}
+
+#[tokio::test]
+async fn sdk_studio_ddl_final_observer_failure_preserves_remote_ack() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = ddl_session(&fixture, &studio).await;
+    let (plan, token) = reviewed_ddl(&studio, &fixture, &info.id).await;
+    std::fs::write(fixture.controls.join("deny-observer-after-ddl"), b"").unwrap();
+    let result = studio
+        .execute_snowflake_ddl(&plan.id, Some(&token))
+        .await
+        .unwrap();
+    assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+    assert!(result.error.is_some());
+    assert_eq!(ddl_effects(&fixture).len(), 1);
+    assert_eq!(
+        studio.history("").unwrap()[0]
+            .snowflake_ddl
+            .as_ref()
+            .unwrap()
+            .statement_outcome,
+        SnowflakeDdlOutcome::Succeeded
+    );
+    studio.shutdown_and_wait().await.unwrap();
+    no_roots(&fixture);
+}
+
+#[tokio::test]
+async fn sdk_studio_ddl_dropped_waiter_still_persists_actual_helper_ack() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = ddl_session(&fixture, &studio).await;
+    let (plan, token) = reviewed_ddl(&studio, &fixture, &info.id).await;
+    std::fs::write(fixture.controls.join("hold-ddl-ack"), b"").unwrap();
+    let owner = studio.clone();
+    let waiter =
+        tokio::spawn(async move { owner.execute_snowflake_ddl(&plan.id, Some(&token)).await });
+    ddl_entered(&fixture).await;
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    std::fs::write(fixture.controls.join("release-ddl-ack"), b"").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while studio.history("").unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        studio.history("").unwrap()[0]
+            .snowflake_ddl
+            .as_ref()
+            .unwrap()
+            .statement_outcome,
+        SnowflakeDdlOutcome::Succeeded
+    );
+    assert_eq!(ddl_effects(&fixture).len(), 1);
+    studio.shutdown_and_wait().await.unwrap();
+    no_roots(&fixture);
+}
+
+#[tokio::test]
+async fn sdk_studio_ddl_shutdown_or_disconnect_after_ack_keeps_durable_success() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    for shutdown in [false, true] {
+        let fixture = Fixture::new();
+        let studio = studio(&fixture);
+        let info = ddl_session(&fixture, &studio).await;
+        let (plan, token) = reviewed_ddl(&studio, &fixture, &info.id).await;
+        std::fs::write(fixture.controls.join("hold-ddl-final-observer"), b"").unwrap();
+        let owner = studio.clone();
+        let waiter =
+            tokio::spawn(async move { owner.execute_snowflake_ddl(&plan.id, Some(&token)).await });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !fixture.controls.join("ddl-final-observer-entered").exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // The real helper emitted ddlAcknowledged before the adapter could
+        // begin this final observer. Retire while it is deliberately pending.
+        if shutdown {
+            waiter.abort();
+            assert!(waiter.await.unwrap_err().is_cancelled());
+            studio.shutdown_and_wait().await.unwrap();
+        } else {
+            studio.disconnect_and_wait(&info.id).await.unwrap();
+            let result = waiter.await.unwrap().unwrap();
+            assert_eq!(result.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+            assert!(result.retired);
+            studio.shutdown_and_wait().await.unwrap();
+        }
+        let history = studio.history("").unwrap();
+        assert_eq!(history.len(), 1);
+        let evidence = history[0].snowflake_ddl.as_ref().unwrap();
+        assert_eq!(evidence.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+        assert!(evidence.retired);
+        assert_eq!(ddl_effects(&fixture).len(), 1);
+        no_roots(&fixture);
+    }
 }

@@ -461,6 +461,7 @@ pub(crate) fn plan_for_statements(
     };
     Ok(PreparedPlan {
         reviewed_snowflake_dml: false,
+        reviewed_snowflake_ddl: false,
         id: new_id(),
         session_id: session_id.into(),
         statements,
@@ -469,6 +470,7 @@ pub(crate) fn plan_for_statements(
         requires_approval: unsafe_batch && mode != SafeMode::Silent,
         requires_passphrase: unsafe_batch && mode == SafeMode::PasswordGated,
         confirmation_text,
+        target_confirmation_text: None,
         warnings,
         expires_at: now_ms() + 60_000,
     })

@@ -22,6 +22,7 @@ fn profile() -> ConnectionProfile {
         snowflake: Some(SnowflakeConfig {
             authentication: SnowflakeAuthentication::LocalApplicationOauth,
             reviewed_dml: false,
+            reviewed_ddl: false,
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),
             schema: "PUBLIC".into(),
@@ -428,4 +429,53 @@ async fn unavailable_sdk_rejects_explicit_mode_without_oauth_fallback() {
         .err()
         .unwrap();
     assert_eq!(error.code, ErrorCode::InvalidInput);
+}
+
+#[test]
+fn reviewed_ddl_is_independent_defaults_false_and_requires_non_read_only_sdk() {
+    let mut encoded = serde_json::to_value(profile()).unwrap();
+    encoded["snowflake"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewedDdl");
+    let decoded: ConnectionProfile = serde_json::from_value(encoded).unwrap();
+    assert!(!decoded.snowflake.as_ref().unwrap().reviewed_ddl);
+
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+
+    // OAuth + reviewed_ddl rejected even if non-ReadOnly
+    let mut oauth_ddl = profile();
+    oauth_ddl.group_id = "local".into();
+    oauth_ddl.environment = Environment::Local;
+    oauth_ddl.safe_mode = SafeMode::Confirm;
+    oauth_ddl.snowflake.as_mut().unwrap().reviewed_ddl = true;
+    assert_eq!(
+        studio.save_profile(oauth_ddl, None).unwrap_err().code,
+        ErrorCode::InvalidInput
+    );
+
+    // ExternalBrowser + ReadOnly + reviewed_ddl rejected
+    let mut ro_ddl = profile();
+    ro_ddl.group_id = "local".into();
+    ro_ddl.environment = Environment::Local;
+    ro_ddl.safe_mode = SafeMode::ReadOnly;
+    ro_ddl.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    ro_ddl.snowflake.as_mut().unwrap().reviewed_ddl = true;
+    assert_eq!(
+        studio.save_profile(ro_ddl, None).unwrap_err().code,
+        ErrorCode::InvalidInput
+    );
+
+    // ExternalBrowser + Confirm + reviewed_ddl accepted without implying reviewed_dml
+    let mut sdk_ddl = profile();
+    sdk_ddl.group_id = "local".into();
+    sdk_ddl.environment = Environment::Local;
+    sdk_ddl.safe_mode = SafeMode::Confirm;
+    sdk_ddl.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    sdk_ddl.snowflake.as_mut().unwrap().reviewed_ddl = true;
+    sdk_ddl.snowflake.as_mut().unwrap().reviewed_dml = false;
+    let saved = studio.save_profile(sdk_ddl, None).unwrap();
+    assert!(saved.snowflake.as_ref().unwrap().reviewed_ddl);
+    assert!(!saved.snowflake.as_ref().unwrap().reviewed_dml);
 }

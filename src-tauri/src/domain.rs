@@ -120,6 +120,9 @@ pub struct SnowflakeConfig {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub reviewed_dml: bool,
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_ddl: bool,
     pub role: String,
     pub warehouse: String,
     pub schema: String,
@@ -189,6 +192,10 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub ddl_editing: bool,
+    /// Narrow reviewed generated table DDL on the Snowflake SDK route.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub snowflake_reviewed_ddl: bool,
     /// Active lock-wait and blocker chain inspection.
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
@@ -392,6 +399,10 @@ pub struct PreparedPlan {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub reviewed_snowflake_dml: bool,
+    /// Dedicated typed reviewed Snowflake DDL route; never a generic SQL job.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_snowflake_ddl: bool,
     pub id: String,
     pub session_id: String,
     pub statements: Vec<StatementPlan>,
@@ -404,6 +415,10 @@ pub struct PreparedPlan {
     pub requires_approval: bool,
     pub requires_passphrase: bool,
     pub confirmation_text: Option<String>,
+    /// Separate exact-target confirmation (e.g. DROP TABLE), independent of policy confirmation_text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_confirmation_text: Option<String>,
     pub warnings: Vec<String>,
     #[ts(type = "number")]
     pub expires_at: u64,
@@ -1176,6 +1191,9 @@ pub struct HistoryEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub snowflake_dml: Option<SnowflakeDmlEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_ddl: Option<SnowflakeDdlEvidence>,
     pub id: String,
     pub connection_id: String,
     pub connection_name: String,
@@ -1708,6 +1726,149 @@ pub struct SnowflakeDmlResult {
     pub kind: SnowflakeDmlKind,
     pub statement_outcome: SnowflakeDmlOutcome,
     pub summary: SnowflakeDmlSummary,
+    pub state: SessionRuntimeState,
+    pub retired: bool,
+    pub error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDdlKind {
+    CreateTable,
+    AddColumn,
+    DropTable,
+}
+
+impl SnowflakeDdlKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateTable => "createTable",
+            Self::AddColumn => "addColumn",
+            Self::DropTable => "dropTable",
+        }
+    }
+}
+
+impl From<crate::safety::snowflake_ddl::Kind> for SnowflakeDdlKind {
+    fn from(kind: crate::safety::snowflake_ddl::Kind) -> Self {
+        match kind {
+            crate::safety::snowflake_ddl::Kind::CreateTable => Self::CreateTable,
+            crate::safety::snowflake_ddl::Kind::AddColumn => Self::AddColumn,
+            crate::safety::snowflake_ddl::Kind::DropTable => Self::DropTable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlColumnDraft {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+impl SnowflakeDdlColumnDraft {
+    pub fn to_table_column_draft(&self) -> TableColumnDraft {
+        TableColumnDraft {
+            name: self.name.clone(),
+            data_type: self.data_type.clone(),
+            nullable: self.nullable,
+            default_expression: None,
+            auto_increment: false,
+            primary_key: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SnowflakeDdlAction {
+    CreateTable {
+        database: String,
+        schema: String,
+        name: String,
+        columns: Vec<SnowflakeDdlColumnDraft>,
+    },
+    AddColumn {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column: SnowflakeDdlColumnDraft,
+    },
+    DropTable {
+        browse_revision: String,
+        target_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlPreflightRequest {
+    pub session_id: String,
+    pub action: SnowflakeDdlAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlPreflightResponse {
+    pub revision: String,
+    pub kind: SnowflakeDdlKind,
+    pub database: String,
+    pub schema: String,
+    pub name: String,
+    pub qualified_target: String,
+    pub sql: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlRequest {
+    pub revision: String,
+    pub action: SnowflakeDdlAction,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDdlOutcome {
+    Succeeded,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDdlSummaryStatus {
+    Acknowledged,
+    Unavailable,
+}
+
+/// Durable statement evidence for reviewed Snowflake DDL; never claims affected rows or rollbackability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDdlEvidence {
+    pub kind: SnowflakeDdlKind,
+    pub qualified_target: String,
+    pub statement_outcome: SnowflakeDdlOutcome,
+    pub summary_status: SnowflakeDdlSummaryStatus,
+    pub catalog_reconciliation_required: bool,
+    pub retired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDdlResult {
+    pub kind: SnowflakeDdlKind,
+    pub qualified_target: String,
+    pub statement_outcome: SnowflakeDdlOutcome,
+    pub summary_status: SnowflakeDdlSummaryStatus,
+    pub catalog_reconciliation_required: bool,
     pub state: SessionRuntimeState,
     pub retired: bool,
     pub error: Option<AppError>,
@@ -2573,5 +2734,47 @@ mod tests {
         assert_eq!(edges[0].object, mutual_view);
         assert_eq!(edges[0].relation, "view");
         assert_eq!(edges[1].object, fn_int);
+    }
+
+    #[test]
+    fn snowflake_ddl_dtos_are_recursively_closed() {
+        let create = serde_json::json!({
+            "sessionId": "session-1",
+            "action": {
+                "kind": "createTable",
+                "database": "DB",
+                "schema": "PUBLIC",
+                "name": "ORDERS",
+                "columns": [
+                    {"name": "ID", "dataType": "NUMBER(38,0)", "nullable": false}
+                ]
+            }
+        });
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(create.clone()).is_ok());
+        let mut extra_outer = create.clone();
+        extra_outer["sql"] = serde_json::json!("CREATE TABLE T (ID INT)");
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(extra_outer).is_err());
+
+        let mut extra_action = create.clone();
+        extra_action["action"]["comment"] = serde_json::json!("not allowed");
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(extra_action).is_err());
+
+        let mut extra_column = create;
+        extra_column["action"]["columns"][0]["defaultExpression"] = serde_json::json!("1");
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(extra_column).is_err());
+
+        let request = serde_json::json!({
+            "revision": "rev-1",
+            "action": {
+                "kind": "dropTable",
+                "browseRevision": "browse-1",
+                "targetId": "target-1"
+            },
+            "sql": "DROP TABLE \"DB\".\"PUBLIC\".\"ORDERS\" RESTRICT"
+        });
+        assert!(serde_json::from_value::<SnowflakeDdlRequest>(request.clone()).is_ok());
+        let mut cascade = request;
+        cascade["action"]["cascade"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<SnowflakeDdlRequest>(cascade).is_err());
     }
 }
