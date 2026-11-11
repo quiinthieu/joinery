@@ -5,6 +5,10 @@ use super::snowflake_process::{
     Bounds, Certainty, CleanupObserver, Column, Impact, Launch, Operation, OperationToken, Report,
     ShutdownReport, Supervisor, TransactionAction,
 };
+#[cfg(all(unix, feature = "test-harness"))]
+use super::snowflake_qualification_metadata::{
+    MetadataAttachment, MetadataSite, RelationObservation, SchemaObservation,
+};
 use super::{
     BrowseRows, CompletionRelations, Driver, QuerySink, RowMutation,
     snowflake::Snowflake,
@@ -39,6 +43,15 @@ const DDL_GRANT_TTL: Duration = Duration::from_secs(60);
 #[derive(Default)]
 pub struct ExternalBrowserOptions {
     pub expected_server_user: Option<String>,
+    #[cfg(all(unix, feature = "test-harness"))]
+    pub(crate) metadata_observer: Option<MetadataAttachment>,
+}
+
+impl ExternalBrowserOptions {
+    pub fn with_expected_server_user(mut self, user: String) -> Self {
+        self.expected_server_user = Some(user);
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -159,9 +172,68 @@ pub struct SnowflakeExternal {
     shutdown_started: AtomicBool,
     shutdown: watch::Sender<Option<Arc<ShutdownReport>>>,
     runtime: tokio::runtime::Handle,
+    #[cfg(all(unix, feature = "test-harness"))]
+    metadata_observer: Option<MetadataAttachment>,
 }
 
 impl SnowflakeExternal {
+    #[cfg(all(unix, feature = "test-harness"))]
+    fn check_metadata_observer(&self) -> AppResult<()> {
+        self.metadata_observer
+            .as_ref()
+            .map_or(Ok(()), MetadataAttachment::check)
+    }
+
+    #[cfg(all(unix, feature = "test-harness"))]
+    fn observe_schemas(
+        &self,
+        site: MetadataSite,
+        context: &LiveContext,
+        rows: &MetadataResult,
+        parsed_names: &[String],
+    ) -> AppResult<()> {
+        if let Some(observer) = &self.metadata_observer {
+            // Only called after the production parser accepted the complete
+            // result. Its sorted output must not erase original wire order.
+            let wire_names = rows
+                .rows
+                .iter()
+                .map(|row| {
+                    row.get(1)
+                        .and_then(Option::as_ref)
+                        .cloned()
+                        .ok_or_else(protocol_error)
+                })
+                .collect::<AppResult<Vec<_>>>()?;
+            observer.observe_schemas(SchemaObservation {
+                site,
+                context,
+                wire_names: &wire_names,
+                parsed_names,
+            })?;
+        }
+        Ok(())
+    }
+
+    #[cfg(all(unix, feature = "test-harness"))]
+    fn observe_relations(
+        &self,
+        site: MetadataSite,
+        context: &LiveContext,
+        schema: Option<&str>,
+        relations: &[BrowseRelation],
+    ) -> AppResult<()> {
+        if let Some(observer) = &self.metadata_observer {
+            observer.observe_relations(RelationObservation {
+                site,
+                context,
+                schema,
+                relations,
+            })?;
+        }
+        Ok(())
+    }
+
     /// Capture `launch.cleanup_observer()` before awaiting this method. Cancelling open
     /// drops its supervisor and requests child termination; the observer still proves reap.
     pub async fn open(
@@ -187,6 +259,10 @@ impl SnowflakeExternal {
             .is_some_and(|s| s.is_empty() || s.len() > 1024)
         {
             return Err(AppError::invalid("Invalid expected Snowflake principal"));
+        }
+        #[cfg(all(unix, feature = "test-harness"))]
+        if let Some(observer) = &options.metadata_observer {
+            observer.check()?;
         }
         let started = Instant::now();
         let process = Arc::new(
@@ -276,6 +352,8 @@ impl SnowflakeExternal {
             shutdown_started: AtomicBool::new(false),
             shutdown,
             runtime: tokio::runtime::Handle::current(),
+            #[cfg(all(unix, feature = "test-harness"))]
+            metadata_observer: options.metadata_observer,
         });
         // Obtain the version on the same SDK session rather than infer it from the local package.
         let mut version = ScalarSink::default();
@@ -439,6 +517,8 @@ impl SnowflakeExternal {
     }
 
     fn require_unrestricted(&self) -> AppResult<()> {
+        #[cfg(all(unix, feature = "test-harness"))]
+        self.check_metadata_observer()?;
         if self.is_closed() {
             return Err(closed_error());
         }
@@ -779,6 +859,13 @@ impl SnowflakeExternal {
                     )
                     .await?;
                 let schemas = browsing::parse_schemas(context, &schema_rows)?;
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.observe_schemas(
+                    MetadataSite::CreateTargetCheck,
+                    context,
+                    &schema_rows,
+                    &schemas,
+                )?;
                 if !schemas.iter().any(|existing| existing == schema) {
                     return Err(AppError::new(
                         ErrorCode::Conflict,
@@ -793,6 +880,13 @@ impl SnowflakeExternal {
                     )
                     .await?;
                 let relations = browsing::parse_relations(context, schema, &relation_rows)?;
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.observe_relations(
+                    MetadataSite::CreateTargetCheck,
+                    context,
+                    Some(schema),
+                    &relations,
+                )?;
                 if relations
                     .iter()
                     .any(|relation| relation.table.name == *name)
@@ -904,11 +998,16 @@ impl SnowflakeExternal {
         sample: &ObservationSample,
         generation: &str,
     ) -> AppResult<SessionRuntimeState> {
+        #[cfg(all(unix, feature = "test-harness"))]
+        self.check_metadata_observer()?;
         let mut runtime = self.observed_session_state(sample)?;
         let mut state = self.transaction_authority.lock();
         if self.is_closed() || state.generation != generation {
             return Err(stale_transaction());
         }
+        // A shared failure can arrive while this publication waits for state.
+        #[cfg(all(unix, feature = "test-harness"))]
+        self.check_metadata_observer()?;
         let revision = new_id();
         state.grant = Some(TransactionGrant {
             revision: revision.clone(),
@@ -1066,8 +1165,16 @@ impl SnowflakeExternal {
         self.metadata_operation_inner(async {
             self.require_unrestricted()?;
             let generation = self.revoke_transaction_grant();
-            work.await
-                .inspect_err(|error| self.observer_failed(&generation, error))
+            let result = work.await;
+            // This wrapper serves reads and schema switching. Typed DML/DDL/TX
+            // use the inner wrapper and retain their independent ACK mappings.
+            #[cfg(all(unix, feature = "test-harness"))]
+            let result = result.and_then(|value| {
+                self.check_metadata_observer()
+                    .map_err(AppError::with_completion_invalidated)?;
+                Ok(value)
+            });
+            result.inspect_err(|error| self.observer_failed(&generation, error))
         })
         .await
     }
@@ -1229,7 +1336,17 @@ impl SnowflakeExternal {
             )
             .await?;
         browsing::require_relation(context, target, &result)
-            .map_err(AppError::with_completion_invalidated)
+            .map_err(AppError::with_completion_invalidated)?;
+        #[cfg(all(unix, feature = "test-harness"))]
+        // require_relation established full equality with this parsed target,
+        // including creation/DDL markers; do not drop them into a public DTO.
+        self.observe_relations(
+            MetadataSite::ExactRelationCheck,
+            context,
+            Some(&target.table.schema),
+            std::slice::from_ref(target),
+        )?;
+        Ok(())
     }
 
     async fn run(
@@ -1350,6 +1467,8 @@ impl SnowflakeExternal {
         max_rows: u64,
         max_bytes: u64,
     ) -> AppResult<u64> {
+        #[cfg(all(unix, feature = "test-harness"))]
+        self.check_metadata_observer()?;
         let mut operation = self
             .process
             .request(
@@ -1433,6 +1552,8 @@ impl SnowflakeExternal {
             .get("rowsSeen")
             .and_then(Value::as_u64)
             .ok_or_else(protocol_error)?;
+        #[cfg(all(unix, feature = "test-harness"))]
+        self.check_metadata_observer()?;
         if result.get("truncated").and_then(Value::as_bool) == Some(true) {
             sink.limit("Snowflake helper result retention limit reached");
         }
@@ -1521,6 +1642,8 @@ impl Driver for SnowflakeExternal {
                 if state.generation != generation || self.is_closed() {
                     return Err(stale_transaction());
                 }
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.check_metadata_observer()?;
                 lease.operation = Some(self.process.request(
                     "reviewed-dml", "dml",
                     json!({"kind": kind, "sql": wire.rewritten_sql, "binds": binds,
@@ -1703,6 +1826,8 @@ impl Driver for SnowflakeExternal {
                 if self.is_closed() || ddl.generation != ddl_generation {
                     return Err(stale_ddl());
                 }
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.check_metadata_observer()?;
                 ddl.grant = Some(DdlGrant {
                     revision: revision.clone(),
                     issued_at: Instant::now(),
@@ -1802,6 +1927,8 @@ impl Driver for SnowflakeExternal {
                     {
                         return Err(stale_ddl());
                     }
+                    #[cfg(all(unix, feature = "test-harness"))]
+                    self.check_metadata_observer()?;
                     lease.operation = Some(
                         self.process
                             .request(
@@ -2016,6 +2143,8 @@ impl Driver for SnowflakeExternal {
             {
                 let state = self.transaction_authority.lock();
                 if state.generation != generation || self.is_closed() { return Err(stale_transaction()); }
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.check_metadata_observer()?;
                 lease.operation = Some(self.process.request("transaction-control", "transaction",
                     json!({"action": action.as_str(), "expected": {"user": self.identity["user"], "session": self.identity["session"]}}),
                     action.impact()).map_err(control_error)?);
@@ -2161,6 +2290,13 @@ impl Driver for SnowflakeExternal {
                     )
                     .await?;
                 let available = metadata::parse_schemas(&before.context, &rows)?;
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.observe_schemas(
+                    MetadataSite::SchemaSwitch,
+                    &before.context,
+                    &rows,
+                    &available,
+                )?;
                 if !available.contains(&request.schema) {
                     return Err(stale_session_options());
                 }
@@ -2171,6 +2307,8 @@ impl Driver for SnowflakeExternal {
                     if options.revision != generation || self.is_closed() {
                         return Err(stale_session_options());
                     }
+                    #[cfg(all(unix, feature = "test-harness"))]
+                    self.check_metadata_observer()?;
                     lease.operation = Some(
                         self.process
                             .request(
@@ -2233,6 +2371,8 @@ impl Driver for SnowflakeExternal {
                 if options.revision != generation || self.is_closed() {
                     return Err(stale_session_options());
                 }
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.check_metadata_observer()?;
                 *options = SessionOptionsState {
                     revision,
                     snapshot: Some(SessionOptionsSnapshot {
@@ -2326,6 +2466,13 @@ impl Driver for SnowflakeExternal {
                     )
                     .await?;
                 let available = metadata::parse_schemas(&before.context, &rows)?;
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.observe_schemas(
+                    MetadataSite::SessionContextOptions,
+                    &before.context,
+                    &rows,
+                    &available,
+                )?;
                 let after = self.session_sample().await?;
                 if session::compare_samples(Some(&before), Some(&after))
                     != SampleConsistency::Stable
@@ -2336,6 +2483,8 @@ impl Driver for SnowflakeExternal {
                 if options.revision != revision {
                     return Err(stale_session_options());
                 }
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.check_metadata_observer()?;
                 options.snapshot = Some(SessionOptionsSnapshot {
                     sample: after,
                     available,
@@ -2401,6 +2550,13 @@ impl Driver for SnowflakeExternal {
                 )
                 .await?;
             let schemas = browsing::parse_schemas(&context, &rows)?;
+            #[cfg(all(unix, feature = "test-harness"))]
+            self.observe_schemas(
+                MetadataSite::RelationCatalogBatch,
+                &context,
+                &rows,
+                &schemas,
+            )?;
             let mut relations = Vec::new();
             let mut bytes = 0usize;
             for schema in &schemas {
@@ -2412,6 +2568,13 @@ impl Driver for SnowflakeExternal {
                     )
                     .await?;
                 let batch = browsing::parse_relations(&context, schema, &rows)?;
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.observe_relations(
+                    MetadataSite::RelationCatalogBatch,
+                    &context,
+                    Some(schema),
+                    &batch,
+                )?;
                 bytes = bytes
                     .checked_add(
                         serde_json::to_vec(&batch)
@@ -2428,6 +2591,13 @@ impl Driver for SnowflakeExternal {
             }
             browsing::validate_catalog(&context, &schemas, &mut relations)?;
             self.browse_context(Some(&context)).await?;
+            #[cfg(all(unix, feature = "test-harness"))]
+            self.observe_relations(
+                MetadataSite::RelationCatalogSnapshot,
+                &context,
+                None,
+                &relations,
+            )?;
             let targets: HashMap<_, _> = relations
                 .into_iter()
                 .map(|relation| (uuid::Uuid::new_v4().to_string(), relation))
@@ -2467,6 +2637,8 @@ impl Driver for SnowflakeExternal {
             if state.revision != revision {
                 return Err(stale_browse());
             }
+            #[cfg(all(unix, feature = "test-harness"))]
+            self.check_metadata_observer()?;
             state.snapshot = Some(BrowseSnapshot {
                 context,
                 targets,
@@ -2548,6 +2720,8 @@ impl Driver for SnowflakeExternal {
             if state.revision != request.revision {
                 return Err(stale_browse());
             }
+            #[cfg(all(unix, feature = "test-harness"))]
+            self.check_metadata_observer()?;
             let slot = state
                 .snapshot
                 .as_mut()
@@ -2630,7 +2804,15 @@ impl Driver for SnowflakeExternal {
                 .await?;
             let mut relations = Vec::new();
             let mut relation_bytes = 0usize;
-            for schema in metadata::parse_schemas(&context, &schemas)? {
+            let parsed_schemas = metadata::parse_schemas(&context, &schemas)?;
+            #[cfg(all(unix, feature = "test-harness"))]
+            self.observe_schemas(
+                MetadataSite::CompletionCatalog,
+                &context,
+                &schemas,
+                &parsed_schemas,
+            )?;
+            for schema in parsed_schemas {
                 let rows = self
                     .metadata_read(
                         &metadata::relations_sql(&context, &schema)?,
@@ -3136,6 +3318,10 @@ mod session_tests {
     use super::*;
     use std::path::PathBuf;
 
+    mod qualification_metadata_tests {
+        include!("snowflake_qualification_metadata_adapter_tests.rs");
+    }
+
     // The real framed helper runs in a child with a synthetic SDK. No SDK import,
     // external-browser login, socket or account is used by this fixture.
     const FIXTURE: &str = r#"
@@ -3325,6 +3511,15 @@ process.stdin.on('end', retire);
             reviewed_dml: bool,
             reviewed_ddl: bool,
         ) -> Self {
+            Self::open_policy_and_observer(safe_mode, reviewed_dml, reviewed_ddl, None).await
+        }
+
+        async fn open_policy_and_observer(
+            safe_mode: SafeMode,
+            reviewed_dml: bool,
+            reviewed_ddl: bool,
+            metadata_observer: Option<MetadataAttachment>,
+        ) -> Self {
             let scripts = tempfile::tempdir().unwrap();
             let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -3390,7 +3585,10 @@ process.stdin.on('end', retire);
                     &profile,
                     "observer-session",
                     launch,
-                    ExternalBrowserOptions::default(),
+                    ExternalBrowserOptions {
+                        metadata_observer,
+                        ..Default::default()
+                    },
                 ),
             )
             .await

@@ -23,6 +23,15 @@ pub mod snowflake_process;
     not(test),
     allow(
         dead_code,
+        reason = "Internal qualification metadata interface; no desktop entry point"
+    )
+)]
+pub(crate) mod snowflake_qualification_metadata;
+#[cfg(all(unix, feature = "test-harness"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
         reason = "Internal qualification transport interface; no desktop entry point"
     )
 )]

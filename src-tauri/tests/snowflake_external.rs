@@ -681,15 +681,8 @@ async fn mutation_or_forged_classification_never_reaches_sdk() {
 async fn explicit_expected_principal_rejection_reaps_child() {
     let (launch, _scripts) = launch();
     let cleanup = launch.cleanup_observer();
-    let result = SnowflakeExternal::open(
-        &profile(),
-        "synthetic-session",
-        launch,
-        ExternalBrowserOptions {
-            expected_server_user: Some("WRONG_USER".into()),
-        },
-    )
-    .await;
+    let options = ExternalBrowserOptions::default().with_expected_server_user("WRONG_USER".into());
+    let result = SnowflakeExternal::open(&profile(), "synthetic-session", launch, options).await;
     assert!(matches!(
         result,
         Err(AppError {
