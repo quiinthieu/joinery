@@ -93,6 +93,8 @@ pub(crate) trait TransportPolicy: Send + Sync {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TransportLimits {
     pub stdout_bytes: u64,
+    /// Aggregate of every inbound frame body, excluding four-byte prefixes.
+    pub payload_bytes: u64,
     pub frames: u64,
     pub frame_bytes: usize,
     pub stderr_bytes: u64,
@@ -101,6 +103,7 @@ impl Default for TransportLimits {
     fn default() -> Self {
         Self {
             stdout_bytes: 64 * 1024 * 1024,
+            payload_bytes: 32 * 1024 * 1024,
             frames: 32768,
             frame_bytes: MAX_FRAME,
             stderr_bytes: 64 * 1024,
@@ -122,6 +125,9 @@ pub(crate) enum Disposition {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TransportReport {
     pub stdout_bytes: u64,
+    /// Successfully read body bytes, including partial and malformed frames.
+    /// Headers and declared-but-unread body bytes are excluded.
+    pub payload_bytes: u64,
     pub complete_frames: u64,
     pub stderr_bytes: u64,
     pub admitted_writes: u64,
@@ -141,6 +147,10 @@ struct State {
     active_tasks: usize,
     active_publications: usize,
     first_error: Option<AppError>,
+    // Declared body lengths reserve budget before allocation and are never refunded.
+    reserved_payload_bytes: u64,
+    // Errors or cancellation leave this set: a partial frame cannot be replayed.
+    frame_open: bool,
 }
 struct Attached {
     policy: Arc<dyn TransportPolicy>,
@@ -184,6 +194,8 @@ impl TransportAttachment {
         let max = TransportLimits::default();
         if limits.stdout_bytes == 0
             || limits.stdout_bytes > max.stdout_bytes
+            || limits.payload_bytes == 0
+            || limits.payload_bytes > max.payload_bytes
             || limits.frames == 0
             || limits.frames > max.frames
             || limits.frame_bytes == 0
@@ -205,8 +217,11 @@ impl TransportAttachment {
                     active_tasks: 0,
                     active_publications: 0,
                     first_error: None,
+                    reserved_payload_bytes: 0,
+                    frame_open: false,
                     report: TransportReport {
                         stdout_bytes: 0,
+                        payload_bytes: 0,
                         complete_frames: 0,
                         stderr_bytes: 0,
                         admitted_writes: 0,
@@ -373,6 +388,7 @@ impl TransportAttachment {
         reader: &mut (impl AsyncRead + Unpin),
         buffer: &mut [u8],
         stream: Stream,
+        payload: bool,
     ) -> Result<usize, &'static str> {
         let used = {
             let report = self.report();
@@ -393,10 +409,15 @@ impl TransportAttachment {
             self.stream_failure(stream, Disposition::Io);
             "qualification pipe read failed"
         })?;
-        self.update(|state| match stream {
-            Stream::Stdout => state.report.stdout_bytes += count as u64,
-            Stream::Stderr => state.report.stderr_bytes += count as u64,
-            Stream::Writer => unreachable!(),
+        self.update(|state| {
+            match stream {
+                Stream::Stdout => state.report.stdout_bytes += count as u64,
+                Stream::Stderr => state.report.stderr_bytes += count as u64,
+                Stream::Writer => unreachable!(),
+            }
+            if payload {
+                state.report.payload_bytes += count as u64;
+            }
         });
         if used + count as u64 > cap {
             self.stream_failure(stream, Disposition::Limit);
@@ -408,11 +429,12 @@ impl TransportAttachment {
         &self,
         reader: &mut (impl AsyncRead + Unpin),
         buffer: &mut [u8],
+        payload: bool,
     ) -> Result<(), &'static str> {
         let mut offset = 0;
         while offset < buffer.len() {
             let count = self
-                .read(reader, &mut buffer[offset..], Stream::Stdout)
+                .read(reader, &mut buffer[offset..], Stream::Stdout, payload)
                 .await?;
             if count == 0 {
                 self.stream_failure(Stream::Stdout, Disposition::Truncated);
@@ -427,30 +449,56 @@ impl TransportAttachment {
         reader: &mut (impl AsyncRead + Unpin),
         frame_limit: Duration,
     ) -> Result<Option<Value>, &'static str> {
+        {
+            let mut state = self.inner.state.lock().unwrap();
+            if state.frame_open {
+                return Err("qualification frame reader cannot resume");
+            }
+            state.frame_open = true;
+        }
         let mut prefix = [0; 4];
-        if self.read(reader, &mut prefix[..1], Stream::Stdout).await? == 0 {
+        if self
+            .read(reader, &mut prefix[..1], Stream::Stdout, false)
+            .await?
+            == 0
+        {
             self.end(Stream::Stdout, Disposition::Eof);
+            self.update(|state| state.frame_open = false);
             return Ok(None);
         }
         let result = timeout(frame_limit, async {
-            self.exact(reader, &mut prefix[1..]).await?;
+            self.exact(reader, &mut prefix[1..], false).await?;
             let length = u32::from_be_bytes(prefix) as usize;
-            let report = self.report();
-            if length == 0
-                || length > self.inner.limits.frame_bytes
-                || report.complete_frames >= self.inner.limits.frames
-                || length as u64
-                    > self
-                        .inner
-                        .limits
-                        .stdout_bytes
-                        .saturating_sub(report.stdout_bytes)
-            {
+            let admitted = {
+                let mut state = self.inner.state.lock().unwrap();
+                if length == 0
+                    || length > self.inner.limits.frame_bytes
+                    || state.report.complete_frames >= self.inner.limits.frames
+                    || length as u64
+                        > self
+                            .inner
+                            .limits
+                            .stdout_bytes
+                            .saturating_sub(state.report.stdout_bytes)
+                    || length as u64
+                        > self
+                            .inner
+                            .limits
+                            .payload_bytes
+                            .saturating_sub(state.reserved_payload_bytes)
+                {
+                    false
+                } else {
+                    state.reserved_payload_bytes += length as u64;
+                    true
+                }
+            };
+            if !admitted {
                 self.stream_failure(Stream::Stdout, Disposition::Limit);
                 return Err("qualification frame limit");
             }
             let mut bytes = vec![0; length];
-            self.exact(reader, &mut bytes).await?;
+            self.exact(reader, &mut bytes, true).await?;
             self.update(|state| state.report.complete_frames += 1);
             serde_json::from_slice(&bytes).map(Some).map_err(|_| {
                 self.stream_failure(Stream::Stdout, Disposition::Malformed);
@@ -459,7 +507,12 @@ impl TransportAttachment {
         })
         .await;
         match result {
-            Ok(result) => result,
+            Ok(result) => {
+                if result.is_ok() {
+                    self.update(|state| state.frame_open = false);
+                }
+                result
+            }
             Err(_) => {
                 self.stream_failure(Stream::Stdout, Disposition::Deadline);
                 Err("incomplete frame deadline")
@@ -472,7 +525,11 @@ impl TransportAttachment {
     ) -> Result<(), &'static str> {
         let mut buffer = [0; 8192];
         loop {
-            if self.read(reader, &mut buffer, Stream::Stderr).await? == 0 {
+            if self
+                .read(reader, &mut buffer, Stream::Stderr, false)
+                .await?
+                == 0
+            {
                 self.end(Stream::Stderr, Disposition::Eof);
                 return Ok(());
             }

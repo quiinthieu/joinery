@@ -500,11 +500,11 @@ fn frame(bytes: &[u8]) -> Vec<u8> {
 }
 #[tokio::test]
 async fn qualification_transport_counts_complete_malformed_and_partial_physical_input() {
-    for (input, expected_bytes, frames, disposition) in [
-        (frame(b"{}"), 6, 1, Disposition::Eof),
-        (frame(b"no"), 6, 1, Disposition::Malformed),
-        (vec![0, 0], 2, 0, Disposition::Truncated),
-        (vec![0, 0, 0, 4, b'{'], 5, 0, Disposition::Truncated),
+    for (input, expected_bytes, payload_bytes, frames, disposition) in [
+        (frame(b"{}"), 6, 2, 1, Disposition::Eof),
+        (frame(b"no"), 6, 2, 1, Disposition::Malformed),
+        (vec![0, 0], 2, 0, 0, Disposition::Truncated),
+        (vec![0, 0, 0, 4, b'{'], 5, 1, 0, Disposition::Truncated),
     ] {
         let transport = attachment(Arc::new(Policy::default()), TransportLimits::default());
         transport.claim().unwrap();
@@ -523,13 +523,178 @@ async fn qualification_transport_counts_complete_malformed_and_partial_physical_
                     .is_none()
             );
         }
+        if first.is_err() {
+            let before = transport.report();
+            let replay = frame(b"{}");
+            let mut replay_reader = replay.as_slice();
+            assert!(
+                transport
+                    .read_frame(&mut replay_reader, Duration::from_secs(1))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                replay_reader.len(),
+                6,
+                "failed framing cannot resume or replay"
+            );
+            assert_eq!(transport.report().stdout_bytes, before.stdout_bytes);
+        }
         drop(guard);
         let report = transport.wait(Duration::from_secs(1)).await.unwrap();
         assert_eq!(report.stdout_bytes, expected_bytes);
+        assert_eq!(report.payload_bytes, payload_bytes);
         assert_eq!(report.complete_frames, frames);
         assert_eq!(report.stdout, disposition);
     }
 }
+#[test]
+fn qualification_transport_payload_limit_constructor_bounds() {
+    let defaults = TransportLimits::default();
+    assert_eq!(defaults.payload_bytes, 32 * 1024 * 1024);
+    assert_eq!(defaults.stdout_bytes, 64 * 1024 * 1024);
+    for payload_bytes in [0, defaults.payload_bytes + 1, u64::MAX] {
+        assert!(
+            TransportAttachment::new(
+                Arc::new(Policy::default()),
+                TransportLimits {
+                    payload_bytes,
+                    ..defaults
+                }
+            )
+            .is_err()
+        );
+    }
+    for payload_bytes in [1, defaults.payload_bytes] {
+        assert!(
+            TransportAttachment::new(
+                Arc::new(Policy::default()),
+                TransportLimits {
+                    payload_bytes,
+                    ..defaults
+                }
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[tokio::test]
+async fn qualification_transport_payload_exact_boundary_and_header_only_overflow() {
+    for overflow in [false, true] {
+        let transport = attachment(
+            Arc::new(Policy::default()),
+            TransportLimits {
+                payload_bytes: 5,
+                ..TransportLimits::default()
+            },
+        );
+        transport.claim().unwrap();
+        let guard = transport.start(Stream::Stdout);
+        transport.seal();
+        let mut input = [frame(b"{}"), frame(b"[0]")].concat();
+        if overflow {
+            // No body exists: rejection must follow the header, not a body read.
+            input.extend(1_u32.to_be_bytes());
+        }
+        let mut reader = input.as_slice();
+        assert_eq!(
+            transport
+                .read_frame(&mut reader, Duration::from_secs(1))
+                .await
+                .unwrap(),
+            Some(json!({}))
+        );
+        assert_eq!(
+            transport
+                .read_frame(&mut reader, Duration::from_secs(1))
+                .await
+                .unwrap(),
+            Some(json!([0]))
+        );
+        let result = transport
+            .read_frame(&mut reader, Duration::from_secs(1))
+            .await;
+        if overflow {
+            assert!(result.is_err());
+        } else {
+            assert!(result.unwrap().is_none());
+        }
+        assert!(reader.is_empty());
+        drop(guard);
+        let report = transport.wait(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(report.payload_bytes, 5);
+        assert_eq!(report.stdout_bytes, if overflow { 17 } else { 13 });
+        assert_eq!(report.complete_frames, 2);
+        assert_eq!(
+            report.stdout,
+            if overflow {
+                Disposition::Limit
+            } else {
+                Disposition::Eof
+            }
+        );
+        assert_eq!(report.failed, overflow);
+    }
+    let transport = attachment(
+        Arc::new(Policy::default()),
+        TransportLimits {
+            payload_bytes: 1,
+            ..TransportLimits::default()
+        },
+    );
+    let _guard = transport.start(Stream::Stdout);
+    let input = frame(b"{}");
+    let mut reader = input.as_slice();
+    assert!(
+        transport
+            .read_frame(&mut reader, Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+    assert_eq!(reader, b"{}", "over-budget body is not read");
+    assert_eq!(transport.report().payload_bytes, 0);
+    assert_eq!(transport.report().stdout_bytes, 4);
+}
+
+#[tokio::test]
+async fn qualification_transport_cancelled_body_keeps_reservation_and_actual_bytes() {
+    let transport = attachment(
+        Arc::new(Policy::default()),
+        TransportLimits {
+            payload_bytes: 4,
+            ..TransportLimits::default()
+        },
+    );
+    transport.claim().unwrap();
+    let guard = transport.start(Stream::Stdout);
+    transport.seal();
+    let (mut writer, mut reader) = tokio::io::duplex(16);
+    writer.write_all(&[0, 0, 0, 4, b'[']).await.unwrap();
+    {
+        let mut read = Box::pin(transport.read_frame(&mut reader, Duration::from_secs(1)));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(read.as_mut().poll(&mut context).is_pending());
+        assert_eq!(transport.report().payload_bytes, 1);
+    }
+    writer.write_all(b"0] ").await.unwrap();
+    assert!(
+        transport
+            .read_frame(&mut reader, Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+    assert_eq!(transport.report().payload_bytes, 1);
+    assert_eq!(transport.report().stdout_bytes, 5);
+    let mut unread = [0; 3];
+    reader.read_exact(&mut unread).await.unwrap();
+    assert_eq!(&unread, b"0] ");
+    drop(guard);
+    let report = transport.wait(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(report.stdout, Disposition::Interrupted);
+    assert_eq!(report.complete_frames, 0);
+}
+
 #[tokio::test]
 async fn qualification_transport_caps_before_frame_allocation_and_counts_stderr_sentinel() {
     for (limits, input, expected_bytes, expected_frames) in [
@@ -1228,6 +1393,107 @@ async fn qualification_transport_real_handshake_stderr_overflow_and_settlement_a
     assert!(cleanup.wait(Duration::from_secs(3)).await.unwrap().reaped);
 }
 #[tokio::test]
+async fn qualification_transport_real_child_payload_cap_preserves_prior_ack_and_settles() {
+    let generation = "00000000-0000-4000-8000-000000000001";
+    let request_id = "00000000-0000-4000-8000-000000000011";
+    let hello = json!({"v":1,"type":"hello","protocol":"joinery-snowflake","sdkVersion":"3.4.1","limits":{"frameBytes":MAX_FRAME,"batchRows":128,"batchBytes":MAX_BATCH,"queued":8,"credits":32}});
+    let connect_events = [
+        json!({"type":"accepted"}),
+        json!({"type":"terminal","ok":true,"result":{}}),
+    ];
+    let dml_events = [
+        json!({"type":"accepted"}),
+        json!({"type":"phase","phase":"dispatching"}),
+        json!({"type":"statement","sdkRequestId":request_id}),
+        json!({"type":"dmlAcknowledged","sdkRequestId":request_id,"kind":"insert"}),
+    ];
+    let mut payload_bytes = serde_json::to_vec(&hello).unwrap().len() as u64;
+    for (wire_id, events) in [
+        ("1", connect_events.as_slice()),
+        ("2", dml_events.as_slice()),
+    ] {
+        for extra in events {
+            let mut event = json!({"v":1,"generation":generation,"id":wire_id});
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            payload_bytes += serde_json::to_vec(&event).unwrap().len() as u64;
+        }
+    }
+    let policy = Arc::new(LocalReportPolicy::default());
+    let transport = TransportAttachment::new(
+        policy.clone(),
+        TransportLimits {
+            payload_bytes,
+            ..TransportLimits::default()
+        },
+    )
+    .unwrap();
+    // This is an actual child and production Supervisor reader, with scripted wire
+    // events rather than the account SDK. The final header has deliberately no body.
+    let script = format!(
+        r#"{HELLO_SCRIPT}
+const connectEvents={connect_events};const dmlEvents={dml_events};
+let input=Buffer.alloc(0);process.stdin.on('data',chunk=>{{
+ input=Buffer.concat([input,chunk]);
+ while(input.length>=4&&input.length>=4+input.readUInt32BE(0)){{
+  const length=input.readUInt32BE(0);const request=JSON.parse(input.subarray(4,4+length));input=input.subarray(4+length);
+  const events=request.op==='connect'?connectEvents:request.op==='dml'?dmlEvents:null;
+  if(!events)throw Error('unexpected request');
+  for(const event of events)emit({{v:1,generation:request.generation,id:request.id,...event}});
+  if(request.op==='dml'){{const prefix=Buffer.alloc(4);prefix.writeUInt32BE(1);process.stdout.write(prefix);}}
+ }}
+}});setInterval(()=>{{}},1000);
+"#,
+        connect_events = serde_json::to_string(&connect_events).unwrap(),
+        dml_events = serde_json::to_string(&dml_events).unwrap()
+    );
+    let (_root, launch) = scripted_launch(&script, transport.clone());
+    let cleanup = launch.cleanup_observer();
+    let supervisor = Supervisor::spawn(launch, generation, Bounds::default())
+        .await
+        .unwrap();
+    let mut connect = supervisor
+        .request("connect", "connect", json!({}), Impact::Control)
+        .unwrap();
+    let connected = connect.wait_bounded(Duration::from_secs(3)).await;
+    assert!(
+        connected.ok,
+        "connect={connected:?}, transport={:?}",
+        transport.report()
+    );
+    let mut operation = supervisor
+        .request("write", "dml", json!({"kind":"insert"}), Impact::Mutating)
+        .unwrap();
+    let original = operation.wait_bounded(Duration::from_secs(3)).await;
+    assert_eq!(original.certainty, Certainty::StatementSucceeded);
+    assert_eq!(original.retirement, Some(Retirement::Protocol));
+    assert_eq!(
+        original
+            .dml_acknowledged
+            .as_ref()
+            .unwrap()
+            .statement
+            .sdk_request_id,
+        request_id
+    );
+    let report = transport.wait(Duration::from_secs(3)).await.unwrap();
+    assert_eq!(report.payload_bytes, payload_bytes);
+    assert_eq!(report.stdout_bytes, payload_bytes + 8 * 4);
+    assert_eq!(report.complete_frames, 7);
+    assert_eq!(report.stdout, Disposition::Limit);
+    assert!(report.failed && report.settled);
+    assert!(supervisor.is_closed());
+    assert!(cleanup.wait(Duration::from_secs(3)).await.unwrap().reaped);
+    let reports = policy.reports.lock().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[1].certainty, original.certainty);
+    assert_eq!(reports[1].dml_acknowledged, original.dml_acknowledged);
+    assert_eq!(policy.local.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn qualification_transport_cancelled_handshake_and_failed_spawn_settle_without_reuse() {
     let transport = attachment(Arc::new(Policy::default()), TransportLimits::default());
     let (_root, launch) = scripted_launch("setInterval(()=>{},1000)", transport.clone());
@@ -1275,57 +1541,68 @@ async fn qualification_transport_cancelled_handshake_and_failed_spawn_settle_wit
 }
 #[tokio::test]
 async fn qualification_transport_known_dml_ack_survives_later_inbound_limit() {
-    let transport = attachment(
-        Arc::new(Policy::default()),
-        TransportLimits {
-            frames: 4,
-            ..TransportLimits::default()
-        },
-    );
-    let (inner, _normal, _control) = isolated(transport.clone());
-    let mut op = inner
-        .request("write", "dml", json!({"kind":"insert"}), Impact::Mutating)
-        .unwrap();
-    {
-        let mut state = inner.state.lock().unwrap();
-        let p = state.pending.get_mut("write").unwrap();
-        p.phase = Phase::Sent;
-        p.wire_id = Some("1".into());
-        state.wire_ids.insert("1".into(), "write".into());
-    }
-    let id = "00000000-0000-4000-8000-000000000011";
-    let events = [
-        json!({"type":"accepted"}),
-        json!({"type":"phase","phase":"dispatching"}),
-        json!({"type":"statement","sdkRequestId":id}),
-        json!({"type":"dmlAcknowledged","sdkRequestId":id,"kind":"insert"}),
-        json!({"type":"unexpected"}),
-    ];
-    let mut all = Vec::new();
-    for extra in events {
-        let mut e = json!({"v":1,"generation":inner.generation,"id":"1"});
-        e.as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        all.extend(frame(&serde_json::to_vec(&e).unwrap()));
-    }
-    let _guard = transport.start(Stream::Stdout);
-    let mut reader = all.as_slice();
-    loop {
-        match observed_frame(&inner, &mut reader, Duration::from_secs(1)).await {
-            Ok(Some(e)) => assert!(inner.event(e)),
-            Err(_) => {
-                inner.retire(Retirement::Protocol);
-                break;
+    for prior_failure in [false, true] {
+        let transport = attachment(
+            Arc::new(Policy::default()),
+            TransportLimits {
+                frames: 4,
+                ..TransportLimits::default()
+            },
+        );
+        let (inner, _normal, _control) = isolated(transport.clone());
+        let mut op = inner
+            .request("write", "dml", json!({"kind":"insert"}), Impact::Mutating)
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            let p = state.pending.get_mut("write").unwrap();
+            p.phase = Phase::Sent;
+            p.wire_id = Some("1".into());
+            state.wire_ids.insert("1".into(), "write".into());
+        }
+        let id = "00000000-0000-4000-8000-000000000011";
+        let events = [
+            json!({"type":"accepted"}),
+            json!({"type":"phase","phase":"dispatching"}),
+            json!({"type":"statement","sdkRequestId":id}),
+            json!({"type":"dmlAcknowledged","sdkRequestId":id,"kind":"insert"}),
+            json!({"type":"unexpected"}),
+        ];
+        let mut all = Vec::new();
+        for extra in events {
+            let mut e = json!({"v":1,"generation":inner.generation,"id":"1"});
+            e.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            all.extend(frame(&serde_json::to_vec(&e).unwrap()));
+        }
+        if prior_failure {
+            transport.fail(AppError::invalid("prior policy failure"));
+        }
+        let _guard = transport.start(Stream::Stdout);
+        let mut reader = all.as_slice();
+        loop {
+            match observed_frame(&inner, &mut reader, Duration::from_secs(1)).await {
+                Ok(Some(e)) => assert!(inner.event(e)),
+                Err(_) => {
+                    inner.retire(Retirement::Protocol);
+                    break;
+                }
+                Ok(None) => panic!("expected cap"),
             }
-            Ok(None) => panic!("expected cap"),
+        }
+        let report = op.wait().await;
+        assert!(report.dml_acknowledged.is_some());
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        assert_eq!(transport.report().complete_frames, 4);
+        assert!(transport.report().failed);
+        if prior_failure {
+            assert_eq!(
+                transport.first_error().unwrap().message,
+                "prior policy failure"
+            );
         }
     }
-    let report = op.wait().await;
-    assert!(report.dml_acknowledged.is_some());
-    assert_eq!(report.certainty, Certainty::StatementSucceeded);
-    assert_eq!(transport.report().complete_frames, 4);
-    assert!(transport.report().failed);
 }
 
 struct WriteGate {
