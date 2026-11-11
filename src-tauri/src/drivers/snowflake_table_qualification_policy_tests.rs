@@ -484,6 +484,69 @@ async fn owning_completion_does_not_replace_operation_error_with_prior_policy_fa
 }
 
 #[tokio::test]
+async fn owning_incomplete_read_retains_original_and_cleanup_errors_durably() {
+    for prior_failure in [false, true] {
+        let (directory, policy) = policy().await;
+        if prior_failure {
+            TransportPolicy::failed(&policy, AppError::internal("earlier callback failure"));
+        }
+        let capture_error = AppError::internal("bounded original read capture incomplete");
+        let original = AppError::new(
+            crate::domain::ErrorCode::Cancelled,
+            "original operation cancelled",
+        );
+        let cleanup_error = AppError::internal("original local disconnect failure");
+        let events = vec![QueryEvent::Started {
+            run_id: "incomplete-original-run".into(),
+        }];
+        let failure = policy
+            .record_operation_completion(OperationCompletion::IncompleteRead {
+                error: &capture_error,
+                original_error: Some(&original),
+                events: &events,
+                cleanup_error: Some(&cleanup_error),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            failure.message,
+            if prior_failure {
+                "earlier callback failure"
+            } else {
+                &capture_error.message
+            }
+        );
+        let completions = completion_records(directory.path());
+        assert_eq!(completions.len(), 1);
+        let completion = &completions[0]["completion"];
+        assert_eq!(completion["status"], "incompleteRead");
+        assert_eq!(
+            completion["original"]["error"],
+            serde_json::to_value(&capture_error).unwrap()
+        );
+        assert_eq!(
+            completion["original"]["originalError"],
+            serde_json::to_value(&original).unwrap()
+        );
+        assert_eq!(
+            completion["original"]["events"],
+            serde_json::to_value(&events).unwrap()
+        );
+        assert_eq!(
+            completion["original"]["cleanupError"],
+            serde_json::to_value(&cleanup_error).unwrap()
+        );
+        assert!(policy.state.lock().pending.is_empty());
+        assert_eq!(policy.state.lock().sequence.phase().unwrap().number(), 1);
+        assert!(TransportPolicy::check(&policy).is_err());
+        let retained = policy.persist_final_evidence().await.unwrap_err();
+        assert_eq!(retained.message, failure.message);
+        assert_eq!(completion_records(directory.path()).len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn owning_cancelled_completion_syncs_exactly_once_without_phase_advance() {
     let (directory, policy) = policy().await;
     let original = original_ddl_ack();

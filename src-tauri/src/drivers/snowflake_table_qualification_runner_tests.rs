@@ -1,350 +1,35 @@
 //! Closed synthetic-only composition of the actual Studio/helper routes.
 //! No account SDK, profile lookup, external execution entry or approval exists.
 use super::{
-    Operation, Plan, Readback, SCHEMA, SchemaCensus, StatementId,
-    evidence::PhaseEvidence,
+    Plan, SCHEMA, SchemaCensus, StatementId,
     journal::FILE_NAME,
-    policy::{OperationCompletion, Policy},
+    policy::Policy,
+    runner::{
+        CallError, Collector, EVENT_LIMIT, FixtureControls, Output, Pause, READ_BYTES, Runner,
+        RunnerReceipt, wait_finished,
+    },
 };
 use crate::{
     domain::*,
-    drivers::{
-        snowflake_qualification::QualificationAttachment,
-        snowflake_qualification_transport::{
-            TransportAttachment, TransportLimits, TransportPolicy,
-        },
-    },
-    execution::{EventHandler, Studio},
+    drivers::snowflake_qualification_transport::{TransportAttachment, TransportPolicy},
+    execution::Studio,
     file_capability::DisabledFileDialog,
-    relation_inspection::{BrowseCatalog, InspectRelationRequest, RelationInspection},
     secrets::MemorySecrets,
     snowflake_runtime::studio_fixture::Fixture,
 };
-use arrow_array::{Array, StringArray};
-use arrow_ipc::reader::StreamReader;
-use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::{fs, io::Cursor, os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
-
-const EVENT_LIMIT: usize = 32;
-const READ_BYTES: usize = 64 * 1024;
-
-fn invalid() -> AppError {
-    AppError::invalid("Synthetic qualification runner result is incomplete")
-}
-
-enum Output {
-    Startup(SessionInfo),
-    Preflight(SnowflakeDdlPreflightResponse),
-    Ddl(SnowflakeDdlResult),
-    Reconcile(SessionContextOptions, BrowseCatalog),
-    Catalog(BrowseCatalog),
-    Inspect(RelationInspection),
-    Read(ReadCapture),
-    Boundary(TransactionControlResult),
-    Dml(SnowflakeDmlResult),
-    Options(SessionContextOptions),
-}
-
-impl Output {
-    fn evidence(&self) -> PhaseEvidence<'_> {
-        match self {
-            Self::Startup(v) => PhaseEvidence::Startup(v),
-            Self::Preflight(v) => PhaseEvidence::Preflight(v),
-            Self::Ddl(v) => PhaseEvidence::Ddl(v),
-            Self::Reconcile(options, catalog) => PhaseEvidence::Reconcile { options, catalog },
-            Self::Catalog(v) => PhaseEvidence::Catalog(v),
-            Self::Inspect(v) => PhaseEvidence::Inspect(v),
-            Self::Read(v) => PhaseEvidence::Read {
-                events: &v.events,
-                result: &v.result,
-                rows: &v.rows,
-            },
-            Self::Boundary(v) => PhaseEvidence::Boundary(v),
-            Self::Dml(v) => PhaseEvidence::Dml(v),
-            Self::Options(v) => PhaseEvidence::Options(v),
-        }
-    }
-}
-
-struct ReadCapture {
-    events: Vec<QueryEvent>,
-    result: ResultInfo,
-    rows: Vec<TextRow>,
-}
-
-struct CallError {
-    error: AppError,
-    events: Vec<QueryEvent>,
-}
-
-impl From<AppError> for CallError {
-    fn from(error: AppError) -> Self {
-        Self {
-            error,
-            events: Vec::new(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct Collector {
-    events: Vec<QueryEvent>,
-    bytes: usize,
-    error: Option<AppError>,
-}
-
-impl Collector {
-    fn complete_snapshot(&self) -> (Vec<QueryEvent>, Option<AppError>) {
-        assert!(
-            self.error.is_none() && matches!(self.events.last(), Some(QueryEvent::Finished { .. })),
-            "incomplete original read event capture (bounded collector overflow or missing terminal)"
-        );
-        (self.events.clone(), self.error.clone())
-    }
-
-    fn push(&mut self, event: QueryEvent) -> bool {
-        if self.error.is_some() {
-            return false;
-        }
-        let bytes = match serde_json::to_vec(&event) {
-            Ok(v) => v.len(),
-            Err(_) => {
-                self.error = Some(invalid());
-                return false;
-            }
-        };
-        if self.events.len() >= EVENT_LIMIT || self.bytes.saturating_add(bytes) > READ_BYTES {
-            self.error = Some(invalid());
-            return false;
-        }
-        self.bytes += bytes;
-        self.events.push(event);
-        true
-    }
-}
-
-fn approve(studio: &Studio, plan: &PreparedPlan) -> AppResult<Option<String>> {
-    if plan.requires_passphrase {
-        return Err(invalid());
-    }
-    if plan.requires_approval {
-        studio
-            .authorize(&plan.id, None, plan.confirmation_text.as_deref())
-            .map(Some)
-    } else {
-        Ok(None)
-    }
-}
-
-async fn read(
-    studio: &Arc<Studio>,
-    session: &str,
-    sql: &str,
-    cancel_on_stream: bool,
-) -> Result<ReadCapture, CallError> {
-    let plan = studio.prepare_execution(session, sql)?;
-    if plan.reviewed_snowflake_dml
-        || plan.reviewed_snowflake_ddl
-        || plan.statements.len() != 1
-        || !plan.bound_parameters.is_empty()
-    {
-        return Err(invalid().into());
-    }
-    let approval = approve(studio, &plan)?;
-    let capture = Arc::new(Mutex::new(Collector::default()));
-    let (progress, mut completion) = tokio::sync::watch::channel((false, false));
-    let handler: EventHandler = Arc::new({
-        let capture = capture.clone();
-        move |event| {
-            let finished = matches!(event, QueryEvent::Finished { .. });
-            let streaming = matches!(&event, QueryEvent::Result { result } if result.status == RetentionStatus::Streaming);
-            let accepted = capture.lock().push(event);
-            progress.send_modify(|value| {
-                value.0 |= streaming;
-                value.1 |= finished;
-            });
-            accepted
-        }
-    });
-    let run = studio.execute(&plan.id, approval.as_deref(), handler)?;
-    let settled = tokio::time::timeout(Duration::from_secs(15), async {
-        while {
-            let (streaming, finished) = *completion.borrow_and_update();
-            !(finished || cancel_on_stream && streaming)
-        } {
-            completion.changed().await.map_err(|_| invalid())?;
-        }
-        Ok::<_, AppError>(())
-    })
-    .await;
-    let cancelled = cancel_on_stream || !matches!(settled, Ok(Ok(())));
-    if cancelled {
-        let cancel_result = studio.cancel(&run).await;
-        // Cancel requests do not join run_plan. Retain the collector until its
-        // original terminal event, including late errors/state/metrics, arrives.
-        // A failed local drain is a harness failure, never a complete receipt.
-        let drained = tokio::time::timeout(Duration::from_secs(15), async {
-            while !completion.borrow_and_update().1 {
-                completion.changed().await.map_err(|_| invalid())?;
-            }
-            Ok::<_, AppError>(())
-        })
-        .await;
-        if !matches!(drained, Ok(Ok(()))) {
-            let _ = studio.disconnect_and_wait(session).await;
-            tokio::time::timeout(Duration::from_secs(15), async {
-                while !completion.borrow_and_update().1 {
-                    completion.changed().await.unwrap();
-                }
-            })
-            .await
-            .expect("incomplete original read event capture after local disconnect");
-        }
-        let (events, _) = capture.lock().complete_snapshot();
-        let error = events
-            .iter()
-            .find_map(|event| match event {
-                QueryEvent::Error { error, .. } => Some(error.clone()),
-                _ => None,
-            })
-            .or_else(|| cancel_result.err())
-            .unwrap_or_else(|| {
-                AppError::new(
-                    ErrorCode::Cancelled,
-                    "Synthetic qualification read collection cancelled",
-                )
-            });
-        return Err(CallError { error, events });
-    }
-    let (events, error) = {
-        let capture = capture.lock();
-        capture.complete_snapshot()
-    };
-    let parsed = (|| {
-        if let Some(error) = error {
-            return Err(error);
-        }
-        if let Some(error) = events.iter().find_map(|event| match event {
-            QueryEvent::Error { error, .. } => Some(error.clone()),
-            _ => None,
-        }) {
-            return Err(error);
-        }
-        let result = events
-            .iter()
-            .rev()
-            .find_map(|event| match event {
-                QueryEvent::Result { result } if result.status == RetentionStatus::Complete => {
-                    Some(result.clone())
-                }
-                _ => None,
-            })
-            .ok_or_else(invalid)?;
-        if result.retained_rows > 1 {
-            return Err(invalid());
-        }
-        let bytes = studio.range(&result.id, 0, 2)?;
-        if bytes.len() > READ_BYTES {
-            return Err(invalid());
-        }
-        let reader = StreamReader::try_new(Cursor::new(bytes), None).map_err(|_| invalid())?;
-        if reader.schema().fields().len() != result.columns.len() {
-            return Err(invalid());
-        }
-        let mut rows = Vec::new();
-        for batch in reader {
-            let batch = batch.map_err(|_| invalid())?;
-            if rows.len().saturating_add(batch.num_rows()) > 1 {
-                return Err(invalid());
-            }
-            for row in 0..batch.num_rows() {
-                let values = batch
-                    .columns()
-                    .iter()
-                    .map(|column| {
-                        let column = column
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .ok_or_else(invalid)?;
-                        Ok(if column.is_null(row) {
-                            None
-                        } else {
-                            Some(column.value(row).to_owned())
-                        })
-                    })
-                    .collect::<AppResult<TextRow>>()?;
-                rows.push(values);
-            }
-        }
-        if rows.len() != result.retained_rows {
-            return Err(invalid());
-        }
-        Ok((result, rows))
-    })();
-    match parsed {
-        Ok((result, rows)) => Ok(ReadCapture {
-            events,
-            result,
-            rows,
-        }),
-        Err(error) => Err(CallError { error, events }),
-    }
-}
-
-#[derive(Default)]
-struct RouteState {
-    session: Option<SessionInfo>,
-    runtime: Option<SessionRuntimeState>,
-    catalog: Option<BrowseCatalog>,
-    inspection: Option<RelationInspection>,
-    preflight: Option<(SnowflakeDdlAction, SnowflakeDdlPreflightResponse)>,
-}
-
-impl RouteState {
-    fn accept(&mut self, output: &Output) {
-        match output {
-            Output::Startup(v) => self.session = Some(v.clone()),
-            Output::Ddl(v) => self.runtime = Some(v.state.clone()),
-            Output::Reconcile(options, _) | Output::Options(options) => {
-                self.runtime = Some(options.state.clone())
-            }
-            Output::Catalog(v) => {
-                self.catalog = Some(v.clone());
-                self.inspection = None;
-            }
-            Output::Inspect(v) => self.inspection = Some(v.clone()),
-            Output::Read(v) => {
-                self.runtime = v.events.iter().find_map(|event| match event {
-                    QueryEvent::SessionState { state } => Some(state.clone()),
-                    _ => None,
-                })
-            }
-            Output::Boundary(v) => self.runtime = Some(v.state.clone()),
-            Output::Dml(v) => self.runtime = Some(v.state.clone()),
-            Output::Preflight(_) => {}
-        }
-    }
-}
+use std::{fs, os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 
 // Only this module constructs the harness. All configurable inputs below are
 // synthetic test cases; there is no production profile/account/session selector.
-struct Pause {
-    phase: u8,
-    reached: tokio::sync::oneshot::Sender<()>,
-    resume: Arc<tokio::sync::Notify>,
-}
-
 struct OfflineHarness {
     fixture: Fixture,
     journal: tempfile::TempDir,
     studio: Arc<Studio>,
     policy: Arc<Policy>,
-    attachment: Option<QualificationAttachment>,
+    runner: Option<Runner>,
     transport: TransportAttachment,
     plan: Plan,
-    attempt: String,
-    state: RouteState,
     cancel_read: bool,
     pause: Option<Pause>,
     break_journal_after: Option<u8>,
@@ -567,256 +252,70 @@ export default sdk;
             )
             .unwrap();
         let attempt = studio.prepare_connection(&profile.id).unwrap();
-        let attachment =
-            QualificationAttachment::new(policy.clone(), TransportLimits::default()).unwrap();
-        let transport = attachment.transport.clone();
+        let runner =
+            Runner::fixture(studio.clone(), policy.clone(), plan.clone(), attempt).unwrap();
+        let transport = runner.transport();
         Self {
             fixture,
             journal,
             studio,
             policy,
-            attachment: Some(attachment),
+            runner: Some(runner),
             transport,
             plan,
-            attempt,
-            state: RouteState::default(),
             cancel_read,
             pause: None,
             break_journal_after: None,
         }
     }
 
-    async fn call(&mut self, operation: Operation) -> Result<Output, CallError> {
-        if operation == Operation::StartupIdentityAndVersion {
-            return self
-                .studio
-                .connect_prepared_qualification(
-                    &self.attempt,
-                    ConnectionSecrets::default(),
-                    self.attachment.take().ok_or_else(invalid)?,
-                )
-                .await
-                .map(Output::Startup)
-                .map_err(Into::into);
-        }
-        let session = self.state.session.as_ref().ok_or_else(invalid)?.id.clone();
-        let output = match operation {
-            Operation::DdlPreflight(id) => {
-                let (catalog, inspection) = match id {
-                    StatementId::Create => (None, None),
-                    StatementId::Add => {
-                        (self.state.catalog.as_ref(), self.state.inspection.as_ref())
-                    }
-                    StatementId::Drop => (self.state.catalog.as_ref(), None),
-                    _ => return Err(invalid().into()),
-                };
-                let action = self.plan.ddl_action(id, catalog, inspection)?;
-                let result = self
-                    .studio
-                    .preflight_snowflake_ddl(&SnowflakeDdlPreflightRequest {
-                        session_id: session,
-                        action: action.clone(),
-                    })
-                    .await?;
-                self.state.preflight = Some((action, result.clone()));
-                Output::Preflight(result)
+    async fn run(self) -> Receipt {
+        // This detached fixture owner keeps tempdirs/SDK material alive even if
+        // its waiter drops while the shared core still owns an in-flight call.
+        tokio::spawn(async move {
+            let mut harness = self;
+            let mut runner = harness.runner.take().unwrap();
+            runner.set_controls(FixtureControls {
+                cancel_read: harness.cancel_read,
+                pause: harness.pause.take(),
+                break_journal: harness
+                    .break_journal_after
+                    .map(|phase| (phase, harness.journal.path().join(FILE_NAME))),
+            });
+            let RunnerReceipt {
+                outputs,
+                failure,
+                original_call_failure,
+                completion_record_error,
+                shutdown,
+                settled,
+                persisted,
+            } = runner.start().await.unwrap();
+            let journal = fs::read_to_string(harness.journal.path().join(FILE_NAME))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let queries = fs::read_to_string(harness.fixture.controls.join("queries"))
+                .unwrap_or_default()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            Receipt {
+                harness,
+                outputs,
+                failure,
+                original_call_failure,
+                completion_record_error,
+                journal,
+                queries,
+                shutdown,
+                settled,
+                persisted,
             }
-            Operation::ReviewedDdl(_) => {
-                let (action, response) = self.state.preflight.take().ok_or_else(invalid)?;
-                let plan = self.studio.prepare_snowflake_ddl(
-                    &session,
-                    &SnowflakeDdlRequest {
-                        revision: response.revision,
-                        action,
-                        sql: response.sql,
-                    },
-                )?;
-                if !plan.reviewed_snowflake_ddl || plan.requires_passphrase {
-                    return Err(invalid().into());
-                }
-                let approval = self.studio.authorize_snowflake_ddl(
-                    &plan.id,
-                    None,
-                    plan.confirmation_text.as_deref(),
-                    plan.target_confirmation_text.as_deref(),
-                )?;
-                Output::Ddl(
-                    self.studio
-                        .execute_snowflake_ddl(&plan.id, Some(&approval))
-                        .await?,
-                )
-            }
-            Operation::CoherentReconciliation(_) => {
-                let (options, catalog) = self
-                    .studio
-                    .refresh_snowflake_ddl_metadata_qualification(&session)
-                    .await?;
-                Output::Reconcile(options, catalog)
-            }
-            Operation::Catalog(_) => Output::Catalog(self.studio.relation_catalog(&session).await?),
-            Operation::Inspect(_) => {
-                let catalog = self.state.catalog.as_ref().ok_or_else(invalid)?;
-                let relation = catalog
-                    .relations
-                    .iter()
-                    .find(|r| r.table.schema == SCHEMA && r.table.name == self.plan.table())
-                    .ok_or_else(invalid)?;
-                Output::Inspect(
-                    self.studio
-                        .inspect_relation(
-                            &session,
-                            &InspectRelationRequest {
-                                revision: catalog.revision.clone(),
-                                target_id: relation.target_id.clone(),
-                            },
-                        )
-                        .await?,
-                )
-            }
-            Operation::Read(expected) => {
-                let id = if expected == Readback::Ownership {
-                    StatementId::OwnershipRead
-                } else {
-                    StatementId::DataRead
-                };
-                Output::Read(
-                    read(
-                        &self.studio,
-                        &session,
-                        self.plan.statement(id).source_sql(),
-                        self.cancel_read && expected != Readback::Ownership,
-                    )
-                    .await?,
-                )
-            }
-            Operation::TypedBoundary { action, .. } => {
-                let state = self.state.runtime.as_ref().ok_or_else(invalid)?;
-                let Some(TransactionControlAuthority::Observed { revision, .. }) =
-                    &state.transaction_control_authority
-                else {
-                    return Err(invalid().into());
-                };
-                let plan = self.studio.prepare_transaction_control(
-                    &session,
-                    &TransactionControlRequest {
-                        action,
-                        revision: revision.clone(),
-                    },
-                )?;
-                let approval = approve(&self.studio, &plan)?;
-                Output::Boundary(
-                    self.studio
-                        .execute_transaction_control(&plan.id, approval.as_deref())
-                        .await?,
-                )
-            }
-            Operation::ReviewedDml(id) => {
-                let plan = self
-                    .studio
-                    .prepare_execution(&session, self.plan.statement(id).source_sql())?;
-                if !plan.reviewed_snowflake_dml || !plan.bound_parameters.is_empty() {
-                    return Err(invalid().into());
-                }
-                let approval = approve(&self.studio, &plan)?;
-                Output::Dml(
-                    self.studio
-                        .execute_snowflake_dml(&plan.id, approval.as_deref())
-                        .await?,
-                )
-            }
-            Operation::SessionOptionsResume => Output::Options(
-                self.studio
-                    .session_contexts_with_refresh(&session, true)
-                    .await?,
-            ),
-            Operation::StartupIdentityAndVersion => return Err(invalid().into()),
-        };
-        Ok(output)
-    }
-
-    async fn run(mut self) -> Receipt {
-        let mut outputs = Vec::new();
-        let mut failure = None;
-        for phase in self.plan.phases().to_vec() {
-            match self.call(phase.operation()).await {
-                Ok(output) => {
-                    if self
-                        .pause
-                        .as_ref()
-                        .is_some_and(|v| v.phase == phase.number())
-                    {
-                        let pause = self.pause.take().unwrap();
-                        let _ = pause.reached.send(());
-                        pause.resume.notified().await;
-                    }
-                    if self.break_journal_after == Some(phase.number()) {
-                        fs::set_permissions(
-                            self.journal.path().join(FILE_NAME),
-                            fs::Permissions::from_mode(0o644),
-                        )
-                        .unwrap();
-                    }
-                    let recorded = self
-                        .policy
-                        .record_operation_completion(OperationCompletion::Returned(
-                            output.evidence(),
-                        ))
-                        .await;
-                    let result = match recorded {
-                        Ok(None) => self.policy.finish_phase(output.evidence()).await,
-                        Ok(Some(error)) | Err(error) => Err(error),
-                    };
-                    if result.is_ok() {
-                        self.state.accept(&output);
-                        if let Output::Read(read) = &output {
-                            self.studio.release_result(&read.result.id);
-                        }
-                    }
-                    outputs.push(output);
-                    if let Err(error) = result {
-                        failure = Some((phase.number(), error));
-                        break;
-                    }
-                }
-                Err(original) => {
-                    let _ = self
-                        .policy
-                        .record_operation_completion(OperationCompletion::Failed {
-                            error: &original.error,
-                            events: &original.events,
-                        })
-                        .await;
-                    failure = Some((phase.number(), original.error));
-                    break;
-                }
-            }
-        }
-        if let Some((_, error)) = &failure {
-            TransportPolicy::failed(&*self.policy, error.clone());
-        }
-        let shutdown = self.studio.shutdown_and_wait().await;
-        let settled = self.transport.wait(Duration::from_secs(10)).await;
-        let persisted = self.policy.persist_final_evidence().await;
-        let journal = fs::read_to_string(self.journal.path().join(FILE_NAME))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        let queries = fs::read_to_string(self.fixture.controls.join("queries"))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        Receipt {
-            harness: self,
-            outputs,
-            failure,
-            journal,
-            queries,
-            shutdown,
-            settled: settled.is_some(),
-            persisted,
-        }
+        })
+        .await
+        .unwrap()
     }
 }
 
@@ -824,6 +323,8 @@ struct Receipt {
     harness: OfflineHarness,
     outputs: Vec<Output>,
     failure: Option<(u8, AppError)>,
+    original_call_failure: Option<CallError>,
+    completion_record_error: Option<AppError>,
     journal: Vec<Value>,
     queries: Vec<String>,
     shutdown: AppResult<()>,
@@ -849,7 +350,6 @@ fn assert_local_settlement(receipt: &Receipt) {
 }
 
 #[test]
-#[should_panic(expected = "incomplete original read event capture")]
 fn qualification_studio_runner_event_overflow_never_becomes_complete_capture() {
     let mut collector = Collector::default();
     for _ in 0..EVENT_LIMIT {
@@ -862,11 +362,19 @@ fn qualification_studio_runner_event_overflow_never_becomes_complete_capture() {
         status: RunStatus::Cancelled,
         elapsed_ms: 0
     }));
-    collector.complete_snapshot();
+    let snapshot = collector.complete_snapshot();
+    assert!(!snapshot.complete);
+    assert_eq!(snapshot.events.len(), EVENT_LIMIT);
+    assert_eq!(snapshot.error.unwrap().code, ErrorCode::Internal);
+    assert!(
+        !snapshot
+            .events
+            .iter()
+            .any(|event| matches!(event, QueryEvent::Finished { .. }))
+    );
 }
 
 #[test]
-#[should_panic(expected = "incomplete original read event capture")]
 fn qualification_studio_runner_byte_overflow_never_becomes_complete_capture() {
     let mut collector = Collector::default();
     assert!(!collector.push(QueryEvent::Notice {
@@ -877,7 +385,240 @@ fn qualification_studio_runner_byte_overflow_never_becomes_complete_capture() {
         status: RunStatus::Cancelled,
         elapsed_ms: 0
     }));
-    collector.complete_snapshot();
+    let snapshot = collector.complete_snapshot();
+    assert!(!snapshot.complete);
+    assert!(snapshot.events.is_empty());
+    assert_eq!(snapshot.error.unwrap().code, ErrorCode::Internal);
+    assert!(
+        !snapshot
+            .events
+            .iter()
+            .any(|event| matches!(event, QueryEvent::Finished { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_fixture_rejects_plan_mismatch_before_launch() {
+    let harness = OfflineHarness::new(1, Value::Null).await;
+    let different = Plan::generate().unwrap();
+    assert_ne!(different.run(), harness.plan.run());
+    assert_ne!(different.table(), harness.plan.table());
+    assert!(
+        Runner::fixture(
+            harness.studio.clone(),
+            harness.policy.clone(),
+            different,
+            "unused-attempt".into()
+        )
+        .is_err()
+    );
+    assert!(!harness.fixture.controls.join("queries").exists());
+    assert_eq!(fs::read_dir(&harness.fixture.state).unwrap().count(), 0);
+    let report = harness.transport.report();
+    assert_eq!(report.admitted_writes, 0);
+    assert_eq!(report.stdout_bytes, 0);
+    let records: Vec<Value> = fs::read_to_string(harness.journal.path().join(FILE_NAME))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!records.iter().any(|record| {
+        record["event"].get("wireId").is_some()
+            || matches!(
+                record["event"]["type"].as_str(),
+                Some("validatedPhase" | "operationCompletion")
+            )
+    }));
+    harness.studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn qualification_studio_runner_missing_finished_is_typed_incomplete_prefix() {
+    let mut collector = Collector::default();
+    let original = QueryEvent::Notice {
+        message: "original prefix".into(),
+    };
+    assert!(collector.push(original.clone()));
+    let (sender, mut receiver) = tokio::sync::watch::channel((false, false));
+    drop(sender);
+    let error = wait_finished(&mut receiver).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Internal);
+    let snapshot = collector.complete_snapshot();
+    assert!(!snapshot.complete);
+    assert!(snapshot.error.is_some());
+    assert_eq!(
+        serde_json::to_value(snapshot.events).unwrap(),
+        serde_json::to_value([original]).unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_incomplete_capture_journals_original_error_and_prefix() {
+    let harness = OfflineHarness::new(1, Value::Null).await;
+    let mut collector = Collector::default();
+    for index in 0..EVENT_LIMIT {
+        assert!(collector.push(QueryEvent::Notice {
+            message: format!("original-{index}")
+        }));
+    }
+    assert!(!collector.push(QueryEvent::Finished {
+        run_id: "original-run".into(),
+        status: RunStatus::Cancelled,
+        elapsed_ms: 9
+    }));
+    let original_error = AppError::new(ErrorCode::Cancelled, "distinct original cancellation");
+    let cleanup_error = AppError::new(
+        ErrorCode::ConnectionClosed,
+        "distinct local cleanup failure",
+    );
+    let mut original = CallError::captured(original_error.clone(), collector.complete_snapshot());
+    original.cleanup_error = Some(Box::new(cleanup_error.clone()));
+    let expected_events = serde_json::to_value(&original.events).unwrap();
+    assert!(!original.capture_complete);
+    assert_eq!(original.error.code, ErrorCode::Internal);
+    assert!(
+        harness
+            .policy
+            .record_operation_completion(original.completion())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(TransportPolicy::check(&*harness.policy).is_err());
+    let journal: Vec<Value> = fs::read_to_string(harness.journal.path().join(FILE_NAME))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let completion = &journal
+        .iter()
+        .find(|record| record["event"]["type"] == "operationCompletion")
+        .unwrap()["event"]["completion"];
+    assert_eq!(completion["status"], "incompleteRead");
+    let durable = &completion["original"];
+    assert_eq!(
+        durable["error"],
+        serde_json::to_value(&original.error).unwrap()
+    );
+    assert_eq!(
+        durable["originalError"],
+        serde_json::to_value(original_error).unwrap()
+    );
+    assert_eq!(
+        durable["cleanupError"],
+        serde_json::to_value(cleanup_error).unwrap()
+    );
+    assert_eq!(durable["events"], expected_events);
+    assert_eq!(durable["events"].as_array().unwrap().len(), EVENT_LIMIT);
+    assert!(
+        !journal
+            .iter()
+            .any(|record| record["event"]["type"] == "validatedPhase")
+    );
+    assert!(!harness.fixture.controls.join("queries").exists());
+    harness.studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_late_finished_keeps_incomplete_original_provenance() {
+    let harness = OfflineHarness::new(1, Value::Null).await;
+    let mut collector = Collector::default();
+    assert!(collector.push(QueryEvent::Notice {
+        message: "original prefix before failed drain".into()
+    }));
+    let original_error = AppError::new(
+        ErrorCode::Cancelled,
+        "actual cancellation before late Finished",
+    );
+    let mut original = CallError::captured(original_error.clone(), collector.complete_snapshot());
+    assert!(!original.capture_complete);
+    assert!(collector.push(QueryEvent::Finished {
+        run_id: "original-run".into(),
+        status: RunStatus::Cancelled,
+        elapsed_ms: 17
+    }));
+    let late = collector.complete_snapshot();
+    assert!(late.complete);
+    original.retain_cleanup_snapshot(late);
+    assert!(!original.capture_complete);
+    assert!(matches!(
+        original.events.last(),
+        Some(QueryEvent::Finished { .. })
+    ));
+    assert!(
+        harness
+            .policy
+            .record_operation_completion(original.completion())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(TransportPolicy::check(&*harness.policy).is_err());
+    let journal: Vec<Value> = fs::read_to_string(harness.journal.path().join(FILE_NAME))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let completion = &journal
+        .iter()
+        .find(|record| record["event"]["type"] == "operationCompletion")
+        .unwrap()["event"]["completion"];
+    assert_eq!(completion["status"], "incompleteRead");
+    assert_eq!(
+        completion["original"]["originalError"],
+        serde_json::to_value(original_error).unwrap()
+    );
+    assert_eq!(completion["original"]["error"]["code"], "internal");
+    assert_eq!(
+        completion["original"]["events"],
+        serde_json::to_value(&original.events).unwrap()
+    );
+    assert!(
+        !journal
+            .iter()
+            .any(|record| record["event"]["type"] == "validatedPhase")
+    );
+    assert!(!harness.fixture.controls.join("queries").exists());
+    harness.studio.shutdown_and_wait().await.unwrap();
+}
+
+#[test]
+fn qualification_studio_runner_recovered_snapshot_keeps_failed_first_drain() {
+    let mut collector = Collector::default();
+    assert!(collector.push(QueryEvent::Notice {
+        message: "original prefix before failed first drain".into()
+    }));
+    assert!(collector.push(QueryEvent::Finished {
+        run_id: "original-run".into(),
+        status: RunStatus::Cancelled,
+        elapsed_ms: 23
+    }));
+    let recovered = collector.complete_snapshot();
+    assert!(recovered.complete);
+    let expected_events = serde_json::to_value(&recovered.events).unwrap();
+    // The same boundary helper is used after the real read's first failed drain,
+    // when disconnect's subsequent drain has already recovered Finished.
+    let snapshot = recovered.after_failed_drain();
+    let original_error = AppError::new(
+        ErrorCode::Cancelled,
+        "original cancellation before recovered disconnect",
+    );
+    let cleanup_error = AppError::new(ErrorCode::ConnectionClosed, "original disconnect failure");
+    let mut original = CallError::captured(original_error.clone(), snapshot);
+    original.cleanup_error = Some(Box::new(cleanup_error.clone()));
+    assert!(!original.capture_complete);
+    let record = serde_json::to_value(original.completion()).unwrap();
+    assert_eq!(record["status"], "incompleteRead");
+    assert_eq!(record["original"]["error"]["code"], "internal");
+    assert_eq!(
+        record["original"]["originalError"],
+        serde_json::to_value(original_error).unwrap()
+    );
+    assert_eq!(
+        record["original"]["cleanupError"],
+        serde_json::to_value(cleanup_error).unwrap()
+    );
+    assert_eq!(record["original"]["events"], expected_events);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -931,6 +672,76 @@ async fn qualification_studio_runner_dropped_waiter_preserves_post_ack_owner() {
             .filter(|v| v["event"]["type"] == "operationCompletion")
             .count(),
         32
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_dropped_core_handle_retains_original_completion_and_cleanup() {
+    let mut harness = OfflineHarness::new(1, Value::Null).await;
+    let mut runner = harness.runner.take().unwrap();
+    let (reached, ready) = tokio::sync::oneshot::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    runner.set_controls(FixtureControls {
+        pause: Some(Pause {
+            phase: 3,
+            reached,
+            resume: resume.clone(),
+        }),
+        ..FixtureControls::default()
+    });
+    let owner = runner.start();
+    tokio::time::timeout(Duration::from_secs(30), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(owner);
+    resume.notify_one();
+    let settled = harness
+        .transport
+        .wait(Duration::from_secs(90))
+        .await
+        .unwrap();
+    assert!(settled.settled);
+    // Transport settlement precedes the owner's final journal flush. The policy
+    // gate joins that flush locally, without issuing another database call.
+    harness.policy.persist_final_evidence().await.unwrap();
+    harness.studio.shutdown_and_wait().await.unwrap();
+    let journal: Vec<Value> = fs::read_to_string(harness.journal.path().join(FILE_NAME))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        journal
+            .iter()
+            .filter(|record| record["event"]["type"] == "validatedPhase")
+            .count(),
+        32
+    );
+    assert_eq!(
+        journal
+            .iter()
+            .filter(|record| record["event"]["type"] == "operationCompletion")
+            .count(),
+        32
+    );
+    assert_eq!(fs::read_dir(&harness.fixture.state).unwrap().count(), 0);
+    let queries: Vec<String> = fs::read_to_string(harness.fixture.controls.join("queries"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let ledger = harness
+        .plan
+        .expand_physical_ledger(&SchemaCensus::freeze(&[SCHEMA.into()]).unwrap())
+        .unwrap();
+    assert_eq!(
+        queries,
+        ledger
+            .entries()
+            .iter()
+            .map(|entry| entry.sql().to_owned())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1028,6 +839,13 @@ async fn qualification_studio_runner_cancellation_drains_original_terminal_event
             .unwrap();
         let completion = assert_stopped_at(&receipt, 13);
         assert_eq!(completion["status"], "failed");
+        let retained = receipt.original_call_failure.as_ref().unwrap();
+        assert!(retained.capture_complete);
+        assert!(retained.original_error.is_none());
+        assert_eq!(
+            serde_json::to_value(&retained.events).unwrap(),
+            completion["original"]["events"]
+        );
         let events = completion["original"]["events"].as_array().unwrap();
         if kind == "stallReadError" {
             let original = events
@@ -1653,6 +1471,8 @@ async fn qualification_studio_runner_completes_all_actual_routes_at_census_extre
         assert!(receipt.shutdown.is_ok(), "{:?}", receipt.shutdown);
         assert!(receipt.settled);
         assert!(receipt.persisted.is_ok(), "{:?}", receipt.persisted);
+        assert!(receipt.completion_record_error.is_none());
+        assert!(receipt.original_call_failure.is_none());
         assert_eq!(
             fs::read_dir(&receipt.harness.fixture.state)
                 .unwrap()

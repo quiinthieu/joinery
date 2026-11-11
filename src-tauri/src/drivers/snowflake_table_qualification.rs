@@ -89,6 +89,16 @@ mod evidence;
 #[path = "snowflake_table_qualification_policy.rs"]
 mod policy;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Shared qualification owner; consumed account entry is not yet implemented"
+    )
+)]
+#[path = "snowflake_table_qualification_runner.rs"]
+mod runner;
+
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
     domain::{

@@ -46,6 +46,16 @@ pub(super) enum OperationCompletion<'a> {
         error: &'a AppError,
         events: &'a [QueryEvent],
     },
+    /// A bounded original event prefix cannot be presented as a complete read.
+    /// Keep its collection failure separate from the original operation error.
+    IncompleteRead {
+        error: &'a AppError,
+        #[serde(rename = "originalError")]
+        original_error: Option<&'a AppError>,
+        events: &'a [QueryEvent],
+        #[serde(rename = "cleanupError")]
+        cleanup_error: Option<&'a AppError>,
+    },
 }
 
 fn denied() -> AppError {
@@ -340,7 +350,9 @@ impl Policy {
             state.enqueue(json!({"type":"operationCompletion", "phase":phase,
                 "completion":original}))?;
             state.operation_completions.insert(phase);
-            if let OperationCompletion::Failed { error, .. } = completion {
+            if let OperationCompletion::Failed { error, .. }
+            | OperationCompletion::IncompleteRead { error, .. } = completion
+            {
                 state.fail(error.clone());
             }
             state.event_sequence
