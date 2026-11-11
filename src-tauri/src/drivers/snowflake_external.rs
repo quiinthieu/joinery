@@ -1478,7 +1478,7 @@ impl SnowflakeExternal {
                 {
                     sink_error = Some(error);
                     retaining = false;
-                    self.discard(&token, &operation).await?;
+                    self.discard(&token, &mut operation).await?;
                 }
                 described = true;
             }
@@ -1496,7 +1496,7 @@ impl SnowflakeExternal {
                             Ok(false) => { retaining = false; sink.limit("Result retention limit reached"); },
                             Err(error) => { retaining = false; sink_error = Some(error); }
                         }
-                        if !retaining { self.discard(&token, &operation).await?; }
+                        if !retaining { self.discard(&token, &mut operation).await?; }
                     }
                     if retaining && operation.report().is_none() {
                         match self.process.credit(&token, 1) {
@@ -1505,6 +1505,8 @@ impl SnowflakeExternal {
                                 if operation.report().is_none() { check_report(&report)?; }
                             },
                             Err(_) if operation.report().is_some() => {},
+                            Err(super::snowflake_process::INACTIVE_OPERATION)
+                                if operation.wait_if_finalizing().await.is_some() => {},
                             Err(_) => { self.start_shutdown(); return Err(closed_error()); }
                         }
                     }
@@ -1544,7 +1546,7 @@ impl SnowflakeExternal {
     async fn discard(
         &self,
         token: &OperationToken,
-        operation: &super::snowflake_process::Operation,
+        operation: &mut super::snowflake_process::Operation,
     ) -> AppResult<()> {
         match self.process.discard(token) {
             Ok(mut discard) => {
@@ -1557,6 +1559,11 @@ impl SnowflakeExternal {
                 }
             }
             Err(_) if operation.report().is_some() => Ok(()),
+            Err(super::snowflake_process::INACTIVE_OPERATION)
+                if operation.wait_if_finalizing().await.is_some() =>
+            {
+                Ok(())
+            }
             Err(_) => {
                 self.start_shutdown();
                 Err(closed_error())
@@ -3267,6 +3274,9 @@ mod session_tests {
     mod read_spec_tests {
         include!("snowflake_read_spec_adapter_tests.rs");
     }
+    mod qualification_finalizing_tests {
+        include!("snowflake_qualification_finalizing_adapter_tests.rs");
+    }
 
     // The real framed helper runs in a child with a synthetic SDK. No SDK import,
     // external-browser login, socket or account is used by this fixture.
@@ -3469,6 +3479,25 @@ process.stdin.on('end', retire);
             reviewed_ddl: bool,
             metadata_observer: Option<MetadataAttachment>,
         ) -> Self {
+            Self::open_policy_and_attachments(
+                safe_mode,
+                reviewed_dml,
+                reviewed_ddl,
+                metadata_observer,
+                None,
+            )
+            .await
+        }
+
+        async fn open_policy_and_attachments(
+            safe_mode: SafeMode,
+            reviewed_dml: bool,
+            reviewed_ddl: bool,
+            metadata_observer: Option<MetadataAttachment>,
+            transport: Option<
+                crate::drivers::snowflake_qualification_transport::TransportAttachment,
+            >,
+        ) -> Self {
             let scripts = tempfile::tempdir().unwrap();
             let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -3494,13 +3523,16 @@ process.stdin.on('end', retire);
                 std::env::var_os("JOINERY_TEST_NODE").expect("explicit JOINERY_TEST_NODE required"),
             );
             assert!(node.is_absolute() && node.is_file());
-            let launch = Launch::new(
+            let mut launch = Launch::new(
                 node,
                 Some(path),
                 scripts.path().to_owned(),
                 tempfile::tempdir().unwrap(),
             )
             .unwrap();
+            if let Some(transport) = transport {
+                launch.attach_transport(transport).unwrap();
+            }
             let cleanup = launch.cleanup_observer();
             let profile = ConnectionProfile {
                 id: new_id(),

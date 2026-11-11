@@ -26,6 +26,7 @@ use tokio::{
 pub const MAX_FRAME: usize = 1_048_576;
 pub const MAX_BATCH: usize = 262_144;
 const MAX_CREDITS: u32 = 32;
+pub(crate) const INACTIVE_OPERATION: &str = "stale or inactive operation token";
 
 pub struct Launch {
     /// Absolute, explicitly selected executable; never resolved using PATH.
@@ -608,7 +609,7 @@ enum TargetError {
 impl TargetError {
     fn message(self) -> &'static str {
         match self {
-            Self::Inactive => "stale or inactive operation token",
+            Self::Inactive => INACTIVE_OPERATION,
             Self::Control(message) => message,
         }
     }
@@ -828,6 +829,20 @@ impl Operation {
                     ddl_acknowledged: None,
                 };
             }
+        }
+    }
+    /// An inactive control target may already have an original terminal inside
+    /// its observer. Wait for this exact operation's public watch; the private
+    /// cache proves ownership but must not expose an outcome before callbacks.
+    pub(crate) async fn wait_if_finalizing(&mut self) -> Option<Report> {
+        let completing = {
+            let state = self.owner.state.lock().unwrap();
+            self.completion_evidence(&state).is_some()
+        };
+        if completing {
+            Some(self.wait().await)
+        } else {
+            None
         }
     }
     pub async fn wait_bounded(&mut self, limit: Duration) -> Report {
@@ -1114,7 +1129,7 @@ impl Supervisor {
                 .pending
                 .get_mut(&target.id)
                 .filter(|pending| pending.ticket == target.ticket)
-                .ok_or("stale or inactive operation token")?;
+                .ok_or(INACTIVE_OPERATION)?;
             if pending.phase == Phase::Queued {
                 return Err("query has not been transmitted");
             }
