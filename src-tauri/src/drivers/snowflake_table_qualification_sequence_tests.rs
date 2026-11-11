@@ -889,6 +889,137 @@ fn local_query(discard: bool, admitted: bool) -> (Harness, Admission, LocalFixtu
     (h, sql, local)
 }
 
+fn completed_query_control(discard: bool) -> (Harness, Admission, Frame) {
+    let mut h = Harness::new();
+    h.step();
+    let frame = h.sql_frame();
+    let sql = h.seq.reserve(&frame.request()).unwrap();
+    // Process already prepared this exact target while it was live, then its
+    // awaited policy work lets the helper terminal beat the reservation.
+    let control = h.control(&sql, "credit", discard);
+    let AdmissionKind::Sql(entry) = sql.kind() else {
+        unreachable!()
+    };
+    assert!(
+        h.finish(&sql, &Harness::sql_success(entry))
+            .error()
+            .is_none()
+    );
+    (h, sql, control)
+}
+
+#[test]
+fn sequence_local_completed_before_reservation_is_inactive_only() {
+    for discard in [false, true] {
+        let (mut h, sql, frame) = completed_query_control(discard);
+        let before = (h.seq.index, h.seq.phase_index);
+        let admission = h.seq.reserve(&frame.request()).unwrap();
+        assert!(matches!(
+            admission.kind(),
+            AdmissionKind::InactiveControl(_)
+        ));
+        assert!(h.seq.active.is_none());
+        assert!(h.seq.phase_ready().is_err());
+        let local = LocalFixture::inactive(&frame, Some(&admission));
+        let original = inactive_report();
+        let record = h.seq.local_terminal(local.terminal(&original));
+        assert!(record.error().is_none());
+        assert!(record.record()["wireId"].is_null());
+        assert_eq!(
+            record.record()["candidateWireId"],
+            admission.wire_id.to_string()
+        );
+        assert_eq!(record.report().certainty, Certainty::NotSubmitted);
+        assert_eq!(before, (h.seq.index, h.seq.phase_index));
+        assert_eq!(h.seq.last_wire_id, admission.wire_id);
+        assert!(h.seq.active.is_none() && h.seq.pending.is_empty());
+        h.seq.phase_ready().unwrap();
+        assert!(
+            h.seq
+                .local_terminal(local.terminal(&original))
+                .error()
+                .is_some()
+        );
+        assert!(!h.seq.pending.contains_key(&sql.wire_id));
+    }
+}
+
+#[test]
+fn sequence_local_inactive_only_reservation_rejects_helper_terminal() {
+    let (mut h, _, frame) = completed_query_control(false);
+    let admission = h.seq.reserve(&frame.request()).unwrap();
+    let before = (h.seq.index, h.seq.phase_index);
+    let forged = report();
+    let recorded = h.finish(&admission, &forged);
+    assert!(recorded.error().is_some());
+    assert!(recorded.report().ok);
+    assert_eq!(recorded.report().result, forged.result);
+    assert_eq!(before, (h.seq.index, h.seq.phase_index));
+    assert!(h.seq.active.is_none() && h.seq.pending.is_empty());
+    assert!(h.seq.phase_ready().is_err());
+}
+
+#[test]
+fn sequence_local_completed_reservation_rejects_wrong_owner_grammar_and_replay() {
+    for changed in [
+        "generation",
+        "logical",
+        "ticket",
+        "wire",
+        "phase",
+        "cancel",
+        "batches",
+        "duplicate",
+        "discarded",
+    ] {
+        let (mut h, sql, mut frame) = completed_query_control(false);
+        match changed {
+            "generation" => {
+                frame.generation = "foreign-generation".into();
+                frame.value["generation"] = json!(frame.generation);
+            }
+            "logical" => frame.target.as_mut().unwrap().0 = "foreign-query".into(),
+            "ticket" => frame.target.as_mut().unwrap().1 = Some(sql.ticket + 100),
+            "wire" => frame.value["payload"]["target"] = json!((sql.wire_id + 100).to_string()),
+            "phase" => h.seq.advance_phase().unwrap(),
+            "cancel" => {
+                frame.operation = "cancel".into();
+                frame.value["op"] = json!("cancel");
+                frame.value["payload"] = json!({"target":sql.wire_id.to_string()});
+            }
+            "batches" => frame.value["payload"]["batches"] = json!(2),
+            "duplicate" | "discarded" => {
+                let mut first = if changed == "discarded" {
+                    h.control(&sql, "credit", true)
+                } else {
+                    frame
+                };
+                // The duplicate case uses the original frame again after its
+                // local completion; discard uses a fresh later candidate.
+                first.bytes = serde_json::to_vec(&first.value).unwrap();
+                let admission = h.seq.reserve(&first.request()).unwrap();
+                let local = LocalFixture::inactive(&first, Some(&admission));
+                assert!(
+                    h.seq
+                        .local_terminal(local.terminal(&inactive_report()))
+                        .error()
+                        .is_none()
+                );
+                frame = if changed == "duplicate" {
+                    first
+                } else {
+                    h.control(&sql, "credit", false)
+                };
+            }
+            _ => unreachable!(),
+        }
+        frame.bytes = serde_json::to_vec(&frame.value).unwrap();
+        let before = (h.seq.index, h.seq.phase_index);
+        assert!(h.seq.reserve(&frame.request()).is_err(), "{changed}");
+        assert_eq!(before, (h.seq.index, h.seq.phase_index), "{changed}");
+    }
+}
+
 #[test]
 fn sequence_local_admitted_inactive_credit_and_discard_consume_only_their_reservation() {
     for discard in [false, true] {

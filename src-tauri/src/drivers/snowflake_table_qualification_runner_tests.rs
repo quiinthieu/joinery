@@ -2,6 +2,7 @@
 //! No account SDK, profile lookup, external execution entry or approval exists.
 use super::{
     Plan, SCHEMA, SchemaCensus, StatementId,
+    envelope::fixture_consumed,
     journal::FILE_NAME,
     policy::Policy,
     runner::{
@@ -28,11 +29,14 @@ struct OfflineHarness {
     studio: Arc<Studio>,
     policy: Arc<Policy>,
     runner: Option<Runner>,
+    attempt: String,
+    _guard_artifacts: Option<tempfile::TempDir>,
     transport: TransportAttachment,
     plan: Plan,
     cancel_read: bool,
     pause: Option<Pause>,
     break_journal_after: Option<u8>,
+    authentication_limit: Option<Duration>,
 }
 
 impl OfflineHarness {
@@ -120,7 +124,8 @@ impl OfflineHarness {
         } else {
             Value::Null
         };
-        let sdk_fault = if child_exit.is_null() && drift.is_null() {
+        let stall_authentication = fault["kind"] == "stallAuthentication";
+        let sdk_fault = if child_exit.is_null() && drift.is_null() && !stall_authentication {
             fault
         } else {
             Value::Null
@@ -133,8 +138,20 @@ import {{Readable}} from 'node:stream';
 const options={options};
 const childExit={child_exit};
 const drift={drift};
+const stallAuthentication={stall_authentication};
 const append=(name,value)=>appendFileSync(new URL('../../'+name,import.meta.url),JSON.stringify(value)+'\n');
 const sdk=makeSdk({{...options,log:sql=>append('queries',sql)}});
+if (stallAuthentication) {{
+  const create=sdk.createConnection.bind(sdk);
+  sdk.createConnection=profile=>{{
+    const connection=create(profile);
+    connection.connectAsync=()=>{{
+      append('auth-entered',{{pid:process.pid}});
+      return new Promise(()=>{{}});
+    }};
+    return connection;
+  }};
+}}
 if (childExit !== null) {{
   const create=sdk.createConnection.bind(sdk);
   sdk.createConnection=profile=>{{
@@ -252,8 +269,13 @@ export default sdk;
             )
             .unwrap();
         let attempt = studio.prepare_connection(&profile.id).unwrap();
-        let runner =
-            Runner::fixture(studio.clone(), policy.clone(), plan.clone(), attempt).unwrap();
+        let runner = Runner::fixture(
+            studio.clone(),
+            policy.clone(),
+            plan.clone(),
+            attempt.clone(),
+        )
+        .unwrap();
         let transport = runner.transport();
         Self {
             fixture,
@@ -261,12 +283,38 @@ export default sdk;
             studio,
             policy,
             runner: Some(runner),
+            attempt,
+            _guard_artifacts: None,
             transport,
             plan,
             cancel_read,
             pause: None,
             break_journal_after: None,
+            authentication_limit: None,
         }
+    }
+
+    async fn consumed(schema_count: usize, fault: Value) -> (Self, std::path::PathBuf) {
+        let mut harness = Self::new(schema_count, fault).await;
+        let plan = harness.plan.clone();
+        let profile = harness.policy.frozen_profile();
+        // The helper uses normal capture/approval/consume and the real current
+        // test executable. Other artifact/profile bytes remain synthetic.
+        let (artifacts, consumed, drift) =
+            tokio::task::spawn_blocking(move || fixture_consumed(plan, profile))
+                .await
+                .unwrap();
+        let runner = Runner::consumed(
+            harness.studio.clone(),
+            harness.policy.clone(),
+            consumed,
+            harness.attempt.clone(),
+        )
+        .unwrap();
+        harness.transport = runner.transport();
+        harness.runner = Some(runner);
+        harness._guard_artifacts = Some(artifacts);
+        (harness, drift)
     }
 
     async fn run(self) -> Receipt {
@@ -277,6 +325,8 @@ export default sdk;
             let mut runner = harness.runner.take().unwrap();
             runner.set_controls(FixtureControls {
                 cancel_read: harness.cancel_read,
+                authentication_limit: harness.authentication_limit,
+                finished: None,
                 pause: harness.pause.take(),
                 break_journal: harness
                     .break_journal_after
@@ -290,6 +340,9 @@ export default sdk;
                 shutdown,
                 settled,
                 persisted,
+                guard_revalidation,
+                guard_settled,
+                guard_recorded,
             } = runner.start().await.unwrap();
             let journal = fs::read_to_string(harness.journal.path().join(FILE_NAME))
                 .unwrap()
@@ -312,6 +365,9 @@ export default sdk;
                 shutdown,
                 settled,
                 persisted,
+                guard_revalidation,
+                guard_settled,
+                guard_recorded,
             }
         })
         .await
@@ -330,6 +386,9 @@ struct Receipt {
     shutdown: AppResult<()>,
     settled: bool,
     persisted: AppResult<()>,
+    guard_revalidation: Option<AppResult<()>>,
+    guard_settled: Option<bool>,
+    guard_recorded: Option<AppResult<()>>,
 }
 
 fn start(schema_count: usize, fault: Value) -> tokio::task::JoinHandle<Receipt> {
@@ -1551,4 +1610,310 @@ async fn qualification_studio_runner_completes_all_actual_routes_at_census_extre
             assert_eq!(receipt.journal[validation]["event"]["evidence"], original);
         }
     }
+}
+
+fn assert_final_guard_failed(journal: &[Value], error: &AppError) {
+    let records = journal
+        .iter()
+        .filter(|record| record["event"]["type"] == "executionEnvelopeFinal")
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    let event = &records[0]["event"];
+    assert_eq!(event["revalidation"]["ok"], false);
+    assert_eq!(
+        event["revalidation"]["error"],
+        serde_json::to_value(error).unwrap()
+    );
+    assert_eq!(event["scannerSettled"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_consumed_preauth_drift_stops_before_launch() {
+    let (harness, drift) = OfflineHarness::consumed(1, Value::Null).await;
+    fs::write(drift, b"changed synthetic runtime before authentication").unwrap();
+    let receipt = harness.run().await;
+    assert_local_settlement(&receipt);
+    assert_eq!(receipt.failure.as_ref().map(|value| value.0), Some(1));
+    assert!(receipt.outputs.is_empty());
+    assert!(receipt.queries.is_empty());
+    assert!(receipt.original_call_failure.is_some());
+    assert!(matches!(receipt.guard_revalidation, Some(Err(_))));
+    assert_eq!(receipt.guard_settled, Some(true));
+    assert!(matches!(receipt.guard_recorded, Some(Ok(()))));
+    assert_final_guard_failed(
+        &receipt.journal,
+        receipt
+            .guard_revalidation
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err(),
+    );
+    let report = receipt.harness.transport.report();
+    assert_eq!(report.stdout_bytes, 0);
+    assert_eq!(report.admitted_writes, 0);
+    assert_eq!(report.started_writes, 0);
+    assert_eq!(
+        report.stdout,
+        crate::drivers::snowflake_qualification_transport::Disposition::NotStarted
+    );
+    assert!(
+        receipt
+            .journal
+            .iter()
+            .all(|record| record["event"]["type"] != "validatedPhase")
+    );
+    assert_eq!(
+        receipt
+            .journal
+            .iter()
+            .filter(|record| record["event"]["type"] == "operationCompletion")
+            .count(),
+        1
+    );
+}
+
+fn assert_consumed_create_retained(plan: &Plan, journal: &[Value], queries: &[String]) {
+    let ledger = plan
+        .expand_physical_ledger(&SchemaCensus::freeze(&[SCHEMA.into()]).unwrap())
+        .unwrap();
+    assert_eq!(
+        queries,
+        ledger
+            .entries()
+            .iter()
+            .take_while(|entry| entry.phase() <= 3)
+            .map(|entry| entry.sql().to_owned())
+            .collect::<Vec<_>>()
+    );
+    let original = journal
+        .iter()
+        .filter(|record| {
+            record["event"]["type"] == "operationCompletion" && record["event"]["phase"] == 3
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(original.len(), 1);
+    assert_eq!(original[0]["event"]["completion"]["status"], "returned");
+    let value = &original[0]["event"]["completion"]["original"]["value"];
+    assert_eq!(value["statementOutcome"], "succeeded");
+    assert_eq!(value["retired"], false);
+    assert!(value["error"].is_null());
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|sql| sql.starts_with("CREATE TABLE "))
+            .count(),
+        1
+    );
+    assert!(
+        !queries
+            .iter()
+            .any(|sql| sql.starts_with("ALTER TABLE ") || sql.starts_with("DROP TABLE "))
+    );
+    assert!(
+        journal
+            .iter()
+            .filter(|record| record["event"]["type"] == "validatedPhase")
+            .all(|record| record["event"]["phase"].as_u64().unwrap() <= 3)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_consumed_drift_preserves_actual_create_ack() {
+    let (mut harness, drift) = OfflineHarness::consumed(1, Value::Null).await;
+    let (reached, ready) = tokio::sync::oneshot::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    harness.pause = Some(Pause {
+        phase: 3,
+        reached,
+        resume: resume.clone(),
+    });
+    let waiter = tokio::spawn(harness.run());
+    if let Err(error) = tokio::time::timeout(Duration::from_secs(300), ready)
+        .await
+        .expect("consumed CREATE pause deadline exceeded")
+    {
+        let receipt = waiter.await.unwrap();
+        panic!(
+            "consumed Runner exited before CREATE pause: {error:?}; failure={:?}; original={:?}; completion_record_error={:?}; outputs={}; guard={:?}; guard_settled={:?}; guard_recorded={:?}; shutdown={:?}; transport={:?}; queries={:?}",
+            receipt.failure,
+            receipt
+                .original_call_failure
+                .as_ref()
+                .map(|value| &value.error),
+            receipt.completion_record_error,
+            receipt.outputs.len(),
+            receipt.guard_revalidation,
+            receipt.guard_settled,
+            receipt.guard_recorded,
+            receipt.shutdown,
+            receipt.harness.transport.report(),
+            receipt.queries,
+        );
+    }
+    fs::write(drift, b"changed synthetic dependency after original CREATE").unwrap();
+    resume.notify_one();
+    let receipt = waiter.await.unwrap();
+    assert_local_settlement(&receipt);
+    assert_eq!(receipt.failure.as_ref().map(|value| value.0), Some(4));
+    assert_eq!(receipt.outputs.len(), 3);
+    assert!(receipt.original_call_failure.is_some());
+    assert!(matches!(receipt.guard_revalidation, Some(Err(_))));
+    assert_eq!(receipt.guard_settled, Some(true));
+    assert!(matches!(receipt.guard_recorded, Some(Ok(()))));
+    assert_final_guard_failed(
+        &receipt.journal,
+        receipt
+            .guard_revalidation
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err(),
+    );
+    assert_consumed_create_retained(&receipt.harness.plan, &receipt.journal, &receipt.queries);
+    let recorded = receipt
+        .journal
+        .iter()
+        .find(|record| {
+            record["event"]["type"] == "operationCompletion" && record["event"]["phase"] == 3
+        })
+        .unwrap();
+    assert_eq!(
+        recorded["event"]["completion"]["original"],
+        receipt.outputs[2].evidence().record().unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_consumed_dropped_waiter_retains_ack_and_cleanup() {
+    let (mut harness, drift) = OfflineHarness::consumed(1, Value::Null).await;
+    let mut runner = harness.runner.take().unwrap();
+    let (reached, ready) = tokio::sync::oneshot::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let (finished, completed) = tokio::sync::oneshot::channel();
+    runner.set_controls(FixtureControls {
+        finished: Some(finished),
+        pause: Some(Pause {
+            phase: 3,
+            reached,
+            resume: resume.clone(),
+        }),
+        ..FixtureControls::default()
+    });
+    let owner = runner.start();
+    if let Err(error) = tokio::time::timeout(Duration::from_secs(300), ready)
+        .await
+        .expect("consumed detached CREATE pause deadline exceeded")
+    {
+        let receipt = owner.await.unwrap();
+        panic!(
+            "consumed Runner exited before detached CREATE pause: {error:?}; failure={:?}; original={:?}; completion_record_error={:?}; outputs={}; guard={:?}; guard_settled={:?}; guard_recorded={:?}; shutdown={:?}; transport={:?}; queries={:?}",
+            receipt.failure,
+            receipt
+                .original_call_failure
+                .as_ref()
+                .map(|value| &value.error),
+            receipt.completion_record_error,
+            receipt.outputs.len(),
+            receipt.guard_revalidation,
+            receipt.guard_settled,
+            receipt.guard_recorded,
+            receipt.shutdown,
+            harness.transport.report(),
+            fs::read_to_string(harness.fixture.controls.join("queries")),
+        );
+    }
+    drop(owner);
+    // The test retains only fixture files/Studio, not the detached Runner task.
+    fs::write(drift, b"changed synthetic dependency after detached CREATE").unwrap();
+    resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(90), completed)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        harness
+            .transport
+            .wait(Duration::from_secs(60))
+            .await
+            .unwrap()
+            .settled
+    );
+    assert!(harness.policy.persist_final_evidence().await.is_err());
+    harness.studio.shutdown_and_wait().await.unwrap();
+    assert_eq!(fs::read_dir(&harness.fixture.state).unwrap().count(), 0);
+    let journal = fs::read_to_string(harness.journal.path().join(FILE_NAME))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect::<Vec<_>>();
+    let queries = fs::read_to_string(harness.fixture.controls.join("queries"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_consumed_create_retained(&harness.plan, &journal, &queries);
+    assert_final_guard_failed(
+        &journal,
+        &TransportPolicy::check(harness.policy.as_ref()).unwrap_err(),
+    );
+    assert_eq!(
+        journal
+            .iter()
+            .filter(|record| record["event"]["type"] == "operationCompletion"
+                && record["event"]["phase"] == 4)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_consumed_authentication_deadline_joins_real_child_cleanup() {
+    let (mut harness, _) = OfflineHarness::consumed(1, json!({"kind":"stallAuthentication"})).await;
+    // Shorter-only fixture bound; production remains120s. Allow the genuine
+    // current-executable scan to finish before the actual SDK stall is observed.
+    harness.authentication_limit = Some(Duration::from_secs(20));
+    let receipt = harness.run().await;
+    assert_local_settlement(&receipt);
+    let auth = fs::read_to_string(receipt.harness.fixture.controls.join("auth-entered"))
+        .expect("actual synthetic SDK authentication was entered");
+    let entries = auth
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0]["pid"].as_u64().unwrap() > 0);
+    assert_eq!(receipt.failure.as_ref().map(|value| value.0), Some(1));
+    let original = receipt.original_call_failure.as_ref().unwrap();
+    assert_eq!(
+        original.error.message,
+        "Qualification authentication deadline exceeded"
+    );
+    assert!(receipt.outputs.is_empty());
+    assert!(receipt.queries.is_empty());
+    assert!(matches!(receipt.guard_revalidation, Some(Err(_))));
+    assert_eq!(receipt.guard_settled, Some(true));
+    assert!(matches!(receipt.guard_recorded, Some(Ok(()))));
+    assert_final_guard_failed(
+        &receipt.journal,
+        receipt
+            .guard_revalidation
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err(),
+    );
+    let completions = receipt
+        .journal
+        .iter()
+        .filter(|record| record["event"]["type"] == "operationCompletion")
+        .collect::<Vec<_>>();
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0]["event"]["completion"]["status"], "failed");
+    assert!(
+        receipt
+            .journal
+            .iter()
+            .all(|record| record["event"]["type"] != "validatedPhase")
+    );
 }

@@ -420,12 +420,42 @@ impl Envelope {
 }
 
 impl ConsumedEnvelope {
+    pub(super) fn plan(&self) -> Plan {
+        self.envelope.plan.clone()
+    }
+
+    pub(super) fn frozen_profile(&self) -> AppResult<serde_json::Value> {
+        serde_json::to_value(&self.envelope.manifest.profile).map_err(|_| invalid())
+    }
+
+    /// Publication-safe time/failure check. Never reads artifact files or markers.
+    pub(super) fn check(&self) -> AppResult<()> {
+        let mut failure = self.failure.lock().map_err(|_| invalid())?;
+        if failure.is_none() {
+            let result = if self.started.elapsed() >= DEADLINE {
+                Err(invalid())
+            } else {
+                now_ms().and_then(|now| self.envelope.manifest.window.check(now))
+            };
+            if let Err(error) = result {
+                *failure = Some(error);
+            }
+        }
+        failure.clone().map_or(Ok(()), Err)
+    }
+
+    /// Latch-only revocation; no filesystem or caller reentry.
+    pub(super) fn fail(&self, error: AppError) -> AppError {
+        match self.failure.lock() {
+            Ok(mut failure) => failure.get_or_insert(error).clone(),
+            Err(_) => invalid(),
+        }
+    }
+
     /// Blocking IO, outside Studio/process/policy locks. Failure is sticky;
     /// restoring changed bytes later cannot revive this capability.
     pub(super) fn revalidate(&self) -> AppResult<()> {
-        if let Some(error) = self.failure.lock().map_err(|_| invalid())?.as_ref() {
-            return Err(error.clone());
-        }
+        self.check()?;
         let result = (|| {
             if self.started.elapsed() >= DEADLINE
                 || self.consumed.execution_sha256() != self.envelope.sha256()?
@@ -456,6 +486,14 @@ fn read_profile(path: &Path) -> AppResult<Profile> {
         return Err(invalid());
     }
     serde_json::from_slice(&bytes).map_err(|_| invalid())
+}
+
+#[cfg(test)]
+pub(super) fn fixture_consumed(
+    plan: Plan,
+    profile: serde_json::Value,
+) -> (tempfile::TempDir, ConsumedEnvelope, PathBuf) {
+    tests::fixture_consumed(plan, profile)
 }
 
 #[cfg(test)]

@@ -32,6 +32,9 @@ pub(crate) enum AdmissionKind {
     Connect,
     Sql(SqlEntry),
     Control(ControlKind),
+    /// A target completed while its queued control awaited admission. This
+    /// candidate may only finish locally without an assigned physical wire ID.
+    InactiveControl(ControlKind),
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +60,9 @@ impl Admission {
             AdmissionKind::Connect => json!({"connect":true}),
             AdmissionKind::Sql(entry) => json!({"sql":entry}),
             AdmissionKind::Control(kind) => json!({"control":format!("{kind:?}")}),
+            AdmissionKind::InactiveControl(kind) => {
+                json!({"inactiveControl":format!("{kind:?}")})
+            }
         };
         json!({"generation":self.generation,"logicalId":self.logical_id,"ticket":self.ticket,
             "wireId":self.wire_id,"operation":self.operation,"impact":format!("{:?}",self.impact),
@@ -237,6 +243,9 @@ impl Sequencer {
     pub(crate) fn plan(&self) -> &Plan {
         &self.plan
     }
+    pub(crate) fn frozen_profile(&self) -> &Value {
+        &self.profile
+    }
     pub(crate) fn ledger(&self) -> &PhysicalLedger {
         &self.ledger
     }
@@ -313,34 +322,74 @@ impl Sequencer {
                 AdmissionKind::Connect
             }
             "credit" | "cancel" | "close" => {
-                let target = self
-                    .active
-                    .as_ref()
-                    .and_then(|active| self.pending.get(&active.wire_id))
-                    .map(|a| ControlTarget {
-                        logical_id: &a.logical_id,
-                        ticket: a.ticket,
-                        wire_id: a.wire_id,
-                        operation: &a.operation,
-                    });
-                let control = controls::validate_control(
-                    request,
-                    target,
-                    self.connect_reserved && self.pending.is_empty() && self.active.is_none(),
-                )?;
-                if control != ControlKind::Close {
-                    // Fatal failures only retain a no-pending close escape. A
-                    // definitive primary rejection has not latched that failure.
+                // Process resolves a live target before awaiting policy work.
+                // Its original helper terminal can arrive during that await.
+                // Bind that queued credit to the completed owner, but grant
+                // only local completion: Process must suppress the stale write.
+                let inactive = if request.operation == "credit"
+                    && self.active.is_none()
+                    && self.pending.is_empty()
+                {
+                    request.target.and_then(|(logical, ticket)| {
+                        let owner = self.completed_queries.get(&ticket?)?;
+                        (owner.generation == request.generation
+                            && owner.logical_id == logical
+                            && request.ticket > owner.ticket
+                            && !owner.discarded
+                            && self
+                                .phase()
+                                .is_some_and(|phase| phase.number() == owner.phase))
+                        .then_some(owner)
+                    })
+                } else {
+                    None
+                };
+                if let Some(owner) = inactive {
                     self.check()?;
-                    let active = self.active.as_ref().ok_or_else(denied)?;
-                    if (control == ControlKind::Cancel && active.cancelled)
-                        || (control == ControlKind::Discard && active.discarded)
-                        || (control == ControlKind::Credit && active.discarded)
-                    {
+                    let control = controls::validate_control(
+                        request,
+                        Some(ControlTarget {
+                            logical_id: &owner.logical_id,
+                            ticket: owner.ticket,
+                            wire_id: owner.wire_id,
+                            operation: "query",
+                        }),
+                        false,
+                    )?;
+                    if !matches!(control, ControlKind::Credit | ControlKind::Discard) {
                         return Err(denied());
                     }
+                    AdmissionKind::InactiveControl(control)
+                } else {
+                    let target = self
+                        .active
+                        .as_ref()
+                        .and_then(|active| self.pending.get(&active.wire_id))
+                        .map(|a| ControlTarget {
+                            logical_id: &a.logical_id,
+                            ticket: a.ticket,
+                            wire_id: a.wire_id,
+                            operation: &a.operation,
+                        });
+                    let control = controls::validate_control(
+                        request,
+                        target,
+                        self.connect_reserved && self.pending.is_empty() && self.active.is_none(),
+                    )?;
+                    if control != ControlKind::Close {
+                        // Fatal failures only retain a no-pending close escape. A
+                        // definitive primary rejection has not latched that failure.
+                        self.check()?;
+                        let active = self.active.as_ref().ok_or_else(denied)?;
+                        if (control == ControlKind::Cancel && active.cancelled)
+                            || (control == ControlKind::Discard && active.discarded)
+                            || (control == ControlKind::Credit && active.discarded)
+                        {
+                            return Err(denied());
+                        }
+                    }
+                    AdmissionKind::Control(control)
                 }
-                AdmissionKind::Control(control)
             }
             _ => {
                 self.check()?;
@@ -402,6 +451,17 @@ impl Sequencer {
                 let active = self.active.as_mut().ok_or_else(denied)?;
                 active.cancelled |= *control == ControlKind::Cancel;
                 active.discarded |= *control == ControlKind::Discard;
+            }
+            AdmissionKind::InactiveControl(control) => {
+                if *control == ControlKind::Discard {
+                    let (_, Some(ticket)) = request.target.ok_or_else(denied)? else {
+                        return Err(denied());
+                    };
+                    self.completed_queries
+                        .get_mut(&ticket)
+                        .ok_or_else(denied)?
+                        .discarded = true;
+                }
             }
         }
         self.pending.insert(wire_id, admission.clone());
@@ -627,7 +687,7 @@ impl Sequencer {
                     .as_ref()
                     .map(|(logical, ticket)| (logical.as_str(), *ticket))
                     != terminal.target
-                || !matches!(admission.kind(), AdmissionKind::Control(control) if *control == kind)
+                || !matches!(admission.kind(), AdmissionKind::Control(control) | AdmissionKind::InactiveControl(control) if *control == kind)
             {
                 return Err(denied());
             }
@@ -713,6 +773,7 @@ impl Sequencer {
                 Ok(())
             }
             AdmissionKind::Control(_) => validate_control_success(report),
+            AdmissionKind::InactiveControl(_) => Err(denied()),
         }
     }
 

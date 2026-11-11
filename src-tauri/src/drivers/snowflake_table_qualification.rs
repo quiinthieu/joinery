@@ -126,6 +126,16 @@ mod consumption;
 #[path = "snowflake_table_qualification_envelope.rs"]
 mod envelope;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Consumed runner guard; fixed executable entry remains closed"
+    )
+)]
+#[path = "snowflake_table_qualification_guard.rs"]
+mod guard;
+
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
     domain::{

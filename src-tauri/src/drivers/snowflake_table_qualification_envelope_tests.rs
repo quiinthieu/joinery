@@ -86,6 +86,30 @@ fn approval(envelope: &Envelope) -> Vec<u8> {
     .unwrap()
 }
 
+// Sibling guard/runner tests use the actual consume path and actual current
+// executable. Only source/runtime/compiler/profile inputs are synthetic.
+pub(super) fn fixture_consumed(
+    plan: Plan,
+    frozen_profile: Value,
+) -> (tempfile::TempDir, ConsumedEnvelope, PathBuf) {
+    let mut fixture = Fixture::new();
+    fixture.roots.executable = std::env::current_exe().unwrap();
+    fixture.window.expires_unix_ms = fixture.window.not_before_unix_ms + WINDOW_MS;
+    fs::write(
+        &fixture.roots.profile,
+        serde_json::to_vec(&frozen_profile).unwrap(),
+    )
+    .unwrap();
+    let envelope = Envelope::capture(&fixture.roots, plan, fixture.window).unwrap();
+    let grant = approval(&envelope);
+    let consumed = envelope.consume(&fixture.store(), &grant).unwrap();
+    let drift = fixture
+        .roots
+        .runtime
+        .join("node_modules/guard/deep/library.mjs");
+    (fixture._directory, consumed, drift)
+}
+
 #[test]
 fn envelope_exact_restore_retains_closed_plan_and_complete_artifacts_without_launch() {
     let fixture = Fixture::new();
@@ -380,13 +404,23 @@ fn envelope_consumption_binds_running_binary_and_retains_sticky_drift_failure() 
     let grant = approval(&envelope);
     let store = fixture.store();
     let consumed = envelope.consume(&store, &grant).unwrap();
+    assert!(consumed.check().is_ok());
+    assert_eq!(
+        consumed.plan().canonical_json().unwrap(),
+        original_plan.canonical_json().unwrap()
+    );
+    assert_eq!(consumed.frozen_profile().unwrap(), profile());
     assert_eq!(fixture.markers(), 2);
     let target = fixture
         .roots
         .runtime
         .join("node_modules/guard/deep/library.mjs");
     fs::write(&target, b"runtime B").unwrap();
+    // Publication callbacks must perform no artifact IO under their locks.
+    // Only the full revalidation discovers a changed runtime file.
+    assert!(consumed.check().is_ok());
     assert!(consumed.revalidate().is_err());
+    assert!(consumed.check().is_err());
     fs::write(&target, b"runtime A").unwrap();
     assert!(
         consumed.revalidate().is_err(),
@@ -398,4 +432,36 @@ fn envelope_consumption_binds_running_binary_and_retains_sticky_drift_failure() 
     // spent RUN after a local launch failure; no marker is refunded.
     assert!(retry.consume(&store, &grant).is_err());
     assert_eq!(fixture.markers(), 2);
+}
+
+#[test]
+fn envelope_publication_checks_expiry_and_monotonic_deadline_without_artifact_io() {
+    for monotonic in [false, true] {
+        let (_directory, mut consumed, drift) =
+            fixture_consumed(Plan::generate().unwrap(), profile());
+        assert!(consumed.check().is_ok());
+        fs::remove_file(drift).unwrap();
+        assert!(
+            consumed.check().is_ok(),
+            "memory check cannot scan artifacts"
+        );
+        let original_window = consumed.envelope.manifest.window;
+        let original_started = consumed.started;
+        if monotonic {
+            consumed.started = Instant::now().checked_sub(DEADLINE).unwrap();
+        } else {
+            let now = now_ms().unwrap();
+            consumed.envelope.manifest.window = Window {
+                not_before_unix_ms: now - 2000,
+                expires_unix_ms: now - 1000,
+            };
+        }
+        assert!(consumed.check().is_err());
+        consumed.envelope.manifest.window = original_window;
+        consumed.started = original_started;
+        assert!(
+            consumed.check().is_err(),
+            "restored time cannot revive the attempt"
+        );
+    }
 }

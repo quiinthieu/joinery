@@ -301,6 +301,116 @@ fn completion_records(directory: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
+fn final_guard_records(directory: &std::path::Path) -> Vec<Value> {
+    records(directory)
+        .into_iter()
+        .map(|record| record["event"].clone())
+        .filter(|event| event["type"] == "executionEnvelopeFinal")
+        .collect()
+}
+
+#[tokio::test]
+async fn owning_final_guard_syncs_after_failure_without_replacing_original_ack() {
+    let (directory, policy) = policy().await;
+    let original = original_ddl_ack();
+    policy
+        .record_operation_completion(OperationCompletion::Returned(PhaseEvidence::Ddl(&original)))
+        .await
+        .unwrap();
+    TransportPolicy::failed(&policy, AppError::internal("earlier observer failure"));
+    let failure = AppError::internal("final envelope drift");
+    policy
+        .record_final_guard(&Err(failure.clone()), true)
+        .await
+        .unwrap();
+    let final_records = final_guard_records(directory.path());
+    assert_eq!(final_records.len(), 1);
+    assert_eq!(
+        final_records[0],
+        json!({"type":"executionEnvelopeFinal",
+        "revalidation":{"ok":false,"error":failure},"scannerSettled":true})
+    );
+    assert_eq!(
+        completion_records(directory.path())[0]["completion"]["original"]["value"],
+        serde_json::to_value(&original).unwrap()
+    );
+    assert_eq!(
+        TransportPolicy::check(&policy).unwrap_err().message,
+        "earlier observer failure"
+    );
+    assert!(policy.record_final_guard(&Ok(()), true).await.is_err());
+    assert!(policy.persist_final_evidence().await.is_err());
+    assert_eq!(final_guard_records(directory.path()), final_records);
+    assert!(policy.state.lock().pending.is_empty());
+}
+
+#[tokio::test]
+async fn owning_final_guard_records_unsettled_scan_as_failure() {
+    let (directory, policy) = policy().await;
+    policy.record_final_guard(&Ok(()), false).await.unwrap();
+    assert_eq!(
+        final_guard_records(directory.path()),
+        vec![json!({
+        "type":"executionEnvelopeFinal","revalidation":{"ok":true},
+        "scannerSettled":false})]
+    );
+    assert!(
+        TransportPolicy::check(&policy)
+            .unwrap_err()
+            .message
+            .contains("not settled")
+    );
+}
+
+#[tokio::test]
+async fn owning_final_guard_poisoned_journal_cannot_claim_storage_or_replace_record() {
+    let (directory, policy) = policy().await;
+    fs::set_permissions(
+        directory.path().join(super::super::journal::FILE_NAME),
+        fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    let original = Err(AppError::internal("original final guard failure"));
+    assert!(policy.record_final_guard(&original, false).await.is_err());
+    assert!(policy.state.lock().final_guard_recorded);
+    assert_eq!(policy.state.lock().pending.len(), 1);
+    assert!(policy.record_final_guard(&Ok(()), true).await.is_err());
+    assert_eq!(policy.state.lock().pending.len(), 1);
+    assert!(policy.persist_final_evidence().await.is_err());
+    assert!(final_guard_records(directory.path()).is_empty());
+    assert_eq!(
+        TransportPolicy::check(&policy).unwrap_err().message,
+        "original final guard failure"
+    );
+}
+
+#[tokio::test]
+async fn owning_cancelled_final_guard_syncs_original_once_without_replacement() {
+    let (directory, policy) = policy().await;
+    let failure = AppError::internal("original final guard failure");
+    let original = Err(failure.clone());
+    {
+        let _held = policy.journal.lock().unwrap();
+        let mut future = Box::pin(policy.record_final_guard(&original, false));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(policy.state.lock().pending.len(), 1);
+        drop(future);
+        assert!(TransportPolicy::check(&policy).is_err());
+    }
+    assert!(policy.persist_final_evidence().await.is_err());
+    assert!(policy.record_final_guard(&Ok(()), true).await.is_err());
+    assert!(policy.persist_final_evidence().await.is_err());
+    assert_eq!(
+        final_guard_records(directory.path()),
+        vec![json!({
+        "type":"executionEnvelopeFinal",
+        "revalidation":{"ok":false,"error":failure},
+        "scannerSettled":false})]
+    );
+    assert!(policy.state.lock().pending.is_empty());
+}
+
 #[tokio::test]
 async fn owning_completion_syncs_original_ack_and_prior_report_after_observer_failure() {
     let (directory, policy) = policy().await;

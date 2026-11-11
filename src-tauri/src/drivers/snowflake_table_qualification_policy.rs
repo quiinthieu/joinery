@@ -82,6 +82,7 @@ struct State {
     phase_runtime_count: usize,
     authority_revisions: HashSet<String>,
     operation_completions: HashSet<u8>,
+    final_guard_recorded: bool,
     transaction_a: Option<String>,
     transaction_b: Option<String>,
     failure: Option<AppError>,
@@ -239,6 +240,7 @@ impl Policy {
                 phase_runtime_count: 0,
                 authority_revisions: HashSet::new(),
                 operation_completions: HashSet::new(),
+                final_guard_recorded: false,
                 transaction_a: None,
                 transaction_b: None,
                 failure: None,
@@ -259,6 +261,10 @@ impl Policy {
 
     pub(super) fn plan(&self) -> Plan {
         self.state.lock().sequence.plan().clone()
+    }
+
+    pub(super) fn frozen_profile(&self) -> Value {
+        self.state.lock().sequence.frozen_profile().clone()
     }
 
     async fn flush(&self) -> AppResult<()> {
@@ -439,6 +445,49 @@ impl Policy {
             state.sequence.advance_phase()?;
             state.phase_runtime_count = 0;
             state.last_sql = None;
+        }
+        interrupted.armed = false;
+        Ok(())
+    }
+
+    /// Persist the final execution-envelope observation separately from original
+    /// operation outcomes. Storage success never clears the first failure or
+    /// authorizes further work. Reserve once, including across interrupted IO.
+    pub(super) async fn record_final_guard(
+        &self,
+        revalidation: &AppResult<()>,
+        settled: bool,
+    ) -> AppResult<()> {
+        let _gate = self.gate.lock().await;
+        let mut interrupted = self.interrupted();
+        let event_id = {
+            let mut state = self.state.lock();
+            if state.final_guard_recorded {
+                return Err(state.fail(denied()));
+            }
+            state.final_guard_recorded = true;
+            let observation = match revalidation {
+                Ok(()) => json!({"ok":true}),
+                Err(error) => json!({"ok":false,"error":error}),
+            };
+            state.enqueue(json!({"type":"executionEnvelopeFinal",
+                "revalidation":observation,"scannerSettled":settled}))?;
+            if let Err(error) = revalidation {
+                state.fail(error.clone());
+            }
+            if !settled {
+                state.fail(AppError::internal(
+                    "Qualification execution-envelope scan has not settled",
+                ));
+            }
+            state.event_sequence
+        };
+        self.flush_pending().await?;
+        {
+            let mut state = self.state.lock();
+            if state.pending.iter().any(|(id, _)| *id <= event_id) {
+                return Err(state.fail(denied()));
+            }
         }
         interrupted.armed = false;
         Ok(())

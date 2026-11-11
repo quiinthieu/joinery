@@ -1,11 +1,12 @@
 //! Retained closed-plan Studio execution. No account entry or authority constructor exists.
-//! Construction remains fixture-only until a consumed-attempt capability is available.
+//! Consumed construction requires the sealed offline envelope; no account CLI exists.
 use super::{
     Operation, Plan, Readback, SCHEMA, StatementId,
+    envelope::ConsumedEnvelope,
     evidence::PhaseEvidence,
+    guard::Guard,
     policy::{OperationCompletion, Policy},
 };
-#[cfg(test)]
 use crate::drivers::snowflake_qualification_transport::TransportLimits;
 use crate::{
     domain::*,
@@ -23,6 +24,7 @@ use std::{io::Cursor, sync::Arc, time::Duration};
 
 pub(super) const EVENT_LIMIT: usize = 32;
 pub(super) const READ_BYTES: usize = 64 * 1024;
+const AUTHENTICATION_LIMIT: Duration = Duration::from_secs(120);
 
 fn invalid() -> AppError {
     AppError::invalid("Closed qualification runner result is incomplete")
@@ -463,6 +465,7 @@ impl RouteState {
 pub(super) struct Runner {
     studio: Arc<Studio>,
     policy: Arc<Policy>,
+    guard: Option<Arc<Guard>>,
     attachment: Option<QualificationAttachment>,
     transport: TransportAttachment,
     plan: Plan,
@@ -476,6 +479,8 @@ pub(super) struct Runner {
 #[derive(Default)]
 pub(super) struct FixtureControls {
     pub(super) cancel_read: bool,
+    pub(super) authentication_limit: Option<Duration>,
+    pub(super) finished: Option<tokio::sync::oneshot::Sender<()>>,
     pub(super) pause: Option<Pause>,
     pub(super) break_journal: Option<(u8, std::path::PathBuf)>,
 }
@@ -495,11 +500,44 @@ pub(super) struct RunnerReceipt {
     pub(super) shutdown: AppResult<()>,
     pub(super) settled: bool,
     pub(super) persisted: AppResult<()>,
+    /// Final integrity/deadline check, independent of all original call outcomes.
+    pub(super) guard_revalidation: Option<AppResult<()>>,
+    /// Blocking inventory owners may outlive a cancelled or timed-out waiter.
+    pub(super) guard_settled: Option<bool>,
+    pub(super) guard_recorded: Option<AppResult<()>>,
 }
 
 impl Runner {
+    /// Same closed Studio route, backed by the consumed envelope and owning guard.
+    /// This is not a manifest/account entry point or a source of profile authority.
+    pub(super) fn consumed(
+        studio: Arc<Studio>,
+        policy: Arc<Policy>,
+        consumed: ConsumedEnvelope,
+        attempt: String,
+    ) -> AppResult<Self> {
+        if attempt.is_empty() {
+            return Err(invalid());
+        }
+        let guard = Guard::new(consumed, policy.clone())?;
+        let plan = guard.plan();
+        let attachment = QualificationAttachment::new(guard.clone(), TransportLimits::default())?;
+        let transport = attachment.transport.clone();
+        Ok(Self {
+            studio,
+            policy,
+            guard: Some(guard),
+            attachment: Some(attachment),
+            transport,
+            plan,
+            attempt,
+            state: RouteState::default(),
+            #[cfg(test)]
+            controls: FixtureControls::default(),
+        })
+    }
+
     /// Not an account entry: only isolated fixtures may assemble execution components.
-    /// The future account constructor must require a sealed consumed-attempt capability.
     #[cfg(test)]
     pub(super) fn fixture(
         studio: Arc<Studio>,
@@ -521,6 +559,7 @@ impl Runner {
         Ok(Self {
             studio,
             policy,
+            guard: None,
             attachment: Some(attachment),
             transport,
             plan,
@@ -538,6 +577,14 @@ impl Runner {
     #[cfg(test)]
     pub(super) fn set_controls(&mut self, controls: FixtureControls) {
         self.controls = controls;
+    }
+
+    fn authentication_limit(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(limit) = self.controls.authentication_limit {
+            return limit.min(AUTHENTICATION_LIMIT);
+        }
+        AUTHENTICATION_LIMIT
     }
 
     fn cancel_read(&self, expected: Readback) -> bool {
@@ -560,16 +607,34 @@ impl Runner {
 
     async fn call(&mut self, operation: Operation) -> Result<Output, CallError> {
         if operation == Operation::StartupIdentityAndVersion {
-            return self
-                .studio
-                .connect_prepared_qualification(
+            // Full filesystem validation is awaited before any helper launch/SSO.
+            // No process, Studio or policy mutex is held across this boundary.
+            if let Some(guard) = &self.guard {
+                guard.revalidate().await?;
+            }
+            let attachment = self.attachment.take().ok_or_else(invalid)?;
+            return match tokio::time::timeout(
+                self.authentication_limit(),
+                self.studio.connect_prepared_qualification(
                     &self.attempt,
                     ConnectionSecrets::default(),
-                    self.attachment.take().ok_or_else(invalid)?,
-                )
-                .await
-                .map(Output::Startup)
-                .map_err(Into::into);
+                    attachment,
+                ),
+            )
+            .await
+            {
+                Ok(result) => result.map(Output::Startup).map_err(Into::into),
+                Err(_) => {
+                    let error =
+                        AppError::internal("Qualification authentication deadline exceeded");
+                    if let Some(guard) = &self.guard {
+                        TransportPolicy::failed(guard.as_ref(), error.clone());
+                    } else {
+                        TransportPolicy::failed(self.policy.as_ref(), error.clone());
+                    }
+                    Err(error.into())
+                }
+            };
         }
         let session = self.state.session.as_ref().ok_or_else(invalid)?.id.clone();
         let output = match operation {
@@ -706,6 +771,12 @@ impl Runner {
         let mut original_call_failure = None;
         let mut completion_record_error = None;
         for phase in self.plan.phases().to_vec() {
+            if let Some(guard) = &self.guard
+                && let Err(error) = guard.check()
+            {
+                failure = Some((phase.number(), error));
+                break;
+            }
             match self.call(phase.operation()).await {
                 Ok(output) => {
                     #[cfg(test)]
@@ -746,7 +817,10 @@ impl Runner {
                         .await;
                     let result = match recorded {
                         Ok(None) if failure.is_none() => {
-                            self.policy.finish_phase(output.evidence()).await
+                            match self.guard.as_ref().map(|guard| guard.check()).transpose() {
+                                Ok(_) => self.policy.finish_phase(output.evidence()).await,
+                                Err(error) => Err(error),
+                            }
                         }
                         Ok(None) => Err(AppError::internal(
                             "Qualification fixture failed before phase completion",
@@ -798,9 +872,29 @@ impl Runner {
         if let Some((_, error)) = &failure {
             TransportPolicy::failed(&*self.policy, error.clone());
         }
+        // Dispose an attachment rejected by the guard before Studio could claim
+        // its Launch; otherwise an unstarted transport would never settle here.
+        drop(self.attachment.take());
         let shutdown = self.studio.shutdown_and_wait().await;
         let settled = self.transport.wait(Duration::from_secs(10)).await.is_some();
+        let (guard_revalidation, guard_settled) = match &self.guard {
+            Some(guard) => (
+                Some(guard.revalidate().await),
+                Some(guard.wait_for_settlement().await),
+            ),
+            None => (None, None),
+        };
+        let guard_recorded = match (&guard_revalidation, guard_settled) {
+            (Some(result), Some(settled)) => {
+                Some(self.policy.record_final_guard(result, settled).await)
+            }
+            _ => None,
+        };
         let persisted = self.policy.persist_final_evidence().await;
+        #[cfg(test)]
+        if let Some(finished) = self.controls.finished.take() {
+            let _ = finished.send(());
+        }
         RunnerReceipt {
             outputs,
             failure,
@@ -809,6 +903,9 @@ impl Runner {
             shutdown,
             settled,
             persisted,
+            guard_revalidation,
+            guard_settled,
+            guard_recorded,
         }
     }
 }

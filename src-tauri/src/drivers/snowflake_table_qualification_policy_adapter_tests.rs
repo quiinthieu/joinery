@@ -119,6 +119,7 @@ process.stdin.on('end', retire);
 
 struct PausedCredit {
     first: AtomicBool,
+    before_admission: bool,
     scripts: OnceLock<PathBuf>,
     admitted: watch::Sender<Option<Value>>,
     version_terminal: watch::Sender<Option<Report>>,
@@ -127,15 +128,25 @@ struct PausedCredit {
 }
 
 impl PausedCredit {
-    fn new() -> Self {
+    fn at_admission(before_admission: bool) -> Self {
         Self {
             first: AtomicBool::new(true),
+            before_admission,
             scripts: OnceLock::new(),
             admitted: watch::channel(None).0,
             version_terminal: watch::channel(None).0,
             local_terminal: watch::channel(None).0,
             release: Semaphore::new(0),
         }
+    }
+
+    async fn block(&self, original: Value) {
+        self.admitted.send_replace(Some(original));
+        self.release
+            .acquire()
+            .await
+            .expect("credit barrier open")
+            .forget();
     }
 }
 
@@ -194,15 +205,12 @@ impl TransportPolicy for PausedPolicy {
                 request.operation == "credit" && self.pause.first.swap(false, Ordering::SeqCst);
             let original = json!({"envelope":request.payload,"ticket":request.ticket,
                 "logicalId":request.operation_id,"target":request.target});
+            if pause && self.pause.before_admission {
+                self.pause.block(original.clone()).await;
+            }
             TransportPolicy::admit(self.inner.as_ref(), request).await?;
-            if pause {
-                self.pause.admitted.send_replace(Some(original));
-                self.pause
-                    .release
-                    .acquire()
-                    .await
-                    .expect("credit barrier open")
-                    .forget();
+            if pause && !self.pause.before_admission {
+                self.pause.block(original).await;
             }
             Ok(())
         })
@@ -672,8 +680,17 @@ async fn owning_adapter_real_helper_cannot_start_preflight_before_typed_startup_
 
 #[tokio::test]
 async fn owning_adapter_real_helper_stale_credit_after_durable_admission_finishes_locally() {
+    stale_credit_route(false).await;
+}
+
+#[tokio::test]
+async fn owning_adapter_real_helper_stale_credit_before_inner_admission_finishes_locally() {
+    stale_credit_route(true).await;
+}
+
+async fn stale_credit_route(before_admission: bool) {
     tokio::time::timeout(Duration::from_secs(9), async {
-        let pause = Arc::new(PausedCredit::new());
+        let pause = Arc::new(PausedCredit::at_admission(before_admission));
         let opening_pause = pause.clone();
         let opening =
             tokio::spawn(async move { Harness::open_with_pause(Some(opening_pause)).await });
@@ -698,7 +715,8 @@ async fn owning_adapter_real_helper_stale_credit_after_durable_admission_finishe
 
         // The SDK stream watcher was installed before startup. Releasing EOF
         // makes the real Helper send the original version terminal while the
-        // one writer is still suspended in its already-durable CREDIT admit.
+        // writer is suspended either before inner admission (like an awaited
+        // Guard scan) or after its intent has already been durably recorded.
         fs::write(
             pause.scripts.get().unwrap().join("release-version"),
             b"release",
@@ -752,6 +770,11 @@ async fn owning_adapter_real_helper_stale_credit_after_durable_admission_finishe
                 "an original local inactive CREDIT must release only its own reservation"
             );
             assert_eq!(state.sequence.phase().unwrap().number(), 1);
+            assert_eq!(state.sequence.next_entry().unwrap().ordinal(), 3);
+            assert!(
+                state.debt.is_empty(),
+                "local control creates no metadata debt"
+            );
             assert!(state.runtime_pin.is_none() && state.lifecycle.context().is_none());
         }
         harness
@@ -841,6 +864,14 @@ async fn owning_adapter_real_helper_stale_credit_after_durable_admission_finishe
         assert_eq!(recorded_local["report"]["certainty"], "NotSubmitted");
         assert_eq!(recorded_local["report"]["phase"], "Queued");
         assert_eq!(recorded_local["admission"]["wireId"], candidate);
+        assert_eq!(
+            recorded_local["admission"]["kind"],
+            if before_admission {
+                json!({"inactiveControl":"Credit"})
+            } else {
+                json!({"control":"Credit"})
+            }
+        );
         let version = events
             .iter()
             .find(|event| {
