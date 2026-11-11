@@ -11,8 +11,17 @@ authentication, SDK memory use, types, million-row transport or writes.
 The proposed Snowflake synthetic million-row query's policy rejection is now
 reproduced and repaired with general engine-specific built-in admission. A small
 production-helper fixture uses a synthetic SDK to check single dispatch and exact
-integer/NULL/empty values. This removes a local SQL-admission blocker; it does not
-qualify million-row Snowflake transport, memory, paging or export. The separate
+integer/NULL/empty values. Separate offline checks now cover both the framed
+helper/Rust driver/`ResultStore`/CSV export bridge for one million synthetic rows
+and the actual pinned `snowflake-sdk` `3.4.1` streaming 1,000,000 exact rows
+across 100 gzip-compressed storage chunks on owned loopback HTTP (including
+default 2-chunk prefetch/backpressure and stream-destroy cancellation at row
+128; see the
+[verification ledger](replacement-verification.md#actual-sdk-million-row-gzip-chunk-streaming-11-november-2026)).
+These remove local SQL-admission, chunk-decompression and driver-bridge gaps;
+they do not qualify remote Snowflake cloud-storage chunk URLs, external-browser
+SSO, end-to-end packaged-application memory bounds or live account performance.
+The separate
 [account plan](snowflake-account-qualification-plan.md#a3-one-million-row-result-paging-and-export)
 still needs an executable runner, fresh approval and actual account evidence.
 
