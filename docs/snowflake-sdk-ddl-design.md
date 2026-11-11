@@ -1,14 +1,39 @@
 # Snowflake SDK reviewed DDL proposal
 
-**Status: proposed next increment; not implemented or account-qualified.**
+**Status: execution workflow proposed; pure syntax foundation implemented
+locally and verified. No application DDL execution route or account
+qualification.**
 This is a bounded design for the next Snowflake SDK schema-change workflow. It
-does not authorize account activity, enable DDL, or complete the Snowflake
+does not authorize account activity, enable DDL execution, or complete the Snowflake
 DataGrip replacement. The full replacement still requires broader object
 creation and editing, schema comparison, reviewed migration and synchronization
 workflows, and hands-on qualification. Read alongside the
-[reviewed DML proposal](snowflake-sdk-dml-design.md), the
+[reviewed DML contract](snowflake-sdk-dml-design.md), the
 [explicit transaction contract](snowflake-sdk-transactions-design.md), and the
 [Snowflake replacement inventory](snowflake-datagrip-replacement.md).
+
+## Pure syntax foundation (11 November 2026)
+
+`safety/snowflake_ddl.rs` compiles the existing structured table action and an
+explicit database into one canonical statement. It has no raw-SQL entry point
+and grants no execution, catalog, transaction or object-identity authority.
+Closed types are NUMBER, VARCHAR, BINARY, BOOLEAN, FLOAT, DATE, TIME and
+TIMESTAMP_NTZ; parameters and output are bounded. Numeric precision is 1–38,
+scale is 0–37 and no greater than precision. Aliases, expressions, defaults,
+identity, keys, comments, unsupported actions and supplied forbidden fields fail
+closed. CREATE may specify NOT NULL on its empty new table; ADD remains nullable.
+Identifier values are quoted independently and round-tripped through the whole
+AST; quoted case semantics still require runtime qualification before execution.
+
+All eleven inline tests pass in the complete crate. Independent review found the
+scale-38 admission and lead review found plain DROP's default CASCADE behavior;
+new regressions reproduced both before the fixes. DROP now explicitly emits
+RESTRICT. The full validation passes 671 frontend / 437 standard Rust tests;
+129 fixture tests are ignored, not passes. No UI or account DDL route is enabled.
+See the [verification ledger](replacement-verification.md#pure-snowflake-ddl-syntax-foundation-11-november-2026).
+Snowflake's [numeric limits](https://docs.snowflake.com/en/sql-reference/data-types-numeric)
+and [DROP semantics](https://docs.snowflake.com/en/sql-reference/sql/drop-table)
+were verified against current official documentation.
 
 ## Database contract and first workflow
 
@@ -27,7 +52,8 @@ user-prepared disposable schema:
 
 1. **Create a table.** Choose the exact database, schema and new table name;
    enter a bounded list of columns using an allowlist of supported scalar types.
-   Require at least one column. The first version should not accept defaults,
+   Require at least one column. Explicit NOT NULL is allowed on this newly
+   created empty table. The first version should not accept defaults, other
    constraints, policies, tags, comments, identity/sequence behavior, table
    options or expressions. Require that the target table name is currently
    unused, then show the fully qualified generated statement.
@@ -39,7 +65,10 @@ user-prepared disposable schema:
    [ALTER TABLE](https://docs.snowflake.com/en/sql-reference/sql/alter-table).
 3. **Drop a table.** Select one exact table and require a separate destructive
    confirmation that repeats its fully qualified name. Do not generate
-   `CASCADE`, `PURGE`, or `IF EXISTS`; the action must fail if the reviewed
+   `CASCADE`, `PURGE`, or `IF EXISTS`; generate explicit `RESTRICT` because
+   standard tables otherwise default to CASCADE for foreign-key references.
+   RESTRICT does not protect dependent views or prove complete dependency
+   absence. The action must fail if the reviewed
    target is absent or no longer matches the observed catalog. Explain that a
    dropped table may be recoverable only during its configured Time Travel
    retention, and that recovery is separate from transaction rollback. Snowflake

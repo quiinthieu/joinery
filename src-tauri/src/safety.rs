@@ -11,6 +11,7 @@ use sqlparser::{
 };
 use std::ops::ControlFlow;
 
+pub mod snowflake_ddl;
 pub mod snowflake_dml;
 
 pub(crate) fn has_mysql_executable_comment(sql: &str) -> bool {

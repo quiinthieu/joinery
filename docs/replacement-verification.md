@@ -8,6 +8,38 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Pure Snowflake DDL syntax foundation (11 November 2026)
+
+The separately enrolled `safety::snowflake_ddl` module generates exactly one
+CREATE TABLE, nullable ADD COLUMN or DROP TABLE RESTRICT from a structured
+action and explicit database. There is no application DDL execution route,
+profile permission or account qualification. Broader DDL remains required.
+
+- Full final `pnpm validate`: **671 frontend / 437 standard Rust tests**, 129
+  ignored fixture tests; formatting/contracts, production frontend build, Rust
+  check and strict all-target/all-feature Clippy pass. Log
+  `.cache/verification/snowflake-ddl-pure/validate-final.log`, exit 0.
+- All **11** full-crate inline generator tests pass, including exact identifier
+  escaping, closed scalar types, forbidden supplied fields/options, action
+  variants, duplicate names, bounds and whole-AST roundtrip. Initial crate run
+  `crate-tests.log`; final validation includes the repaired tests.
+- Independent review found invalid NUMBER scale 38; lead review found standard
+  DROP's implicit CASCADE default. Three isolated assertions reproduced failure
+  before changes (`restrict-scale-before-fix.log`); all 11 pass afterward
+  (`restrict-scale-after-fix.log`). Generate explicit RESTRICT and enforce scale
+  at most 37. Independent recheck found no further material issue in this scope.
+- CREATE's explicit NOT NULL is intentionally allowed only on its new empty
+  table, with the design corrected to state this. ADD remains nullable. Pure
+  syntax does not establish runtime quoted-case policy, complete dependencies,
+  atomic identity, idle transactions or permission.
+
+Reproduce with pinned toolchains: `cargo test --manifest-path src-tauri/Cargo.toml
+--no-default-features --lib generated_ddl_ -- --test-threads=1`, then
+`pnpm validate`. No account, database fixtures or browser actions are needed for
+this unused pure generator. The preceding normal DML package/native artifacts
+remain pinned to `fb091db`; they do not claim qualification of later sources.
+The [DDL design](snowflake-sdk-ddl-design.md) records remaining integration gates.
+
 ### SDK reviewed SQL DML (11 November 2026)
 
 Implemented in two local commits: `eae1e81` (strict grammar, typed helper/adapter
