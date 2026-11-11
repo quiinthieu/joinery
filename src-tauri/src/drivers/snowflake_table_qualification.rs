@@ -37,6 +37,16 @@ mod wire;
 #[path = "snowflake_table_qualification_lifecycle.rs"]
 mod lifecycle;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Internal qualification integration; no account runner entry point"
+    )
+)]
+#[path = "snowflake_table_qualification_journal.rs"]
+mod journal;
+
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
     domain::{
