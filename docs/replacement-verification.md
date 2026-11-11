@@ -8,6 +8,174 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Owning qualification policy (11 November 2026)
+
+Local harness implementation now composes exact physical SQL/control admission,
+census/context/target lifecycle checks, runtime publication observations, typed
+phase evidence and a private fsync journal. There is no desktop/account runner,
+profile lookup, executable approval envelope or resume path. No private profile
+was read and no account activity occurred. `SANDBOX.BILLIE_TESTING` remains the
+permitted new-table location; the previous CREATE DATABASE approval is consumed.
+
+| Check | Result and scope |
+| --- | --- |
+| Complete qualification regression | **150/150**, `qualification-owner-all-repaired.log`, 133.70 seconds: includes the owning policy, controls, journal, sequencer, evidence, existing metadata/transport and Studio integration cases. This precedes the final test-only cached-string comparison fix; the affected adapter composition is rerun separately below. Counts overlap |
+| Complete offline owner routes | Within the 150: all 32 phases at census sizes 1 and 32, exactly **393/610 SQL**; original report/SDK/query-ID/typed-ACK equality, 28 runtime publications, all 32 durable phase records and independent journal hash-chain verification. Shaped callbacks/DTOs are synthetic; this is not a complete actual-adapter route |
+| Actual adapter/helper policy composition | Within the 150: three cases through actual `SnowflakeExternal::open` and adapter methods with production helper/framing and a synthetic SDK. Startup and CREATE preflight use exact **14 SQL**, parsed operation results, census/runtime observations and first two typed phase barriers. Another case blocks preflight before the third SQL if typed startup completion is omitted. The third forces query EOF during durable credit admission and verifies original local completion, candidate consumption and durable accounting without adding SQL. None launches production `main.mjs` or accesses Snowflake |
+| Final affected adapter-policy rerun | **3/3**, `qualification-owner-adapter-post-lint.log`, 0.76 seconds, against the accepted source manifest after the comparison-only allocation fix; production sources remain identical to the 150-case run |
+| Exact staged transport commit | **58/58**, `qualification-transport-index-process-corrected.log`: all process, cleanup and qualification-transport cases, including seven new local-original regressions. An isolated checkout of the staged tree excludes the uncommitted owning policy; committed as `98aab26` |
+| Exact staged prerequisite commits | Runtime observation **3/3**, `qualification-runtime-index-tests.log`; private journal **11/11** plus formatting, `qualification-journal-index-tests.log`. Separate isolated staged trees; committed as `4cafd4c` and `59fc3e5` |
+| Exact staged request sequencing | **77/77**, `qualification-sequence-index-final-tests.log`, 0.77 seconds; includes eight control and 27 sequencer cases plus existing definitions/journal. Committed as `87d2318`; the owner-only plan accessor is deferred to the owner commit |
+| Exact staged typed evidence | **88/88**, `qualification-evidence-index-tests.log`, 0.89 seconds; adds 11 typed-evidence cases to that prerequisite tree. Committed as `0894688` |
+| Final adapter regression | **69/69**, `qualification-owner-adapter-repaired.log`, 11.04 seconds: production adapter/helper with a synthetic SDK. Includes three new runtime-observation tests, callback rejection before publication, mutation ACK retention and unchanged SQL budgets; these three tests launch five synthetic SDK cases |
+| Final application validation | **`pnpm validate` exits 0**, `qualification-owner-validate-accepted.log`: **679 frontend / 465 standard Rust tests**, **129 fixture tests ignored**. Formatting, contracts, production frontend build, Cargo check and strict all-target/all-feature Clippy pass. Existing ts-rs attribute/chunk-size warnings remain nonfatal |
+
+The journal tests exercise exclusive private creation, symlinks/replacement,
+permission/length/link changes, independent lossless canonical hashes, bounded
+records/depth/node counts, partial writes and fsync failures. They establish local
+filesystem/fault behavior, not crash/power-loss durability or authenticated audit
+evidence. The owner tests block journal I/O, drop admission/finish futures and
+repeat final persistence: receipt consumption occurs exactly once, failure stays
+latched and the phase cannot advance. Original reports are retained before
+policy rejection; final local draining does not repeat SQL.
+
+Independent review found a transport-to-owner failure propagation gap. The new
+regression failed before repair (`qualification-owner-shared-failure-red.log`):
+the attachment rejected work while the concrete phase owner remained healthy.
+`SharedPolicy::failed` now forwards failure to the concrete owner before latching
+the shared error, outside shared/counter locks. The passing regression verifies
+concrete/shared first-error retention, unchanged phase and repeated cleanup
+failure. Final bounded review found no material issue in this fix or the owner's
+fsync/cancellation ordering. Another reviewer checked the full-route tests;
+exact persisted typed-ACK contents were added alongside their count assertions.
+
+The broader regression then reproduced an actual startup reservation leak: a
+query could finish while its result-credit admission was syncing. The process
+published an inactive local result without notifying the owner, which retained
+the reservation and could reuse the candidate ID. Separate local observation now
+captures queued cancellation/close, inactive controls and all six retirement
+reasons. Original ACKs remain accessible while callbacks run outside State;
+in-flight publications block settlement. Admitted candidates are consumed before
+pending-ticket/target revalidation, while actual wire assignment stays nullable.
+The deterministic actual-adapter regression gates EOF and admission explicitly.
+Exact close accounting includes only durably recorded admitted inactive controls;
+it does not relax equality to an inequality. Independent review found no material
+issue in the repair. The original pre-repair 91-case pass is retained in
+`qualification-owner-integrated-corrected.log`; it did not expose this race.
+Final bounded source review also checked operation completion ordering: the
+production collector awaits each credit/discard control, whose original callback
+precedes terminal-watch publication. Successful startup therefore cannot return
+with that control's sequencer reservation still pending. The forced race fixture's
+explicit callback signal is redundant synchronization, not an extra SQL or drain
+mechanism in production.
+
+A shaped retired-CREATE owner fixture retains the original typed ACK and
+`StatementSucceeded` in exactly one durable local record, even though the original
+report is unsuccessful and has no final result. Repeated local persistence and
+new admission cannot advance phase three or repeat the SQL. This composes the
+local callback, policy and real filesystem journal; it is not an actual helper
+EOF-after-ACK or account mutation claim.
+
+The final 23 changed code/config/test inputs are frozen in
+`qualification-owner-source-accepted.json`, SHA-256
+`3e9eb3cbcfae7c42f1822cf2f98fd51467022eccb9cae9d6cc30f519894ce45d`.
+The preceding 150-case source is retained in
+`qualification-owner-source-repaired.json`, SHA-256
+`ec5606b661d5f8dcefc3ae3bf382c431b04c0da2a73becb067fbedede9f338fd`;
+only the adapter fixture's cached-string assertions differ. Production inputs
+are identical between these manifests.
+This is a bounded changed-file freeze, excluding documentation and the full
+dependency/runtime tree. Tier 2 graph coverage generation
+`2026-11-11T14:59:26Z`, recorded `2026-11-11T15:00:51Z`, reports metadata match for
+all 21 changed Rust paths, best effort. The process file has a partial parse at
+lines 1299–1303; those lines were read directly, along with targeted source review.
+Other changed Rust paths have no recorded issue, which is not proof of complete
+coverage. Configuration/lock changes were inspected directly.
+
+Failed development checks remain recorded:
+
+- `qualification-runtime-adapter-first.log`: two passed, one failed because a new
+  test expected `session_state` to return an error; existing behavior returns an
+  unavailable state after observer denial. Correcting the test passed all three
+  in `qualification-runtime-adapter-corrected.log`, without a production change.
+- `qualification-owner-validate-first.log`: frontend and standard Rust suites
+  passed; strict Clippy rejected two unused methods before new tests were
+  registered and a new test's standard mutex guard across an await. Registering
+  actual-route tests exercises the methods; synchronous polling in a lexical
+  guard scope fixes the lock issue without a lint allowance.
+- `qualification-owner-integrated-final.log`: new tests initially failed to
+  compile due to a missing `Poll` import and nonexistent `SafeMode::LocalConfirm`.
+  Corrected to the current `Confirm` enum. That invocation also unnecessarily
+  enabled default desktop features; the successful 91-case rerun uses the normal
+  library/no-default-features harness command below.
+- `qualification-owner-validate-final.log`: all 679 frontend / 465 standard Rust
+  tests passed (129 fixture cases ignored); strict Clippy then rejected an owned
+  string allocation in a new report assertion. The corrected comparison keeps
+  the persisted wire ID as a string and compares borrowed strings, without a
+  lint allowance. The final-source qualification and validation reruns follow.
+- `qualification-owner-all-final.log`: **130 passed / one failed**. The actual
+  adapter startup/preflight case failed its phase barrier because an admitted
+  credit completed locally without notifying the owning sequencer. The final
+  150-case run above passes after the local completion repair.
+- `qualification-local-original-red.log`: both new local-original tests failed
+  before capture was wired (zero observed callbacks, one expected).
+- `qualification-stale-credit-red.log`: the deterministic actual-adapter race
+  failed waiting for its missing local completion callback before the repair.
+- `qualification-local-original-green.log`: the first repair compilation failed
+  four E0695 diagnostics for unlabeled `continue` statements inside labeled
+  blocks. Explicit outer-loop labels fix compilation without changing control
+  flow; the 150-case rerun includes all seven new local-original tests.
+- `qualification-transport-index-tests.log`: **28/28** ordinary process tests
+  passed, but that filter omitted cleanup and qualification-transport cases.
+  Widening it initially passed **56/58** in
+  `qualification-transport-index-process-all.log`: two existing child-process
+  fixtures could not find their manifest-relative pinned Node binary in the
+  exported checkout. Provisioning that same existing binary in the isolated
+  fixture's expected cache path, without source changes, passes all **58/58** in
+  the corrected log. The full working-tree 150-case run had already passed those
+  cases. The export and provisioned binary are local cache artifacts.
+- `qualification-owner-validate-repaired.log`: frontend **679/679** and the
+  production frontend build passed; the standard Rust run stopped at two
+  PostgreSQL startup-cleanup dispatch timeouts in `tests/postgres_protocol.rs:121`,
+  before strict lint checks. Those tests, the PostgreSQL driver and startup paths
+  are unchanged from `86c5da6`. The exact target passed unchanged on rerun:
+  **8 passed / one fixture ignored**, 2.48 seconds,
+  `qualification-owner-postgres-protocol-rerun.log`. Cause is unconfirmed, not
+  classified as a proven pre-existing failure. Source review identified synchronous
+  native-certificate loading even with PostgreSQL TLS disabled as an unmeasured
+  hypothesis; the failure occurred before cancellation/EOF assertions. No timeout
+  or PostgreSQL source was changed. A full validation rerun is recorded above.
+- `qualification-owner-validate-repaired-rerun.log`: **679 frontend / 465 standard
+  Rust tests passed**, **129 fixtures ignored**; formatting, frontend build and
+  Cargo check passed. Strict Clippy rejected three comparison-only allocations
+  in the newly added deterministic race fixture. One cached string and explicit
+  JSON `as_str()` comparisons retain string-only ID semantics without a lint
+  allowance or production change. The affected adapter cases and final full
+  validation are rerun after this correction.
+
+Reproduce with pinned Rust **1.99.1**, Node **24.22.2**, pnpm **11.23.0**, and an
+explicit helper executable. Logs are under
+`.cache/verification/connection-attempts/` and are not committed.
+
+```sh
+export JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node"
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_process:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests -- --test-threads=1
+pnpm validate
+```
+
+The fixed runner still needs actual same-call reconciliation catalog evidence,
+complete production-route interruption/rejection coverage and end-to-end durable
+outcome qualification using the separate original local-completion callback.
+One-use source/runtime/binary/private-profile binding remains open. No account
+execution plan or approval follows from the journal/ledger hash. Actual effects,
+normal packaged SSO, million-row account performance, full DataGrip functionality
+and hands-on acceptance remain required. No UI behavior changed; prior native,
+browser, actual local database and packaged-app evidence retains its recorded
+source/scope and is not refreshed by these harness tests. Nothing is pushed,
+merged, published, installed or externally qualified in this increment.
+
 ### Offline wire/lifecycle validators and terminal evidence (11 November 2026)
 
 Local implementation adds strict final-frame matching, census/context/target

@@ -53,6 +53,18 @@ impl Lifecycle {
         self.context.as_ref()
     }
 
+    pub(super) fn validate_ownership(&self, marker: &super::OwnershipMarker) -> AppResult<()> {
+        let context = self.context.as_ref().ok_or_else(invalid)?;
+        let target = self.target.as_ref().ok_or_else(invalid)?;
+        if context.role.as_deref() != Some(marker.owner())
+            || target.created != marker.created()
+            || target.traits.transient != Some(marker.transient())
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     pub(super) fn observe_schemas(
         &mut self,
         phase: &Phase,

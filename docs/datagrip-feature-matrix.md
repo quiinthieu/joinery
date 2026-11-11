@@ -1,5 +1,23 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Owning qualification policy (11 November 2026)
+
+| Capability | Implemented locally | Verification/remaining gate |
+| --- | --- | --- |
+| Closed physical request grammar | Exact SQL order, frozen connect payload, bounded credit/discard/cancel/close controls, unique physical identities and route-specific rejection suffixes | Pure and composition tests; no executable account approval |
+| Metadata/runtime/phase ownership | Correlated callback sites and ordinals, frozen census/context/target markers, original typed results and transaction A/B observations | Complete synthetic owner routes; full production-route and actual account effects remain required |
+| Durable intent/evidence barriers | Private create-once hash-chained journal; fsync before admission/phase advancement; cancellation-safe record consumption and sticky failure | Local filesystem/fault tests; no power-loss or account claim |
+| Original local completion evidence | Queued cancellation/close, inactive controls and retirement reports, including original typed ACKs; candidate IDs separate from actual wire assignment | Process and synthetic composition coverage; full runner interruption and durable outcome qualification remain required |
+| Production adapter composition | Runtime publication observation and first startup/preflight integration | Synthetic SDK only; complete 32-phase production-route runner remains open |
+
+See the [verification ledger](replacement-verification.md#owning-qualification-policy-11-november-2026)
+for commands, actual results, failed attempts and evidence provenance. This adds
+no externally qualified product capability. Complete outcome qualification, one-use
+source/runtime/profile binding and a fixed account runner remain incomplete.
+Actual Snowflake writes/DDL/transactions, normal packaged SSO, million-row account
+performance, broader DataGrip workflows and owner acceptance remain required.
+Earlier entries below describe their recorded source and validation scope.
+
 ## Offline validation primitives (11 November 2026)
 
 The [qualification contract](snowflake-qualification-sql-ledger.md#offline-wire-and-lifecycle-validators-11-november-2026)

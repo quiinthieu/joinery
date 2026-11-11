@@ -79,6 +79,7 @@ impl<T: TransportPolicy + MetadataObserver> TransportPolicy for SharedPolicy<T> 
     }
 
     fn failed(&self, error: AppError) {
+        self.policy.failed(error.clone());
         let _ = self.record(Err(error));
     }
 

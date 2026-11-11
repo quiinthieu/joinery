@@ -1,5 +1,49 @@
 # Joinery implementation roadmap
 
+## Owning qualification policy (11 November 2026)
+
+Implemented a harness-only owner of the exact physical ledger/control grammar,
+callback debt, frozen lifecycle, actual runtime publications and typed phase
+evidence. A private create-once journal records original intents, helper reports,
+observations and validated phase evidence. Admission and advancement wait for
+their own fsync receipts. Interrupted owners retain failure and consume completed
+receipts once; cleanup cannot advance or retry SQL. See the
+[contract](snowflake-qualification-sql-ledger.md#owning-policy-and-durable-barriers-11-november-2026)
+and [verification evidence](replacement-verification.md#owning-qualification-policy-11-november-2026).
+
+Next, in dependency order:
+
+1. Extend actual adapter/Studio composition beyond startup/preflight through the
+   complete 32-phase route and rejected/interrupted calls. Reconciliation must
+   retain the actual catalog from its own call; do not add SQL or manufacture DTOs.
+2. Extend local-completion coverage into the full actual production route.
+   Verify original early ACKs and final durable evidence across interruption,
+   rejected calls and local storage failure; never repeat SQL during cleanup.
+3. Bind one executable, non-resumable attempt to reviewed source, binary, runtime
+   and private profile identities; implement one-use approval consumption and the
+   fixed runner. No caller-supplied SQL or arbitrary target.
+4. Independently review full-route success, rejection, cancellation, connection
+   interruption and local journal failures. Preserve exact statement budgets and
+   prove cleanup does not replay SQL or evidence.
+5. Prepare the executable fresh-table plan under `SANDBOX.BILLIE_TESTING`, then
+   request fresh exact execution/billing approval before account activity.
+
+The separate local-completion seam now carries exact ticket/generation identity,
+optional actually assigned wire ID, reserved candidate and a closed origin.
+Pending removal and ticket-keyed retained evidence precede observation outside
+the process mutex and unchanged caller publication. In-flight publication guards
+participate in settlement. A deterministic adapter/helper test forces a query to
+finish during durable credit admission: its inactive local completion consumes
+the reservation without inventing a wire assignment or advancing SQL. Other local
+outcomes retain the original report and stop the attempt. Full-runner evidence
+and real account interruption qualification remain open; see the verification
+ledger for passing and failed development runs.
+
+All applicable DataGrip authoring, navigation, grid/import, schema/performance,
+native persistence/packaging, normal packaged SSO and million-row account gates
+remain in scope. The local policy is not replacement acceptance. Earlier roadmap
+entries below retain their historical context; the Goal remains incomplete.
+
 ## Offline validation primitives (11 November 2026)
 
 Implemented pure final-wire matching and in-memory lifecycle validation, plus a

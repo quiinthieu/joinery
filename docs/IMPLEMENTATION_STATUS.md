@@ -1,5 +1,35 @@
 # Implementation and release status
 
+## Owning qualification policy (11 November 2026, local integration)
+
+The harness now owns exact SQL/control admission, callback correlation, phase
+evidence and durable journal barriers. Runtime observations reach that policy
+before publication. A phase advances only after original terminal reports,
+validated metadata/runtime observations and its typed operation evidence are
+written and synced. Cancellation permanently stops advancement; final local
+persistence can drain original records without replaying SQL or journal events.
+This is internal qualification infrastructure with no desktop/account entry point.
+
+Local completion observation also retains original reports for queued cancellation,
+queued close, inactive controls and retirement. Observers run outside process
+locks, and settlement includes their publication. Candidate request IDs remain
+distinct from actual wire assignments and are consumed after admission even when
+a concurrent completion prevents sending. These paths do not advance SQL phases.
+
+Verification and review results are recorded in the
+[ledger](replacement-verification.md#owning-qualification-policy-11-november-2026).
+The complete offline routes use shaped synthetic callbacks and DTOs; actual
+adapter/helper composition has a separate, narrower scope. Neither establishes
+live Snowflake writes, transactions, DDL or account performance.
+
+Still open: complete production-route runner and interruption/rejection coverage,
+end-to-end durable outcome qualification, and one-use source/runtime/binary/private-
+profile binding. Only then prepare the exact fresh-table account plan under
+`SANDBOX.BILLIE_TESTING` for fresh execution/billing approval. Normal packaged SSO,
+million-row account performance, all applicable DataGrip workflows and owner
+acceptance remain required. The Goal is active and incomplete; nothing is pushed,
+merged, published or installed. Earlier sections retain their original scope.
+
 ## Offline validation primitives (11 November 2026, local integration)
 
 Strict final-frame matching and in-memory census/context/target lifecycle

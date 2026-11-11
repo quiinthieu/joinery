@@ -230,6 +230,9 @@ impl Sequencer {
             failure: None,
         })
     }
+    pub(crate) fn plan(&self) -> &Plan {
+        &self.plan
+    }
     pub(crate) fn ledger(&self) -> &PhysicalLedger {
         &self.ledger
     }
