@@ -67,6 +67,16 @@ mod journal;
 #[path = "snowflake_table_qualification_sequence.rs"]
 mod sequence;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Internal qualification integration; no account runner entry point"
+    )
+)]
+#[path = "snowflake_table_qualification_evidence.rs"]
+mod evidence;
+
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
     domain::{
@@ -680,11 +690,31 @@ impl Plan {
         catalog: &BrowseCatalog,
         pin: &RuntimePin,
     ) -> AppResult<()> {
+        self.validate_catalog_identity(
+            presence,
+            catalog,
+            pin.initial.role.as_deref().ok_or_else(invalid)?,
+            pin.initial
+                .context_fingerprint
+                .as_deref()
+                .ok_or_else(invalid)?,
+        )
+    }
+
+    pub(super) fn validate_catalog_identity(
+        &self,
+        presence: Presence,
+        catalog: &BrowseCatalog,
+        role: &str,
+        context_fingerprint: &str,
+    ) -> AppResult<()> {
         if catalog.revision.is_empty()
             || catalog.database != DATABASE
             || catalog.identity.database != DATABASE
-            || catalog.identity.role != pin.initial.role.as_deref().ok_or_else(invalid)?
-            || catalog.identity.context_fingerprint != pin.initial.context_fingerprint
+            || role.is_empty()
+            || context_fingerprint.is_empty()
+            || catalog.identity.role != role
+            || catalog.identity.context_fingerprint.as_deref() != Some(context_fingerprint)
         {
             return Err(invalid());
         }
