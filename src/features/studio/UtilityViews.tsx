@@ -32,6 +32,7 @@ import { TableObjectDialog, type TableObjectDialogRequest } from "./TableObjectD
 import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
+import { SnowflakeDmlHistorySummary } from "./SnowflakeDmlNotice";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]),
@@ -147,6 +148,9 @@ export function HistoryView() {
                     {entry.sql ??
                       `${entry.statementCount} statement${entry.statementCount === 1 ? "" : "s"} · SQL text not stored`}
                   </code>
+                  {entry.snowflakeDml && (
+                    <SnowflakeDmlHistorySummary evidence={entry.snowflakeDml} />
+                  )}
                   {entry.sql && <ArrowUpRight size={15} className="history-open" />}
                 </button>
               ))}

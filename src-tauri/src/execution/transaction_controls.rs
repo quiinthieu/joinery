@@ -133,6 +133,7 @@ impl Studio {
             if request.action != ExplicitTransactionAction::Rollback {
                 audit?;
             }
+            session.metadata_gate.lock().hold();
             *session.observed_runtime.lock() = None;
             *session.completion.lock() = None;
             session.driver.invalidate_relation_catalog();

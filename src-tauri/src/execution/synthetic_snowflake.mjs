@@ -47,11 +47,26 @@ export default {
         const sql = options.sqlText;
         const current = context();
         const boundary = ['BEGIN TRANSACTION', 'COMMIT', 'ROLLBACK'].includes(sql);
+        const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /.test(sql);
         let names = ['C0'];
         let types = ['TEXT'];
         let values = [['1']];
         let failure = null;
-        if (boundary) {
+        if (dml) {
+          const kind = sql.startsWith('INSERT') ? 'insert' : sql.startsWith('UPDATE') ? 'update' : 'delete';
+          names = [`number of rows ${kind === 'insert' ? 'inserted' : kind === 'update' ? 'updated' : 'deleted'}`];
+          values = [['9007199254740993']];
+          if (kind === 'update') {
+            names.push('number of multi-joined rows updated');
+            values[0].push('7');
+          }
+          types = names.map(() => 'FIXED');
+          appendFileSync(marker('dml-effects'), JSON.stringify({ sql, binds: options.binds }) + '\n');
+          writeFileSync(marker('dml-entered'), String(id));
+          if (existsSync(marker('deny-observer-after-dml'))) {
+            writeFileSync(marker('deny-observer'), 'synthetic DML final-observer denial');
+          }
+        } else if (boundary) {
           names = []; values = [];
           transactionId = sql === 'BEGIN TRANSACTION' ? 'opaque-studio-tx:90071992547409931234567890' : null;
           appendFileSync(marker('transaction-effects'), sql + '\n');
@@ -150,7 +165,15 @@ export default {
           // Test-only loss after synthetic execution and before its response.
           // This never claims logout or real Snowflake transaction effects.
           if (boundary && existsSync(marker('lose-transaction-ack'))) process.exit(0);
-          options.complete(failure, statement);
+          if (dml && existsSync(marker('lose-dml-ack'))) process.exit(0);
+          const complete = () => {
+            if (dml && existsSync(marker('hold-dml-ack')) && !existsSync(marker('release-dml-ack'))) {
+              setTimeout(complete, 10);
+              return;
+            }
+            options.complete(failure, statement);
+          };
+          complete();
         });
         return statement;
       },

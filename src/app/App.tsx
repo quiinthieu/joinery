@@ -614,7 +614,9 @@ export function App() {
         .then((latencyMs) => {
           useStudio.getState().updateSessionLatency(session.id, latencyMs);
         })
-        .catch(() => useStudio.getState().retireSession(session.id));
+        .catch((error) => {
+          if (appErrorOf(error).code !== "conflict") useStudio.getState().retireSession(session.id);
+        });
     }, 30000);
     return () => clearInterval(timer);
   }, [session?.id]);
@@ -638,6 +640,20 @@ export function App() {
       querySessionForTab(active, useStudio.getState().sessions)?.id !== plan.sessionId
     ) {
       state.notify("The query session changed. Run the statement again in its current session.");
+      return;
+    }
+    if (plan.reviewedSnowflakeDml) {
+      // Authorization has finished. Keep the running console and its explicit
+      // disconnect control reachable while the typed write is pending.
+      setDialog((current) =>
+        current?.kind === "review" && current.plan.id === plan.id ? null : current,
+      );
+      try {
+        const result = await useStudio.getState().executeSnowflakeDml(plan, approval, tabId);
+        if (result.statementOutcome === "succeeded") onSuccess?.();
+      } catch (error) {
+        state.notify(messageOf(error));
+      }
       return;
     }
     try {
@@ -667,6 +683,7 @@ export function App() {
       dataSessionId: plan.sessionId,
       planSource: planSourceForExecution(plan, executionSession, undefined),
       runMetrics: undefined,
+      snowflakeDmlResult: undefined,
       clientStartedAt: performance.now(),
       clientElapsedMs: undefined,
     });
@@ -1666,7 +1683,11 @@ export function App() {
                 Boolean(dialog.preview),
               );
           }}
-          onClose={() => setDialog(null)}
+          onClose={() =>
+            setDialog((current) =>
+              current?.kind === "review" && current.plan.id === dialog.plan.id ? null : current,
+            )
+          }
         />
       )}
       {dialog?.kind === "value" && (

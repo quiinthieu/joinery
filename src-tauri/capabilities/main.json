@@ -87,6 +87,7 @@
     "allow-switch-session-schema",
     "allow-prepare-transaction-control",
     "allow-execute-transaction-control",
+    "allow-execute-snowflake-dml",
     "allow-set-transaction-mode",
     "allow-commit-transaction",
     "allow-rollback-transaction",

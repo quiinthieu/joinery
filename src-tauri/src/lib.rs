@@ -228,6 +228,7 @@ pub fn run() {
             commands::switch_session_schema,
             commands::prepare_transaction_control,
             commands::execute_transaction_control,
+            commands::execute_snowflake_dml,
             commands::set_transaction_mode,
             commands::commit_transaction,
             commands::rollback_transaction,

@@ -282,6 +282,11 @@ export async function runNativeSmoke() {
     }
     for (const [command, expectedCode, invokeCommand] of [
       [
+        "execute_snowflake_dml",
+        "approvalExpired",
+        () => client.call("execute_snowflake_dml", { planId: "missing-native-dml-plan" }),
+      ],
+      [
         "execute_transaction_control",
         "approvalExpired",
         () =>

@@ -61,7 +61,13 @@ export function ConnectionDialog({
               : environment === "production" && profile.safeMode !== "readOnly"
                 ? "passwordGated"
                 : profile.safeMode,
-          snowflake: withSnowflakeAuthentication(profile.snowflake, authentication),
+          snowflake: {
+            ...withSnowflakeAuthentication(profile.snowflake, authentication),
+            reviewedDml:
+              authentication === "externalBrowser" && profile.safeMode !== "readOnly"
+                ? (profile.snowflake.reviewedDml ?? false)
+                : false,
+          },
         };
       }
       return profile;
@@ -256,7 +262,7 @@ export function ConnectionDialog({
                       ? current.engine === "snowflake" && current.snowflake
                         ? current.snowflake
                         : withSnowflakeAuthentication(
-                            { role: "", warehouse: "", schema: "" },
+                            { role: "", warehouse: "", schema: "", reviewedDml: false },
                             "externalBrowser",
                           )
                       : null,
@@ -342,7 +348,14 @@ export function ConnectionDialog({
                           ? current.safeMode
                           : "readOnly",
                       snowflake: current.snowflake
-                        ? withSnowflakeAuthentication(current.snowflake, authentication)
+                        ? {
+                            ...withSnowflakeAuthentication(current.snowflake, authentication),
+                            reviewedDml:
+                              authentication === "externalBrowser" &&
+                              snowflakeAuthentication(current.snowflake) === "externalBrowser"
+                                ? (current.snowflake.reviewedDml ?? false)
+                                : false,
+                          }
                         : null,
                     }));
                   }}
@@ -615,7 +628,16 @@ export function ConnectionDialog({
                 draft.engine === "snowflake" &&
                 snowflakeAuthentication(draft.snowflake) !== "externalBrowser"
               }
-              onChange={(e) => change("safeMode", e.target.value as SafeMode)}
+              onChange={(e) => {
+                const safeMode = e.target.value as SafeMode;
+                setDraft((current) => ({
+                  ...current,
+                  safeMode,
+                  ...(safeMode === "readOnly" && current.snowflake
+                    ? { snowflake: { ...current.snowflake, reviewedDml: false } }
+                    : {}),
+                }));
+              }}
             >
               {draft.engine === "snowflake" &&
               snowflakeAuthentication(draft.snowflake) === "externalBrowser" ? (
@@ -643,10 +665,33 @@ export function ConnectionDialog({
               <option value="readOnly">Read only · block writes</option>
             </select>
           </label>
+          {draft.engine === "snowflake" &&
+            draft.snowflake &&
+            snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+            draft.safeMode !== "readOnly" && (
+              <label className="checkbox-label span-2">
+                <input
+                  type="checkbox"
+                  checked={draft.snowflake.reviewedDml ?? false}
+                  onChange={(event) =>
+                    change("snowflake", {
+                      ...draft.snowflake!,
+                      reviewedDml: event.target.checked,
+                    })
+                  }
+                />
+                Allow separately reviewed single INSERT, UPDATE, and DELETE statements
+                <span className="optional">
+                  Can change data and transaction state, and may incur warehouse charges. Joinery
+                  does not automatically retry submitted SQL. Broader write grammar and DDL remain
+                  unavailable.
+                </span>
+              </label>
+            )}
           {draft.engine === "snowflake" && (
             <p className="form-note span-2">
               {snowflakeAuthentication(draft.snowflake) === "externalBrowser"
-                ? "Safe Mode applies only to separately reviewed explicit transaction boundaries. SQL writes and DDL remain blocked."
+                ? "Safe Mode controls review and approval for explicit transaction boundaries and opted-in single INSERT, UPDATE, and DELETE statements. Broader write grammar and DDL remain unavailable."
                 : "This authentication route supports read-only SQL."}
             </p>
           )}

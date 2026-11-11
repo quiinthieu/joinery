@@ -471,11 +471,20 @@ async fn sdk_studio_acknowledged_begin_denial_keeps_recovery_and_rollback_has_no
     let rollback = transaction_request(&begun.state, ExplicitTransactionAction::Rollback);
     for _ in 0..2 {
         let before = queries(&fixture).len();
-        let failed = studio.session_contexts(&info.id).await.unwrap();
+        // Deliberate owner refresh is allowed to try an observer while the
+        // durable metadata hold blocks automatic callers. Incoherent results
+        // retain the hold and the existing rollback-only recovery capability.
+        let failed = studio
+            .session_contexts_with_refresh(&info.id, true)
+            .await
+            .unwrap_err();
+        assert_eq!(failed.code, ErrorCode::Conflict);
         assert_eq!(queries(&fixture)[before..], observation_sample_sql()[..3]);
-        assert!(failed.available.is_empty() && failed.revision.is_none());
         assert_eq!(
-            transaction_request(&failed.state, ExplicitTransactionAction::Rollback),
+            transaction_request(
+                retained.observed_runtime.lock().as_ref().unwrap(),
+                ExplicitTransactionAction::Rollback
+            ),
             rollback
         );
     }
@@ -1216,4 +1225,292 @@ async fn sdk_completion_server_session_replacement_retires_without_reconnecting(
         "retirement must not reconnect or replay"
     );
     close_metadata_session(&fixture, &studio, &info.id).await;
+}
+
+const DML_INPUT_SQL: &str = "UPDATE DB.PUBLIC.T SET V = :value WHERE V = :value";
+const DML_WIRE_SQL: &str = "UPDATE DB.PUBLIC.T SET V = ? WHERE V = ?";
+
+async fn dml_session(fixture: &Fixture, studio: &Studio) -> SessionInfo {
+    let mut configured = profile();
+    configured.safe_mode = SafeMode::Confirm;
+    configured.snowflake.as_mut().unwrap().reviewed_dml = true;
+    let configured = studio.save_profile(configured, None).unwrap();
+    let info = studio
+        .connect(&configured.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    assert_eq!(queries(fixture).len(), 2);
+    let before = queries(fixture).len();
+    studio.session_contexts(&info.id).await.unwrap();
+    assert_options_reads(fixture, before);
+    info
+}
+
+fn reviewed_dml(studio: &Studio, fixture: &Fixture, id: &str) -> (PreparedPlan, String) {
+    let before = queries(fixture).len();
+    let plan = studio
+        .prepare_execution_with_params(
+            id,
+            DML_INPUT_SQL,
+            Some(vec![QueryParamInput {
+                key: "value".into(),
+                kind: QueryParamKind::Text,
+                value: Some("private-dml-parameter-never-persist".into()),
+            }]),
+        )
+        .unwrap();
+    assert!(plan.reviewed_snowflake_dml && plan.requires_approval);
+    assert_eq!(plan.statements.len(), 1);
+    assert_eq!(plan.statements[0].sql, DML_INPUT_SQL);
+    let approval = studio.authorize(&plan.id, None, None).unwrap();
+    assert_eq!(queries(fixture).len(), before, "review must remain local");
+    (plan, approval)
+}
+
+fn dml_effects(fixture: &Fixture) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(fixture.controls.join("dml-effects"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn assert_dml_reads(fixture: &Fixture, before: usize, final_sample: usize) {
+    let mut expected = observation_sample_sql().to_vec();
+    expected.push(DML_WIRE_SQL);
+    expected.extend(&observation_sample_sql()[..final_sample]);
+    assert_eq!(queries(fixture)[before..], expected);
+    let effects = dml_effects(fixture);
+    assert_eq!(effects.len(), 1, "a reviewed write must never replay");
+    assert_eq!(effects[0]["sql"], DML_WIRE_SQL);
+    assert_eq!(
+        effects[0]["binds"],
+        serde_json::json!([
+            "private-dml-parameter-never-persist",
+            "private-dml-parameter-never-persist"
+        ])
+    );
+    assert!(!fixture.controls.join("transaction-effects").exists());
+}
+
+async fn dml_entered(fixture: &Fixture) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture.controls.join("dml-entered").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("production helper must submit the synthetic DML once");
+}
+
+#[tokio::test]
+async fn sdk_studio_dml_parameterized_uses_eleven_sql_and_persists_exact_evidence_on_restart() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = dml_session(&fixture, &studio).await;
+    let (plan, approval) = reviewed_dml(&studio, &fixture, &info.id);
+    let before = queries(&fixture).len();
+    let result = studio
+        .execute_snowflake_dml(&plan.id, Some(&approval))
+        .await
+        .unwrap();
+    assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+    assert!(!result.retired && result.error.is_none());
+    assert_eq!(result.summary.status, SnowflakeDmlSummaryStatus::Validated);
+    assert_eq!(
+        result.summary.affected_rows.as_deref(),
+        Some("9007199254740993")
+    );
+    assert_eq!(result.summary.multi_joined_rows.as_deref(), Some("7"));
+    assert_dml_reads(&fixture, before, 5);
+    assert!(
+        studio
+            .execute_snowflake_dml(&plan.id, Some(&approval))
+            .await
+            .is_err()
+    );
+    assert_dml_reads(&fixture, before, 5);
+    close_synthetic_session(&fixture, &studio, &info.id, &[DML_WIRE_SQL]).await;
+    studio.shutdown_and_wait().await.unwrap();
+    let reopened = Studio::with_secrets(
+        &fixture.directory.path().join("workspace"),
+        Arc::new(MemorySecrets::default()),
+    )
+    .unwrap();
+    let history = reopened.history("").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, RunStatus::Completed);
+    assert!(history[0].sql.is_none());
+    let evidence = history[0].snowflake_dml.as_ref().unwrap();
+    assert_eq!(evidence.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+    assert_eq!(evidence.summary, result.summary);
+    let persisted = serde_json::to_string(&history).unwrap();
+    assert!(!persisted.contains("private-dml-parameter-never-persist"));
+    assert!(!persisted.contains(":value"));
+}
+
+#[tokio::test]
+async fn sdk_studio_dml_ack_survives_final_observer_denial_with_only_rollback_recovery() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = dml_session(&fixture, &studio).await;
+    let (plan, approval) = reviewed_dml(&studio, &fixture, &info.id);
+    std::fs::write(fixture.controls.join("deny-observer-after-dml"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let result = studio
+        .execute_snowflake_dml(&plan.id, Some(&approval))
+        .await
+        .unwrap();
+    assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+    assert_eq!(
+        result.summary.affected_rows.as_deref(),
+        Some("9007199254740993")
+    );
+    assert_eq!(result.error.as_ref().unwrap().code, ErrorCode::Database);
+    assert!(!result.retired);
+    assert!(matches!(
+        result.state.transaction_control_authority,
+        Some(TransactionControlAuthority::RollbackOnly { .. })
+    ));
+    assert_dml_reads(&fixture, before, 3);
+    assert!(studio.prepare_execution(&info.id, DML_INPUT_SQL).is_err());
+    assert_eq!(queries(&fixture).len(), before + 9);
+    let recovery = transaction_request(&result.state, ExplicitTransactionAction::Rollback);
+    std::fs::remove_file(fixture.controls.join("deny-observer")).unwrap();
+    let before_rollback = queries(&fixture).len();
+    let rolled_back = reviewed_transaction(&studio, &fixture, &info.id, &recovery).await;
+    assert_boundary_reads(
+        &fixture,
+        before_rollback,
+        ExplicitTransactionAction::Rollback,
+    );
+    assert_eq!(
+        rolled_back.boundary_outcome,
+        TransactionBoundaryOutcome::Acknowledged
+    );
+    close_synthetic_session(&fixture, &studio, &info.id, &[DML_WIRE_SQL, "ROLLBACK"]).await;
+}
+
+#[tokio::test]
+async fn sdk_studio_dml_lost_ack_is_unknown_retires_and_never_replays() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = dml_session(&fixture, &studio).await;
+    let retained = studio.session(&info.id).unwrap();
+    let (plan, approval) = reviewed_dml(&studio, &fixture, &info.id);
+    std::fs::write(fixture.controls.join("lose-dml-ack"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let result = studio
+        .execute_snowflake_dml(&plan.id, Some(&approval))
+        .await
+        .unwrap();
+    assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Unknown);
+    assert_eq!(
+        result.summary.status,
+        SnowflakeDmlSummaryStatus::Unavailable
+    );
+    assert!(result.retired && result.state.transaction_control_authority.is_none());
+    assert!(retained.driver.is_closed());
+    assert_dml_reads(&fixture, before, 0);
+    assert!(
+        studio
+            .execute_snowflake_dml(&plan.id, Some(&approval))
+            .await
+            .is_err()
+    );
+    assert!(studio.health(&info.id).await.is_err());
+    assert_dml_reads(&fixture, before, 0);
+    let history = studio.history("").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, RunStatus::OutcomeUnknown);
+    assert_eq!(
+        history[0].snowflake_dml.as_ref().unwrap().statement_outcome,
+        SnowflakeDmlOutcome::Unknown
+    );
+    studio.shutdown_and_wait().await.unwrap();
+    no_roots(&fixture);
+}
+
+#[tokio::test]
+async fn sdk_studio_dml_queued_health_and_completion_submit_no_sql_after_hold() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = dml_session(&fixture, &studio).await;
+    let (plan, approval) = reviewed_dml(&studio, &fixture, &info.id);
+    std::fs::write(fixture.controls.join("hold-dml-ack"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let owner = studio.clone();
+    let write =
+        tokio::spawn(async move { owner.execute_snowflake_dml(&plan.id, Some(&approval)).await });
+    dml_entered(&fixture).await;
+    let health_owner = studio.clone();
+    let health_id = info.id.clone();
+    let health = tokio::spawn(async move { health_owner.health(&health_id).await });
+    let completion_owner = studio.clone();
+    let completion_id = info.id.clone();
+    let completion =
+        tokio::spawn(async move { completion_owner.completion_catalog(&completion_id).await });
+    tokio::task::yield_now().await;
+    std::fs::write(fixture.controls.join("release-dml-ack"), b"").unwrap();
+    let result = write.await.unwrap().unwrap();
+    assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+    assert!(!result.retired && result.error.is_none());
+    assert_eq!(health.await.unwrap().unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(
+        completion.await.unwrap().unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_dml_reads(&fixture, before, 5);
+    assert_eq!(
+        studio.health(&info.id).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        studio.completion_catalog(&info.id).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_dml_reads(&fixture, before, 5);
+    close_synthetic_session(&fixture, &studio, &info.id, &[DML_WIRE_SQL]).await;
+}
+
+#[tokio::test]
+async fn sdk_studio_dml_dropped_waiter_still_records_helper_ack_once() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = dml_session(&fixture, &studio).await;
+    let (plan, approval) = reviewed_dml(&studio, &fixture, &info.id);
+    std::fs::write(fixture.controls.join("hold-dml-ack"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let owner = studio.clone();
+    let waiter =
+        tokio::spawn(async move { owner.execute_snowflake_dml(&plan.id, Some(&approval)).await });
+    dml_entered(&fixture).await;
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    std::fs::write(fixture.controls.join("release-dml-ack"), b"").unwrap();
+    let history = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let history = studio.history("").unwrap();
+            if !history.is_empty() {
+                break history;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(history.len(), 1);
+    let evidence = history[0].snowflake_dml.as_ref().unwrap();
+    assert_eq!(evidence.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+    assert_eq!(
+        evidence.summary.affected_rows.as_deref(),
+        Some("9007199254740993")
+    );
+    assert_dml_reads(&fixture, before, 5);
+    close_synthetic_session(&fixture, &studio, &info.id, &[DML_WIRE_SQL]).await;
 }

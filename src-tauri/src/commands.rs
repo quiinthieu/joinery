@@ -840,8 +840,11 @@ pub async fn compare_data(
 pub async fn session_contexts(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
+    resume_metadata: Option<bool>,
 ) -> AppResult<SessionContextOptions> {
-    studio.session_contexts(&session_id).await
+    studio
+        .session_contexts_with_refresh(&session_id, resume_metadata.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -888,6 +891,17 @@ pub async fn execute_transaction_control(
 ) -> AppResult<TransactionControlResult> {
     studio
         .execute_transaction_control(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn execute_snowflake_dml(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<SnowflakeDmlResult> {
+    studio
+        .execute_snowflake_dml(&plan_id, approval.as_deref())
         .await
 }
 

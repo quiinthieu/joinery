@@ -29,6 +29,7 @@ import type {
   TableSchema,
   TransactionMode,
   TransactionControlResult,
+  SnowflakeDmlResult,
   TransactionControlAuthority,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
@@ -83,6 +84,7 @@ export interface MetadataOrigin {
 export interface StudioTab {
   metadataOrigin?: MetadataOrigin;
   errorOrigin?: SqlExecutionOrigin;
+  snowflakeDmlResult?: SnowflakeDmlResult;
   id: string;
   kind: TabKind;
   title: string;
@@ -252,6 +254,11 @@ interface StudioState {
     plan: PreparedPlan,
     approval?: string | null,
   ): Promise<TransactionControlResult>;
+  executeSnowflakeDml(
+    plan: PreparedPlan,
+    approval?: string | null,
+    ownerTabId?: string,
+  ): Promise<SnowflakeDmlResult>;
   retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
@@ -1066,6 +1073,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       try {
         options = await client.call<SessionContextOptions | null>("session_contexts", {
           sessionId,
+          ...(throwOnError && get().sessionMetadataRefreshRequired[sessionId]
+            ? { resumeMetadata: true }
+            : {}),
         });
         if (!options?.state || options.state.sessionId !== sessionId)
           throw new Error("Session observation is unavailable");
@@ -1104,6 +1114,14 @@ export const useStudio = create<StudioState>((set, get) => ({
         return {
           sessionStates: { ...state.sessionStates, [sessionId]: runtime },
           sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+          ...(throwOnError
+            ? {
+                sessionMetadataRefreshRequired: {
+                  ...state.sessionMetadataRefreshRequired,
+                  [sessionId]: false,
+                },
+              }
+            : {}),
           ...(sdk && options.revision
             ? {
                 sessionContextAuthorities: {
@@ -1281,6 +1299,128 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
       // Do not issue an automatic observer or replay a boundary. An owner can
       // explicitly refresh after an admission failure on a still-live session.
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      set((state) => {
+        const pending = { ...state.sessionTransactionPending };
+        delete pending[sessionId];
+        return { sessionTransactionPending: pending };
+      });
+    }
+  },
+  async executeSnowflakeDml(plan, approval, ownerTabId) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    if (get().sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly")
+      throw new Error("Only rollback recovery is available for this session");
+    const ownerTab = get().tabs.find((tab) => tab.id === ownerTabId);
+    if (ownerTabId && (!ownerTab || querySessionForTab(ownerTab, get().sessions)?.id !== sessionId))
+      throw new Error("The owning query session changed; prepare this write again");
+    revokeSchemaSelectionBeforeWork(sessionId, true);
+    const request = beginContextRequest(sessionId);
+    set((state) => ({
+      sessionTransactionPending: { ...state.sessionTransactionPending, [sessionId]: true },
+      sessionMetadataRefreshRequired: {
+        ...state.sessionMetadataRefreshRequired,
+        [sessionId]: true,
+      },
+      // Earlier query events must not replace this write's final authority.
+      tabs: state.tabs.map((tab) =>
+        querySessionForTab(tab, state.sessions)?.id === sessionId
+          ? {
+              ...tab,
+              revision: tab.revision + 1,
+              ...(tab.id === ownerTabId
+                ? {
+                    snowflakeDmlResult: undefined,
+                    status: "running" as const,
+                    error: null,
+                    runId: null,
+                    dataSessionId: sessionId,
+                    clientStartedAt: performance.now(),
+                    clientElapsedMs: undefined,
+                  }
+                : {}),
+            }
+          : tab,
+      ),
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    const ownerRevision = get().tabs.find((tab) => tab.id === ownerTabId)?.revision;
+    try {
+      const result = await client.call("execute_snowflake_dml", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.state.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid Snowflake DML response");
+      }
+      if (result.retired || result.statementOutcome === "unknown") {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId)) {
+        set((state) => ({ sessionStates: { ...state.sessionStates, [sessionId]: result.state } }));
+      }
+      // Preserve the statement evidence even when the owning tab has closed.
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                snowflakeDmlResult: result,
+                status:
+                  result.statementOutcome === "succeeded"
+                    ? "completed"
+                    : result.statementOutcome === "unknown"
+                      ? "outcomeUnknown"
+                      : "failed",
+                error: result.error,
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      const count =
+        result.summary.status === "validated" && result.summary.affectedRows !== null
+          ? `; affected rows ${result.summary.affectedRows}`
+          : "; affected-row count unavailable";
+      get().notify(
+        `${result.kind.toUpperCase()} ${result.statementOutcome === "unknown" ? "outcome unknown" : result.statementOutcome}${count}${result.retired ? "; session retired" : result.state.transactionControlAuthority?.status === "rollbackOnly" ? "; only rollback recovery is available" : ""}${result.error ? `. ${result.error.message}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                status: "failed",
+                error: asAppError(error),
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      // No automatic observer or replay after a write admission failure.
       throw error;
     } finally {
       finishContextRequest(sessionId, request);

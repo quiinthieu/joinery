@@ -1385,13 +1385,15 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                   aria-label="Refresh completion context"
                   disabled={transactionPending || contextSwitchPending || rollbackOnly}
                   onClick={() => {
-                    if (props.sessionId)
-                      useStudio.setState((s) => ({
-                        sessionMetadataRefreshRequired: {
-                          ...s.sessionMetadataRefreshRequired,
-                          [props.sessionId!]: false,
-                        },
-                      }));
+                    if (props.sessionId && metadataRefreshRequired) {
+                      // Resume the native hold with explicit owner intent before
+                      // allowing completion/health effects to send SQL again.
+                      void useStudio
+                        .getState()
+                        .refreshSessionContexts(props.sessionId, true)
+                        .catch((error) => setContextError(messageOf(error)));
+                      return;
+                    }
                     setRefresh((n) => n + 1);
                   }}
                 >

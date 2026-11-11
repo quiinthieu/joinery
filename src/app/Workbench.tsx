@@ -79,6 +79,10 @@ import { RedisTools } from "../features/redis/RedisTools";
 import { resultCache } from "../data/result-cache";
 import { tabNavigation } from "../components/ui/tabs";
 import { QueryPlanView, isQueryPlanResult } from "../features/studio/QueryPlanView";
+import {
+  SnowflakeDmlNotice,
+  SnowflakeDmlPendingControl,
+} from "../features/studio/SnowflakeDmlNotice";
 
 const SqlEditor = lazy(() =>
   import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
@@ -196,6 +200,8 @@ export function Workbench({
     session &&
     state.sessionStates[session.id]?.transactionControlAuthority?.status === "rollbackOnly";
   const running = tab.status === "running" || tab.status === "queued" || controlPending;
+  const dmlPending =
+    tab.kind === "query" && tab.status === "running" && !tab.runId && controlPending;
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const queryResultEditable =
     tab.kind === "query" &&
@@ -811,7 +817,15 @@ export function Workbench({
                 <Code2 size={13} />
                 Format
               </button>
-              {running && !controlPending ? (
+              {dmlPending && session ? (
+                <SnowflakeDmlPendingControl
+                  onDisconnect={() =>
+                    void state
+                      .disconnectQuerySession(session.id)
+                      .catch((error) => state.notify(messageOf(error)))
+                  }
+                />
+              ) : running && !controlPending ? (
                 <button
                   className="button cancel-query"
                   onClick={() =>
@@ -1362,6 +1376,12 @@ export function Workbench({
             profile?.engine === "postgres" ? "case-insensitive text" : "follows column collation"
           }
           onChange={applyQuery}
+        />
+      )}
+      {tab.kind === "query" && tab.snowflakeDmlResult && (
+        <SnowflakeDmlNotice
+          result={tab.snowflakeDmlResult}
+          hasPriorResults={tab.results.length > 0}
         />
       )}
       {tab.error &&

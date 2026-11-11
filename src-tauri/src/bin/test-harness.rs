@@ -518,7 +518,7 @@ async fn rpc(
             "compare_data" => json!(studio.compare_data(arg(&args, "request")?).await?),
             "session_contexts" => json!(
                 studio
-                    .session_contexts(&arg::<String>(&args, "sessionId")?)
+                    .session_contexts_with_refresh(&arg::<String>(&args, "sessionId")?, args.get("resumeMetadata").and_then(Value::as_bool).unwrap_or(false))
                     .await?
             ),
             "switch_session_context" => json!(
@@ -541,6 +541,10 @@ async fn rpc(
                 &arg::<String>(&args, "sessionId")?, &arg(&args, "request")?
             )?),
             "execute_transaction_control" => json!(studio.execute_transaction_control(
+                &arg::<String>(&args, "planId")?,
+                arg::<Option<String>>(&args, "approval")?.as_deref()
+            ).await?),
+            "execute_snowflake_dml" => json!(studio.execute_snowflake_dml(
                 &arg::<String>(&args, "planId")?,
                 arg::<Option<String>>(&args, "approval")?.as_deref()
             ).await?),

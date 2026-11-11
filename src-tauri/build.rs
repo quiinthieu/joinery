@@ -82,6 +82,7 @@ fn main() {
             "switch_session_schema",
             "prepare_transaction_control",
             "execute_transaction_control",
+            "execute_snowflake_dml",
             "set_transaction_mode",
             "commit_transaction",
             "rollback_transaction",

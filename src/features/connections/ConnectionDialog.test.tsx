@@ -363,8 +363,22 @@ test("new Snowflake profiles default to external browser SSO and explain both mo
   const safeMode = screen.getByLabelText("Safe Mode") as HTMLSelectElement;
   expect(safeMode.value).toBe("readOnly");
   expect(safeMode.disabled).toBe(false);
+  expect(screen.queryByLabelText(/allow separately reviewed single INSERT/i)).toBeNull();
   expect(screen.getByText(/metadata browsing is temporarily unavailable/i)).toBeTruthy();
   expect(screen.getByText(/will not fall back to local application OAuth/i)).toBeTruthy();
+
+  fireEvent.change(safeMode, { target: { value: "confirm" } });
+  const reviewedDml = screen.getByLabelText(
+    /allow separately reviewed single INSERT, UPDATE, and DELETE statements/i,
+  ) as HTMLInputElement;
+  expect(reviewedDml.checked).toBe(false);
+  expect(screen.getByText(/may incur warehouse charges/i)).toBeTruthy();
+  expect(screen.getByText(/does not automatically retry submitted SQL/i)).toBeTruthy();
+  expect(
+    screen.getByText(
+      /Safe Mode controls review and approval for explicit transaction boundaries and opted-in single INSERT, UPDATE, and DELETE statements/i,
+    ),
+  ).toBeTruthy();
 
   fireEvent.change(authentication, { target: { value: "localApplicationOauth" } });
   expect(authentication.value).toBe("localApplicationOauth");
@@ -385,19 +399,77 @@ test("Snowflake OAuth transitions reset policy and never restore an earlier elev
   const safeMode = screen.getByLabelText("Safe Mode") as HTMLSelectElement;
   fireEvent.change(safeMode, { target: { value: "confirm" } });
   expect(safeMode.value).toBe("confirm");
+  const reviewedDmlLabel =
+    /allow separately reviewed single INSERT, UPDATE, and DELETE statements/i;
+  fireEvent.click(screen.getByLabelText(reviewedDmlLabel));
+  expect((screen.getByLabelText(reviewedDmlLabel) as HTMLInputElement).checked).toBe(true);
 
   fireEvent.change(authentication, { target: { value: "localApplicationOauth" } });
   expect(safeMode.value).toBe("readOnly");
   expect(safeMode.disabled).toBe(true);
+  expect(screen.queryByLabelText(reviewedDmlLabel)).toBeNull();
 
   fireEvent.change(authentication, { target: { value: "externalBrowser" } });
   expect(safeMode.value).toBe("readOnly");
   expect(safeMode.disabled).toBe(false);
+  fireEvent.change(safeMode, { target: { value: "confirm" } });
+  expect((screen.getByLabelText(reviewedDmlLabel) as HTMLInputElement).checked).toBe(false);
   expect(
     screen.getByText(
-      /safe mode applies only to separately reviewed explicit transaction boundaries/i,
+      /safe mode controls review and approval for explicit transaction boundaries and opted-in single INSERT, UPDATE, and DELETE statements/i,
     ),
   ).toBeTruthy();
+});
+
+test("ReadOnly clears reviewed DML consent and does not restore it when policy is elevated", () => {
+  enableSnowflakeEngine();
+  render(<ConnectionDialog onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Database engine"), {
+    target: { value: "snowflake" },
+  });
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+  const reviewedDmlLabel =
+    /allow separately reviewed single INSERT, UPDATE, and DELETE statements/i;
+  fireEvent.click(screen.getByLabelText(reviewedDmlLabel));
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "readOnly" } });
+  expect(screen.queryByLabelText(reviewedDmlLabel)).toBeNull();
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+  expect((screen.getByLabelText(reviewedDmlLabel) as HTMLInputElement).checked).toBe(false);
+
+  fireEvent.click(screen.getByLabelText(reviewedDmlLabel));
+  fireEvent.change(screen.getByLabelText("Database engine"), { target: { value: "postgres" } });
+  fireEvent.change(screen.getByLabelText("Database engine"), { target: { value: "snowflake" } });
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+  expect((screen.getByLabelText(reviewedDmlLabel) as HTMLInputElement).checked).toBe(false);
+});
+
+test("saving a legacy Snowflake profile submits reviewedDml false until explicitly opted in", async () => {
+  const existing = snowflakeProfile("externalBrowser");
+  vi.mocked(client.call).mockImplementation(async (command) => {
+    if (command === "save_profile") return existing;
+    if (command === "prepare_connection") throw new Error("Stop after profile save");
+    return null;
+  });
+  render(<ConnectionDialog profile={existing} onClose={vi.fn()} />);
+
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+  const reviewedDmlLabel =
+    /allow separately reviewed single INSERT, UPDATE, and DELETE statements/i;
+  expect((screen.getByLabelText(reviewedDmlLabel) as HTMLInputElement).checked).toBe(false);
+  fireEvent.submit(screen.getByRole("button", { name: "Save and connect" }).closest("form")!);
+
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("save_profile", expect.anything()));
+  let save = vi.mocked(client.call).mock.calls.find(([command]) => command === "save_profile");
+  expect(save?.[1]).toMatchObject({ profile: { snowflake: { reviewedDml: false } } });
+  await screen.findByRole("alert");
+
+  vi.mocked(client.call).mockClear();
+  fireEvent.click(screen.getByLabelText(reviewedDmlLabel));
+  fireEvent.submit(screen.getByRole("button", { name: "Save and connect" }).closest("form")!);
+
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("save_profile", expect.anything()));
+  save = vi.mocked(client.call).mock.calls.find(([command]) => command === "save_profile");
+  expect(save?.[1]).toMatchObject({ profile: { snowflake: { reviewedDml: true } } });
 });
 
 test("Snowflake group changes preserve read-only and nonproduction choices, and normalize production", () => {

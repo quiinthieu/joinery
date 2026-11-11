@@ -73,6 +73,7 @@ import type {
   TransactionMode,
   TransactionControlRequest,
   TransactionControlResult,
+  SnowflakeDmlResult,
 } from "./generated";
 
 /**
@@ -439,7 +440,7 @@ export interface JoineryCommandMap {
     result: DataCompareReport;
   };
   session_contexts: {
-    args: { sessionId: string };
+    args: { sessionId: string; resumeMetadata?: boolean };
     result: SessionContextOptions;
   };
   switch_session_context: {
@@ -457,6 +458,10 @@ export interface JoineryCommandMap {
   execute_transaction_control: {
     args: { planId: string; approval?: string | null };
     result: TransactionControlResult;
+  };
+  execute_snowflake_dml: {
+    args: { planId: string; approval?: string | null };
+    result: SnowflakeDmlResult;
   };
   set_transaction_mode: {
     args: { sessionId: string; mode: TransactionMode };

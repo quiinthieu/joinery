@@ -52,9 +52,33 @@ mod snowflake_connection_tests;
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
+mod snowflake_dml;
 mod transaction_controls;
 
+#[derive(Default)]
+struct MetadataGate {
+    revision: String,
+    held: bool,
+}
+
+impl MetadataGate {
+    fn hold(&mut self) {
+        self.revision = new_id();
+        self.held = true;
+    }
+    fn check(&self, revision: Option<&str>, resume: bool) -> AppResult<()> {
+        if revision.is_some_and(|revision| revision != self.revision) || (self.held && !resume) {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Metadata is paused after a reviewed write or transaction action; explicitly refresh the session to resume",
+            ));
+        }
+        Ok(())
+    }
+}
+
 struct Session {
+    metadata_gate: Mutex<MetadataGate>,
     info: SessionInfo,
     profile: ConnectionProfile,
     driver: Arc<dyn Driver>,
@@ -109,6 +133,12 @@ enum Action {
     },
     TransactionControl {
         request: TransactionControlRequest,
+    },
+    SnowflakeDml {
+        request: SnowflakeDmlRequest,
+        bound: crate::params::BoundStatement,
+        database: String,
+        mode: SafeMode,
     },
 }
 
@@ -216,6 +246,7 @@ pub struct Studio {
     mysql_guard_policy: crate::drivers::mysql::guard::GuardPolicy,
     pub results: ResultStore,
     connection_attempts: ConnectionAttempts,
+    dml_tasks: tokio_util::task::TaskTracker,
     configuration_gate: Mutex<()>,
     tunnels: SshManager,
     #[cfg(unix)]
@@ -310,6 +341,7 @@ impl Studio {
             mysql_guard_policy,
             results,
             connection_attempts: ConnectionAttempts::default(),
+            dml_tasks: tokio_util::task::TaskTracker::new(),
             configuration_gate: Mutex::new(()),
             tunnels: SshManager::default(),
             #[cfg(unix)]
@@ -930,6 +962,7 @@ impl Studio {
                     driver: driver.clone(),
                     lane: tokio::sync::Mutex::new(()),
                     completion: Mutex::new(None),
+                    metadata_gate: Mutex::new(MetadataGate::default()),
                     observed_runtime: Mutex::new(None),
                     cancellation_gate: tokio::sync::Mutex::new(()),
                     active_run: Mutex::new(None),
@@ -1143,6 +1176,15 @@ impl Studio {
         error_source: Option<ExplainSource>,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if error_source.is_none() && snowflake_dml::sdk_profile(&session.profile) {
+            let database = session.observed_runtime.lock().as_ref().map_or_else(
+                || session.profile.database.clone(),
+                |state| state.database.clone(),
+            );
+            if safety::snowflake_dml::analyze(sql, &database).is_ok() {
+                return self.prepare_snowflake_dml(session_id, sql, params.as_deref());
+            }
+        }
         let source_bytes = error_source
             .as_ref()
             .map_or(0, |source| source.sql.len() + source.prefix.len());
@@ -1150,6 +1192,7 @@ impl Studio {
         if slots.is_empty() {
             crate::params::validate_inputs(&slots, params.as_deref())?;
             let plan = safety::prepare(session_id, &session.profile, sql)?;
+            snowflake_dml::require_sdk_read_plan(&session.profile, &plan)?;
             return self.store_plan(
                 plan,
                 Action::Sql {
@@ -1165,6 +1208,7 @@ impl Studio {
             crate::params::rewrite_for_classification(session.profile.engine, sql)?;
         let mut plan =
             safety::prepare_parameterized(session_id, &session.profile, sql, &classification)?;
+        snowflake_dml::require_sdk_read_plan(&session.profile, &plan)?;
         let mut question_offset = 0usize;
         let mut bound = Vec::with_capacity(plan.statements.len());
         let mut remaining_bytes =
@@ -1311,6 +1355,15 @@ impl Studio {
                 serde_json::to_vec(bound)
                     .map_err(|_| AppError::internal("Could not fingerprint bound parameters"))?,
             ),
+            Action::SnowflakeDml {
+                request,
+                bound,
+                database,
+                mode,
+            } => fingerprint.update(
+                serde_json::to_vec(&(request, bound, database, mode))
+                    .map_err(|_| AppError::internal("Could not fingerprint reviewed DML"))?,
+            ),
             Action::TransactionControl { request } => fingerprint.update(
                 serde_json::to_vec(request)
                     .map_err(|_| AppError::internal("Could not fingerprint transaction action"))?,
@@ -1380,7 +1433,7 @@ impl Studio {
         }
         if matches!(
             stored.action,
-            Action::Browse { .. } | Action::TransactionControl { .. }
+            Action::Browse { .. } | Action::TransactionControl { .. } | Action::SnowflakeDml { .. }
         ) {
             return Err(AppError::invalid(
                 "Use the dedicated typed command to execute this prepared action",
@@ -1700,7 +1753,9 @@ impl Studio {
                     });
                 }
             }
-            Action::Browse { .. } | Action::TransactionControl { .. } => {}
+            Action::Browse { .. }
+            | Action::TransactionControl { .. }
+            | Action::SnowflakeDml { .. } => {}
         }
         if serialized {
             let observed_state = if matches!(stored.action, Action::Sql { .. })
@@ -1830,7 +1885,16 @@ impl Studio {
     }
 
     pub async fn session_contexts(&self, session_id: &str) -> AppResult<SessionContextOptions> {
+        self.session_contexts_with_refresh(session_id, false).await
+    }
+
+    pub async fn session_contexts_with_refresh(
+        &self,
+        session_id: &str,
+        resume_metadata: bool,
+    ) -> AppResult<SessionContextOptions> {
         let session = self.session(session_id)?;
+        let revision = session.metadata_gate.lock().revision.clone();
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
                 ErrorCode::Conflict,
@@ -1846,7 +1910,33 @@ impl Studio {
                 "This database session is disconnected",
             ));
         }
-        self.build_session_contexts(&session).await
+        session
+            .metadata_gate
+            .lock()
+            .check(Some(&revision), resume_metadata)?;
+        let result = self.build_session_contexts(&session).await;
+        if resume_metadata
+            && snowflake_dml::sdk_profile(&session.profile)
+            && result.as_ref().is_ok_and(|options| {
+                !matches!(
+                    options.state.transaction_observation,
+                    Some(TransactionObservation::Observed { .. })
+                ) || !matches!(
+                    options.state.transaction_control_authority,
+                    Some(TransactionControlAuthority::Observed { .. })
+                )
+            })
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "The session could not be coherently observed; metadata remains paused",
+            )
+            .with_completion_invalidated());
+        }
+        if result.is_ok() && resume_metadata {
+            session.metadata_gate.lock().held = false;
+        }
+        result
     }
 
     pub async fn switch_session_context(
@@ -2179,6 +2269,7 @@ impl Studio {
                     "The session is busy; retry suggestions",
                 )
             })?;
+        session.metadata_gate.lock().check(None, false)?;
         let previous = session.completion.lock().take();
         let identity = session.driver.completion_identity().await?;
         let relations = session.driver.completion_catalog(&identity).await?;
@@ -2269,6 +2360,7 @@ impl Studio {
                     "The session is busy; retry suggestions",
                 )
             })?;
+        session.metadata_gate.lock().check(None, false)?;
         let snapshot = session
             .completion
             .lock()
@@ -2378,6 +2470,7 @@ impl Studio {
                 "Wait for the running query to finish first",
             ));
         }
+        session.metadata_gate.lock().check(None, false)?;
         Ok(lane)
     }
 
@@ -2422,7 +2515,13 @@ impl Studio {
     }
 
     pub async fn catalog(&self, session_id: &str) -> AppResult<Vec<TableInfo>> {
-        self.session(session_id)?.driver.catalog().await
+        let session = self.session(session_id)?;
+        let _lane = if snowflake_dml::sdk_profile(&session.profile) {
+            Some(Self::relation_lane(&session).await?)
+        } else {
+            None
+        };
+        session.driver.catalog().await
     }
     pub async fn database_objects(
         &self,
@@ -2921,7 +3020,19 @@ impl Studio {
         })?
     }
     pub async fn health(&self, session_id: &str) -> AppResult<u32> {
-        self.session(session_id)?.driver.health().await
+        let session = self.session(session_id)?;
+        // SDK health sends SQL and revokes observer authority. Serialize and
+        // recheck the native hold before entering the driver at all.
+        let _lane = if snowflake_dml::sdk_profile(&session.profile) {
+            let lane = tokio::time::timeout(Duration::from_millis(1500), session.lane.lock())
+                .await
+                .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+            session.metadata_gate.lock().check(None, false)?;
+            Some(lane)
+        } else {
+            None
+        };
+        session.driver.health().await
     }
     pub async fn processes(&self, session_id: &str) -> AppResult<Vec<ProcessInfo>> {
         self.session(session_id)?.driver.processes().await
@@ -4640,6 +4751,7 @@ impl Studio {
         // snapshot, or the irreversible attempt barrier rejects publication.
         let _configuration = self.configuration_gate.lock();
         self.connection_attempts.shutdown();
+        self.dml_tasks.close();
         for export in self.exports.lock().values() {
             export.token.cancel();
         }
@@ -4656,6 +4768,17 @@ impl Studio {
     pub async fn shutdown_and_wait(&self) -> AppResult<()> {
         self.shutdown();
         self.connection_attempts.wait_idle().await;
+        // Child reaping does not establish that its Studio owner has persisted
+        // retained acknowledgements. A timeout keeps the window open and the
+        // owner alive; a later shutdown can await the same tracker again.
+        tokio::time::timeout(Duration::from_secs(10), self.dml_tasks.wait())
+            .await
+            .map_err(|_| {
+                AppError::new(
+                    ErrorCode::Conflict,
+                    "A database write is still recording its outcome; keep Joinery open and try closing again",
+                )
+            })?;
         #[cfg(unix)]
         self.snowflake_cleanup
             .wait_all(Duration::from_secs(10))
@@ -5167,6 +5290,8 @@ mod browse_classification_tests {
         schema_switch_calls: Mutex<Vec<SwitchSchemaRequest>>,
         schema_switch_options: Mutex<Option<SessionContextOptions>>,
         close_during_schema_switch: bool,
+        dml_calls: Mutex<Vec<SnowflakeDmlRequest>>,
+        dml_result: Mutex<Option<SnowflakeDmlResult>>,
         boundary_calls: Mutex<Vec<TransactionControlRequest>>,
         boundary_result: Mutex<Option<TransactionControlResult>>,
         boundary_barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
@@ -5323,6 +5448,36 @@ mod browse_classification_tests {
             }
             Ok(result)
         }
+        fn validate_snowflake_dml(&self, request: &SnowflakeDmlRequest) -> AppResult<()> {
+            let state = self.runtime_override.lock();
+            let state = state.as_ref().unwrap();
+            if !matches!(&state.transaction_control_authority, Some(TransactionControlAuthority::Observed { revision, .. }) if revision == &request.revision)
+            {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "Stale fixture DML authority",
+                ));
+            }
+            safety::snowflake_dml::compile(
+                &request.sql,
+                Some(&request.parameters),
+                &state.database,
+            )?;
+            Ok(())
+        }
+        async fn snowflake_dml(
+            &self,
+            _session_id: &str,
+            request: &SnowflakeDmlRequest,
+        ) -> AppResult<SnowflakeDmlResult> {
+            self.dml_calls.lock().push(request.clone());
+            let result = self.dml_result.lock().clone().unwrap();
+            if let Some((started, release)) = &self.boundary_barrier {
+                started.notify_one();
+                release.notified().await;
+            }
+            Ok(result)
+        }
         async fn commit_transaction(&self) -> AppResult<()> {
             self.transaction_error
                 .map_or(Ok(()), |code| Err(AppError::new(code, "control failure")))
@@ -5387,7 +5542,7 @@ mod browse_classification_tests {
         let profile = profile(EngineKind::Postgres, SafeMode::ReadOnly);
         let session = Arc::new(Session {
             info: SessionInfo { id: new_id(), connection_id: profile.id.clone(), engine: EngineKind::Postgres, server_version: "fixture".into(), latency_ms: 0, encrypted: false, capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"cancellation":true,"tableBrowsing":false,"relationBrowsing":enabled,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
-            profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), observed_runtime: Mutex::new(None),
+            profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), metadata_gate: Mutex::new(MetadataGate::default()), observed_runtime: Mutex::new(None),
         });
         studio
             .sessions
@@ -5462,11 +5617,13 @@ mod browse_classification_tests {
                 capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"explicitTransactionControls":true,"cancellation":true,"tableBrowsing":false,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
             profile, driver: driver.clone(), lane: tokio::sync::Mutex::new(()),
             cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None),
-            closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), observed_runtime: Mutex::new(None),
+            closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), metadata_gate: Mutex::new(MetadataGate::default()), observed_runtime: Mutex::new(None),
         });
         studio.sessions.lock().insert(id, session.clone());
         (root, studio, driver, session, request)
     }
+
+    include!("execution/snowflake_dml_tests.rs");
 
     #[tokio::test]
     async fn explicit_boundary_policy_review_and_one_use_are_enforced_without_extra_observers() {
@@ -6100,6 +6257,7 @@ mod browse_classification_tests {
                             closed: AtomicBool::new(false),
                             tunnel: None,
                             completion: Mutex::new(None),
+                            metadata_gate: Mutex::new(MetadataGate::default()),
                             observed_runtime: Mutex::new(None),
                         }),
                     );
@@ -6195,6 +6353,7 @@ mod browse_classification_tests {
                 closed: AtomicBool::new(false),
                 tunnel: None,
                 completion: Mutex::new(None),
+                metadata_gate: Mutex::new(MetadataGate::default()),
                 observed_runtime: Mutex::new(None),
             }),
         );
@@ -6385,6 +6544,7 @@ mod browse_classification_tests {
                 closed: AtomicBool::new(false),
                 tunnel: None,
                 completion: Mutex::new(None),
+                metadata_gate: Mutex::new(MetadataGate::default()),
                 observed_runtime: Mutex::new(None),
             }),
         );

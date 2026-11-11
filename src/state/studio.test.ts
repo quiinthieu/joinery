@@ -8,6 +8,7 @@ import type {
   TablePage,
   TableSchema,
   TransactionControlResult,
+  SnowflakeDmlResult,
 } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import {
@@ -2462,4 +2463,150 @@ test("editable query result tracks pending edits in dirtyStore and cleans up whe
 
   useStudio.getState().closeTab(tabId);
   expect(dirtyStore.pendingCountForTab(editableResult.id, [editableResult.id])).toBe(0);
+});
+
+function dmlPlan(): PreparedPlan {
+  return {
+    ...transactionControlPlan(),
+    id: "reviewed-dml",
+    reviewedSnowflakeDml: true,
+    statements: [
+      { sql: "UPDATE DB.PUBLIC.T SET A = 1 WHERE ID = 2", kind: "write", missingWhere: false },
+    ],
+  };
+}
+function dmlResult(overrides: Partial<SnowflakeDmlResult> = {}): SnowflakeDmlResult {
+  return {
+    kind: "update",
+    statementOutcome: "succeeded",
+    summary: { status: "validated", affectedRows: "9007199254740993", multiJoinedRows: "7" },
+    state: boundaryResult().state,
+    retired: false,
+    error: null,
+    ...overrides,
+  };
+}
+
+test("reviewed DML dispatches once, preserves results and exact counts, and holds automatic metadata until explicit refresh", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  const prior = page(schema("prior")).result;
+  useStudio.getState().updateTab(tabId, { results: [prior], activeResultId: prior.id });
+  let resolve!: (value: SnowflakeDmlResult) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise<SnowflakeDmlResult>((done) => {
+      resolve = done;
+    }),
+  );
+  const pending = useStudio.getState().executeSnowflakeDml(dmlPlan(), "approval", tabId);
+  expect(useStudio.getState().tabs.find((tab) => tab.id === tabId)?.status).toBe("running");
+  expect(await useStudio.getState().refreshSessionContexts(session.id)).toBe(false);
+  await expect(useStudio.getState().executeSnowflakeDml(dmlPlan())).rejects.toThrow("finish first");
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("execute_snowflake_dml", {
+    planId: "reviewed-dml",
+    approval: "approval",
+  });
+  resolve(dmlResult());
+  await pending;
+  const tab = useStudio.getState().tabs.find((tab) => tab.id === tabId)!;
+  expect(tab.status).toBe("completed");
+  expect(tab.results).toEqual([prior]);
+  expect(tab.snowflakeDmlResult?.summary.affectedRows).toBe("9007199254740993");
+  expect(useStudio.getState().sessionStates.session).toEqual(dmlResult().state);
+  expect(await useStudio.getState().refreshSessionContexts(session.id)).toBe(false);
+  expect(client.call).toHaveBeenCalledTimes(1);
+  vi.mocked(client.call).mockResolvedValue({
+    state: sdkRuntime(),
+    available: ["public"],
+    revision: "explicit",
+  });
+  expect(await useStudio.getState().refreshSessionContexts(session.id, true)).toBe(true);
+  expect(client.call).toHaveBeenLastCalledWith("session_contexts", {
+    sessionId: session.id,
+    resumeMetadata: true,
+  });
+  expect(useStudio.getState().sessionMetadataRefreshRequired.session).toBe(false);
+});
+
+test("reviewed DML rejects rollback-only and competing queries before invalidating their revisions", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  useStudio.getState().updateTab(tabId, { status: "running" });
+  const revision = useStudio.getState().tabs[0].revision;
+  await expect(useStudio.getState().executeSnowflakeDml(dmlPlan(), null, tabId)).rejects.toThrow(
+    "queries to finish",
+  );
+  expect(useStudio.getState().tabs[0].revision).toBe(revision);
+  useStudio.getState().updateTab(tabId, { status: "idle" });
+  useStudio.setState({
+    sessionStates: {
+      session: {
+        ...sdkRuntime(),
+        transactionControlAuthority: { status: "rollbackOnly", revision: "recovery" },
+      },
+    },
+  });
+  await expect(useStudio.getState().executeSnowflakeDml(dmlPlan(), null, tabId)).rejects.toThrow(
+    "Only rollback recovery",
+  );
+  expect(client.call).not.toHaveBeenCalled();
+});
+
+test("late DML ACK cannot resurrect a retired session or overwrite a repurposed tab", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  let resolve!: (value: SnowflakeDmlResult) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise<SnowflakeDmlResult>((done) => {
+      resolve = done;
+    }),
+  );
+  const pending = useStudio.getState().executeSnowflakeDml(dmlPlan(), null, tabId);
+  useStudio.getState().retireSession(session.id);
+  useStudio.getState().updateTab(tabId, {
+    revision: useStudio.getState().tabs[0].revision + 1,
+    status: "idle",
+    sql: "SELECT later",
+  });
+  const notify = vi.spyOn(useStudio.getState(), "notify");
+  resolve(dmlResult({ retired: true }));
+  expect((await pending).statementOutcome).toBe("succeeded");
+  expect(useStudio.getState().sessions.profile).toBeUndefined();
+  expect(useStudio.getState().sessionStates.session).toBeUndefined();
+  expect(useStudio.getState().tabs[0].status).toBe("idle");
+  expect(useStudio.getState().tabs[0].snowflakeDmlResult).toBeUndefined();
+  expect(notify).toHaveBeenCalledWith(
+    expect.stringContaining("UPDATE succeeded; affected rows 9007199254740993; session retired"),
+  );
+});
+
+test("unknown DML retires without replay and stale query observations cannot replace rollback recovery", async () => {
+  for (const unknown of [false, true]) {
+    useSdkSession();
+    const tabId = useStudio.getState().openQuery("profile");
+    const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)!.revision;
+    const state: SessionRuntimeState = {
+      ...sdkRuntime(),
+      transactionObservation: { status: "unavailable" },
+      transactionControlAuthority: { status: "rollbackOnly", revision: "recovery-dml" },
+    };
+    vi.mocked(client.call).mockResolvedValue(
+      dmlResult({
+        state,
+        statementOutcome: unknown ? "unknown" : "succeeded",
+        summary: { status: "unavailable", affectedRows: null, multiJoinedRows: null },
+      }),
+    );
+    const result = await useStudio.getState().executeSnowflakeDml(dmlPlan(), null, tabId);
+    useStudio
+      .getState()
+      .applyEvents(tabId, [{ type: "sessionState", state: sdkRuntime() }], revision);
+    if (unknown) {
+      expect(result.retired).toBe(true);
+      expect(useStudio.getState().sessions.profile).toBeUndefined();
+    } else expect(useStudio.getState().sessionStates.session).toEqual(state);
+    expect(useStudio.getState().sessionTransactionPending.session).toBeUndefined();
+    useStudio.setState({ tabs: [] });
+  }
+  expect(client.call).toHaveBeenCalledTimes(2);
 });
