@@ -1,8 +1,9 @@
 //! Offline, closed existing-schema qualification definition. This is not an
 //! executable manifest, approval, SQL admission gate, or account runner.
 //!
-//! Only `Plan::generate` creates a plan. There is no caller-selected target,
-//! SQL, transaction, or deserialization entry point. The census-bound expansion
+//! Only `Plan::generate` chooses a fresh target. Internal snapshot restoration
+//! recompiles that same closed definition; there is no caller-selected SQL,
+//! target setter or Plan deserialization entry point. The census-bound expansion
 //! describes exact production-derived SQL order and route-specific rejection
 //! suffixes. Harness-only policy/Studio composition supplies physical admission,
 //! lifecycle observations and durable receipts. Source/binary/private-connection
@@ -113,6 +114,10 @@ pub const DATABASE: &str = "SANDBOX";
 pub const SCHEMA: &str = "BILLIE_TESTING";
 pub const MAX_SCHEMAS: usize = 32;
 pub const PHASE_COUNT: usize = 32;
+// The fixed 32-phase, nine-statement definition fits within 32 KiB. Keep a
+// bounded margin for its production-derived templates; this is not a ledger
+// expansion or an execution-envelope limit. A regression checks the current size.
+pub(crate) const MAX_PLAN_SNAPSHOT_BYTES: usize = 64 * 1024;
 
 fn invalid() -> AppError {
     AppError::invalid("Existing-schema qualification evidence does not match the closed plan")
@@ -678,6 +683,36 @@ impl Plan {
     }
     pub fn sha256(&self) -> AppResult<String> {
         Ok(format!("{:x}", Sha256::digest(self.canonical_json()?)))
+    }
+    /// Restore only an exact closed definition, never execution authority.
+    /// The outer runner must independently bind approval, provenance and one-use
+    /// consumption. RUN is the only parsed value used by the private compiler;
+    /// every input byte must then equal its freshly compiled canonical snapshot.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "Fixed qualification envelope is not yet implemented"
+        )
+    )]
+    pub(crate) fn restore_snapshot(bytes: &[u8], expected_sha256: &str) -> AppResult<Self> {
+        if bytes.is_empty()
+            || bytes.len() > MAX_PLAN_SNAPSHOT_BYTES
+            || expected_sha256.len() != 64
+            || !expected_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(invalid());
+        }
+        let snapshot: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+        let run = snapshot
+            .get("run")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let plan = Self::compile_run(run)?;
+        plan.verify_snapshot(bytes, expected_sha256)?;
+        Ok(plan)
     }
     /// Tamper detection against this in-memory definition, not authentication,
     /// source/runtime binding, execution authority or a loadable manifest.

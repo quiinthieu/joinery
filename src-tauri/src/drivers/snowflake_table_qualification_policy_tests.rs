@@ -103,6 +103,58 @@ fn records(directory: &std::path::Path) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn owning_create_with_restored_plan_pins_exact_identity_in_ledger_and_journal_header() {
+    let original = Plan::generate().unwrap();
+    let bytes = original.canonical_json().unwrap();
+    let hash = original.sha256().unwrap();
+    let restored = Plan::restore_snapshot(&bytes, &hash).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let policy = Policy::create_with_plan(directory.path().to_owned(), profile(), restored)
+        .await
+        .unwrap();
+    assert_eq!(policy.plan().canonical_json().unwrap(), bytes);
+    assert_eq!(policy.plan().run(), original.run());
+    assert_eq!(
+        policy.plan().qualified_target(),
+        original.qualified_target()
+    );
+    assert_eq!(policy.state.lock().sequence.ledger().plan_sha256(), hash);
+    let header = records(directory.path());
+    assert_eq!(header.len(), 1);
+    assert_eq!(header[0]["event"]["planSha256"], hash);
+    let connect = Frame::new(1, "connect", Impact::Control, profile());
+    TransportPolicy::admit(&policy, connect.request())
+        .await
+        .unwrap();
+    assert_eq!(records(directory.path()).len(), 2);
+    assert_eq!(policy.plan().canonical_json().unwrap(), bytes);
+    assert_eq!(policy.state.lock().sequence.ledger().plan_sha256(), hash);
+}
+
+#[tokio::test]
+async fn owning_create_with_plan_rejects_invalid_profiles_before_journal_creation() {
+    for profile in [Value::Null, json!({}), {
+        let mut changed = profile();
+        changed["database"] = json!("OTHER");
+        changed
+    }] {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            Policy::create_with_plan(
+                directory.path().to_owned(),
+                profile,
+                Plan::generate().unwrap()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+}
+
+#[tokio::test]
 async fn owning_admission_syncs_intent_and_prior_original_terminal_before_returning() {
     let (directory, policy) = policy().await;
     let connect = Frame::new(1, "connect", Impact::Control, profile());

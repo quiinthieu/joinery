@@ -255,6 +255,69 @@ fn sequence_completes_only_by_explicit_internal_phase_advancement() {
 }
 
 #[test]
+fn sequence_with_restored_plan_retains_the_exact_closed_definition_and_ledger() {
+    let original = Plan::generate().unwrap();
+    let snapshot = original.canonical_json().unwrap();
+    let hash = original.sha256().unwrap();
+    let restored = Plan::restore_snapshot(&snapshot, &hash).unwrap();
+    let mut h = Harness {
+        seq: Sequencer::with_plan(restored, profile()).unwrap(),
+        wire: 0,
+        ticket: 0,
+    };
+    assert_eq!(h.seq.plan().canonical_json().unwrap(), snapshot);
+    assert_eq!(h.seq.plan().run(), original.run());
+    assert_eq!(h.seq.plan().table(), original.table());
+    assert_eq!(h.seq.ledger().plan_sha256(), hash);
+    assert_eq!(
+        h.seq.ledger().canonical_json().unwrap(),
+        original
+            .expand_physical_ledger(&SchemaCensus::freeze(&[SCHEMA.into()]).unwrap())
+            .unwrap()
+            .canonical_json()
+            .unwrap()
+    );
+    let connect = h.frame("connect", Impact::Control, profile());
+    let admission = h.seq.reserve(&connect.request()).unwrap();
+    assert!(h.finish(&admission, &report()).error().is_none());
+    h.walk_to(|entry| entry.kind() == SqlKind::Ddl(SnowflakeDdlKind::CreateTable));
+    assert_eq!(
+        h.seq.next_entry().unwrap().sql(),
+        original
+            .statement(super::super::StatementId::Create)
+            .wire_sql()
+    );
+    assert_eq!(h.seq.ledger().plan_sha256(), hash);
+    assert_eq!(h.seq.plan().canonical_json().unwrap(), snapshot);
+}
+
+#[test]
+fn sequence_with_plan_preserves_existing_frozen_profile_validation() {
+    let mut invalid_profiles = vec![Value::Null, json!({})];
+    for (field, value) in [
+        ("account", json!("")),
+        ("host", json!("bad\u{0}host")),
+        ("username", json!("x".repeat(1021))),
+        ("role", Value::Null),
+        ("warehouse", json!(1)),
+        ("database", json!("OTHER")),
+        ("schema", json!("OTHER")),
+        ("extra", json!("unexpected")),
+    ] {
+        let mut changed = profile();
+        changed[field] = value;
+        invalid_profiles.push(changed);
+    }
+    let mut missing = profile();
+    missing.as_object_mut().unwrap().remove("username");
+    invalid_profiles.push(missing);
+    for profile in invalid_profiles {
+        assert!(Sequencer::new(profile.clone()).is_err());
+        assert!(Sequencer::with_plan(Plan::generate().unwrap(), profile).is_err());
+    }
+}
+
+#[test]
 fn sequence_requires_connect_once_before_sql_and_exact_frozen_profile() {
     let mut h = Harness {
         seq: Sequencer::new(profile()).unwrap(),

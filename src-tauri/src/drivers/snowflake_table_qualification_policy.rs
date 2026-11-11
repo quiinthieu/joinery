@@ -199,7 +199,17 @@ impl Drop for Interrupted {
 
 impl Policy {
     pub(super) async fn create(directory: PathBuf, frozen_profile: Value) -> AppResult<Self> {
-        let sequence = Sequencer::new(frozen_profile)?;
+        Self::create_with_plan(directory, frozen_profile, Plan::generate()?).await
+    }
+
+    /// Pin the caller's verified closed definition before journal creation.
+    /// This supplies neither approval nor the still-required execution envelope.
+    pub(super) async fn create_with_plan(
+        directory: PathBuf,
+        frozen_profile: Value,
+        plan: Plan,
+    ) -> AppResult<Self> {
+        let sequence = Sequencer::with_plan(plan, frozen_profile)?;
         let lifecycle = Lifecycle::new(sequence.plan());
         let hash = sequence.plan().sha256()?;
         let journal = tokio::task::spawn_blocking(move || Journal::create(&directory, &hash))

@@ -286,6 +286,131 @@ fn deterministic_snapshot_hash_detects_byte_digest_and_plan_substitution() {
     assert!(plan.verify_snapshot(&tampered, &recomputed).is_err());
 }
 
+#[test]
+fn closed_snapshot_restore_preserves_original_run_target_sql_and_expanded_ledger() {
+    for original in [plan(), Plan::generate().unwrap()] {
+        let bytes = original.canonical_json().unwrap();
+        // The restore limit is deliberately bounded, with room above the
+        // current fixed definition rather than above an expanded SQL ledger.
+        assert!(bytes.len() <= MAX_PLAN_SNAPSHOT_BYTES / 2);
+        let digest = original.sha256().unwrap();
+        let restored = Plan::restore_snapshot(&bytes, &digest).unwrap();
+        assert_eq!(restored.run(), original.run());
+        assert_eq!(restored.table(), original.table());
+        assert_eq!(restored.qualified_target(), original.qualified_target());
+        assert_eq!(restored.canonical_json().unwrap(), bytes);
+        assert_eq!(restored.sha256().unwrap(), digest);
+        for (actual, expected) in restored.statements().iter().zip(original.statements()) {
+            assert_eq!(actual.id(), expected.id());
+            assert_eq!(actual.source_sql(), expected.source_sql());
+            assert_eq!(actual.wire_sql(), expected.wire_sql());
+            assert!(actual.binds().is_empty());
+        }
+        for count in [1, 32] {
+            let census = census(count);
+            let expected = original.expand_physical_ledger(&census).unwrap();
+            let actual = restored.expand_physical_ledger(&census).unwrap();
+            assert_eq!(actual.plan_sha256(), digest);
+            assert_eq!(
+                actual.canonical_json().unwrap(),
+                expected.canonical_json().unwrap()
+            );
+            assert_eq!(actual.entries().len(), 386 + 7 * count);
+        }
+    }
+}
+
+#[test]
+fn closed_snapshot_restore_rejects_size_syntax_duplicate_keys_and_noncanonical_bytes() {
+    let original = plan();
+    let bytes = original.canonical_json().unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let mut missing_run = value.clone();
+    missing_run.as_object_mut().unwrap().remove("run");
+    let mut duplicate_run = bytes.clone();
+    duplicate_run.splice(1..1, format!("\"run\":\"{RUN}\",").bytes());
+    let mut newline = bytes.clone();
+    newline.push(b'\n');
+    let mut leading_space = vec![b' '];
+    leading_space.extend_from_slice(&bytes);
+    for invalid_bytes in [
+        vec![],
+        vec![b' '; MAX_PLAN_SNAPSHOT_BYTES + 1],
+        b"{".to_vec(),
+        vec![0xff],
+        b"null".to_vec(),
+        b"[]".to_vec(),
+        b"{}".to_vec(),
+        b"{\"run\":12}".to_vec(),
+        serde_json::to_vec(&missing_run).unwrap(),
+        duplicate_run,
+        serde_json::to_vec_pretty(&value).unwrap(),
+        newline,
+        leading_space,
+    ] {
+        let recomputed = format!("{:x}", Sha256::digest(&invalid_bytes));
+        assert!(Plan::restore_snapshot(&invalid_bytes, &recomputed).is_err());
+    }
+    for digest in [
+        "0".repeat(64),
+        original.sha256().unwrap().to_ascii_uppercase(),
+        "g".repeat(64),
+        "a".repeat(63),
+        "a".repeat(65),
+        String::new(),
+    ] {
+        assert!(Plan::restore_snapshot(&bytes, &digest).is_err());
+    }
+}
+
+#[test]
+fn closed_snapshot_restore_rejects_rehashed_run_target_sql_and_policy_tampering() {
+    // Mutate typed test copies so serialization retains canonical struct key
+    // order. Rejection must depend on the changed definition, not sorted Value
+    // keys incidentally differing from the canonical Plan encoding.
+    let mutations: [fn(&mut Plan); 13] = [
+        |p| p.run = "00000000000000000000000000000000".into(),
+        |p| p.run = "0123456789abcdef0123456789abcdef".into(),
+        |p| p.run = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF".into(),
+        |p| p.database = "OTHER",
+        |p| p.schema = "OTHER",
+        |p| p.table = "EXISTING_TABLE".into(),
+        |p| p.qualified_target = "SANDBOX.BILLIE_TESTING.EXISTING_TABLE".into(),
+        |p| p.statements[0].source_sql = "CREATE DATABASE OTHER".into(),
+        |p| p.statements[1].wire_sql = "DROP DATABASE OTHER".into(),
+        |p| p.phases[0].budget.fixed = 3,
+        |p| p.max_schemas = 33,
+        |p| p.metadata.bounds.qualification_schema_cap = 33,
+        |p| {
+            p.limits
+                .source_binary_runtime_private_connection_envelope_missing = false
+        },
+    ];
+    for (index, mutate) in mutations.into_iter().enumerate() {
+        let mut changed = plan();
+        mutate(&mut changed);
+        let bytes = changed.canonical_json().unwrap();
+        let recomputed = format!("{:x}", Sha256::digest(&bytes));
+        assert!(
+            Plan::restore_snapshot(&bytes, &recomputed).is_err(),
+            "mutation {index}"
+        );
+    }
+    let original = String::from_utf8(plan().canonical_json().unwrap()).unwrap();
+    for changed in [
+        original.replacen("\"binds\":[]", "\"binds\":[\"unexpected\"]", 1),
+        original.replacen(
+            "OnlyActiveFrozenReadOnlyPostObserverSuffix",
+            "AllowReplay",
+            1,
+        ),
+    ] {
+        assert_ne!(changed, original);
+        let recomputed = format!("{:x}", Sha256::digest(changed.as_bytes()));
+        assert!(Plan::restore_snapshot(changed.as_bytes(), &recomputed).is_err());
+    }
+}
+
 fn ledger_tag(kind: SqlKind) -> &'static str {
     use metadata::ReadKind::*;
     match kind {

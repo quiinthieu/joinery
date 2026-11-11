@@ -184,6 +184,11 @@ pub(crate) struct Sequencer {
 
 impl Sequencer {
     pub(crate) fn new(profile: Value) -> AppResult<Self> {
+        Self::with_plan(Plan::generate()?, profile)
+    }
+    /// The supplied closed definition is retained exactly. This constructor
+    /// verifies the frozen profile; it supplies no execution/approval authority.
+    pub(crate) fn with_plan(plan: Plan, profile: Value) -> AppResult<Self> {
         let fields = [
             "account",
             "host",
@@ -206,7 +211,6 @@ impl Sequencer {
         {
             return Err(denied());
         }
-        let plan = Plan::generate()?;
         let ledger = plan.expand_physical_ledger(&SchemaCensus::freeze(&[SCHEMA.into()])?)?;
         Ok(Self {
             plan,
