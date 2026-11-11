@@ -35,6 +35,53 @@ Snowflake's [numeric limits](https://docs.snowflake.com/en/sql-reference/data-ty
 and [DROP semantics](https://docs.snowflake.com/en/sql-reference/sql/drop-table)
 were verified against current official documentation.
 
+## Integration prerequisites identified in review
+
+The 11 November source review found three dependencies that must precede an
+enabled application workflow:
+
+- **One coherent DDL grant.** Existing metadata operations revoke transaction
+  grants before and inside the serialized adapter lane. Independently obtained
+  browse and transaction revisions cannot be combined as DDL authority. Collect
+  bounded target/catalog evidence and coherent idle context under one owning
+  lane, bind them to the structured action, canonical SQL, all three identifier
+  components, principal/session, revision and expiry, then consume once. Recheck
+  target evidence and a final idle sample before dispatch. The existing session
+  sample already checks quoted-case policy; DDL additionally requires AUTOCOMMIT
+  true, no observed transaction and unrestricted authority. DML's allowance for
+  open transactions and its rollback-only recovery are not DDL policy.
+- **A catalog-specific hold.** The current boolean metadata hold can clear after
+  runtime/options observations alone. DDL needs a hold kind/revision that clears
+  only after successful explicit bounded catalog reconciliation plus a coherent
+  idle observation. Capture the held revision before waiting; an older queued
+  refresh must never clear a newer hold. Denial or incomplete inspection retains
+  the hold. Preserve command acknowledgement independently of reconciliation.
+- **A dedicated typed UI/execution route.** The existing table dialog calls
+  generic SQL execution, automatically refreshes catalog and can select a primary
+  session. Its SDK branch must use the exact owning browser session, strict new
+  recursively closed DTOs, an independent default-false opt-in, one-use review,
+  retained DDL acknowledgement, tracked execution ownership/history and explicit
+  reconciliation. Broad `ddlEditing` stays false. The fixed disposable-setup
+  operation is not this route and grants no application authority.
+
+Implement in dependent groups: contracts/policy and helper/adapter transport;
+composite preflight authority; Studio execution/history/hold reconciliation;
+then the constrained table dialog and typed IPC registration. Each enabled
+operation needs compiler, adapter, Studio, actual pinned-SDK loopback and browser
+coverage, including pre/post-ACK close, dropped waiter, shutdown, policy/catalog
+drift, failed reconciliation and old-refresh/new-hold races. Declare its complete
+observer/catalog SQL budget before account qualification; the existing eleven-SQL
+DML cadence does not cover DDL target qualification.
+
+Current constraints are `NotFetched`, and a visible catalog snapshot cannot prove
+complete visibility, dependency absence or immutable identity. Define bounded
+qualification for supported table kind, schema eligibility and required metadata;
+deny unknown evidence. A preflight name-absence sample is advisory and does not
+replace CREATE's collision error. Names, catalog UUIDs and timestamp comparisons
+do not eliminate concurrent replacement or temporary shadowing. Preserve the
+dedicated disposable-schema/no-concurrent-actors qualification boundary and
+explicit warnings. Broader schema tools remain required after this increment.
+
 ## Database contract and first workflow
 
 Snowflake DDL has its own transaction semantics. Each DDL statement executes as
