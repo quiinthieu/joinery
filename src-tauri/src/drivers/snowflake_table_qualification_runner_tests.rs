@@ -409,7 +409,33 @@ impl OfflineHarness {
             }
             _ => Value::Null,
         };
-        let sdk_fault = if child_exit.is_null() {
+        // These closed row transformations exercise real parsing/callbacks. The
+        // injection point is derived from the same closed ledger, not SQL input.
+        let drift_point = match fault["kind"].as_str() {
+            Some("censusOverflow" | "censusReversed") => Some((2, 6)),
+            Some("censusBeforeCreate") => Some((3, 6)),
+            Some("censusCatalog") => Some((4, 14)),
+            Some("contextRoleBeforePin" | "contextWarehouseBeforePin") => Some((2, 1)),
+            Some("contextSecondaryRoles" | "contextSearchPath") => Some((4, 1)),
+            _ => None,
+        };
+        let drift = if let Some((phase, ordinal)) = drift_point {
+            let names = std::iter::once(SCHEMA.to_owned())
+                .chain((2..=schema_count).map(|n| format!("S{n:02}")))
+                .collect::<Vec<_>>();
+            let ledger = plan
+                .expand_physical_ledger(&SchemaCensus::freeze(&names).unwrap())
+                .unwrap();
+            let index = ledger
+                .entries()
+                .iter()
+                .position(|entry| entry.phase() == phase && entry.phase_ordinal() == ordinal)
+                .unwrap();
+            json!({"kind":fault["kind"],"at":index+1,"sql":ledger.entries()[index].sql()})
+        } else {
+            Value::Null
+        };
+        let sdk_fault = if child_exit.is_null() && drift.is_null() {
             fault
         } else {
             Value::Null
@@ -418,8 +444,10 @@ impl OfflineHarness {
         let wrapper = format!(
             r#"import {{makeSdk}} from '../../lifecycle-sdk.mjs';
 import {{appendFileSync}} from 'node:fs';
+import {{Readable}} from 'node:stream';
 const options={options};
 const childExit={child_exit};
+const drift={drift};
 const append=(name,value)=>appendFileSync(new URL('../../'+name,import.meta.url),JSON.stringify(value)+'\n');
 const sdk=makeSdk({{...options,log:sql=>append('queries',sql)}});
 if (childExit !== null) {{
@@ -446,6 +474,54 @@ if (childExit !== null) {{
       }}
       request.complete(error,statement);
     }}}});
+    return connection;
+  }};
+}}
+if (drift !== null) {{
+  const create=sdk.createConnection.bind(sdk);
+  sdk.createConnection=profile=>{{
+    const connection=create(profile);
+    const execute=connection.execute.bind(connection);
+    let ordinal=0;
+    connection.execute=request=>{{
+      const current=++ordinal;
+      if (current === drift.at && request.sqlText !== drift.sql)
+        throw Error('Synthetic drift point disagrees with closed ledger');
+      const selected=request.sqlText === drift.sql && (current === drift.at ||
+        drift.kind.startsWith('context') && current > drift.at);
+      return execute({{...request,complete:(error,statement)=>{{
+        if (!error && selected) {{
+          const stream=statement.streamRows.bind(statement);
+          statement.streamRows=()=>Readable.from((async function* () {{
+            const before=[];
+            for await (const row of stream()) before.push([...row]);
+            const rows=before.map(row=>[...row]);
+            const names=statement.getColumns().map(column=>column.getName());
+            if (drift.kind === 'censusOverflow') rows.push(['SANDBOX','S33']);
+            else if (drift.kind === 'censusReversed') rows.reverse();
+            else if (drift.kind === 'censusBeforeCreate' || drift.kind === 'censusCatalog') {{
+              if (rows.length !== 2 || rows[1][1] !== 'S02')
+                throw Error('Synthetic census swap requires its two-schema baseline');
+              rows[1][1]='S03';
+            }} else {{
+              if (rows.length !== 1) throw Error('Synthetic context drift requires one row');
+              const field=drift.kind === 'contextRoleBeforePin' ? 'ROLE_NAME' :
+                drift.kind === 'contextWarehouseBeforePin' ? 'WAREHOUSE_NAME' :
+                drift.kind === 'contextSecondaryRoles' ? 'SECONDARY_ROLES' : 'SEARCH_PATH';
+              const index=names.indexOf(field);
+              if (index < 0) throw Error('Synthetic context field is missing');
+              rows[0][index]=drift.kind === 'contextRoleBeforePin' ? 'OTHER_ROLE' :
+                drift.kind === 'contextWarehouseBeforePin' ? 'OTHER_WAREHOUSE' :
+                drift.kind === 'contextSecondaryRoles' ? JSON.stringify({{roles:'EXTRA_ROLE',value:'ALL'}}) :
+                JSON.stringify(['SANDBOX.BILLIE_TESTING','SANDBOX.S02']);
+            }}
+            append('drift-events',{{kind:drift.kind,ordinal:current,sql:request.sqlText,names,before,after:rows}});
+            yield* rows;
+          }})());
+        }}
+        request.complete(error,statement);
+      }}}});
+    }};
     return connection;
   }};
 }}
@@ -1340,6 +1416,225 @@ async fn qualification_studio_runner_child_exit_after_ack_preserves_success_for_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn qualification_studio_runner_observer_failures_retain_all_seven_mutation_acks() {
     mutation_failures("observerMismatch").await;
+}
+
+async fn drift_failure(kind: &str, schemas: usize, phase: u8, stop_ordinal: u16) {
+    let receipt = start(schemas, json!({"kind":kind})).await.unwrap();
+    let completion = assert_stopped_at(&receipt, phase);
+    assert!(receipt.persisted.is_err());
+    assert_eq!(completion["status"], "failed");
+    assert_eq!(completion["original"]["events"], json!([]));
+    let original_error = &receipt.failure.as_ref().unwrap().1;
+    assert_eq!(original_error.code, ErrorCode::InvalidInput);
+    assert_eq!(
+        completion["original"]["error"],
+        serde_json::to_value(original_error).unwrap()
+    );
+    assert_eq!(receipt.outputs.len(), usize::from(phase - 1));
+
+    let names = std::iter::once(SCHEMA.to_owned())
+        .chain((2..=schemas).map(|n| format!("S{n:02}")))
+        .collect::<Vec<_>>();
+    let ledger = receipt
+        .harness
+        .plan
+        .expand_physical_ledger(&SchemaCensus::freeze(&names).unwrap())
+        .unwrap();
+    let stop = ledger
+        .entries()
+        .iter()
+        .position(|entry| entry.phase() == phase && entry.phase_ordinal() == stop_ordinal)
+        .unwrap();
+    assert_eq!(
+        receipt.queries,
+        ledger.entries()[..=stop]
+            .iter()
+            .map(|entry| entry.sql().to_owned())
+            .collect::<Vec<_>>(),
+        "drift must stop at its first rejecting callback: {kind}"
+    );
+    assert!(
+        !receipt
+            .queries
+            .iter()
+            .any(|sql| sql.starts_with("ALTER TABLE ") || sql.starts_with("DROP TABLE "))
+    );
+    assert!(
+        receipt
+            .journal
+            .iter()
+            .all(|record| record["event"]["report"]["certainty"] != "OutcomeUnknown")
+    );
+    let frozen = receipt
+        .journal
+        .iter()
+        .filter(|record| record["event"]["type"] == "frozenLedger")
+        .count();
+    assert_eq!(frozen, usize::from(phase > 2));
+    let read_reports = receipt
+        .journal
+        .iter()
+        .filter(|record| {
+            record["event"]["admission"]["kind"]["sql"]["ordinal"]
+                == ledger.entries()[stop].ordinal()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(read_reports.len(), 1);
+    assert_eq!(read_reports[0]["event"]["report"]["ok"], true);
+    assert!(read_reports[0]["event"]["report"]["retirement"].is_null());
+
+    // Reconciliation drift cannot retroactively erase or downgrade the original
+    // CREATE. Earlier failures must never fabricate a mutation or unknown ACK.
+    assert_eq!(
+        receipt
+            .queries
+            .iter()
+            .filter(|sql| sql.starts_with("CREATE TABLE "))
+            .count(),
+        usize::from(phase == 4)
+    );
+    let creates = receipt
+        .journal
+        .iter()
+        .filter(|record| {
+            record["event"]["type"] == "operationCompletion"
+                && record["event"]["phase"] == 3
+                && record["event"]["completion"]["status"] == "returned"
+        })
+        .collect::<Vec<_>>();
+    if phase == 4 {
+        assert_eq!(creates.len(), 1);
+        let original = receipt.outputs[2].evidence().record().unwrap();
+        assert_eq!(creates[0]["event"]["completion"]["original"], original);
+        assert_eq!(original["value"]["statementOutcome"], "succeeded");
+        assert_eq!(original["value"]["retired"], false);
+        assert!(original["value"]["error"].is_null());
+        let acks = receipt
+            .journal
+            .iter()
+            .filter(|record| !record["event"]["report"]["ddlAcknowledged"].is_null())
+            .collect::<Vec<_>>();
+        assert_eq!(acks.len(), 1);
+        let report = &acks[0]["event"]["report"];
+        assert_eq!(report["ok"], true);
+        assert_eq!(report["certainty"], "StatementSucceeded");
+        let ack = &report["ddlAcknowledged"]["statement"];
+        assert!(ack["sdkRequestId"].as_str().is_some_and(|v| !v.is_empty()));
+        assert!(ack["queryId"].as_str().is_some_and(|v| !v.is_empty()));
+        assert_eq!(report["statements"].as_array().unwrap().len(), 1);
+        assert_eq!(&report["statements"][0], ack);
+    } else {
+        assert!(creates.is_empty());
+        assert!(
+            receipt
+                .journal
+                .iter()
+                .all(|record| record["event"]["report"]["ddlAcknowledged"].is_null())
+        );
+    }
+
+    let markers = fs::read_to_string(receipt.harness.fixture.controls.join("drift-events"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        markers.len(),
+        1,
+        "unexercised or repeated drift injection: {kind}"
+    );
+    let marker = &markers[0];
+    assert_eq!(marker["kind"], kind);
+    let injection_ordinal = if kind.starts_with("context") {
+        1
+    } else {
+        stop_ordinal
+    };
+    let injection = ledger
+        .entries()
+        .iter()
+        .find(|entry| entry.phase() == phase && entry.phase_ordinal() == injection_ordinal)
+        .unwrap();
+    assert_eq!(marker["ordinal"], injection.ordinal());
+    assert_eq!(marker["sql"], injection.sql());
+    let before = marker["before"].as_array().unwrap();
+    let after = marker["after"].as_array().unwrap();
+    assert_ne!(before, after);
+    if kind.starts_with("census") {
+        let baseline = names
+            .iter()
+            .map(|name| json!(["SANDBOX", name]))
+            .collect::<Vec<_>>();
+        assert_eq!(before, &baseline);
+        let mut expected = baseline;
+        match kind {
+            "censusOverflow" => {
+                assert_eq!(schemas, 32);
+                expected.push(json!(["SANDBOX", "S33"]));
+                assert_eq!(after.len(), 33);
+            }
+            "censusReversed" => expected.reverse(),
+            "censusBeforeCreate" | "censusCatalog" => {
+                assert_eq!(schemas, 2);
+                expected[1][1] = json!("S03");
+            }
+            _ => unreachable!("closed census case"),
+        }
+        assert_eq!(after, &expected);
+    } else {
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        let field = match kind {
+            "contextRoleBeforePin" => "ROLE_NAME",
+            "contextWarehouseBeforePin" => "WAREHOUSE_NAME",
+            "contextSecondaryRoles" => "SECONDARY_ROLES",
+            "contextSearchPath" => "SEARCH_PATH",
+            _ => unreachable!("closed context case"),
+        };
+        let column = marker["names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|name| name.as_str() == Some(field))
+            .unwrap();
+        let mut expected = before[0].as_array().unwrap().clone();
+        expected[column] = match kind {
+            "contextRoleBeforePin" => json!("OTHER_ROLE"),
+            "contextWarehouseBeforePin" => json!("OTHER_WAREHOUSE"),
+            "contextSecondaryRoles" => json!(r#"{"roles":"EXTRA_ROLE","value":"ALL"}"#),
+            "contextSearchPath" => json!(r#"["SANDBOX.BILLIE_TESTING","SANDBOX.S02"]"#),
+            _ => unreachable!("closed context case"),
+        };
+        assert_eq!(after[0], json!(expected));
+        // All other fields, including bootstrap principal/server-session, stay
+        // unchanged; these are coherent valid context rows, not parse failures.
+        assert_eq!(before[0][0], "SERVER_USER");
+        assert_eq!(before[0][5], "SESSION");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_drift_rejects_initial_census_overflow_and_wire_order() {
+    drift_failure("censusOverflow", 32, 2, 6).await;
+    drift_failure("censusReversed", 2, 2, 6).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_drift_stops_before_create_and_catalog_dependencies() {
+    drift_failure("censusBeforeCreate", 2, 3, 6).await;
+    drift_failure("censusCatalog", 2, 4, 14).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_drift_rejects_role_and_warehouse_before_first_pin() {
+    drift_failure("contextRoleBeforePin", 2, 2, 6).await;
+    drift_failure("contextWarehouseBeforePin", 2, 2, 6).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_drift_rejects_secondary_roles_and_search_path_after_pin() {
+    drift_failure("contextSecondaryRoles", 2, 4, 6).await;
+    drift_failure("contextSearchPath", 2, 4, 6).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
