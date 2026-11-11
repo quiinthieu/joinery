@@ -8,6 +8,200 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Internal qualification attachments (11 November 2026)
+
+Implementation commits: `e74e65a` (transport), `dd93739` (metadata), and
+`7c5d469` (shared failure/publication), unmerged and unpublished.
+
+The [attachment contract](snowflake-qualification-attachments.md) describes the
+implemented boundary. This increment has no account connection, SQL, executable
+approval, private profile access or desktop entry. Normal connections supply no
+attachment. The closed SQL ledger, execution envelope, durable journal and fixed
+account runner remain required.
+
+The shared failure latch now reaches both physical transport and metadata
+publication. Physical admission occurs outside the process mutex, with policy
+and ownership rechecks on each physical write poll after contention or pipe
+backpressure. Zero accepted bytes remains `NotSubmitted`; partial delivery stays
+`OutcomeUnknown`. Counter-task settlement and actual child/private-root cleanup
+are separate receipts. Original acknowledged mutation outcomes are preserved.
+
+The final Studio check occurs after configuration, attempt-registry and session-map
+lock waits. It rejects both shared policy failure and an exited driver before
+insertion. A rejected publication retains the attempt until its owner closes the
+driver. Metadata checks similarly follow cache/authority lock waits, with a final
+successful-read check; mutation-specific ACK mappings remain separate.
+
+| Check | Result and evidence scope |
+| --- | --- |
+| Transport races before fix | **0/2**, both expected failures reproduced: mutex contention after admission and revocation after a pending zero/partial write. `qualification-transport-final-policy-red.log` |
+| Final transport focus | **13/13**, actual pipe/frame bounds, synthetic Node child lifecycle and controlled write polls. Includes unstarted disposal, live task settlement, cancellation/target replacement and known DML ACK retention. `qualification-transport-final.log` |
+| Existing process regression | **28/28**, `qualification-transport-existing-process.log` |
+| Metadata publication before fix | **0/3**, expected failures reproduced for catalog snapshot, transaction grant and successful-read return after rejection. `qualification-metadata-publication-red.log` |
+| Final metadata focus | **13/13**, `qualification-metadata-final.log`: ten adapter workflow cases, two direct publication/wrapper seam cases after real-helper setup/sample, and one pure attachment unit. The 12 adapter cases use a handwritten launcher importing production `helper.mjs`/framing with a synthetic SDK; they do not launch production `main.mjs` |
+| Existing mutation ACK regression | **4/4**, DML, DDL, TX and schema-switch cases. `qualification-metadata-ack-regressions.log` |
+| Studio publication before fix | **0/2**, both expected failures reproduced: late policy rejection and actual owned-helper TERM/reap still returned a published session. The red tests explicitly close any wrongly published session. `qualification-studio-publication-red.log` |
+| Final Studio focus | **8/8**, serial run, 119.50 seconds. Production main/helper through Studio with a synthetic SDK; startup denial, metadata rejection, physical stderr overflow and cross-domain revocation, late policy/child exit, unstarted zero counters and settled/reaped/private-root cleanup. `qualification-studio-final.log` |
+| Independent final source review | No outstanding material findings. Tier 2 generation `2026-11-11T11:55:12Z`, 13 exact evidence paths best-effort `metadata_match`/`no_recorded_issue`, plus fresh direct source checks. Seven core source hashes remain identical after canonical formatting. Reviewer ran no tests, build or account activity |
+
+Commands use pinned Rust 1.99.1 and Node 24.22.2, with explicit
+`JOINERY_TEST_NODE` for actual-helper fixtures:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib qualification_transport -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib qualification_metadata -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib qualification_studio_ -- --nocapture --test-threads=1
+```
+
+All logs are under `.cache/verification/connection-attempts/`. An initial metadata
+fixture compile found an omitted schema-switch argument and was corrected before
+its focused pass. Root's first green attempt failed compilation because its new
+registry unit named the existing shutdown method incorrectly
+(`qualification-studio-focused.log`). After that correction, a parallel focused
+run passed 6/8 but failed one helper startup and the stderr test
+(`qualification-studio-focused-rerun.log`). The latter used
+`process.stderr.write`, which production main deliberately silences. Its corrected
+disposable SDK fixture writes directly to fd 2 and waits for independently drained
+physical overflow; it does not require the counter task to run before connection
+setup returns. The generic startup failure's cause was not established. All eight
+passed in the final serial run without changing production startup deadlines.
+Failed runs are not counted as passing qualification.
+
+The first broad validation (`qualification-attachments-validate.log`) passed
+**679 frontend / 464 standard Rust tests**, with **129 fixture tests ignored**,
+then failed strict Clippy on five test-only findings: three recorder field types
+and two lock guards that Clippy treated as live across an await. Named tuple
+aliases and lexical guard scopes resolve them without lint allowances. The two
+test files are the only differences between the initial snapshot and
+`qualification-attachments-source-final.json`; the transition is recorded in
+`qualification-attachments-lint-transition.json`. Production source is unchanged.
+
+The first combined 44-case run then passed **43/44** in 178.36 seconds
+(`qualification-attachments-focused-final.log`). Its helper-exit coordination
+thread timed out waiting for setup. An isolated diagnostic rerun reproduced the
+failure: the real connection later reached the publication hook, whose send then
+failed because that ten-second receiver had already timed out
+(`qualification-studio-exit-diagnostic.log`, 0/1). The corrected tests wait on a
+channel owned by the setup lifetime; early connection failure drops the sender.
+They retain bounded post-hook resume/cleanup waits and unchanged production
+deadlines. Failure assertions now include the connection result and numeric
+transport report. This is a third test-file-only source transition, recorded in
+`qualification-attachments-final-transition.json`.
+
+The corrected combined run passes **44/44** in 191.13 seconds
+(`qualification-attachments-focused-final-rerun.log`). Independent review
+confirmed the final channel ownership and unchanged production deadlines.
+The next broad validation stopped on the existing PostgreSQL protocol test's
+three-second identity-dispatch wait, before cancellation had begun
+(`tests/postgres_protocol.rs:121`, suite 7 passed/1 failed/1 ignored). Its exact
+unchanged rerun passes 1/1 in 2.34 seconds
+(`qualification-attachments-postgres-cancellation-repro.log`). The cause remains
+unresolved; this is not a confirmed pre-existing defect or a passing broad run.
+The sequential driver overwrote that broad log when restarted; the preserved
+result and explicitly labelled terminal excerpt are
+`qualification-attachments-broad-first-results.json` and
+`qualification-attachments-validate-intermittent-excerpt.json`.
+Independent read-only diagnosis found no deterministic publication regression:
+the fixture withholds the identity response, so setup cannot reach publication.
+It identified unconditionally synchronous native certificate loading before TCP
+connection, even with TLS disabled, as an unmeasured timing candidate. The pinned
+loader accesses macOS trust settings synchronously. This remains an actionable
+follow-up, not a demonstrated cause of the failed run.
+
+Final unchanged-source `pnpm validate` passes (250.52 seconds): **679 frontend /
+464 standard Rust tests**, with **129 fixture tests ignored**, formatting,
+generated contracts/types, frontend build, desktop check and strict all-target /
+all-feature Clippy. Receipt: `qualification-attachments-validate-final.log`.
+The prior failed readiness wait remains recorded above rather than being erased
+by the successful rerun.
+
+Further current-source regression checks pass: **63/63** adapter-internal cases,
+**32/32** adapter integration cases, **4/4** normal Studio startup/cancellation
+cases without attachments, and **43/43** against the actual isolated PostgreSQL
+18 fixture on `127.0.0.1:56432`. Logs are respectively
+`qualification-attachments-{adapter-internal,adapter-external,normal-studio,postgres}.log`;
+the sequential commands, exits and elapsed times are retained in
+`qualification-attachments-broad-results.json`. The adapter integration includes
+synthetic million-row driver/store/CSV coverage, which does not establish account
+million-row performance. Counts overlap the focused suite and must not be added
+to claim distinct tests. All external-browser helper cases here use synthetic
+SDK/local data, not a Snowflake account.
+
+The first browser selection could not launch any case because the expected
+Chromium headless shell was absent from Playwright's default cache. Its failed
+launch log and isolated trace archive are retained as
+`qualification-attachments-browser.log` and
+`qualification-attachments-browser-launch-failure.tar.gz`. No UI behavior is
+qualified by that run. The browser is installed under the repository-only
+`.cache/playwright-attachments`, selected with `PLAYWRIGHT_BROWSERS_PATH`; no
+user browser profile or global configuration is modified.
+
+The corrected browser run passes **24/24** in 40.4 seconds
+(`qualification-attachments-browser-final.log`), using headless Chromium
+156.0.8078.4 / Playwright shell revision 1248. It exercises connection deletion
+and persistence, PostgreSQL attempt cancellation, Snowflake authentication
+profile persistence, and synthetic-RPC SDK browsing, reviewed DDL/DML,
+transactions, schema selection and session-state workflows. The browser is real;
+the Snowflake RPC responses are synthetic and do not establish helper/account
+effects. The isolated PostgreSQL fixture was removed with its task-owned volume
+and network; ports 1421/1422/56432 are free and the unrelated inventory database
+remains running (`qualification-attachments-postgres-cleanup.log`).
+
+Fresh SDK-enabled hidden native build and **3/3 smoke runs** pass, each with ten
+cleanup cycles. Receipts are `qualification-attachments-native-{build,runs}.log`
+and the separately retained `qualification-attachments-native-{build,runs}.json`.
+The copied executable SHA-256 is
+`1d39bd7ad772d99ec4bbbe6e67fba156cbe45936593a86917170d2d704c62d83`;
+the isolated signed smoke-bundle binary is
+`56cb0b636b3eaff36e5b982f7c8692757c7499d131e8386d7339c4130b3024de`.
+The build records source revision `7c5d469` and tree `92d8ffd033ddbc260fca0abe8bb26855d836290b`;
+`sourceDirty=true` reflects the documentation-only worktree. All 437 frozen
+source/config/test inputs still match after the build. Runs execute the copied
+hidden test binary, not the normal application bundle. They do not qualify
+fully cold visible startup, total application memory, display FPS, normal
+packaged SSO or representative account workloads.
+
+The fresh normal SDK-enabled macOS arm64 bundle also passes
+`pnpm desktop:snowflake:bundle:mac`
+(`qualification-attachments-normal-bundle.log`). It is runnable locally at
+`src-tauri/target/release/bundle/macos/Joinery.app`, uninstalled and unreleased.
+Strict ad-hoc signature verification, SDK package/resource verification and
+guarded offline Node/helper startup pass; the startup receipt reports **zero
+authentication and SQL requests**. SDK 3.4.1 resource manifest SHA-256 remains
+`dd08932407ed6a540379dc5711a464fa51600498196a8637af671e23ea9256a0`,
+with 15,107 resource entries and zero symlinks in the normal bundle.
+Developer ID, notarization and normal packaged SSO/restart remain unqualified.
+
+Normal signed binary SHA-256:
+`1319a2699248acff64de5d16958870677014dd12387b4a8ae69f8bd5774a8b0d`.
+The final complete-file manifest SHA-256 is
+`ba0cc4b730b7fdad3f663ffa97f52b301e3d9ae26313abceb881612db129d4b4`
+(`qualification-attachments-normal-bundle-files.json`): 13,053 regular files,
+zero symlinks, 240,227,767 logical bytes / 229.10 MiB. Tauri's earlier build
+display reports 224.90 MiB; these are recorded as separate measurements.
+`qualification-attachments-normal-bundle-artifact.json` binds those receipts to
+source `7c5d469`, its tree, and the unchanged final 437-input manifest. The only
+working paths at artifact capture were the seven documentation files.
+
+The recurring nonfatal `ts-rs` attribute, frontend chunk-size and pinned
+`rust-objcopy` missing-LLVM stripping warnings remain in the logs. No global
+configuration or toolchain was changed to hide them. No account activity,
+installation, push, merge, deployment or publication occurred. The private
+project hub was left unchanged under the local-only/no-publication scope.
+
+The pre-validation source manifest `qualification-attachments-source.json` freezes
+**437** source/config/test inputs, SHA-256
+`e376117b2808cc78c439a4be96bbf11e88ab0e456f3b726b6fc2797d300c6cda`.
+The lint-only 437-input snapshot has SHA-256
+`84f40fadf2f619ad1390c36bcb0dfe70df0f13e77e821f121a4c413b35788566`.
+The final `qualification-attachments-qualified-source.json` also freezes 437
+inputs, SHA-256
+`32070d2e6c78517e2723041d890292e0c9eb37fe73c37f7d070685b88186ae02`.
+Documentation is outside that compiled-input manifest. This source snapshot and
+focused evidence do not establish complete route qualification, normal packaged
+SSO, real Snowflake effects, million-row account performance or DataGrip parity.
+The Goal remains active and incomplete.
+
 ### Mutation receipt recovery and offline lifecycle definition (11 November 2026)
 
 Implementation commits: `b06f030` (shared receipt recovery and regression coverage)

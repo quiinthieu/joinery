@@ -1,5 +1,31 @@
 # Implementation and release status
 
+## Qualification plumbing (11 November 2026, local integration)
+
+The [internal qualification attachments](snowflake-qualification-attachments.md)
+provide physical admission/resource accounting, validated census/marker observers,
+shared failure rejection and connection/metadata publication checks. Focused
+checks pass 13 transport, 13 metadata and eight Studio cases; existing process
+and mutation-ACK regressions pass. Seven publication/write timing regressions
+reproduced before their fixes. Final source review has no outstanding material
+finding. See the [ledger](replacement-verification.md) for complete validation,
+failed runs and fixture scope.
+
+Code commits are `e74e65a`, `dd93739` and `7c5d469`. Final validation passes
+**679 frontend / 464 standard Rust tests**, with **129 fixture tests ignored**;
+separate checks pass **44 qualification**, **63 adapter-internal**, **32 adapter
+integration**, **4 normal Studio**, **43 real PostgreSQL**, **24 browser** and
+**3 hidden native** cases/runs. These counts overlap. A fresh normal macOS bundle
+passes ad-hoc signature, SDK resource and offline helper-startup checks. One
+intermittent PostgreSQL readiness timeout and its unchanged passing reruns remain
+documented; no live account or replacement-readiness inference follows.
+
+This is harness-only plumbing with no desktop command. It does not implement the
+closed SQL ledger, source/runtime-bound envelope, durable journal or fixed account
+runner. No account activity occurred. Real Snowflake effects, normal packaged
+SSO, million-row results, complete DataGrip workflows and owner acceptance remain
+open; the Goal stays active and incomplete. Nothing is shipped or installed.
+
 ## Retained mutation outcomes (11 November 2026, local integration)
 
 Commits `b06f030` and `3039975` repair local outcome recording across SDK DDL,

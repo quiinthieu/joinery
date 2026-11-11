@@ -29,6 +29,13 @@ explicit opt-in before a query runs, has bounded disk use, and preserves the
 memory-only default. Its common-store PostgreSQL qualification does not establish
 Snowflake connector performance or replacement readiness.
 
+The next account lifecycle is being prepared for a fresh table under the
+owner-permitted `SANDBOX.BILLIE_TESTING`. The earlier database-creation approval
+was consumed by its rejected attempt and must not be replayed. The new
+[qualification attachments](snowflake-qualification-attachments.md) are internal
+plumbing, not a runnable user command. The fixed runner, reviewed executable plan
+and possible-billing approval remain prerequisites to that account walkthrough.
+
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 
 Keep an existing profile ReadOnly unless deliberately evaluating boundary controls

@@ -1,5 +1,36 @@
 # Joinery implementation roadmap
 
+## Qualification attachments (11 November 2026)
+
+Implemented the [internal attachment contract](snowflake-qualification-attachments.md):
+asynchronous physical-request admission, bounded raw pipe/frame accounting,
+validated wire-order census and creation-marker observations, cross-domain
+failure latching, and post-lock publication checks through Studio. Focused
+transport/metadata/Studio checks pass 13/13/8 respectively; seven new timing
+regressions reproduced before repair. Independent final source review has no
+outstanding material finding. Full validation and current source/artifact scope
+are recorded in the [ledger](replacement-verification.md).
+
+These hooks are not the qualification policy. Continue with the exact physical
+SQL/phase ledger and exported bootstrap definitions, lifecycle census/marker
+enforcement, private source/runtime/profile envelope and durable one-use journal,
+then the fixed production-route runner. Qualify complete 393/610-execution routes
+and failure suffixes locally before preparing any new account approval request.
+The permitted target remains one fresh table in `SANDBOX.BILLIE_TESTING`.
+
+All remaining DataGrip workflow gaps, normal packaged account behavior,
+million-row account performance, installation/signing and hands-on acceptance
+remain required. The Goal is active and incomplete; nothing is pushed, merged,
+published or installed.
+
+One bounded reliability follow-up remains from broad validation: PostgreSQL
+currently loads native trust roots synchronously even for `TlsMode::Disable`.
+Avoid that unnecessary work and prove disabled TLS never invokes the loader,
+while preserving VerifyFull native/custom roots and hostname rejection. One
+existing protocol readiness wait timed out and passed unchanged in isolation;
+certificate loading is a plausible, unmeasured contributor, not an established
+cause. Keep readiness diagnosis separate from cancellation/EOF deadlines.
+
 ## Receipt recovery and qualification definition (11 November 2026)
 
 Implemented and independently reviewed in `b06f030` / `3039975`: shared original

@@ -1,5 +1,32 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Internal qualification plumbing (11 November 2026)
+
+The [attachment contract](snowflake-qualification-attachments.md) now implements
+the transport/metadata seams needed for existing-schema qualification. This is
+internal test infrastructure, with no desktop entry or account approval.
+
+| Capability | Implemented and locally verified | Remaining gate |
+| --- | --- | --- |
+| Physical admission and bounded pipe accounting | 13 transport cases; both write-boundary races reproduced before repair; 28 existing process regressions pass | Exact production SQL/phase ledger and durable intent policy |
+| Validated census/creation-marker observations and publication rejection | 13 metadata cases plus four existing ACK regressions; three publication failures reproduced before repair | Frozen lifecycle census/identity enforcement and complete route qualification |
+| Shared failure, qualified startup/publication and cleanup | Eight Studio cases through production main/helper with a synthetic SDK; both late-publication defects reproduced before repair | Source/runtime/private-profile envelope, journal and fixed runner |
+| Existing-schema account lifecycle | Offline definition only, targeting a fresh table under `SANDBOX.BILLIE_TESTING` | Executable reviewed plan, fresh possible-billing approval and actual account effects |
+
+The metadata cases import production helper/framing through a test launcher;
+they do not all launch production `main.mjs`. These local fixtures establish no
+live Snowflake write, transaction, DDL or million-row result capability. Broader
+DataGrip functionality and owner acceptance remain required. Final combined
+validation and source/artifact scope are recorded in the
+[verification ledger](replacement-verification.md).
+
+Current combined validation passes 679 frontend / 464 standard Rust tests
+(129 fixture tests ignored). Additional checks include 43 actual PostgreSQL,
+24 browser workflows and three hidden native runs, plus a freshly verified
+normal ad-hoc macOS bundle. The ledger distinguishes overlapping test counts,
+an intermittent readiness failure, synthetic Snowflake RPCs and offline-only
+SDK startup from account behavior. None closes the required live workflow gates.
+
 ## Mutation receipt recovery (11 November 2026, local verification)
 
 Commits `b06f030` and `3039975` add shared retained SDK DDL/DML/transaction
