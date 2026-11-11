@@ -4,8 +4,9 @@
 //! Only `Plan::generate` creates a plan. There is no caller-selected target,
 //! SQL, transaction, or deserialization entry point. The census-bound expansion
 //! describes exact production-derived SQL order and route-specific rejection
-//! suffixes. Physical admission enforcement, lifecycle observations, source/
-//! binary/private-connection binding and durable receipts still need integration.
+//! suffixes. Harness-only policy/Studio composition supplies physical admission,
+//! lifecycle observations and durable receipts. Source/binary/private-connection
+//! binding and an authorized account entry remain separate, unfinished gates.
 
 #[cfg_attr(
     not(test),
@@ -91,12 +92,12 @@ use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snow
 use crate::{
     domain::{
         AppError, AppResult, ColumnInfo, ColumnKind, DatabaseObjectKind, DatabaseObjectRef,
-        ExplicitTransactionAction, SessionContextKind, SessionRuntimeState, SnowflakeDdlKind,
-        SnowflakeDdlOutcome, SnowflakeDdlResult, SnowflakeDdlSummaryStatus, SnowflakeDmlKind,
-        SnowflakeDmlOutcome, SnowflakeDmlResult, SnowflakeDmlSummaryStatus, TableColumnDraft,
-        TableObjectAction, TableRef, TextRow, TransactionBoundaryOutcome,
-        TransactionControlAuthority, TransactionControlResult, TransactionMode,
-        TransactionObservation, TransactionState,
+        ExplicitTransactionAction, SessionContextKind, SessionRuntimeState, SnowflakeDdlAction,
+        SnowflakeDdlColumnDraft, SnowflakeDdlKind, SnowflakeDdlOutcome, SnowflakeDdlResult,
+        SnowflakeDdlSummaryStatus, SnowflakeDmlKind, SnowflakeDmlOutcome, SnowflakeDmlResult,
+        SnowflakeDmlSummaryStatus, TableColumnDraft, TableObjectAction, TableRef, TextRow,
+        TransactionBoundaryOutcome, TransactionControlAuthority, TransactionControlResult,
+        TransactionMode, TransactionObservation, TransactionState,
     },
     params::TypedBind,
     relation_inspection::{
@@ -442,41 +443,9 @@ impl Plan {
             metadata::quote_identifier(SCHEMA)?,
             metadata::quote_identifier(&table)?
         );
-        let actions = [
-            (
-                StatementId::Create,
-                TableObjectAction::CreateTable {
-                    table: target.clone(),
-                    columns: vec![
-                        column("ID", "NUMBER(38,0)"),
-                        column("NOTE", "VARCHAR(128)"),
-                        column("ACTIVE", "BOOLEAN"),
-                    ],
-                    comment: None,
-                },
-            ),
-            (
-                StatementId::Add,
-                TableObjectAction::AddColumn {
-                    table: target.clone(),
-                    column: column("EXTRA", "VARCHAR(32)"),
-                },
-            ),
-            (
-                StatementId::Drop,
-                TableObjectAction::DropObject {
-                    object: DatabaseObjectRef {
-                        schema: SCHEMA.into(),
-                        name: table.clone(),
-                        kind: DatabaseObjectKind::Table,
-                        identity: None,
-                    },
-                    cascade: false,
-                },
-            ),
-        ];
         let mut statements = Vec::new();
-        for (id, action) in actions {
+        for id in [StatementId::Create, StatementId::Add, StatementId::Drop] {
+            let action = fixed_ddl_action(id, target.clone())?;
             let canonical = snowflake_ddl::compile(&action, DATABASE)?;
             if canonical.qualified_target()
                 != &[DATABASE.to_string(), SCHEMA.to_string(), table.clone()]
@@ -610,6 +579,99 @@ impl Plan {
             .iter()
             .find(|statement| statement.id == id)
             .expect("closed statement ID")
+    }
+
+    /// Build only this plan's three fixed DDL actions. The runner must supply
+    /// its retained, Policy-validated phase 6/7 evidence for ADD and phase 28
+    /// evidence for DROP. DTOs alone cannot authenticate their provenance or
+    /// distinguish a coherent old pair from current observations. The adapter
+    /// still checks live revision authority during preflight and execution.
+    /// CREATE's fresh-name absence is checked by its actual preflight, not here.
+    pub fn ddl_action(
+        &self,
+        id: StatementId,
+        catalog: Option<&BrowseCatalog>,
+        inspection: Option<&RelationInspection>,
+    ) -> AppResult<SnowflakeDdlAction> {
+        let target = TableRef {
+            schema: SCHEMA.into(),
+            name: self.table.clone(),
+        };
+        let fixed = fixed_ddl_action(id, target)?;
+        let relation = match id {
+            StatementId::Create if catalog.is_none() && inspection.is_none() => None,
+            StatementId::Add | StatementId::Drop => {
+                let catalog = catalog.ok_or_else(invalid)?;
+                self.validate_catalog_identity(
+                    Presence::Present,
+                    catalog,
+                    &catalog.identity.role,
+                    catalog
+                        .identity
+                        .context_fingerprint
+                        .as_deref()
+                        .ok_or_else(invalid)?,
+                )?;
+                let relation = catalog
+                    .relations
+                    .iter()
+                    .find(|relation| {
+                        relation.database == DATABASE
+                            && relation.table.schema == SCHEMA
+                            && relation.table.name == self.table
+                    })
+                    .ok_or_else(invalid)?;
+                // A target token must identify exactly this catalog member.
+                if catalog
+                    .relations
+                    .iter()
+                    .filter(|other| other.target_id == relation.target_id)
+                    .count()
+                    != 1
+                {
+                    return Err(invalid());
+                }
+                match (id, inspection) {
+                    (StatementId::Add, Some(inspection)) => {
+                        self.validate_inspection(Shape::ThreeNullableColumns, inspection)?;
+                        if inspection.target_id != relation.target_id {
+                            return Err(invalid());
+                        }
+                    }
+                    (StatementId::Drop, None) => {}
+                    _ => return Err(invalid()),
+                }
+                Some((catalog, relation))
+            }
+            _ => return Err(invalid()),
+        };
+        match fixed {
+            TableObjectAction::CreateTable { table, columns, .. } => {
+                Ok(SnowflakeDdlAction::CreateTable {
+                    database: DATABASE.into(),
+                    schema: table.schema,
+                    name: table.name,
+                    columns: columns.into_iter().map(ddl_column).collect(),
+                })
+            }
+            TableObjectAction::AddColumn { column, .. } => {
+                let (catalog, relation) = relation.ok_or_else(invalid)?;
+                Ok(SnowflakeDdlAction::AddColumn {
+                    browse_revision: catalog.revision.clone(),
+                    target_id: relation.target_id.clone(),
+                    inspection_revision: inspection.ok_or_else(invalid)?.revision.clone(),
+                    column: ddl_column(column),
+                })
+            }
+            TableObjectAction::DropObject { .. } => {
+                let (catalog, relation) = relation.ok_or_else(invalid)?;
+                Ok(SnowflakeDdlAction::DropTable {
+                    browse_revision: catalog.revision.clone(),
+                    target_id: relation.target_id.clone(),
+                })
+            }
+            _ => Err(invalid()),
+        }
     }
     pub fn canonical_json(&self) -> AppResult<Vec<u8>> {
         serde_json::to_vec(self).map_err(|_| invalid())
@@ -1027,6 +1089,42 @@ impl Readback {
             return Err(invalid());
         }
         Ok(None)
+    }
+}
+
+fn fixed_ddl_action(id: StatementId, table: TableRef) -> AppResult<TableObjectAction> {
+    match id {
+        StatementId::Create => Ok(TableObjectAction::CreateTable {
+            table,
+            columns: vec![
+                column("ID", "NUMBER(38,0)"),
+                column("NOTE", "VARCHAR(128)"),
+                column("ACTIVE", "BOOLEAN"),
+            ],
+            comment: None,
+        }),
+        StatementId::Add => Ok(TableObjectAction::AddColumn {
+            table,
+            column: column("EXTRA", "VARCHAR(32)"),
+        }),
+        StatementId::Drop => Ok(TableObjectAction::DropObject {
+            object: DatabaseObjectRef {
+                schema: table.schema,
+                name: table.name,
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+            cascade: false,
+        }),
+        _ => Err(invalid()),
+    }
+}
+
+fn ddl_column(column: TableColumnDraft) -> SnowflakeDdlColumnDraft {
+    SnowflakeDdlColumnDraft {
+        name: column.name,
+        data_type: column.data_type,
+        nullable: column.nullable,
     }
 }
 

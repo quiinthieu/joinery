@@ -937,6 +937,276 @@ fn inspection() -> RelationInspection {
     }
 }
 
+fn ddl_factory_evidence() -> (BrowseCatalog, RelationInspection) {
+    let plan = plan();
+    let initial = runtime();
+    let catalog = BrowseCatalog {
+        revision: "catalog-revision".into(),
+        database: DATABASE.into(),
+        identity: CompletionIdentity {
+            database: DATABASE.into(),
+            role: "ROLE".into(),
+            search_path: initial.search_path,
+            case_sensitive_table_names: Some(true),
+            context_fingerprint: initial.context_fingerprint,
+        },
+        relations: vec![
+            template_relation(TableRef {
+                schema: SCHEMA.into(),
+                name: plan.table().into(),
+            })
+            .summary("new-target".into()),
+        ],
+    };
+    let mut inspection = inspection();
+    inspection.columns.pop();
+    (catalog, inspection)
+}
+
+// Resolve the emitted typed action exactly as a catalog-owning adapter does,
+// then run the production DDL compiler rather than rendering SQL in this test.
+fn compile_factory_action(action: &SnowflakeDdlAction, catalog: &BrowseCatalog) -> String {
+    let resolve = |target_id: &str| {
+        catalog
+            .relations
+            .iter()
+            .find(|relation| relation.target_id == target_id)
+            .unwrap()
+            .table
+            .clone()
+    };
+    let action = match action {
+        SnowflakeDdlAction::CreateTable {
+            database,
+            schema,
+            name,
+            columns,
+        } => {
+            assert_eq!(database, DATABASE);
+            TableObjectAction::CreateTable {
+                table: TableRef {
+                    schema: schema.clone(),
+                    name: name.clone(),
+                },
+                columns: columns
+                    .iter()
+                    .map(SnowflakeDdlColumnDraft::to_table_column_draft)
+                    .collect(),
+                comment: None,
+            }
+        }
+        SnowflakeDdlAction::AddColumn {
+            target_id, column, ..
+        } => TableObjectAction::AddColumn {
+            table: resolve(target_id),
+            column: column.to_table_column_draft(),
+        },
+        SnowflakeDdlAction::DropTable { target_id, .. } => {
+            let table = resolve(target_id);
+            TableObjectAction::DropObject {
+                object: DatabaseObjectRef {
+                    schema: table.schema,
+                    name: table.name,
+                    kind: DatabaseObjectKind::Table,
+                    identity: None,
+                },
+                cascade: false,
+            }
+        }
+    };
+    snowflake_ddl::compile(&action, DATABASE)
+        .unwrap()
+        .sql()
+        .into()
+}
+
+#[test]
+fn ddl_factory_actions_compile_to_exact_frozen_ddl_and_bind_observed_tokens() {
+    let plan = plan();
+    let (catalog, inspection) = ddl_factory_evidence();
+    let create = plan.ddl_action(StatementId::Create, None, None).unwrap();
+    assert_eq!(
+        create,
+        SnowflakeDdlAction::CreateTable {
+            database: DATABASE.into(),
+            schema: SCHEMA.into(),
+            name: plan.table().into(),
+            columns: [
+                ("ID", "NUMBER(38,0)"),
+                ("NOTE", "VARCHAR(128)"),
+                ("ACTIVE", "BOOLEAN"),
+            ]
+            .map(|(name, data_type)| SnowflakeDdlColumnDraft {
+                name: name.into(),
+                data_type: data_type.into(),
+                nullable: true,
+            })
+            .into(),
+        }
+    );
+    let add = plan
+        .ddl_action(StatementId::Add, Some(&catalog), Some(&inspection))
+        .unwrap();
+    assert_eq!(
+        add,
+        SnowflakeDdlAction::AddColumn {
+            browse_revision: catalog.revision.clone(),
+            target_id: inspection.target_id.clone(),
+            inspection_revision: inspection.revision.clone(),
+            column: SnowflakeDdlColumnDraft {
+                name: "EXTRA".into(),
+                data_type: "VARCHAR(32)".into(),
+                nullable: true,
+            },
+        }
+    );
+    let drop = plan
+        .ddl_action(StatementId::Drop, Some(&catalog), None)
+        .unwrap();
+    assert_eq!(
+        drop,
+        SnowflakeDdlAction::DropTable {
+            browse_revision: catalog.revision.clone(),
+            target_id: catalog.relations[0].target_id.clone(),
+        }
+    );
+    for (id, action) in [
+        (StatementId::Create, create),
+        (StatementId::Add, add),
+        (StatementId::Drop, drop),
+    ] {
+        assert_eq!(
+            compile_factory_action(&action, &catalog),
+            plan.statement(id).source_sql()
+        );
+        assert_eq!(
+            plan.statement(id).source_sql(),
+            plan.statement(id).wire_sql()
+        );
+        assert!(plan.statement(id).binds().is_empty());
+    }
+}
+
+#[test]
+fn ddl_factory_rejects_non_ddl_ids_and_missing_or_extraneous_evidence() {
+    let plan = plan();
+    let (catalog, inspection) = ddl_factory_evidence();
+    for id in [
+        StatementId::RollbackInsert,
+        StatementId::CommittedInsert,
+        StatementId::Update,
+        StatementId::Delete,
+        StatementId::OwnershipRead,
+        StatementId::DataRead,
+    ] {
+        assert!(plan.ddl_action(id, None, None).is_err());
+        assert!(
+            plan.ddl_action(id, Some(&catalog), Some(&inspection))
+                .is_err()
+        );
+    }
+    for (id, catalog, inspection) in [
+        (StatementId::Create, Some(&catalog), None),
+        (StatementId::Create, None, Some(&inspection)),
+        (StatementId::Create, Some(&catalog), Some(&inspection)),
+        (StatementId::Add, None, None),
+        (StatementId::Add, None, Some(&inspection)),
+        (StatementId::Add, Some(&catalog), None),
+        (StatementId::Drop, None, None),
+        (StatementId::Drop, None, Some(&inspection)),
+        (StatementId::Drop, Some(&catalog), Some(&inspection)),
+    ] {
+        assert!(plan.ddl_action(id, catalog, inspection).is_err());
+    }
+}
+
+#[test]
+fn ddl_factory_rejects_invalid_catalog_identity_target_and_eligibility() {
+    let plan = plan();
+    let (catalog, inspection) = ddl_factory_evidence();
+    let mutations: [fn(&mut BrowseCatalog); 14] = [
+        |value| value.revision.clear(),
+        |value| value.database = "OTHER".into(),
+        |value| value.identity.database = "OTHER".into(),
+        |value| value.identity.role.clear(),
+        |value| value.identity.context_fingerprint = None,
+        |value| value.identity.context_fingerprint = Some(String::new()),
+        |value| value.relations[0].target_id.clear(),
+        |value| value.relations[0].table.name = "EXISTING_TABLE".into(),
+        |value| value.relations[0].table_type = "VIEW".into(),
+        |value| value.relations[0].traits.temporary = Some(true),
+        |value| value.relations[0].traits.transient = None,
+        |value| value.relations[0].availability = RelationAvailability::Shadowed,
+        |value| value.relations.push(value.relations[0].clone()),
+        |value| {
+            let mut other = value.relations[0].clone();
+            other.table.name = "EXISTING_TABLE".into();
+            value.relations.push(other);
+        },
+    ];
+    for mutate in mutations {
+        let mut invalid = catalog.clone();
+        mutate(&mut invalid);
+        assert!(
+            plan.ddl_action(StatementId::Add, Some(&invalid), Some(&inspection))
+                .is_err()
+        );
+        assert!(
+            plan.ddl_action(StatementId::Drop, Some(&invalid), None)
+                .is_err()
+        );
+    }
+    for transient in [false, true] {
+        let mut valid = catalog.clone();
+        valid.relations[0].traits.transient = Some(transient);
+        assert!(
+            plan.ddl_action(StatementId::Add, Some(&valid), Some(&inspection))
+                .is_ok()
+        );
+        assert!(
+            plan.ddl_action(StatementId::Drop, Some(&valid), None)
+                .is_ok()
+        );
+    }
+}
+
+#[test]
+fn ddl_factory_rejects_unassociated_stale_inspection_and_wrong_lifecycle_shape() {
+    let plan = plan();
+    let (catalog, observed_inspection) = ddl_factory_evidence();
+    let mutations: [fn(&mut RelationInspection); 6] = [
+        |value| value.revision.clear(),
+        |value| value.target_id = "old-catalog-target".into(),
+        |value| value.database = "OTHER".into(),
+        |value| value.table.name = "EXISTING_TABLE".into(),
+        |value| value.columns[1].nullable = false,
+        |value| value.columns[0].identity.is_identity = Some(true),
+    ];
+    for mutate in mutations {
+        let mut invalid = observed_inspection.clone();
+        mutate(&mut invalid);
+        assert!(
+            plan.ddl_action(StatementId::Add, Some(&catalog), Some(&invalid))
+                .is_err()
+        );
+    }
+    assert!(
+        plan.ddl_action(StatementId::Add, Some(&catalog), Some(&inspection()))
+            .is_err()
+    );
+    let mut newer_catalog = catalog;
+    newer_catalog.revision = "newer-catalog-revision".into();
+    newer_catalog.relations[0].target_id = "newer-catalog-target".into();
+    assert!(
+        plan.ddl_action(
+            StatementId::Add,
+            Some(&newer_catalog),
+            Some(&observed_inspection)
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn inspection_and_catalog_validators_only_accept_new_plain_exact_shape_target() {
     let plan = plan();
