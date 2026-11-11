@@ -29,12 +29,21 @@ all remaining applicable DataGrip capabilities remain required gaps.
 The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
 The separate helper-only runner implements a fixed 28-SQL ledger with three
 CREATEs, permanent one-use consumption and private acknowledgement receipts.
-Its final local qualification and exact owner-private execution plan precede any
-new execution/billing request; no setup has executed. The
+One owner-approved attempt for plan
+`60844de7e1a65152c4adbfd8dd4d708ccc14873fe06445f0eed85fdd9560658a` ran at
+05:41:35.426 UTC on 11 November 2026: external-browser SSO and steps 1–7
+(startup identity/version and the initial five-observation idle `AUTOCOMMIT`
+sample) succeeded and validated, and step 8 (`CREATE TRANSIENT DATABASE`)
+received a definitive database rejection (`remoteOutcome: rejected`); the runner
+stopped immediately without admitting steps 9–28, switching roles, falling back
+to the configured database/schema, or retrying, and permanently consumed the
+one-use approval and run token. The
 [DDL design](snowflake-sdk-ddl-design.md) has a locally verified pure generator
 (11 tests), without an application execution route. A separate million-row
-helper/driver/store/CSV bridge passes with a synthetic SDK; actual Snowflake
-performance and complete account workflows remain unqualified.
+helper/driver/store/CSV bridge passes with a synthetic SDK, and a separate
+actual-SDK `3.4.1` loopback test streams 1,000,000 exact rows across 100
+gzip-compressed chunks (`2/2` pass, including cancellation after 128 rows);
+actual Snowflake performance and complete account workflows remain unqualified.
 The Goal remains active and incomplete; nothing is merged, published or installed.
 
 ## Recorded transaction increment (10 November 2026, source `929ae06`)

@@ -1,9 +1,19 @@
 # Disposable Snowflake acceptance setup
 
-Prepared 11 November 2026 at the owner's request. **No account
-connection, SQL, object creation or cleanup has been executed or authorized.**
-The prior read approvals are consumed. This setup does not grant write, DDL,
-transaction, interruption or billing permission.
+Prepared 11 November 2026 at the owner's request. **One owner-approved attempt
+for plan `60844de7e1a65152c4adbfd8dd4d708ccc14873fe06445f0eed85fdd9560658a`
+ran at 11 November 2026 05:41:35.426 UTC and stopped at step 8
+(`create.database`) with a definitive database rejection (`remoteOutcome:
+rejected`, `terminalErrorCode: database`).** Steps 1–7 (`startup.identity`,
+`startup.version`, and the five `before.*` session/context observations)
+succeeded and validated on the owner's external-browser SSO connection; no
+later statement (steps 9–28, including `CREATE SCHEMA` and `CREATE TABLE`) was
+admitted or dispatched, no fallback to the existing configured database/schema
+was attempted, and no retry ran. Both the plan hash and run token are
+permanently consumed. See the
+[verification ledger](replacement-verification.md#approved-disposable-setup-attempt-11-november-2026).
+The prior read approvals and this setup approval are consumed; they grant no
+write, DDL, transaction, interruption or further billing permission.
 
 Use the existing external-browser connection and its configured role and
 warehouse. Create a fresh transient database named `JOINERY_ACCEPTANCE_<RUN>`,

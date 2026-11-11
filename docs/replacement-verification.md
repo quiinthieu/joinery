@@ -8,6 +8,88 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Approved disposable setup attempt (11 November 2026)
+
+The owner explicitly approved one helper-direct disposable setup attempt for
+execution plan `60844de7e1a65152c4adbfd8dd4d708ccc14873fe06445f0eed85fdd9560658a`,
+ledger `83458feb13d79f8829fe0b87d02f93cc14f1c179136dd71dc9e26d2a8ffe5a25`,
+runtime manifest `16b1aa4ea0ed0e3435570fc098d6a6aee56b831dfa2697ef7b72327370378da4`,
+inside the 11 November 2026 03:57:48.859 UTC through 12 November 2026 03:57:48.859 UTC
+window, including external-browser SSO, up to 28 fixed SQL statements (three
+CREATEs), and possible billing.
+
+The single attempt completed at **11 November 2026 05:41:35.426 UTC** with
+**qualification failed** (`failureCode: setupHelperOperationFailed`). Steps 1–7
+succeeded and validated on the owner's actual external-browser SSO connection:
+`startup.identity`, `startup.version`, `before.context`,
+`before.quotedIdentifierPolicy`, `before.autocommit`, `before.abortOnError` and
+`before.transaction` (confirming idle `AUTOCOMMIT=true` and
+`QUOTED_IDENTIFIERS_IGNORE_CASE=false` before the first DDL statement). Step 8
+(`create.database`, `CREATE TRANSIENT DATABASE "JOINERY_ACCEPTANCE_<RUN>" ...`)
+received a definitive database rejection before acknowledgement
+(`remoteOutcome: rejected`, `terminalErrorCode: database`,
+`validationStatus: failed`). No later ledger statement (steps 9–28, including
+`CREATE SCHEMA` and `CREATE TABLE`) was admitted or dispatched. As required by
+the [disposable setup contract](snowflake-disposable-setup.md), the runner did
+not switch roles, grant privileges, retry, or fall back to the existing
+configured database/schema.
+
+Upon the step 8 failure, the helper retired immediately (`stop()`), stdio closed
+and the child exited with code 0 and was reaped (`childReaped: true`,
+`closeObserved: true`; `logoutAcknowledged: false` because helper retirement on
+setup failure destroys the connection and exits directly without waiting for a
+separate close RPC reply). No `SIGTERM`, `SIGKILL` or cancellation was needed.
+The original temporary authentication root identity was confirmed and removed
+(`rootIdentityConfirmed: true`, `stateRemoved: true`), all pinned source and
+runtime hashes revalidated (`sourceRevalidated: true`), and both the private
+hash-chained journal and runner-confirmed receipt (`finalizationStatus:
+runnerConfirmed`, `evidencePersisted: true`) persisted cleanly (`52` inbound
+frames, `12,410` inbound bytes, `0` stderr bytes).
+
+Safe log: `.cache/verification/connection-attempts/setup-owner-attempt.log` and
+preflight `.cache/verification/connection-attempts/setup-owner-approved-preflight.log`.
+Both permanent consumption markers (`setup-consumed-plan-*` and
+`setup-consumed-run-*`), the private journal and the private result remain under
+`.cache/snowflake-qualification`; no profile, object names, session/query IDs,
+tokens or raw diagnostics are committed. **Approval and the generated run token
+are permanently consumed; no retry was attempted.** Creating an isolated
+disposable target requires either a role with `CREATE DATABASE` privilege or an
+administrator-provisioned disposable database/schema and a new exact plan and
+approval. Actual account writes, DDL and transaction effects remain unqualified.
+
+### Actual-SDK million-row gzip chunk streaming (11 November 2026)
+
+New helper tests `snowflake-helper/test/sdk-large-result-probe.mjs` and
+`snowflake-helper/test/sdk-large-result.test.mjs` pass **2/2 in 9.47 seconds**
+with pinned Node 24.22.2 (`--expose-gc --max-old-space-size=256`) and installed
+`snowflake-sdk` `3.4.1` against an owned loopback HTTP server using synthetic
+OAuth and lazily generated 10,000-row gzip-compressed storage chunks
+(`content-encoding: gzip`, comma-separated JSON row fragments). Non-loopback
+socket connections are denied (`actualNetworkDenied: 0`).
+
+- **`million` scenario:** Streams all **1,000,000 rows** across **100 gzip
+  chunks** (`5,966,624` compressed bytes / `124,006,438` uncompressed bytes) and
+  verifies every row's exact 38-digit integer above 2^53, signed 38-digit
+  decimal, quoted/newline/Unicode text and `null`/empty strings. Default SDK
+  chunk prefetch is preserved (`chunksBeforeStream: 0`; pausing at row 128
+  observes `pausedChunkRequests: 3` and `pausedReadableLength: 10` within
+  `rowHighWaterMark: 10`). Sampled peak RSS for the SDK and in-process lazy
+  chunk server combined is `304,414,720` bytes (~290.31 MiB; `maxRSS` `297,280`
+  KiB) and peak `heapUsed` is `96,917,112` bytes (~92.43 MiB), returning to
+  `27,877,592` bytes (~26.59 MiB) after cleanup and GC.
+- **`cancel` scenario:** Pauses at row 128 (`3` chunk requests), destroys the
+  local row stream and calls `statement.cancel()`, observing `1` synthetic abort
+  request and zero additional chunk downloads (`chunksAfterCancel: 3`,
+  `consumedRows: 128`).
+- Independent review (`setup_runtime_review`) found no material issues. Log
+  `.cache/verification/connection-attempts/sdk-million-chunks-final.log`.
+- Reproduce: `.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node --test
+  snowflake-helper/test/sdk-large-result.test.mjs`. This qualifies local SDK
+  chunk decompression, backpressure and stream-destroy behavior only; remote
+  Snowflake cloud-storage chunk URLs, external-browser SSO, remote cancellation
+  disposition, natural SDK process exit without explicit child exit, and end-to-end
+  packaged-application memory bounds remain unqualified.
+
 ### Disposable setup runner (11 November 2026, offline qualification)
 
 At the owner's request, prepared a separate helper-only setup workflow. It has
