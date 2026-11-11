@@ -1302,3 +1302,7 @@ fn phases() -> Vec<Phase> {
 #[cfg(test)]
 #[path = "snowflake_table_qualification_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "snowflake_table_qualification_runner_tests.rs"]
+mod runner_tests;

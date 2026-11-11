@@ -205,6 +205,292 @@ async fn owning_cancelled_admission_latches_failure_while_blocking_sync_is_outst
     assert!(policy.state.lock().pending.is_empty());
 }
 
+fn original_ddl_ack() -> crate::domain::SnowflakeDdlResult {
+    use crate::domain::*;
+    SnowflakeDdlResult {
+        kind: SnowflakeDdlKind::CreateTable,
+        qualified_target: "\"SANDBOX\".\"BILLIE_TESTING\".\"ORIGINAL_TARGET\"".into(),
+        statement_outcome: SnowflakeDdlOutcome::Succeeded,
+        summary_status: SnowflakeDdlSummaryStatus::Acknowledged,
+        catalog_reconciliation_required: true,
+        state: SessionRuntimeState {
+            session_id: "original-console".into(),
+            transaction_mode: TransactionMode::AutoCommit,
+            transaction_state: TransactionState::Idle,
+            context_kind: SessionContextKind::Schema,
+            active_context: Some(SCHEMA.into()),
+            database: "SANDBOX".into(),
+            role: Some("QUALIFICATION".into()),
+            search_path: vec!["SANDBOX.BILLIE_TESTING".into()],
+            context_fingerprint: Some("original-fingerprint".into()),
+            transaction_observation: Some(TransactionObservation::Observed {
+                transaction_id: None,
+                abort_on_error: true,
+                usability: TransactionUsability::Unknown,
+            }),
+            transaction_control_authority: Some(TransactionControlAuthority::Observed {
+                revision: "original-authority".into(),
+                allowed_actions: vec![
+                    ExplicitTransactionAction::Begin,
+                    ExplicitTransactionAction::Rollback,
+                ],
+            }),
+        },
+        retired: true,
+        error: Some(AppError::internal("original post-ACK retirement")),
+    }
+}
+
+fn completion_records(directory: &std::path::Path) -> Vec<Value> {
+    records(directory)
+        .into_iter()
+        .map(|record| record["event"].clone())
+        .filter(|event| event["type"] == "operationCompletion")
+        .collect()
+}
+
+#[tokio::test]
+async fn owning_completion_syncs_original_ack_and_prior_report_after_observer_failure() {
+    let (directory, policy) = policy().await;
+    let connect = Frame::new(1, "connect", Impact::Control, profile());
+    TransportPolicy::admit(&policy, connect.request())
+        .await
+        .unwrap();
+    TransportPolicy::terminal(&policy, connect.terminal(&connect_report())).unwrap();
+    TransportPolicy::failed(&policy, AppError::internal("first observer failure"));
+    let original = original_ddl_ack();
+
+    let failure = policy
+        .record_operation_completion(OperationCompletion::Returned(PhaseEvidence::Ddl(&original)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failure.message, "first observer failure");
+    let rows = records(directory.path());
+    assert_eq!(
+        rows.len(),
+        4,
+        "header, admission, original report, completion"
+    );
+    assert!(rows[2]["event"].to_string().contains("fixture-generation"));
+    let completions = completion_records(directory.path());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0]["phase"], 1);
+    assert_eq!(completions[0]["completion"]["status"], "returned");
+    assert_eq!(completions[0]["completion"]["original"]["kind"], "ddl");
+    assert_eq!(
+        completions[0]["completion"]["original"]["value"],
+        serde_json::to_value(&original).unwrap()
+    );
+    assert!(policy.state.lock().pending.is_empty());
+    assert!(
+        policy
+            .finish_phase(PhaseEvidence::Ddl(&original))
+            .await
+            .is_err()
+    );
+    assert!(
+        policy
+            .record_operation_completion(OperationCompletion::Returned(PhaseEvidence::Ddl(
+                &original
+            )))
+            .await
+            .is_err()
+    );
+    assert_eq!(records(directory.path()).len(), 4);
+    assert_eq!(policy.state.lock().sequence.phase().unwrap().number(), 1);
+    assert_eq!(
+        TransportPolicy::check(&policy).unwrap_err().message,
+        "first observer failure"
+    );
+}
+
+#[tokio::test]
+async fn owning_completion_retains_unvalidated_typed_output_before_finish_rejection() {
+    let (directory, policy) = policy().await;
+    let original = original_ddl_ack();
+    assert!(
+        policy
+            .record_operation_completion(OperationCompletion::Returned(PhaseEvidence::Ddl(
+                &original
+            )))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // This DDL result cannot complete bootstrap. Retention is deliberately
+    // independent of whether finish_phase accepts the operation's evidence.
+    assert!(
+        policy
+            .finish_phase(PhaseEvidence::Ddl(&original))
+            .await
+            .is_err()
+    );
+    assert!(policy.persist_final_evidence().await.is_err());
+    let completions = completion_records(directory.path());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(
+        completions[0]["completion"]["original"]["value"],
+        serde_json::to_value(&original).unwrap()
+    );
+    assert_eq!(policy.state.lock().sequence.phase().unwrap().number(), 1);
+}
+
+#[tokio::test]
+async fn owning_completion_preserves_original_error_and_partial_query_events() {
+    use crate::domain::{ErrorCode, ErrorLocation, SqlSpan};
+    let (directory, policy) = policy().await;
+    let original = AppError {
+        code: ErrorCode::PermissionDenied,
+        message: "original collector failure".into(),
+        location: Some(Box::new(ErrorLocation {
+            span: SqlSpan {
+                start_utf16: 4,
+                end_utf16: 9,
+                line: 2,
+                column: 3,
+            },
+            statement_index: Some(0),
+            sql_state: Some("42501".into()),
+            detail: Some("original detail".into()),
+            hint: Some("original hint".into()),
+        })),
+        completion_invalidated: Some(true),
+    };
+    let events = vec![
+        QueryEvent::Started {
+            run_id: "original-run".into(),
+        },
+        QueryEvent::StatementStarted {
+            run_id: "original-run".into(),
+            index: 0,
+        },
+        QueryEvent::Progress {
+            result_id: "original-result".into(),
+            retained_rows: 1,
+        },
+    ];
+    let failure = policy
+        .record_operation_completion(OperationCompletion::Failed {
+            error: &original,
+            events: &events,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(failure).unwrap(),
+        serde_json::to_value(&original).unwrap()
+    );
+    let completions = completion_records(directory.path());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0]["completion"]["status"], "failed");
+    assert_eq!(
+        completions[0]["completion"]["original"]["error"],
+        serde_json::to_value(&original).unwrap()
+    );
+    assert_eq!(
+        completions[0]["completion"]["original"]["events"],
+        serde_json::to_value(&events).unwrap()
+    );
+    assert!(policy.state.lock().pending.is_empty());
+    assert_eq!(policy.state.lock().sequence.phase().unwrap().number(), 1);
+    assert!(TransportPolicy::check(&policy).is_err());
+}
+
+#[tokio::test]
+async fn owning_completion_does_not_replace_operation_error_with_prior_policy_failure() {
+    let (directory, policy) = policy().await;
+    TransportPolicy::failed(&policy, AppError::internal("first callback failure"));
+    let original = AppError::new(
+        crate::domain::ErrorCode::Cancelled,
+        "original operation cancelled",
+    );
+    let events = vec![QueryEvent::Started {
+        run_id: "partial-run".into(),
+    }];
+    let failure = policy
+        .record_operation_completion(OperationCompletion::Failed {
+            error: &original,
+            events: &events,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failure.message, "first callback failure");
+    let completions = completion_records(directory.path());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(
+        completions[0]["completion"]["original"]["error"],
+        serde_json::to_value(&original).unwrap()
+    );
+    assert_eq!(
+        completions[0]["completion"]["original"]["events"],
+        serde_json::to_value(&events).unwrap()
+    );
+    assert!(policy.state.lock().pending.is_empty());
+}
+
+#[tokio::test]
+async fn owning_cancelled_completion_syncs_exactly_once_without_phase_advance() {
+    let (directory, policy) = policy().await;
+    let original = original_ddl_ack();
+    {
+        let _held = policy.journal.lock().unwrap();
+        let mut future = Box::pin(policy.record_operation_completion(
+            OperationCompletion::Returned(PhaseEvidence::Ddl(&original)),
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(policy.state.lock().pending.len(), 1);
+        drop(future);
+        assert!(TransportPolicy::check(&policy).is_err());
+    }
+    assert!(policy.persist_final_evidence().await.is_err());
+    assert!(policy.persist_final_evidence().await.is_err());
+    assert!(
+        policy
+            .record_operation_completion(OperationCompletion::Returned(PhaseEvidence::Ddl(
+                &original
+            )))
+            .await
+            .is_err()
+    );
+    let completions = completion_records(directory.path());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(
+        completions[0]["completion"]["original"]["value"],
+        serde_json::to_value(&original).unwrap()
+    );
+    assert!(policy.state.lock().pending.is_empty());
+    assert_eq!(policy.state.lock().sequence.phase().unwrap().number(), 1);
+}
+
+#[tokio::test]
+async fn owning_completion_does_not_claim_persistence_when_journal_is_poisoned() {
+    let (directory, policy) = policy().await;
+    let journal = directory.path().join(super::super::journal::FILE_NAME);
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o400)).unwrap();
+    TransportPolicy::failed(&policy, AppError::internal("earlier observer failure"));
+    let original = original_ddl_ack();
+    assert!(
+        policy
+            .record_operation_completion(OperationCompletion::Returned(PhaseEvidence::Ddl(
+                &original
+            )))
+            .await
+            .is_err()
+    );
+    assert_eq!(records(directory.path()).len(), 1);
+    assert_eq!(policy.state.lock().pending.len(), 1);
+    assert!(policy.persist_final_evidence().await.is_err());
+    assert_eq!(records(directory.path()).len(), 1);
+    assert_eq!(
+        TransportPolicy::check(&policy).unwrap_err().message,
+        "earlier observer failure"
+    );
+}
+
 #[tokio::test]
 async fn owning_shared_transport_failure_revokes_concrete_phase_owner() {
     use crate::drivers::snowflake_qualification::QualificationAttachment;

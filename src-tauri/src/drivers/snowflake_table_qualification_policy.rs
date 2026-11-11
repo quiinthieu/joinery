@@ -5,7 +5,7 @@
 //! complete production-route interruption qualification remains required.
 
 use super::{
-    ExpectedState, Operation, RuntimePin, SCHEMA, TransactionSlot,
+    ExpectedState, Operation, Plan, RuntimePin, SCHEMA, TransactionSlot,
     evidence::{self, PhaseEvidence},
     journal::Journal,
     ledger::{SqlEntry, SqlKind},
@@ -13,7 +13,7 @@ use super::{
     sequence::{AdmissionKind, Sequencer},
 };
 use crate::{
-    domain::{AppError, AppResult, SessionRuntimeState, TransactionControlAuthority},
+    domain::{AppError, AppResult, QueryEvent, SessionRuntimeState, TransactionControlAuthority},
     drivers::{
         snowflake_qualification_metadata::{
             MetadataObserver, MetadataSite, RelationObservation, SchemaObservation,
@@ -24,6 +24,7 @@ use crate::{
     },
 };
 use parking_lot::Mutex;
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::{HashSet, VecDeque},
@@ -34,6 +35,18 @@ use std::{
 };
 
 const MAX_PENDING: usize = 1024;
+
+/// Original owning-operation outputs, captured before completion validation.
+/// Borrowed inputs become an owned queue record before the first storage await.
+#[derive(Serialize)]
+#[serde(tag = "status", content = "original", rename_all = "camelCase")]
+pub(super) enum OperationCompletion<'a> {
+    Returned(PhaseEvidence<'a>),
+    Failed {
+        error: &'a AppError,
+        events: &'a [QueryEvent],
+    },
+}
 
 fn denied() -> AppError {
     AppError::invalid("Existing-schema qualification phase evidence is incomplete or out of order")
@@ -58,6 +71,7 @@ struct State {
     last_runtime: Option<SessionRuntimeState>,
     phase_runtime_count: usize,
     authority_revisions: HashSet<String>,
+    operation_completions: HashSet<u8>,
     transaction_a: Option<String>,
     transaction_b: Option<String>,
     failure: Option<AppError>,
@@ -204,6 +218,7 @@ impl Policy {
                 last_runtime: None,
                 phase_runtime_count: 0,
                 authority_revisions: HashSet::new(),
+                operation_completions: HashSet::new(),
                 transaction_a: None,
                 transaction_b: None,
                 failure: None,
@@ -222,7 +237,18 @@ impl Policy {
         }
     }
 
+    pub(super) fn plan(&self) -> Plan {
+        self.state.lock().sequence.plan().clone()
+    }
+
     async fn flush(&self) -> AppResult<()> {
+        self.flush_pending().await?;
+        self.state.lock().check()
+    }
+
+    // Storage success is separate from the admission failure latch: original
+    // operation outputs must remain recordable after an observer has failed.
+    async fn flush_pending(&self) -> AppResult<()> {
         // An interrupted owner may leave its blocking write running. Wait for
         // that exact batch to settle before taking a new prefix, so final
         // cleanup cannot replay records whose fsync already succeeded.
@@ -232,7 +258,7 @@ impl Policy {
                 let mut state = self.state.lock();
                 if !state.flushing {
                     if state.pending.is_empty() {
-                        return state.check();
+                        return Ok(());
                     }
                     state.flushing = true;
                     break state.pending.iter().cloned().collect::<Vec<_>>();
@@ -278,7 +304,49 @@ impl Policy {
             Ok(()) => {}
             Err(error) => return Err(self.state.lock().fail(error)),
         }
-        self.state.lock().check()
+        Ok(())
+    }
+
+    /// Sync one original completion and every earlier queued original without
+    /// validating or advancing the phase. Ok(Some(error)) means storage succeeded
+    /// but the retained first policy/operation failure still prohibits progress.
+    /// A duplicate cannot replace an original, including after interrupted IO.
+    pub(super) async fn record_operation_completion(
+        &self,
+        completion: OperationCompletion<'_>,
+    ) -> AppResult<Option<AppError>> {
+        let _gate = self.gate.lock().await;
+        let mut interrupted = self.interrupted();
+        let original =
+            serde_json::to_value(&completion).map_err(|_| self.state.lock().fail(denied()))?;
+        let event_id = {
+            let mut state = self.state.lock();
+            let Some(phase) = state.sequence.phase().map(|phase| phase.number()) else {
+                return Err(state.fail(denied()));
+            };
+            if state.operation_completions.contains(&phase) {
+                return Err(state.fail(denied()));
+            }
+            state.enqueue(json!({"type":"operationCompletion", "phase":phase,
+                "completion":original}))?;
+            state.operation_completions.insert(phase);
+            if let OperationCompletion::Failed { error, .. } = completion {
+                state.fail(error.clone());
+            }
+            state.event_sequence
+        };
+        self.flush_pending().await?;
+        let result = {
+            let mut state = self.state.lock();
+            // Each prefix item leaves pending only after its own fsync receipt.
+            // Never translate an existing failure into a storage-success claim.
+            if state.pending.iter().any(|(id, _)| *id <= event_id) {
+                return Err(state.fail(denied()));
+            }
+            state.check().err()
+        };
+        interrupted.armed = false;
+        Ok(result)
     }
 
     pub(super) async fn finish_phase(&self, evidence: PhaseEvidence<'_>) -> AppResult<()> {
