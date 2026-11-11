@@ -83,8 +83,8 @@ are not account qualification.
 
 The following remain required before an executable approval request:
 
-1. Export the production bootstrap SQL definitions and implement the exact closed
-   physical SQL order/count ledger, including bounded post-rejection observations.
+1. Enforce the [shared production SQL definitions and expanded offline ledger](snowflake-qualification-sql-ledger.md)
+   at physical admission, including route-specific post-rejection observations.
 2. Freeze and enforce the raw census and created-object markers using these
    observers. Callback availability alone does not enforce a lifecycle policy.
 3. Bind source, runtime, binary, private connection and generated target identities
@@ -100,14 +100,14 @@ million-row account results, the remaining DataGrip workflows and owner hands-on
 acceptance remain open. Nothing in this internal plumbing establishes replacement
 readiness.
 
-## Next contract increment
+## Shared contract and next binding increment
 
-The next bounded implementation should share production-used SQL definitions
-before building the closed ledger. Bootstrap currently executes the helper's
-six-function identity SELECT, then the adapter's `SELECT CURRENT_VERSION()`.
-The helper's typed transaction SQL also needs an authoritative contract consumed
-by both JavaScript and Rust; duplicating literals in a test ledger would not
-prove the production request's meaning.
+The [shared SQL contract and offline expansion](snowflake-qualification-sql-ledger.md)
+now implement the first three responsibilities below. Bootstrap executes the
+shared six-function identity SELECT, then the shared version read. The helper
+and generated Rust constants consume the same source-pinned JSON for these and
+typed transaction SQL. Production adapter reads and offline entries share named
+immutable specifications. The lead's enforcement/runner integration remains open.
 
 | Responsibility | Expected result |
 | --- | --- |
@@ -126,5 +126,6 @@ cancellation and teardown; statement counts alone do not bound those frames.
 After a statement rejection, only the active call's frozen read-only suffix may
 finish. No phase advancement, replay or cleanup SQL is permitted.
 
-This is a planned increment. Shared definitions, expanded enforcement and their
-production-route regression evidence are not implemented by the attachment APIs.
+Shared definitions and offline expansion are implemented separately from these
+attachment APIs. Expanded enforcement and complete production-route execution
+evidence remain required; neither contract alone supplies execution authority.

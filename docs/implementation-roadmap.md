@@ -1,5 +1,26 @@
 # Joinery implementation roadmap
 
+## Shared SQL and offline ledger (11 November 2026)
+
+Implemented [shared production definitions and census-bound expansion](snowflake-qualification-sql-ledger.md):
+one pinned helper/Rust bootstrap and transaction contract, production-used named
+read specs, and exact ordered entries for all 32 lifecycle phases. Fourteen
+compiler tests and three read-spec tests pass; the 48-case qualification run
+also passes. Definitive rejection permits only the production route's tail:
+DDL five observer reads, normal Studio readback ten, DML/typed boundaries/metadata
+zero. These are local/synthetic checks, not complete account execution routes.
+
+Next implement the in-memory phase/census/lifecycle policy and bind the ledger
+to physical admission; then durable intent/outcome journaling, a source/runtime/
+profile-bound one-use envelope and the fixed production-route runner. Exercise
+complete 393/610-entry synthetic routes and interrupted/rejected paths before
+preparing any executable account plan. The permitted new-table target remains
+`SANDBOX.BILLIE_TESTING`; no account approval is requested during this local work.
+
+Full DataGrip workflow scope, actual account behavior, million-row performance,
+installation/signing and owner acceptance remain open. See the
+[verification ledger](replacement-verification.md) for the final checks and scope.
+
 ## Qualification attachments (11 November 2026)
 
 Implemented the [internal attachment contract](snowflake-qualification-attachments.md):

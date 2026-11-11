@@ -11,15 +11,17 @@ document. No approval question is pending while the executable boundary is absen
 The harness-only [offline definition](../src-tauri/src/drivers/snowflake_table_qualification.rs)
 and its [tests](../src-tauri/src/drivers/snowflake_table_qualification_tests.rs)
 now implement the generated target, production-compiled DDL/DML, ordered phases,
-typed outcome/state/readback validators and bounded census expansion. Ten focused
+typed outcome/state/readback validators and bounded census expansion. Fourteen focused
 Rust tests pass; an independent bounded source review found no material issue in
 this offline scope. The snapshot hash detects changes to this definition; it is
 not an executable approval manifest. The later
 [attachment increment](snowflake-qualification-attachments.md) implements physical
 admission/resource plumbing and validated raw census/creation-marker observation
-hooks. Startup SQL export, the exact physical SQL ledger, frozen lifecycle
-observation policy, source/runtime/private connection binding, durable execution
-receipts and the account runner remain unimplemented. No normal desktop command
+hooks. The [shared SQL contract and offline ledger](snowflake-qualification-sql-ledger.md)
+now export bootstrap/typed SQL and expand exact physical statement order/bounds.
+Ledger enforcement, frozen lifecycle observation policy, source/runtime/private
+connection binding, durable execution receipts and the account runner remain
+unimplemented. No normal desktop command
 exposes this module. See the
 [verification ledger](replacement-verification.md) for checks and remaining gates.
 

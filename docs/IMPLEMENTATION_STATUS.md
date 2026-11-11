@@ -1,5 +1,34 @@
 # Implementation and release status
 
+## Shared SQL and offline ledger (11 November 2026, local integration)
+
+The [SQL contract and ledger](snowflake-qualification-sql-ledger.md) now share
+bootstrap, version and transaction SQL between the helper and Rust build.
+Immutable production read specs also feed the offline qualification compiler.
+All 32 phases expand into exact SQL/bind/retention entries, preserving the
+**386 + 7S** budget and reviewed rejection tails. Helper resources, bundle checks
+and source pins include the two new contract files. Independent integrated
+review found no material issue.
+
+Full application validation passes **679 frontend / 465 standard Rust tests**,
+with **129 fixture tests ignored**. The complete helper suite passes **361**
+cases; guarded staged startup sends **zero authentication / zero SQL requests**.
+Final-source checks also pass **14 compiler**, **66 adapter-internal** and
+**32 adapter integration** cases. Three hidden native runs pass. A fresh normal
+macOS SDK bundle passes ad-hoc signature, resource and guarded helper-startup
+checks with zero authentication/SQL; all 443 frozen inputs remain unchanged.
+See the [verification ledger](replacement-verification.md) for affected harness
+checks, source pins, packaging evidence and failed invocations. Counts overlap.
+
+This is an offline compiler, not an executable account plan. Physical ledger and
+lifecycle enforcement, durable intent/outcome journaling, a source/runtime-bound
+one-use envelope and the fixed runner remain open. No private profile was read
+and no account activity occurred. The permitted fresh-table location remains
+`SANDBOX.BILLIE_TESTING`; the old database-creation approval is consumed. Actual
+Snowflake write/transaction effects, normal packaged SSO, million-row account
+performance, complete DataGrip workflows and owner acceptance remain required.
+The Goal stays active and incomplete; nothing is shipped or installed.
+
 ## Qualification plumbing (11 November 2026, local integration)
 
 The [internal qualification attachments](snowflake-qualification-attachments.md)

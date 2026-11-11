@@ -1,5 +1,21 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Shared SQL and offline qualification ledger (11 November 2026)
+
+The [contract increment](snowflake-qualification-sql-ledger.md) implements shared
+helper/Rust bootstrap and transaction SQL, immutable production read specs and
+the complete 32-phase offline statement expansion (393–610 entries). Compiler
+and synthetic helper wire checks pass. Entries preserve exact SQL, empty binds,
+retention ceilings, ordinals and route-specific rejected-operation suffixes.
+
+**Incomplete:** physical ledger enforcement, frozen lifecycle context/markers,
+durable intent/outcome recording, executable envelope and fixed account runner.
+The expansion's hash is not an approval. Actual Snowflake write/transaction/DDL
+effects, normal packaged SSO, million-row account performance and all remaining
+applicable DataGrip workflows remain required. Complete synthetic execution of
+the 393/610-entry routes is also still required. See current
+[verification evidence](replacement-verification.md); the Goal remains active.
+
 ## Internal qualification plumbing (11 November 2026)
 
 The [attachment contract](snowflake-qualification-attachments.md) now implements

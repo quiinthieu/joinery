@@ -33,7 +33,9 @@ The next account lifecycle is being prepared for a fresh table under the
 owner-permitted `SANDBOX.BILLIE_TESTING`. The earlier database-creation approval
 was consumed by its rejected attempt and must not be replayed. The new
 [qualification attachments](snowflake-qualification-attachments.md) are internal
-plumbing, not a runnable user command. The fixed runner, reviewed executable plan
+plumbing, not a runnable user command. The [offline SQL ledger](snowflake-qualification-sql-ledger.md)
+now expands the proposed lifecycle using the production SQL definitions; it does
+not enforce or execute those entries. The fixed runner, reviewed executable plan
 and possible-billing approval remain prerequisites to that account walkthrough.
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)

@@ -8,6 +8,121 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Shared SQL and offline ledger (11 November 2026)
+
+Implementation commit: `a8bcc61`, unmerged and unpublished.
+
+The [SQL contract](snowflake-qualification-sql-ledger.md) shares bootstrap and
+typed-boundary definitions between production helper and generated Rust constants.
+Production metadata calls and the offline compiler consume immutable read specs.
+The ledger expands every phase, preserving **386 + 7S**, exact wire SQL, empty
+binds, query retention bounds and route-specific rejection tails. This is an
+offline definition, not physical admission enforcement or an account runner.
+
+| Check | Result and scope |
+| --- | --- |
+| Offline compiler | **14/14**, all 32 phases, every census size 1–32, exact ordering, target/census escaping, bounds, hashes and rejected tails. `qualification-ledger-focused.log` |
+| Production read specs | **3/3**, one pure order/bounds case and two framed-helper/synthetic-SDK wire cases checking dispatched SQL/binds/ceilings. `qualification-ledger-read-specs-rerun.log` |
+| Existing qualification regression | **48/48**, compiler, transport, metadata and Studio tests, 118.13 seconds. `qualification-ledger-all-focused.log`; not complete 393/610-entry application execution routes |
+| Helper suite | **361/361**, synthetic helper/process and actual SDK loopback HTTP/TLS/proxy behavior; no Snowflake account. `qualification-ledger-helper-all.log`, 214.87 seconds |
+| Contract/runtime/old manifests | **84/84**, `sql-contract-focused-final.log` |
+| Focused helper regression | **88/88**, `sql-contract-helper-regressions.log`; overlaps the complete helper suite |
+| Offline qualification/canary definitions | **147/147**, `sql-contract-offline-regressions.log`; these tests do not run an account canary |
+| Offline runtime preparation/startup | Pass, new eight-source resource contract; Node 24.22.2 / SDK 3.4.1, guarded startup **zero authentication / zero SQL**. `qualification-ledger-runtime-{prepare,startup}.log` |
+| Final application validation | **679 frontend / 465 standard Rust tests**, **129 fixture tests ignored**; formatting, generated contracts, production frontend, Cargo check and strict all-target/all-feature Clippy pass. `qualification-ledger-validate-final.log` |
+| Final-source compiler | **14/14**, `qualification-ledger-compiler-final.log` |
+| Final-source adapter | **66/66** internal and **32/32** integration; includes the three named-read-spec cases and synthetic 1M-row driver/store/CSV hash regression. `qualification-ledger-adapter-final.log`, `qualification-ledger-adapter-integration-final.log`; synthetic results do not establish account throughput |
+| Fresh hidden native fixture | **3/3** successful runs, each with 20 check categories and ten cleanup cycles. SDK resources and guarded helper startup pass, **zero authentication / zero SQL**. `qualification-ledger-native-{build,runs}.{log,json}` |
+| Fresh normal macOS SDK bundle | Pass, strict ad-hoc signature, package resources and guarded helper startup; **zero authentication / zero SQL**. `qualification-ledger-normal-bundle.log`; local/uninstalled, Developer ID and notarization open |
+
+The initial read-spec invocation passed its pure case but failed both helper
+cases before launch because root omitted the required `JOINERY_TEST_NODE`.
+The corrected environment passed all three without a source change; the initial
+log remains `qualification-ledger-read-specs.log`. The 48-case run preceded the
+equivalent template-array migration to `sample_reads()` and getter-only build
+hygiene change; affected final-source checks are recorded with final validation.
+Counts overlap and are not a total of distinct cases.
+
+Reproduce with the pinned toolchains and an explicit helper Node path:
+
+```sh
+export JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node"
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_table_qualification -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib named_read_specs -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib qualification -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --test snowflake_external -- --test-threads=1
+pnpm test:snowflake:helper
+pnpm snowflake:prepare --cache-dir .cache/snowflake-helper-dev/npm-cache --offline
+pnpm test:snowflake:startup
+pnpm validate
+pnpm desktop:snowflake:smoke:build
+python3 scripts/native-smoke.py --runs 3
+pnpm desktop:snowflake:bundle:mac
+```
+
+Ledger suffix review followed actual production rejection paths: normal Studio
+readback may run two samples after a rejected SELECT; DDL has one dedicated
+post-rejection sample; DML, typed boundaries and metadata stop without subsequent
+SQL. Every failed observer read stops its remaining suffix. No phase advancement,
+automatic rollback, cleanup or replay is added. Review found no material issue
+in the offline expansion and adapter migration; final integrated review covers
+the source/resource contract separately. That integrated review found no material
+issue in 27 files, including the new contract document. Its sorted
+`sha256  relative-path\n` reviewed-set digest is
+`1adddcf7ff33d4c1cbb4b3f3d9f1d9219247403b61b7a2004994f127143e4ae0`.
+Tier 2 generation `2026-11-11T13:13:12Z` reported no recorded coverage issue and
+matching metadata for the 26 code/config/test paths; this best-effort signal is
+supplemented by direct source review. Cross-platform cfg paths were inspected,
+not independently compiled.
+
+The first full validation also passed. Its normal-library test build emitted
+an unused `ReadSpec::kind` warning; the final source narrows that getter to its
+actual `test-harness` callers. Only this compilation gate changed between the
+two full validations. The final snapshot freezes **443 source/config/test
+inputs**, excluding documentation, in
+`qualification-ledger-source-final.json` (SHA-256
+`4b72fb0e4543c8a938c83d64dd826c6acf5cdbc59ddbda4cc70179c7ec15d29c`).
+`qualification-ledger-source-transition.json` records the single-file transition
+from the initial snapshot. Existing ts-rs attribute and Vite chunk-size warnings
+remain nonfatal.
+Release builds also retain the previously recorded `rust-objcopy` stripping
+warning from the pinned toolchain's missing `libLLVM.dylib`; global toolchain
+configuration was not changed.
+
+The hidden native binary is SHA-256
+`74367edc666a94c0ab9f75e958eed796b8d93e58dca0eb9f682fff50bb873891`.
+Its synthetic hidden WebView checks do not establish normal-app SSO, visible
+startup, display performance or attributable total idle memory.
+
+The final normal bundle is
+`src-tauri/target/release/bundle/macos/Joinery.app`, built from `a8bcc61`.
+Tauri reports **224.93 MiB**; a sum of all **13,055 regular files**, with zero
+symlinks, is **240,258,489 bytes / 229.13 MiB**. The whole-bundle logical sum and
+Tauri's displayed size are distinct measurements. Binary SHA-256 is
+`6357be58300e60aaf1b09c6003e7b6ad92ffdfcc3ef804b954a9259885275f53`;
+the sorted JSON file-manifest SHA-256 is
+`9f2d5ec2c9388afa08f4e6c628228f103afa52d4a95f3a86c36a53e031993275`.
+The packaged runtime manifest SHA-256 is
+`74e1dfac7b3346d163fad04879dc7f558c73111d2eac6230a904a98e34621f1f`.
+`qualification-ledger-normal-bundle-{artifact,files}.json` retain the receipt and
+per-file hashes. All **443** frozen inputs still match after packaging. The normal
+application was not launched, installed or used with an account.
+
+No frontend workflow changed in this increment. The existing browser and actual
+PostgreSQL results below retain their original source scope; they were not rerun
+or relabeled as current-source checks. The changed adapter behavior is exercised
+through the production framed helper with a synthetic SDK and SDK loopback tests.
+
+No private connection was read and no account activity occurred. Target permission
+for a fresh table in `SANDBOX.BILLIE_TESTING` persists, but the prior database setup
+approval remains consumed. Physical ledger/lifecycle enforcement, durable
+intent/outcome journal, reviewed execution envelope, fixed runner and complete
+synthetic routes remain required before a new executable account approval.
+Actual account effects, million-row performance, complete DataGrip workflows,
+installation/signing and owner hands-on acceptance remain open. The private
+project hub was not updated under the user's no-publication scope.
+
 ### Internal qualification attachments (11 November 2026)
 
 Implementation commits: `e74e65a` (transport), `dd93739` (metadata), and
