@@ -30,6 +30,7 @@ import {
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const sourceNames = [
+  "disposable-setup-ledger.mjs",
   "framing.mjs",
   "helper.mjs",
   "main.mjs",

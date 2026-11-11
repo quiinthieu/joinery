@@ -58,6 +58,7 @@ export function verifySnowflakeRuntime({
   if (sha256 !== NODE_BINARY_SHA256)
     throw new Error("The Node hash did not match the pinned binary");
   const expectedFiles = [
+    "disposable-setup-ledger.mjs",
     "framing.mjs",
     "helper.mjs",
     "main.mjs",

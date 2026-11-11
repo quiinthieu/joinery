@@ -1,3 +1,5 @@
+import { deriveSetupLedger } from "./disposable-setup-ledger.mjs";
+
 export function connectionOptions(profile, clientConfigFile) {
   return {
     ...profile,
@@ -85,6 +87,8 @@ export class Helper {
     this.state = "new";
     this.connection = null;
     this.retired = false;
+    this.setupBootstrap = 0;
+    this.setupRun = null;
     emit({
       v: 1,
       type: "hello",
@@ -106,11 +110,37 @@ export class Helper {
   finish(request, code, result = {}) {
     if (this.done.has(request)) return;
     this.done.add(request);
+    if (
+      !this.setupRun &&
+      ["context", "query", "switchSchema", "transaction", "dml"].includes(request.op)
+    ) {
+      const p = request.payload;
+      if (!code && request.op === "context" && this.setupBootstrap === 0) this.setupBootstrap = 1;
+      else if (
+        !code &&
+        request.op === "query" &&
+        this.setupBootstrap === 1 &&
+        exact(p, ["sql", "binds", "classification", "credits", "maxRows", "maxBytes"]) &&
+        p.sql === "SELECT CURRENT_VERSION()" &&
+        p.binds.length === 0 &&
+        p.classification === "read" &&
+        p.credits === 1 &&
+        p.maxRows === 1 &&
+        p.maxBytes === 65536 &&
+        result.rowsSeen === 1 &&
+        result.rowsRetained === 1 &&
+        result.truncated === false
+      )
+        this.setupBootstrap = 2;
+      else this.setupBootstrap = -1;
+    }
     const a = this.active?.request === request ? this.active : null;
     this.send(request, "terminal", {
       ...(a ? this.idsFor(a) : {}),
       ...(code ? { ok: false, error: error(code) } : { ok: true, result }),
     });
+    // Once setup owns the session, even malformed control requests seal it.
+    if (code && this.setupRun && !this.retired) this.stop();
   }
   submissionViolation() {
     // A violation is a protocol failure even if a native throw is swallowed by
@@ -120,7 +150,8 @@ export class Helper {
         this.active.request,
         (this.active.useAcknowledged ||
         this.active.boundaryAcknowledged ||
-        this.active.dmlAcknowledged
+        this.active.dmlAcknowledged ||
+        this.active.setupAcknowledged
           ? "connectionClosed"
           : undefined) ??
           this.active.knownFailure ??
@@ -161,14 +192,28 @@ export class Helper {
       if (r.op !== "connect") return this.fatal();
       this.generation = r.generation;
     }
+    if (this.setupRun && !["setup", "close", "cancel"].includes(r.op)) return this.rejectSetup(r);
     if (r.op === "connect") return this.connect(r);
     if (r.op === "close") return this.close(r);
     if (r.op === "cancel") return this.cancel(r);
     if (r.op === "credit") return this.credit(r);
-    if (!["query", "context", "switchSchema", "transaction", "dml"].includes(r.op))
+    if (!["query", "context", "switchSchema", "transaction", "dml", "setup"].includes(r.op))
       return this.finish(r, "unsupported");
-    if (this.state !== "connected") return this.finish(r, "connectionClosed");
+    if (this.state !== "connected") {
+      this.finish(r, "connectionClosed");
+      if (r.op === "setup") this.stop();
+      return;
+    }
+    // The offline owner must wait for each durable terminal before advancing.
+    // No queued or pipelined request can reserve a future setup statement.
+    if (r.op === "setup" && (this.active || this.queue.length)) return this.rejectSetup(r);
     if (!this.validateWork(r)) return;
+    if (r.op === "setup" && !this.setupRun)
+      this.setupRun = {
+        runId: r.payload.runId,
+        next: 3,
+        ledger: deriveSetupLedger(r.payload.runId),
+      };
     if (this.queue.length >= LIMITS.queued) return this.finish(r, "busy");
     this.send(r, "accepted");
     this.queue.push(r);
@@ -219,6 +264,28 @@ export class Helper {
   }
   validateWork(r) {
     const p = r.payload;
+    if (r.op === "setup") {
+      let ledger;
+      try {
+        ledger = this.setupRun?.ledger ?? deriveSetupLedger(p.runId);
+      } catch {
+        return this.rejectSetup(r);
+      }
+      if (
+        !exact(p, ["runId", "step", "expected"]) ||
+        !integer(p.step, 3, 28) ||
+        this.setupBootstrap !== 2 ||
+        !exact(p.expected, ["user", "session"]) ||
+        !this.identityPin ||
+        p.expected.user !== this.identityPin.user ||
+        p.expected.session !== this.identityPin.session ||
+        (this.setupRun && p.runId !== this.setupRun.runId) ||
+        p.step !== (this.setupRun?.next ?? 3) ||
+        ledger[p.step - 1]?.index !== p.step
+      )
+        return this.rejectSetup(r);
+      return true;
+    }
     if (r.op === "dml") {
       // Trusted Rust admission owns the SQL grammar and canonical bindings.
       // This transport check is deliberately not a SQL classification claim.
@@ -319,6 +386,11 @@ export class Helper {
     }
     return true;
   }
+  rejectSetup(r) {
+    this.finish(r, "invalidInput");
+    this.stop();
+    return false;
+  }
   async pump() {
     if (this.active || this.retired) return;
     const r = this.queue.shift();
@@ -337,6 +409,34 @@ export class Helper {
       if (r.op === "query") {
         const result = await this.execute(a, r.payload.sql, r.payload.binds, true);
         this.finish(r, null, { ...result, ...this.idsFor(a) });
+      } else if (r.op === "setup") {
+        if (!this.validateWork(r)) return;
+        const entry = this.setupRun.ledger[r.payload.step - 1];
+        a.setupEntry = entry;
+        // Consume before phase publication, SDK execution, or any callback.
+        this.setupRun.next++;
+        this.send(r, "phase", { phase: "dispatching" });
+        const result = await this.execute(
+          a,
+          entry.sql,
+          [],
+          false,
+          false,
+          null,
+          null,
+          entry.mutation ? { runId: r.payload.runId, step: entry.index, key: entry.key } : null,
+        );
+        if (this.retired || this.done.has(r)) return;
+        this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
+        this.finish(r, null, {
+          runId: r.payload.runId,
+          step: entry.index,
+          key: entry.key,
+          phase: entry.phase,
+          mutation: entry.mutation,
+          ...result,
+          ...this.idsFor(a),
+        });
       } else if (r.op === "dml") {
         if (!this.validateWork(r)) return;
         this.send(r, "phase", { phase: "dispatching" });
@@ -420,7 +520,7 @@ export class Helper {
     } catch (e) {
       this.finish(
         r,
-        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged
+        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged || a.setupAcknowledged
           ? "connectionClosed"
           : ["resultLimitReached", "outcomeUnknown", "connectionClosed", "database"].includes(
                 e?.code,
@@ -430,6 +530,7 @@ export class Helper {
       );
       if (
         e?.retire ||
+        r.op === "setup" ||
         r.op === "context" ||
         r.op === "switchSchema" ||
         a.boundaryAcknowledged ||
@@ -489,7 +590,7 @@ export class Helper {
     a.statements.set(sdkRequestId, identity);
     this.send(a.request, "statement", identity);
   }
-  execute(a, sql, binds, publish, use = false, boundary = null, dml = null) {
+  execute(a, sql, binds, publish, use = false, boundary = null, dml = null, setup = null) {
     // This is per execute: a preceding USE acknowledgement cannot settle the
     // following context readback's outcome before that statement acknowledges.
     a.acknowledged = false;
@@ -521,6 +622,11 @@ export class Helper {
           return reject(failure);
         }
         a.acknowledged = true;
+        if (setup) {
+          a.setupAcknowledged = setup;
+          this.send(a.request, "setupAcknowledged", { ...setup, ...this.idsFor(a) });
+          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+        }
         if (dml) {
           a.dmlAcknowledged = dml;
           this.send(a.request, "dmlAcknowledged", { kind: dml, ...this.idsFor(a) });
@@ -584,12 +690,16 @@ export class Helper {
     const columns = statement.getColumns().map((c) => ({ name: c.getName(), type: c.getType() }));
     if (
       Buffer.byteLength(JSON.stringify(columns)) > LIMITS.frameBytes - 512 ||
-      columns.length > (a.request.op === "dml" ? 2 : 1000) ||
+      columns.length > (a.setupEntry?.maximumColumns ?? (a.request.op === "dml" ? 2 : 1000)) ||
       columns.some((c) => !text(c.name, 4096) || !text(c.type, 128))
     )
       throw error("resultLimitReached");
-    const privateBudget =
-      a.request.op === "dml" ? 65536 - Buffer.byteLength(JSON.stringify(columns)) : 131072;
+    const privateBudget = a.setupEntry
+      ? a.setupEntry.maximumBytes - Buffer.byteLength(JSON.stringify(columns)) - 2
+      : a.request.op === "dml"
+        ? 65536 - Buffer.byteLength(JSON.stringify(columns))
+        : 131072;
+    if (a.setupEntry && privateBudget < 0) throw error("resultLimitReached");
     if (publish) this.send(a.request, "columns", { columns });
     const stream = (a.stream = statement.streamRows());
     let rowsSeen = 0,
@@ -647,9 +757,9 @@ export class Helper {
         const size = Buffer.byteLength(JSON.stringify(row)) + 1;
         if (!publish) {
           if (
-            values.length >= (a.request.op === "dml" ? 1 : 2) ||
+            values.length >= (a.setupEntry?.maximumRows ?? (a.request.op === "dml" ? 1 : 2)) ||
             size > 65536 ||
-            (a.request.op === "dml" && bytes + size > privateBudget)
+            ((a.request.op === "dml" || a.setupEntry) && bytes + size > privateBudget)
           )
             throw error("resultLimitReached");
           bytes += size;
@@ -737,7 +847,8 @@ export class Helper {
     if (
       a.request.op === "switchSchema" ||
       a.request.op === "transaction" ||
-      a.request.op === "dml"
+      a.request.op === "dml" ||
+      a.request.op === "setup"
     ) {
       // A cancel ACK cannot verify either the USE outcome or final context.
       try {
@@ -746,7 +857,7 @@ export class Helper {
       this.finish(r, null, { requested: true });
       this.finish(
         a.request,
-        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged
+        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged || a.setupAcknowledged
           ? "connectionClosed"
           : (a.knownFailure ?? "outcomeUnknown"),
       );
@@ -767,7 +878,15 @@ export class Helper {
     const prior = this.state;
     this.state = "closing";
     if (this.connectRequest) this.finish(this.connectRequest, "connectionClosed");
-    if (this.active) this.finish(this.active.request, "connectionClosed");
+    if (this.active) {
+      const a = this.active;
+      this.finish(
+        a.request,
+        a.request.op === "setup" && !a.setupAcknowledged
+          ? (a.knownFailure ?? "outcomeUnknown")
+          : "connectionClosed",
+      );
+    }
     for (const queued of this.queue.splice(0)) this.finish(queued, "connectionClosed");
     this.wake?.();
     if (prior === "connecting" || !this.connection) {

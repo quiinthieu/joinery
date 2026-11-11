@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { installQuerySubmitGuard } from "../src/query-submit-guard.mjs";
 import { verifyTransportSources } from "../src/transport-source-pins.mjs";
 import { Helper } from "../src/helper.mjs";
+import { deriveSetupLedger } from "../src/disposable-setup-ledger.mjs";
 
 const [scenario, transport] = process.argv.slice(2);
 const allowed = new Set([
@@ -60,6 +61,19 @@ const allowed = new Set([
   "helper-switch-lost-use",
   "helper-switch-readback-denied",
   "helper-switch-lost-readback",
+  "helper-setup-database",
+  "helper-setup-schema",
+  "helper-setup-table",
+  "helper-setup-read-context",
+  "helper-setup-read-parameter",
+  "helper-setup-lost-ack",
+  "helper-setup-rejected",
+  "helper-setup-ack-drain",
+  "helper-setup-ack-guard",
+  "helper-setup-ack-cancel",
+  "helper-setup-ack-eof",
+  "helper-setup-close-before-ack",
+  "helper-setup-close-after-ack",
   "untrusted-tls",
   "fixture-boundary",
 ]);
@@ -111,6 +125,27 @@ const SQL = "SELECT ? AS EXACT_VALUE, ? AS ENABLED, ? AS EMPTY_VALUE";
 const switchScenario = scenario.startsWith("helper-switch-");
 const transactionScenario = scenario.startsWith("helper-transaction-");
 const dmlScenario = scenario.startsWith("helper-dml-");
+const setupScenario = scenario.startsWith("helper-setup-");
+const setupRunId = "0123456789ABCDEF0123456789ABCDEF";
+const setupLedger = deriveSetupLedger(setupRunId);
+const setupStep =
+  scenario === "helper-setup-read-context"
+    ? 3
+    : scenario === "helper-setup-read-parameter"
+      ? 4
+      : scenario === "helper-setup-schema"
+        ? 14
+        : scenario === "helper-setup-table"
+          ? 20
+          : 8;
+const setupEntry = setupLedger[setupStep - 1];
+const setupColumnCount = setupEntry.mutation ? 1 : setupEntry.maximumColumns;
+const setupColumns = Array.from({ length: setupColumnCount }, (_, i) =>
+  setupEntry.mutation ? "status" : `FIELD_${i}`,
+);
+const setupValues = setupColumns.map(() =>
+  setupEntry.mutation ? "synthetic CREATE status" : "synthetic observation",
+);
 const dmlKind =
   scenario === "helper-dml-insert"
     ? "insert"
@@ -283,7 +318,7 @@ try {
         : {};
       const url = new URL(request.url, "http://127.0.0.1");
       if (url.pathname === "/dml-status-chunk") {
-        assert.equal(scenario, "helper-dml-ack-drain");
+        assert(["helper-dml-ack-drain", "helper-setup-ack-drain"].includes(scenario));
         assert.equal(request.method, "GET");
         report.resultChunkRequests = (report.resultChunkRequests ?? 0) + 1;
         response.writeHead(404);
@@ -313,20 +348,53 @@ try {
       } else report.queryIdsSame &&= firstId === id;
       report.intendedSQLOnly &&=
         body.sqlText ===
-        (dmlScenario
-          ? dmlSQL
-          : transactionScenario
-            ? transactionSQL
-            : switchScenario
-              ? report.queryPosts === 1
-                ? SWITCH_SQL
-                : CONTEXT_SQL
-              : SQL);
+        (setupScenario
+          ? setupEntry.sql
+          : dmlScenario
+            ? dmlSQL
+            : transactionScenario
+              ? transactionSQL
+              : switchScenario
+                ? report.queryPosts === 1
+                  ? SWITCH_SQL
+                  : CONTEXT_SQL
+                : SQL);
       report.scalarBindsExact &&=
-        switchScenario || transactionScenario
+        setupScenario || switchScenario || transactionScenario
           ? body.bindings === undefined || JSON.stringify(body.bindings) === "{}"
           : JSON.stringify(body.bindings) === JSON.stringify(expectedBindings);
       resolveFirstQuery();
+      if (setupScenario) {
+        if (scenario === "helper-setup-rejected")
+          return json(response, {
+            success: false,
+            code: "100038",
+            message: "synthetic CREATE rejection",
+            data: { sqlState: "42501", queryId: "11111111-1111-4111-8111-111111111111" },
+          });
+        if (setupEntry.mutation) report.effects++;
+        if (scenario === "helper-setup-close-before-ack") return;
+        if (scenario === "helper-setup-lost-ack") return request.socket.destroy();
+        const reply = success();
+        reply.data.statementTypeId = 4096;
+        reply.data.rowtype = setupColumns.map((name) => ({
+          name,
+          type: "text",
+          length: 1024,
+          nullable: false,
+        }));
+        reply.data.rowset = [setupValues];
+        if (scenario === "helper-setup-ack-drain") {
+          reply.data.rowset = [];
+          reply.data.chunks = [
+            {
+              url: `${transport === "http" ? "http" : "https"}://127.0.0.1:${port}/dml-status-chunk`,
+              rowCount: 1,
+            },
+          ];
+        }
+        return json(response, reply);
+      }
       if (dmlScenario) {
         if (scenario === "helper-dml-database")
           return json(response, {
@@ -703,6 +771,162 @@ try {
   }
   assert.notEqual(scenario, "untrusted-tls");
   report.connected = true;
+  if (setupScenario) {
+    phase = "preconnected-setup-helper";
+    report.helperFixturePreconnected = true;
+    report.externalBrowserConnectSkipped = true;
+    report.setupCursorFixtureSeeded = true;
+    report.helperTerminals = 0;
+    report.helperRetired = 0;
+    report.helperSetupAcknowledged = false;
+    report.rows = 0;
+    report.publicColumns = 0;
+    let resolveTerminal;
+    const terminal = new Promise((resolve) => {
+      resolveTerminal = resolve;
+    });
+    helper = new Helper(
+      sdk,
+      (event) => {
+        if (event.id === "2" && event.type === "terminal")
+          report.helperCancelRequested = event.ok && event.result.requested === true;
+        if (event.id !== "1") return;
+        if (event.type === "columns") report.publicColumns++;
+        if (event.type === "rows") report.rows += event.rows.length;
+        if (event.type === "setupAcknowledged") {
+          report.helperSetupAcknowledged =
+            event.runId === setupRunId &&
+            event.step === setupStep &&
+            event.key === setupEntry.key &&
+            event.sdkRequestId === firstId;
+          report.setupAckBeforeTerminal = report.helperTerminals === 0;
+          report.setupAckRegistered = guard.snapshot().admitted === 1;
+          if (scenario === "helper-setup-ack-guard") {
+            const request = transport === "http" ? http.request : https.request;
+            try {
+              request({
+                hostname: "127.0.0.1",
+                port,
+                method: "POST",
+                path: `/queries/v1/query-request?requestId=${event.sdkRequestId}`,
+              });
+            } catch {}
+          }
+          if (scenario === "helper-setup-ack-cancel")
+            helper.receive({
+              v: 1,
+              generation: helper.generation,
+              id: "2",
+              op: "cancel",
+              payload: { target: "1" },
+            });
+          if (scenario === "helper-setup-ack-eof") {
+            // Same local retirement seam as stdin EOF, not a framed-process EOF test.
+            helper.stop();
+            report.helperTerminal = "localEOF";
+            resolveTerminal();
+          }
+          if (scenario === "helper-setup-close-after-ack") {
+            report.helperExplicitCloseRequested = true;
+            helper.receive({
+              v: 1,
+              generation: helper.generation,
+              id: "2",
+              op: "close",
+              payload: {},
+            });
+          }
+        }
+        if (event.type === "terminal") {
+          report.helperTerminals++;
+          report.helperTerminal = event.ok ? "success" : event.error.code;
+          if (event.ok) {
+            const r = event.result;
+            report.privateSetupResultExact =
+              r.runId === setupRunId &&
+              r.step === setupStep &&
+              r.key === setupEntry.key &&
+              r.phase === setupEntry.phase &&
+              r.mutation === setupEntry.mutation &&
+              r.rowsSeen === 1 &&
+              r.rowsRetained === 0 &&
+              r.truncated === false &&
+              r.sdkRequestId === firstId &&
+              JSON.stringify(r.columns) ===
+                JSON.stringify(setupColumns.map((name) => ({ name, type: "text" }))) &&
+              JSON.stringify(r.values) === JSON.stringify([setupValues]);
+          }
+          resolveTerminal();
+        }
+      },
+      () => report.helperRetired++,
+      { submitGuard: guard, clientConfigFile: join(root, "disabled-config.json") },
+    );
+    // Scope: real SDK/guard/Helper execution and evidence, with browser/bootstrap
+    // and prior ledger cursors explicitly seeded. Unit tests execute all 28 SQL.
+    helper.connection = connection;
+    helper.state = "connected";
+    helper.generation = "11111111-1111-4111-8111-111111111111";
+    helper.identityPin = { user: "SERVER_USER", session: "OPAQUE-SESSION" };
+    helper.setupBootstrap = 2;
+    helper.setupRun = { runId: setupRunId, next: setupStep, ledger: setupLedger };
+    helper.receive({
+      v: 1,
+      generation: helper.generation,
+      id: "1",
+      op: "setup",
+      payload: {
+        runId: setupRunId,
+        step: setupStep,
+        expected: { user: "SERVER_USER", session: "OPAQUE-SESSION" },
+      },
+    });
+    if (scenario === "helper-setup-close-before-ack") {
+      await bounded(firstQuery);
+      report.helperExplicitCloseRequested = true;
+      helper.receive({ v: 1, generation: helper.generation, id: "2", op: "close", payload: {} });
+    }
+    await bounded(terminal);
+    if (["helper-setup-lost-ack", "helper-setup-ack-guard"].includes(scenario))
+      await bounded(violated);
+    await pause(350);
+    assert.equal(report.queryPosts, 1);
+    assert(report.intendedSQLOnly && report.scalarBindsExact);
+    const expected =
+      {
+        "helper-setup-lost-ack": "outcomeUnknown",
+        "helper-setup-rejected": "database",
+        "helper-setup-ack-drain": "connectionClosed",
+        "helper-setup-ack-guard": "connectionClosed",
+        "helper-setup-ack-cancel": "connectionClosed",
+        "helper-setup-ack-eof": "localEOF",
+        "helper-setup-close-before-ack": "outcomeUnknown",
+        "helper-setup-close-after-ack": "connectionClosed",
+      }[scenario] ?? "success";
+    assert.equal(report.helperTerminal, expected);
+    assert.equal(
+      report.helperSetupAcknowledged,
+      setupEntry.mutation &&
+        ![
+          "helper-setup-lost-ack",
+          "helper-setup-rejected",
+          "helper-setup-close-before-ack",
+        ].includes(scenario),
+    );
+    if (expected === "success") assert.equal(report.privateSetupResultExact, true);
+    assert.equal(report.helperTerminals, scenario === "helper-setup-ack-eof" ? 0 : 1);
+    assert.equal(report.rows, 0);
+    assert.equal(report.publicColumns, 0);
+    if (report.helperSetupAcknowledged)
+      assert(report.setupAckBeforeTerminal && report.setupAckRegistered);
+    helper.stop();
+    assert.equal(report.helperRetired, 1);
+    report.outcome = `helper-${expected}`;
+    report.guardFailed = guard.snapshot().failed;
+    report.guardAdmitted = guard.snapshot().admitted;
+    report.firstQueryProxyConnects = firstQueryProxyConnects;
+    await finish();
+  }
   if (scenario.startsWith("helper-")) {
     phase = "preconnected-helper";
     report.helperFixturePreconnected = true;

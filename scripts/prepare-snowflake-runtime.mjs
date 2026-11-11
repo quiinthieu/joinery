@@ -37,6 +37,7 @@ const HELPER_FILES = [
   "framing.mjs",
   "query-submit-guard.mjs",
   "transport-source-pins.mjs",
+  "disposable-setup-ledger.mjs",
 ];
 const NOTICE_NAME = /^(?:license|licence|copying|notice)(?:\..*)?$/i;
 const README_NAME = /^readme(?:\..*)?$/i;

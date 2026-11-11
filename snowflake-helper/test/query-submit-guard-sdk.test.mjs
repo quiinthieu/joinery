@@ -42,6 +42,19 @@ for (const transport of ["http", "tls", "proxy"]) {
     "helper-switch-lost-use",
     "helper-switch-readback-denied",
     "helper-switch-lost-readback",
+    "helper-setup-database",
+    "helper-setup-schema",
+    "helper-setup-table",
+    "helper-setup-read-context",
+    "helper-setup-read-parameter",
+    "helper-setup-lost-ack",
+    "helper-setup-rejected",
+    "helper-setup-ack-drain",
+    "helper-setup-ack-guard",
+    "helper-setup-ack-cancel",
+    "helper-setup-ack-eof",
+    "helper-setup-close-before-ack",
+    "helper-setup-close-after-ack",
   ])
     cases.push([scenario, transport]);
 }
@@ -206,6 +219,67 @@ for (const [scenario, transport] of cases) {
         assert.equal(result.connected, true);
         assert.equal(result.intendedSQLOnly, true);
         assert.equal(result.scalarBindsExact, true);
+        if (scenario.startsWith("helper-setup-")) {
+          assert.equal(result.helperFixturePreconnected, true);
+          assert.equal(result.externalBrowserConnectSkipped, true);
+          assert.equal(result.setupCursorFixtureSeeded, true);
+          assert.equal(result.queryPosts, 1);
+          const readStep = scenario.startsWith("helper-setup-read-");
+          assert.equal(result.effects, readStep || scenario === "helper-setup-rejected" ? 0 : 1);
+          assert.equal(result.guardAdmitted, 1);
+          assert.equal(result.helperRetired, 1);
+          assert.equal(result.rows, 0);
+          assert.equal(result.publicColumns, 0);
+          const expected =
+            {
+              "helper-setup-lost-ack": "outcomeUnknown",
+              "helper-setup-rejected": "database",
+              "helper-setup-ack-drain": "connectionClosed",
+              "helper-setup-ack-guard": "connectionClosed",
+              "helper-setup-ack-cancel": "connectionClosed",
+              "helper-setup-ack-eof": "localEOF",
+              "helper-setup-close-before-ack": "outcomeUnknown",
+              "helper-setup-close-after-ack": "connectionClosed",
+            }[scenario] ?? "success";
+          assert.equal(result.helperTerminal, expected);
+          assert.equal(result.helperTerminals, scenario === "helper-setup-ack-eof" ? 0 : 1);
+          assert.equal(
+            result.helperSetupAcknowledged,
+            !readStep &&
+              ![
+                "helper-setup-lost-ack",
+                "helper-setup-rejected",
+                "helper-setup-close-before-ack",
+              ].includes(scenario),
+          );
+          if (result.helperSetupAcknowledged) {
+            assert.equal(result.setupAckBeforeTerminal, true);
+            assert.equal(result.setupAckRegistered, true);
+          }
+          if (expected === "success") assert.equal(result.privateSetupResultExact, true);
+          if (scenario === "helper-setup-ack-drain") assert.equal(result.resultChunkRequests, 1);
+          if (scenario === "helper-setup-ack-cancel")
+            assert.equal(result.helperCancelRequested, true);
+          if (scenario.startsWith("helper-setup-close-"))
+            assert.equal(result.helperExplicitCloseRequested, true);
+          assert.equal(
+            result.violations,
+            ["helper-setup-lost-ack", "helper-setup-ack-guard"].includes(scenario) ? 1 : 0,
+          );
+          if (transport !== "http") assert.equal(result.tlsVerified, true);
+          if (transport === "proxy" && scenario === "helper-setup-lost-ack")
+            assert.equal(result.proxyConnectsAtViolation, result.firstQueryProxyConnects);
+          t.diagnostic(
+            JSON.stringify({
+              scenario,
+              transport,
+              posts: result.queryPosts,
+              effects: result.effects,
+              outcome: result.outcome,
+            }),
+          );
+          return;
+        }
         const switchScenario = scenario.startsWith("helper-switch-");
         const transactionScenario = scenario.startsWith("helper-transaction-");
         const dmlScenario = scenario.startsWith("helper-dml-");

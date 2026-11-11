@@ -37,6 +37,7 @@ function fixture(t) {
     "framing.mjs",
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",
+    "disposable-setup-ledger.mjs",
   ]) {
     sources[name] = `// synthetic fixture ${name}\n`;
     writeFileSync(path.join(repoRoot, "snowflake-helper/src", name), sources[name]);

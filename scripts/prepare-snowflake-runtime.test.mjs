@@ -107,6 +107,7 @@ function makeFixture({ nodeMode = 0o755 } = {}) {
     "framing.mjs",
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",
+    "disposable-setup-ledger.mjs",
   ])
     writeFileSync(path.join(helperRoot, "src", filename), `// ${filename}\n`);
   writeFileSync(
