@@ -11,6 +11,7 @@ pub mod snowflake;
 pub mod snowflake_auth;
 #[cfg(unix)]
 pub(crate) mod snowflake_browsing;
+pub mod snowflake_dml_summary;
 #[cfg(unix)]
 pub mod snowflake_external;
 #[cfg(unix)]
@@ -236,6 +237,23 @@ pub trait Driver: Send + Sync {
         Err(AppError::new(
             ErrorCode::Unsupported,
             "Revision-bound schema switching is unavailable for this engine",
+        ))
+    }
+    /// Pure validation only; this cannot consume authority or submit SQL.
+    fn validate_snowflake_dml(&self, _request: &SnowflakeDmlRequest) -> AppResult<()> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed Snowflake SQL writes are unavailable for this engine",
+        ))
+    }
+    async fn snowflake_dml(
+        &self,
+        _session_id: &str,
+        _request: &SnowflakeDmlRequest,
+    ) -> AppResult<SnowflakeDmlResult> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed Snowflake SQL writes are unavailable for this engine",
         ))
     }
     /// Pure validation only: preparation must never consume authority or send SQL.

@@ -117,6 +117,9 @@ pub struct ConnectionProfile {
 pub struct SnowflakeConfig {
     #[serde(default)]
     pub authentication: SnowflakeAuthentication,
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_dml: bool,
     pub role: String,
     pub warehouse: String,
     pub schema: String,
@@ -385,6 +388,10 @@ pub struct StatementPlan {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedPlan {
+    /// Dedicated typed execution route; never a generic row-count job.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_snowflake_dml: bool,
     pub id: String,
     pub session_id: String,
     pub statements: Vec<StatementPlan>,
@@ -1166,6 +1173,9 @@ pub struct LockWaitSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_dml: Option<SnowflakeDmlEvidence>,
     pub id: String,
     pub connection_id: String,
     pub connection_name: String,
@@ -1628,6 +1638,79 @@ pub enum TransactionBoundaryOutcome {
     Acknowledged,
     Rejected,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDmlKind {
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDmlRequest {
+    pub sql: String,
+    #[serde(default)]
+    pub parameters: Vec<QueryParamInput>,
+    /// One-use coherent observed authority; rollback-only authority never admits DML.
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDmlOutcome {
+    Succeeded,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDmlSummaryStatus {
+    Validated,
+    Unavailable,
+}
+
+/// Counts are decimal strings, never rounded JavaScript numbers or status-row counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDmlSummary {
+    pub status: SnowflakeDmlSummaryStatus,
+    pub affected_rows: Option<String>,
+    pub multi_joined_rows: Option<String>,
+}
+
+impl SnowflakeDmlSummary {
+    pub fn unavailable() -> Self {
+        Self {
+            status: SnowflakeDmlSummaryStatus::Unavailable,
+            affected_rows: None,
+            multi_joined_rows: None,
+        }
+    }
+}
+
+/// Durable statement evidence; excludes parameters and transient session authority.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDmlEvidence {
+    pub kind: SnowflakeDmlKind,
+    pub statement_outcome: SnowflakeDmlOutcome,
+    pub summary: SnowflakeDmlSummary,
+    pub retired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDmlResult {
+    pub kind: SnowflakeDmlKind,
+    pub statement_outcome: SnowflakeDmlOutcome,
+    pub summary: SnowflakeDmlSummary,
+    pub state: SessionRuntimeState,
+    pub retired: bool,
+    pub error: Option<AppError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

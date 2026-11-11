@@ -21,6 +21,7 @@ fn profile() -> ConnectionProfile {
         store_drafts: false,
         snowflake: Some(SnowflakeConfig {
             authentication: SnowflakeAuthentication::LocalApplicationOauth,
+            reviewed_dml: false,
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),
             schema: "PUBLIC".into(),

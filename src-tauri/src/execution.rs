@@ -1777,6 +1777,7 @@ impl Studio {
             None
         };
         let history = HistoryEntry {
+            snowflake_dml: None,
             id: run_id.clone(),
             connection_id: session.profile.id.clone(),
             connection_name: session.profile.name.clone(),

@@ -43,6 +43,7 @@ const TRANSACTIONS = Object.freeze({
   commit: "COMMIT",
   rollback: "ROLLBACK",
 });
+const DML_KINDS = new Set(["insert", "update", "delete"]);
 const integer = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
 const sdkFailure = (failure, acknowledged = false) => {
   const state = failure?.sqlState;
@@ -117,7 +118,9 @@ export class Helper {
     if (this.active)
       this.finish(
         this.active.request,
-        (this.active.useAcknowledged || this.active.boundaryAcknowledged
+        (this.active.useAcknowledged ||
+        this.active.boundaryAcknowledged ||
+        this.active.dmlAcknowledged
           ? "connectionClosed"
           : undefined) ??
           this.active.knownFailure ??
@@ -162,7 +165,7 @@ export class Helper {
     if (r.op === "close") return this.close(r);
     if (r.op === "cancel") return this.cancel(r);
     if (r.op === "credit") return this.credit(r);
-    if (!["query", "context", "switchSchema", "transaction"].includes(r.op))
+    if (!["query", "context", "switchSchema", "transaction", "dml"].includes(r.op))
       return this.finish(r, "unsupported");
     if (this.state !== "connected") return this.finish(r, "connectionClosed");
     if (!this.validateWork(r)) return;
@@ -216,6 +219,36 @@ export class Helper {
   }
   validateWork(r) {
     const p = r.payload;
+    if (r.op === "dml") {
+      // Trusted Rust admission owns the SQL grammar and canonical bindings.
+      // This transport check is deliberately not a SQL classification claim.
+      if (
+        !exact(p, ["kind", "sql", "binds", "expected"]) ||
+        typeof p.kind !== "string" ||
+        !DML_KINDS.has(p.kind) ||
+        !text(p.sql, 262144) ||
+        !p.sql.isWellFormed() ||
+        !Array.isArray(p.binds) ||
+        p.binds.length > 1000 ||
+        !p.binds.every(
+          (x) =>
+            x === null ||
+            typeof x === "boolean" ||
+            (typeof x === "string" && Buffer.byteLength(x) <= 262144 && x.isWellFormed()),
+        ) ||
+        !exact(p.expected, ["user", "session"]) ||
+        !identifier(p.expected.user) ||
+        !text(p.expected.session, 1024) ||
+        !p.expected.session.isWellFormed() ||
+        !this.identityPin ||
+        p.expected.user !== this.identityPin.user ||
+        p.expected.session !== this.identityPin.session
+      ) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
     if (r.op === "transaction") {
       if (
         !exact(p, ["action", "expected"]) ||
@@ -304,6 +337,21 @@ export class Helper {
       if (r.op === "query") {
         const result = await this.execute(a, r.payload.sql, r.payload.binds, true);
         this.finish(r, null, { ...result, ...this.idsFor(a) });
+      } else if (r.op === "dml") {
+        if (!this.validateWork(r)) return;
+        this.send(r, "phase", { phase: "dispatching" });
+        const result = await this.execute(
+          a,
+          r.payload.sql,
+          r.payload.binds,
+          false,
+          false,
+          null,
+          r.payload.kind,
+        );
+        if (this.retired || this.done.has(r)) return;
+        this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
+        this.finish(r, null, { kind: r.payload.kind, ...result, ...this.idsFor(a) });
       } else if (r.op === "transaction") {
         // Recheck at dispatch too: a queued operation never adopts another pin.
         if (!this.validateWork(r)) return;
@@ -372,7 +420,7 @@ export class Helper {
     } catch (e) {
       this.finish(
         r,
-        a.useAcknowledged || a.boundaryAcknowledged
+        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged
           ? "connectionClosed"
           : ["resultLimitReached", "outcomeUnknown", "connectionClosed", "database"].includes(
                 e?.code,
@@ -380,7 +428,13 @@ export class Helper {
             ? e.code
             : "database",
       );
-      if (e?.retire || r.op === "context" || r.op === "switchSchema" || a.boundaryAcknowledged)
+      if (
+        e?.retire ||
+        r.op === "context" ||
+        r.op === "switchSchema" ||
+        a.boundaryAcknowledged ||
+        a.dmlAcknowledged
+      )
         this.stop();
     } finally {
       if (a.submitOwner) {
@@ -435,7 +489,7 @@ export class Helper {
     a.statements.set(sdkRequestId, identity);
     this.send(a.request, "statement", identity);
   }
-  execute(a, sql, binds, publish, use = false, boundary = null) {
+  execute(a, sql, binds, publish, use = false, boundary = null, dml = null) {
     // This is per execute: a preceding USE acknowledgement cannot settle the
     // following context readback's outcome before that statement acknowledges.
     a.acknowledged = false;
@@ -467,6 +521,11 @@ export class Helper {
           return reject(failure);
         }
         a.acknowledged = true;
+        if (dml) {
+          a.dmlAcknowledged = dml;
+          this.send(a.request, "dmlAcknowledged", { kind: dml, ...this.idsFor(a) });
+          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+        }
         if (boundary) {
           // Command success is distinct from verified transaction disposition.
           // Registered identity and ACK survive reentrant record/send failures.
@@ -525,10 +584,12 @@ export class Helper {
     const columns = statement.getColumns().map((c) => ({ name: c.getName(), type: c.getType() }));
     if (
       Buffer.byteLength(JSON.stringify(columns)) > LIMITS.frameBytes - 512 ||
-      columns.length > 1000 ||
+      columns.length > (a.request.op === "dml" ? 2 : 1000) ||
       columns.some((c) => !text(c.name, 4096) || !text(c.type, 128))
     )
       throw error("resultLimitReached");
+    const privateBudget =
+      a.request.op === "dml" ? 65536 - Buffer.byteLength(JSON.stringify(columns)) : 131072;
     if (publish) this.send(a.request, "columns", { columns });
     const stream = (a.stream = statement.streamRows());
     let rowsSeen = 0,
@@ -585,7 +646,13 @@ export class Helper {
           throw error("resultLimitReached");
         const size = Buffer.byteLength(JSON.stringify(row)) + 1;
         if (!publish) {
-          if (values.length >= 2 || size > 65536) throw error("resultLimitReached");
+          if (
+            values.length >= (a.request.op === "dml" ? 1 : 2) ||
+            size > 65536 ||
+            (a.request.op === "dml" && bytes + size > privateBudget)
+          )
+            throw error("resultLimitReached");
+          bytes += size;
           values.push(row);
           continue;
         }
@@ -645,7 +712,7 @@ export class Helper {
   }
   removeQueued(control, target) {
     const index = this.queue.findIndex(
-      (r) => ["query", "switchSchema", "transaction"].includes(r.op) && r.id === target,
+      (r) => ["query", "switchSchema", "transaction", "dml"].includes(r.op) && r.id === target,
     );
     if (index < 0) return false;
     const [queued] = this.queue.splice(index, 1);
@@ -667,7 +734,11 @@ export class Helper {
     const a = this.active;
     if (!a || a.request.id !== p.target || !a.statement) return this.finish(r, "invalidInput");
     this.send(r, "accepted");
-    if (a.request.op === "switchSchema" || a.request.op === "transaction") {
+    if (
+      a.request.op === "switchSchema" ||
+      a.request.op === "transaction" ||
+      a.request.op === "dml"
+    ) {
       // A cancel ACK cannot verify either the USE outcome or final context.
       try {
         a.statement.cancel(() => {});
@@ -675,7 +746,7 @@ export class Helper {
       this.finish(r, null, { requested: true });
       this.finish(
         a.request,
-        a.useAcknowledged || a.boundaryAcknowledged
+        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged
           ? "connectionClosed"
           : (a.knownFailure ?? "outcomeUnknown"),
       );

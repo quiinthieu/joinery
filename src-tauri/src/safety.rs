@@ -11,6 +11,8 @@ use sqlparser::{
 };
 use std::ops::ControlFlow;
 
+pub mod snowflake_dml;
+
 pub(crate) fn has_mysql_executable_comment(sql: &str) -> bool {
     let bytes = sql.as_bytes();
     let mut i = 0;
@@ -457,6 +459,7 @@ pub(crate) fn plan_for_statements(
         None
     };
     Ok(PreparedPlan {
+        reviewed_snowflake_dml: false,
         id: new_id(),
         session_id: session_id.into(),
         statements,

@@ -676,6 +676,7 @@ mod tests {
         let db = Persistence::open(dir.path()).unwrap();
         assert_eq!(db.groups().unwrap().len(), 3);
         db.record_history(&HistoryEntry {
+            snowflake_dml: None,
             id: new_id(),
             connection_id: "p".into(),
             connection_name: "Production".into(),

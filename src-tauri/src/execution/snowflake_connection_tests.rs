@@ -28,6 +28,7 @@ fn profile() -> ConnectionProfile {
         store_drafts: false,
         snowflake: Some(SnowflakeConfig {
             authentication: SnowflakeAuthentication::ExternalBrowser,
+            reviewed_dml: false,
             role: "ROLE".into(),
             warehouse: "WH".into(),
             schema: "PUBLIC".into(),

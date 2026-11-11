@@ -31,6 +31,7 @@ fn recovery_writer() {
     .unwrap();
     db.set_setting("recovery-fixture", "committed").unwrap();
     db.record_history(&HistoryEntry {
+        snowflake_dml: None,
         id: "committed-run".into(),
         connection_id: "fixture".into(),
         connection_name: "Disposable recovery fixture".into(),

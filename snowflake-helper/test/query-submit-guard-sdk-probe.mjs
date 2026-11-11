@@ -47,6 +47,15 @@ const allowed = new Set([
   "helper-transaction-lost-ack",
   "helper-transaction-ack-guard",
   "helper-transaction-database",
+  "helper-dml-insert",
+  "helper-dml-update",
+  "helper-dml-delete",
+  "helper-dml-lost-ack",
+  "helper-dml-ack-guard",
+  "helper-dml-database",
+  "helper-dml-ack-drain",
+  "helper-dml-ack-cancel",
+  "helper-dml-ack-eof",
   "helper-switch-success",
   "helper-switch-lost-use",
   "helper-switch-readback-denied",
@@ -101,6 +110,23 @@ const firstQuery = new Promise((resolve) => {
 const SQL = "SELECT ? AS EXACT_VALUE, ? AS ENABLED, ? AS EMPTY_VALUE";
 const switchScenario = scenario.startsWith("helper-switch-");
 const transactionScenario = scenario.startsWith("helper-transaction-");
+const dmlScenario = scenario.startsWith("helper-dml-");
+const dmlKind =
+  scenario === "helper-dml-insert"
+    ? "insert"
+    : scenario === "helper-dml-delete"
+      ? "delete"
+      : "update";
+const dmlSQL = {
+  insert: "INSERT INTO SYNTHETIC.PUBLIC.T (A,B,C) VALUES (?,?,?)",
+  update: "UPDATE SYNTHETIC.PUBLIC.T SET A=?, B=? WHERE C=?",
+  delete: "DELETE FROM SYNTHETIC.PUBLIC.T WHERE A=? AND B=? AND C=?",
+}[dmlKind];
+const dmlColumn = {
+  insert: "number of rows inserted",
+  update: "number of rows updated",
+  delete: "number of rows deleted",
+}[dmlKind];
 const transactionAction =
   scenario === "helper-transaction-begin"
     ? "begin"
@@ -256,6 +282,14 @@ try {
           )
         : {};
       const url = new URL(request.url, "http://127.0.0.1");
+      if (url.pathname === "/dml-status-chunk") {
+        assert.equal(scenario, "helper-dml-ack-drain");
+        assert.equal(request.method, "GET");
+        report.resultChunkRequests = (report.resultChunkRequests ?? 0) + 1;
+        response.writeHead(404);
+        response.end();
+        return;
+      }
       if (url.pathname === "/session/v1/login-request")
         return json(response, { success: true, data: session() });
       if (url.pathname === "/session/token-request") {
@@ -279,18 +313,54 @@ try {
       } else report.queryIdsSame &&= firstId === id;
       report.intendedSQLOnly &&=
         body.sqlText ===
-        (transactionScenario
-          ? transactionSQL
-          : switchScenario
-            ? report.queryPosts === 1
-              ? SWITCH_SQL
-              : CONTEXT_SQL
-            : SQL);
+        (dmlScenario
+          ? dmlSQL
+          : transactionScenario
+            ? transactionSQL
+            : switchScenario
+              ? report.queryPosts === 1
+                ? SWITCH_SQL
+                : CONTEXT_SQL
+              : SQL);
       report.scalarBindsExact &&=
         switchScenario || transactionScenario
           ? body.bindings === undefined || JSON.stringify(body.bindings) === "{}"
           : JSON.stringify(body.bindings) === JSON.stringify(expectedBindings);
       resolveFirstQuery();
+      if (dmlScenario) {
+        if (scenario === "helper-dml-database")
+          return json(response, {
+            success: false,
+            code: "100038",
+            message: "synthetic DML rejection",
+            data: { sqlState: "42501", queryId: "11111111-1111-4111-8111-111111111111" },
+          });
+        report.effects++;
+        if (scenario === "helper-dml-lost-ack") return request.socket.destroy();
+        const reply = success();
+        reply.data.statementTypeId = { insert: 12288, update: 12289, delete: 12290 }[dmlKind];
+        reply.data.rowtype = [
+          dmlColumn,
+          ...(dmlKind === "update" ? ["number of multi-joined rows updated"] : []),
+        ].map((name) => ({
+          name,
+          type: "fixed",
+          precision: 38,
+          scale: 0,
+          nullable: false,
+        }));
+        reply.data.rowset = [["9007199254740993", ...(dmlKind === "update" ? ["7"] : [])]];
+        if (scenario === "helper-dml-ack-drain") {
+          reply.data.rowset = [];
+          reply.data.chunks = [
+            {
+              url: `${transport === "http" ? "http" : "https"}://127.0.0.1:${port}/dml-status-chunk`,
+              rowCount: 1,
+            },
+          ];
+        }
+        return json(response, reply);
+      }
       if (transactionScenario) {
         if (scenario === "helper-transaction-database")
           return json(response, {
@@ -640,6 +710,8 @@ try {
     report.helperTerminals = 0;
     report.helperRetired = 0;
     report.helperAcknowledged = false;
+    report.publicColumns = 0;
+    if (dmlScenario) report.helperDmlAcknowledged = false;
     if (switchScenario) report.helperUseAcknowledged = false;
     let resolveTerminal, resolveAcknowledged;
     const terminal = new Promise((resolve) => {
@@ -662,12 +734,37 @@ try {
     helper = new Helper(
       sdk,
       (event) => {
+        if (event.id === "2" && scenario === "helper-dml-ack-cancel" && event.type === "terminal")
+          report.helperCancelRequested = event.ok && event.result.requested === true;
         if (event.id !== "1") return;
         if (event.type === "phase" && event.phase === "acknowledged") {
           report.helperAcknowledged = true;
           resolveAcknowledged();
         }
         if (event.type === "useAcknowledged") report.helperUseAcknowledged = true;
+        if (event.type === "dmlAcknowledged") {
+          report.helperDmlAcknowledged = event.kind === dmlKind && event.sdkRequestId === firstId;
+          report.dmlAckBeforeTerminal = report.helperTerminals === 0;
+          report.dmlAckRegistered = guard.snapshot().admitted === 1;
+          if (scenario === "helper-dml-ack-guard") nativeStale(event.sdkRequestId);
+          if (scenario === "helper-dml-ack-cancel")
+            helper.receive({
+              v: 1,
+              generation: helper.generation,
+              id: "2",
+              op: "cancel",
+              payload: { target: "1" },
+            });
+          if (scenario === "helper-dml-ack-eof") {
+            // Same retirement entry point as main.mjs stdin end; this is a
+            // helper seam, not a subprocess/protocol-EOF qualification.
+            helper.stop();
+            report.helperTerminal = "localEOF";
+            report.outcome = "helper-localEOF";
+            resolveTerminal();
+          }
+        }
+        if (event.type === "columns") report.publicColumns++;
         if (event.type === "boundaryAcknowledged") {
           report.helperBoundaryAcknowledged =
             event.action === transactionAction && event.sdkRequestId === firstId;
@@ -677,7 +774,7 @@ try {
         if (
           event.type === "statement" &&
           event.queryId &&
-          scenario === "helper-database" &&
+          ["helper-database", "helper-dml-database"].includes(scenario) &&
           !report.helperReentrantFailure
         ) {
           // Reenter after the actual SDK supplied definitive SQLSTATE, before the
@@ -692,6 +789,25 @@ try {
           if (switchScenario && event.ok) {
             report.switchSchemaMatches = event.result.schema === SWITCH_SCHEMA;
             report.switchRoleNull = event.result.role === null && event.result.warehouse === null;
+          }
+          if (dmlScenario && event.ok) {
+            const r = event.result;
+            report.privateDmlResultExact =
+              r.kind === dmlKind &&
+              r.rowsSeen === 1 &&
+              r.rowsRetained === 0 &&
+              r.truncated === false &&
+              r.sdkRequestId === firstId &&
+              r.queryId === "11111111-1111-4111-8111-111111111111" &&
+              JSON.stringify(r.columns) ===
+                JSON.stringify(
+                  [
+                    dmlColumn,
+                    ...(dmlKind === "update" ? ["number of multi-joined rows updated"] : []),
+                  ].map((name) => ({ name, type: "fixed" })),
+                ) &&
+              JSON.stringify(r.values) ===
+                JSON.stringify([["9007199254740993", ...(dmlKind === "update" ? ["7"] : [])]]);
           }
           resolveTerminal();
         }
@@ -708,37 +824,50 @@ try {
     helper.state = "connected";
     helper.generation = "11111111-1111-4111-8111-111111111111";
     if (switchScenario) helper.expectedProfile = { database: "SYNTHETIC" };
-    if (transactionScenario)
+    if (transactionScenario || dmlScenario)
       helper.identityPin = { user: "SERVER_USER", session: "OPAQUE-SESSION" };
     helper.receive({
       v: 1,
       generation: helper.generation,
       id: "1",
-      op: transactionScenario ? "transaction" : switchScenario ? "switchSchema" : "query",
-      payload: transactionScenario
+      op: dmlScenario
+        ? "dml"
+        : transactionScenario
+          ? "transaction"
+          : switchScenario
+            ? "switchSchema"
+            : "query",
+      payload: dmlScenario
         ? {
-            action: transactionAction,
+            kind: dmlKind,
+            sql: dmlSQL,
+            binds,
             expected: { user: "SERVER_USER", session: "OPAQUE-SESSION" },
           }
-        : switchScenario
+        : transactionScenario
           ? {
-              database: "SYNTHETIC",
-              schema: SWITCH_SCHEMA,
-              expected: {
-                user: "SERVER_USER",
-                role: null,
-                warehouse: null,
-                session: "OPAQUE-SESSION",
-              },
+              action: transactionAction,
+              expected: { user: "SERVER_USER", session: "OPAQUE-SESSION" },
             }
-          : {
-              sql: SQL,
-              binds,
-              classification: "read",
-              credits: scenario === "helper-ack-drain" ? 0 : 1,
-              maxRows: 4,
-              maxBytes: 4096,
-            },
+          : switchScenario
+            ? {
+                database: "SYNTHETIC",
+                schema: SWITCH_SCHEMA,
+                expected: {
+                  user: "SERVER_USER",
+                  role: null,
+                  warehouse: null,
+                  session: "OPAQUE-SESSION",
+                },
+              }
+            : {
+                sql: SQL,
+                binds,
+                classification: "read",
+                credits: scenario === "helper-ack-drain" ? 0 : 1,
+                maxRows: 4,
+                maxBytes: 4096,
+              },
     });
     if (scenario === "helper-ack-drain") {
       await bounded(acknowledged);
@@ -747,9 +876,11 @@ try {
     }
     await bounded(terminal);
     if (
-      transactionScenario
-        ? ["helper-transaction-lost-ack", "helper-transaction-ack-guard"].includes(scenario)
-        : scenario !== "helper-success" && (!switchScenario || scenario.includes("lost-"))
+      dmlScenario
+        ? ["helper-dml-lost-ack", "helper-dml-ack-guard", "helper-dml-database"].includes(scenario)
+        : transactionScenario
+          ? ["helper-transaction-lost-ack", "helper-transaction-ack-guard"].includes(scenario)
+          : scenario !== "helper-success" && (!switchScenario || scenario.includes("lost-"))
     )
       await bounded(violated);
     await pause(350);
@@ -758,7 +889,7 @@ try {
       switchScenario && scenario !== "helper-switch-lost-use" ? 2 : 1,
     );
     assert(report.intendedSQLOnly && report.scalarBindsExact);
-    assert.equal(report.helperTerminals, 1);
+    assert.equal(report.helperTerminals, scenario === "helper-dml-ack-eof" ? 0 : 1);
     const expected = {
       "helper-success": "success",
       "helper-lost-ack": "outcomeUnknown",
@@ -770,6 +901,15 @@ try {
       "helper-transaction-lost-ack": "outcomeUnknown",
       "helper-transaction-ack-guard": "connectionClosed",
       "helper-transaction-database": "database",
+      "helper-dml-insert": "success",
+      "helper-dml-update": "success",
+      "helper-dml-delete": "success",
+      "helper-dml-lost-ack": "outcomeUnknown",
+      "helper-dml-ack-guard": "connectionClosed",
+      "helper-dml-database": "database",
+      "helper-dml-ack-drain": "connectionClosed",
+      "helper-dml-ack-cancel": "connectionClosed",
+      "helper-dml-ack-eof": "localEOF",
       "helper-switch-success": "success",
       "helper-switch-lost-use": "outcomeUnknown",
       "helper-switch-readback-denied": "connectionClosed",
@@ -785,6 +925,21 @@ try {
         report.helperBoundaryAcknowledged === true,
         !["helper-transaction-lost-ack", "helper-transaction-database"].includes(scenario),
       );
+    if (dmlScenario) {
+      assert.equal(
+        report.helperDmlAcknowledged,
+        !["helper-dml-lost-ack", "helper-dml-database"].includes(scenario),
+      );
+      assert.equal(report.rows, 0);
+      assert.equal(report.publicColumns, 0);
+      if (report.helperDmlAcknowledged) {
+        assert.equal(report.dmlAckBeforeTerminal, true);
+        assert.equal(report.dmlAckRegistered, true);
+      }
+      if (expected === "success") assert.equal(report.privateDmlResultExact, true);
+      if (scenario === "helper-dml-ack-drain") assert.equal(report.resultChunkRequests, 1);
+      if (scenario === "helper-dml-ack-cancel") assert.equal(report.helperCancelRequested, true);
+    }
     if (switchScenario) {
       assert.equal(report.helperUseAcknowledged, scenario !== "helper-switch-lost-use");
       assert.equal(report.helperAcknowledged, expected === "success");
@@ -793,7 +948,7 @@ try {
       if (expected === "success") assert(report.switchSchemaMatches && report.switchRoleNull);
     }
     if (expected === "success" || scenario === "helper-transaction-database") {
-      assert.equal(report.rows, switchScenario || transactionScenario ? 0 : 1);
+      assert.equal(report.rows, switchScenario || transactionScenario || dmlScenario ? 0 : 1);
       helper.stop();
     }
     report.guardFailed = guard.snapshot().failed;

@@ -1,4 +1,5 @@
 //! Bounded Snowflake helper process transport. No remote capability is qualified here.
+use crate::domain::SnowflakeDmlKind;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -470,7 +471,19 @@ pub struct BoundaryAcknowledgement {
     pub action: TransactionAction,
     pub statement: StatementIdentity,
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DmlAcknowledgement {
+    pub kind: SnowflakeDmlKind,
+    pub statement: StatementIdentity,
+}
+fn parse_dml_kind(value: &Value) -> Option<SnowflakeDmlKind> {
+    serde_json::from_value(value.clone()).ok()
+}
 fn valid_transaction_impact(op: &str, payload: &Value, impact: Impact) -> bool {
+    if op == "dml" {
+        return impact == Impact::Mutating
+            && payload.get("kind").and_then(parse_dml_kind).is_some();
+    }
     if op == "transaction" {
         payload
             .get("action")
@@ -522,6 +535,8 @@ pub struct Report {
     pub use_acknowledged: Option<StatementIdentity>,
     /// Fixed boundary command success, independent of drain or transaction disposition.
     pub boundary_acknowledged: Option<BoundaryAcknowledgement>,
+    /// DML statement success, independently of count parsing or transaction effects.
+    pub dml_acknowledged: Option<DmlAcknowledgement>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatementIdentity {
@@ -568,6 +583,8 @@ struct Pending {
     use_acknowledged: Option<StatementIdentity>,
     transaction_action: Option<TransactionAction>,
     boundary_acknowledged: Option<BoundaryAcknowledgement>,
+    dml_kind: Option<SnowflakeDmlKind>,
+    dml_acknowledged: Option<DmlAcknowledgement>,
     statement_events: u8,
     wire_id: Option<String>,
     terminal: watch::Sender<Option<Report>>,
@@ -686,6 +703,19 @@ impl Operation {
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.boundary_acknowledged.clone())
     }
+    pub fn dml_acknowledged(&self) -> Option<DmlAcknowledgement> {
+        if let Some(report) = self.report() {
+            return report.dml_acknowledged;
+        }
+        self.owner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .get(&self.id)
+            .filter(|pending| pending.ticket == self.token.ticket)
+            .and_then(|pending| pending.dml_acknowledged.clone())
+    }
     /// Observe completion while independently consuming columns and queued rows.
     /// A terminal report does not imply the row receiver has been drained.
     pub fn terminal_receiver(&self) -> watch::Receiver<Option<Report>> {
@@ -708,6 +738,7 @@ impl Operation {
                     statements: vec![],
                     use_acknowledged: None,
                     boundary_acknowledged: None,
+                    dml_acknowledged: None,
                 };
             }
         }
@@ -726,7 +757,7 @@ impl Operation {
     fn cleanup_unfinished(&self) {
         if matches!(
             self.op.as_str(),
-            "connect" | "context" | "switchSchema" | "transaction" | "close"
+            "connect" | "context" | "switchSchema" | "transaction" | "dml" | "close"
         ) {
             self.owner.retire_target(&self.token, Retirement::Dropped);
             return;
@@ -974,7 +1005,7 @@ impl Supervisor {
                             p.phase == Phase::Queued
                                 && matches!(
                                     p.op.as_str(),
-                                    "query" | "context" | "switchSchema" | "transaction"
+                                    "query" | "context" | "switchSchema" | "transaction" | "dml"
                                 )
                         })
                         .map(|(id, _)| id.clone())
@@ -991,6 +1022,7 @@ impl Supervisor {
                             statements: pending.statements,
                             use_acknowledged: pending.use_acknowledged,
                             boundary_acknowledged: pending.boundary_acknowledged,
+                            dml_acknowledged: pending.dml_acknowledged,
                         }));
                     }
                 }
@@ -1090,7 +1122,8 @@ impl Inner {
         let is_connect = pending.op == "connect";
         if pending.op != "query"
             && !(allow_connect
-                && (is_connect || matches!(pending.op.as_str(), "switchSchema" | "transaction")))
+                && (is_connect
+                    || matches!(pending.op.as_str(), "switchSchema" | "transaction" | "dml")))
         {
             return Err(TargetError::Control("invalid query target"));
         }
@@ -1109,6 +1142,7 @@ impl Inner {
             statements: pending.statements,
             use_acknowledged: pending.use_acknowledged,
             boundary_acknowledged: pending.boundary_acknowledged,
+            dml_acknowledged: pending.dml_acknowledged,
         }));
         Ok((None, is_connect))
     }
@@ -1183,6 +1217,7 @@ impl Inner {
                     | "context"
                     | "switchSchema"
                     | "transaction"
+                    | "dml"
                     | "credit"
                     | "cancel"
                     | "close"
@@ -1215,6 +1250,11 @@ impl Inner {
             .map(str::to_owned);
         let transaction_action = if op == "transaction" {
             payload.get("action").and_then(TransactionAction::parse)
+        } else {
+            None
+        };
+        let dml_kind = if op == "dml" {
+            payload.get("kind").and_then(parse_dml_kind)
         } else {
             None
         };
@@ -1269,6 +1309,8 @@ impl Inner {
                 statements: vec![],
                 use_acknowledged: None,
                 boundary_acknowledged: None,
+                dml_acknowledged: None,
+                dml_kind,
                 transaction_action,
                 statement_events: 0,
                 wire_id: None,
@@ -1330,11 +1372,12 @@ impl Inner {
         }
         state.retired = Some(reason);
         for (_, pending) in state.pending.drain() {
-            let certainty = if pending.boundary_acknowledged.is_some() {
-                Certainty::StatementSucceeded
-            } else {
-                interrupted_certainty(pending.impact, pending.phase)
-            };
+            let certainty =
+                if pending.boundary_acknowledged.is_some() || pending.dml_acknowledged.is_some() {
+                    Certainty::StatementSucceeded
+                } else {
+                    interrupted_certainty(pending.impact, pending.phase)
+                };
             pending.terminal.send_replace(Some(Report {
                 ok: false,
                 certainty,
@@ -1352,6 +1395,7 @@ impl Inner {
                 statements: pending.statements,
                 use_acknowledged: pending.use_acknowledged,
                 boundary_acknowledged: pending.boundary_acknowledged,
+                dml_acknowledged: pending.dml_acknowledged,
             }));
         }
         state.wire_ids.clear();
@@ -1392,7 +1436,7 @@ impl Inner {
                     if pending.accepted
                         && matches!(
                             pending.op.as_str(),
-                            "query" | "context" | "switchSchema" | "transaction"
+                            "query" | "context" | "switchSchema" | "transaction" | "dml"
                         )
                         && pending.phase < Phase::Dispatching =>
                 {
@@ -1412,6 +1456,13 @@ impl Inner {
                     }
                     if pending.op == "transaction"
                         && (pending.boundary_acknowledged.is_none()
+                            || pending.statements.len() != 1
+                            || event.get("sdkRequestId").and_then(Value::as_str).is_none())
+                    {
+                        return false;
+                    }
+                    if pending.op == "dml"
+                        && (pending.dml_acknowledged.is_none()
                             || pending.statements.len() != 1
                             || event.get("sdkRequestId").and_then(Value::as_str).is_none())
                     {
@@ -1454,6 +1505,37 @@ impl Inner {
                 });
                 true
             }
+            Some("dmlAcknowledged") => {
+                if pending.op != "dml"
+                    || !pending.accepted
+                    || pending.phase != Phase::Dispatching
+                    || pending.dml_acknowledged.is_some()
+                    || pending.statements.len() != 1
+                    || event.get("sdkRequestId").and_then(Value::as_str).is_none()
+                    || event.get("kind").and_then(parse_dml_kind) != pending.dml_kind
+                    || !event.as_object().is_some_and(|object| {
+                        object.keys().all(|key| {
+                            matches!(
+                                key.as_str(),
+                                "v" | "generation"
+                                    | "id"
+                                    | "type"
+                                    | "kind"
+                                    | "sdkRequestId"
+                                    | "queryId"
+                            )
+                        })
+                    })
+                    || !validate_latest_statement(pending, &event)
+                {
+                    return false;
+                }
+                pending.dml_acknowledged = Some(DmlAcknowledgement {
+                    kind: pending.dml_kind.unwrap(),
+                    statement: pending.statements[0].clone(),
+                });
+                true
+            }
             Some("useAcknowledged") => {
                 if pending.op != "switchSchema"
                     || !pending.accepted
@@ -1473,7 +1555,7 @@ impl Inner {
                     || pending.phase < Phase::Dispatching
                     || !matches!(
                         pending.op.as_str(),
-                        "query" | "context" | "switchSchema" | "transaction"
+                        "query" | "context" | "switchSchema" | "transaction" | "dml"
                     )
                 {
                     return false;
@@ -1574,6 +1656,17 @@ impl Inner {
                         return false;
                     }
                 }
+                if ok && pending.op == "dml" {
+                    let Some(result) = event.get("result") else {
+                        return false;
+                    };
+                    if event.get("sdkRequestId").and_then(Value::as_str).is_none()
+                        || pending.dml_acknowledged.is_none()
+                        || !valid_dml_result(pending, result)
+                    {
+                        return false;
+                    }
+                }
                 let (code, result) = if ok {
                     if event.get("error").is_some() || event.get("result").is_none() {
                         return false;
@@ -1605,7 +1698,7 @@ impl Inner {
                 if ok
                     && matches!(
                         pending.op.as_str(),
-                        "query" | "context" | "switchSchema" | "transaction"
+                        "query" | "context" | "switchSchema" | "transaction" | "dml"
                     )
                     && pending.phase != Phase::Acknowledged
                 {
@@ -1615,9 +1708,15 @@ impl Inner {
                     pending.use_acknowledged.is_some() && pending.phase != Phase::Acknowledged;
                 let cancelled_context = matches!(
                     pending.impact,
-                    Impact::ContextChange | Impact::Begin | Impact::Commit | Impact::Rollback
+                    Impact::ContextChange
+                        | Impact::Begin
+                        | Impact::Commit
+                        | Impact::Rollback
+                        | Impact::Mutating
                 ) && code.as_deref() == Some("cancelled");
-                let certainty = if pending.boundary_acknowledged.is_some() {
+                let certainty = if pending.boundary_acknowledged.is_some()
+                    || pending.dml_acknowledged.is_some()
+                {
                     Certainty::StatementSucceeded
                 } else if pending.phase == Phase::Acknowledged {
                     acknowledged_certainty(pending.impact)
@@ -1649,7 +1748,8 @@ impl Inner {
                     .as_deref()
                     .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"))
                     || unverified_use
-                    || (pending.boundary_acknowledged.is_some()
+                    || ((pending.boundary_acknowledged.is_some()
+                        || pending.dml_acknowledged.is_some())
                         && pending.phase != Phase::Acknowledged)
                     || cancelled_context;
                 pending.terminal.send_replace(Some(Report {
@@ -1662,6 +1762,7 @@ impl Inner {
                     statements: pending.statements,
                     use_acknowledged: pending.use_acknowledged,
                     boundary_acknowledged: pending.boundary_acknowledged,
+                    dml_acknowledged: pending.dml_acknowledged,
                 }));
                 let closing = state.pending.values().any(|p| p.op == "close");
                 drop(state);
@@ -1673,6 +1774,60 @@ impl Inner {
             _ => false,
         }
     }
+}
+
+fn valid_dml_result(pending: &Pending, result: &Value) -> bool {
+    let Some(object) = result.as_object() else {
+        return false;
+    };
+    if !object.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "kind"
+                | "rowsSeen"
+                | "rowsRetained"
+                | "truncated"
+                | "columns"
+                | "values"
+                | "sdkRequestId"
+                | "queryId"
+        )
+    }) || result.get("kind").and_then(parse_dml_kind) != pending.dml_kind
+        || result.get("sdkRequestId").and_then(Value::as_str).is_none()
+        || !validate_latest_statement(pending, result)
+        || result.get("rowsRetained").and_then(Value::as_u64) != Some(0)
+        || result.get("truncated").and_then(Value::as_bool).is_none()
+        || serde_json::to_vec(result).map_or(true, |bytes| bytes.len() > 65536 + 512)
+    {
+        return false;
+    }
+    let Some(columns) = result.get("columns").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(rows) = result.get("values").and_then(Value::as_array) else {
+        return false;
+    };
+    columns.len() <= 2
+        && rows.len() <= 1
+        && result.get("rowsSeen").and_then(Value::as_u64) == Some(rows.len() as u64)
+        && columns.iter().all(|column| {
+            column.as_object().is_some_and(|c| {
+                c.len() == 2
+                    && ["name", "type"].into_iter().all(|key| {
+                        c.get(key).and_then(Value::as_str).is_some_and(|value| {
+                            !value.is_empty()
+                                && value.len() <= if key == "name" { 4096 } else { 128 }
+                                && !value.contains('\0')
+                        })
+                    })
+            })
+        })
+        && rows.iter().all(|row| {
+            row.as_array().is_some_and(|row| {
+                row.len() == columns.len()
+                    && row.iter().all(|cell| cell.is_null() || cell.is_string())
+            })
+        })
 }
 
 fn validate_latest_statement(pending: &Pending, event: &Value) -> bool {
@@ -1734,6 +1889,13 @@ fn update_statement(pending: &mut Pending, event: &Value) -> bool {
         {
             ack.statement = existing.clone();
         }
+        if let Some(ack) = pending
+            .dml_acknowledged
+            .as_mut()
+            .filter(|ack| ack.statement.sdk_request_id == request_id)
+        {
+            ack.statement = existing.clone();
+        }
     } else {
         if pending.statements.len() >= if pending.op == "switchSchema" { 2 } else { 1 }
             || (pending.op == "switchSchema"
@@ -1761,6 +1923,7 @@ fn local_report(result: Value) -> Report {
         statements: vec![],
         use_acknowledged: None,
         boundary_acknowledged: None,
+        dml_acknowledged: None,
     }
 }
 
@@ -2029,6 +2192,237 @@ mod tests {
             json!({"type":"statement","sdkRequestId":USE_ID})
         ));
         (inner, op)
+    }
+    fn dispatched_dml(kind: SnowflakeDmlKind) -> (Arc<Inner>, Operation) {
+        let (inner, _normal, _control) = isolated();
+        let op = inner
+            .request("dml", "dml", json!({"kind":kind}), Impact::Mutating)
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.pending.get_mut("dml").unwrap().phase = Phase::Sent;
+            state.wire_ids.insert("1".into(), "dml".into());
+        }
+        assert!(switch_event(&inner, json!({"type":"accepted"})));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"dispatching"})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":USE_ID})
+        ));
+        (inner, op)
+    }
+    #[tokio::test]
+    async fn dml_impact_and_kind_are_paired_and_queued_cancel_has_no_submission() {
+        let (inner, _normal, _control) = isolated();
+        for kind in [
+            SnowflakeDmlKind::Insert,
+            SnowflakeDmlKind::Update,
+            SnowflakeDmlKind::Delete,
+        ] {
+            for impact in [
+                Impact::Read,
+                Impact::Control,
+                Impact::Begin,
+                Impact::Commit,
+                Impact::Rollback,
+                Impact::ContextChange,
+            ] {
+                assert!(
+                    inner
+                        .request("bad", "dml", json!({"kind":kind}), impact)
+                        .is_err()
+                );
+            }
+            let mut op = inner
+                .request("dml", "dml", json!({"kind":kind}), Impact::Mutating)
+                .unwrap();
+            assert!(inner.discard(&op.token()).is_err());
+            assert!(inner.cancel(&op.token()).unwrap().wait().await.ok);
+            let report = op.wait().await;
+            assert_eq!(report.certainty, Certainty::NotSubmitted);
+            assert!(report.dml_acknowledged.is_none());
+            assert!(inner.state.lock().unwrap().retired.is_none());
+        }
+        for kind in [
+            json!("INSERT"),
+            json!("merge"),
+            json!(["insert"]),
+            Value::Null,
+        ] {
+            assert!(
+                inner
+                    .request("bad", "dml", json!({"kind":kind}), Impact::Mutating)
+                    .is_err()
+            );
+        }
+    }
+    #[tokio::test]
+    async fn dml_ack_survives_all_retirements_with_exact_statement_identity() {
+        for kind in [
+            SnowflakeDmlKind::Insert,
+            SnowflakeDmlKind::Update,
+            SnowflakeDmlKind::Delete,
+        ] {
+            for reason in [
+                Retirement::Eof,
+                Retirement::Protocol,
+                Retirement::Deadline,
+                Retirement::Dropped,
+                Retirement::Requested,
+                Retirement::Write,
+            ] {
+                for acknowledged in [false, true] {
+                    let (inner, mut op) = dispatched_dml(kind);
+                    if acknowledged {
+                        assert!(switch_event(
+                            &inner,
+                            json!({"type":"dmlAcknowledged","kind":kind,"sdkRequestId":USE_ID})
+                        ));
+                        assert_eq!(op.dml_acknowledged().unwrap().kind, kind);
+                        assert!(switch_event(
+                            &inner,
+                            json!({"type":"statement","sdkRequestId":USE_ID,"queryId":READBACK_ID})
+                        ));
+                    }
+                    inner.retire(reason);
+                    let report = op.wait().await;
+                    assert!(!report.ok);
+                    assert_eq!(
+                        report.certainty,
+                        if acknowledged {
+                            Certainty::StatementSucceeded
+                        } else {
+                            Certainty::OutcomeUnknown
+                        }
+                    );
+                    assert_eq!(report.dml_acknowledged.is_some(), acknowledged);
+                    if let Some(ack) = report.dml_acknowledged {
+                        assert_eq!(ack.kind, kind);
+                        assert_eq!(ack.statement, report.statements[0]);
+                        assert_eq!(ack.statement.query_id.as_deref(), Some(READBACK_ID));
+                    }
+                }
+            }
+        }
+    }
+    #[tokio::test]
+    async fn dml_ack_terminal_and_summary_require_exact_association_and_closed_shape() {
+        let (inner, mut op) = dispatched_dml(SnowflakeDmlKind::Update);
+        for event in [
+            json!({"type":"dmlAcknowledged","kind":"update"}),
+            json!({"type":"dmlAcknowledged","kind":"delete","sdkRequestId":USE_ID}),
+            json!({"type":"dmlAcknowledged","kind":"update","sdkRequestId":READBACK_ID}),
+            json!({"type":"dmlAcknowledged","kind":"update","sdkRequestId":USE_ID,"extra":true}),
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID}),
+            json!({"type":"boundaryAcknowledged","action":"commit","sdkRequestId":USE_ID}),
+        ] {
+            assert!(!switch_event(&inner, event));
+        }
+        assert!(op.dml_acknowledged().is_none());
+        assert!(switch_event(
+            &inner,
+            json!({"type":"dmlAcknowledged","kind":"update","sdkRequestId":USE_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"dmlAcknowledged","kind":"update","sdkRequestId":USE_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+        ));
+        let result = json!({"kind":"update","rowsSeen":1,"rowsRetained":0,"truncated":false,
+            "columns":[{"name":"number of rows updated","type":"fixed"}],"values":[["9007199254740993"]],"sdkRequestId":USE_ID});
+        for (key, bad) in [
+            ("kind", json!("delete")),
+            ("rowsSeen", json!(0)),
+            ("rowsRetained", json!(1)),
+            ("truncated", Value::Null),
+            ("values", json!([[1]])),
+            ("values", json!([["1"], ["2"]])),
+            ("sdkRequestId", json!(READBACK_ID)),
+            ("extra", json!(true)),
+        ] {
+            let mut malformed = result.clone();
+            malformed[key] = bad;
+            assert!(
+                !switch_event(
+                    &inner,
+                    json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":malformed})
+                ),
+                "{key}"
+            );
+        }
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":result})
+        ));
+        let report = op.wait().await;
+        assert!(report.ok);
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        assert_eq!(report.result.unwrap()["values"][0][0], "9007199254740993");
+        assert!(report.dml_acknowledged.is_some());
+    }
+    #[tokio::test]
+    async fn dml_database_rejection_and_post_ack_drain_loss_keep_distinct_evidence() {
+        for acknowledged in [false, true] {
+            let (inner, mut op) = dispatched_dml(SnowflakeDmlKind::Delete);
+            if acknowledged {
+                assert!(switch_event(
+                    &inner,
+                    json!({"type":"dmlAcknowledged","kind":"delete","sdkRequestId":USE_ID})
+                ));
+            }
+            assert!(switch_event(
+                &inner,
+                json!({"type":"terminal","ok":false,"sdkRequestId":USE_ID,"error":{"code":"database"}})
+            ));
+            let report = op.wait().await;
+            assert_eq!(
+                report.certainty,
+                if acknowledged {
+                    Certainty::StatementSucceeded
+                } else {
+                    Certainty::ServerTerminal
+                }
+            );
+            assert_eq!(report.dml_acknowledged.is_some(), acknowledged);
+            assert_eq!(inner.state.lock().unwrap().retired.is_some(), acknowledged);
+        }
+    }
+    #[test]
+    fn dropped_dispatched_dml_retires_but_completed_cleanup_cannot_retire_replacement() {
+        let (inner, op) = dispatched_dml(SnowflakeDmlKind::Insert);
+        drop(op);
+        assert_eq!(
+            inner.state.lock().unwrap().retired,
+            Some(Retirement::Dropped)
+        );
+        // Keep the synthetic transport receivers alive for the replacement.
+        let (inner, _normal, _control) = isolated();
+        let old = inner
+            .request("dml", "dml", json!({"kind":"delete"}), Impact::Mutating)
+            .unwrap();
+        inner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .get_mut("dml")
+            .unwrap()
+            .phase = Phase::Dispatching;
+        let pending = inner.state.lock().unwrap().pending.remove("dml").unwrap();
+        inner.state.lock().unwrap().wire_ids.clear();
+        pending.terminal.send_replace(Some(local_report(json!({}))));
+        let replacement = inner
+            .request("dml", "dml", json!({"kind":"insert"}), Impact::Mutating)
+            .unwrap();
+        old.cleanup_unfinished();
+        assert!(replacement.report().is_none());
+        assert!(inner.state.lock().unwrap().retired.is_none());
     }
     #[tokio::test]
     async fn transaction_action_and_impact_are_paired_and_queued_cancel_is_local() {

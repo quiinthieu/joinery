@@ -1,4 +1,5 @@
-//! Stateful external-browser read adapter. Packaged account workflows and writes remain unqualified.
+//! Stateful external-browser adapter with separately admitted reviewed SQL DML.
+//! Packaged account workflows and actual mutation effects remain unqualified.
 //! Each instance owns one helper connection; no query or connection is automatically recreated.
 use super::snowflake_process::{
     Bounds, Certainty, CleanupObserver, Column, Impact, Launch, Operation, OperationToken, Report,
@@ -533,6 +534,43 @@ impl SnowflakeExternal {
             return Err(stale_transaction());
         }
         Ok(())
+    }
+
+    fn validate_dml_locked(
+        &self,
+        state: &TransactionAuthorityState,
+        request: &SnowflakeDmlRequest,
+    ) -> AppResult<crate::safety::snowflake_dml::Canonical> {
+        if self.is_closed() {
+            return Err(closed_error());
+        }
+        if self.profile.safe_mode == SafeMode::ReadOnly
+            || !self.profile.snowflake.as_ref().is_some_and(|config| {
+                config.authentication == SnowflakeAuthentication::ExternalBrowser
+                    && config.reviewed_dml
+            })
+        {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Snowflake DML requires an explicitly enabled external-browser profile with writes allowed",
+            ));
+        }
+        if state
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.restricted)
+            || state
+                .grant
+                .as_ref()
+                .is_none_or(|grant| grant.revision != request.revision)
+        {
+            return Err(stale_transaction());
+        }
+        crate::safety::snowflake_dml::compile(
+            &request.sql,
+            Some(&request.parameters),
+            &self.profile.database,
+        )
     }
 
     fn publish_transaction_sample(
@@ -1103,6 +1141,164 @@ impl Drop for SnowflakeExternal {
 
 #[async_trait]
 impl Driver for SnowflakeExternal {
+    fn validate_snowflake_dml(&self, request: &SnowflakeDmlRequest) -> AppResult<()> {
+        self.validate_dml_locked(&self.transaction_authority.lock(), request)
+            .map(|_| ())
+    }
+
+    async fn snowflake_dml(
+        &self,
+        session_id: &str,
+        request: &SnowflakeDmlRequest,
+    ) -> AppResult<SnowflakeDmlResult> {
+        if session_id != self.session_id {
+            return Err(AppError::invalid("Invalid Snowflake session"));
+        }
+        // Recompile the original SQL and scalar parameters at the private
+        // adapter boundary. Public callers cannot supply a trusted wire query.
+        // This is reviewed SQL-name execution, not an atomic object binding:
+        // concurrent DDL, temporary shadowing and indirect effects remain gates.
+        let (canonical, baseline, generation) = {
+            let mut state = self.transaction_authority.lock();
+            let canonical = self.validate_dml_locked(&state, request)?;
+            let baseline = state.grant.take().ok_or_else(stale_transaction)?.sample;
+            let generation = new_id();
+            state.generation = generation.clone();
+            if let Some(recovery) = &mut state.recovery {
+                recovery.revision = new_id();
+            }
+            (canonical, baseline, generation)
+        };
+        let kind = canonical.kind();
+        let wire = canonical.bound_statement();
+        let binds = binds_json(&wire.binds)?;
+        self.invalidate_session_options();
+        self.invalidate_relation_catalog();
+        let mut lease = TransactionLease {
+            driver: self,
+            operation: None,
+            settled: false,
+        };
+        let mut summary = SnowflakeDmlSummary::unavailable();
+        let result = self.metadata_operation_inner(async {
+            self.require_transaction_generation(&generation)?;
+            let before = self.session_sample().await?;
+            if before != baseline {
+                self.restrict_transaction_recovery(&generation);
+                return Err(stale_transaction());
+            }
+            {
+                let state = self.transaction_authority.lock();
+                if state.generation != generation || self.is_closed() {
+                    return Err(stale_transaction());
+                }
+                lease.operation = Some(self.process.request(
+                    "reviewed-dml", "dml",
+                    json!({"kind": kind, "sql": wire.rewritten_sql, "binds": binds,
+                        "expected": {"user": self.identity["user"], "session": self.identity["session"]}}),
+                    Impact::Mutating,
+                ).map_err(control_error)?);
+            }
+            let report = {
+                let operation = lease.operation.as_mut().ok_or_else(protocol_error)?;
+                *self.active.lock() = Some(Active {
+                    token: operation.token(),
+                    terminal: operation.terminal_receiver(),
+                });
+                let _active = ActiveLease(&self.active);
+                operation.wait().await
+            };
+            // Retain available count evidence before the final observer can
+            // fail. rowsSeen describes status rows and is never affected rows.
+            if report.dml_acknowledged.as_ref().is_some_and(|ack| ack.kind == kind) {
+                summary = dml_summary(kind, report.result.as_ref());
+            }
+            check_report(&report)?;
+            if report.dml_acknowledged.as_ref().is_none_or(|ack| ack.kind != kind) {
+                return Err(protocol_error());
+            }
+            self.require_transaction_generation(&generation)?;
+            let after = self.session_sample().await?;
+            let mut comparable = after.clone();
+            comparable.transaction_id = baseline.transaction_id.clone();
+            if comparable != baseline
+                || baseline.transaction_id.as_ref().is_some_and(|id| after.transaction_id.as_ref() != Some(id))
+                || (baseline.autocommit && baseline.transaction_id.is_none() && after.transaction_id.is_some())
+            {
+                return Err(stale_transaction());
+            }
+            self.require_transaction_generation(&generation)?;
+            self.publish_transaction_sample(&after, &generation)
+        }).await;
+        match result {
+            Ok(state) => {
+                lease.settled = true;
+                Ok(SnowflakeDmlResult {
+                    kind,
+                    statement_outcome: SnowflakeDmlOutcome::Succeeded,
+                    summary,
+                    state,
+                    retired: false,
+                    error: None,
+                })
+            }
+            Err(error) => {
+                self.observer_failed(&generation, &error);
+                let Some(operation) = &lease.operation else {
+                    return Err(error.with_completion_invalidated());
+                };
+                let acknowledged = operation
+                    .dml_acknowledged()
+                    .is_some_and(|ack| ack.kind == kind);
+                let report = operation.report();
+                let rejected = !acknowledged
+                    && report.as_ref().is_some_and(|report| {
+                        !report.ok
+                            && report.retirement.is_none()
+                            && report.error_code.as_deref() == Some("database")
+                            && report.certainty == Certainty::ServerTerminal
+                    });
+                let recoverable = ((acknowledged
+                    && report.as_ref().is_some_and(|report| report.ok)
+                    && error.code == ErrorCode::Database)
+                    || rejected)
+                    && self.restrict_transaction_recovery(&generation);
+                if recoverable {
+                    lease.settled = true;
+                } else {
+                    self.start_shutdown();
+                }
+                let error = if acknowledged && !recoverable {
+                    AppError::new(
+                        ErrorCode::ConnectionClosed,
+                        "Snowflake acknowledged the DML statement, but the final session state could not be verified. The session was closed; reconnect before continuing.",
+                    )
+                } else if !acknowledged && !rejected {
+                    AppError::new(
+                        ErrorCode::OutcomeUnknown,
+                        "Snowflake DML outcome is unknown; inspect query history before retrying",
+                    )
+                } else {
+                    error
+                };
+                Ok(SnowflakeDmlResult {
+                    kind,
+                    statement_outcome: if acknowledged {
+                        SnowflakeDmlOutcome::Succeeded
+                    } else if rejected {
+                        SnowflakeDmlOutcome::Rejected
+                    } else {
+                        SnowflakeDmlOutcome::Unknown
+                    },
+                    summary,
+                    state: self.unavailable_session_state(),
+                    retired: !recoverable,
+                    error: Some(error.with_completion_invalidated()),
+                })
+            }
+        }
+    }
+
     fn validate_transaction_control(&self, request: &TransactionControlRequest) -> AppResult<()> {
         self.validate_transaction_locked(&self.transaction_authority.lock(), request)
     }
@@ -1921,6 +2117,40 @@ impl Driver for SnowflakeExternal {
     }
 }
 
+fn dml_summary(kind: SnowflakeDmlKind, result: Option<&Value>) -> SnowflakeDmlSummary {
+    let parse = || -> Option<SnowflakeDmlSummary> {
+        let result = result?;
+        let columns = result.get("columns")?.as_array()?;
+        if columns.len() > 2 {
+            return None;
+        }
+        let columns = columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| {
+                Some(column_info((
+                    index,
+                    Column {
+                        name: column.get("name")?.as_str()?.to_owned(),
+                        data_type: column.get("type")?.as_str()?.to_owned(),
+                    },
+                )))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let rows: Vec<TextRow> = serde_json::from_value(result.get("values")?.clone()).ok()?;
+        if result.get("rowsSeen")?.as_u64()? != rows.len() as u64 {
+            return None;
+        }
+        Some(super::snowflake_dml_summary::parse(
+            kind,
+            &columns,
+            &rows,
+            result.get("truncated")?.as_bool()?,
+        ))
+    };
+    parse().unwrap_or_else(SnowflakeDmlSummary::unavailable)
+}
+
 fn binds_json(binds: &[TypedBind]) -> AppResult<Vec<Value>> {
     if binds.len() > 1000 {
         return Err(AppError::invalid("Too many Snowflake helper parameters"));
@@ -2148,7 +2378,7 @@ const file = name => new URL(name, import.meta.url);
 // coercion in the production template. This models routing, not Snowflake typing.
 const normalizedContextSql = 'SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES';
 const oldContextSql = normalizedContextSql.replace('TO_VARCHAR(CURRENT_SCHEMAS())', 'TO_JSON(CURRENT_SCHEMAS())');
-let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, currentTransaction = null;
+let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, currentTransaction = null;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
   appendFileSync(file('connections'), '1');
@@ -2167,9 +2397,17 @@ const sdk = { createConnection() {
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
       const use = sql.startsWith('USE SCHEMA ');
       const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
+      const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /u.test(sql);
       const readback = sql.startsWith('SELECT CURRENT_USER(),') && switched;
       let names = ['VALUE'], rows = [['1']], parameter;
-      if (boundary) {
+      if (dml) {
+        dmlSeen = true;
+        appendFileSync(file('dml-binds'), JSON.stringify(options.binds) + '\n');
+        if (!settings.rejectDml && value('autocommit','true') === 'false') currentTransaction = value('transactionId','implicit-DML-TX');
+        names = [sql.startsWith('INSERT') ? 'number of rows inserted' : sql.startsWith('UPDATE') ? 'number of rows updated' : 'number of rows deleted'];
+        rows = [[value('affectedRows','9007199254740993')]];
+        if (settings.multiJoined !== undefined) { names.push('number of multi-joined rows updated'); rows[0].push(settings.multiJoined); }
+      } else if (boundary) {
         if (!settings.rejectBoundary) {
           currentTransaction = sql === 'BEGIN TRANSACTION' ? 'opaque-TX-雪' : null;
           boundarySeen = true;
@@ -2190,7 +2428,7 @@ const sdk = { createConnection() {
       } else if (context) {
         contextReads++;
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
-        rows = [[value('principal','SERVER_USER'),(switched || boundarySeen) ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),(switched || boundarySeen) ? value('afterDatabase',value('database','DB')) : value('database','DB'),(switched || boundarySeen) ? value('afterSchema',currentSchema) : value('schema',currentSchema),(switched || boundarySeen) ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),(switched || boundarySeen) ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),(switched || boundarySeen) ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
+        rows = [[value('principal','SERVER_USER'),(switched || boundarySeen || dmlSeen) ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),(switched || boundarySeen || dmlSeen) ? value('afterDatabase',value('database','DB')) : value('database','DB'),(switched || boundarySeen || dmlSeen) ? value('afterSchema',currentSchema) : value('schema',currentSchema),(switched || boundarySeen || dmlSeen) ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),(switched || boundarySeen || dmlSeen) ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),(switched || boundarySeen || dmlSeen) ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
       } else if (sql.startsWith('SHOW PARAMETERS LIKE ')) {
         parameter = sql.split("'")[1];
         names = ['key','value','default','level'];
@@ -2199,7 +2437,7 @@ const sdk = { createConnection() {
       } else if (sql === 'SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID') {
         transactionReads++;
         names = ['TRANSACTION_ID'];
-        rows = [[boundarySeen ? value('afterBoundaryTransactionId',currentTransaction) : switched ? value('afterTransactionId',value('transactionId',currentTransaction)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',currentTransaction)]];
+        rows = [[boundarySeen ? value('afterBoundaryTransactionId',currentTransaction) : (switched || dmlSeen) ? value('afterTransactionId',value('transactionId',currentTransaction)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',currentTransaction)]];
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
         rows = value('schemas',['OTHER','PUBLIC']).map(name => ['DB',name]);
@@ -2209,8 +2447,20 @@ const sdk = { createConnection() {
       let cancelled = false;
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map(name => ({ getName: () => name, getType: () => settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
+        getColumns: () => names.map(name => ({ getName: () => settings.badDmlName && dml ? 'unexpected' : name, getType: () => dml ? value('dmlType','FIXED') : settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
         streamRows() {
+          if (dml && settings.protocolDml) {
+            send.flush().then(() => process.stdout.write(Buffer.alloc(4)));
+            return Readable.from((async function*() { await new Promise(() => {}); })());
+          }
+          if (dml && settings.holdDmlDrain || context && dmlSeen && settings.holdDmlObserver) {
+            writeFileSync(file(dml ? 'held-dml-drain' : 'held-dml-observer'), '');
+            return Readable.from((async function*() {
+              while (!existsSync(file('release')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5));
+              if (cancelled) throw { sqlState: '57014' };
+              yield* rows;
+            })());
+          }
           if (boundary && settings.protocolBoundary) {
             send.flush().then(() => process.stdout.write(Buffer.alloc(4)));
             return Readable.from((async function*() { await new Promise(() => {}); })());
@@ -2227,8 +2477,9 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      const denied = dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
       setImmediate(() => {
+        if (dml && settings.holdDml) { writeFileSync(file('held-dml'), ''); return; }
         if (boundary && settings.holdBoundary || use && settings.holdUse || readback && settings.holdReadback) {
           writeFileSync(file(boundary ? 'held-boundary' : use ? 'held-use' : 'held-readback'), '');
           return;
@@ -2260,6 +2511,10 @@ process.stdin.on('end', retire);
         }
 
         async fn open_mode(safe_mode: SafeMode) -> Self {
+            Self::open_policy(safe_mode, false).await
+        }
+
+        async fn open_policy(safe_mode: SafeMode, reviewed_dml: bool) -> Self {
             let scripts = tempfile::tempdir().unwrap();
             let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -2312,6 +2567,7 @@ process.stdin.on('end', retire);
                 store_drafts: false,
                 snowflake: Some(SnowflakeConfig {
                     authentication: SnowflakeAuthentication::ExternalBrowser,
+                    reviewed_dml,
                     role: "ROLE".into(),
                     warehouse: "WH".into(),
                     schema: "PUBLIC".into(),
@@ -2387,6 +2643,9 @@ process.stdin.on('end', retire);
                     .contains(&sql.as_str())
                     || sql.starts_with("USE SCHEMA \"DB\".")
                     || ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"].contains(&sql.as_str())
+                    || ["INSERT INTO ", "UPDATE ", "DELETE FROM "]
+                        .iter()
+                        .any(|prefix| sql.starts_with(prefix))
             }));
         }
     }
@@ -2470,6 +2729,435 @@ process.stdin.on('end', retire);
             | TransactionControlAuthority::RollbackOnly { revision } => revision.clone(),
         };
         TransactionControlRequest { action, revision }
+    }
+
+    fn dml_request(state: &SessionRuntimeState, sql: &str) -> SnowflakeDmlRequest {
+        SnowflakeDmlRequest {
+            sql: sql.into(),
+            parameters: vec![],
+            revision: transaction_request(state, ExplicitTransactionAction::Rollback).revision,
+        }
+    }
+
+    fn dml_count(h: &Harness) -> usize {
+        h.queries()
+            .iter()
+            .filter(|sql| {
+                ["INSERT INTO ", "UPDATE ", "DELETE FROM "]
+                    .iter()
+                    .any(|prefix| sql.starts_with(prefix))
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn dml_uses_exact_eleven_statements_and_decimal_counts_not_status_rows() {
+        for (sql, settings) in [
+            ("INSERT INTO DB.PUBLIC.T (V) VALUES (1)", json!({})),
+            (
+                "UPDATE DB.PUBLIC.T SET V = 2 WHERE V = 1",
+                json!({"multiJoined":"7"}),
+            ),
+            (
+                "DELETE FROM DB.PUBLIC.T WHERE V = 1",
+                json!({"affectedRows":"0"}),
+            ),
+        ] {
+            let h = Harness::open_policy(SafeMode::Confirm, true).await;
+            h.settings(settings.clone());
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            let request = dml_request(&state, sql);
+            let baseline = h.queries().len();
+            h.driver.validate_snowflake_dml(&request).unwrap();
+            h.driver.validate_snowflake_dml(&request).unwrap();
+            assert_eq!(h.queries().len(), baseline);
+            let result = h
+                .driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .unwrap();
+            assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+            assert_eq!(result.summary.status, SnowflakeDmlSummaryStatus::Validated);
+            assert_eq!(
+                result.summary.affected_rows.as_deref(),
+                Some(if settings.get("affectedRows").is_some() {
+                    "0"
+                } else {
+                    "9007199254740993"
+                })
+            );
+            assert_eq!(
+                result.summary.multi_joined_rows.as_deref(),
+                settings.get("multiJoined").and_then(Value::as_str)
+            );
+            assert!(!result.retired && result.error.is_none());
+            let mut expected = sample_sql();
+            expected.push(sql.into());
+            expected.extend(sample_sql());
+            assert_eq!(h.queries()[baseline..], expected);
+            assert!(
+                h.driver
+                    .snowflake_dml("observer-session", &request)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(dml_count(&h), 1);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dml_recompiles_bound_original_and_preserves_scalar_precision() {
+        let h = Harness::open_policy(SafeMode::Confirm, true).await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let mut request = dml_request(&state, "INSERT INTO DB.PUBLIC.T (V) VALUES (:value)");
+        request.parameters.push(QueryParamInput {
+            key: "value".into(),
+            kind: QueryParamKind::Integer,
+            value: Some("9007199254740993".into()),
+        });
+        let result = h
+            .driver
+            .snowflake_dml("observer-session", &request)
+            .await
+            .unwrap();
+        assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+        let canonical =
+            crate::safety::snowflake_dml::compile(&request.sql, Some(&request.parameters), "DB")
+                .unwrap();
+        assert!(
+            h.queries()
+                .contains(&canonical.bound_statement().rewritten_sql)
+        );
+        let binds = std::fs::read_to_string(h.scripts.path().join("dml-binds")).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(binds.trim()).unwrap(),
+            json!(["9007199254740993"])
+        );
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn dml_profile_grammar_revision_and_rollback_only_denials_submit_nothing() {
+        for (safe_mode, enabled) in [(SafeMode::ReadOnly, false), (SafeMode::Confirm, false)] {
+            let h = Harness::open_policy(safe_mode, enabled).await;
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+            let baseline = h.queries().len();
+            assert_eq!(
+                h.driver
+                    .snowflake_dml("observer-session", &request)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PolicyBlocked
+            );
+            assert_eq!(h.queries().len(), baseline);
+            h.finish().await;
+        }
+        let h = Harness::open_policy(SafeMode::Confirm, true).await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let baseline = h.queries().len();
+        let mut sink = ScalarSink::default();
+        for kind in [StatementKind::Read, StatementKind::Write] {
+            assert!(
+                h.driver
+                    .execute("DELETE FROM DB.PUBLIC.T WHERE V = 1", kind, &mut sink)
+                    .await
+                    .is_err()
+            );
+        }
+        for sql in [
+            "DELETE FROM T",
+            "DELETE FROM OTHER.PUBLIC.T",
+            "DELETE FROM DB.PUBLIC.T; DELETE FROM DB.PUBLIC.T",
+            "UPDATE DB.PUBLIC.T SET V = EXTERNAL_FUNCTION(V)",
+        ] {
+            assert!(
+                h.driver
+                    .snowflake_dml("observer-session", &dml_request(&state, sql))
+                    .await
+                    .is_err()
+            );
+        }
+        let mut request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+        request.revision = "foreign".into();
+        assert!(
+            h.driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .is_err()
+        );
+        assert_eq!(h.queries().len(), baseline);
+        let generation = h.driver.transaction_authority.lock().generation.clone();
+        h.driver.restrict_transaction_recovery(&generation);
+        let revision = match h.driver.transaction_authority().unwrap() {
+            TransactionControlAuthority::RollbackOnly { revision } => revision,
+            _ => panic!("restricted authority"),
+        };
+        request.revision = revision;
+        assert!(
+            h.driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .is_err()
+        );
+        assert_eq!(h.queries().len(), baseline);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn dml_accepts_pending_and_implicit_transactions_without_boundaries() {
+        for settings in [
+            json!({"transactionId":"pending-opaque-TX"}),
+            json!({"autocommit":"false"}),
+        ] {
+            let h = Harness::open_policy(SafeMode::Confirm, true).await;
+            h.settings(settings.clone());
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            let request = dml_request(&state, "UPDATE DB.PUBLIC.T SET V = 2 WHERE V = 1");
+            let baseline = h.queries().len();
+            let result = h
+                .driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .unwrap();
+            assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+            assert_eq!(
+                result.state.transaction_state,
+                TransactionState::InTransaction
+            );
+            let expected = if settings.get("transactionId").is_some() {
+                "pending-opaque-TX"
+            } else {
+                "implicit-DML-TX"
+            };
+            assert!(
+                matches!(result.state.transaction_observation, Some(TransactionObservation::Observed { transaction_id: Some(ref id), usability: TransactionUsability::Unknown, .. }) if id == expected)
+            );
+            assert_eq!(h.queries().len() - baseline, 11);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dml_ack_and_count_survive_denied_final_observer_with_rollback_only_recovery() {
+        let h = Harness::open_policy(SafeMode::Confirm, true).await;
+        h.settings(json!({"failDmlObserver":"AUTOCOMMIT"}));
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+        let result = h
+            .driver
+            .snowflake_dml("observer-session", &request)
+            .await
+            .unwrap();
+        assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+        assert_eq!(
+            result.summary.affected_rows.as_deref(),
+            Some("9007199254740993")
+        );
+        assert!(!result.retired);
+        assert_eq!(result.error.unwrap().code, ErrorCode::Database);
+        assert!(matches!(
+            result.state.transaction_control_authority,
+            Some(TransactionControlAuthority::RollbackOnly { .. })
+        ));
+        assert!(
+            h.driver
+                .snowflake_dml(
+                    "observer-session",
+                    &dml_request(&result.state, &request.sql)
+                )
+                .await
+                .is_err()
+        );
+        h.settings(json!({}));
+        let rollback = transaction_request(&result.state, ExplicitTransactionAction::Rollback);
+        let baseline = h.queries().len();
+        h.driver
+            .transaction_control("observer-session", &rollback)
+            .await
+            .unwrap();
+        assert_eq!(h.queries()[baseline], "ROLLBACK");
+        assert_eq!(h.queries().len() - baseline, 6);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn dml_database_rejection_is_definitive_and_unknown_delivery_never_replays() {
+        let h = Harness::open_policy(SafeMode::Confirm, true).await;
+        h.settings(json!({"rejectDml":true}));
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+        let baseline = h.queries().len();
+        let result = h
+            .driver
+            .snowflake_dml("observer-session", &request)
+            .await
+            .unwrap();
+        assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Rejected);
+        assert_eq!(result.summary, SnowflakeDmlSummary::unavailable());
+        assert!(!result.retired);
+        assert_eq!(h.queries().len() - baseline, 6);
+        assert!(matches!(
+            result.state.transaction_control_authority,
+            Some(TransactionControlAuthority::RollbackOnly { .. })
+        ));
+        h.finish().await;
+
+        for (settings, barrier, expected) in [
+            (
+                json!({"holdDml":true}),
+                "held-dml",
+                SnowflakeDmlOutcome::Unknown,
+            ),
+            (
+                json!({"holdDmlDrain":true}),
+                "held-dml-drain",
+                SnowflakeDmlOutcome::Succeeded,
+            ),
+            (
+                json!({"holdDmlObserver":true}),
+                "held-dml-observer",
+                SnowflakeDmlOutcome::Succeeded,
+            ),
+        ] {
+            let h = Harness::open_policy(SafeMode::Confirm, true).await;
+            h.settings(settings);
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+            let driver = h.driver.clone();
+            let task =
+                tokio::spawn(
+                    async move { driver.snowflake_dml("observer-session", &request).await },
+                );
+            h.wait_until(|| h.scripts.path().join(barrier).exists())
+                .await;
+            let _ = h.driver.cancel().await;
+            let result = task.await.unwrap().unwrap();
+            assert_eq!(result.statement_outcome, expected);
+            assert!(result.retired && h.driver.is_closed());
+            if barrier == "held-dml-observer" {
+                assert_eq!(
+                    result.summary.affected_rows.as_deref(),
+                    Some("9007199254740993")
+                );
+            }
+            assert_eq!(dml_count(&h), 1);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dml_unavailable_summary_does_not_erase_success() {
+        for settings in [
+            json!({"dmlType":"TEXT"}),
+            json!({"badDmlName":true}),
+            json!({"affectedRows":"-1"}),
+            json!({"affectedRows":null}),
+        ] {
+            let h = Harness::open_policy(SafeMode::Confirm, true).await;
+            h.settings(settings);
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+            let result = h
+                .driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .unwrap();
+            assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+            assert_eq!(result.summary, SnowflakeDmlSummary::unavailable());
+            assert!(!result.retired);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dml_post_ack_protocol_and_foreign_context_keep_ack_and_retire() {
+        for settings in [
+            json!({"protocolDml":true}),
+            json!({"afterSession":"FOREIGN"}),
+            json!({"afterRole":"CHANGED"}),
+            json!({"afterTransactionId":"foreign-TX"}),
+        ] {
+            let h = Harness::open_policy(SafeMode::Confirm, true).await;
+            h.settings(settings.clone());
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+            let result = h
+                .driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .unwrap();
+            assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+            assert!(result.retired && h.driver.is_closed());
+            if settings.get("protocolDml").is_none() {
+                assert_eq!(
+                    result.summary.affected_rows.as_deref(),
+                    Some("9007199254740993")
+                );
+            }
+            assert_eq!(dml_count(&h), 1);
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dml_consumes_authority_before_busy_lane_and_rejects_changed_baseline() {
+        let h = Harness::open_policy(SafeMode::Confirm, true).await;
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+        let baseline = h.queries().len();
+        let lane = h.driver.lane.lock().await;
+        assert_eq!(
+            h.driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        drop(lane);
+        assert!(h.driver.validate_snowflake_dml(&request).is_err());
+        assert_eq!(h.queries().len(), baseline);
+        let state = h.driver.session_state("observer-session").await.unwrap();
+        let request = dml_request(&state, &request.sql);
+        h.settings(json!({"warehouse":"CHANGED"}));
+        assert_eq!(
+            h.driver
+                .snowflake_dml("observer-session", &request)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(dml_count(&h), 0);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn dml_abandoned_after_ack_reaps_and_revokes_authority() {
+        for (settings, barrier) in [
+            (json!({"holdDmlDrain":true}), "held-dml-drain"),
+            (json!({"holdDmlObserver":true}), "held-dml-observer"),
+        ] {
+            let h = Harness::open_policy(SafeMode::Confirm, true).await;
+            h.settings(settings);
+            let state = h.driver.session_state("observer-session").await.unwrap();
+            let request = dml_request(&state, "DELETE FROM DB.PUBLIC.T WHERE V = 1");
+            let driver = h.driver.clone();
+            let task =
+                tokio::spawn(
+                    async move { driver.snowflake_dml("observer-session", &request).await },
+                );
+            h.wait_until(|| h.scripts.path().join(barrier).exists())
+                .await;
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            assert!(h.driver.is_closed());
+            assert_eq!(dml_count(&h), 1);
+            h.finish().await;
+        }
     }
 
     #[tokio::test]
