@@ -1,5 +1,27 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Retained runner and aggregate payload bound (12 November 2026)
+
+| Capability | Implemented locally | Verification/remaining gate |
+| --- | --- | --- |
+| Shared retained lifecycle owner | Private 32-phase core used by the route/fault fixtures; original completions precede phase barriers; detached ownership retains cleanup | Constructor remains test-only; exact Plan/Policy identity required before attachment; no account authority |
+| Incomplete read evidence | Typed failure and durable `incompleteRead` retain original operation/capture/cleanup errors and the bounded event prefix; failed first drain stays incomplete after late `Finished` | Regression and final validation results in the verification ledger; local journal consistency does not prove power-loss durability |
+| Aggregate qualification payload | 32 MiB for all inbound frame bodies, checked before allocation/read, with actual partial/malformed byte accounting and nonrefundable reservations | 27 transport tests pass; conservative result-content upper bound, independent of 64 MiB wire cap; normal large-result queries unchanged |
+| Executable account boundary | Same core can be integrated behind a future consumed-attempt capability | Source/binary/full-runtime/private-profile binding, one-use consumption and fixed account entry remain incomplete |
+
+The complete corrected-source qualification module passes **142/142 tests**,
+including all 135 preceding cases and seven new regressions. Focused counts
+overlap these module totals.
+Full application validation passes 679 frontend / 467 standard Rust tests and
+strict checks, with 129 fixtures ignored. This does not execute the ignored
+real-database/native/account workflows.
+
+See the [verification ledger](replacement-verification.md) for final combined
+checks and failed initial runs. These internal changes do not qualify live
+Snowflake effects or packaged UI workflows. Writes, DDL, transactions, external-
+browser SSO, million-row account behavior, all applicable DataGrip functionality
+and owner acceptance remain required. Earlier entries retain historical scope.
+
 ## Closed-plan identity and drift stops (11 November 2026)
 
 | Capability | Implemented locally | Verification/remaining gate |

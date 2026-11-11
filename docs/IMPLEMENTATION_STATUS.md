@@ -1,5 +1,44 @@
 # Implementation and release status
 
+## Retained runner and aggregate payload bound (12 November 2026, local integration)
+
+The 32-phase Studio owner is extracted from the synthetic fixture into a shared
+private runner. Every existing route/fault fixture delegates execution, original
+completion recording, phase barriers and cleanup to that core. Its constructor
+remains test-only until a consumed-attempt capability exists. Plan/Policy identity
+is checked before creating their shared attachment; extraction grants no account
+authority. Dropping the waiting handle leaves the owner running through recording
+and local settlement.
+
+Incomplete read capture returns typed errors instead of panicking. A distinct
+durable `incompleteRead` record retains the capture failure, original operation
+error, actual bounded event prefix and cleanup error separately. A failed first
+drain remains incomplete even when cleanup later supplies `Finished`. Review
+identified and resolved the original-error loss and both late-completion edges.
+
+Qualification sessions now enforce a **32 MiB aggregate inbound body cap** before
+allocation/read, counting every frame kind and excluding four-byte headers. This
+is a conservative upper bound on result content, rather than a semantic-only
+counter. Actual consumed bytes include partial and malformed frames; reservations
+are not refunded after interruption. The independent wire/frame/stderr limits
+remain enforced. Normal million-row queries do not use this qualification cap.
+
+The full qualification module passes **142/142 tests** on the corrected frozen
+source; **27/27 transport tests** also pass. These totals overlap their focused
+regressions; the qualification module includes all 135 preceding cases.
+Full validation passes **679 frontend / 467 standard Rust tests**, with 129
+fixture cases ignored, plus formatting/build/check/strict Clippy. The cap and
+shared runner are committed locally as `963a455` and `68fff80`.
+
+See the [verification ledger](replacement-verification.md) for final checks,
+reviewed source identities and the recorded failed initial runs. These changes
+add no externally qualified product capability. Source/binary/full-runtime/private-
+profile binding, one-use consumption and a fixed account entry remain open before
+a fresh executable plan under `SANDBOX.BILLIE_TESTING`. Packaged SSO, live writes,
+DDL, transactions, million-row account behavior, all applicable DataGrip workflows
+and owner acceptance remain gates. The Goal is active/incomplete. Nothing is
+pushed, published, merged or installed; earlier entries retain historical scope.
+
 ## Closed-plan identity and context drift (11 November 2026, local integration)
 
 The internal qualification owner can now retain a reviewed closed definition

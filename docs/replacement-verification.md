@@ -8,6 +8,124 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Retained runner and aggregate payload bound (12 November 2026)
+
+The private shared runner now owns the same 32 Studio phases used by all existing
+synthetic route/fault fixtures: original completion recording precedes phase
+validation, and cleanup retains local ownership after the waiting handle drops.
+Its constructor is test-only, compares exact Plan canonical bytes/hash with Policy
+before creating the same-owner attachment, and exposes no account entry, SQL/
+target selector, private-profile lookup or authentication authority.
+
+Capture overflow/missing terminal drain now returns typed failures instead of
+panicking. Review identified an original-error retention gap in the first
+extraction: durable failed-read records could contain only the replacement capture
+error. The correction adds typed `incompleteRead` completions with the capture
+error, original operation error, actual bounded event prefix and cleanup error
+separately. Both late-completion edges are covered: a later shutdown suffix and
+a successful second drain after the first failed drain cannot upgrade a failed
+collection. The actual late `Finished` remains recorded. Collector-backed tests
+use the same completion/helper code as execution with a real local policy/journal;
+they do not claim an actual SDK timeout or crash/power-loss durability.
+
+Qualification transport now limits aggregate **all-frame body bytes to 32 MiB**,
+including handshake/control/metadata/malformed frames, excluding four-byte headers.
+Declared lengths reserve nonrefundable budget before allocation/read, while the
+report counts actual consumed body bytes, including partial frames. Interrupted
+framing cannot resume. The independent 64 MiB wire, 1 MiB frame, 32,768 frame-count
+and 64 KiB stderr limits remain. This is a conservative upper bound on result
+content rather than a semantic-only counter; normal million-row queries do not
+use this qualification attachment.
+
+Initial failed checks are retained under `.cache/verification/connection-attempts/`:
+
+- `retained-runner-payload-focused.log`: exit **101** before tests, missing
+  `TransportPolicy` test import after extraction; an unused test import is also
+  removed. This is a compilation failure, not a passing transport check.
+- `retained-runner-payload-repaired-focused.log`: exit **101**, **26 passed /
+  1 failed**, **0.09 seconds**. The new scripted child emits an invalid connect
+  `result` event instead of `terminal`, retiring before its cap check. Correcting
+  that test-only protocol typo preserves the original cap/ACK assertions and
+  deadlines; production transport is unchanged by that repair.
+- `retained-runner-and-payload-qualification-all.log`: exit **101**, **141 passed /
+  1 failed**, **347.44 seconds**, normal three-thread execution. The new dropped-
+  core test counts nonexistent `phaseValidated` rather than actual `validatedPhase`,
+  obtaining zero instead of 32. All four new misspelled event assertions are
+  corrected; the factory assertion also checks actual admission `wireId` records.
+  No runner code, deadline or fixture response changes in this repair.
+
+`retained-runner-payload-final-focused.log` exits **0**, **27/27 passed**,
+**0.10 seconds**, covering constructor bounds, exact multi-frame boundary,
+header-only overflow before body allocation/read, partial/malformed accounting,
+cancelled-frame non-reuse and prior ACK retention after policy failure. The new
+real-child case uses the actual Supervisor with scripted wire frames, not the
+production helper/SDK: an earned DML ACK survives the subsequent header-only
+overflow, original terminal/local observations are retained, and actual child
+reaping/task settlement complete. `retained-runner-dropped-core-repaired.log`
+exits **0**, **1/1 passed**, **20.94 seconds**: the waiting core handle drops after
+CREATE, yet the same owner records all 32 original completions and validated
+phases, exact SQL ledger and local helper settlement. Focused counts overlap the
+complete module coverage.
+
+The complete corrected-source qualification module exits **0**, **142/142 passed**
+in **335.80 seconds**, normal three-thread execution,
+`retained-runner-and-payload-qualification-repaired-all.log`. This includes all
+135 preceding cases, six new runner regressions and one new durable-policy
+regression, both S=1/32 success routes with exact 393/610 physical SQL ledgers,
+all seven-mutation fault loops and the corrected assertions. Focused counts
+overlap this total. No production source changes between the preceding 141/1 run
+and this corrected-assertion run.
+
+**`pnpm validate` exits 0** on the same frozen source,
+`retained-runner-and-payload-validate.log`: **679 frontend / 467 standard Rust
+tests pass**, with **129 fixture cases ignored** across 21 Rust result summaries.
+Formatting, contracts, TypeScript, production frontend build, Cargo check and
+strict all-target/all-feature Clippy pass. Existing ts-rs attribute and frontend
+chunk-size warnings remain nonfatal. Separate real database/native/browser/package
+evidence below keeps its recorded earlier scope; these ignored fixtures are not
+claimed as executed by this application check.
+
+Independent bounded source review is clean after the retention corrections.
+Root verifies the final event-name/admission assertion repair against the actual
+emitted journal shapes. The cap is committed locally as `963a455`; the shared
+runner and durable incomplete-read evidence as `68fff80`. All seven index blobs
+match the reviewed/tested source hashes before commit; no code changes after
+these checks. Frozen SHA-256 values identify the reviewed source:
+
+| File under `src-tauri/src/drivers/` | SHA-256 |
+| --- | --- |
+| `snowflake_table_qualification.rs` | `749347b79aa90aac4c835390456e7c0af961b0e1674a6ff5359ee62514c0188b` |
+| `snowflake_table_qualification_policy.rs` | `053b0ddc96061c6531a94679e7537572e384cab1c506a596ca4cf47726565008` |
+| `snowflake_table_qualification_policy_tests.rs` | `15d8d6d358b0cb783416ad8eb7da4ad745e66368162ba89bc996a038742010fb` |
+| `snowflake_table_qualification_runner.rs` | `c3b6070f05f15bacbdbda15ee520e7d6721de44ea87e8bc916269e119ca2bc2e` |
+| `snowflake_table_qualification_runner_tests.rs` | `dd4b1128ac5e7f5c86d62afecd3e55691a21c0aab1734933f52eacb3ee49f865` |
+| `snowflake_qualification_transport.rs` | `47d43007c9356c7fb6c6674e1c6c78a72431db66e88694330ebd29f3a08eb50b` |
+| `snowflake_qualification_transport_tests.rs` | `950faf17f6024a51a5bc24dfc1c484b3b366efe80e8e219cab0c859d6dc9d025` |
+
+```sh
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_transport_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_studio_runner_dropped_core_handle -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+pnpm validate
+```
+
+No UI or normal package behavior changes in this harness-only increment. The
+preceding normal macOS bundle remains present/executable; its executable SHA-256
+is rechecked as `e556602265ca8ddb3004a7c8306d1416d80cd8124c8add8b4c323c5bf6e68265`.
+It is not rebuilt, launched or installed here; its earlier package/startup checks
+retain their original scope. No new UI/native/real-PostgreSQL workflow is claimed.
+No saved private profile, SSO, account SQL or possible billing is exercised here.
+
+Source/binary/full-runtime/private-profile binding, one-use consumption and the
+fixed account entry remain incomplete. Bind a fully inventoried zero-link tree;
+the earlier normal bundle supplies one while the default stage has five links.
+Only after those checks pass, prepare a concrete executable plan for fresh tables
+under owner-permitted `SANDBOX.BILLIE_TESTING` and request fresh execution/billing
+approval. Live account effects/interruptions, packaged SSO, million-row account
+performance, all applicable DataGrip capabilities and owner acceptance remain
+required. The Goal remains active/incomplete; nothing is pushed, published,
+merged or installed. Earlier evidence below retains its historical scope.
+
 ### Closed-plan restoration and context drift (11 November 2026)
 
 Seven focused identity tests pass: three `closed_snapshot_restore_`, two

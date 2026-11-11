@@ -7,6 +7,37 @@ connect to Snowflake, enable an account runner or authorize account activity.
 The complete replacement Goal and all unqualified DataGrip workflows remain
 required.
 
+## Retained owner and payload bound (12 November 2026)
+
+The private shared runner now owns all 32 Studio phases, original completion
+recording, phase barriers and local cleanup; existing synthetic route/fault
+fixtures delegate to it. Construction remains test-only and checks exact Plan/
+Policy identity before creating an attachment from the same owner. A future
+account constructor must require a sealed consumed-attempt capability.
+
+Bounded capture failures use typed `incompleteRead` journal completions retaining
+the capture error, original operation error, actual event prefix and cleanup error
+separately. Failed first drains remain incomplete even after late actual
+`Finished`; late suffixes do not erase the original failure. The same completion
+helper serves execution and durable regression tests. Normal complete failures
+retain their preceding `failed` record shape. A dropped waiter detaches the owner
+rather than cancelling recording or cleanup. This does not prove crash durability.
+
+The qualification transport enforces 32 MiB over all inbound frame bodies,
+including metadata/control/malformed frames, excluding four-byte headers. Declared
+length reserves budget before allocation/read; successful reads report actual
+body bytes, including partial frames. Interrupted framing cannot resume or refund
+that reservation. This conservative upper bound on result content is distinct
+from semantic-only accounting and the existing independent 64 MiB wire, 1 MiB
+frame, 32,768 frame-count and 64 KiB stderr limits. Ordinary million-row queries
+are unchanged. The future executable manifest must bind these actual semantics.
+
+Final validation and failed initial runs are in the
+[verification ledger](replacement-verification.md). Source/binary/full-runtime/
+private-profile binding, one-use consumption and the fixed account entry remain
+incomplete; no Snowflake account effects or packaged daily workflows are qualified
+by this local increment. Earlier sections retain historical scope.
+
 ## Owning policy and durable barriers (11 November 2026)
 
 `Policy` composes the physical sequencer, lifecycle observations, phase evidence

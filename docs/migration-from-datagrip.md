@@ -38,9 +38,13 @@ expands the proposed lifecycle using production SQL definitions. Its internal
 policy now enforces those entries in actual Studio/helper routes with a synthetic
 SDK, including bounded drift and interruption cases. Closed-plan restoration
 preserves the original generated table across processes. These are local test
-results, with no account execution authority. The fixed runner, source/runtime/
-profile-bound executable plan and fresh possible-billing approval remain
-prerequisites to the account walkthrough.
+results, with no account execution authority. The retained 32-phase core is now
+shared by the synthetic route/fault fixtures, with typed durable incomplete-read
+evidence and a conservative qualification-only 32 MiB inbound body cap. Normal
+million-row queries do not use that cap. Its constructor remains test-only;
+the source/binary/full-runtime/profile-bound executable plan, one-use consumption,
+fixed account entry and fresh possible-billing approval remain prerequisites to
+the account walkthrough.
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 

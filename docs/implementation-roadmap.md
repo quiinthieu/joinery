@@ -1,5 +1,40 @@
 # Joinery implementation roadmap
 
+## Retained owner integration (12 November 2026)
+
+The shared 32-phase owner and conservative 32 MiB aggregate inbound body cap are
+implemented locally. Route/fault fixtures use that same execution core. Typed
+incomplete-read records preserve original operation/capture/cleanup errors and
+actual event prefixes through late completion; dropping the waiter retains the
+owner through recording and local settlement. Construction remains test-only.
+The corrected-source qualification module passes 142/142 tests, including all
+135 preceding cases; transport passes 27/27. Focused counts overlap these totals.
+Full validation passes 679 frontend / 467 standard Rust tests and strict checks,
+with 129 fixture cases ignored. Local commits are `963a455` and `68fff80`.
+See the [verification ledger](replacement-verification.md) for final checks and
+the source-review corrections; earlier roadmap sections retain historical scope.
+
+Remaining work, in dependency order:
+
+1. Bind a non-resumable executable attempt to exact reviewed source, actual
+   binary, complete zero-link runtime contents and private profile. Restore the
+   reviewed Plan and consume both its execution hash and account/host/database/
+   schema/RUN marker before authentication. Supply a sealed consumed capability
+   to the same runner; reject drift before authentication, each SQL and after
+   execution. Verify cross-process reuse, partial consumption and launch failure.
+2. Prepare the concrete fresh-table plan under `SANDBOX.BILLIE_TESTING`, with
+   implemented limits and disclosures, then obtain fresh execution/billing
+   approval. The location permission does not revive earlier consumed approvals.
+3. Qualify actual write/DDL/transaction effects and interruptions, packaged SSO,
+   and million-row account performance. Complete all applicable DataGrip
+   workflows and the owner's hands-on acceptance before replacement readiness.
+
+The normal local macOS bundle from the preceding increment remains the runnable
+artifact; this harness-only increment changes no normal package workflow. The
+Goal remains active/incomplete. Nothing is pushed, merged, published or installed.
+The private project hub is not updated: available Sites updates require pushing
+and deployment, both prohibited by the owner's instruction.
+
 ## Full Studio qualification composition (11 November 2026)
 
 The synthetic-only owner now uses actual Studio APIs for all 32 phases. Initial

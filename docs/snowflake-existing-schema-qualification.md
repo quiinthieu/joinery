@@ -40,14 +40,18 @@ tests pass eight census/context drift cases, including exact stopping prefixes
 and retained prior CREATE ACKs. Search-path drift adds an entry rather than
 testing an order-only permutation. Both independent source reviews are clean.
 See the verification ledger for current full validation and failed attempts.
-The complete combined-source module passes 135 tests, including the new identity
-and drift cases. Full validation passes 679 frontend / 467 standard Rust tests
-and strict checks, with 129 fixtures ignored. Extracting the same retained owner
-from its synthetic fixture, source/runtime/binary/private
-connection binding, one-use consumption and the account entry remain incomplete.
-The proposed 32 MiB aggregate semantic-result cap is not yet enforced by the
-transport or per-read bounds. The default staged runtime contains five dependency
-symlinks; the newly verified normal macOS bundle has zero. Strict execution
+The preceding combined-source module passes 135 tests, including the new identity
+and drift cases. That full validation passes 679 frontend / 467 standard Rust
+tests and strict checks, with 129 fixtures ignored. The retained 32-phase owner is
+now extracted and used by all synthetic route/fault fixtures. Construction remains
+test-only. Qualification sessions also enforce a conservative 32 MiB cap over all
+inbound frame bodies, rather than semantic-only accounting; this does not affect
+normal million-row queries. Typed durable incomplete-read evidence preserves
+capture/original/cleanup errors through late completion. Current combined-source
+checks and review corrections are recorded in the verification ledger.
+Source/runtime/binary/private-connection binding, one-use consumption and the
+account entry remain incomplete. The default staged runtime contains five
+dependency symlinks; the preceding normal macOS bundle has zero. Strict execution
 inventory must bind and fully inventory that or another zero-link resource tree.
 No normal desktop command exposes this module.
 See the
@@ -398,6 +402,13 @@ The minimum complete increment has these parts:
    content, 64 MiB physical inbound bytes, 1 MiB/frame, 32,768 frames and 64 KiB
    counted stderr. The reviewed runner must enforce rather than merely print
    these caps.
+   The local qualification transport now conservatively enforces the 32 MiB
+   bound over **all inbound frame bodies**, including control/metadata/malformed
+   frames, excluding four-byte headers. It checks declared length before body
+   allocation/read and separately reports actual bytes, including partial reads.
+   Reservations are not refunded after interruption. This stronger upper bound
+   is not a semantic-only counter and must be described exactly in the executable
+   manifest; it does not restrict normal large-result queries.
 2. **One fixed Rust application-core qualification entry point.** Drive the
    production Studio/SnowflakeExternal session, DDL preflight/prepare/dedicated
    authorization/execute, DML, typed boundaries, read event completion and
@@ -406,6 +417,11 @@ The minimum complete increment has these parts:
    for this owned run. No direct helper setup commands substitute for these
    paths. This qualifies the recorded application-core/adapter path; a normal
    packaged UI run remains separate.
+   The shared retained owner is now extracted and used by all synthetic route/
+   fault fixtures. Its constructor remains test-only pending the sealed consumed-
+   attempt boundary. Typed incomplete-read completion records preserve capture,
+   original operation and cleanup errors without presenting a bounded prefix as
+   complete, including late `Finished` recovery after a failed first drain.
 3. **Physical admission and durable ownership.** A qualification-only policy
    at the production SnowflakeProcess write boundary reserves/checks the next
    permitted SQL/template expansion and syncs its intent before writing. It
