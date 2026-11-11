@@ -21,9 +21,18 @@ hooks. The [shared SQL contract and offline ledger](snowflake-qualification-sql-
 now export bootstrap/typed SQL and expand exact physical statement order/bounds.
 The later owning policy implements physical ledger enforcement, frozen lifecycle
 observations and durable intent/original-outcome/phase receipts, with local fault
-and synthetic composition coverage. Complete production-route execution and
-interruption qualification, source/runtime/private connection binding and the
-account runner remain incomplete. No normal desktop command exposes this module.
+and synthetic composition coverage. The full 32-phase Studio/adapter/helper route
+is now composed in a synthetic-only harness; initial S=1/32 success runs match
+393/610 SQL requests. The first expanded qualification run passes 119/122; focused
+reruns pass success/cancellation. The post-ACK storage-failure case initially
+closes early; a separately reproduced finalization race is repaired and that
+case now passes, as do all 122 qualification and 131 process/adapter tests. Strict
+Rust checks pass separately; both full application runs fail the previously
+recorded PostgreSQL startup timeouts. See the verification
+ledger for failed attempts and the four deterministic repair regressions.
+Final fault verification, real wire interruption,
+source/runtime/private connection binding and the account entry remain incomplete.
+No normal desktop command exposes this module.
 See the
 [verification ledger](replacement-verification.md) for checks and remaining gates.
 
@@ -427,9 +436,10 @@ Implemented prerequisites now include the offline definition/ledger, physical
 admission and original completion observation, frozen lifecycle/runtime policy,
 and private durable journal barriers. The same-call Studio reconciliation bridge
 retains original context options and catalog without a second catalog request.
-These prerequisites do not establish the full production-route lifecycle or
-interruption behavior. A closed runner and source/runtime/profile execution
-envelope remain required before an executable approval plan can be prepared.
+The synthetic-only runner now composes all 32 actual Studio/adapter/helper phases.
+Final fault checks and real wire interruption qualification remain open. A closed
+account entry and source/runtime/profile execution envelope remain required before
+an executable approval plan can be prepared.
 No new execution manifest, approval file, authentication, account test, cleanup
 or account qualification is claimed. See the current verification ledger for
 the scope and results of each implemented prerequisite.

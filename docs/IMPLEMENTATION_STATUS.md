@@ -1,5 +1,46 @@
 # Implementation and release status
 
+## Full Studio qualification composition (11 November 2026, local integration)
+
+The synthetic-only runner now composes all 32 phases through actual Studio,
+adapter and production helper routes. Initial runs pass at census sizes 1 and 32,
+with exactly 393 and 610 SQL requests. The fixture models pending/committed rows,
+rollback, commit, schema markers and the three-column to four-column transition.
+It independently checks all nine fixed SQL statements and their generated target.
+No account SDK, saved private profile or account execution entry is involved.
+
+Original typed operation completions are queued and synced before validation;
+known mutation ACKs remain distinct from failures in later observations. Reads
+retain ordered events through `Finished` and decode retained Arrow rows locally.
+Cancellation waits for the original terminal event; bounded capture overflow
+fails the harness rather than presenting a truncated capture as complete.
+
+Current checks pass 122 qualification tests, 131 process/adapter tests and
+separate formatting/Cargo check/strict Clippy. Both repaired-source full validation
+attempts stop at the two previously recorded PostgreSQL startup-cleanup timeouts;
+679 frontend and the 418-test main Rust library pass in each failed run. The
+unchanged PostgreSQL target passes serially. Its cause remains unproven; the
+pre-repair full application pass is historical evidence in the ledger.
+The first expanded qualification run passes 119 of 122 tests; three actual-helper
+cases fail at startup. Focused reruns expose a separate real result-credit race:
+an original response undergoing terminal observation appears inactive before its
+public completion is published. The adapter now waits for that exact original
+on inactive credit/discard, preserving callback ordering and observer rejection.
+Four deterministic actual-helper regressions pass after reproducing the defect;
+the original post-ACK journal-failure case now reaches its fault and passes too.
+Independent review has no material finding. The repaired-source qualification
+module passes all 122 tests in normal three-thread execution. The recurrent
+PostgreSQL timeout diagnosis remains open; the earlier generic helper-start
+cause also remains unconfirmed.
+See the [verification ledger](replacement-verification.md) for final results,
+reproducible commands and scope. This advances internal qualification only.
+Real wire interruption, the one-use source/runtime/binary/private-profile envelope
+and the fixed account entry remain open before a fresh executable account plan.
+Live writes/DDL/transactions under `SANDBOX.BILLIE_TESTING`, normal packaged SSO,
+million-row account performance, all applicable DataGrip workflows and owner
+acceptance remain required. The Goal is active and incomplete. Nothing is pushed,
+merged, published or installed. Earlier sections retain their historical scope.
+
 ## Owning qualification policy (11 November 2026, local integration)
 
 The harness now owns exact SQL/control admission, callback correlation, phase

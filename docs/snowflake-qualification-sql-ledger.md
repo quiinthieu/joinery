@@ -33,9 +33,9 @@ inspection shapes, reconciliation options plus its actual same-call catalog, and
 the complete fixed-read event/result/row sequence. Read counts come from original
 events and must agree with complete retained rows. Ownership readbacks agree with
 raw creation/transient markers. Exhausting requests or helper terminals alone
-cannot advance a phase. Reconciliation currently needs a runner bridge that
-retains the catalog already produced by that call; another catalog query would
-violate this ledger.
+cannot advance a phase. The harness-only Studio bridge retains the catalog
+already produced by reconciliation; another catalog query would violate this
+ledger. The complete synthetic Studio runner consumes that original catalog.
 
 The journal requires an existing owner-only `0700` directory and exclusively
 creates a `0600` file through an anchored descriptor. It checks file/directory
@@ -66,11 +66,18 @@ completed query in the same phase. They clear their reservation without advancin
 SQL. Every other local completion retains its original report/ACKs and fails the
 attempt. A late original is still recorded after an earlier policy failure.
 
-Full offline owner composition and first-two-phase actual adapter/helper checks
-are distinguished in the [verification ledger](replacement-verification.md#owning-qualification-policy-11-november-2026).
-The former supplies synthetic shaped callbacks/DTOs; the latter uses a synthetic
-SDK with actual adapter requests and parsed operation results. Neither is a
-complete production-route/account qualification.
+Full offline owner composition and actual adapter/helper checks are distinguished
+in the [verification ledger](replacement-verification.md). The former supplies
+synthetic shaped callbacks/DTOs. The newer complete 32-phase Studio runner uses a
+stateful synthetic SDK, actual requests and parsed original operation results at
+S=1/32, with exact 393/610 SQL vectors. Pre-repair full application validation
+passes; the first expanded qualification run passes 119/122. Focused reruns pass success and
+cancellation. The post-ACK storage-failure case passes after a reproduced
+finalization race is repaired, and all 122 qualification and 131 process/adapter
+tests pass. Strict Rust checks pass separately; both full application runs fail
+the previously recorded PostgreSQL startup timeouts.
+Earlier startup failures remain recorded in the ledger. No
+account SDK or account qualification is involved.
 
 ## Shared production definitions
 
@@ -164,13 +171,13 @@ completion, and full production-route outcome qualification remains required.
 
 ## Remaining integration gates
 
-The policy is attached in local fixtures, with complete 393/610-entry offline
-owner routes and narrower actual adapter/helper composition. A full fixed
-production-route runner, source/runtime/binary/private-profile binding and
-one-use approval consumption remain unimplemented. Original local completion
-capture is implemented, but full durable outcome qualification across the fixed
-runner remains open. Preserve early ACKs, actual same-call operation results and
-collector evidence through that integration.
+The policy is attached in local fixtures, including complete synthetic 32-phase
+Studio/adapter/helper composition. Original operation completions are durably
+recorded before validation, separately from validated phase evidence. Final fault
+verification and real wire interruption remain open. Source/runtime/binary/private-
+profile binding, one-use approval consumption and an account entry are still
+unimplemented. Preserve early ACKs, actual same-call results and collector evidence
+through that integration; local filesystem tests do not prove power-loss durability.
 
 Complete production-route success/rejection/interruption/recording-failure tests
 must pass before preparing a fresh executable account plan. The old database-

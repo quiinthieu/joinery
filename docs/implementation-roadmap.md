@@ -1,5 +1,70 @@
 # Joinery implementation roadmap
 
+## Full Studio qualification composition (11 November 2026)
+
+The synthetic-only owner now uses actual Studio APIs for all 32 phases. Initial
+success runs at S=1/32 match the entire 393/610-request SQL ledger. Closed DDL
+actions use the Plan's definitions and actual validated catalog/inspection tokens;
+reads decode local retained Arrow data and transaction boundaries use prior actual
+runtime authority. Original operation completions are recorded before validation.
+The stateful SDK independently validates all nine SQL strings and generated target;
+its ten Node regressions pass. Pre-repair full application validation passes 679
+frontend and 466 standard Rust tests. The first expanded qualification run passes
+119/122: all seven mutations pass each rejection, SDK callback loss and observation
+failure scenario, and the dropped waiter passes too. Three cases fail at helper
+startup in that run. Focused reruns pass the full success route and cancellation,
+but the post-ACK journal-failure
+case initially closes its session before reaching the intended fault. A reproduced
+finalizing-operation race is now repaired: inactive credit/discard waits for that
+exact operation's original public completion. Four deterministic regressions and
+the original journal-failure case pass; independent review has no material finding.
+The complete repaired-source qualification module passes all 122 tests; 131
+process/adapter cases and strict Rust checks also pass. Both full application runs
+fail the previously recorded PostgreSQL startup timeouts, although the target
+passes unchanged serially. That diagnosis and the earlier generic helper-start
+cause remain open.
+
+Remaining work, in dependency order:
+
+1. Resolve the recurrent full-validation PostgreSQL startup timeout without
+   relaxing deadlines or skipping checks. Source review identifies unnecessary
+   synchronous native-root loading with TLS disabled before connection, but
+   elapsed attribution is unproven. Capture stage timing before selecting a
+   bounded repair; preserve explicit CA validation and enabled-TLS trust behavior.
+   All 122 qualification tests now pass, including full-route rejection,
+   callback-loss, cancellation, caller-drop and post-ACK journal failure; original
+   outcomes remain retained without later phase SQL, replay, recovery SQL or
+   cleanup DROP.
+2. Add actual helper wire interruption/EOF and remaining census/context drift
+   cases. SDK callback errors after simulated effects do not prove wire EOF.
+   The runner's test-owned SDK wrapper can intercept the selected exact mutation's
+   successful callback, record a synthetic-effect marker, then exit the child
+   before forwarding it. For retained-ACK coverage, forward that callback unchanged
+   and exit on the first subsequent parent-originated observer SQL callback; an
+   immediate exit after forwarding leaves an ACK-versus-reaper race. Exercise all
+   seven mutation phases, exact SQL prefixes, original unknown/acknowledged typed
+   results and local retirement reports, with no replay, later phase or cleanup
+   DROP. Require actual child exit/reap and local settlement; the child waiter can
+   win before the stdout reader observes EOF. No production hook is needed.
+3. Bind one non-resumable executable attempt to reviewed source, binary, runtime
+   and private profile; consume a one-use approval envelope. The current harness
+   accepts no account/profile/SQL/target selector.
+4. Prepare the exact fresh-table plan under `SANDBOX.BILLIE_TESTING`, then request
+   fresh account execution/billing approval. Old approvals remain consumed.
+5. Qualify actual writes, DDL, transaction effects, normal packaged SSO and
+   million-row performance. Complete all applicable DataGrip workflows and the
+   owner's hands-on walkthrough before replacement acceptance.
+
+See the [verification ledger](replacement-verification.md) for final results and
+the distinction between synthetic routes and externally qualified product behavior.
+The Goal remains active and incomplete. Nothing is pushed, merged, published or
+installed. Earlier roadmap entries below retain their historical scope.
+
+The private project hub is not updated in this local-only increment: available
+Sites content updates require pushing source and deploying, both prohibited by
+the owner's current instruction. Repository documentation remains the durable
+current evidence until publication is authorized.
+
 ## Owning qualification policy (11 November 2026)
 
 Implemented a harness-only owner of the exact physical ledger/control grammar,

@@ -8,6 +8,189 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Full Studio qualification composition (11 November 2026)
+
+The synthetic-only owner now runs the full 32-phase lifecycle through real Studio
+APIs, the adapter and production main/helper. The sole Plan factory generates
+its target; no private-profile, account, SQL or target selector is accepted.
+The stateful SDK independently spells the nine expected statements and models
+three/four-column metadata, pending versus committed rows, two transaction IDs,
+rollback, commit, update, delete and final DROP. This is actual local route
+composition with a synthetic SDK, not real Snowflake/SDK qualification.
+
+Local commits: `933b2fa` closes the DDL action factory, `b3409ce` repairs finalizing
+read outcomes, and `4bc4be2` adds the full synthetic Studio lifecycle and original
+operation-completion recording. Current source is unmerged, unpublished and
+uninstalled. Both repaired-source full validation failures below use this same
+code, before the commit metadata was created.
+
+Initial S=1/32 success coverage passes with exactly **393/610** SQL, **28** runtime
+publications and **32** validated phases. Each original typed operation completion
+is separately queued/fsynced before validation; the success test compares the
+original DTOs and journal ordering phase by phase. Rows are decoded losslessly
+from local retained Arrow IPC; retrieval issues no SQL.
+
+Focused checks currently pass **4** DDL action-factory tests (0.02 seconds),
+**20** owning-policy/route tests (18.68 seconds) and **10** standalone SDK tests.
+Logs are under `.cache/verification/connection-attempts/`:
+`qualification-ddl-factory-tests.log`,
+`qualification-owning-completion-tests.log`, and
+`qualification-stateful-sdk-tests.log`.
+
+Full application validation exits **0**, `qualification-full-runner-validate.log`:
+**679 frontend / 466 standard Rust tests pass**, with **129 fixtures ignored**.
+Formatting, contracts, TypeScript, production build, Cargo check and strict
+all-target/all-feature Clippy pass. Existing ts-rs/chunk-size warnings remain
+nonfatal. This pre-repair validation precedes the production finalization fix and
+later diagnostic assertion changes; it is not a current-source full pass.
+
+The expanded qualification run exits **101**, **119 passed / 3 failed**, 221.30
+seconds, `qualification-full-runner-final.log`. All seven mutations across each
+definitive rejection, post-effect SDK callback-error and post-ACK observer-error
+case pass the strengthened exact-ledger/original-outcome assertions. Dropping the
+caller at the post-CREATE-ACK barrier also passes through all 32 phases. The three
+failures occur at phase 1 with generic helper-start errors before any SQL. Their
+startup cause is not established.
+
+The unchanged focused serial rerun exits **101**, **2 passed / 1 failed**, 95.39
+seconds, `qualification-full-runner-failed-serial.log`: both cancellation variants
+and the full S=1/32 success route pass. The post-ACK journal-failure test instead
+closes the session at phase 2, before its intended phase-3 storage fault. Adding
+diagnostic assertions and rerunning the same three cases in parallel again exits
+**101**, **2 passed / 1 failed**, 52.21 seconds,
+`qualification-full-runner-startup-diagnostics.log`. The same phase-2 failure has
+four completed outbound writes, 22 received frames, no stderr, and an interrupted,
+settled failed transport whose first error is `ConnectionClosed` with
+`completion_invalidated=true`. Success/cancellation pass. Neither rerun proves
+the intended storage-failure behavior or resolves the earlier startup failures.
+
+An isolated diagnostic run, `qualification-full-runner-journal-diagnostics.log`,
+exits **101**, **0 passed / 1 failed**, 22.14 seconds, at phase 1. Both bootstrap
+and version SQL have original successful terminal reports, followed by a locally
+submitted CLOSE and its successful logout acknowledgement before startup returns
+`ConnectionClosed`. No transport error preceded that close. Source investigation
+identified a race between removing an operation from pending, observing its
+terminal response and publishing its original terminal watch: result handling
+can request credit in that interval and mistake the finalizing operation for an
+inactive target.
+
+The deterministic actual-helper reproducer holds the terminal observer at that
+boundary. Both accepted and denied observer variants fail with the same premature
+`ConnectionClosed` before repair: **0 passed / 2 failed**, 0.19 seconds,
+`qualification-finalizing-credit-red-compiled.log`. Its earlier compile attempt
+missed the required `MetadataObserver::check` method and ran no tests; corrected
+before this reproduced failure.
+
+The repair waits only after the precise inactive-control error and only when the
+same operation's owned completion evidence proves terminal finalization. It waits
+for the original public watch after callbacks; it does not expose private cached
+success, issue another control/SQL request or change production deadlines. Four
+actual-helper regressions cover credit/discard with observer success/denial and
+pass **4/4**, 0.17 seconds, `qualification-finalizing-credit-green.log`. They assert
+the stream stays pending and the public watch stays empty while observation is
+held, then compare the actual published original report and reject observer
+failure without extra SQL or control admission. The original full-route journal-
+failure test now passes **1/1**, 14.78 seconds,
+`qualification-full-runner-journal-repaired.log`, reaching the intended phase-3
+storage fault and retaining the original successful DDL result without advancing.
+Failed storage is not claimed durable. The complete repaired-source qualification
+module passes **122/122**, **213.80 seconds**, normal three-thread execution,
+`qualification-full-runner-repaired-all.log`. This includes all three seven-
+mutation fault loops, both S=1/32 success routes, both cancellation variants,
+caller-drop, journal failure, overflow guards, original completion policy tests
+and existing offline validators. Subsequent process/adapter, strict checks and
+failed full validation results follow. Counts overlap the focused results above.
+
+The repaired-source full validation exits **101**,
+`qualification-full-runner-repaired-validate.log`: **679 frontend** and **418 main
+Rust library tests** pass, but PostgreSQL protocol ends **6 passed / 2 failed /
+1 ignored**, 3.61 seconds. Both previously recorded startup-cleanup cases time
+out at `tests/postgres_protocol.rs:121` waiting for identity dispatch. The failure
+has the same location as the earlier unchanged-source failures documented below;
+the production Snowflake repair does not change PostgreSQL code. This is a failed
+full run, and strict lint is not reached. Separate affected checks follow; no
+deadline or test is relaxed.
+
+The independent existing process/adapter regression passes **131/131**, 3.90
+seconds, `qualification-finalizing-process-adapter.log`, including the four new
+finalization cases. Separate **`pnpm check:rust` exits 0**,
+`qualification-finalizing-rust-checks.log`: formatting, Cargo check and strict
+all-target/all-feature Clippy pass. Neither result converts the failed full
+validation into a pass.
+
+The unchanged PostgreSQL protocol target passes serially **8 passed / 1 ignored**,
+1.00 second, `qualification-finalizing-postgres-serial.log`. Source review confirms
+unnecessary synchronous native-root enumeration before connecting even with TLS
+disabled; that can block the fixtures' current-thread runtimes, but timing
+attribution for the failed run is unproven. No PostgreSQL code, fixture deadline
+or scheduling policy is changed in this increment. The complete unchanged rerun,
+`qualification-full-runner-repaired-validate-rerun.log`, also exits **101** at the
+same two PostgreSQL startup-cleanup cases, **6 passed / 2 failed / 1 ignored**,
+3.40 seconds. Frontend/main Rust tests pass again, but this is another failed full
+run and does not reach strict lint. The separate strict check above passes.
+Do not substitute the earlier pre-repair full pass for either failed current-
+source run. Root cause diagnosis remains open.
+
+Independent review has no material finding in the three-file repair. Tier 2
+generation `2026-11-11T16:07:46Z` reports matching metadata, with process partial
+lines 1314–1318 read directly; the missing graph match-guard caller is checked in
+source. External and new-test paths have no recorded coverage issue. These are
+best-effort index signals supplemented by exact source/diff review. These findings
+do not establish the cause of the separate generic helper-start failures.
+
+Frozen reviewed repair SHA-256: `snowflake_process.rs`
+`e6037a4da586474b8cb8ef342ed9bce286ae11ad99ff011ab1c7ef6fd34fd1d7`;
+`snowflake_external.rs`
+`658eef3c5b568efdde11a61ef36014e8c6ba8f7b7902a2a76831fb96c80438ef`;
+`snowflake_qualification_finalizing_adapter_tests.rs`
+`b2f5456e6d8f83e01960411ad09e1d8ca7e58446933aa1eb44c35ac52f0f5b14`.
+The final runner hash is
+`ea44d22d01d2faa467078da23015f0c8712845d46e7b8049c9c7572eecaf0aef`;
+its SDK and Node-test hashes are respectively
+`a08b46ab21612a818c2399d2794eb61c9ed68aa9eeda261bff1915f41a90398a`
+and `7f858cc25bad110016a600d2a9c60c34df98f7e01daf5b4d8014a077bc016731`.
+The read-only impact review confirms startup/version, metadata, ordinary and
+bound reads all use repaired `stream_bounded`; unfinished-operation cleanup
+already treats inactive targets as benign while preserving observer ownership.
+
+Reproduce using the pinned Node/Rust environment documented below:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib ddl_factory_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib owning_ -- --test-threads=1
+node --test src-tauri/tests/support/snowflake_table_qualification_sdk.test.mjs
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_finalizing_query_ -- --test-threads=1
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_studio_runner -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+pnpm validate
+```
+
+The first five-test fault run ended **4 passed / 1 failed** in 484.38 seconds,
+`qualification-full-runner-faults-first.log`. All seven mutations in each rejection,
+post-effect SDK callback-error and post-ACK observer-error case reached the expected
+stopping phase. The cancellation assertion incorrectly required a non-success
+terminal after the fixture released its stalled stream with clean EOF. Source
+review confirmed that production correctly preserves that original successful
+terminal; a cancel acknowledgement alone cannot replace it. Keep that EOF case
+and a distinct SQLSTATE-57014 stream-error case, retaining both original events
+and the actual cancel error. Callback loss is not helper wire EOF.
+
+Review also corrected early read snapshots after cancellation, overflow being
+mistaken for complete capture, cross-phase ACK assertions, weak rejection/loss
+certainty checks and replacement of original errors with generic harness errors.
+Final tests include a dropped waiter at the post-CREATE-ACK barrier and a journal
+permission failure before completion recording. The latter passes after repairing
+the separately reproduced finalization race described above. No claim is made
+that failed storage became durable. Independent bounded source review has no
+remaining material finding; complete qualification results are recorded above.
+
+Still open: actual helper wire interruption, remaining drift cases, the one-use
+source/runtime/binary/private-profile envelope and account entry. No account SDK,
+SSO, private state, external SQL, billing, UI change, package or installation was
+involved. Nothing is pushed, merged or published. Full DataGrip replacement,
+real writes/DDL/transactions, normal packaged SSO, 1M-row account performance and
+owner acceptance remain unqualified.
+
 ### Same-call reconciliation bridge (11 November 2026)
 
 Studio's harness-only refresh returns the original final context options and
