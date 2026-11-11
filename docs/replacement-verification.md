@@ -8,6 +8,100 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Closed-plan restoration and context drift (11 November 2026)
+
+Seven focused identity tests pass: three `closed_snapshot_restore_`, two
+`sequence_with_` and two `owning_create_with_` cases. Logs are
+`closed-plan-restore-focused.log`, `closed-plan-sequence-focused.log` and
+`closed-plan-owner-focused.log` under `.cache/verification/connection-attempts/`.
+The internal restoration API reads at most 64 KiB, extracts only RUN, recompiles
+the private closed factory and requires exact canonical bytes and SHA-256.
+It preserves the original table, SQL, S=1/32 expanded ledgers and journal-header
+identity. Rehashed typed-copy tampering, malformed/duplicate/noncanonical JSON,
+invalid digest and invalid profile cases fail. Invalid profiles create no journal.
+Restoring a definition supplies no approval, freshness or execution authority.
+
+Four full-route drift tests pass all eight scenarios in **59.13 seconds**, normal
+three-thread execution, `full-route-context-drift-focused.log`: initial census
+overflow and reversed original row order; same-count schema-set replacement before
+CREATE and during catalog refresh; initial role and warehouse mismatch; and later
+secondary-role and search-path drift. The last search-path case adds an entry;
+it does not establish full-route order-only permutation coverage. These fixtures
+launch the actual helper with a synthetic SDK, alter successful wire results and
+exercise production decoding and policy. They verify the exact stopping SQL
+prefix, original typed failure/read report, retained earlier CREATE success/ACK
+where applicable, no invented unknown outcome, no replay or cleanup DROP, and
+actual local child/task settlement and private-root removal.
+
+Independent bounded source reviews find no material issues in either increment.
+Plan identity is committed locally as `d96be31`; drift coverage as `376622b`.
+All seven frozen source hashes still match after validation, packaging and these
+commits; commit metadata does not change the tested source bytes.
+Frozen SHA-256 values below identify the reviewed and tested driver files:
+
+| File under `src-tauri/src/drivers/` | SHA-256 |
+| --- | --- |
+| `snowflake_table_qualification.rs` | `07e19a529241f122c300acf4b098927706a300add49dd066ff7e959879b5c450` |
+| `snowflake_table_qualification_tests.rs` | `e0da0582d63adc1bbb88a5addea9295a7714792ff7f2937493a8a48224b4851d` |
+| `snowflake_table_qualification_sequence.rs` | `afcc74a8c68660dc43cfa6890d5522cc04da2ad5313a5830c86a0c12b4a23e2d` |
+| `snowflake_table_qualification_sequence_tests.rs` | `2a3d50f669bc7d773b796cbcfb14c5a2bb0dce89a28eb431df36c03a7b3612af` |
+| `snowflake_table_qualification_policy.rs` | `b9446b0429e8e9aab4914ff7027bdc1001062c79aa381c160ae2c43d088f2158` |
+| `snowflake_table_qualification_policy_tests.rs` | `c3c0ead8517e3e8f77380f232af7eb589f18b37b463787e4f3ccbec597c8ddf3` |
+| `snowflake_table_qualification_runner_tests.rs` | `0a1e44ea4161471971b297e5f631c5c570b3a625a0c801e49ca70aeac657668d` |
+
+The complete combined-source qualification module exits **0**, **135/135 passed**
+in **324.08 seconds**, normal three-thread execution,
+`drift-and-closed-plan-qualification-all.log`. This includes all 124 preceding
+cases plus the seven identity and four drift tests, including both complete
+census-extreme routes and all rejection/interruption/storage-failure loops.
+Focused counts overlap this module total. **`pnpm validate` exits 0** on the same
+frozen source, `drift-and-closed-plan-validate.log`: **679 frontend / 467 standard
+Rust tests pass**, with **129 fixture tests ignored**. Formatting, contracts,
+TypeScript, production frontend build, Cargo check and strict all-target/all-
+feature Clippy pass. Existing ts-rs attribute and chunk-size warnings remain
+nonfatal. Earlier full-validation results below describe the preceding increment.
+
+`pnpm desktop:snowflake:bundle:mac` exits **0** on the same frozen source,
+`drift-and-closed-plan-macos-bundle.log`, producing the normal **224.93 MiB**
+arm64 `src-tauri/target/release/bundle/macos/Joinery.app`, version/build **0.1.0**.
+Strict ad-hoc signature verification and resource verification pass. The bundle
+resource inventory reports **15,109 entries / zero symlinks**; guarded real-SDK
+3.4.1 helper startup passes with **zero authentication / SQL requests**. The guard
+is a Node network guard, not an OS sandbox or packaged account/desktop workflow.
+Executable SHA-256 is
+`e556602265ca8ddb3004a7c8306d1416d80cd8124c8add8b4c323c5bf6e68265`;
+runtime manifest SHA-256 is
+`74e1dfac7b3346d163fad04879dc7f558c73111d2eac6230a904a98e34621f1f`;
+Node SHA-256 is
+`b6fb419f0f43bb2fbca273700294dd2f3b685a64b60e8417c295f47646a70e4a`.
+The pre-existing missing-`libLLVM.dylib`/`rust-objcopy` debug-stripping warning
+recurs but does not fail the build or verifiers. No global toolchain changes,
+installation, Developer ID signing, notarization or account qualification occur.
+
+```sh
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib closed_snapshot_restore_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib sequence_with_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib owning_create_with_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_studio_runner_drift_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+pnpm validate
+pnpm desktop:snowflake:bundle:mac
+```
+
+The execution-boundary review identifies remaining work before an executable
+account plan: extract the same retained owner from its synthetic fixture, bind
+and exclusively consume one source/binary/runtime/private-profile envelope, and
+enforce the proposed **32 MiB aggregate semantic-result cap**. The existing
+64 MiB transport and 64 KiB per-read capture bounds do not establish that aggregate
+cap. The default staged runtime contains five dependency symlinks; the newly
+verified bundle's runtime has zero. The executable boundary still needs to bind
+and fully inventory its chosen zero-link runtime rather than silently accept
+the stage's links.
+No account connection, saved private-profile access, authentication, account SQL
+or billing occurs in this increment. Live effects, account interruption, packaged
+SSO, million-row account performance, all applicable DataGrip workflows and owner
+acceptance remain open.
+
 ### Combined startup and child-exit validation (11 November 2026)
 
 **`pnpm validate` exits 0** on the combined source,

@@ -32,10 +32,23 @@ PostgreSQL startup timeouts. A subsequent timing reproduction and bounded repair
 pass the normal parallel protocol target and 45 real PostgreSQL/SSH/TLS fixtures.
 Two new tests pass all 14 actual helper-child-exit scenarios across the seven
 mutations, before and after ACK, preserving original outcomes without SQL replay.
-The complete combined-source qualification module passes all 124 tests.
+That combined-source qualification module passes all 124 tests. The newer
+closed-plan restoration increment passes seven identity/tamper/profile tests;
+it retains the original generated target and journal hash across processes
+without supplying execution authority. Four later actual-helper/synthetic-SDK
+tests pass eight census/context drift cases, including exact stopping prefixes
+and retained prior CREATE ACKs. Search-path drift adds an entry rather than
+testing an order-only permutation. Both independent source reviews are clean.
 See the verification ledger for current full validation and failed attempts.
-Remaining full-route census/context drift and final integrated fault verification,
-source/runtime/private connection binding and the account entry remain incomplete.
+The complete combined-source module passes 135 tests, including the new identity
+and drift cases. Full validation passes 679 frontend / 467 standard Rust tests
+and strict checks, with 129 fixtures ignored. Extracting the same retained owner
+from its synthetic fixture, source/runtime/binary/private
+connection binding, one-use consumption and the account entry remain incomplete.
+The proposed 32 MiB aggregate semantic-result cap is not yet enforced by the
+transport or per-read bounds. The default staged runtime contains five dependency
+symlinks; the newly verified normal macOS bundle has zero. Strict execution
+inventory must bind and fully inventory that or another zero-link resource tree.
 No normal desktop command exposes this module.
 See the
 [verification ledger](replacement-verification.md) for checks and remaining gates.

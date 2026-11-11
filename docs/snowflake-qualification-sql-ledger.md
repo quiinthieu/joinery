@@ -179,12 +179,23 @@ completion, and full production-route outcome qualification remains required.
 The policy is attached in local fixtures, including complete synthetic 32-phase
 Studio/adapter/helper composition. Original operation completions are durably
 recorded before validation, separately from validated phase evidence. Actual
-helper child exit passes before/after ACK across all seven mutations; remaining
-census/context drift and final integrated fault verification are open. Account
+helper child exit passes before/after ACK across all seven mutations. The newer
+four full-route drift tests pass eight scenarios: census overflow/order, same-count
+schema replacement, role/warehouse, secondary roles and search path. Search-path
+coverage adds an entry and is not an order-only permutation. Seven exact-plan
+restoration tests also pass; canonical private recompilation preserves the
+original target/SQL/expanded ledger/journal header but conveys no authority.
+The complete combined-source module passes all 135 tests, including both
+census-extreme success routes and preceding fault loops; full application
+validation also passes. Checks are recorded in the verification ledger. Account
 interruption remains unqualified. Source/runtime/binary/private-
 profile binding, one-use approval consumption and an account entry are still
 unimplemented. Preserve early ACKs, actual same-call results and collector evidence
 through that integration; local filesystem tests do not prove power-loss durability.
+Enforce the proposed 32 MiB aggregate semantic-result cap separately from transport
+and per-read limits. Strict runtime inventory must reject links; the default staged
+runtime has five dependency symlinks, while the newly verified normal macOS bundle
+has zero. The execution envelope must bind and fully inventory its zero-link tree.
 
 Complete production-route success/rejection/interruption/recording-failure tests
 must pass before preparing a fresh executable account plan. The old database-

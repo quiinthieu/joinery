@@ -1,5 +1,28 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Closed-plan identity and drift stops (11 November 2026)
+
+| Capability | Implemented locally | Verification/remaining gate |
+| --- | --- | --- |
+| Exact closed-plan restoration | Bounded RUN extraction, private recompilation and exact canonical bytes/digest; sequencer/policy retain original table and journal identity | Seven focused tests pass; no approval, freshness or execution authority supplied |
+| Census/context drift stops | Original wire order, overflow, same-count schema replacement, role/warehouse, secondary roles and search path | Four actual-helper/synthetic-SDK tests pass eight scenarios; exact SQL prefix, original failure and prior CREATE ACK retained; search-path case is not order-only coverage |
+| Executable account boundary | Definition identity is now reusable across processes | Same-owner extraction, source/binary/runtime/private-profile binding, one-use consumption and aggregate semantic-result cap remain incomplete |
+
+See the [verification ledger](replacement-verification.md#closed-plan-restoration-and-context-drift-11-november-2026)
+for focused checks and the combined-source validation state. The combined module
+passes 135 tests, including both census-extreme routes and all preceding fault
+cases; focused counts overlap that total. Full validation
+passes 679 frontend / 467 standard Rust tests and strict checks, with 129 fixtures
+ignored. These internal qualification increments add no externally qualified
+account capability. Live
+writes, schema changes, transactions, packaged SSO, million-row account behavior,
+all applicable DataGrip workflows and owner acceptance remain required.
+
+The normal 224.93 MiB arm64 macOS bundle passes ad-hoc signature, resource and
+guarded SDK startup checks with zero authentication/SQL requests and zero runtime
+symlinks. This is a local artifact, not installation, notarization or account/UI
+workflow qualification. Source and executable hashes are in the verification ledger.
+
 ## Full Studio qualification composition (11 November 2026)
 
 | Capability | Implemented locally | Verification/remaining gate |
@@ -13,8 +36,9 @@
 | Independent fixture SQL oracle | All nine exact SQL strings and generated target checked separately from supplied Plan dictionary | Ten Node tests pass, including wrong targets, key swaps, altered SQL/binds and stalled-read release |
 
 See the [verification ledger](replacement-verification.md) for final results.
-Full-route census/context drift, source/runtime/binary/private-profile binding
-and a one-use account entry remain incomplete. Actual Snowflake effects and
+The newer focused drift coverage above closes eight specified local scenarios;
+source/runtime/binary/private-profile binding and a one-use account entry remain
+incomplete. Actual Snowflake effects and
 account interruption, packaged SSO, million-row account performance and every
 applicable DataGrip workflow remain acceptance gates.
 This is internal qualification infrastructure; the Goal remains incomplete.

@@ -33,23 +33,38 @@ three-thread execution, including both new child-exit loops and existing faults.
 
 Remaining work, in dependency order:
 
-1. Close remaining full-route census/context drift cases: first census overflow
-   and original wire order; same-count schema-set changes before CREATE and during
-   catalog refresh; pre-pin role/warehouse mismatch; and later ordered search-path
-   or secondary-role mismatch. Require exact SQL stopping prefixes and original
-   completions, retaining prior CREATE ACKs where applicable. Existing seven-
-   mutation observer failures cover later role drift, not these cases.
-2. Keep actual helper child-exit evidence distinct from SDK callback errors and
-   account interruption. The 14 local child-exit scenarios pass; complete the
-   integrated fault suite after drift coverage without relaxing deadlines.
-3. Bind one non-resumable executable attempt to reviewed source, binary, runtime
-   and private profile; consume a one-use approval envelope. The current harness
-   accepts no account/profile/SQL/target selector.
-4. Prepare the exact fresh-table plan under `SANDBOX.BILLIE_TESTING`, then request
+1. Extract the same retained 32-phase owner from its synthetic fixture, preserving
+   production Studio routes, original completions, bounded event capture, local
+   settlement and durable receipt barriers. Convert test assertions into retained
+   typed errors; no account/profile/SQL/target selector or extra cleanup SQL.
+2. Bind one non-resumable executable attempt to reviewed source, actual binary,
+   complete runtime contents and private profile; consume a one-use envelope.
+   Restore the exact reviewed Plan rather than regenerate its target. Enforce
+   the proposed 32 MiB aggregate semantic-result cap independently of transport
+   and per-read bounds. Bind a zero-link runtime with a complete inventory; the
+   newly verified normal bundle supplies such a resource tree, while the default
+   stage has five symlinks. Verify rejection before authentication, cross-process
+   reuse, drift, failed launch and final receipt.
+3. Prepare the exact fresh-table plan under `SANDBOX.BILLIE_TESTING`, then request
    fresh account execution/billing approval. Old approvals remain consumed.
-5. Qualify actual writes, DDL, transaction effects, normal packaged SSO and
+4. Qualify actual writes, DDL, transaction effects, normal packaged SSO and
    million-row performance. Complete all applicable DataGrip workflows and the
    owner's hands-on walkthrough before replacement acceptance.
+
+The closed Plan restoration preserves the original generated table, SQL,
+expanded ledger and journal header across processes. Seven identity tests and
+four drift tests/eight scenarios are included in the complete passing 135-test
+module, with clean independent reviews. Drift covers original census order/
+overflow, same-count schema replacement before CREATE and in catalog refresh,
+role/warehouse, secondary roles and search path; the latter is not order-only
+coverage. Full validation passes 679 frontend / 467 standard Rust tests and
+strict checks, with 129 fixtures ignored. Plan restoration is an offline identity
+primitive, not the executable envelope or approval; local child exits and
+synthetic responses do not establish account effects. Exact source/evidence is in
+the [ledger](replacement-verification.md#closed-plan-restoration-and-context-drift-11-november-2026).
+The normal arm64 macOS bundle is rebuilt and locally verified with ad-hoc signing,
+zero runtime symlinks and guarded zero-authentication/SQL helper startup. It is not
+installed, notarized or account qualified.
 
 See the [verification ledger](replacement-verification.md) for final results and
 the distinction between synthetic routes and externally qualified product behavior.

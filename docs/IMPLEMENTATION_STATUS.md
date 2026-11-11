@@ -1,5 +1,40 @@
 # Implementation and release status
 
+## Closed-plan identity and context drift (11 November 2026, local integration)
+
+The internal qualification owner can now retain a reviewed closed definition
+across processes. Restoration extracts only RUN from a bounded snapshot,
+recompiles the private factory, and requires exact canonical bytes and digest.
+The sequencer, lifecycle and journal retain that same plan. Seven focused
+identity/tamper/profile tests pass. This supplies no account approval or execution
+authority.
+
+Four full-route tests pass eight census/context drift scenarios using the actual
+helper and a synthetic SDK. They establish exact stopping prefixes and original
+failure outcomes, retaining prior CREATE ACKs without replay, cleanup DROP or
+invented unknown outcomes. Search-path coverage adds an entry rather than testing
+an order-only permutation. Independent source reviews find no material issues.
+The complete combined-source qualification module passes **135/135 tests** in
+normal three-thread execution, including all preceding fault cases. Full
+validation passes **679 frontend / 467 standard Rust tests**, with 129 fixture
+cases ignored, plus formatting/build/check/strict Clippy on the same frozen source.
+See the [verification ledger](replacement-verification.md#closed-plan-restoration-and-context-drift-11-november-2026)
+for focused and combined-source checks.
+
+The normal 224.93 MiB arm64 macOS bundle is rebuilt locally. Ad-hoc signature,
+resources and guarded real-SDK helper startup pass with zero authentication/SQL
+requests; its runtime inventory has zero symlinks. It is not installed or account
+qualified; Developer ID signing and notarization remain open.
+
+Next are the shared retained runner, source/binary/runtime/private-profile
+envelope and one-use consumption. The proposed 32 MiB aggregate semantic-result
+cap still needs enforcement; transport/per-read caps do not supply it. Bind and
+fully inventory a zero-link runtime, such as the newly verified bundle resources;
+the default stage still has five dependency symlinks.
+No account activity occurs in this increment. Live `SANDBOX.BILLIE_TESTING`
+effects, packaged SSO, million-row account behavior, all applicable DataGrip
+workflows and owner acceptance remain gates. The Goal remains active/incomplete.
+
 ## Full Studio qualification composition (11 November 2026, local integration)
 
 The synthetic-only runner now composes all 32 phases through actual Studio,

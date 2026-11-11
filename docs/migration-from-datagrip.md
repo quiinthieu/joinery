@@ -34,9 +34,13 @@ owner-permitted `SANDBOX.BILLIE_TESTING`. The earlier database-creation approval
 was consumed by its rejected attempt and must not be replayed. The new
 [qualification attachments](snowflake-qualification-attachments.md) are internal
 plumbing, not a runnable user command. The [offline SQL ledger](snowflake-qualification-sql-ledger.md)
-now expands the proposed lifecycle using the production SQL definitions; it does
-not enforce or execute those entries. The fixed runner, reviewed executable plan
-and possible-billing approval remain prerequisites to that account walkthrough.
+expands the proposed lifecycle using production SQL definitions. Its internal
+policy now enforces those entries in actual Studio/helper routes with a synthetic
+SDK, including bounded drift and interruption cases. Closed-plan restoration
+preserves the original generated table across processes. These are local test
+results, with no account execution authority. The fixed runner, source/runtime/
+profile-bound executable plan and fresh possible-billing approval remain
+prerequisites to the account walkthrough.
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 
