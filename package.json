@@ -33,7 +33,7 @@
     "format": "prettier --write src tests/e2e playwright.config.ts scripts/prepare-native-smoke.mjs scripts/native-smoke-resources*.mjs scripts/verify-macos-bundle.mjs snowflake-helper scripts/test-snowflake-process.mjs scripts/prepare-snowflake-runtime*.mjs scripts/verify-snowflake-runtime*.mjs scripts/verify-snowflake-package.mjs scripts/snowflake-read-canary*.mjs scripts/snowflake-qualification*.mjs",
     "desktop:bundle:mac": "tauri build --bundles app && node scripts/verify-macos-bundle.mjs",
     "test:snowflake:process": "node scripts/test-snowflake-process.mjs",
-    "test:snowflake:helper": "pnpm --dir snowflake-helper test",
+    "test:snowflake:helper": "npm --prefix snowflake-helper test",
     "test:snowflake:runtime": "node --test scripts/prepare-snowflake-runtime.test.mjs scripts/verify-snowflake-runtime.test.mjs",
     "test:snowflake:startup": "node scripts/verify-snowflake-runtime.mjs",
     "snowflake:prepare": "node scripts/prepare-snowflake-runtime.mjs",

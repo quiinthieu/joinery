@@ -46,6 +46,7 @@ const TRANSACTIONS = Object.freeze({
   rollback: "ROLLBACK",
 });
 const DML_KINDS = new Set(["insert", "update", "delete"]);
+const DDL_KINDS = new Set(["createTable", "addColumn", "dropTable"]);
 const integer = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
 const sdkFailure = (failure, acknowledged = false) => {
   const state = failure?.sqlState;
@@ -112,7 +113,7 @@ export class Helper {
     this.done.add(request);
     if (
       !this.setupRun &&
-      ["context", "query", "switchSchema", "transaction", "dml"].includes(request.op)
+      ["context", "query", "switchSchema", "transaction", "dml", "ddl"].includes(request.op)
     ) {
       const p = request.payload;
       if (!code && request.op === "context" && this.setupBootstrap === 0) this.setupBootstrap = 1;
@@ -151,6 +152,7 @@ export class Helper {
         (this.active.useAcknowledged ||
         this.active.boundaryAcknowledged ||
         this.active.dmlAcknowledged ||
+        this.active.ddlAcknowledged ||
         this.active.setupAcknowledged
           ? "connectionClosed"
           : undefined) ??
@@ -197,7 +199,7 @@ export class Helper {
     if (r.op === "close") return this.close(r);
     if (r.op === "cancel") return this.cancel(r);
     if (r.op === "credit") return this.credit(r);
-    if (!["query", "context", "switchSchema", "transaction", "dml", "setup"].includes(r.op))
+    if (!["query", "context", "switchSchema", "transaction", "dml", "ddl", "setup"].includes(r.op))
       return this.finish(r, "unsupported");
     if (this.state !== "connected") {
       this.finish(r, "connectionClosed");
@@ -303,6 +305,28 @@ export class Helper {
             typeof x === "boolean" ||
             (typeof x === "string" && Buffer.byteLength(x) <= 262144 && x.isWellFormed()),
         ) ||
+        !exact(p.expected, ["user", "session"]) ||
+        !identifier(p.expected.user) ||
+        !text(p.expected.session, 1024) ||
+        !p.expected.session.isWellFormed() ||
+        !this.identityPin ||
+        p.expected.user !== this.identityPin.user ||
+        p.expected.session !== this.identityPin.session
+      ) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
+    if (r.op === "ddl") {
+      // Trusted Rust admission owns the generated DDL grammar and canonical target.
+      // This transport check requires a closed parameter-free payload and pinned session.
+      if (
+        !exact(p, ["kind", "sql", "expected"]) ||
+        typeof p.kind !== "string" ||
+        !DDL_KINDS.has(p.kind) ||
+        !text(p.sql, 262144) ||
+        !p.sql.isWellFormed() ||
         !exact(p.expected, ["user", "session"]) ||
         !identifier(p.expected.user) ||
         !text(p.expected.session, 1024) ||
@@ -452,6 +476,23 @@ export class Helper {
         if (this.retired || this.done.has(r)) return;
         this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
         this.finish(r, null, { kind: r.payload.kind, ...result, ...this.idsFor(a) });
+      } else if (r.op === "ddl") {
+        if (!this.validateWork(r)) return;
+        this.send(r, "phase", { phase: "dispatching" });
+        const result = await this.execute(
+          a,
+          r.payload.sql,
+          [],
+          false,
+          false,
+          null,
+          null,
+          null,
+          r.payload.kind,
+        );
+        if (this.retired || this.done.has(r)) return;
+        this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
+        this.finish(r, null, { kind: r.payload.kind, ...result, ...this.idsFor(a) });
       } else if (r.op === "transaction") {
         // Recheck at dispatch too: a queued operation never adopts another pin.
         if (!this.validateWork(r)) return;
@@ -520,7 +561,11 @@ export class Helper {
     } catch (e) {
       this.finish(
         r,
-        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged || a.setupAcknowledged
+        a.useAcknowledged ||
+          a.boundaryAcknowledged ||
+          a.dmlAcknowledged ||
+          a.ddlAcknowledged ||
+          a.setupAcknowledged
           ? "connectionClosed"
           : ["resultLimitReached", "outcomeUnknown", "connectionClosed", "database"].includes(
                 e?.code,
@@ -534,7 +579,8 @@ export class Helper {
         r.op === "context" ||
         r.op === "switchSchema" ||
         a.boundaryAcknowledged ||
-        a.dmlAcknowledged
+        a.dmlAcknowledged ||
+        a.ddlAcknowledged
       )
         this.stop();
     } finally {
@@ -590,14 +636,29 @@ export class Helper {
     a.statements.set(sdkRequestId, identity);
     this.send(a.request, "statement", identity);
   }
-  execute(a, sql, binds, publish, use = false, boundary = null, dml = null, setup = null) {
+  execute(
+    a,
+    sql,
+    binds,
+    publish,
+    use = false,
+    boundary = null,
+    dml = null,
+    setup = null,
+    ddl = null,
+  ) {
     // This is per execute: a preceding USE acknowledgement cannot settle the
     // following context readback's outcome before that statement acknowledges.
     a.acknowledged = false;
     a.knownFailure = undefined;
+    // A phase/event callback may close the request while SDK logout remains
+    // pending. Retirement alone is too late to prevent that settled dispatch.
+    if (this.retired || this.done.has(a.request) || this.state !== "connected")
+      return Promise.reject(error("connectionClosed"));
     const ticket = this.submitGuard?.beginStatement(a.submitOwner);
     const task = new Promise((resolve, reject) => {
-      if (this.retired) return reject(error("connectionClosed"));
+      if (this.retired || this.done.has(a.request) || this.state !== "connected")
+        return reject(error("connectionClosed"));
       a.dispatching = true;
       if (publish) this.send(a.request, "phase", { phase: "dispatching" });
       let returned = false,
@@ -632,6 +693,11 @@ export class Helper {
           this.send(a.request, "dmlAcknowledged", { kind: dml, ...this.idsFor(a) });
           if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
         }
+        if (ddl) {
+          a.ddlAcknowledged = ddl;
+          this.send(a.request, "ddlAcknowledged", { kind: ddl, ...this.idsFor(a) });
+          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+        }
         if (boundary) {
           // Command success is distinct from verified transaction disposition.
           // Registered identity and ACK survive reentrant record/send failures.
@@ -661,6 +727,8 @@ export class Helper {
         );
       };
       try {
+        if (this.retired || this.done.has(a.request) || this.state !== "connected")
+          return reject(error("connectionClosed"));
         a.statement = this.connection.execute({
           sqlText: sql,
           binds,
@@ -690,13 +758,15 @@ export class Helper {
     const columns = statement.getColumns().map((c) => ({ name: c.getName(), type: c.getType() }));
     if (
       Buffer.byteLength(JSON.stringify(columns)) > LIMITS.frameBytes - 512 ||
-      columns.length > (a.setupEntry?.maximumColumns ?? (a.request.op === "dml" ? 2 : 1000)) ||
+      columns.length >
+        (a.setupEntry?.maximumColumns ??
+          (a.request.op === "dml" || a.request.op === "ddl" ? 2 : 1000)) ||
       columns.some((c) => !text(c.name, 4096) || !text(c.type, 128))
     )
       throw error("resultLimitReached");
     const privateBudget = a.setupEntry
       ? a.setupEntry.maximumBytes - Buffer.byteLength(JSON.stringify(columns)) - 2
-      : a.request.op === "dml"
+      : a.request.op === "dml" || a.request.op === "ddl"
         ? 65536 - Buffer.byteLength(JSON.stringify(columns))
         : 131072;
     if (a.setupEntry && privateBudget < 0) throw error("resultLimitReached");
@@ -757,9 +827,12 @@ export class Helper {
         const size = Buffer.byteLength(JSON.stringify(row)) + 1;
         if (!publish) {
           if (
-            values.length >= (a.setupEntry?.maximumRows ?? (a.request.op === "dml" ? 1 : 2)) ||
+            values.length >=
+              (a.setupEntry?.maximumRows ??
+                (a.request.op === "dml" || a.request.op === "ddl" ? 1 : 2)) ||
             size > 65536 ||
-            ((a.request.op === "dml" || a.setupEntry) && bytes + size > privateBudget)
+            ((a.request.op === "dml" || a.request.op === "ddl" || a.setupEntry) &&
+              bytes + size > privateBudget)
           )
             throw error("resultLimitReached");
           bytes += size;
@@ -822,7 +895,8 @@ export class Helper {
   }
   removeQueued(control, target) {
     const index = this.queue.findIndex(
-      (r) => ["query", "switchSchema", "transaction", "dml"].includes(r.op) && r.id === target,
+      (r) =>
+        ["query", "switchSchema", "transaction", "dml", "ddl"].includes(r.op) && r.id === target,
     );
     if (index < 0) return false;
     const [queued] = this.queue.splice(index, 1);
@@ -848,6 +922,7 @@ export class Helper {
       a.request.op === "switchSchema" ||
       a.request.op === "transaction" ||
       a.request.op === "dml" ||
+      a.request.op === "ddl" ||
       a.request.op === "setup"
     ) {
       // A cancel ACK cannot verify either the USE outcome or final context.
@@ -857,7 +932,11 @@ export class Helper {
       this.finish(r, null, { requested: true });
       this.finish(
         a.request,
-        a.useAcknowledged || a.boundaryAcknowledged || a.dmlAcknowledged || a.setupAcknowledged
+        a.useAcknowledged ||
+          a.boundaryAcknowledged ||
+          a.dmlAcknowledged ||
+          a.ddlAcknowledged ||
+          a.setupAcknowledged
           ? "connectionClosed"
           : (a.knownFailure ?? "outcomeUnknown"),
       );
@@ -882,7 +961,8 @@ export class Helper {
       const a = this.active;
       this.finish(
         a.request,
-        a.request.op === "setup" && !a.setupAcknowledged
+        (a.request.op === "setup" && !a.setupAcknowledged) ||
+          (a.request.op === "ddl" && a.dispatching && !a.ddlAcknowledged)
           ? (a.knownFailure ?? "outcomeUnknown")
           : "connectionClosed",
       );

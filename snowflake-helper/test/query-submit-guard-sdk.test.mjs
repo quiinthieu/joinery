@@ -38,6 +38,17 @@ for (const transport of ["http", "tls", "proxy"]) {
     "helper-dml-ack-drain",
     "helper-dml-ack-cancel",
     "helper-dml-ack-eof",
+    "helper-ddl-create",
+    "helper-ddl-add-column",
+    "helper-ddl-drop",
+    "helper-ddl-lost-ack",
+    "helper-ddl-ack-guard",
+    "helper-ddl-database",
+    "helper-ddl-ack-drain",
+    "helper-ddl-ack-cancel",
+    "helper-ddl-ack-eof",
+    "helper-ddl-close-before-ack",
+    "helper-ddl-close-after-ack",
     "helper-switch-success",
     "helper-switch-lost-use",
     "helper-switch-readback-denied",
@@ -283,6 +294,7 @@ for (const [scenario, transport] of cases) {
         const switchScenario = scenario.startsWith("helper-switch-");
         const transactionScenario = scenario.startsWith("helper-transaction-");
         const dmlScenario = scenario.startsWith("helper-dml-");
+        const ddlScenario = scenario.startsWith("helper-ddl-");
         assert.equal(
           result.queryPosts,
           switchScenario && scenario !== "helper-switch-lost-use"
@@ -310,17 +322,21 @@ for (const [scenario, transport] of cases) {
             ? scenario === "helper-dml-database"
               ? 0
               : 1
-            : transactionScenario
-              ? scenario === "helper-transaction-database"
+            : ddlScenario
+              ? scenario === "helper-ddl-database"
                 ? 0
                 : 1
-              : switchScenario
-                ? 1
-                : scenario === "mutation-no-guard"
-                  ? 2
-                  : effectful.has(scenario)
-                    ? 1
-                    : 0,
+              : transactionScenario
+                ? scenario === "helper-transaction-database"
+                  ? 0
+                  : 1
+                : switchScenario
+                  ? 1
+                  : scenario === "mutation-no-guard"
+                    ? 2
+                    : effectful.has(scenario)
+                      ? 1
+                      : 0,
         );
         if (scenario.startsWith("helper-")) {
           const expected = {
@@ -343,6 +359,17 @@ for (const [scenario, transport] of cases) {
             "helper-dml-ack-drain": "connectionClosed",
             "helper-dml-ack-cancel": "connectionClosed",
             "helper-dml-ack-eof": "localEOF",
+            "helper-ddl-create": "success",
+            "helper-ddl-add-column": "success",
+            "helper-ddl-drop": "success",
+            "helper-ddl-lost-ack": "outcomeUnknown",
+            "helper-ddl-ack-guard": "connectionClosed",
+            "helper-ddl-database": "database",
+            "helper-ddl-ack-drain": "connectionClosed",
+            "helper-ddl-ack-cancel": "connectionClosed",
+            "helper-ddl-ack-eof": "localEOF",
+            "helper-ddl-close-before-ack": "outcomeUnknown",
+            "helper-ddl-close-after-ack": "connectionClosed",
             "helper-switch-success": "success",
             "helper-switch-lost-use": "outcomeUnknown",
             "helper-switch-readback-denied": "connectionClosed",
@@ -351,18 +378,25 @@ for (const [scenario, transport] of cases) {
           assert.equal(result.helperFixturePreconnected, true);
           assert.equal(result.externalBrowserConnectSkipped, true);
           assert.equal(result.helperTerminal, expected);
-          assert.equal(result.helperTerminals, scenario === "helper-dml-ack-eof" ? 0 : 1);
+          assert.equal(
+            result.helperTerminals,
+            ["helper-dml-ack-eof", "helper-ddl-ack-eof"].includes(scenario) ? 0 : 1,
+          );
           assert.equal(result.helperRetired, 1);
           assert.equal(result.outcome, `helper-${expected}`);
           const violation = dmlScenario
             ? ["helper-dml-lost-ack", "helper-dml-ack-guard", "helper-dml-database"].includes(
                 scenario,
               )
-            : transactionScenario
-              ? ["helper-transaction-lost-ack", "helper-transaction-ack-guard"].includes(scenario)
-              : switchScenario
-                ? scenario.includes("lost-")
-                : scenario !== "helper-success";
+            : ddlScenario
+              ? ["helper-ddl-lost-ack", "helper-ddl-ack-guard", "helper-ddl-database"].includes(
+                  scenario,
+                )
+              : transactionScenario
+                ? ["helper-transaction-lost-ack", "helper-transaction-ack-guard"].includes(scenario)
+                : switchScenario
+                  ? scenario.includes("lost-")
+                  : scenario !== "helper-success";
           assert.equal(result.violations, violation ? 1 : 0);
           if (violation) assert.equal(result.helperSettledSynchronously, true);
           if (transactionScenario)
@@ -388,6 +422,31 @@ for (const [scenario, transport] of cases) {
               assert.equal(result.helperCancelRequested, true);
             if (scenario === "helper-dml-database")
               assert.equal(result.helperReentrantFailure, true);
+          }
+          if (ddlScenario) {
+            assert.equal(
+              result.helperDdlAcknowledged,
+              ![
+                "helper-ddl-lost-ack",
+                "helper-ddl-database",
+                "helper-ddl-close-before-ack",
+              ].includes(scenario),
+            );
+            assert.equal(result.rows, 0);
+            assert.equal(result.publicColumns, 0);
+            assert.equal(result.guardAdmitted, 1);
+            if (result.helperDdlAcknowledged) {
+              assert.equal(result.ddlAckBeforeTerminal, true);
+              assert.equal(result.ddlAckRegistered, true);
+            }
+            if (expected === "success") assert.equal(result.privateDdlResultExact, true);
+            if (scenario === "helper-ddl-ack-drain") assert.equal(result.resultChunkRequests, 1);
+            if (scenario === "helper-ddl-ack-cancel")
+              assert.equal(result.helperCancelRequested, true);
+            if (scenario === "helper-ddl-database")
+              assert.equal(result.helperReentrantFailure, true);
+            if (scenario.startsWith("helper-ddl-close-"))
+              assert.equal(result.helperExplicitCloseRequested, true);
           }
           if (switchScenario) {
             assert.equal(result.helperUseAcknowledged, scenario !== "helper-switch-lost-use");
@@ -431,7 +490,9 @@ for (const [scenario, transport] of cases) {
         if (transport === "proxy") {
           assert(result.proxyConnects >= 1);
           if (
-            ["lost-ack", "helper-lost-ack", "helper-dml-lost-ack"].includes(scenario) ||
+            ["lost-ack", "helper-lost-ack", "helper-dml-lost-ack", "helper-ddl-lost-ack"].includes(
+              scenario,
+            ) ||
             scenario.startsWith("redirect-")
           )
             assert.equal(result.proxyConnectsAtViolation, result.firstQueryProxyConnects);
