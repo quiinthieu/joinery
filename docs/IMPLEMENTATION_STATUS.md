@@ -18,7 +18,7 @@ checks pass 51 Rust DML cases, then 15 final Studio cases including the reproduc
 and repaired graceful-shutdown history gap. All 21 Studio/actual-helper synthetic
 SDK fixtures, seven browser DML/transaction flows and 43 actual disposable
 PostgreSQL regressions pass. Helper coverage is 255 passing cases across the 107
-actual-SDK loopback and 148 remaining-helper runs. The current-source normal
+actual-SDK loopback and 148 remaining-helper runs. The recorded DML-source normal
 macOS bundle (224.33 MiB), strict ad-hoc signature/resources/startup checks and
 three hidden native runs pass with zero startup authentication/SQL. See the
 [verification ledger](replacement-verification.md) for source pins and limits.
@@ -27,9 +27,14 @@ million-row account result. Broader DML, grid editing, DDL, AUTOCOMMIT changes a
 all remaining applicable DataGrip capabilities remain required gaps.
 
 The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
-Six setup statements are rendered privately and none has executed. A bounded
-write-capable setup runner and fresh explicit execution/billing approval are still
-needed. The [DDL design](snowflake-sdk-ddl-design.md) is proposed, not implemented.
+The separate helper-only runner implements a fixed 28-SQL ledger with three
+CREATEs, permanent one-use consumption and private acknowledgement receipts.
+Its final local qualification and exact owner-private execution plan precede any
+new execution/billing request; no setup has executed. The
+[DDL design](snowflake-sdk-ddl-design.md) has a locally verified pure generator
+(11 tests), without an application execution route. A separate million-row
+helper/driver/store/CSV bridge passes with a synthetic SDK; actual Snowflake
+performance and complete account workflows remain unqualified.
 The Goal remains active and incomplete; nothing is merged, published or installed.
 
 ## Recorded transaction increment (10 November 2026, source `929ae06`)

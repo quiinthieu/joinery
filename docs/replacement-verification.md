@@ -8,6 +8,58 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Disposable setup runner (11 November 2026, offline qualification)
+
+At the owner's request, prepared a separate helper-only setup workflow. It has
+exactly 28 fixed SQL statements, including three CREATEs for one fresh transient
+database, its SCRATCH schema and empty ROW_CHECKS table. There is no arbitrary
+SQL, DML, transaction command, existing-table read, role/grant/warehouse change,
+retry or cleanup SQL. No account activity has run; prior read approvals are
+consumed and grant no setup authority. See the
+[exact ledger, charges and execution gate](snowflake-disposable-setup.md).
+
+| Check | Result and evidence scope |
+| --- | --- |
+| Full application validation | `pnpm validate`: **671 frontend / 437 standard Rust tests**, **129 ignored** fixtures; formatting, production frontend build, Rust check and strict Clippy pass. `setup-validate-final.log`, exit 0 |
+| Complete helper suite | **305/305**, correct helper working directory, 172.81 seconds. Includes existing reads/DML/transactions/process/million-row tests and new fixed setup cases. `.cache/verification/setup-helper-final-all.log` |
+| New actual pinned-SDK setup cases | **39/39** across HTTP, verified TLS and CONNECT proxy: one POST/effect per CREATE, private results, lost ACK, rejection, drain failure, guard retirement, cancel, local EOF and explicit close before/after ACK. Bootstrap/prior setup cursor is fixture-seeded in this probe; it does not prove SSO or the complete admission sequence. `.cache/verification/setup-helper-close-sdk-after-fix.log` |
+| Complete qualification scripts | **136/136**, including **17** runtime tests using the production Helper with synthetic SDK and a full 28-statement run. Lost ACK at each CREATE, definitive rejection, partial creation, journal barriers/failures, bounded deadline, owner interruption, no replay after restart and receipt failures pass. `setup-qualification-finalization-final.log` |
+| Compiler/resources | **75/75** read/setup compiler and runtime-resource cases. Closed SQL/shape/hash binding, deep immutability, private exclusive CLI output, file allowlists, setup windows up to 24 hours and unchanged ten-minute read window pass. `setup-compiler-resources-final.log` |
+| Offline runtime | Rebuilt from the repository-owned npm cache with `pnpm snowflake:prepare --cache-dir .cache/snowflake-helper-dev/npm-cache --offline`; staged startup passes SDK 3.4.1 hello/EOF with **zero authentication / SQL requests**. `setup-runtime-prepare.log`, `setup-staged-startup.log` |
+| Actual offline owner plan | Emission and exact-plan verification pass with the retained current-connection allowlist and original proposal token; no helper is launched. `setup-owner-offline-emission.log`, `setup-owner-offline-verified.log` |
+| Independent review | Helper and runtime reviews found and resolved the close-before-ACK outcome distinction and receipt durability findings below; final bounded re-review has no unresolved material finding. This is local evidence, not remote exactly-once or account-effect proof |
+
+Logs without a directory prefix above are under
+`.cache/verification/connection-attempts/`. One earlier helper aggregate used the
+wrong working directory and failed four process tests; the final correct-directory
+305-case run supersedes it. The new regression failures were reproduced before
+their repairs: `setup-helper-close-before-fix.log` under `.cache/verification/`,
+and `setup-receipt-before-fix.log` / `setup-finalization-before-fix.log` under the
+connection-attempts directory. Final affected runs pass. No failure is counted as
+a pass.
+
+Exclusive plan and account/host/run markers, with directory sync, precede SSO.
+The journal syncs each intent and each CREATE ACK before admitting the next SQL.
+Known acknowledgements remain separate from private result validation and complete
+qualification. Close before ACK reports unknown delivery; after ACK retains known
+success. Journal-close failures preserve known outcomes and stop qualification.
+Final receipts stay provisional (`requiresRunnerConfirmation`, qualification and
+evidence flags false); only the returned runner report confirms final file and
+directory sync. This prevents an already-written receipt from claiming success
+if that final sync fails. No automatic overwrite or replay occurs.
+
+Execution plan SHA-256:
+`60844de7e1a65152c4adbfd8dd4d708ccc14873fe06445f0eed85fdd9560658a`;
+ledger SHA-256:
+`83458feb13d79f8829fe0b87d02f93cc14f1c179136dd71dc9e26d2a8ffe5a25`;
+runtime manifest SHA-256:
+`16b1aa4ea0ed0e3435570fc098d6a6aee56b831dfa2697ef7b72327370378da4`.
+The proposed single-attempt window is **11 November 2026 03:57:48.859 UTC through
+12 November 2026 03:57:48.859 UTC**. These hashes and window are preparation,
+not approval. Source drift, consumed markers, expiry or changed profile deny
+execution. This helper-only setup does not enable application DDL, qualify DML
+or transaction effects, or close the broader DataGrip replacement Goal.
+
 ### Million-row Snowflake driver/store/export bridge (11 November 2026)
 
 New integration test `synthetic_million_rows_stream_through_driver_store_and_csv_hash`

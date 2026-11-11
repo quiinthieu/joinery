@@ -1,6 +1,6 @@
 # Disposable Snowflake acceptance setup
 
-Prepared 11 November 2026 at the owner's request. **Proposal only: no account
+Prepared 11 November 2026 at the owner's request. **No account
 connection, SQL, object creation or cleanup has been executed or authorized.**
 The prior read approvals are consumed. This setup does not grant write, DDL,
 transaction, interruption or billing permission.
@@ -18,7 +18,9 @@ The owner can instead have an administrator create this exact isolated setup.
 These aliases describe the privately rendered statements. Quote each identifier
 component independently. `DB` is the one generated database, and `LABEL` is
 `joinery-disposable-<RUN>`; neither accepts arbitrary SQL. There are six proposed
-setup statements, each invoked at most once and in this order:
+object statements, each invoked at most once and in this relative order. The
+separate helper runner's full 28-statement ledger also includes the session
+observations listed below:
 
 ```sql
 CREATE TRANSIENT DATABASE "DB"
@@ -100,16 +102,97 @@ no credentials. Its SHA-256 is
 It declares `offlineOnly: true`, `runner: null` and no authorization. It is
 deliberately **not** an executable approval manifest.
 
-Before requesting execution permission, implement and independently review a
-bounded setup runner with a complete ledger including connect-time SQL,
-context/settings checks, these six statements and any permitted recovery or
-cleanup. Bind it to source/runtime hashes, a one-use approval and admission
-window; verify private receipts, result limits, interruption, no replay, and
-cleanup ownership using synthetic tests. The existing
+The separate bounded setup runner is implemented locally. Its qualification and
+source/runtime pins must be recorded before requesting execution permission.
+The original six-statement proposal above remains historical preparation, not
+the runner's approval manifest. The runner derives every SQL string from a
+closed ledger and the single run token; it has no arbitrary-SQL flag.
+
+| Index | Statement or fixed observation |
+| --- | --- |
+| 1 | Six-column startup identity/context SELECT |
+| 2 | `SELECT CURRENT_VERSION()` |
+| 3–7 | Initial five-observation sample |
+| 8 | CREATE TRANSIENT DATABASE |
+| 9–13 | Five-observation sample, expecting the new database and PUBLIC schema |
+| 14 | CREATE SCHEMA |
+| 15–19 | Five-observation sample, expecting the new database and SCRATCH schema |
+| 20 | CREATE TABLE |
+| 21–23 | Exact database/schema readback and zero table count shown above |
+| 24–28 | Final five-observation sample |
+
+Each five-observation sample is exactly:
+
+```sql
+SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME,
+  CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME,
+  CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID,
+  TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH,
+  CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES;
+SHOW PARAMETERS LIKE 'QUOTED_IDENTIFIERS_IGNORE_CASE' IN SESSION;
+SHOW PARAMETERS LIKE 'AUTOCOMMIT' IN SESSION;
+SHOW PARAMETERS LIKE 'TRANSACTION_ABORT_ON_ERROR' IN SESSION;
+SELECT CAST(CURRENT_TRANSACTION() AS VARCHAR) AS TRANSACTION_ID;
+```
+
+The first context SELECT is the helper's existing startup identity operation:
+`SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(),
+CURRENT_WAREHOUSE(), CURRENT_SESSION()`. Connect itself sends zero SQL. The
+private execution manifest contains all 28 rendered strings and their bounds.
+The runner pins principal/session, primary role, warehouse and secondary roles;
+requires AUTOCOMMIT true, no active transaction, quoted-case policy false and
+stable settings before each CREATE. CREATE's documented context changes are
+expected explicitly. Search-path samples do not prove atomic identity; every
+object statement uses its fully qualified generated name.
+
+One attempt permits one helper/SSO session, at most 28 SQL statements including
+three CREATEs, one outstanding SQL command, and no retries or cleanup SQL.
+Explicit cancel and close controls may overlap the active command. Each result
+is bounded to one row, 64 KiB and at most 32 columns. Authentication is bounded
+to 120 seconds, each SQL operation to 30 seconds, and the workflow to 360 seconds
+before bounded close/EOF/TERM/KILL cleanup. Receipt persistence has a separate
+bounded wait. Admission and SQL stop at the exact approved window's end; setup
+accepts a window of at most 24 hours so a short approval delay does not require a
+new plan. This is neither a spending cap nor a bound on SDK authentication,
+result-fetch or logout HTTP traffic.
+
+Before authentication, exclusive private markers consume both the plan hash and
+the account/host/run-token combination. They are never removed for another try.
+The private hash-chained journal syncs each intent before dispatch and each
+CREATE acknowledgement before any later SQL. Failure stops subsequent SQL;
+known acknowledgement, unknown delivery, readback validation and complete
+qualification remain distinct. Failed receipt persistence prevents progress,
+but cannot undo a CREATE. Preserve the journal and require owner intervention
+after uncertain delivery; never create a new approval for the same object token.
+The retained final receipt deliberately has `qualificationPassed: false`,
+`evidencePersisted: false` and `finalizationStatus: requiresRunnerConfirmation`:
+it records execution facts and a qualification candidate without certifying its
+own final directory sync. Only the runner's returned report can state
+`runnerConfirmed` after that sync succeeds. Keep both forms of evidence; a
+provisional receipt alone never establishes complete qualification. Journal-close
+or final-sync failures preserve known CREATE outcomes and report failed
+qualification. No receipt is overwritten to manufacture success.
+Local source checks are pathname-based and do not protect against hostile
+same-user mutation or remote concurrent changes.
+
+Offline preparation and verification use:
+
+```sh
+pnpm snowflake:qualification:setup --input .cache/snowflake-qualification/owner-setup-input.json
+pnpm snowflake:qualification:setup --input .cache/snowflake-qualification/owner-setup-input.json --emit .cache/snowflake-qualification/owner-setup-execution-plan.json
+pnpm snowflake:qualification:setup --input .cache/snowflake-qualification/owner-setup-input.json --plan .cache/snowflake-qualification/owner-setup-execution-plan.json
+```
+
+These commands do not launch the helper or authenticate. Inputs/outputs are
+owner-private; do not paste the connection profile or journal into public logs.
+Only a separately authorized `--run` with the exact plan and one-use approval
+file can start account activity. Do not manufacture that approval from this
+document or reuse a consumed read approval. The existing
 [24-read runner](snowflake-qualification-runner.md) cannot execute this setup and
 must not be repurposed by passing arbitrary SQL. The application's reviewed
 DML opt-in does not enable database/schema/table DDL. The
-[DDL design](snowflake-sdk-ddl-design.md) remains proposed.
+[DDL design](snowflake-sdk-ddl-design.md) has a pure syntax foundation but no
+application execution route.
 
 The broader [account qualification plan](snowflake-account-qualification-plan.md)
 and [replacement acceptance](replacement-acceptance.md) remain open. Preparing

@@ -44,7 +44,9 @@
     "snowflake:canary": "node scripts/snowflake-read-canary.mjs",
     "test:snowflake:qualification:manifest": "node --test scripts/snowflake-qualification-manifest.test.mjs",
     "test:snowflake:qualification": "node --test scripts/snowflake-qualification*.test.mjs",
-    "snowflake:qualification:manifest": "node scripts/snowflake-qualification-manifest.mjs"
+    "snowflake:qualification:manifest": "node scripts/snowflake-qualification-manifest.mjs",
+    "snowflake:qualification:setup:manifest": "node scripts/snowflake-qualification-setup-manifest.mjs",
+    "snowflake:qualification:setup": "node scripts/snowflake-qualification-setup-runner.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6",

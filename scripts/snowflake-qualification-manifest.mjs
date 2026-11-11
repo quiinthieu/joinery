@@ -175,7 +175,13 @@ function validateProfile(profile) {
   )
     throw fail("invalidProfile");
 }
-function validateInput(input) {
+export function validateQualificationInput(input, admissionWindowMs = CAPS.admissionWindowMs) {
+  if (
+    !Number.isSafeInteger(admissionWindowMs) ||
+    admissionWindowMs < 1 ||
+    admissionWindowMs > 86400000
+  )
+    throw fail("invalidWindow");
   exact(input, ["workflow", "route", "runId", "window", "profile", "sources", "runtime"]);
   if (input.workflow !== WORKFLOW) throw fail("unsupportedWorkflow");
   if (input.route !== "helper-direct") throw fail("unsupportedRoute");
@@ -195,8 +201,7 @@ function validateInput(input) {
       throw fail("invalidWindow");
     return Date.parse(value);
   });
-  if (times[1] <= times[0] || times[1] - times[0] > CAPS.admissionWindowMs)
-    throw fail("invalidWindow");
+  if (times[1] <= times[0] || times[1] - times[0] > admissionWindowMs) throw fail("invalidWindow");
   validateProfile(input.profile);
   exact(input.sources, SOURCE_PATHS);
   if (!Object.values(input.sources).every((value) => typeof value === "string" && HASH.test(value)))
@@ -222,7 +227,7 @@ function validateInput(input) {
 }
 
 export function compileManifest(input) {
-  validateInput(input);
+  validateQualificationInput(input);
   // Snapshot the caller's data before generating commands; neither mutation nor
   // JSON key order may alter a compiled manifest after its hash is returned.
   input = frozenCopy(input);

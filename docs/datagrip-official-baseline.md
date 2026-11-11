@@ -12,7 +12,7 @@ rows. The source-linked [Snowflake benchmark](snowflake-official-baseline.md)
 records that inventory and connector constraints. JetBrains' official
 [release API](https://data.services.jetbrains.com/products/releases?code=DG&latest=true&type=release)
 confirms **2026.3**, build `263.7307.216`, released 5 November 2026, as the latest
-stable release checked on 9 November and rechecked on 10 November. The latter
+stable release checked on 9 November and rechecked on 10 and 11 November. The latter
 check refreshes release identity only; the source research below retains its
 original observation date.
 
