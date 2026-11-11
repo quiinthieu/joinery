@@ -99,6 +99,33 @@ mod policy;
 #[path = "snowflake_table_qualification_runner.rs"]
 mod runner;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Offline execution identity; no account entry point"
+    )
+)]
+#[path = "snowflake_table_qualification_inventory.rs"]
+mod inventory;
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "One-use local markers; no account entry point")
+)]
+#[path = "snowflake_table_qualification_consumption.rs"]
+mod consumption;
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Execution envelope; account runner integration remains closed"
+    )
+)]
+#[path = "snowflake_table_qualification_envelope.rs"]
+mod envelope;
+
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
     domain::{
