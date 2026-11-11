@@ -303,7 +303,7 @@ fn transaction_request(
 }
 
 async fn reviewed_transaction(
-    studio: &Studio,
+    studio: &Arc<Studio>,
     fixture: &Fixture,
     id: &str,
     request: &TransactionControlRequest,
@@ -1815,4 +1815,162 @@ async fn sdk_studio_ddl_shutdown_or_disconnect_after_ack_keeps_durable_success()
         assert_eq!(ddl_effects(&fixture).len(), 1);
         no_roots(&fixture);
     }
+}
+
+#[tokio::test]
+async fn sdk_studio_receipt_dml_dropped_waiter_retries_only_original_local_recording() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = dml_session(&fixture, &studio).await;
+    let (plan, approval) = reviewed_dml(&studio, &fixture, &info.id);
+    std::fs::write(fixture.controls.join("hold-dml-ack"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let owner = studio.clone();
+    let waiter =
+        tokio::spawn(async move { owner.execute_snowflake_dml(&plan.id, Some(&approval)).await });
+    dml_entered(&fixture).await;
+    let database =
+        rusqlite::Connection::open(fixture.directory.path().join("workspace/joinery.sqlite"))
+            .unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE INSERT ON history BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    std::fs::write(fixture.controls.join("release-dml-ack"), b"").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while studio.pending_snowflake_receipts.lock().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let original = {
+        let receipts = studio.pending_snowflake_receipts.lock();
+        let receipt = receipts.values().next().unwrap();
+        let snowflake_receipts::OriginalResult::Dml(result) = &receipt.original else {
+            panic!("expected original DML result")
+        };
+        assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
+        receipt.entry.as_ref().unwrap().clone()
+    };
+    assert_dml_reads(&fixture, before, 5);
+    let query_count = queries(&fixture).len();
+    assert_eq!(
+        studio.shutdown_and_wait().await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert!(studio.shutdown_and_wait().await.is_err());
+    database
+        .execute_batch("DROP TRIGGER reject_terminal; DROP TRIGGER reject_history;")
+        .unwrap();
+    studio.shutdown_and_wait().await.unwrap();
+    studio.shutdown_and_wait().await.unwrap();
+    let history = studio.history("").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, original.id);
+    assert_eq!(
+        history[0].snowflake_dml.as_ref().unwrap().statement_outcome,
+        SnowflakeDmlOutcome::Succeeded
+    );
+    assert_eq!(
+        history[0]
+            .snowflake_dml
+            .as_ref()
+            .unwrap()
+            .summary
+            .affected_rows
+            .as_deref(),
+        Some("9007199254740993")
+    );
+    let audits: u32 = database
+        .query_row(
+            "SELECT COUNT(*) FROM audit WHERE action='snowflake-dml' AND outcome='succeeded'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audits, 1);
+    assert_eq!(dml_effects(&fixture).len(), 1);
+    assert_eq!(queries(&fixture).len(), query_count);
+    no_roots(&fixture);
+}
+
+#[tokio::test]
+async fn sdk_studio_receipt_boundary_dropped_waiter_keeps_helper_ack_through_audit_failure() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let fixture = Fixture::new();
+    let studio = studio(&fixture);
+    let info = transaction_session(&fixture, &studio).await;
+    let options = studio.session_contexts(&info.id).await.unwrap();
+    let request = transaction_request(&options.state, ExplicitTransactionAction::Begin);
+    let plan = studio
+        .prepare_transaction_control(&info.id, &request)
+        .unwrap();
+    let approval = studio.authorize(&plan.id, None, None).unwrap();
+    std::fs::write(fixture.controls.join("hold-transaction-ack"), b"").unwrap();
+    let before = queries(&fixture).len();
+    let owner = studio.clone();
+    let waiter = tokio::spawn(async move {
+        owner
+            .execute_transaction_control(&plan.id, Some(&approval))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture.controls.join("transaction-effects").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let database =
+        rusqlite::Connection::open(fixture.directory.path().join("workspace/joinery.sqlite"))
+            .unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    std::fs::write(fixture.controls.join("release-transaction-ack"), b"").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while studio.pending_snowflake_receipts.lock().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    {
+        let receipts = studio.pending_snowflake_receipts.lock();
+        let receipt = receipts.values().next().unwrap();
+        let snowflake_receipts::OriginalResult::Boundary(result) = &receipt.original else {
+            panic!("expected original boundary result")
+        };
+        assert_eq!(result.action, ExplicitTransactionAction::Begin);
+        assert_eq!(
+            result.boundary_outcome,
+            TransactionBoundaryOutcome::Acknowledged
+        );
+        assert!(result.error.is_none());
+    }
+    assert_boundary_reads(&fixture, before, ExplicitTransactionAction::Begin);
+    let query_count = queries(&fixture).len();
+    assert_eq!(
+        studio.shutdown_and_wait().await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert!(studio.shutdown_and_wait().await.is_err());
+    database
+        .execute_batch("DROP TRIGGER reject_terminal;")
+        .unwrap();
+    studio.shutdown_and_wait().await.unwrap();
+    studio.shutdown_and_wait().await.unwrap();
+    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
+    assert_eq!(audits, 1);
+    assert_eq!(
+        std::fs::read_to_string(fixture.controls.join("transaction-effects"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["BEGIN TRANSACTION"]
+    );
+    assert_eq!(queries(&fixture).len(), query_count);
+    assert!(studio.history("").unwrap().is_empty());
+    no_roots(&fixture);
 }

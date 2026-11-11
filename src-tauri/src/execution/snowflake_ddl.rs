@@ -7,16 +7,6 @@ pub(super) struct Preflight {
     deadline: Instant,
 }
 
-/// A failed local write must outlive the IPC waiter. Normal shutdown remains
-/// blocked until both stages persist; retrying this receipt never sends SQL.
-pub(super) struct PendingReceipt {
-    pub(super) entry: HistoryEntry,
-    digest: String,
-    outcome: &'static str,
-    audit_pending: bool,
-    history_pending: bool,
-}
-
 fn writable_profile(profile: &ConnectionProfile) -> AppResult<()> {
     if !snowflake_dml::sdk_profile(profile)
         || !profile
@@ -138,42 +128,11 @@ fn coherent_idle(state: &SessionRuntimeState, session_id: &str) -> bool {
 }
 
 impl Studio {
-    pub(super) fn flush_pending_ddl_receipts(&self) -> AppResult<()> {
-        let mut pending = self.pending_ddl_receipts.lock();
-        for receipt in pending.values_mut() {
-            if receipt.audit_pending
-                && self
-                    .persistence
-                    .audit(
-                        &receipt.entry.connection_id,
-                        "snowflake-ddl",
-                        &receipt.digest,
-                        receipt.outcome,
-                    )
-                    .is_ok()
-            {
-                receipt.audit_pending = false;
-            }
-            if receipt.history_pending && self.persistence.record_history(&receipt.entry).is_ok() {
-                receipt.history_pending = false;
-            }
-        }
-        pending.retain(|_, receipt| receipt.audit_pending || receipt.history_pending);
-        if pending.is_empty() {
-            Ok(())
-        } else {
-            Err(AppError::new(
-                ErrorCode::Conflict,
-                "A retained Snowflake DDL outcome could not be recorded locally; keep Joinery open and retry closing after local storage is available",
-            ))
-        }
-    }
-
     pub async fn preflight_snowflake_ddl(
         &self,
         request: &SnowflakeDdlPreflightRequest,
     ) -> AppResult<SnowflakeDdlPreflightResponse> {
-        self.flush_pending_ddl_receipts()?;
+        self.flush_pending_snowflake_receipts()?;
         let session = self.session(&request.session_id)?;
         let revision = session.metadata_gate.lock().revision.clone();
         let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
@@ -356,7 +315,7 @@ impl Studio {
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         let (request, preflight, digest) = {
             let _configuration = self.configuration_gate.lock();
-            self.flush_pending_ddl_receipts()?;
+            self.flush_pending_snowflake_receipts()?;
             let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
             if stored.deadline <= Instant::now() || stored.plan.session_id != session_id {
                 return Err(expired());
@@ -438,11 +397,6 @@ impl Studio {
             result.state.transaction_control_authority = None;
             self.disconnect(&session_id);
         }
-        let outcome = match result.statement_outcome {
-            SnowflakeDdlOutcome::Succeeded => "succeeded",
-            SnowflakeDdlOutcome::Rejected => "rejected",
-            SnowflakeDdlOutcome::Unknown => "unknown",
-        };
         let entry = HistoryEntry {
             snowflake_ddl: Some(SnowflakeDdlEvidence {
                 kind: result.kind,
@@ -467,20 +421,15 @@ impl Studio {
             },
             elapsed_ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
         };
-        self.pending_ddl_receipts.lock().insert(
-            entry.id.clone(),
-            PendingReceipt {
+        if self
+            .retain_snowflake_receipt(snowflake_receipts::PendingReceipt::statement(
                 entry,
                 digest,
-                outcome,
-                audit_pending: true,
-                history_pending: true,
-            },
-        );
-        if self.flush_pending_ddl_receipts().is_err() && result.error.is_none() {
-            result.error = Some(AppError::internal(
-                "The statement finished, but its local history or audit could not be recorded; keep Joinery open so the retained outcome can be recorded before closing",
-            ));
+                snowflake_receipts::OriginalResult::Ddl(result.clone()),
+            ))
+            .is_err()
+        {
+            snowflake_receipts::recording_notice(&mut result.error);
         }
         if !result.retired {
             self.publish_observed_runtime(&session, &result.state);

@@ -195,6 +195,7 @@ impl Studio {
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         let (request, kind, digest) = {
             let _configuration = self.configuration_gate.lock();
+            self.flush_pending_snowflake_receipts()?;
             let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
             if stored.deadline <= Instant::now() || stored.plan.session_id != session_id {
                 return Err(expired());
@@ -281,16 +282,8 @@ impl Studio {
             result.state.transaction_control_authority = None;
             self.disconnect(&session_id);
         }
-        let outcome = match result.statement_outcome {
-            SnowflakeDmlOutcome::Succeeded => "succeeded",
-            SnowflakeDmlOutcome::Rejected => "rejected",
-            SnowflakeDmlOutcome::Unknown => "unknown",
-        };
         // Neither local persistence nor a late close may erase remote ACKs.
-        let audit = self
-            .persistence
-            .audit(&session.profile.id, "snowflake-dml", &digest, outcome);
-        let history = self.persistence.record_history(&HistoryEntry {
+        let entry = HistoryEntry {
             snowflake_dml: Some(SnowflakeDmlEvidence {
                 kind: result.kind,
                 statement_outcome: result.statement_outcome,
@@ -311,11 +304,16 @@ impl Studio {
                 SnowflakeDmlOutcome::Unknown => RunStatus::OutcomeUnknown,
             },
             elapsed_ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
-        });
-        if (audit.is_err() || history.is_err()) && result.error.is_none() {
-            result.error = Some(AppError::internal(
-                "The statement finished, but its local history or audit could not be recorded",
-            ));
+        };
+        if self
+            .retain_snowflake_receipt(snowflake_receipts::PendingReceipt::statement(
+                entry,
+                digest,
+                snowflake_receipts::OriginalResult::Dml(result.clone()),
+            ))
+            .is_err()
+        {
+            snowflake_receipts::recording_notice(&mut result.error);
         }
         if !result.retired {
             self.publish_observed_runtime(&session, &result.state);

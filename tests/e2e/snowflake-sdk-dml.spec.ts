@@ -173,7 +173,13 @@ async function reviewAndRun(page: Page) {
   await page.keyboard.press("Enter");
 }
 
-for (const outcome of ["normal", "recovery", "unknown", "disconnect"] as const) {
+for (const outcome of [
+  "normal",
+  "recovery",
+  "unknown",
+  "disconnect",
+  "recordingFailure",
+] as const) {
   test(`reviewed SDK DML ${outcome} uses parameters and exact review once, keeps metadata quiet and displays truthful evidence`, async ({
     page,
   }) => {
@@ -198,7 +204,13 @@ for (const outcome of ["normal", "recovery", "unknown", "disconnect"] as const) 
             : { status: "validated", affectedRows: "9007199254740993", multiJoinedRows: "7" },
         state: runtime(outcome === "recovery"),
         retired: outcome === "unknown" || outcome === "disconnect",
-        error: null,
+        error:
+          outcome === "recordingFailure"
+            ? {
+                code: "internal",
+                message: "Local outcome recording is incomplete; keep Joinery open.",
+              }
+            : null,
       };
     });
     await reviewAndRun(page);
@@ -235,6 +247,12 @@ for (const outcome of ["normal", "recovery", "unknown", "disconnect"] as const) 
       await expect(notice).toContainText("9007199254740993");
       await expect(notice).toContainText("Multi-joined rows updated: 7");
       await expect(notice).toContainText("does not prove committed effects");
+    }
+    if (outcome === "recordingFailure") {
+      await expect(notice.getByRole("alert")).toContainText(
+        "Local outcome recording is incomplete; keep Joinery open.",
+      );
+      await expect(notice).not.toContainText("Statement outcome is unknown");
     }
     await page.clock.fastForward("00:31");
     expect(quiet()).toBe(before);

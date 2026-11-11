@@ -440,113 +440,134 @@ test("synthetic SDK unknown boundary outcome retires without replay or reconnect
   ).toBe(false);
 });
 
-test("synthetic SDK immediate COMMIT acknowledgement does not trigger background observation", async ({
-  page,
-}) => {
-  const sessionId = "synthetic-snowflake-immediate-commit";
-  const current = runtime(sessionId, "commit-authority", ["commit"], {
-    transactionMode: "manual",
-    transactionState: "inTransaction",
-    transactionObservation: {
-      status: "observed",
-      transactionId: "opaque-transaction-id",
-      abortOnError: false,
-      usability: "unknown",
-    },
-  });
-  const calls: Array<{ command: string; body: Record<string, any> }> = [];
-  let profile!: ConnectionProfile;
-  const next = runtime(sessionId, "after-commit", []);
-
-  await createSyntheticSnowflakeConsole(
+for (const recordingFailure of [false, true]) {
+  test(`synthetic SDK COMMIT acknowledgement with recording failure ${recordingFailure} is retained without replay`, async ({
     page,
-    async (command, body) => {
-      calls.push({ command, body });
-      switch (command) {
-        case "save_profile":
-          profile = body.profile as ConnectionProfile;
-          expect(profile.safeMode).toBe("silent");
-          return profile;
-        case "prepare_connection":
-          return "synthetic-attempt";
-        case "connect_prepared":
-          return {
-            id: sessionId,
-            connectionId: profile.id,
-            engine: "snowflake",
-            serverVersion: "synthetic fixture",
-            latencyMs: 1,
-            encrypted: true,
-            capabilities: {
-              sql: true,
-              transactions: false,
-              explicitTransactionControls: true,
-              cancellation: true,
-              tableBrowsing: false,
-              relationBrowsing: true,
-              tableEditing: false,
-              tableFiltering: false,
-              processes: false,
-            },
-          };
-        case "session_contexts":
-          return { state: current, available: ["PUBLIC"], revision: "context-revision" };
-        case "completion_catalog":
-          return {
-            revision: "completion-revision",
-            identity: {
-              database: "DB",
-              role: "ANALYST",
-              searchPath: ["DB.PUBLIC"],
-              caseSensitiveTableNames: true,
-              contextFingerprint: current.contextFingerprint,
-            },
-            tables: [],
-            unqualifiedTables: [],
-          };
-        case "health":
-          return 1;
-        case "prepare_transaction_control":
-          expect(body).toEqual({
-            sessionId,
-            request: { action: "commit", revision: "commit-authority" },
-          });
-          return controlPlan("commit", sessionId);
-        case "execute_transaction_control":
-          expect(body).toEqual({ planId: "synthetic-commit-plan" });
-          return boundaryResult("commit", next);
-        default:
-          return passThrough;
-      }
-    },
-    "commit",
-    "silent",
-  );
+  }) => {
+    const sessionId = "synthetic-snowflake-immediate-commit";
+    const current = runtime(sessionId, "commit-authority", ["commit"], {
+      transactionMode: "manual",
+      transactionState: "inTransaction",
+      transactionObservation: {
+        status: "observed",
+        transactionId: "opaque-transaction-id",
+        abortOnError: false,
+        usability: "unknown",
+      },
+    });
+    const calls: Array<{ command: string; body: Record<string, any> }> = [];
+    let profile!: ConnectionProfile;
+    const next = runtime(sessionId, "after-commit", []);
 
-  const contextCallsBeforeCommit = calls.filter((call) =>
-    ["session_contexts", "completion_catalog", "health"].includes(call.command),
-  ).length;
-  await page.getByRole("button", { name: "Commit transaction" }).click();
-  await expect(page.getByText("COMMIT acknowledged", { exact: true })).toBeVisible();
-  await expect(
-    page.getByText("Refresh completion context after the transaction action", { exact: true }),
-  ).toBeVisible();
-  await page.clock.fastForward("00:31");
-  expect(calls.filter((call) => call.command === "authorize_plan")).toHaveLength(0);
-  expect(
-    calls.filter((call) =>
+    await createSyntheticSnowflakeConsole(
+      page,
+      async (command, body) => {
+        calls.push({ command, body });
+        switch (command) {
+          case "save_profile":
+            profile = body.profile as ConnectionProfile;
+            expect(profile.safeMode).toBe("silent");
+            return profile;
+          case "prepare_connection":
+            return "synthetic-attempt";
+          case "connect_prepared":
+            return {
+              id: sessionId,
+              connectionId: profile.id,
+              engine: "snowflake",
+              serverVersion: "synthetic fixture",
+              latencyMs: 1,
+              encrypted: true,
+              capabilities: {
+                sql: true,
+                transactions: false,
+                explicitTransactionControls: true,
+                cancellation: true,
+                tableBrowsing: false,
+                relationBrowsing: true,
+                tableEditing: false,
+                tableFiltering: false,
+                processes: false,
+              },
+            };
+          case "session_contexts":
+            return { state: current, available: ["PUBLIC"], revision: "context-revision" };
+          case "completion_catalog":
+            return {
+              revision: "completion-revision",
+              identity: {
+                database: "DB",
+                role: "ANALYST",
+                searchPath: ["DB.PUBLIC"],
+                caseSensitiveTableNames: true,
+                contextFingerprint: current.contextFingerprint,
+              },
+              tables: [],
+              unqualifiedTables: [],
+            };
+          case "health":
+            return 1;
+          case "prepare_transaction_control":
+            expect(body).toEqual({
+              sessionId,
+              request: { action: "commit", revision: "commit-authority" },
+            });
+            return controlPlan("commit", sessionId);
+          case "execute_transaction_control":
+            expect(body).toEqual({ planId: "synthetic-commit-plan" });
+            return boundaryResult("commit", next, {
+              error: recordingFailure
+                ? {
+                    code: "internal",
+                    message: "Local outcome recording is incomplete; keep Joinery open.",
+                  }
+                : null,
+            });
+          default:
+            return passThrough;
+        }
+      },
+      "commit",
+      "silent",
+    );
+
+    const contextCallsBeforeCommit = calls.filter((call) =>
       ["session_contexts", "completion_catalog", "health"].includes(call.command),
-    ),
-  ).toHaveLength(contextCallsBeforeCommit);
-  expect(
-    calls.some(({ command }) =>
-      [
-        "prepare_execution",
-        "execute",
-        "set_transaction_mode",
-        "commit_transaction",
-        "rollback_transaction",
-      ].includes(command),
-    ),
-  ).toBe(false);
-});
+    ).length;
+    await page.getByRole("button", { name: "Commit transaction" }).click();
+    await expect(
+      page.getByText(
+        recordingFailure
+          ? "COMMIT acknowledged. Local outcome recording is incomplete; keep Joinery open."
+          : "COMMIT acknowledged",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(page.getByText("Transaction state unknown", { exact: true })).toHaveCount(0);
+    await expect(
+      page.getByText("Open transaction · usability unknown", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("Refresh completion context after the transaction action", { exact: true }),
+    ).toBeVisible();
+    await page.clock.fastForward("00:31");
+    expect(calls.filter((call) => call.command === "authorize_plan")).toHaveLength(0);
+    expect(calls.filter((call) => call.command === "execute_transaction_control")).toHaveLength(1);
+    expect(
+      calls.filter((call) =>
+        ["session_contexts", "completion_catalog", "health"].includes(call.command),
+      ),
+    ).toHaveLength(contextCallsBeforeCommit);
+    expect(
+      calls.some(({ command }) =>
+        [
+          "prepare_execution",
+          "execute",
+          "set_transaction_mode",
+          "commit_transaction",
+          "rollback_transaction",
+        ].includes(command),
+      ),
+    ).toBe(false);
+  });
+}

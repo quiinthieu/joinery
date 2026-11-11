@@ -54,6 +54,7 @@ pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
 mod snowflake_ddl;
 mod snowflake_dml;
+mod snowflake_receipts;
 mod transaction_controls;
 
 #[derive(Default)]
@@ -251,7 +252,7 @@ pub struct Studio {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     plans: Mutex<HashMap<String, StoredPlan>>,
     ddl_preflights: Mutex<HashMap<String, snowflake_ddl::Preflight>>,
-    pending_ddl_receipts: Mutex<HashMap<String, snowflake_ddl::PendingReceipt>>,
+    pending_snowflake_receipts: Mutex<HashMap<String, snowflake_receipts::PendingReceipt>>,
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
@@ -356,7 +357,7 @@ impl Studio {
             connection_attempts: ConnectionAttempts::default(),
             dml_tasks: tokio_util::task::TaskTracker::new(),
             ddl_preflights: Mutex::new(HashMap::new()),
-            pending_ddl_receipts: Mutex::new(HashMap::new()),
+            pending_snowflake_receipts: Mutex::new(HashMap::new()),
             configuration_gate: Mutex::new(()),
             tunnels: SshManager::default(),
             #[cfg(unix)]
@@ -4842,7 +4843,7 @@ impl Studio {
                     "A database write is still recording its outcome; keep Joinery open and try closing again",
                 )
             })?;
-        self.flush_pending_ddl_receipts()?;
+        self.flush_pending_snowflake_receipts()?;
         #[cfg(unix)]
         self.snowflake_cleanup
             .wait_all(Duration::from_secs(10))
@@ -5362,6 +5363,7 @@ mod browse_classification_tests {
         ddl_result: Mutex<Option<SnowflakeDdlResult>>,
         boundary_calls: Mutex<Vec<TransactionControlRequest>>,
         boundary_result: Mutex<Option<TransactionControlResult>>,
+        boundary_predispatch_error: Mutex<Option<ErrorCode>>,
         boundary_barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     }
 
@@ -5511,6 +5513,12 @@ mod browse_classification_tests {
             _session_id: &str,
             request: &TransactionControlRequest,
         ) -> AppResult<TransactionControlResult> {
+            if let Some(code) = *self.boundary_predispatch_error.lock() {
+                return Err(AppError::new(
+                    code,
+                    "Fixture rejected before remote submission",
+                ));
+            }
             self.boundary_calls.lock().push(request.clone());
             let result = self.boundary_result.lock().clone().unwrap();
             if let Some((started, release)) = &self.boundary_barrier {
@@ -5732,6 +5740,7 @@ mod browse_classification_tests {
 
     include!("execution/snowflake_dml_tests.rs");
     include!("execution/snowflake_ddl_tests.rs");
+    include!("execution/snowflake_receipt_tests.rs");
 
     #[tokio::test]
     async fn explicit_boundary_policy_review_and_one_use_are_enforced_without_extra_observers() {

@@ -756,25 +756,33 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
         let error = studio.shutdown_and_wait().await.unwrap_err();
         assert_eq!(error.code, ErrorCode::Conflict);
         let original = {
-            let pending = studio.pending_ddl_receipts.lock();
+            let pending = studio.pending_snowflake_receipts.lock();
             assert_eq!(pending.len(), 1);
             let receipt = pending.values().next().unwrap();
-            let evidence = receipt.entry.snowflake_ddl.as_ref().unwrap();
+            let evidence = receipt
+                .entry
+                .as_ref()
+                .unwrap()
+                .snowflake_ddl
+                .as_ref()
+                .unwrap();
             assert_eq!(evidence.statement_outcome, SnowflakeDdlOutcome::Succeeded);
             assert_eq!(evidence.qualified_target, "\"DB\".\"PUBLIC\".\"T\"");
-            receipt.entry.clone()
+            receipt.entry.as_ref().unwrap().clone()
         };
         assert_eq!(driver.ddl_calls.lock().len(), 1);
         // Repeated close attempts keep the exact receipt and never submit again.
         assert!(studio.shutdown_and_wait().await.is_err());
         assert_eq!(
             studio
-                .pending_ddl_receipts
+                .pending_snowflake_receipts
                 .lock()
                 .values()
                 .next()
                 .unwrap()
                 .entry
+                .as_ref()
+                .unwrap()
                 .id,
             original.id
         );
@@ -785,7 +793,7 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
         }
         studio.shutdown_and_wait().await.unwrap();
         studio.shutdown_and_wait().await.unwrap();
-        assert!(studio.pending_ddl_receipts.lock().is_empty());
+        assert!(studio.pending_snowflake_receipts.lock().is_empty());
         let history = studio.history("").unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, original.id);

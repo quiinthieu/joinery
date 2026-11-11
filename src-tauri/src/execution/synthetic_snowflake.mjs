@@ -187,6 +187,10 @@ export default {
           if (dml && existsSync(marker('lose-dml-ack'))) process.exit(0);
           if (ddl && existsSync(marker('lose-ddl-ack'))) process.exit(0);
           const complete = () => {
+            if (boundary && existsSync(marker('hold-transaction-ack')) && !existsSync(marker('release-transaction-ack'))) {
+              setTimeout(complete, 10);
+              return;
+            }
             if (dml && existsSync(marker('hold-dml-ack')) && !existsSync(marker('release-dml-ack'))) {
               setTimeout(complete, 10);
               return;

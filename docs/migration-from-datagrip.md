@@ -56,6 +56,26 @@ retry or reconnect occurs. These steps are a prepared walkthrough, not account
 transaction acceptance: no transaction/write approval has been consumed for this
 increment. See the [contract and required checks](snowflake-sdk-transactions-design.md).
 
+## Local outcome-recording recovery
+
+A statement acknowledgement and local history/audit recording are separate
+results. If Joinery reports incomplete outcome recording, keep it open and do
+not rerun SQL to repair history. Pending original receipts block new reviewed
+Snowflake writes, schema changes, BEGIN/COMMIT and normal shutdown until local
+recording succeeds.
+Explicit typed rollback remains available under its normal recovery policy and
+retains its own outcome; it does not replay an earlier statement.
+After a submitted rollback, its pending receipt must be recorded before another
+rollback on that console.
+
+Resolve an open transaction deliberately. Restore local storage availability,
+then retry closing when ready; the receipt retry writes local records only.
+Transaction boundaries retain their existing audit evidence, not a new script
+history entry. While SQLite cannot write, pending receipts remain in memory:
+forced termination or power loss can lose them. Neither a recorded receipt nor
+an acknowledgement proves committed account data effects. Current verification
+and remaining account gates are in the [ledger](replacement-verification.md).
+
 ## Reviewed SDK table DDL (prepared acceptance walkthrough)
 
 These steps require a fresh exact account plan and possible-billing approval.
