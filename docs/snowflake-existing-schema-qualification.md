@@ -8,6 +8,18 @@ authentication, transaction, DROP, or possible-billing approval described here.
 No account connection, credential access, or account SQL was used to prepare this
 document. No approval question is pending while the executable boundary is absent.
 
+The harness-only [offline definition](../src-tauri/src/drivers/snowflake_table_qualification.rs)
+and its [tests](../src-tauri/src/drivers/snowflake_table_qualification_tests.rs)
+now implement the generated target, production-compiled DDL/DML, ordered phases,
+typed outcome/state/readback validators and bounded census expansion. Ten focused
+Rust tests pass; an independent bounded source review found no material issue in
+this offline scope. The snapshot hash detects changes to this definition; it is
+not an executable approval manifest. Startup SQL export, physical admission and
+inbound counters, raw census/creation-marker interception, source/runtime/private
+connection binding, durable execution receipts and the account runner remain
+unimplemented. No normal desktop command exposes this module. See the
+[verification ledger](replacement-verification.md) for checks and remaining gates.
+
 The earlier [database setup attempt](snowflake-disposable-setup.md) stopped on
 the definitive `CREATE DATABASE` rejection at 05:41:35.426 UTC. Its plan hash and
 run token remain consumed. Do not retry it, edit its target, fall back through
@@ -404,6 +416,6 @@ The minimum complete increment has these parts:
    and offline modes having zero account side effects. Run relevant repository
    checks and independently review the complete manifest and guard placement.
 
-The only deliverable of this change is this durable design. No new runner,
-execution manifest, approval file, authentication, account test, cleanup or
-account qualification is claimed.
+Current deliverables are this design and its tested offline definition. No new
+runner, execution manifest, approval file, authentication, account test, cleanup
+or account qualification is claimed.

@@ -20,6 +20,8 @@ mod snowflake_metadata;
 pub mod snowflake_process;
 #[cfg(unix)]
 mod snowflake_session;
+#[cfg(all(unix, feature = "test-harness"))]
+pub mod snowflake_table_qualification;
 
 pub trait QuerySink: Send {
     fn limit(&mut self, reason: &str);
