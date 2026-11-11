@@ -6,7 +6,8 @@ use super::{
         MetadataAttachment, MetadataObserver, RelationObservation, SchemaObservation,
     },
     snowflake_qualification_transport::{
-        PhysicalRequest, PhysicalTerminal, TransportAttachment, TransportLimits, TransportPolicy,
+        LocalTerminal, PhysicalRequest, PhysicalTerminal, TransportAttachment, TransportLimits,
+        TransportPolicy,
     },
 };
 use crate::domain::{AppError, AppResult, SessionRuntimeState};
@@ -84,6 +85,11 @@ impl<T: TransportPolicy + MetadataObserver> TransportPolicy for SharedPolicy<T> 
     fn terminal(&self, terminal: PhysicalTerminal<'_>) -> AppResult<()> {
         // Preserve observation of original ACKs even after cross-domain failure.
         self.record(self.policy.terminal(terminal))
+    }
+
+    fn local_terminal(&self, terminal: LocalTerminal<'_>) -> AppResult<()> {
+        // Local originals, including early ACKs, survive prior policy failure.
+        self.record(self.policy.local_terminal(terminal))
     }
 
     fn admit<'a>(

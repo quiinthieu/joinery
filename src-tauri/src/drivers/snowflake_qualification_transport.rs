@@ -38,6 +38,32 @@ pub(crate) struct PhysicalTerminal<'a> {
     pub impact: Impact,
     pub report: &'a super::snowflake_process::Report,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LocalTerminalOrigin {
+    QueuedCancellation,
+    QueuedClose,
+    InactiveControl { admitted: bool },
+    Retirement,
+}
+/// An original pending-operation report produced locally. This excludes the
+/// separate synthetic cancel/discard acknowledgement and aggregate close/fallback
+/// reports, which have no pending operation or physical admission to complete.
+pub(crate) struct LocalTerminal<'a> {
+    pub generation: &'a str,
+    pub operation_id: &'a str,
+    pub ticket: u64,
+    /// Actual process wire assignment, never an admission candidate substituted for it.
+    pub wire_id: Option<&'a str>,
+    /// Candidate passed to admission; presence alone proves neither fsync nor delivery.
+    pub candidate_wire_id: Option<&'a str>,
+    pub operation: &'a str,
+    pub impact: Impact,
+    pub target: Option<(&'a str, Option<u64>)>,
+    /// Original unresolved operation payload, including the logical target.
+    pub payload: &'a Value,
+    pub origin: LocalTerminalOrigin,
+    pub report: &'a super::snowflake_process::Report,
+}
 pub(crate) trait TransportPolicy: Send + Sync {
     /// Synchronous, no IO or adapter/Studio/registry reentry. Publication may
     /// call this while holding connection registry and session-map locks.
@@ -50,6 +76,11 @@ pub(crate) trait TransportPolicy: Send + Sync {
     /// I/O or reentry. Rejection revokes subsequent admission without replacing
     /// the original terminal or its independently retained mutation ACK.
     fn terminal(&self, _terminal: PhysicalTerminal<'_>) -> AppResult<()> {
+        Ok(())
+    }
+    /// Same in-memory/no-reentry contract as terminal. Observe even after failure;
+    /// denial cannot replace the locally produced original or its retained ACK.
+    fn local_terminal(&self, _terminal: LocalTerminal<'_>) -> AppResult<()> {
         Ok(())
     }
     /// May sync a private intent. No process-state mutex is held across this await.
@@ -108,6 +139,7 @@ struct State {
     claimed: bool,
     sealed: bool,
     active_tasks: usize,
+    active_publications: usize,
     first_error: Option<AppError>,
 }
 struct Attached {
@@ -129,6 +161,15 @@ pub(super) enum Stream {
 pub(super) struct TaskGuard {
     attachment: TransportAttachment,
     stream: Stream,
+}
+pub(super) struct PublicationGuard {
+    attachment: TransportAttachment,
+}
+impl Drop for PublicationGuard {
+    fn drop(&mut self) {
+        self.attachment
+            .update(|state| state.active_publications -= 1);
+    }
 }
 impl Drop for TaskGuard {
     fn drop(&mut self) {
@@ -162,6 +203,7 @@ impl TransportAttachment {
                     claimed: false,
                     sealed: false,
                     active_tasks: 0,
+                    active_publications: 0,
                     first_error: None,
                     report: TransportReport {
                         stdout_bytes: 0,
@@ -185,7 +227,8 @@ impl TransportAttachment {
         let mut state = self.inner.state.lock().unwrap();
         f(&mut state);
         state.report.failed = state.first_error.is_some();
-        state.report.settled = state.sealed && state.active_tasks == 0;
+        state.report.settled =
+            state.sealed && state.active_tasks == 0 && state.active_publications == 0;
         self.inner
             .updates
             .send_modify(|sequence| *sequence = sequence.wrapping_add(1));
@@ -297,6 +340,19 @@ impl TransportAttachment {
         // another failure has revoked admission.
         if let Err(error) = self.inner.policy.terminal(terminal) {
             self.fail(error);
+        }
+    }
+    pub(super) fn local_terminal(&self, terminal: LocalTerminal<'_>) {
+        if let Err(error) = self.inner.policy.local_terminal(terminal) {
+            self.fail(error);
+        }
+    }
+    /// Register under process State before publishing outside that mutex, so a
+    /// concurrent owner cannot mistake stream settlement for completed capture.
+    pub(super) fn publication(&self) -> PublicationGuard {
+        self.update(|state| state.active_publications += 1);
+        PublicationGuard {
+            attachment: self.clone(),
         }
     }
     pub(super) fn write_started(&self) {

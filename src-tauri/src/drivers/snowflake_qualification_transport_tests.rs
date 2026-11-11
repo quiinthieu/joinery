@@ -2,13 +2,182 @@
 use super::*;
 use crate::domain::{AppError, AppResult};
 use crate::drivers::snowflake_qualification_transport::{
-    Disposition, PhysicalRequest, PhysicalTerminal, Stream, TransportLimits, TransportPolicy,
+    Disposition, LocalTerminal, LocalTerminalOrigin, PhysicalRequest, PhysicalTerminal, Stream,
+    TransportLimits, TransportPolicy,
 };
 use std::{future::Future, pin::Pin, sync::atomic::AtomicUsize};
 use tokio::sync::Notify;
 
 type ObservedRequest = (String, u64, String, Vec<u8>);
 type ObservedTerminal = (String, u64, String, String, Certainty);
+
+#[derive(Default)]
+struct LocalReportPolicy {
+    reports: Mutex<Vec<Report>>,
+    local: Mutex<Vec<ObservedLocal>>,
+}
+#[derive(Debug)]
+struct ObservedLocal {
+    id: String,
+    ticket: u64,
+    wire_id: Option<String>,
+    candidate: Option<String>,
+    target: Option<(String, Option<u64>)>,
+    payload: Value,
+    origin: LocalTerminalOrigin,
+}
+fn local_metadata(terminal: &LocalTerminal<'_>) -> ObservedLocal {
+    assert!(valid_generation(terminal.generation));
+    assert!(valid_transaction_impact(
+        terminal.operation,
+        terminal.payload,
+        terminal.impact
+    ));
+    ObservedLocal {
+        id: terminal.operation_id.into(),
+        ticket: terminal.ticket,
+        wire_id: terminal.wire_id.map(str::to_owned),
+        candidate: terminal.candidate_wire_id.map(str::to_owned),
+        target: terminal.target.map(|(id, ticket)| (id.into(), ticket)),
+        payload: terminal.payload.clone(),
+        origin: terminal.origin,
+    }
+}
+impl TransportPolicy for LocalReportPolicy {
+    fn admit<'a>(
+        &'a self,
+        _: PhysicalRequest<'a>,
+    ) -> Pin<Box<dyn Future<Output = AppResult<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn terminal(&self, terminal: PhysicalTerminal<'_>) -> AppResult<()> {
+        self.reports.lock().unwrap().push(terminal.report.clone());
+        Ok(())
+    }
+    fn local_terminal(&self, terminal: LocalTerminal<'_>) -> AppResult<()> {
+        self.local.lock().unwrap().push(local_metadata(&terminal));
+        self.reports.lock().unwrap().push(terminal.report.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn qualification_local_original_queued_cancel_is_observed_once_after_prior_failure() {
+    let policy = Arc::new(LocalReportPolicy::default());
+    let transport = TransportAttachment::new(policy.clone(), TransportLimits::default()).unwrap();
+    let (inner, _normal, _control) = isolated(transport.clone());
+    let mut operation = inner
+        .request(
+            "queued",
+            "query",
+            json!({"sql":"never submitted"}),
+            Impact::Read,
+        )
+        .unwrap();
+    transport.fail(AppError::invalid("prior qualification denial"));
+    let acknowledgement = inner.cancel(&operation.token()).unwrap();
+    assert!(acknowledgement.report().unwrap().ok);
+    let original = operation.wait().await;
+    assert_eq!(original.certainty, Certainty::NotSubmitted);
+    assert_eq!(original.error_code.as_deref(), Some("cancelled"));
+    inner.retire(Retirement::Requested);
+    let observed = policy.reports.lock().unwrap();
+    assert_eq!(
+        observed.len(),
+        1,
+        "the original local report must reach its owner"
+    );
+    assert_eq!(format!("{:?}", observed[0]), format!("{original:?}"));
+    let local = policy.local.lock().unwrap();
+    assert_eq!(local[0].id, "queued");
+    assert_eq!(local[0].ticket, operation.token().ticket);
+    assert_eq!(local[0].origin, LocalTerminalOrigin::QueuedCancellation);
+    assert!(local[0].wire_id.is_none() && local[0].candidate.is_none());
+    assert!(local[0].target.is_none());
+    assert_eq!(local[0].payload, json!({"sql":"never submitted"}));
+}
+
+#[tokio::test]
+async fn qualification_local_original_retirement_retains_all_typed_acks_once() {
+    for (operation_name, payload, acknowledgement, impact) in [
+        (
+            "dml",
+            json!({"kind":"insert"}),
+            json!({"type":"dmlAcknowledged","kind":"insert"}),
+            Impact::Mutating,
+        ),
+        (
+            "ddl",
+            json!({"kind":"createTable"}),
+            json!({"type":"ddlAcknowledged","kind":"createTable"}),
+            Impact::Mutating,
+        ),
+        (
+            "transaction",
+            json!({"action":"begin"}),
+            json!({"type":"boundaryAcknowledged","action":"begin"}),
+            Impact::Begin,
+        ),
+    ] {
+        for reason in [
+            Retirement::Eof,
+            Retirement::Protocol,
+            Retirement::Write,
+            Retirement::Requested,
+            Retirement::Deadline,
+            Retirement::Dropped,
+        ] {
+            let policy = Arc::new(LocalReportPolicy::default());
+            let transport =
+                TransportAttachment::new(policy.clone(), TransportLimits::default()).unwrap();
+            let (inner, _normal, _control) = isolated(transport);
+            let mut operation = inner
+                .request("write", operation_name, payload.clone(), impact)
+                .unwrap();
+            {
+                let mut state = inner.state.lock().unwrap();
+                let pending = state.pending.get_mut("write").unwrap();
+                pending.phase = Phase::Sent;
+                pending.wire_id = Some("1".into());
+                state.wire_ids.insert("1".into(), "write".into());
+            }
+            let sdk_id = "00000000-0000-4000-8000-000000000011";
+            let query_id = "00000000-0000-4000-8000-000000000012";
+            for extra in [
+                json!({"type":"accepted"}),
+                json!({"type":"phase","phase":"dispatching"}),
+                json!({"type":"statement","sdkRequestId":sdk_id}),
+                acknowledgement.clone(),
+                json!({"type":"statement","sdkRequestId":sdk_id,"queryId":query_id}),
+            ] {
+                let mut event =
+                    json!({"v":1,"generation":inner.generation,"id":"1","sdkRequestId":sdk_id});
+                event
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(extra.as_object().unwrap().clone());
+                assert!(inner.event(event));
+            }
+            inner.retire(reason);
+            inner.retire(reason);
+            let original = operation.wait().await;
+            assert_eq!(original.certainty, Certainty::StatementSucceeded);
+            assert_eq!(original.retirement, Some(reason));
+            assert_eq!(original.statements[0].query_id.as_deref(), Some(query_id));
+            let observed = policy.reports.lock().unwrap();
+            assert_eq!(
+                observed.len(),
+                1,
+                "retirement must retain one original owner report"
+            );
+            assert_eq!(format!("{:?}", observed[0]), format!("{original:?}"));
+            let local = policy.local.lock().unwrap();
+            assert_eq!(local[0].wire_id.as_deref(), Some("1"));
+            assert!(local[0].candidate.is_none());
+            assert_eq!(local[0].origin, LocalTerminalOrigin::Retirement);
+        }
+    }
+}
 
 #[derive(Default)]
 struct TerminalPolicy {
@@ -227,8 +396,13 @@ struct Policy {
     release: Notify,
     pause: AtomicBool,
     seen: Mutex<Vec<ObservedRequest>>,
+    local: Mutex<Vec<ObservedLocal>>,
 }
 impl TransportPolicy for Policy {
+    fn local_terminal(&self, terminal: LocalTerminal<'_>) -> AppResult<()> {
+        self.local.lock().unwrap().push(local_metadata(&terminal));
+        Ok(())
+    }
     fn check(&self) -> AppResult<()> {
         let revoked = self.revoked.load(Ordering::SeqCst);
         if self.calls.load(Ordering::SeqCst) > 0 {
@@ -315,6 +489,7 @@ fn isolated(
         buffered: Arc::new(AtomicUsize::new(0)),
         logout_acknowledged: AtomicBool::new(false),
         transport: Some(transport),
+        finalizations: watch::channel(0).0,
     });
     (inner, normal_rx, control_rx)
 }
@@ -517,7 +692,10 @@ async fn qualification_transport_awaited_admission_rechecks_canceled_and_replace
     .unwrap()
     .unwrap();
     assert_eq!(wire["payload"]["sql"], "replacement");
-    assert_eq!(wire["id"], "1");
+    assert_eq!(
+        wire["id"], "2",
+        "the canceled operation's admitted candidate is consumed"
+    );
     assert_eq!(transport.report().admitted_writes, 2);
     assert_eq!(transport.report().started_writes, 1);
     {
@@ -563,12 +741,377 @@ async fn qualification_transport_awaited_control_revalidates_terminal_target() {
     pending.terminal.send_replace(Some(local_report(json!({}))));
     policy.release.notify_one();
     assert!(cancel.wait_bounded(Duration::from_secs(1)).await.ok);
+    {
+        let local = policy.local.lock().unwrap();
+        let original = &local[0];
+        assert_eq!(original.id, cancel.id);
+        assert_eq!(original.ticket, cancel.token().ticket);
+        assert_eq!(
+            original.origin,
+            LocalTerminalOrigin::InactiveControl { admitted: true }
+        );
+        assert!(original.wire_id.is_none());
+        assert_eq!(original.candidate.as_deref(), Some("1"));
+        assert_eq!(
+            original.target,
+            Some(("target".into(), Some(target.token().ticket)))
+        );
+        assert_eq!(original.payload, json!({"target":"target"}));
+    }
+    assert_eq!(inner.state.lock().unwrap().next_wire_id, 1);
+    assert_eq!(transport.report().started_writes, 0);
+    let next = inner
+        .request("next", "query", json!({"sql":"next"}), Impact::Read)
+        .unwrap();
+    let wire = timeout(
+        Duration::from_secs(1),
+        read_frame(&mut reader, Duration::from_secs(1)),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        wire["id"], "2",
+        "a consumed intent candidate cannot be reused"
+    );
     inner.retire(Retirement::Requested);
     task.await.unwrap();
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).await.unwrap();
     assert!(bytes.is_empty());
-    assert_eq!(transport.report().started_writes, 0);
+    assert_eq!(transport.report().started_writes, 1);
+    drop(next);
+}
+
+#[tokio::test]
+async fn qualification_local_original_inactive_control_before_admission_has_no_candidate() {
+    let policy = Arc::new(Policy::default());
+    let transport = attachment(policy.clone(), TransportLimits::default());
+    let (inner, normal, control) = isolated(transport.clone());
+    let target = inner
+        .request("target", "query", json!({}), Impact::Read)
+        .unwrap();
+    {
+        let mut state = inner.state.lock().unwrap();
+        let pending = state.pending.get_mut("target").unwrap();
+        pending.phase = Phase::Sent;
+        pending.wire_id = Some("existing".into());
+    }
+    let mut discard = inner.discard(&target.token()).unwrap();
+    let pending = inner
+        .state
+        .lock()
+        .unwrap()
+        .pending
+        .remove("target")
+        .unwrap();
+    pending.terminal.send_replace(Some(local_report(json!({}))));
+    let (writer, mut reader) = tokio::io::duplex(1024);
+    let task = tokio::spawn(write_loop(
+        inner.clone(),
+        writer,
+        normal,
+        control,
+        Duration::from_secs(1),
+    ));
+    assert!(discard.wait_bounded(Duration::from_secs(1)).await.ok);
+    {
+        let local = policy.local.lock().unwrap();
+        assert_eq!(local.len(), 1);
+        assert_eq!(
+            local[0].origin,
+            LocalTerminalOrigin::InactiveControl { admitted: false }
+        );
+        assert!(local[0].wire_id.is_none() && local[0].candidate.is_none());
+        assert_eq!(
+            local[0].target,
+            Some(("target".into(), Some(target.token().ticket)))
+        );
+        assert_eq!(
+            local[0].payload,
+            json!({"target":"target","batches":0,"discard":true})
+        );
+    }
+    assert_eq!(transport.report().admitted_writes, 0);
+    assert_eq!(inner.state.lock().unwrap().next_wire_id, 0);
+    inner.retire(Retirement::Requested);
+    task.await.unwrap();
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await.unwrap();
+    assert!(bytes.is_empty());
+}
+
+#[tokio::test]
+async fn qualification_local_original_close_drains_queued_work_before_shutdown() {
+    let policy = Arc::new(LocalReportPolicy::default());
+    let transport = TransportAttachment::new(policy.clone(), TransportLimits::default()).unwrap();
+    let (inner, _normal, _control) = isolated(transport);
+    inner.state.lock().unwrap().connect_sent = true;
+    let mut query = inner
+        .request("queued", "query", json!({}), Impact::Read)
+        .unwrap();
+    let process = Supervisor {
+        inner,
+        pid: 0,
+        bounds: Bounds {
+            exit: Duration::from_millis(10),
+            ..Bounds::default()
+        },
+    };
+    process.close().await;
+    let report = query.wait().await;
+    assert_eq!(report.certainty, Certainty::NotSubmitted);
+    assert_eq!(report.error_code.as_deref(), Some("connectionClosed"));
+    let local = policy.local.lock().unwrap();
+    let matching = local
+        .iter()
+        .filter(|row| row.id == "queued")
+        .collect::<Vec<_>>();
+    assert_eq!(matching.len(), 1);
+    assert_eq!(matching[0].origin, LocalTerminalOrigin::QueuedClose);
+    assert!(matching[0].wire_id.is_none() && matching[0].candidate.is_none());
+}
+
+struct BlockingPublicationPolicy {
+    inner: Mutex<Option<std::sync::Weak<Inner>>>,
+    entered: std::sync::mpsc::Sender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    block_helper: bool,
+    local_calls: AtomicUsize,
+}
+impl TransportPolicy for BlockingPublicationPolicy {
+    fn admit<'a>(
+        &'a self,
+        _: PhysicalRequest<'a>,
+    ) -> Pin<Box<dyn Future<Output = AppResult<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn terminal(&self, _: PhysicalTerminal<'_>) -> AppResult<()> {
+        if self.block_helper {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }
+        Ok(())
+    }
+    fn local_terminal(&self, terminal: LocalTerminal<'_>) -> AppResult<()> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upgrade()
+            .unwrap();
+        {
+            let state = inner
+                .state
+                .try_lock()
+                .expect("local observer outside process State");
+            assert!(
+                state
+                    .finalizing
+                    .contains_key(&(terminal.operation_id.into(), terminal.ticket))
+            );
+            assert!(
+                !state
+                    .pending
+                    .get(terminal.operation_id)
+                    .is_some_and(|p| p.ticket == terminal.ticket)
+            );
+        }
+        self.local_calls.fetch_add(1, Ordering::SeqCst);
+        if !self.block_helper {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+            return Err(AppError::invalid(
+                "local publication denied after original capture",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn qualification_local_original_inflight_callback_blocks_settlement_and_preserves_ack() {
+    let (entered, entered_rx) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let policy = Arc::new(BlockingPublicationPolicy {
+        inner: Mutex::new(None),
+        entered,
+        release: Mutex::new(release_rx),
+        block_helper: false,
+        local_calls: AtomicUsize::new(0),
+    });
+    let transport = TransportAttachment::new(policy.clone(), TransportLimits::default()).unwrap();
+    let guard = transport.start(Stream::Stdout);
+    transport.seal();
+    let (inner, _normal, _control) = isolated(transport.clone());
+    *policy.inner.lock().unwrap() = Some(Arc::downgrade(&inner));
+    let mut operation = inner
+        .request("write", "dml", json!({"kind":"insert"}), Impact::Mutating)
+        .unwrap();
+    {
+        let mut state = inner.state.lock().unwrap();
+        let pending = state.pending.get_mut("write").unwrap();
+        pending.phase = Phase::Dispatching;
+        pending.wire_id = Some("1".into());
+        let statement = StatementIdentity {
+            sdk_request_id: "original-sdk-id".into(),
+            query_id: Some("original-query-id".into()),
+        };
+        pending.statements.push(statement.clone());
+        pending.dml_acknowledged = Some(DmlAcknowledgement {
+            kind: SnowflakeDmlKind::Insert,
+            statement,
+        });
+    }
+    let owner = inner.clone();
+    let thread = std::thread::spawn(move || owner.retire(Retirement::Eof));
+    entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    drop(guard);
+    assert!(
+        !transport.report().settled,
+        "local callback is not a pipe task but still owns settlement"
+    );
+    assert!(operation.report().is_none());
+    assert_eq!(
+        operation
+            .dml_acknowledged()
+            .unwrap()
+            .statement
+            .query_id
+            .as_deref(),
+        Some("original-query-id")
+    );
+    assert_eq!(operation.phase(), Phase::Dispatching);
+    inner.retire(Retirement::Requested);
+    release.send(()).unwrap();
+    thread.join().unwrap();
+    let original = operation.wait().await;
+    assert_eq!(original.certainty, Certainty::StatementSucceeded);
+    assert_eq!(original.retirement, Some(Retirement::Eof));
+    assert!(original.dml_acknowledged.is_some());
+    assert_eq!(policy.local_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        transport
+            .wait(Duration::from_secs(1))
+            .await
+            .unwrap()
+            .settled
+    );
+    assert!(transport.first_error().is_some());
+    assert!(inner.state.lock().unwrap().finalizing.is_empty());
+}
+
+#[test]
+fn qualification_local_original_dropped_mutation_is_retained_without_a_caller_receiver() {
+    let policy = Arc::new(LocalReportPolicy::default());
+    let transport = TransportAttachment::new(policy.clone(), TransportLimits::default()).unwrap();
+    let (inner, _normal, _control) = isolated(transport);
+    let operation = inner
+        .request("dropped", "dml", json!({"kind":"insert"}), Impact::Mutating)
+        .unwrap();
+    {
+        let mut state = inner.state.lock().unwrap();
+        let pending = state.pending.get_mut("dropped").unwrap();
+        pending.phase = Phase::Dispatching;
+        pending.wire_id = Some("1".into());
+        let statement = StatementIdentity {
+            sdk_request_id: "original-sdk-id".into(),
+            query_id: Some("original-query-id".into()),
+        };
+        pending.statements.push(statement.clone());
+        pending.dml_acknowledged = Some(DmlAcknowledgement {
+            kind: SnowflakeDmlKind::Insert,
+            statement,
+        });
+    }
+    drop(operation);
+    let reports = policy.reports.lock().unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].retirement, Some(Retirement::Dropped));
+    assert_eq!(reports[0].certainty, Certainty::StatementSucceeded);
+    assert_eq!(
+        reports[0].dml_acknowledged.as_ref().unwrap().statement,
+        reports[0].statements[0]
+    );
+    assert!(inner.state.lock().unwrap().finalizing.is_empty());
+}
+
+#[tokio::test]
+async fn qualification_local_original_inactive_waits_for_exact_helper_publication() {
+    use std::task::{Context, Poll, Waker};
+    let (entered, entered_rx) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let policy = Arc::new(BlockingPublicationPolicy {
+        inner: Mutex::new(None),
+        entered,
+        release: Mutex::new(release_rx),
+        block_helper: true,
+        local_calls: AtomicUsize::new(0),
+    });
+    let transport = TransportAttachment::new(policy.clone(), TransportLimits::default()).unwrap();
+    transport.seal();
+    let (inner, normal, control) = isolated(transport.clone());
+    *policy.inner.lock().unwrap() = Some(Arc::downgrade(&inner));
+    let target = inner
+        .request("target", "query", json!({}), Impact::Read)
+        .unwrap();
+    {
+        let mut state = inner.state.lock().unwrap();
+        let pending = state.pending.get_mut("target").unwrap();
+        pending.phase = Phase::Acknowledged;
+        pending.wire_id = Some("1".into());
+        state.wire_ids.insert("1".into(), "target".into());
+    }
+    let mut discard = inner.discard(&target.token()).unwrap();
+    let owner = inner.clone();
+    let event = json!({"v":1,"generation":inner.generation,"id":"1","type":"terminal","ok":true,"result":{}});
+    let thread = std::thread::spawn(move || assert!(owner.event(event)));
+    entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let (writer, mut reader) = tokio::io::duplex(1024);
+    let write = write_loop(
+        inner.clone(),
+        writer,
+        normal,
+        control,
+        Duration::from_secs(1),
+    );
+    tokio::pin!(write);
+    assert!(matches!(
+        write.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Pending
+    ));
+    assert_eq!(
+        policy.local_calls.load(Ordering::SeqCst),
+        0,
+        "local control cannot precede target helper observation"
+    );
+    assert!(discard.report().is_none());
+    assert!(!transport.report().settled);
+    release.send(()).unwrap();
+    thread.join().unwrap();
+    assert!(matches!(
+        write.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Pending
+    ));
+    assert!(discard.wait().await.ok);
+    assert_eq!(policy.local_calls.load(Ordering::SeqCst), 1);
+    inner.retire(Retirement::Requested);
+    write.await;
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await.unwrap();
+    assert!(bytes.is_empty());
+    assert!(transport.report().settled);
 }
 struct PartialWriter {
     remaining: usize,

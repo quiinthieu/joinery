@@ -1,7 +1,8 @@
 //! Bounded Snowflake helper process transport. No remote capability is qualified here.
 #[cfg(all(unix, feature = "test-harness"))]
 use super::snowflake_qualification_transport::{
-    Disposition, PhysicalRequest, PhysicalTerminal, Stream, TransportAttachment,
+    Disposition, LocalTerminal, LocalTerminalOrigin, PhysicalRequest, PhysicalTerminal,
+    PublicationGuard, Stream, TransportAttachment,
 };
 use crate::domain::{SnowflakeDdlKind, SnowflakeDmlKind};
 use serde_json::{Value, json};
@@ -635,6 +636,24 @@ struct Pending {
     width: Option<usize>,
     credits: u32,
     discard: bool,
+    #[cfg(all(unix, feature = "test-harness"))]
+    qualification: Option<PendingQualification>,
+}
+#[cfg(all(unix, feature = "test-harness"))]
+struct PendingQualification {
+    payload: Value,
+    target: Option<(String, Option<u64>)>,
+    candidate_wire_id: Option<String>,
+}
+struct LocalPublication {
+    id: String,
+    pending: Pending,
+    report: Report,
+    published: bool,
+    #[cfg(all(unix, feature = "test-harness"))]
+    origin: LocalTerminalOrigin,
+    #[cfg(all(unix, feature = "test-harness"))]
+    _guard: Option<PublicationGuard>,
 }
 #[derive(Default)]
 struct State {
@@ -662,6 +681,8 @@ struct Inner {
     logout_acknowledged: AtomicBool,
     #[cfg(all(unix, feature = "test-harness"))]
     transport: Option<TransportAttachment>,
+    #[cfg(all(unix, feature = "test-harness"))]
+    finalizations: watch::Sender<u64>,
 }
 struct Outbound {
     id: String,
@@ -916,6 +937,8 @@ impl Supervisor {
             logout_acknowledged: AtomicBool::new(false),
             #[cfg(all(unix, feature = "test-harness"))]
             transport: launch.transport.clone(),
+            #[cfg(all(unix, feature = "test-harness"))]
+            finalizations: watch::channel(0).0,
         });
         #[cfg(all(unix, feature = "test-harness"))]
         let (stdout_guard, writer_guard) = if let Some(transport) = &inner.transport {
@@ -1131,6 +1154,7 @@ impl Supervisor {
                         .pending
                         .values()
                         .any(|p| p.op == "connect" && p.phase == Phase::Queued);
+                let mut publications = Vec::new();
                 if !never_sent {
                     let queued: Vec<_> = state
                         .pending
@@ -1151,28 +1175,39 @@ impl Supervisor {
                         .collect();
                     for id in queued {
                         let pending = state.pending.remove(&id).unwrap();
-                        pending.terminal.send_replace(Some(Report {
+                        let report = Report {
                             ok: false,
                             certainty: Certainty::NotSubmitted,
                             phase: Phase::Queued,
                             result: None,
                             error_code: Some("connectionClosed".into()),
                             retirement: None,
-                            statements: pending.statements,
-                            use_acknowledged: pending.use_acknowledged,
-                            boundary_acknowledged: pending.boundary_acknowledged,
-                            dml_acknowledged: pending.dml_acknowledged,
-                            ddl_acknowledged: pending.ddl_acknowledged,
-                        }));
+                            statements: pending.statements.clone(),
+                            use_acknowledged: pending.use_acknowledged.clone(),
+                            boundary_acknowledged: pending.boundary_acknowledged.clone(),
+                            dml_acknowledged: pending.dml_acknowledged.clone(),
+                            ddl_acknowledged: pending.ddl_acknowledged.clone(),
+                        };
+                        publications.push(self.inner.stage_local(
+                            &mut state,
+                            id,
+                            pending,
+                            report,
+                            #[cfg(all(unix, feature = "test-harness"))]
+                            LocalTerminalOrigin::QueuedClose,
+                        ));
                     }
                 }
-                Some(never_sent)
+                Some((never_sent, publications))
             }
         };
-        let Some(never_sent) = decision else {
+        let Some((never_sent, publications)) = decision else {
             self.wait_exited().await;
             return None;
         };
+        for publication in publications {
+            self.inner.publish_local(publication);
+        }
         if never_sent {
             self.inner.retire(Retirement::Requested);
             self.wait_exited().await;
@@ -1215,6 +1250,125 @@ impl Supervisor {
 }
 
 impl Inner {
+    fn stage_local(
+        &self,
+        state: &mut State,
+        id: String,
+        pending: Pending,
+        report: Report,
+        #[cfg(all(unix, feature = "test-harness"))] origin: LocalTerminalOrigin,
+    ) -> LocalPublication {
+        #[cfg(not(all(unix, feature = "test-harness")))]
+        let _ = state;
+        #[cfg(all(unix, feature = "test-harness"))]
+        let guard = self.transport.as_ref().map(|transport| {
+            state
+                .finalizing
+                .insert((id.clone(), pending.ticket), report.clone());
+            transport.publication()
+        });
+        #[cfg(all(unix, feature = "test-harness"))]
+        let published = self.transport.is_none();
+        #[cfg(not(all(unix, feature = "test-harness")))]
+        let published = true;
+        if published {
+            // Without an observer preserve the original atomic ACK visibility:
+            // removal and watch publication both happen under process State.
+            pending.terminal.send_replace(Some(report.clone()));
+        }
+        LocalPublication {
+            id,
+            pending,
+            report,
+            published,
+            #[cfg(all(unix, feature = "test-harness"))]
+            origin,
+            #[cfg(all(unix, feature = "test-harness"))]
+            _guard: guard,
+        }
+    }
+    fn publish_local(&self, publication: LocalPublication) {
+        if publication.published {
+            return;
+        }
+        let LocalPublication {
+            id,
+            pending,
+            report,
+            published: _,
+            #[cfg(all(unix, feature = "test-harness"))]
+            origin,
+            #[cfg(all(unix, feature = "test-harness"))]
+            _guard,
+        } = publication;
+        #[cfg(all(unix, feature = "test-harness"))]
+        if let Some(transport) = &self.transport {
+            let qualification = pending
+                .qualification
+                .as_ref()
+                .expect("attached pending operation metadata");
+            transport.local_terminal(LocalTerminal {
+                generation: &self.generation,
+                operation_id: &id,
+                ticket: pending.ticket,
+                wire_id: pending.wire_id.as_deref(),
+                candidate_wire_id: qualification.candidate_wire_id.as_deref(),
+                operation: &pending.op,
+                impact: pending.impact,
+                target: qualification
+                    .target
+                    .as_ref()
+                    .map(|(target, ticket)| (target.as_str(), *ticket)),
+                payload: &qualification.payload,
+                origin,
+                report: &report,
+            });
+        }
+        pending.terminal.send_replace(Some(report));
+        #[cfg(all(unix, feature = "test-harness"))]
+        if self.transport.is_some() {
+            self.state
+                .lock()
+                .unwrap()
+                .finalizing
+                .remove(&(id, pending.ticket));
+            self.finalizations
+                .send_modify(|sequence| *sequence = sequence.wrapping_add(1));
+        }
+        #[cfg(not(all(unix, feature = "test-harness")))]
+        let _ = id;
+        // The guard outlives callback, watch publication, and ACK-cache removal.
+    }
+    async fn publish_inactive(&self, publication: LocalPublication, bound: Duration) {
+        #[cfg(all(unix, feature = "test-harness"))]
+        if let Some(target) = publication
+            .pending
+            .qualification
+            .as_ref()
+            .and_then(|q| q.target.as_ref())
+            .and_then(|(id, ticket)| ticket.map(|ticket| (id.clone(), ticket)))
+        {
+            // Target removal precedes its helper observer. A late local control
+            // must wait for that exact observer/cache publication, rather than
+            // race the owning policy's successful-target proof. Keep the local
+            // report and settlement guard owned even if stop becomes ready.
+            let mut updates = self.finalizations.subscribe();
+            let _ = timeout(bound, async {
+                loop {
+                    if !self.state.lock().unwrap().finalizing.contains_key(&target) {
+                        break;
+                    }
+                    if updates.changed().await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await;
+        }
+        #[cfg(not(all(unix, feature = "test-harness")))]
+        let _ = bound;
+        self.publish_local(publication);
+    }
     fn control(self: &Arc<Self>, op: &str, payload: Value) -> Result<Operation, &'static str> {
         let id = format!("control-{}", self.sequence.fetch_add(1, Ordering::Relaxed));
         self.request(&id, op, payload, Impact::Control)
@@ -1275,19 +1429,29 @@ impl Inner {
             return Ok((Some(pending.ticket), is_connect));
         }
         let pending = state.pending.remove(&target.id).unwrap();
-        pending.terminal.send_replace(Some(Report {
+        let report = Report {
             ok: false,
             certainty: Certainty::NotSubmitted,
             phase: Phase::Queued,
             result: None,
             error_code: Some("cancelled".into()),
             retirement: None,
-            statements: pending.statements,
-            use_acknowledged: pending.use_acknowledged,
-            boundary_acknowledged: pending.boundary_acknowledged,
-            dml_acknowledged: pending.dml_acknowledged,
-            ddl_acknowledged: pending.ddl_acknowledged,
-        }));
+            statements: pending.statements.clone(),
+            use_acknowledged: pending.use_acknowledged.clone(),
+            boundary_acknowledged: pending.boundary_acknowledged.clone(),
+            dml_acknowledged: pending.dml_acknowledged.clone(),
+            ddl_acknowledged: pending.ddl_acknowledged.clone(),
+        };
+        let publication = self.stage_local(
+            &mut state,
+            target.id.clone(),
+            pending,
+            report,
+            #[cfg(all(unix, feature = "test-harness"))]
+            LocalTerminalOrigin::QueuedCancellation,
+        );
+        drop(state);
+        self.publish_local(publication);
         Ok((None, is_connect))
     }
     fn targeted_control(
@@ -1408,6 +1572,8 @@ impl Inner {
         } else {
             None
         };
+        #[cfg(all(unix, feature = "test-harness"))]
+        let qualification_payload = self.transport.as_ref().map(|_| payload.clone());
         let bytes = serde_json::to_vec(
             &json!({"v":1,"generation":self.generation,"id":id,"op":op,"payload":payload}),
         )
@@ -1472,6 +1638,12 @@ impl Inner {
                 width: None,
                 credits: credits as u32,
                 discard: false,
+                #[cfg(all(unix, feature = "test-harness"))]
+                qualification: qualification_payload.map(|payload| PendingQualification {
+                    payload,
+                    target: target.clone(),
+                    candidate_wire_id: None,
+                }),
             },
         );
         if (if priority {
@@ -1505,25 +1677,39 @@ impl Inner {
         })
     }
     fn retire(&self, reason: Retirement) {
-        let mut state = self.state.lock().unwrap();
-        self.retire_locked(&mut state, reason);
+        let publications = {
+            let mut state = self.state.lock().unwrap();
+            self.retire_locked(&mut state, reason)
+        };
+        for publication in publications {
+            self.publish_local(publication);
+        }
     }
     fn retire_target(&self, target: &OperationToken, reason: Retirement) {
-        let mut state = self.state.lock().unwrap();
-        if state
-            .pending
-            .get(&target.id)
-            .is_some_and(|p| p.ticket == target.ticket)
-        {
-            self.retire_locked(&mut state, reason);
+        let publications = {
+            let mut state = self.state.lock().unwrap();
+            if state
+                .pending
+                .get(&target.id)
+                .is_some_and(|p| p.ticket == target.ticket)
+            {
+                self.retire_locked(&mut state, reason)
+            } else {
+                Vec::new()
+            }
+        };
+        for publication in publications {
+            self.publish_local(publication);
         }
     }
-    fn retire_locked(&self, state: &mut State, reason: Retirement) {
+    fn retire_locked(&self, state: &mut State, reason: Retirement) -> Vec<LocalPublication> {
         if state.retired.is_some() {
-            return;
+            return Vec::new();
         }
         state.retired = Some(reason);
-        for (_, pending) in state.pending.drain() {
+        let pending_operations = state.pending.drain().collect::<Vec<_>>();
+        let mut publications = Vec::with_capacity(pending_operations.len());
+        for (id, pending) in pending_operations {
             let certainty = if pending.boundary_acknowledged.is_some()
                 || pending.dml_acknowledged.is_some()
                 || pending.ddl_acknowledged.is_some()
@@ -1532,7 +1718,7 @@ impl Inner {
             } else {
                 interrupted_certainty(pending.impact, pending.phase)
             };
-            pending.terminal.send_replace(Some(Report {
+            let report = Report {
                 ok: false,
                 certainty,
                 phase: pending.phase,
@@ -1546,15 +1732,24 @@ impl Inner {
                     .into(),
                 ),
                 retirement: Some(reason),
-                statements: pending.statements,
-                use_acknowledged: pending.use_acknowledged,
-                boundary_acknowledged: pending.boundary_acknowledged,
-                dml_acknowledged: pending.dml_acknowledged,
-                ddl_acknowledged: pending.ddl_acknowledged,
-            }));
+                statements: pending.statements.clone(),
+                use_acknowledged: pending.use_acknowledged.clone(),
+                boundary_acknowledged: pending.boundary_acknowledged.clone(),
+                dml_acknowledged: pending.dml_acknowledged.clone(),
+                ddl_acknowledged: pending.ddl_acknowledged.clone(),
+            };
+            publications.push(self.stage_local(
+                state,
+                id,
+                pending,
+                report,
+                #[cfg(all(unix, feature = "test-harness"))]
+                LocalTerminalOrigin::Retirement,
+            ));
         }
         state.wire_ids.clear();
         self.stop.send_replace(true);
+        publications
     }
     fn event(&self, event: Value) -> bool {
         if event.get("v").and_then(Value::as_u64) != Some(1)
@@ -1973,10 +2168,13 @@ impl Inner {
                 };
                 let closing = state.pending.values().any(|p| p.op == "close");
                 #[cfg(all(unix, feature = "test-harness"))]
+                let mut publication_guard = None;
+                #[cfg(all(unix, feature = "test-harness"))]
                 if let Some(transport) = &self.transport {
                     state
                         .finalizing
                         .insert((logical_id.clone(), pending.ticket), report.clone());
+                    publication_guard = Some(transport.publication());
                     drop(state);
                     transport.terminal(PhysicalTerminal {
                         generation: &self.generation,
@@ -1993,8 +2191,14 @@ impl Inner {
                 // replace the helper's validated original outcome or ACK.
                 pending.terminal.send_replace(Some(report));
                 #[cfg(all(unix, feature = "test-harness"))]
-                state.finalizing.remove(&(logical_id, pending.ticket));
+                {
+                    state.finalizing.remove(&(logical_id, pending.ticket));
+                    self.finalizations
+                        .send_modify(|sequence| *sequence = sequence.wrapping_add(1));
+                }
                 drop(state);
+                #[cfg(all(unix, feature = "test-harness"))]
+                drop(publication_guard);
                 if terminal_connection_loss && !closing {
                     self.retire(Retirement::Requested);
                 }
@@ -2200,7 +2404,7 @@ async fn write_loop(
     limit: Duration,
 ) {
     let mut stopping = inner.stop.subscribe();
-    loop {
+    'outbound: loop {
         if *stopping.borrow() {
             return;
         }
@@ -2210,9 +2414,9 @@ async fn write_loop(
             return;
         };
         // Prepare an exact candidate under the mutex, then admit outside it.
-        // The single writer does not consume a wire ID or mark Sending until
-        // asynchronous intent recording and a second ownership check finish.
-        let prepared = {
+        // The single writer consumes an attached candidate after admission,
+        // even if later ownership checks prevent actual assignment or sending.
+        let prepared = 'prepare: {
             let mut state = inner.state.lock().unwrap();
             if state.retired.is_some() {
                 return;
@@ -2222,7 +2426,7 @@ async fn write_loop(
                 .get(&outbound.id)
                 .filter(|p| p.ticket == outbound.ticket)
             else {
-                continue;
+                continue 'outbound;
             };
             #[cfg(all(unix, feature = "test-harness"))]
             let metadata = (pending.op.clone(), pending.impact);
@@ -2251,11 +2455,16 @@ async fn write_loop(
                     .and_then(|p| p.wire_id.clone())
                 else {
                     if let Some(pending) = state.pending.remove(&outbound.id) {
-                        pending
-                            .terminal
-                            .send_replace(Some(local_report(json!({"inactive":true}))));
+                        break 'prepare Err(inner.stage_local(
+                            &mut state,
+                            outbound.id.clone(),
+                            pending,
+                            local_report(json!({"inactive":true})),
+                            #[cfg(all(unix, feature = "test-harness"))]
+                            LocalTerminalOrigin::InactiveControl { admitted: false },
+                        ));
                     }
-                    continue;
+                    continue 'outbound;
                 };
                 value["payload"]["target"] = Value::String(target_id);
             }
@@ -2264,7 +2473,14 @@ async fn write_loop(
             let prepared = (next, wire_id, value, bytes, metadata);
             #[cfg(not(all(unix, feature = "test-harness")))]
             let prepared = (next, wire_id, value, bytes);
-            prepared
+            Ok(prepared)
+        };
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(publication) => {
+                inner.publish_inactive(publication, limit).await;
+                continue;
+            }
         };
         #[cfg(all(unix, feature = "test-harness"))]
         let (next, wire_id, value, bytes, (operation, impact)) = prepared;
@@ -2272,6 +2488,19 @@ async fn write_loop(
         let (next, wire_id, value, bytes) = prepared;
         #[cfg(all(unix, feature = "test-harness"))]
         if let Some(transport) = &inner.transport {
+            {
+                let mut state = inner.state.lock().unwrap();
+                if let Some(qualification) = state
+                    .pending
+                    .get_mut(&outbound.id)
+                    .filter(|pending| pending.ticket == outbound.ticket)
+                    .and_then(|pending| pending.qualification.as_mut())
+                {
+                    qualification.candidate_wire_id = Some(wire_id.clone());
+                } else {
+                    continue;
+                }
+            }
             let request = PhysicalRequest {
                 generation: &inner.generation,
                 operation_id: &outbound.id,
@@ -2296,17 +2525,32 @@ async fn write_loop(
                 return;
             }
         }
-        {
+        let inactive = 'revalidate: {
             let mut state = inner.state.lock().unwrap();
             if state.retired.is_some() {
                 return;
+            }
+            #[cfg(all(unix, feature = "test-harness"))]
+            let candidate_consumed = inner.transport.is_some();
+            #[cfg(not(all(unix, feature = "test-harness")))]
+            let candidate_consumed = false;
+            if candidate_consumed {
+                if state.next_wire_id.checked_add(1) != Some(next) {
+                    drop(state);
+                    inner.retire(Retirement::Protocol);
+                    return;
+                }
+                // Successful admission consumes its candidate even if later
+                // ownership checks find cancellation, ID reuse, or a dead target.
+                // Actual assignment remains absent until the live checks pass.
+                state.next_wire_id = next;
             }
             if !state
                 .pending
                 .get(&outbound.id)
                 .is_some_and(|p| p.ticket == outbound.ticket && p.phase == Phase::Queued)
             {
-                continue;
+                continue 'outbound;
             }
             if let Some((target, ticket)) = &outbound.target {
                 let target_live = state
@@ -2316,19 +2560,28 @@ async fn write_loop(
                     .and_then(|p| p.wire_id.as_deref());
                 if target_live != value["payload"]["target"].as_str() || target_live.is_none() {
                     if let Some(pending) = state.pending.remove(&outbound.id) {
-                        pending
-                            .terminal
-                            .send_replace(Some(local_report(json!({"inactive":true}))));
+                        break 'revalidate Some(inner.stage_local(
+                            &mut state,
+                            outbound.id.clone(),
+                            pending,
+                            local_report(json!({"inactive":true})),
+                            #[cfg(all(unix, feature = "test-harness"))]
+                            LocalTerminalOrigin::InactiveControl {
+                                admitted: inner.transport.is_some(),
+                            },
+                        ));
                     }
-                    continue;
+                    continue 'outbound;
                 }
             }
-            if state.next_wire_id.checked_add(1) != Some(next) {
-                drop(state);
-                inner.retire(Retirement::Protocol);
-                return;
+            if !candidate_consumed {
+                if state.next_wire_id.checked_add(1) != Some(next) {
+                    drop(state);
+                    inner.retire(Retirement::Protocol);
+                    return;
+                }
+                state.next_wire_id = next;
             }
-            state.next_wire_id = next;
             state.wire_ids.insert(wire_id.clone(), outbound.id.clone());
             let pending = state.pending.get_mut(&outbound.id).unwrap();
             pending.wire_id = Some(wire_id);
@@ -2340,6 +2593,11 @@ async fn write_loop(
             {
                 pending.phase = Phase::Sending;
             }
+            None
+        };
+        if let Some(publication) = inactive {
+            inner.publish_inactive(publication, limit).await;
+            continue;
         }
         let result = tokio::select! { _ = stopping.changed() => return,
         result = timeout(limit, observed_write(&inner, &outbound, &value, &mut stdin, &bytes)) => result };
@@ -2581,6 +2839,8 @@ mod tests {
             logout_acknowledged: AtomicBool::new(false),
             #[cfg(all(unix, feature = "test-harness"))]
             transport: None,
+            #[cfg(all(unix, feature = "test-harness"))]
+            finalizations: watch::channel(0).0,
         });
         (inner, normal_rx, control_rx)
     }
