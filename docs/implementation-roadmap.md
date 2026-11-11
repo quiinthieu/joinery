@@ -1,5 +1,45 @@
 # Joinery implementation roadmap
 
+## Offline execution envelope (12 November 2026)
+
+The local envelope now binds the exact closed Plan, fixed Rust/helper/build
+source scopes, complete zero-link runtime tree, executable, compiler, private
+seven-field profile and at-most-30-minute admission window. Restoration recaptures
+the supplied physical roots and requires exact canonical bytes/digest. A distinct
+approval format is checked against the actually running executable before
+run-first/plan-second create-once markers are consumed. Marker handles remain
+retained for identity checks; failed or dropped attempts never refund markers.
+This is an offline primitive, not an account entry or implemented placement of
+the checks around authentication/each SQL. See the verification ledger for checks.
+
+The complete qualification module passes 179 tests with one default ignore; the
+ignored packaged-runtime inventory also passes explicitly. It covers all 15,110
+runtime entries and 202,538,012 file bytes without launching the helper or SSO.
+Focused counts overlap the module total. Independent bounded review is clean.
+Full validation passes 679 frontend / 467 standard Rust tests and strict checks,
+with 129 fixture cases ignored. The code is committed locally as `6b95a4d`.
+
+Next, in dependency order:
+
+1. Supply this consumed envelope only through a fixed Rust account entry to the
+   retained runner. Check it outside process/policy locks before authentication,
+   each physical SQL admission and after execution. Enforce the bound 120-second
+   authentication and 30-second admission waits plus the retained 15-minute
+   monotonic deadline; preserve stricter production limits and original outcomes.
+2. Implement private exclusive manifest/approval/output handling and owned local
+   lifecycle around the exact frozen profile and verified packaged runtime.
+   Prove drift, expiry, interrupted/failed launch, no offline side effects and
+   final durable evidence through the composed entry. These are not established
+   by the separate primitives.
+3. Emit and independently review the concrete fresh-table plan for
+   `SANDBOX.BILLIE_TESTING`, then obtain fresh execution/billing approval.
+4. Qualify real writes/DDL/transactions and interruptions, packaged SSO and 1M-row
+   account behavior; complete all applicable DataGrip workflows and owner
+   acceptance. The Goal remains active/incomplete.
+
+No Snowflake activity or new installed/package workflow occurs here. Earlier
+dated sections retain their original scope. Nothing is pushed or published.
+
 ## Retained owner integration (12 November 2026)
 
 The shared 32-phase owner and conservative 32 MiB aggregate inbound body cap are

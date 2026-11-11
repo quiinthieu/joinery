@@ -1,5 +1,18 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Offline execution identity and one-use markers (12 November 2026)
+
+| Capability | Implemented locally | Verification/remaining gate |
+| --- | --- | --- |
+| Complete artifact identity | Fixed source scopes, full runtime dependency contents, executable, compiler and exact private profile; modes, paths and file hashes bound to the closed Plan/window | Offline inventories and canonical restoration; hashes do not attest build provenance or immutable storage |
+| One-use attempt records | Distinct approval schema; actual running executable check; run-first/plan-second private exclusive markers with fsync and retained identity proof | Local races, reuse and persistence-fault fixtures; composed account launch remains closed |
+| Retained drift/deadline checks | Sticky content/identity/window checks and 15-minute monotonic deadline | Still must be placed before authentication, each physical SQL and after the actual run; 120-second authentication/30-second admission waits remain integration work |
+| Account and daily replacement readiness | No new account access or product UI change in this increment | Live writes/DDL/transactions, packaged SSO, million-row account performance, all applicable DataGrip capabilities and hands-on acceptance remain required |
+
+See the [verification ledger](replacement-verification.md) for the actual commands,
+results and evidence scope. Earlier sections retain their recorded historical
+scope. These internal primitives do not establish replacement readiness.
+
 ## Retained runner and aggregate payload bound (12 November 2026)
 
 | Capability | Implemented locally | Verification/remaining gate |

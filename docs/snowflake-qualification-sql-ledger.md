@@ -7,6 +7,46 @@ connect to Snowflake, enable an account runner or authorize account activity.
 The complete replacement Goal and all unqualified DataGrip workflows remain
 required.
 
+## Offline execution envelope (12 November 2026)
+
+The private inventory/envelope/consumption modules add byte identity and local
+one-use primitives for `existing-schema-table-lifecycle-v1`. The envelope includes
+the original canonical Plan, at-most-30-minute half-open window, fixed source
+scopes, complete runtime tree, executable/compiler and private seven-field
+profile. Restore extracts only the closed Plan/window, recaptures the supplied
+physical roots and compares exact canonical bytes/digest. Snapshot-supplied hashes,
+paths, limits and SQL cannot replace that recomputation. Output serialization
+stops at 16 MiB; this is not a total-memory guarantee.
+
+Inventories include root, every directory/empty directory and each regular file's
+full-content SHA256, length, mode and lossless sorted relative path. Fixed bounds
+are 32,768 entries, 64 descendant levels, 512 MiB of file contents and 256 MiB per
+file. Absolute physical inputs are bounded to 64 KiB/64 components. Root/included
+nodes require effective-user ownership and no group/other write or special bits;
+regular files require a single link. Anchored no-follow opens and complete-name/
+metadata rechecks reject observed replacements. Ancestors allow root/effective-
+user ownership, with a root-owned sticky-directory exception for system temporary
+paths. This does not provide exclusive ancestor names or prevent same-user races
+between checks. The private profile additionally requires exact mode 0600 and
+a bounded 16 KiB read through the same descriptor walk.
+
+Consumption checks a distinct closed approval schema and the actually running
+executable, then verifies window/content before exclusively creating and syncing
+the RUN marker first and execution-hash marker second. RUN keys bind workflow,
+account, host, database, schema and original RUN, excluding source/window hashes.
+Partial failure, changed approval window and losing the non-cloneable capability
+cannot refund or resume the RUN. Retained directory/marker descriptors support
+later identity/content checks; envelope failure stays sticky. The envelope binds
+the current transport/default read limits and the proposed 120-second auth/
+30-second admission waits, plus its checked 15-minute monotonic deadline.
+
+No account/runner constructor yet accepts the capability. Fixed account entry,
+exclusive private manifest/output handling, physical check placement, wait
+enforcement and composed final lifecycle evidence remain required before any
+executable approval plan. Local fsync tests do not simulate power loss; content
+hashes are not authenticated build provenance. See the
+[verification ledger](replacement-verification.md) for actual tests and results.
+
 ## Retained owner and payload bound (12 November 2026)
 
 The private shared runner now owns all 32 Studio phases, original completion

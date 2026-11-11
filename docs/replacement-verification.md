@@ -8,6 +8,131 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Offline artifact binding and one-use consumption (12 November 2026)
+
+This harness-only increment adds an offline envelope for the existing closed
+32-phase Plan. It does not add an account entry, authentication authority or a
+normal application workflow. The envelope binds the fixed Rust/helper/vendor and
+build-input scopes, the complete runtime tree, executable and compiler contents,
+an exact seven-field private connection profile, the Plan, proposed limits and
+an admission window of at most 30 minutes. Restoration recaptures trusted caller
+roots and requires identical canonical bytes rather than trusting snapshot paths,
+limits or hashes. Byte binding does not attest that the executable was built from
+those sources, freeze loaded memory or defeat an adversarial same-user process.
+
+The inventory includes root/empty directories, lossless relative path bytes,
+modes, full file lengths and SHA-256 contents. Descriptor-relative no-follow
+walks reject links, hard-linked files, unsafe ownership/modes and special nodes;
+named/held identities and directory listings are rechecked. Fixed caps are 64
+levels, 32,768 entries, 512 MiB aggregate regular-file bytes and 256 MiB per file.
+Physical input paths are bounded to 64 KiB/64 components. The profile is bounded
+to 16 KiB and exactly mode 0600. Canonical envelope output is bounded to 16 MiB;
+that output bound is not a total-process-memory guarantee.
+
+A distinct approval scope/hash plus the actual current executable is required
+before consuming local state. Consumption creates the RUN marker first, then
+the execution-hash marker with exclusive no-follow creation, file and directory
+syncs and readback. Once the RUN marker is created, later partial failure,
+failed launch or a dropped capability cannot refund it; a changed execution hash
+or window cannot reuse that RUN. The sealed capability retains original file
+handles and rechecks identity, modes, link counts and exact marker contents after
+the store drops. Post-consumption artifact/window/deadline failures latch and
+cannot be cleared by restoring bytes. These are local filesystem guarantees,
+not proof of account execution or power-loss durability.
+
+Independent source review found and resolved: the need to retain marker handles
+and contents through later checks; protection of all path ancestors and raw
+alias rejection; checking the observed named stamp before opening; and canonical
+mutation tests that preserve field order instead of failing only on JSON key
+ordering. Final bounded source review is clean. The complete runtime scan is
+outside process/policy locks here; placement before authentication/every physical
+SQL and after execution remains unimplemented. The bound 120-second auth and
+30-second admission waits are proposed values, not demonstrated runtime limits.
+
+Preserved initial failures in `.cache/verification/connection-attempts/`:
+
+- `execution-envelope-inventory-focused.log`: exit **101** before tests because
+  Plan canonical bytes were assigned to a String; corrected with checked UTF-8.
+- `execution-envelope-inventory-repaired.log`: exit **101**, **13 passed /
+  1 failed / 1 ignored**, 0.06 seconds. APFS rejects a deliberately invalid UTF-8
+  fixture name with EILSEQ. The test accepts only that exact filesystem rejection,
+  always checks lossless raw encoding and path aliases, and still performs the
+  real invalid-name capture on filesystems that support it. A separate existing
+  file supplies the wrong-kind check; no production inventory check is relaxed.
+
+Final focused logs exit **0**:
+
+- `execution-envelope-inventory-final.log`: **14 passed / 1 ignored**, 0.06
+  seconds. The separate existing-file wrong-kind assertion was subsequently
+  strengthened and is included in the complete frozen-source run.
+- `execution-envelope-consumption-focused.log`: **14 passed**, 35.29 seconds;
+  includes one envelope-consumption test as well as the 13 consumption functions.
+- `execution-envelope-focused.log`: **11 passed**, 35.01 seconds; includes one
+  preceding wire test alongside the ten envelope tests. Focused counts overlap.
+- `execution-envelope-packaged-runtime-inventory.log`: **1 passed**, 17.54
+  seconds. This explicitly runs the normally ignored macOS inventory test against
+  the existing normal bundle's runtime, without executing Node, helper or SSO.
+
+The complete frozen-source qualification module exits **0**, **179 passed /
+0 failed / 1 ignored**, **358.80 seconds**, normal three-thread execution,
+`execution-envelope-qualification-all.log`. It includes all 142 preceding cases
+and 37 new default cases. The separately executed packaged-runtime case is the
+single default ignore; focused counts overlap this total.
+
+**`pnpm validate` exits 0** on the same frozen source,
+`execution-envelope-validate.log`: **679 frontend / 467 standard Rust tests pass**,
+with **129 fixture cases ignored** across 21 Rust result summaries. Formatting,
+contracts, TypeScript, production frontend build, Cargo check and strict
+all-target/all-feature Clippy pass. Existing ts-rs attribute and frontend chunk-
+size warnings remain nonfatal. Ignored database fixtures and earlier browser/
+native/package evidence retain their separate scope; none is newly claimed by
+this validation. The seven committed index blobs match the hashes below; code
+is committed locally as `6b95a4d`. No source changes follow these checks.
+
+That actual runtime contains **15,110 entries including root** and **202,538,012
+regular-file bytes**. Its complete inventory SHA-256 is
+`4f768186a648e14233d18d31941b96c20818176c2c075c8fdecb5f146df4e699`.
+Capture took 9,218 ms and verification 8,082 ms in the unoptimized Rust test build.
+These are offline debug scan timings, not account latency or release-entry
+performance evidence. The future per-SQL guard must be measured against its
+retained deadline before account approval.
+
+The new tests cover actual cross-process exclusive-creation races (the Rust test
+binary), partial-write/sync failures, unsafe/replaced paths, complete dependency
+content drift, canonical snapshot mutations, private profile bounds, exact
+approval scope, actual test-executable binding, no marker creation on bad
+approval/executable, RUN reuse under a changed envelope, and sticky failure.
+Synthetic files supply source/compiler/profile fixtures. They neither access the
+owner's private profile nor launch authentication.
+
+The existing normal macOS bundle is unchanged. No account activity, UI change,
+new package build, installation, push, merge or publication occurs here. The next
+gate is a fixed executable entry that composes these primitives with the retained
+runner, private manifest/approval/output handling and actual guards around
+authentication/SQL. Only then can a fresh concrete plan for new tables under
+`SANDBOX.BILLIE_TESTING` be reviewed for execution and possible billing.
+
+Frozen reviewed source hashes:
+
+| File under `src-tauri/src/drivers/` | SHA-256 |
+| --- | --- |
+| `snowflake_table_qualification.rs` | `297f4b36dc059294e864d66a0db1de8861a319c2fc10b1734dca8ffd5468dcb2` |
+| `snowflake_table_qualification_inventory.rs` | `4f1d99d7e77fdd21de593f497b502344f6850070a53464ba3cb2ae5431290589` |
+| `snowflake_table_qualification_inventory_tests.rs` | `d74575a7761b52108dab1b9de0aff27e007e14780ad906c464ca00fad7591896` |
+| `snowflake_table_qualification_consumption.rs` | `b08ac4e9b3de8638cf83c76bbec3c1cac2ecabb0b134990adf4ee4f24b6b8620` |
+| `snowflake_table_qualification_consumption_tests.rs` | `9ef308003c091287e4bd4d9101e67b1c20631ab5519a444113ddf28c77dad523` |
+| `snowflake_table_qualification_envelope.rs` | `45359f923bb9474c1aac8bf0dc4cefef852b86253572d78dd2595208f74c9028` |
+| `snowflake_table_qualification_envelope_tests.rs` | `c9dfebea61d721ebc6ce88347afc90dbed65aabef3d871293aa6e236eb3ce9de` |
+
+```sh
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib inventory_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib consumption_ -- --test-threads=3
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib envelope_ -- --test-threads=3
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_table_qualification::inventory::tests::inventory_packaged_runtime_complete_content_capture_and_verify -- --ignored --exact
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification -- --test-threads=3
+pnpm validate
+```
+
 ### Retained runner and aggregate payload bound (12 November 2026)
 
 The private shared runner now owns the same 32 Studio phases used by all existing

@@ -1,5 +1,31 @@
 # Implementation and release status
 
+## Offline execution envelope (12 November 2026, local only)
+
+The new private qualification modules bind complete content inventories to the
+closed Plan and profile, restore exact reviewed bytes, and retain one-use local
+marker proof. Source scopes include all Rust source and the local dependency
+patch, helper source, locks and fixed build/runtime tooling. Runtime inventories
+include every file and directory, including empty directories; no dependency
+symlinks or metadata-only hashes are accepted. A private profile is exactly seven
+non-secret fields and is read through a bounded descriptor-relative no-follow
+walk. Capture/restore have no authentication, subprocess or account effects.
+
+Consumption checks the distinct approval format/scope/hash/one-attempt value,
+actual running executable, window and inventories before syncing both permanent
+markers. A retained capability supports sticky drift/window/deadline checks;
+losing it or failing launch cannot refund the RUN. Hashes bind bytes and local
+consistency, not build provenance, immutable state or power-loss durability.
+
+The fixed account entry, placement of revalidation at authentication/every SQL/
+post-run, authentication/admission wait enforcement, exclusive manifest/output
+handling and complete composed lifecycle remain open. No executable account plan
+or fresh approval is claimed by these primitives. The existing local macOS bundle
+is not rebuilt, installed or account-qualified by this work. All applicable
+DataGrip replacement requirements, including live writes/DDL/transactions,
+packaged SSO, 1M-row behavior and owner acceptance, remain required. Current
+commands/results are in the [verification ledger](replacement-verification.md).
+
 ## Retained runner and aggregate payload bound (12 November 2026, local integration)
 
 The 32-phase Studio owner is extracted from the synthetic fixture into a shared
