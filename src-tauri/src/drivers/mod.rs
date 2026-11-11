@@ -18,6 +18,15 @@ pub mod snowflake_external;
 mod snowflake_metadata;
 #[cfg(unix)]
 pub mod snowflake_process;
+#[cfg(all(unix, feature = "test-harness"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Internal qualification transport interface; no desktop entry point"
+    )
+)]
+pub(crate) mod snowflake_qualification_transport;
 #[cfg(unix)]
 mod snowflake_session;
 #[cfg(all(unix, feature = "test-harness"))]

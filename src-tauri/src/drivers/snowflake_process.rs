@@ -1,4 +1,8 @@
 //! Bounded Snowflake helper process transport. No remote capability is qualified here.
+#[cfg(all(unix, feature = "test-harness"))]
+use super::snowflake_qualification_transport::{
+    Disposition, PhysicalRequest, Stream, TransportAttachment,
+};
 use crate::domain::{SnowflakeDdlKind, SnowflakeDmlKind};
 use serde_json::{Value, json};
 use std::{
@@ -30,6 +34,8 @@ pub struct Launch {
     pub working_directory: PathBuf,
     state_directory: Option<PathBuf>,
     cleanup: CleanupObserver,
+    #[cfg(all(unix, feature = "test-harness"))]
+    transport: Option<TransportAttachment>,
 }
 impl Launch {
     pub fn new(
@@ -73,6 +79,8 @@ impl Launch {
             script,
             working_directory,
             state_directory: Some(path),
+            #[cfg(all(unix, feature = "test-harness"))]
+            transport: None,
             cleanup: CleanupObserver {
                 receiver,
                 authority: Some(authority),
@@ -89,6 +97,20 @@ impl Launch {
         secure_state_directory(launch.state_directory())?;
         Ok(launch)
     }
+    #[cfg(all(unix, feature = "test-harness"))]
+    pub(crate) fn attach_transport(
+        &mut self,
+        transport: TransportAttachment,
+    ) -> crate::domain::AppResult<()> {
+        if self.transport.is_some() {
+            return Err(crate::domain::AppError::invalid(
+                "Launch already has a qualification transport",
+            ));
+        }
+        transport.claim()?;
+        self.transport = Some(transport);
+        Ok(())
+    }
     pub fn state_directory(&self) -> &std::path::Path {
         self.state_directory
             .as_ref()
@@ -102,6 +124,10 @@ impl Launch {
 }
 impl Drop for Launch {
     fn drop(&mut self) {
+        #[cfg(all(unix, feature = "test-harness"))]
+        if let Some(transport) = &self.transport {
+            transport.seal();
+        }
         if self.state_directory.take().is_some() {
             self.cleanup.finish(false, false);
         }
@@ -630,6 +656,8 @@ struct Inner {
     sequence: AtomicU64,
     buffered: Arc<AtomicUsize>,
     logout_acknowledged: AtomicBool,
+    #[cfg(all(unix, feature = "test-harness"))]
+    transport: Option<TransportAttachment>,
 }
 struct Outbound {
     id: String,
@@ -832,13 +860,27 @@ impl Supervisor {
         if let Some(script) = &launch.script {
             command.arg(script);
         }
+        #[cfg(all(unix, feature = "test-harness"))]
+        if let Some(transport) = &launch.transport {
+            transport
+                .check()
+                .map_err(|_| "qualification transport rejected launch")?;
+        }
+        #[cfg(all(unix, feature = "test-harness"))]
+        let stderr = if launch.transport.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
+        #[cfg(not(all(unix, feature = "test-harness")))]
+        let stderr = Stdio::null();
         let mut child = command
             .current_dir(&launch.working_directory)
             .env_clear()
             .env("JOINERY_SNOWFLAKE_STATE_DIR", launch.state_directory())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| "helper could not start")?;
@@ -849,6 +891,8 @@ impl Supervisor {
         let _state_directory = launch.state_directory.take().expect("owned launch root");
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
+        #[cfg(all(unix, feature = "test-harness"))]
+        let stderr = child.stderr.take();
         let (normal, normal_rx) = mpsc::channel(8);
         let (control, control_rx) = mpsc::channel(16);
         let (stop, mut stopping) = watch::channel(false);
@@ -862,7 +906,38 @@ impl Supervisor {
             sequence: AtomicU64::new(0),
             buffered: Arc::new(AtomicUsize::new(0)),
             logout_acknowledged: AtomicBool::new(false),
+            #[cfg(all(unix, feature = "test-harness"))]
+            transport: launch.transport.clone(),
         });
+        #[cfg(all(unix, feature = "test-harness"))]
+        let (stdout_guard, writer_guard) = if let Some(transport) = &inner.transport {
+            let stdout_guard = transport.start(Stream::Stdout);
+            let writer_guard = transport.start(Stream::Writer);
+            if let Some(mut stderr) = stderr {
+                let guard = transport.start(Stream::Stderr);
+                let attachment = transport.clone();
+                let owner = inner.clone();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    let mut stopping = owner.stop.subscribe();
+                    if *stopping.borrow() {
+                        return;
+                    }
+                    tokio::select! {
+                        _ = stopping.changed() => {},
+                        result = attachment.drain_stderr(&mut stderr) => {
+                            if result.is_err() { owner.retire(Retirement::Protocol); }
+                        }
+                    }
+                });
+            } else {
+                transport.stream_failure(Stream::Stderr, Disposition::Io);
+                inner.retire(Retirement::Protocol);
+            }
+            (Some(stdout_guard), Some(writer_guard))
+        } else {
+            (None, None)
+        };
         let owner = inner.clone();
         // Child and private root transfer before the first await in spawn. The reaper
         // survives cancelled handshakes and bounded caller timeouts.
@@ -895,32 +970,53 @@ impl Supervisor {
         let (Some(stdin), Some(mut stdout)) = (stdin, stdout) else {
             return Err("helper pipes missing");
         };
-        let hello = timeout(bounds.handshake, read_frame(&mut stdout, bounds.frame)).await;
+        let hello = timeout(
+            bounds.handshake,
+            observed_frame(&inner, &mut stdout, bounds.frame),
+        )
+        .await;
         if !matches!(hello, Ok(Ok(Some(ref value))) if valid_hello(value)) {
+            #[cfg(all(unix, feature = "test-harness"))]
+            if let Some(transport) = &inner.transport {
+                transport.stream_failure(
+                    Stream::Stdout,
+                    if hello.is_err() {
+                        Disposition::Deadline
+                    } else {
+                        Disposition::Malformed
+                    },
+                );
+            }
             inner.retire(Retirement::Protocol);
             inner.exited.wait(bounds.exit).await;
             return Err("helper handshake failed");
         }
-        tokio::spawn(write_loop(
-            inner.clone(),
-            stdin,
-            normal_rx,
-            control_rx,
-            bounds.write,
-        ));
+        let writer_owner = inner.clone();
+        let write_bound = bounds.write;
+        tokio::spawn(async move {
+            #[cfg(all(unix, feature = "test-harness"))]
+            let _guard = writer_guard;
+            write_loop(writer_owner, stdin, normal_rx, control_rx, write_bound).await;
+        });
         let owner = inner.clone();
         let frame_bound = bounds.frame;
         tokio::spawn(async move {
+            #[cfg(all(unix, feature = "test-harness"))]
+            let _guard = stdout_guard;
             let mut stopping = owner.stop.subscribe();
             loop {
                 if *stopping.borrow() {
                     return;
                 }
                 let frame = tokio::select! { _ = stopping.changed() => return,
-                frame = read_frame(&mut stdout, frame_bound) => frame };
+                frame = observed_frame(&owner, &mut stdout, frame_bound) => frame };
                 match frame {
                     Ok(Some(event)) => {
                         if !owner.event(event) {
+                            #[cfg(all(unix, feature = "test-harness"))]
+                            if let Some(transport) = &owner.transport {
+                                transport.stream_failure(Stream::Stdout, Disposition::Malformed);
+                            }
                             owner.retire(Retirement::Protocol);
                             return;
                         }
@@ -2083,24 +2179,30 @@ async fn write_loop(
         let Some(outbound) = outbound else {
             return;
         };
-        let bytes = {
+        // Prepare an exact candidate under the mutex, then admit outside it.
+        // The single writer does not consume a wire ID or mark Sending until
+        // asynchronous intent recording and a second ownership check finish.
+        let prepared = {
             let mut state = inner.state.lock().unwrap();
             if state.retired.is_some() {
                 return;
             }
-            if !state
+            let Some(pending) = state
                 .pending
                 .get(&outbound.id)
-                .is_some_and(|p| p.ticket == outbound.ticket)
-            {
+                .filter(|p| p.ticket == outbound.ticket)
+            else {
                 continue;
-            }
+            };
+            #[cfg(all(unix, feature = "test-harness"))]
+            let metadata = (pending.op.clone(), pending.impact);
+            #[cfg(not(all(unix, feature = "test-harness")))]
+            let _ = pending;
             let Some(next) = state.next_wire_id.checked_add(1) else {
                 drop(state);
                 inner.retire(Retirement::Protocol);
                 return;
             };
-            state.next_wire_id = next;
             let wire_id = next.to_string();
             let mut value: Value = match serde_json::from_slice(&outbound.bytes) {
                 Ok(value) => value,
@@ -2118,7 +2220,6 @@ async fn write_loop(
                     .filter(|p| Some(p.ticket) == *ticket)
                     .and_then(|p| p.wire_id.clone())
                 else {
-                    // A terminal may beat its queued cancellation/credit; acknowledge locally.
                     if let Some(pending) = state.pending.remove(&outbound.id) {
                         pending
                             .terminal
@@ -2128,17 +2229,108 @@ async fn write_loop(
                 };
                 value["payload"]["target"] = Value::String(target_id);
             }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            #[cfg(all(unix, feature = "test-harness"))]
+            let prepared = (next, wire_id, value, bytes, metadata);
+            #[cfg(not(all(unix, feature = "test-harness")))]
+            let prepared = (next, wire_id, value, bytes);
+            prepared
+        };
+        #[cfg(all(unix, feature = "test-harness"))]
+        let (next, wire_id, value, bytes, (operation, impact)) = prepared;
+        #[cfg(not(all(unix, feature = "test-harness")))]
+        let (next, wire_id, value, bytes) = prepared;
+        #[cfg(all(unix, feature = "test-harness"))]
+        if let Some(transport) = &inner.transport {
+            let request = PhysicalRequest {
+                generation: &inner.generation,
+                operation_id: &outbound.id,
+                ticket: outbound.ticket,
+                operation: &operation,
+                impact,
+                target: outbound
+                    .target
+                    .as_ref()
+                    .map(|(id, ticket)| (id.as_str(), *ticket)),
+                payload: &value,
+                wire_payload: &bytes,
+            };
+            let admission = tokio::select! { _ = stopping.changed() => return, result = timeout(limit, transport.admit(request)) => result };
+            if !matches!(admission, Ok(Ok(()))) {
+                if admission.is_err() {
+                    transport.fail(crate::domain::AppError::invalid(
+                        "Qualification transport admission deadline",
+                    ));
+                }
+                inner.retire(Retirement::Protocol);
+                return;
+            }
+        }
+        {
+            let mut state = inner.state.lock().unwrap();
+            if state.retired.is_some() {
+                return;
+            }
+            if !state
+                .pending
+                .get(&outbound.id)
+                .is_some_and(|p| p.ticket == outbound.ticket && p.phase == Phase::Queued)
+            {
+                continue;
+            }
+            if let Some((target, ticket)) = &outbound.target {
+                let target_live = state
+                    .pending
+                    .get(target)
+                    .filter(|p| Some(p.ticket) == *ticket)
+                    .and_then(|p| p.wire_id.as_deref());
+                if target_live != value["payload"]["target"].as_str() || target_live.is_none() {
+                    if let Some(pending) = state.pending.remove(&outbound.id) {
+                        pending
+                            .terminal
+                            .send_replace(Some(local_report(json!({"inactive":true}))));
+                    }
+                    continue;
+                }
+            }
+            if state.next_wire_id.checked_add(1) != Some(next) {
+                drop(state);
+                inner.retire(Retirement::Protocol);
+                return;
+            }
+            state.next_wire_id = next;
             state.wire_ids.insert(wire_id.clone(), outbound.id.clone());
             let pending = state.pending.get_mut(&outbound.id).unwrap();
             pending.wire_id = Some(wire_id);
-            pending.phase = Phase::Sending;
-            serde_json::to_vec(&value).unwrap()
-        };
+            #[cfg(all(unix, feature = "test-harness"))]
+            if inner.transport.is_none() {
+                pending.phase = Phase::Sending;
+            }
+            #[cfg(not(all(unix, feature = "test-harness")))]
+            {
+                pending.phase = Phase::Sending;
+            }
+        }
         let result = tokio::select! { _ = stopping.changed() => return,
-        result = timeout(limit, write_bytes(&mut stdin, &bytes)) => result };
+        result = timeout(limit, observed_write(&inner, &outbound, &value, &mut stdin, &bytes)) => result };
         if !matches!(result, Ok(Ok(()))) {
+            #[cfg(all(unix, feature = "test-harness"))]
+            if let Some(transport) = &inner.transport {
+                transport.stream_failure(
+                    Stream::Writer,
+                    if result.is_err() {
+                        Disposition::Deadline
+                    } else {
+                        Disposition::Io
+                    },
+                );
+            }
             inner.retire(Retirement::Write);
             return;
+        }
+        #[cfg(all(unix, feature = "test-harness"))]
+        if let Some(transport) = &inner.transport {
+            transport.write_complete();
         }
         if let Some(pending) = inner
             .state
@@ -2151,6 +2343,110 @@ async fn write_loop(
             pending.phase = pending.phase.max(Phase::Sent);
         }
     }
+}
+
+async fn observed_frame(
+    inner: &Inner,
+    reader: &mut (impl AsyncRead + Unpin),
+    frame_limit: Duration,
+) -> Result<Option<Value>, &'static str> {
+    #[cfg(all(unix, feature = "test-harness"))]
+    if let Some(transport) = &inner.transport {
+        return transport.read_frame(reader, frame_limit).await;
+    }
+    #[cfg(not(all(unix, feature = "test-harness")))]
+    let _ = inner;
+    read_frame(reader, frame_limit).await
+}
+async fn observed_write(
+    inner: &Inner,
+    outbound: &Outbound,
+    value: &Value,
+    writer: &mut (impl AsyncWrite + Unpin),
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    #[cfg(all(unix, feature = "test-harness"))]
+    if let Some(transport) = &inner.transport {
+        let prefix = (bytes.len() as u32).to_be_bytes();
+        let mut emitted = false;
+        for part in [prefix.as_slice(), bytes] {
+            let mut offset = 0;
+            while offset < part.len() {
+                let count = std::future::poll_fn(|context| {
+                    use std::{pin::Pin, sync::TryLockError, task::Poll};
+                    // Repeat after every Pending, including pipe backpressure.
+                    // No policy callback runs under the process-state mutex.
+                    if transport.check().is_err() {
+                        return Poll::Ready(Err(std::io::ErrorKind::PermissionDenied.into()));
+                    }
+                    // Never wait for this mutex after the final policy check.
+                    // A contended poll yields and rechecks policy on its next poll;
+                    // the outer write deadline bounds this readiness wait.
+                    let mut state = match inner.state.try_lock() {
+                        Ok(state) => state,
+                        Err(TryLockError::WouldBlock) => {
+                            context.waker().wake_by_ref();
+                            return Poll::Pending;
+                        }
+                        Err(TryLockError::Poisoned(_)) => {
+                            return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+                        }
+                    };
+                    if state.retired.is_some() {
+                        return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+                    }
+                    if let Some((target, ticket)) = &outbound.target {
+                        let live = state
+                            .pending
+                            .get(target)
+                            .filter(|pending| Some(pending.ticket) == *ticket)
+                            .and_then(|pending| pending.wire_id.as_deref());
+                        if live.is_none() || live != value["payload"]["target"].as_str() {
+                            return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+                        }
+                    }
+                    let Some(pending) = state.pending.get_mut(&outbound.id).filter(|pending| {
+                        pending.ticket == outbound.ticket
+                            && pending.wire_id.as_deref() == value["id"].as_str()
+                    }) else {
+                        return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+                    };
+                    pending.phase = pending.phase.max(Phase::Sending);
+                    // A single synchronous poll, never an await, owns this guard.
+                    // Retirement cannot classify zero bytes between OS acceptance
+                    // and the progress update. Pending guarantees no accepted bytes.
+                    let result = Pin::new(&mut *writer).poll_write(context, &part[offset..]);
+                    match &result {
+                        Poll::Ready(Ok(count)) if *count > 0 => {
+                            if !emitted {
+                                transport.write_started();
+                                emitted = true;
+                            }
+                            transport.wrote(*count);
+                        }
+                        _ if !emitted => pending.phase = Phase::Queued,
+                        _ => {}
+                    }
+                    result
+                })
+                .await?;
+                if count == 0 {
+                    return Err(std::io::ErrorKind::WriteZero.into());
+                }
+                offset += count;
+            }
+        }
+        return std::future::poll_fn(|context| {
+            if transport.check().is_err() {
+                return std::task::Poll::Ready(Err(std::io::ErrorKind::PermissionDenied.into()));
+            }
+            std::pin::Pin::new(&mut *writer).poll_flush(context)
+        })
+        .await;
+    }
+    #[cfg(not(all(unix, feature = "test-harness")))]
+    let _ = (inner, outbound, value);
+    write_bytes(writer, bytes).await
 }
 
 fn valid_generation(value: &str) -> bool {
@@ -2253,6 +2549,8 @@ mod tests {
             sequence: AtomicU64::new(0),
             buffered: Arc::new(AtomicUsize::new(0)),
             logout_acknowledged: AtomicBool::new(false),
+            #[cfg(all(unix, feature = "test-harness"))]
+            transport: None,
         });
         (inner, normal_rx, control_rx)
     }
@@ -3632,3 +3930,7 @@ mod cleanup_tests {
         assert!(!path.exists());
     }
 }
+
+#[cfg(all(test, unix, feature = "test-harness"))]
+#[path = "snowflake_qualification_transport_tests.rs"]
+mod qualification_transport_tests;
