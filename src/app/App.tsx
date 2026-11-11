@@ -684,6 +684,7 @@ export function App() {
       planSource: planSourceForExecution(plan, executionSession, undefined),
       runMetrics: undefined,
       snowflakeDmlResult: undefined,
+      snowflakeDdlResult: undefined,
       clientStartedAt: performance.now(),
       clientElapsedMs: undefined,
     });

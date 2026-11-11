@@ -188,6 +188,33 @@ export async function runNativeSmoke() {
         },
       ],
       [
+        "preflight_snowflake_ddl",
+        {
+          request: {
+            sessionId: "missing-native-fixture",
+            action: {
+              kind: "createTable",
+              database: "DB",
+              schema: "PUBLIC",
+              name: "NEW_NATIVE_FIXTURE",
+              columns: [{ name: "ID", dataType: "NUMBER(38,0)", nullable: true }],
+            },
+          },
+        },
+      ],
+      [
+        "prepare_snowflake_ddl",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            revision: "obsolete",
+            action: { kind: "dropTable", browseRevision: "obsolete", targetId: "opaque" },
+            sql: 'DROP TABLE "DB"."PUBLIC"."NEW_NATIVE_FIXTURE" RESTRICT',
+          },
+        },
+      ],
+      ["refresh_snowflake_ddl_metadata", { sessionId: "missing-native-fixture" }],
+      [
         "prepare_transaction_control",
         {
           sessionId: "missing-native-fixture",
@@ -281,6 +308,16 @@ export async function runNativeSmoke() {
       assert(denied, `Native ${command} must reach the Rust disconnected-session guard`);
     }
     for (const [command, expectedCode, invokeCommand] of [
+      [
+        "authorize_snowflake_ddl",
+        "approvalExpired",
+        () => client.call("authorize_snowflake_ddl", { planId: "missing-native-ddl-plan" }),
+      ],
+      [
+        "execute_snowflake_ddl",
+        "approvalExpired",
+        () => client.call("execute_snowflake_ddl", { planId: "missing-native-ddl-plan" }),
+      ],
       [
         "execute_snowflake_dml",
         "approvalExpired",

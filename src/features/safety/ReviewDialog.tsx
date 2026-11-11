@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { AlertTriangle, LockKeyhole, Play, Loader2 } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, messageOf } from "../../ipc/client";
@@ -10,15 +10,25 @@ export function ReviewDialog({
   profile,
   onExecute,
   onClose,
+  onDisconnect,
 }: {
   plan: PreparedPlan;
   preview?: ChangePreview;
   profile?: ConnectionProfile;
   onExecute(approval: string): Promise<void>;
   onClose(): void;
+  onDisconnect?(): void;
 }) {
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [password, setPassword] = useState(""),
     [confirmation, setConfirmation] = useState(""),
+    [targetConfirmation, setTargetConfirmation] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
   async function submit(event: FormEvent) {
@@ -26,15 +36,21 @@ export function ReviewDialog({
     setBusy(true);
     setError(null);
     try {
-      const approval = await client.call<string>("authorize_plan", {
-        planId: plan.id,
-        passphrase: password || null,
-        confirmation: confirmation || null,
-      });
+      const approval = await client.call<string>(
+        plan.reviewedSnowflakeDdl ? "authorize_snowflake_ddl" : "authorize_plan",
+        {
+          planId: plan.id,
+          passphrase: password || null,
+          confirmation: confirmation || null,
+          ...(plan.reviewedSnowflakeDdl ? { targetConfirmation: targetConfirmation || null } : {}),
+        },
+      );
+      if (!mounted.current) return;
       setPassword("");
       await onExecute(approval);
       onClose();
     } catch (error) {
+      if (!mounted.current) return;
       setError(messageOf(error));
       setBusy(false);
       setPassword("");
@@ -132,19 +148,49 @@ export function ReviewDialog({
               />
             </label>
           )}
+          {plan.targetConfirmationText && (
+            <label className="review-field">
+              Type the exact table name <strong>{plan.targetConfirmationText}</strong> to confirm
+              DROP
+              <input
+                aria-label="Exact table name to confirm DROP"
+                value={targetConfirmation}
+                onChange={(e) => setTargetConfirmation(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                required
+              />
+            </label>
+          )}
           <p className="form-note">
             Approval expires after 60 seconds. Changes to the query require another review.
           </p>
           <InlineError message={error} />
         </div>
         <footer className="modal-footer">
+          {onDisconnect && (
+            <button
+              type="button"
+              className="button danger"
+              onClick={() => {
+                mounted.current = false;
+                onDisconnect();
+              }}
+            >
+              Disconnect session
+            </button>
+          )}
           <button type="button" className="button ghost" onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button
             className="button primary"
             type="submit"
-            disabled={busy || (!!plan.confirmationText && confirmation !== plan.confirmationText)}
+            disabled={
+              busy ||
+              (!!plan.confirmationText && confirmation !== plan.confirmationText) ||
+              (!!plan.targetConfirmationText && targetConfirmation !== plan.targetConfirmationText)
+            }
           >
             {busy ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
             {preview ? "Apply changes" : "Authorize and run"}

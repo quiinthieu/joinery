@@ -127,12 +127,12 @@ test("synthetic SDK session observations stay explicit and block unsupported tra
   await expect(
     page.getByText("Open transaction · usability unknown", { exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Commit transaction", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Rollback transaction", exact: true }),
-  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Commit transaction", exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("button", { name: "Rollback transaction", exact: true })).toHaveCount(
+    0,
+  );
 
   const activeSchema = page.getByLabel("Active schema", { exact: true });
   await expect(activeSchema).toBeVisible();
@@ -149,12 +149,12 @@ test("synthetic SDK session observations stay explicit and block unsupported tra
   await expect(page.getByLabel("Transaction mode", { exact: true })).toHaveValue("unknown");
   await expect(page.getByLabel("Transaction mode", { exact: true })).toBeDisabled();
   await expect(page.getByText("Transaction state unknown", { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Commit transaction", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Rollback transaction", exact: true }),
-  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Commit transaction", exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("button", { name: "Rollback transaction", exact: true })).toHaveCount(
+    0,
+  );
   expect(contextCalls).toBeGreaterThan(callsBeforeFailure);
   expect(contextCalls - callsBeforeFailure).toBeLessThanOrEqual(3);
 
@@ -169,6 +169,8 @@ test("synthetic SDK session observations stay explicit and block unsupported tra
   expect(
     calls.filter((command) =>
       [
+        "prepare_transaction_control",
+        "execute_transaction_control",
         "set_transaction_mode",
         "commit_transaction",
         "rollback_transaction",

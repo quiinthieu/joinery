@@ -372,11 +372,11 @@ test("new Snowflake profiles default to external browser SSO and explain both mo
     /allow separately reviewed single INSERT, UPDATE, and DELETE statements/i,
   ) as HTMLInputElement;
   expect(reviewedDml.checked).toBe(false);
-  expect(screen.getByText(/may incur warehouse charges/i)).toBeTruthy();
+  expect(screen.getAllByText(/may incur warehouse charges/i).length).toBeGreaterThan(0);
   expect(screen.getByText(/does not automatically retry submitted SQL/i)).toBeTruthy();
   expect(
     screen.getByText(
-      /Safe Mode controls review and approval for explicit transaction boundaries and opted-in single INSERT, UPDATE, and DELETE statements/i,
+      /Safe Mode controls review and approval for explicit transaction boundaries, opted-in single INSERT, UPDATE, and DELETE statements/i,
     ),
   ).toBeTruthy();
 
@@ -416,7 +416,7 @@ test("Snowflake OAuth transitions reset policy and never restore an earlier elev
   expect((screen.getByLabelText(reviewedDmlLabel) as HTMLInputElement).checked).toBe(false);
   expect(
     screen.getByText(
-      /safe mode controls review and approval for explicit transaction boundaries and opted-in single INSERT, UPDATE, and DELETE statements/i,
+      /safe mode controls review and approval for explicit transaction boundaries, opted-in single INSERT, UPDATE, and DELETE statements/i,
     ),
   ).toBeTruthy();
 });
@@ -746,4 +746,30 @@ test("a newly saved production profile can authorize changed settings after a fa
   expect(screen.getByLabelText("Application write passphrase")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Delete connection" })).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled();
+});
+
+test("reviewed Snowflake DDL is independent and revoked by ReadOnly and OAuth transitions", () => {
+  enableSnowflakeEngine();
+  render(<ConnectionDialog onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Database engine"), { target: { value: "snowflake" } });
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+  const ddl = /Allow separately reviewed CREATE TABLE, nullable ADD COLUMN, and DROP TABLE/i;
+  const dml = /Allow separately reviewed single INSERT, UPDATE, and DELETE statements/i;
+  expect((screen.getByLabelText(ddl) as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByLabelText(dml));
+  expect((screen.getByLabelText(ddl) as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByLabelText(ddl));
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "readOnly" } });
+  expect(screen.queryByLabelText(ddl)).toBeNull();
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+  expect((screen.getByLabelText(ddl) as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByLabelText(ddl));
+  fireEvent.change(screen.getByLabelText("Snowflake authentication"), {
+    target: { value: "localApplicationOauth" },
+  });
+  fireEvent.change(screen.getByLabelText("Snowflake authentication"), {
+    target: { value: "externalBrowser" },
+  });
+  fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+  expect((screen.getByLabelText(ddl) as HTMLInputElement).checked).toBe(false);
 });

@@ -73,6 +73,7 @@ import {
 } from "../features/studio/ObjectInspectorView";
 import { SessionStructureView } from "../features/studio/SessionStructureView";
 import { RelationBrowser } from "../features/studio/RelationBrowser";
+import { SnowflakeDdlNotice } from "../features/studio/SnowflakeDdlNotice";
 import { StructureView } from "../features/studio/UtilityViews";
 import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
@@ -760,7 +761,12 @@ export function Workbench({
               {session?.capabilities.relationBrowsing && (
                 <button
                   className="button ghost small"
-                  disabled={running}
+                  disabled={running || !!state.sessionMetadataRefreshRequired[session.id]}
+                  title={
+                    state.sessionMetadataRefreshRequired[session.id]
+                      ? "Refresh completion context before browsing relations"
+                      : undefined
+                  }
                   onClick={() => {
                     setRelationBrowserRevision(state.sessionContextRevision[session.id] ?? 0);
                     setRelationBrowserSession(session.id);
@@ -952,10 +958,12 @@ export function Workbench({
       {relationBrowserSession &&
         session?.id === relationBrowserSession &&
         relationBrowserRevision === (state.sessionContextRevision[session.id] ?? 0) &&
+        !state.sessionMetadataRefreshRequired[session.id] &&
         !running && (
           <RelationBrowser
-            key={`${session.id}:${state.sessionContextRevision[session.id] ?? 0}:${tab.revision}`}
+            key={`${tab.id}:${session.id}:${state.sessionContextRevision[session.id] ?? 0}:${tab.revision}`}
             sessionId={session.id}
+            ownerTabId={tab.id}
             onClose={() => setRelationBrowserSession(null)}
           />
         )}
@@ -1381,6 +1389,12 @@ export function Workbench({
       {tab.kind === "query" && tab.snowflakeDmlResult && (
         <SnowflakeDmlNotice
           result={tab.snowflakeDmlResult}
+          hasPriorResults={tab.results.length > 0}
+        />
+      )}
+      {tab.kind === "query" && tab.snowflakeDdlResult && (
+        <SnowflakeDdlNotice
+          result={tab.snowflakeDdlResult}
           hasPriorResults={tab.results.length > 0}
         />
       )}

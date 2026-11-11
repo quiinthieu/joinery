@@ -30,6 +30,7 @@ import type {
   TransactionMode,
   TransactionControlResult,
   SnowflakeDmlResult,
+  SnowflakeDdlResult,
   TransactionControlAuthority,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
@@ -85,6 +86,7 @@ export interface StudioTab {
   metadataOrigin?: MetadataOrigin;
   errorOrigin?: SqlExecutionOrigin;
   snowflakeDmlResult?: SnowflakeDmlResult;
+  snowflakeDdlResult?: SnowflakeDdlResult;
   id: string;
   kind: TabKind;
   title: string;
@@ -209,6 +211,7 @@ interface StudioState {
   sessionContextSwitching: Record<string, boolean>;
   sessionTransactionPending: Record<string, boolean>;
   sessionMetadataRefreshRequired: Record<string, boolean>;
+  sessionDdlCatalogRefreshRequired: Record<string, boolean>;
   catalog: Record<string, TableInfo[]>;
   objects: Record<string, DatabaseObjectSummary[]>;
   selectedConnectionId: string | null;
@@ -259,6 +262,11 @@ interface StudioState {
     approval?: string | null,
     ownerTabId?: string,
   ): Promise<SnowflakeDmlResult>;
+  executeSnowflakeDdl(
+    plan: PreparedPlan,
+    approval?: string | null,
+    ownerTabId?: string,
+  ): Promise<SnowflakeDdlResult>;
   retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
@@ -598,6 +606,7 @@ function purgeSessionRuntimeMaps(
     | "sessionContextSwitching"
     | "sessionTransactionPending"
     | "sessionMetadataRefreshRequired"
+    | "sessionDdlCatalogRefreshRequired"
   >,
   sessionIds: Iterable<string>,
 ) {
@@ -608,6 +617,7 @@ function purgeSessionRuntimeMaps(
   const sessionContextSwitching = { ...state.sessionContextSwitching };
   const sessionTransactionPending = { ...state.sessionTransactionPending };
   const sessionMetadataRefreshRequired = { ...state.sessionMetadataRefreshRequired };
+  const sessionDdlCatalogRefreshRequired = { ...state.sessionDdlCatalogRefreshRequired };
   for (const id of sessionIds) {
     contextRequests.delete(id);
     pendingContextRequests.delete(id);
@@ -615,6 +625,7 @@ function purgeSessionRuntimeMaps(
     delete sessionContextSwitching[id];
     delete sessionTransactionPending[id];
     delete sessionMetadataRefreshRequired[id];
+    delete sessionDdlCatalogRefreshRequired[id];
     delete sessionContextAuthorities[id];
     delete sessionStates[id];
     delete sessionContexts[id];
@@ -628,6 +639,7 @@ function purgeSessionRuntimeMaps(
     sessionContextSwitching,
     sessionTransactionPending,
     sessionMetadataRefreshRequired,
+    sessionDdlCatalogRefreshRequired,
   };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
@@ -738,6 +750,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   sessionContextSwitching: {},
   sessionTransactionPending: {},
   sessionMetadataRefreshRequired: {},
+  sessionDdlCatalogRefreshRequired: {},
   catalog: {},
   objects: {},
   selectedConnectionId: null,
@@ -971,6 +984,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().updateTab(tabId, {
       querySession: targetInfo,
       querySessionClosed: false,
+      snowflakeDdlResult: undefined,
+      snowflakeDmlResult: undefined,
       results: [],
       planSource: undefined,
       activeResultId: null,
@@ -1071,12 +1086,15 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       let options: SessionContextOptions | null;
       try {
-        options = await client.call<SessionContextOptions | null>("session_contexts", {
-          sessionId,
-          ...(throwOnError && get().sessionMetadataRefreshRequired[sessionId]
-            ? { resumeMetadata: true }
-            : {}),
-        });
+        options =
+          throwOnError && get().sessionDdlCatalogRefreshRequired[sessionId]
+            ? await client.call("refresh_snowflake_ddl_metadata", { sessionId })
+            : await client.call<SessionContextOptions | null>("session_contexts", {
+                sessionId,
+                ...(throwOnError && get().sessionMetadataRefreshRequired[sessionId]
+                  ? { resumeMetadata: true }
+                  : {}),
+              });
         if (!options?.state || options.state.sessionId !== sessionId)
           throw new Error("Session observation is unavailable");
       } catch (error) {
@@ -1118,6 +1136,10 @@ export const useStudio = create<StudioState>((set, get) => ({
             ? {
                 sessionMetadataRefreshRequired: {
                   ...state.sessionMetadataRefreshRequired,
+                  [sessionId]: false,
+                },
+                sessionDdlCatalogRefreshRequired: {
+                  ...state.sessionDdlCatalogRefreshRequired,
                   [sessionId]: false,
                 },
               }
@@ -1345,6 +1367,7 @@ export const useStudio = create<StudioState>((set, get) => ({
               ...(tab.id === ownerTabId
                 ? {
                     snowflakeDmlResult: undefined,
+                    snowflakeDdlResult: undefined,
                     status: "running" as const,
                     error: null,
                     runId: null,
@@ -1414,6 +1437,133 @@ export const useStudio = create<StudioState>((set, get) => ({
             ? {
                 ...tab,
                 status: "failed",
+                error: asAppError(error),
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      // No automatic observer or replay after a write admission failure.
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      set((state) => {
+        const pending = { ...state.sessionTransactionPending };
+        delete pending[sessionId];
+        return { sessionTransactionPending: pending };
+      });
+    }
+  },
+  async executeSnowflakeDdl(plan, approval, ownerTabId) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    if (get().sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly")
+      throw new Error("Only rollback recovery is available for this session");
+    const ownerTab = get().tabs.find((tab) => tab.id === ownerTabId);
+    if (ownerTabId && (!ownerTab || querySessionForTab(ownerTab, get().sessions)?.id !== sessionId))
+      throw new Error("The owning query session changed; prepare this write again");
+    revokeSchemaSelectionBeforeWork(sessionId, true);
+    const request = beginContextRequest(sessionId);
+    set((state) => ({
+      sessionTransactionPending: { ...state.sessionTransactionPending, [sessionId]: true },
+      sessionMetadataRefreshRequired: {
+        ...state.sessionMetadataRefreshRequired,
+        [sessionId]: true,
+      },
+      sessionDdlCatalogRefreshRequired: {
+        ...state.sessionDdlCatalogRefreshRequired,
+        [sessionId]: true,
+      },
+      // Earlier query events must not replace this DDL statement's final evidence.
+      tabs: state.tabs.map((tab) =>
+        querySessionForTab(tab, state.sessions)?.id === sessionId
+          ? {
+              ...tab,
+              revision: tab.revision + 1,
+              ...(tab.id === ownerTabId
+                ? {
+                    snowflakeDdlResult: undefined,
+                    snowflakeDmlResult: undefined,
+                    status: "running" as const,
+                    error: null,
+                    runId: null,
+                    dataSessionId: sessionId,
+                    clientStartedAt: performance.now(),
+                    clientElapsedMs: undefined,
+                  }
+                : {}),
+            }
+          : tab,
+      ),
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    const ownerRevision = get().tabs.find((tab) => tab.id === ownerTabId)?.revision;
+    try {
+      const result = await client.call("execute_snowflake_ddl", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.state.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid Snowflake DDL response");
+      }
+      if (
+        result.retired ||
+        result.statementOutcome === "unknown" ||
+        !isSessionActive(get(), sessionId)
+      ) {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId)) {
+        set((state) => ({ sessionStates: { ...state.sessionStates, [sessionId]: result.state } }));
+      }
+      // Preserve the statement evidence even when the owning tab has closed.
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                snowflakeDdlResult: result,
+                status:
+                  result.statementOutcome === "succeeded"
+                    ? "completed"
+                    : result.statementOutcome === "unknown"
+                      ? "outcomeUnknown"
+                      : "failed",
+                error: result.error,
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      get().notify(
+        `${result.qualifiedTarget}: ${result.statementOutcome === "unknown" ? "outcome unknown" : result.statementOutcome}. Schema changes cannot be rolled back; explicitly refresh metadata before further work.${result.retired ? " Session retired." : ""}${result.error ? ` ${result.error.message}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                status: code === "outcomeUnknown" ? "outcomeUnknown" : "failed",
                 error: asAppError(error),
                 clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
               }
@@ -2630,6 +2780,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       get().updateTab(tab.id, {
         results: [],
+        snowflakeDdlResult: undefined,
+        snowflakeDmlResult: undefined,
         planSource: undefined,
         pages: [],
         pageKeys: {},

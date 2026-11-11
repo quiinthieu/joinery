@@ -9,6 +9,7 @@ import type {
   TableSchema,
   TransactionControlResult,
   SnowflakeDmlResult,
+  SnowflakeDdlResult,
 } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import {
@@ -108,6 +109,7 @@ beforeEach(() => {
     sessionContextSwitching: {},
     sessionTransactionPending: {},
     sessionMetadataRefreshRequired: {},
+    sessionDdlCatalogRefreshRequired: {},
     savedQueries: [],
     bookmarks: [],
     sqlFormatSettings: {
@@ -2609,4 +2611,123 @@ test("unknown DML retires without replay and stale query observations cannot rep
     useStudio.setState({ tabs: [] });
   }
   expect(client.call).toHaveBeenCalledTimes(2);
+});
+
+function ddlPlan(): PreparedPlan {
+  return {
+    ...transactionControlPlan(),
+    id: "reviewed-ddl",
+    reviewedSnowflakeDdl: true,
+    statements: [
+      { sql: 'DROP TABLE "DB"."PUBLIC"."T" RESTRICT', kind: "ddl", missingWhere: false },
+    ],
+  };
+}
+function ddlResult(overrides: Partial<SnowflakeDdlResult> = {}): SnowflakeDdlResult {
+  return {
+    kind: "dropTable",
+    qualifiedTarget: '"DB"."PUBLIC"."T"',
+    statementOutcome: "succeeded",
+    summaryStatus: "acknowledged",
+    catalogReconciliationRequired: true,
+    state: sdkRuntime(),
+    retired: false,
+    error: null,
+    ...overrides,
+  };
+}
+test("DDL preserves prior results, blocks competing work, and only explicit catalog reconciliation releases metadata", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  const prior = page(schema("before_ddl")).result;
+  useStudio.getState().updateTab(tabId, { results: [prior], activeResultId: prior.id });
+  let finish!: (value: SnowflakeDdlResult) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const pending = useStudio.getState().executeSnowflakeDdl(ddlPlan(), "approval", tabId);
+  expect(useStudio.getState().sessionDdlCatalogRefreshRequired.session).toBe(true);
+  expect(await useStudio.getState().refreshSessionContexts(session.id)).toBe(false);
+  await expect(useStudio.getState().executeSnowflakeDdl(ddlPlan())).rejects.toThrow("finish first");
+  expect(client.call).toHaveBeenCalledExactlyOnceWith("execute_snowflake_ddl", {
+    planId: "reviewed-ddl",
+    approval: "approval",
+  });
+  finish(ddlResult());
+  await pending;
+  expect(useStudio.getState().tabs[0].results).toEqual([prior]);
+  expect(useStudio.getState().tabs[0].snowflakeDdlResult?.statementOutcome).toBe("succeeded");
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Catalog denied"));
+  await expect(useStudio.getState().refreshSessionContexts(session.id, true)).rejects.toThrow(
+    "Catalog denied",
+  );
+  expect(useStudio.getState().sessionDdlCatalogRefreshRequired.session).toBe(true);
+  vi.mocked(client.call).mockResolvedValueOnce({
+    state: sdkRuntime(),
+    available: ["public"],
+    revision: "reconciled",
+  });
+  expect(await useStudio.getState().refreshSessionContexts(session.id, true)).toBe(true);
+  expect(client.call).toHaveBeenLastCalledWith("refresh_snowflake_ddl_metadata", {
+    sessionId: session.id,
+  });
+  expect(useStudio.getState().sessionDdlCatalogRefreshRequired.session).toBe(false);
+  expect(useStudio.getState().sessionMetadataRefreshRequired.session).toBe(false);
+});
+test("unknown DDL retires once without replay and late ACK cannot overwrite a repurposed tab", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  let finish!: (value: SnowflakeDdlResult) => void;
+  vi.mocked(client.call).mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const pending = useStudio.getState().executeSnowflakeDdl(ddlPlan(), "approval", tabId);
+  useStudio.getState().updateTab(tabId, {
+    revision: useStudio.getState().tabs[0].revision + 1,
+    sql: "SELECT later",
+    status: "idle",
+  });
+  finish(ddlResult({ statementOutcome: "unknown", summaryStatus: "unavailable", retired: true }));
+  await pending;
+  expect(useStudio.getState().sessions.profile).toBeUndefined();
+  expect(useStudio.getState().tabs[0].status).toBe("idle");
+  expect(useStudio.getState().tabs[0].snowflakeDdlResult).toBeUndefined();
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+
+test("DDL IPC outcomeUnknown stays unknown and never replays or observes", async () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  vi.mocked(client.call).mockRejectedValue({
+    code: "outcomeUnknown",
+    message: "Helper lost after dispatch",
+  });
+  await expect(
+    useStudio.getState().executeSnowflakeDdl(ddlPlan(), "approval", tabId),
+  ).rejects.toMatchObject({ code: "outcomeUnknown" });
+  expect(useStudio.getState().tabs[0].status).toBe("outcomeUnknown");
+  expect(useStudio.getState().sessions.profile).toBeUndefined();
+  expect(client.call).toHaveBeenCalledTimes(1);
+});
+test("session reattachment and reconnect clear transient DDL notices", () => {
+  useSdkSession();
+  const tabId = useStudio.getState().openQuery("profile");
+  const fresh = { ...session, id: "fresh-session" };
+  useStudio.setState({
+    sessionPool: { profile: [{ info: fresh, label: "Fresh session", primary: true }] },
+  });
+  useStudio.getState().updateTab(tabId, {
+    snowflakeDdlResult: ddlResult({ retired: true }),
+    querySession: { ...session, id: "old-session" },
+    querySessionClosed: true,
+  });
+  expect(useStudio.getState().attachQuerySession(tabId, fresh.id)).toBe(true);
+  expect(useStudio.getState().tabs[0].snowflakeDdlResult).toBeUndefined();
+  useStudio.getState().updateTab(tabId, { snowflakeDdlResult: ddlResult() });
+  useStudio.getState().resetConnectionResults("profile");
+  expect(useStudio.getState().tabs[0].snowflakeDdlResult).toBeUndefined();
 });

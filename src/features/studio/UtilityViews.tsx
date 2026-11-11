@@ -33,6 +33,7 @@ import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
 import { SnowflakeDmlHistorySummary } from "./SnowflakeDmlNotice";
+import { SnowflakeDdlHistorySummary } from "./SnowflakeDdlNotice";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]),
@@ -150,6 +151,9 @@ export function HistoryView() {
                   </code>
                   {entry.snowflakeDml && (
                     <SnowflakeDmlHistorySummary evidence={entry.snowflakeDml} />
+                  )}
+                  {entry.snowflakeDdl && (
+                    <SnowflakeDdlHistorySummary evidence={entry.snowflakeDdl} />
                   )}
                   {entry.sql && <ArrowUpRight size={15} className="history-open" />}
                 </button>

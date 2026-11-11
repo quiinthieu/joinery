@@ -1,14 +1,46 @@
 import { useEffect, useRef, useState } from "react";
 import type { BrowseCatalog, RelationInspection, RelationPreview } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
-import { revokeSchemaSelectionBeforeWork } from "../../state/studio";
+import { querySessionForTab, revokeSchemaSelectionBeforeWork, useStudio } from "../../state/studio";
 import { Modal } from "../../components/ui/Modal";
+import { SnowflakeDdlDialog, type SnowflakeDdlDialogRequest } from "./SnowflakeDdlDialog";
 
 const PAGE_ROWS = 25;
 const PAGE_COLUMNS = 20;
 
 /** Every action carries server-held target revisions from this console session. */
-export function RelationBrowser({ sessionId, onClose }: { sessionId: string; onClose(): void }) {
+export function RelationBrowser({
+  sessionId,
+  ownerTabId,
+  onClose,
+}: {
+  sessionId: string;
+  ownerTabId?: string;
+  onClose(): void;
+}) {
+  const session = useStudio((state) => {
+    const owner = state.tabs.find((tab) => tab.id === ownerTabId);
+    const owned = owner && querySessionForTab(owner, state.sessions);
+    return owned?.id === sessionId
+      ? owned
+      : Object.values(state.sessions).find((entry) => entry.id === sessionId);
+  });
+  const profile = useStudio((state) =>
+    state.bootstrap?.profiles.find((entry) => entry.id === session?.connectionId),
+  );
+  const blocked = useStudio(
+    (state) =>
+      !!(
+        state.sessionTransactionPending[sessionId] ||
+        state.sessionMetadataRefreshRequired[sessionId] ||
+        state.sessionContextSwitching[sessionId]
+      ),
+  );
+  const canDdl =
+    session?.capabilities.snowflakeReviewedDdl === true &&
+    profile?.snowflake?.reviewedDdl === true &&
+    profile.safeMode !== "readOnly";
+  const [ddlRequest, setDdlRequest] = useState<SnowflakeDdlDialogRequest | null>(null);
   const [catalog, setCatalog] = useState<BrowseCatalog | null>(null);
   const [inspection, setInspection] = useState<RelationInspection | null>(null);
   const [preview, setPreview] = useState<RelationPreview | null>(null);
@@ -109,6 +141,22 @@ export function RelationBrowser({ sessionId, onClose }: { sessionId: string; onC
   const columns =
     preview?.columns.slice(columnPage * PAGE_COLUMNS, (columnPage + 1) * PAGE_COLUMNS) ?? [];
   const rows = preview?.rows.slice(rowPage * PAGE_ROWS, (rowPage + 1) * PAGE_ROWS) ?? [];
+  const qualified =
+    target && catalog
+      ? [catalog.database, target.table.schema, target.table.name]
+          .map((part) => `"${part.replaceAll('"', '""')}"`)
+          .join(".")
+      : "";
+  if (ddlRequest && profile)
+    return (
+      <SnowflakeDdlDialog
+        sessionId={sessionId}
+        ownerTabId={ownerTabId}
+        profile={profile}
+        request={ddlRequest}
+        onClose={onClose}
+      />
+    );
   return (
     <Modal
       title="Browse relations"
@@ -199,6 +247,71 @@ export function RelationBrowser({ sessionId, onClose }: { sessionId: string; onC
           <button className="button small" disabled={busy || !inspection} onClick={loadPreview}>
             Preview rows
           </button>
+          {canDdl && (
+            <>
+              <button
+                className="button small"
+                disabled={busy || blocked || !catalog}
+                onClick={() =>
+                  catalog &&
+                  setDdlRequest({
+                    kind: "createTable",
+                    database: catalog.database,
+                    schema: useStudio.getState().sessionStates[sessionId]?.activeContext ?? "",
+                  })
+                }
+              >
+                Create table…
+              </button>
+              <button
+                className="button small"
+                disabled={
+                  busy ||
+                  blocked ||
+                  !catalog ||
+                  !inspection ||
+                  target?.availability !== "available" ||
+                  target.tableType !== "BASE TABLE"
+                }
+                onClick={() =>
+                  catalog &&
+                  inspection &&
+                  target &&
+                  setDdlRequest({
+                    kind: "addColumn",
+                    browseRevision: catalog.revision,
+                    targetId: target.targetId,
+                    inspectionRevision: inspection.revision,
+                    qualifiedTarget: qualified,
+                  })
+                }
+              >
+                Add nullable column…
+              </button>
+              <button
+                className="button small danger"
+                disabled={
+                  busy ||
+                  blocked ||
+                  !catalog ||
+                  target?.availability !== "available" ||
+                  target.tableType !== "BASE TABLE"
+                }
+                onClick={() =>
+                  catalog &&
+                  target &&
+                  setDdlRequest({
+                    kind: "dropTable",
+                    browseRevision: catalog.revision,
+                    targetId: target.targetId,
+                    qualifiedTarget: qualified,
+                  })
+                }
+              >
+                Drop table…
+              </button>
+            </>
+          )}
         </div>
         {inspection && (
           <>
