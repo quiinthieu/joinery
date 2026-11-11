@@ -3,7 +3,9 @@
 The external-browser driver uses its own pinned Node runtime and locked SDK
 dependencies. Explicit application profile integration and local package/native
 qualification pass. New Snowflake profiles choose the SDK route;
-existing profiles retain OAuth/SQL API. Both remain read-only. A prepared stage
+existing profiles retain OAuth/SQL API. OAuth remains read-only. The SDK also
+provides separately reviewed SQL DML and explicit transaction controls locally;
+actual account mutation effects remain unqualified. A prepared stage
 alone does not establish a usable packaged workflow. See the
 [integration evidence](snowflake-sdk-integration.md) for resource packaging,
 verification commands and the remaining required account/write/transaction gates.
@@ -95,6 +97,7 @@ explicitly by the runner. They do not authenticate to Snowflake.
 These tests demonstrate local framing, bounded streaming, exact binding
 transport, cancellation/terminal ordering and process cleanup. They do not
 prove remote request deduplication, write outcomes, rollback or a million-row
-Snowflake workflow. Writes and transactions remain disabled. See the
+Snowflake workflow. Broader DML, grid editing, DDL and actual transaction effects
+remain required gaps. See the
 [driver design](snowflake-driver-design.md), [license audit](snowflake-sdk-licenses.md)
 and [required acceptance inventory](snowflake-datagrip-replacement.md).

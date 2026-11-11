@@ -1,18 +1,20 @@
 # Snowflake external-browser application integration
 
-Status on 10 November 2026: application integration is implemented and locally
-qualified. This increment does not satisfy the owner's
-required writes, DDL, transactions, metadata or complete DataGrip replacement.
-The [required inventory](snowflake-datagrip-replacement.md) remains unchanged.
+Status on 11 November 2026: the Snowflake external-browser foundation is locally
+qualified, and the separate reviewed single-statement DML workflow is integrated
+with focused local tests. Final browser coverage and full validation of the DML
+increment are pending. No actual-account DML, DDL or full DataGrip replacement
+acceptance is established. The [required inventory](snowflake-datagrip-replacement.md)
+remains unchanged.
 
 ## Profile and runtime ownership
 
 Snowflake profiles store an explicit authentication mode:
 
-| Mode                    | Selection                                     | Current behavior                                                                             |
-| ----------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `externalBrowser`       | Default for a newly created Snowflake profile | Pinned Node/official SDK helper, one connection per logical session, read-only SQL           |
-| `localApplicationOauth` | Default when an existing profile has no mode  | Existing local-application OAuth/SQL API route, read-only SQL and its bounded metadata pilot |
+| Mode                    | Selection                                     | Current behavior                                                                                                                              |
+| ----------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `externalBrowser`       | Default for a newly created Snowflake profile | Pinned Node/official SDK helper, one connection per logical session, classified-read SQL plus a separate false-by-default reviewed DML action |
+| `localApplicationOauth` | Default when an existing profile has no mode  | Existing local-application OAuth/SQL API route, read-only SQL and its bounded metadata pilot                                                  |
 
 Changing a role, warehouse, database or schema preserves the selected mode.
 Switching modes is explicit. Unknown serialized values fail validation. A missing
@@ -102,6 +104,36 @@ identify the current local run; committed tests and commands permit reproduction
 | Actual Snowflake account            | Approved two-query helper canary passes          | After a reproduced validator repair, both result contracts, context/session continuity, logout acknowledgement and local cleanup pass. Normal packaged application and complete account workflows remain open. |
 | Owner hands-on acceptance           | Open                                             | All applicable latest DataGrip workflows remain required                                                                                                                                                       |
 
+## Reviewed DML increment (11 November 2026)
+
+The SDK route now has a separate `reviewedDml` profile opt-in, default false for
+new and missing-field profiles. ReadOnly and OAuth/local-application profiles
+deny it. Ordinary public SQL remains classified-read-only; only the typed
+reviewed action admits one strictly parsed INSERT, UPDATE or DELETE statement.
+The final review presents the fully qualified SQL name and warns about
+concurrent DDL, temporary-name shadowing, defaults, policies and dependencies.
+This is name-based routing, not atomic immutable-object binding or a grid-edit
+target identity qualification. Unknown delivery retires the session and never
+replays automatically.
+
+| Focused local evidence                                                                         | Result                                                     | Scope                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust DML grammar, exact status-summary parser, SDK adapter/helper supervisor and Studio action | 51 tests pass (`dml-rust-focused-final.log`)               | Synthetic SDK/local tests; exact integer counts remain decimal strings; no account access                                                     |
+| Node/helper/synthetic SDK Studio integration                                                   | 21 full-suite tests pass (`dml-studio-integrated-full.log`); five new DML cases | One-use admission, exact 11-statement budget, ACK retained across observer failure, unknown outcome retirement/no replay, and durable history |
+| DML helper cases across focused runs                                                           | 255 passing case executions across runs                    | Aggregated helper coverage; not a claim that one full helper suite passed                                                                     |
+| Final browser coverage | Seven headless flows pass (`dml-browser-final.log`) | Four DML outcomes including pending disconnect; three transaction regressions. RPC-intercepted UI behavior only |
+| Full repository validation | `pnpm validate` passes: 671 frontend / 426 Rust tests | 129 fixture tests ignored; final shutdown repair included; separate 43 actual PostgreSQL regressions pass |
+| Final native/package qualification | Three hidden runs pass 20 categories and ten cleanup cycles; normal SDK bundle 224.33 MiB passes strict ad-hoc signature/resources/startup | Zero startup authentication/SQL; 336 frozen source inputs unchanged through `fb091db`; no installation or account qualification |
+| Snowflake account DML                                                                          | Not performed or authorized                                | The earlier approved two-query read canary grants no write authority                                                                          |
+
+The durable metadata hold blocks automatic health/completion/browse SQL after
+submission. It remains until the owner explicitly requests **Refresh** and a new
+observation succeeds. History retains operation, outcome, exact summary counts,
+and retirement evidence without bind values. Statement acknowledgement remains
+separate from later observation and does not prove committed data effects.
+See the [reviewed DML contract](snowflake-sdk-dml-design.md) for grammar,
+policy, transaction and identity limits.
+
 An initial browser run failed because the harness correctly rejected remote
 profile persistence. The added offline fixture permits only one synthetic profile
 shape and continues to refuse authentication; it does not relax desktop policy.
@@ -160,8 +192,9 @@ The SDK route advertises SQL and cancellation. A subsequent
 bounded relation suggestions and lazy resolved columns; the preceding integration
 counts and packaged artifacts do not qualify that later source. The later [browsing slice](snowflake-sdk-browsing-design.md) adds a local
 revision-bound relation catalog, column inspection and read-only preview. Complete
-object/constraint inspection, schema tools, plans and transactions remain incomplete
-until their workflows are implemented. The UI skips automatic generic catalog discovery for SDK sessions. The explicit
+object/constraint inspection, schema tools and plans remain incomplete until
+their workflows are implemented. Explicit transaction controls are implemented
+locally; account transaction acceptance remains open. The UI skips automatic generic catalog discovery for SDK sessions. The explicit
 Browse relations action performs its own bounded metadata reads; current request
 errors clear its stale UI state rather than reporting a successful connection as
 an authentication failure. The existing SQL API metadata pilot does not qualify SDK
@@ -172,19 +205,17 @@ same-connection settings, opaque transaction activity and context observations.
 Unknown states and nullable roles are explicit; backend caches and frontend
 choices are revoked after changed or unavailable observations. Local qualification
 passes; see the [ledger](replacement-verification.md#sdk-session-observation-10-november-2026)
-for current tests, packaging and native evidence. Schema switching and transaction
-controls remain disabled.
-These ten/eleven-read operations need account authorization beyond the earlier
-two-SELECT helper canary.
+for current tests, packaging and native evidence. Schema switching remains
+disabled. These ten/eleven-read operations need account authorization beyond the
+earlier two-SELECT helper canary.
 
-Writes, DDL and explicit transactions remain required and disabled; they are not
-optional. The local submission guard prevents a second admitted native query
-request for its reviewed sources, but truthful mutation/batch/transaction and
-remote outcome behavior still need implementation and qualification. Actual Snowflake
-deduplication after a lost successful response needs independent server-state
-observation. Grid/CSV target identity also remains an open safety gate: documented
-name-based references do not pin an object generation. Raw reviewed SQL and safe
-metadata work can advance independently of that grid gate. See the
+Reviewed single-statement INSERT/UPDATE/DELETE is now implemented locally behind
+the opt-in described above. It does not qualify actual Snowflake DML effects,
+DDL, or transaction behavior on the account. DDL remains disabled; explicit
+transaction controls are locally implemented but account acceptance remains
+open. Actual Snowflake behavior after a lost successful response needs
+independent server-state observation. Grid/CSV target identity also remains an
+open safety gate: SQL-name review does not pin an object generation. See the
 [driver design](snowflake-driver-design.md).
 
 Account acceptance must additionally demonstrate external-browser cancellation,

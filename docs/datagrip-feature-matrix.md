@@ -1,12 +1,44 @@
 # DataGrip workflow comparison and Joinery evidence
 
-## Explicit transaction increment (10 November 2026, locally qualified)
+## Reviewed SQL writes (11 November 2026, local verification)
+
+The SDK external-browser route now implements a separately opted-in, individually
+reviewed single INSERT/UPDATE/DELETE workflow with scalar parameters, exact status
+counts, one-use submission authority and durable outcome history. It targets the
+fully qualified SQL name shown in review; concurrent DDL, temporary-name shadows,
+defaults, policies and dependencies can change resolution/effects. There is no
+immutable object-identity or safe grid-edit claim. Acknowledged success is separate
+from committed data effects. Unknown outcomes retire without replay; ordinary
+observer denial retains rollback recovery. Metadata remains paused until an
+explicit coherent refresh. ReadOnly and OAuth still deny writes.
+
+Local commits `eae1e81` and `fb091db` pass full `pnpm validate`: 671 frontend
+and 426 standard Rust tests, with 129 fixture tests explicitly ignored. Focused
+checks pass 51 Rust DML cases, then 15 final Studio cases including the reproduced
+and repaired graceful-shutdown history gap. All 21 Studio/actual-helper synthetic
+SDK fixtures, seven browser DML/transaction flows and 43 actual disposable
+PostgreSQL regressions pass. Helper coverage is 255 passing cases across the 107
+actual-SDK loopback and 148 remaining-helper runs. The current-source normal
+macOS bundle (224.33 MiB), strict ad-hoc signature/resources/startup checks and
+three hidden native runs pass with zero startup authentication/SQL. See the
+[verification ledger](replacement-verification.md) for source pins and limits.
+These tests do not qualify actual Snowflake writes, transaction effects or a
+million-row account result. Broader DML, grid editing, DDL, AUTOCOMMIT changes and
+all remaining applicable DataGrip capabilities remain required gaps.
+
+The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
+Six setup statements are rendered privately and none has executed. A bounded
+write-capable setup runner and fresh explicit execution/billing approval are still
+needed. The [DDL design](snowflake-sdk-ddl-design.md) is proposed, not implemented.
+The Goal remains active and incomplete; nothing is merged, published or installed.
+
+## Recorded transaction increment (10 November 2026, source `929ae06`)
 
 Local source now includes separately reviewed SDK BEGIN/COMMIT/ROLLBACK controls,
 one-use authority, policy rechecks and rollback-only recovery. SDK profiles still
 default ReadOnly; only explicitly selected external-browser policies can permit
-BEGIN/COMMIT. OAuth remains ReadOnly. DML, DDL and AUTOCOMMIT changes remain
-blocked. The UI retains command acknowledgement separately from transaction
+BEGIN/COMMIT. OAuth remains ReadOnly. On that recorded source, DML, DDL and AUTOCOMMIT
+changes remained blocked. The UI retains command acknowledgement separately from transaction
 activity and verified data effects, and pauses automatic metadata after a control.
 See the [transaction contract](snowflake-sdk-transactions-design.md).
 
@@ -250,15 +282,15 @@ reproduced failures and exact qualification limits.
 
 | Area | Joinery implementation and current evidence | Incomplete or blocked acceptance |
 |---|---|---|
-| Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; explicit Snowflake SDK externalbrowser and OAuth/SQL API read routes | SDK profile routing, cleanup and local bundle/native checks pass. The two-query account canary qualifies its earlier helper source, not the new guard. Normal packaged account/session behavior, metadata, writes/transactions and live/native credential lifecycle remain open |
+| Connections, authentication, TLS, tunnels | PostgreSQL and MySQL/MariaDB adapters; real local TLS/SSH fixture coverage; standalone Redis; explicit Snowflake SDK externalbrowser and OAuth/SQL API read routes | SDK profile routing, cleanup and local bundle/native checks pass. The corrected 24-read helper qualification covers its recorded source; it does not qualify current DML or the normal packaged app. Normal packaged account/session behavior, metadata, writes/transactions and live/native credential lifecycle remain open |
 | Schema navigation, metadata, object search | SQL object explorer, Structure/DDL, dependencies and Search Everywhere exercised in browser fixtures; bounded SDK same-session relation/column completion | SDK current-database relation catalog, revision-bound column inspection and bounded read-only preview are implemented locally; complete object/constraint inspection and actual account shapes remain unqualified. Bounded introspection and permissions vary by engine; daily Snowflake catalogs/roles and required object types need qualification |
 | SQL editing, completion, formatting, diagnostics | Bounded dialect-aware completion, formatting, parameters, diagnostics, navigation and refactoring with frontend/real browser coverage | Fresh-result completion synchronization is repaired (`f9abce0`); unsupported semantic forms remain explicit. Full applicable Snowflake authoring inventory and representative performance remain unqualified |
-| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks; stateful SDK read execution and local one-submission guard. SDK settings/activity/context observer locally qualified with explicit Unknown and nullable role | Fifteen real local-engine transaction-transport tests cover outcomes and retirement. Guarded schema selection locally qualified; account switching remains unqualified. Snowflake other session commands, writes, full batches and transactions remain disabled; actual-account observation/cancellation/outcome qualification remains open |
+| Execution, parameters, cancellation, statements | Reviewed plans, typed parameters, statement/selection/batch execution, isolated/shared consoles; real engine/browser cancellation checks; stateful SDK read execution and local one-submission guard. SDK settings/activity/context observer locally qualified with explicit Unknown and nullable role | Fifteen real local-engine transaction-transport tests cover outcomes and retirement. Guarded schema selection locally qualified; account switching remains unqualified. Typed reviewed single-statement DML and explicit boundaries are locally implemented; broader writes, full batches, other session commands and actual-account cancellation/outcomes remain incomplete |
 | Results, filtering, sorting, copying, export | Arrow-backed retained results, table server filtering/sorting, exact-value copy and bounded export/import workflows exercised locally | Selected-cell inspector race repaired with delayed real Arrow coverage. The required million-row Snowflake paging/export workflow, export destinations and accessibility remain unqualified |
-| Editing, transactions, commit/rollback | Reviewed atomic grid changes and conflict checks; PostgreSQL original relation identity and MySQL/MariaDB bounded retained guards carry target ownership through review and every CSV batch. Exact preview generations are mandatory. Strict diagnostic passes 27/27 on its recorded source; current combined validation and all 145 browser workflows pass | Guard lifetime is 60 seconds, at most 32 live targets per session; expired/disconnected/released targets require a fresh read/preview. External DDL may wait for the lease. All target engine/auth pairs, representative workloads and owner acceptance remain open. See [identity investigation](table-identity-safety.md). Query snapshots in other tabs do not auto-refresh; grid writer remains separate from console transaction |
-| History and saved scripts | Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
+| Editing, transactions, commit/rollback | SDK reviewed SQL DML and typed boundaries pass local synthetic tests; grid editing and account effects remain unqualified. Other engines: reviewed atomic grid changes and conflict checks; PostgreSQL original relation identity and MySQL/MariaDB bounded retained guards carry target ownership through review and every CSV batch. Exact preview generations are mandatory. Strict diagnostic passes 27/27 on its recorded source; current combined validation and all 145 browser workflows pass | Guard lifetime is 60 seconds, at most 32 live targets per session; expired/disconnected/released targets require a fresh read/preview. External DDL may wait for the lease. All target engine/auth pairs, representative workloads and owner acceptance remain open. See [identity investigation](table-identity-safety.md). Query snapshots in other tabs do not auto-refresh; grid writer remains separate from console transaction |
+| History and saved scripts | Typed SDK DML history retains exact count strings and outcome across a local SQLite restart without bound values. Library, file capabilities, opt-in drafts/history and preferences; abrupt-backend restart plus actual isolated native pending-save close/reopen pass without connection/SQL replay | Normal packaged quit/restart and OS credential restoration still need evidence. Required history/privacy/file workflows unconfirmed |
 | Plans and performance investigation | Estimated/actual SQL-engine plan workflows, snapshots/comparison, timing and monitoring exercised in local fixtures | Engine-specific bounds remain; Snowflake live plans and representative workload/latency targets unqualified |
-| Schema changes and engine behavior | Reviewed object/column/index/constraint DDL, snapshots/diff and migration workflow; fixture coverage | Unsupported schema objects and engine implicit-commit behavior must match daily tasks; external versions/privileges unconfirmed |
+| Schema changes and engine behavior | PostgreSQL/MySQL reviewed object/column/index/constraint DDL, snapshots/diff and migration workflow; fixture coverage. SDK DDL design and disposable setup proposal are documented | Snowflake SDK DDL remains disabled. Broader objects, compare/migration, implicit commits and account privileges remain required gaps |
 | Keyboard, accessibility, everyday use | Keyboard navigation/dialog/focus browser coverage and preferences/layout exist | Screen-reader/canvas usability and the owner's complete daily task sequence need hands-on evaluation |
 | Installation, packaging, updates, persistence | Normal macOS arm64 bundle/signature and three hidden smoke runs passed; isolated backend restart and two hidden native close/reopen pairs pass | Local bundle is uninstalled/unreleased. Normal packaged restart, supported update/install acceptance, Developer ID/notarization and Windows/Linux runtime remain open |
 

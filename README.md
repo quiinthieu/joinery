@@ -59,8 +59,16 @@ application qualification passes. Separately reviewed
 [explicit transaction controls](docs/snowflake-sdk-transactions-design.md) are
 implemented with one-use authority and rollback recovery; their integrated local
 qualification passes on `929ae06`. They preserve command acknowledgement separately
-from verified data effects. Complete object/constraint inspection, writes, DDL,
-AUTOCOMMIT changes and actual transaction effects remain incomplete and required.
+from verified data effects. The separately opted-in
+[reviewed SQL DML workflow](docs/snowflake-sdk-dml-design.md) now admits bounded
+single INSERT/UPDATE/DELETE statements and scalar binds, preserving exact count
+strings and durable outcomes. It reviews fully qualified SQL names without an
+immutable object-identity guarantee; defaults, policies, temporary shadows and
+concurrent DDL can change effects. Unknown outcomes retire without replay, and
+metadata stays paused until explicit coherent refresh. Account DML/transaction
+effects, broader DML, grid editing, complete object inspection, DDL and
+AUTOCOMMIT changes remain incomplete and required. The owner's
+[disposable setup proposal](docs/snowflake-disposable-setup.md) has not executed.
 The [submission guard](docs/snowflake-sdk-submit-guard-design.md) bounds SDK query
 submissions for pinned sources and retires on ambiguity. A lost acknowledgement
 can still mean the server executed a request; local tests do not establish remote

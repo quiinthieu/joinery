@@ -1,12 +1,44 @@
 # Joinery implementation roadmap
 
-## Explicit transaction increment (10 November 2026, locally qualified)
+## Reviewed SQL writes (11 November 2026, local verification)
+
+The SDK external-browser route now implements a separately opted-in, individually
+reviewed single INSERT/UPDATE/DELETE workflow with scalar parameters, exact status
+counts, one-use submission authority and durable outcome history. It targets the
+fully qualified SQL name shown in review; concurrent DDL, temporary-name shadows,
+defaults, policies and dependencies can change resolution/effects. There is no
+immutable object-identity or safe grid-edit claim. Acknowledged success is separate
+from committed data effects. Unknown outcomes retire without replay; ordinary
+observer denial retains rollback recovery. Metadata remains paused until an
+explicit coherent refresh. ReadOnly and OAuth still deny writes.
+
+Local commits `eae1e81` and `fb091db` pass full `pnpm validate`: 671 frontend
+and 426 standard Rust tests, with 129 fixture tests explicitly ignored. Focused
+checks pass 51 Rust DML cases, then 15 final Studio cases including the reproduced
+and repaired graceful-shutdown history gap. All 21 Studio/actual-helper synthetic
+SDK fixtures, seven browser DML/transaction flows and 43 actual disposable
+PostgreSQL regressions pass. Helper coverage is 255 passing cases across the 107
+actual-SDK loopback and 148 remaining-helper runs. The current-source normal
+macOS bundle (224.33 MiB), strict ad-hoc signature/resources/startup checks and
+three hidden native runs pass with zero startup authentication/SQL. See the
+[verification ledger](replacement-verification.md) for source pins and limits.
+These tests do not qualify actual Snowflake writes, transaction effects or a
+million-row account result. Broader DML, grid editing, DDL, AUTOCOMMIT changes and
+all remaining applicable DataGrip capabilities remain required gaps.
+
+The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
+Six setup statements are rendered privately and none has executed. A bounded
+write-capable setup runner and fresh explicit execution/billing approval are still
+needed. The [DDL design](snowflake-sdk-ddl-design.md) is proposed, not implemented.
+The Goal remains active and incomplete; nothing is merged, published or installed.
+
+## Recorded transaction increment (10 November 2026, source `929ae06`)
 
 Local source now includes separately reviewed SDK BEGIN/COMMIT/ROLLBACK controls,
 one-use authority, policy rechecks and rollback-only recovery. SDK profiles still
 default ReadOnly; only explicitly selected external-browser policies can permit
-BEGIN/COMMIT. OAuth remains ReadOnly. DML, DDL and AUTOCOMMIT changes remain
-blocked. The UI retains command acknowledgement separately from transaction
+BEGIN/COMMIT. OAuth remains ReadOnly. On that recorded source, DML, DDL and AUTOCOMMIT
+changes remained blocked. The UI retains command acknowledgement separately from transaction
 activity and verified data effects, and pauses automatic metadata after a control.
 See the [transaction contract](snowflake-sdk-transactions-design.md).
 The next required SQL-write increment follows the

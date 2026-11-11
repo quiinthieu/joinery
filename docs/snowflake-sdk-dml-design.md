@@ -1,34 +1,34 @@
-# Snowflake SDK reviewed DML proposal
+# Snowflake SDK reviewed DML workflow
 
-**Status: proposed next increment; not implemented or account-qualified.**
-The SDK currently admits public SQL through a single classified-read gate.
-Explicit transaction controls have their own typed workflow; they do not enable
-DML. This proposal adds a usable, bounded INSERT/UPDATE/DELETE workflow on the
-same SDK session. It authorizes no account activity and does not complete the
-[DataGrip replacement scope](snowflake-datagrip-replacement.md). Broader DML, grid
-editing, cross-database operations, DDL and full transaction acceptance remain
+**Status: implemented and locally tested; actual Snowflake DML and full
+DataGrip replacement acceptance remain open.** The SDK admits only public
+classified reads; a separate typed action now supports a bounded, reviewed
+single INSERT/UPDATE/DELETE statement on the same SDK session when the owner
+explicitly opts in. Its tests use a synthetic SDK and do not establish remote
+data effects or authorize account activity. Broader DML, grid editing,
+cross-database operations, DDL and actual-account transaction acceptance remain
 required. Read alongside the
 [explicit transaction contract](snowflake-sdk-transactions-design.md).
 
-## Policy prerequisite and supported scope
+## Policy and supported scope
 
-Do not reinterpret existing non-ReadOnly SDK profiles silently. Their current UI
-describes authorization for explicit transaction boundaries. Recommended
-migration: add an explicit SDK DML opt-in, default false for existing and new
-profiles, separate from SafeMode. The owner enables it with copy describing table
-mutations, transaction consequences and possible warehouse billing. SafeMode
-still determines per-plan approval, confirmation and passphrase requirements;
-ReadOnly always denies DML. An alternative migration needs equivalent explicit
-consent before previously transaction-only profiles gain DML permission.
+The Snowflake profile has a separate SDK DML opt-in, `reviewedDml`, defaulting
+false for new profiles and for old profiles without the field. It is independent
+of Safe Mode and explicit transaction controls; a non-ReadOnly boundary policy
+does not imply DML consent. The checkbox names reviewed INSERT, UPDATE and DELETE
+and warns about possible warehouse billing and transaction effects. Safe Mode
+still controls per-plan confirmation and passphrase requirements. ReadOnly,
+OAuth/local-application profiles and unsupported authentication routes deny DML.
+Changing authentication or switching into OAuth clears the opt-in; switching
+back does not restore it automatically. Production-profile password-gated
+normalization is preserved. Authentication and policy changes invalidate
+pending plans.
 
-Keep OAuth/legacy profiles ReadOnly and prevent authentication changes from
-restoring elevated policy or opt-in automatically. Preserve verified HTTPS/443,
-no SSH, no stored password and existing production/group normalization. Changing
-profile policy, authentication or passphrase invalidates pending plans. A new
-independent reviewed-DML capability must not enable table editing, DDL editing,
-arbitrary transaction SQL or AUTOCOMMIT mode changes.
+The DML opt-in does not enable grid/table editing, DDL, arbitrary transaction
+SQL or AUTOCOMMIT mode changes. Preserve verified HTTPS/443, no SSH, no stored
+password and existing production/group normalization.
 
-The first supported grammar should be explicit:
+The supported grammar is deliberately narrow:
 
 - One INSERT INTO a named table, with an explicit column list and bounded VALUES
   rows containing supported scalar expressions or binds.
@@ -54,31 +54,34 @@ updates. Do not silently change session parameters to change those semantics.
 See [INSERT](https://docs.snowflake.com/en/sql-reference/sql/insert) and
 [UPDATE](https://docs.snowflake.com/en/sql-reference/sql/update).
 
-For the first current-database slice, require an explicitly database-qualified
-target and compare its parsed identifier components with the pinned database.
-Do not split quoted names on literal dots, concatenate SQL fragments or rewrite
-the reviewed target after approval. Reject known temporary/permanent ambiguity
-or unsupported relation kinds; browsing tokens are not immutable object IDs.
-Concurrent server DDL or hidden objects can still change name resolution. Either
-prove and document the selected-name invariant under least-privilege metadata,
-or retain a target-qualification gate; do not claim an atomic object binding.
+Require an explicit, fully qualified SQL name and compare its parsed database
+component with the pinned current database. The implementation preserves quoted
+identifier components and never splits a dot inside a quoted name, concatenates
+SQL fragments or rewrites the reviewed target after approval. This is
+name-based targeting: it does not bind an immutable Snowflake object identity,
+and it does not qualify relation-kind identity for grid editing. Review copy
+warns that concurrent DDL, temporary-name shadowing, object defaults, policies
+and dependencies can affect name resolution or indirect effects. A matching
+browser label or catalog name is not an immutable object ID; concurrent server
+changes can still create a time-of-check/time-of-use race. Do not claim an
+atomic object binding or that only the named table can be affected.
 
 ## Native admission, binds and helper contract
 
-Reuse the SQL editor's parameter/review UI, but store a distinct SDK-DML action.
-Recommended private request fields are DML kind, original classified SQL,
-canonical bound statement, session ID and server-held observation revision. The
-stored fingerprint covers all fields, exact wire SQL/binds and effective policy.
-After owning the Studio lane, consume the plan once under the configuration
-gate; rederive current persisted policy, check deadline/approval/passphrase and
-session closure, then validate the adapter authority. Do not hold that gate over
-network awaits. A queued plan remains revocable until consumption.
+The SQL editor's parameter/review UI stores a distinct SDK-DML plan. The plan
+binds original SQL, validated scalar parameters, a canonical bound statement,
+session ID and server-held observation revision; its stored fingerprint covers
+the exact wire SQL/binds and effective policy. After owning the Studio lane,
+execution consumes the plan once under the configuration gate, rederives current
+policy, checks deadline/approval/passphrase and session closure, then validates
+adapter authority. The configuration gate is not held over network awaits. A
+queued plan remains revocable until consumption.
 
 Reuse `params::validate_inputs` and canonical recompilation. Require exact
 recompiled wire SQL and ordered bind equality, including repeated named slots;
 never trust a public BoundStatement independently. Keep supported scalar values,
 server numeric/boolean casts, precision, SQL/frame/aggregate-byte bounds and at
-most 1,000 parameter occurrences for this proposed DML gate. The general
+most 1,000 parameter occurrences for this DML gate. The general
 parameter compiler currently permits 1,024; apply the narrower DML cap explicitly
 rather than claiming the existing compiler already enforces it. Do not interpolate values, accept raw SQL
 fragments or admit array binds/staged binding. The existing positive SDK
@@ -86,14 +89,13 @@ fragments or admit array binds/staged binding. The existing positive SDK
 path. Snowflake documents positional bindings and their size limitations in
 [Executing statements](https://docs.snowflake.com/en/developer-guide/node-js/nodejs-driver-execute#binding-statement-parameters).
 
-Recommended helper operation: strict `dml` payload with kind
-`insert | update | delete`, exact reviewed SQL, scalar binds and expected private
-principal/session identity. Unlike fixed transaction commands, DML necessarily
-contains reviewed SQL: the kind enum is not an independent proof of its grammar.
-Rust owns AST admission; the helper validates the closed payload, established
-identity pin and bounds at admission and dispatch. Match this operation only to
-`Impact::Mutating`; leave public read admission unchanged. Never adopt a supplied
-pin or use profile login/role as a fallback for observed identity.
+The dedicated helper `dml` operation carries exact reviewed SQL, scalar binds
+and expected private principal/session identity. Rust owns AST admission; the
+helper validates the closed payload, established identity pin and bounds at
+admission and dispatch. It matches only to `Impact::Mutating`; public read
+admission remains unchanged. A DML kind does not independently prove its SQL
+grammar. Never adopt a supplied pin or use profile login/role as a fallback for
+observed identity.
 
 One operation owns one guarded SDK execute, one exact SDK request ID and its
 allowance through terminal/drain. Keep mandatory transport-source verification,
@@ -105,25 +107,27 @@ is a separate recovery design, not permission for automatic replay here.
 
 ## Statement evidence and exact affected counts
 
-Retain successful statement acknowledgement and its exact registered identity
-before callbacks, status parsing, draining or event delivery can fail. A typed
-result should separately contain statement outcome (`succeeded`, `rejected`,
-`unknown`), optional exact affected count, summary-validation status, final
-runtime, retirement and a bounded safe error. These are recommended DTO concepts,
-not established public field names. Pre-admission failures can return Err;
-post-admission results must preserve known evidence, including when the UI or
-history writer is gone. ACK means statement success, not independently verified
-transaction disposition.
+Retain statement acknowledgement and its exact registered identity before
+callbacks, status parsing, draining or event delivery can fail. The typed result
+separates statement outcome (`succeeded`, `rejected`, `unknown`), optional exact
+affected count, summary-validation status, final runtime, retirement and a
+bounded safe error. Pre-admission failures return an error; post-admission
+results preserve known evidence, including when the UI or history writer is
+gone. ACK means statement success, not independently verified transaction
+disposition or committed data effects.
 
-The current read adapter returns helper `rowsSeen` through QuerySink::complete
-and Driver::execute's u64. That would report one for a DML status row. Add a typed
-driver result instead of forcing ACK, drain failure and unavailable counts through
-`AppResult<u64>`. QuerySink may still render the bounded status result, but viewer
-closure, retention failure or result-store failure cannot replace remote evidence.
-Studio's generic connection-loss-to-OutcomeUnknown rewrite must consult that
-evidence rather than overwrite acknowledged success.
+The read adapter returns helper `rowsSeen` through QuerySink::complete and
+Driver::execute's u64, which would report one for a DML status row. The dedicated
+typed DML driver result preserves ACK, summary validity and drain failure
+separately rather than forcing them through `AppResult<u64>`. QuerySink can still
+render the bounded status result, but viewer closure, retention failure or
+result-store failure cannot replace remote evidence. Studio's generic
+connection-loss-to-OutcomeUnknown rewrite consults that evidence rather than
+overwriting acknowledged success.
 
-Recommended pure summary parser, with exact descriptors qualified before release:
+The pure summary parser accepts only the reviewed descriptors below. The local
+contract publishes counts as exact nonnegative decimal strings, never JavaScript
+numbers:
 
 | Kind   | Required status           | Separate observation                                 |
 | ------ | ------------------------- | ---------------------------------------------------- |
@@ -133,13 +137,14 @@ Recommended pure summary parser, with exact descriptors qualified before release
 
 Require one complete, untruncated row; unique names; a reviewed descriptor set;
 authoritative fixed numeric wire types; and nonnegative integral decimal text.
-Proposed cap: two columns, one row and 64 KiB including descriptors/cells. Normalize
-only reviewed wire-type casing, not arbitrary aliases. Parse with checked integer
-arithmetic and publish decimal strings. Reject null, fractional, negative,
-duplicate, unexpected, oversized or overflowing fields. A failed parser makes the
-count unavailable while preserving prior success ACK. Do not use zero to mean
-unavailable. Exact SDK descriptor casing/optional-column variants remain an
-account acceptance gate; unexpected variants fail closed without replay.
+The implemented cap is two columns, one row and 64 KiB including descriptors
+and cells. Normalize only reviewed wire-type casing, not arbitrary aliases.
+Parse with checked integer arithmetic and publish decimal strings. Reject null,
+fractional, negative, duplicate, unexpected, oversized or overflowing fields.
+A failed parser makes the count unavailable while preserving prior success ACK.
+Do not use zero to mean unavailable. Exact live SDK descriptor casing and
+optional-column variants remain an account acceptance gate; unexpected variants
+fail closed without replay.
 
 Do not use the Node SDK's `getNumRows()` as affected rows or confuse it with the
 JavaScript stored-procedure API. Node SDK 3.4.1 exposes `getNumUpdatedRows()`, but
@@ -159,12 +164,12 @@ Use the existing full observation sample and separate transaction recovery owner
 Consume one-use DML authority before dispatch; reject restricted rollback-only
 state, unavailable baseline, stale revision, different principal/session or
 changed full context. Hold one adapter lane through the result and final sample.
-Recommended budget: five baseline statements, one DML, five final statements:
-**at most eleven explicit statement executions**, ending early on failure. The
-initial coherent observer may separately cost ten statements when authority is
-created. Target inspection or later supported grammar must have its own declared
-budget, not be hidden inside eleven. These counts exclude authentication/session
-setup and do not promise a server execution-cost cap.
+The DML execution path uses five baseline statements, one DML statement and five
+final statements: **at most eleven explicit statement executions**, ending early
+on failure. The initial coherent observer may separately cost ten statements
+when authority is created. Target inspection or later grammar must have its own
+declared budget, not be hidden inside eleven. These counts exclude
+authentication/session setup and do not promise a server execution-cost cap.
 
 Skip Studio's generic ten-read end-run observer for this typed result. Do not
 issue hidden USE, BEGIN, COMMIT, ROLLBACK, ALTER SESSION or count/history queries.
@@ -202,12 +207,13 @@ Cancellation during connection setup can never publish an owned DML action.
 
 Before DML, revoke schema/completion/browse/transaction grants and stale plans,
 advance owning-tab event revisions, and block conflicting queries or controls on
-every tab sharing the session. Preserve existing results. Set the durable
-metadata-refresh hold before dispatch; health, completion and relation-browser
-effects must not add SQL after DML. Publish the returned runtime directly and
-require owner-requested refresh. Preserve acknowledged statement evidence after
-tab closure, disconnect, local audit failure and late event delivery. No global
-lock may span authentication or server work.
+every tab sharing the session. Preserve existing results. The durable
+metadata-refresh hold is set before dispatch; health, completion and
+relation-browser effects do not add SQL after DML. The result and durable history
+retain statement evidence after tab closure, disconnect, local audit failure
+and late event delivery. The hold persists until the owner explicitly selects
+Refresh and a new observation succeeds. No global lock spans authentication or
+server work. History stores operation/outcome/count evidence, not bind values.
 
 ## Limits of SQL effect classification
 
@@ -231,13 +237,11 @@ and [external-function side effects](https://docs.snowflake.com/en/sql-reference
 
 ## Pinned implementation map
 
-The inspected checkout uses sqlparser **0.63.0** with `visitor`. A pure child
-module `src-tauri/src/safety/snowflake_dml.rs` can reuse the existing private
-classification veto and unrestricted-write analysis without exposing them.
-Suggested APIs are `analyze(original_sql, pinned_database)` and
-`compile(original_sql, inputs, pinned_database)`, returning private-field
-candidate/canonical types rather than a caller-constructible admission token.
-This is a proposed implementation map, not parser execution evidence.
+The implementation uses sqlparser **0.63.0** with `visitor`. The pure admission
+module is `src-tauri/src/safety/snowflake_dml.rs`; it reuses the existing private
+classification veto and unrestricted-write analysis without exposing them. Its
+candidate/canonical types keep admission authority private rather than exposing a
+caller-constructible token.
 
 - INSERT/UPDATE/DELETE are tuple `Statement` variants. INSERT targets use
   `TableObject::TableName`; `columns` is `Vec<ObjectName>`. VALUES rows use
@@ -259,7 +263,7 @@ This is a proposed implementation map, not parser execution evidence.
   unsuitable for Snowflake identifier matching.
 - Use closed expression allowlists by position. Do not reuse the common read
   function allowlist: it includes aggregate/window forms. A function-free first
-  grammar should reject every Function and special function-like AST form,
+  grammar rejects every Function and special function-like AST form,
   subquery, sequence reference, wildcard and unreviewed cast/operator. An
   exhaustive fallback rejects future parser variants.
 
@@ -272,23 +276,25 @@ TypedBind fields against any claimed bound representation. Compiler-generated
 CAST/PARSE_JSON wrappers do not authorize equivalent user-supplied functions.
 Independently bound original/rewritten/wire SQL and the final helper frame;
 the compiler's existing eight-MiB bind budget alone is insufficient. Keep the
-separate proposed 1,000-occurrence DML limit described above.
+separate 1,000-occurrence DML limit described above.
 
-## Future effect-qualification runner
+## Remaining effect qualification
 
-Keep the existing 24-read manifest/protocol immutable. A mutation qualification
-needs a distinct workflow and fresh approval binding exact objects, templates,
-binds, effects and any recovery permissions. Reuse source/runtime pins, the
-exclusive consumed grant, strict framing, reserve-before-write child ownership,
-deadlines, redacted receipts and identity-checked authentication-root cleanup.
-Add typed boundary-ACK retention, future DML count parsing, bounded synthetic-row
-comparisons and transition-specific observation checks. The read runner's stable
-sample comparator would reject legitimate transaction-ID changes.
+Keep the existing 24-read manifest/protocol immutable. An account effect
+qualification still needs a distinct workflow and fresh approval binding exact
+objects, templates, binds, effects and any recovery permissions. Reuse
+source/runtime pins, the exclusive consumed grant, strict framing,
+reserve-before-write child ownership, deadlines, redacted receipts and
+identity-checked authentication-root cleanup. Local DML now retains typed
+boundary acknowledgement, parses bounded status counts and compares observed
+transitions; the read runner's stable sample comparator would reject legitimate
+transaction-ID changes and cannot stand in for mutation qualification.
 
-Do not defeat its permanent failure latch with automatic finally-ROLLBACK SQL.
-Recovery requires explicit approved reservations and trusted same-session
-eligibility; malformed protocol or foreign identity stops SQL entirely. Local
-child/root cleanup does not prove remote rollback or object removal.
+Do not defeat the read runner's permanent failure latch with automatic
+finally-ROLLBACK SQL. Any account mutation recovery still requires a separate
+approved action and trusted same-session eligibility; malformed protocol or
+foreign identity stops SQL entirely. Local child/root cleanup does not prove
+remote rollback or object removal.
 
 A first effect plan should use a uniquely named, owner-provisioned disposable
 table with synthetic columns, no policies/indirect dependencies and no concurrent
@@ -303,37 +309,38 @@ A temporary table cannot prove visibility from a second session. Independent
 commit visibility requires another explicitly approved connection or later read
 plan. Provisioning, drop and uncertain-outcome recovery also need exact approved
 scope. If outcome is uncertain, report retained remote objects rather than
-inventing successful cleanup. Helper-direct effects still do not qualify Studio
-policy, scheduling or UI behavior. Implement and synthetically fault-test the new
-compiler/protocol, then review its executable boundary before asking for approval.
+inventing successful cleanup. The synthetic/helper fault tests exercise the
+integrated Studio policy, scheduling and UI evidence path, but they do not
+qualify actual Snowflake data effects. Independent review and separate account
+authorization are still required before an account write.
 
-## Delivery order and verification gates
+## Local implementation and remaining gates
 
-1. **Policy and pure contracts.** Settle explicit opt-in migration; add strict
-   SDK-DML grammar and typed outcome/summary parsers. Own `domain.rs`, `safety.rs`,
-   `params.rs`, profile normalization/form/persistence tests and a focused pure
-   driver module. Prove AST/batch/quoted-name escapes, unsupported modifiers,
-   malformed counts, precision and bind mismatch fail before submission.
-2. **Helper/supervisor transport.** Own `helper.mjs`, `snowflake_process.rs` and
-   their process/actual pinned-SDK loopback fixtures. Prove one guarded native
-   dispatch, exact impact/pin/ACK association, synchronous callback safety, lost
-   ACK, rejected SQL, malformed trailing frames, cancel/drop and bounded cleanup.
-3. **Adapter and Studio.** Own `snowflake_external.rs`, `drivers/mod.rs`, the
-   stored DML action/execution branch and fixtures. Prove eleven-statement budget,
-   one SDK connection, stale authority/policy rejection, pending/implicit
-   transaction support, rollback recovery and no generic extra observer. Verify
-   status count differs from status-row count and multi-joined count is separate.
-4. **Application integration.** Own contracts/IPC, store/editor/review UI and
-   browser/native tests. Prove zero automatic metadata/health SQL, shared-console
-   exclusion, delayed events, tab/session retirement and truthful command/count/
-   transaction messages. Audit or history failure cannot rewrite known outcomes.
-5. **Separate account acceptance.** After local validation, package/source-pin
-   qualification and independent review, obtain a new bounded approval for a
-   disposable isolated table and exact mutations. Test INSERT/UPDATE/DELETE
-   effects, zero/multiple rows, exact descriptors, explicit BEGIN plus rollback
-   and commit, failed DML/abort behavior and real cancellation uncertainty.
-   Design the cleanup/verification SQL in that approval; do not borrow an expired
-   read canary's authority or create objects implicitly.
+The local increment implements the false-by-default profile opt-in, strict AST
+and bind admission, typed SDK helper operation, one-use review plan, exact count
+parser, durable metadata hold/explicit Refresh, statement outcome notice,
+restart-safe history evidence and no-replay retirement for unknown outcomes.
+Focused Rust DML coverage passes 51 tests. The full Node/helper/synthetic SDK
+Studio suite passes 21 cases, including five new DML cases. After a later
+graceful-shutdown history repair, all 15 Studio DML unit cases and full
+`pnpm validate` pass: 671 frontend and 426 standard Rust tests, with 129 fixture
+cases explicitly ignored. Seven headless browser DML/transaction flows and
+43 actual disposable PostgreSQL regressions also pass. Helper coverage is 255
+cases across the 107 actual-SDK loopback and 148 other helper runs. Three hidden
+SDK native runs pass 20 categories and ten cleanup cycles each. These counts
+establish local behavior only; exact commands and source limits are in the
+[verification ledger](replacement-verification.md).
+
+Independent reviews resolved material findings, including dropped-waiter evidence,
+native metadata races, incoherent refresh and graceful shutdown. Current-source
+normal macOS packaging, signature/resources/startup checks and the 336-input
+source comparison pass. Before account testing, finish and review the bounded
+disposable setup runner and obtain fresh execution/billing approval for the
+isolated objects and exact statements. Test actual
+INSERT/UPDATE/DELETE effects, zero/multiple rows, live status descriptors,
+explicit BEGIN plus rollback and commit, failed DML/abort behavior and real
+cancellation uncertainty. Design cleanup and verification SQL in that approval;
+do not borrow an expired read canary's authority or create objects implicitly.
 
 Broader grammar, bulk/large-value binds, joins, MERGE, grid editing, cross-database
 targets, relation-kind coverage, DDL implicit-commit handling, recovery UX and

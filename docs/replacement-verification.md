@@ -8,6 +8,121 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### SDK reviewed SQL DML (11 November 2026)
+
+Implemented in two local commits: `eae1e81` (strict grammar, typed helper/adapter
+transport and exact summary evidence) and `fb091db` (reviewed editor workflow,
+history, metadata hold and graceful shutdown). Neither is merged, published or
+installed. These commits do not qualify actual Snowflake DML, transaction effects,
+DDL, complete results or owner replacement suitability.
+
+The profile's `reviewedDml` opt-in defaults false. ReadOnly and OAuth deny writes.
+The editor admits only a strict single INSERT VALUES, plain UPDATE or plain DELETE
+against an explicit three-component name in the observed database, with bounded
+scalar binds. Every write is reviewed and one-use; canonical SQL/binds, fresh
+revision, current persisted policy and passphrase are rechecked before dispatch.
+Generic SDK execution still denies writes. No grid-edit/immutable relation identity
+claim is made: review warns about concurrent DDL, temporary shadows, defaults,
+policies and dependencies. Broader syntax remains a required gap.
+
+Counts are exact decimal strings from a bounded one-row status result, never SDK
+numeric approximations or status-row counts. UPDATE's optional multi-joined count
+stays separate. Missing/malformed evidence is unavailable, not zero. Known ACKs
+survive observer/drain/history/UI-waiter failure; they do not independently prove
+commit or row disposition. Unknown delivery retires without replay. Ordinary
+observer denial can retain same-session rollback-only recovery.
+
+| Check | Result and evidence scope |
+| --- | --- |
+| Final `pnpm validate` | **671 frontend tests / 56 files; 426 standard Rust tests**. Formatting, contracts/types, frontend production build, Rust check and strict all-target/all-feature Clippy pass. **129 ignored fixture tests are not passes**. Log `dml-validate-qualified.log` |
+| Independent transport commit | Source-only snapshot of the exact staged index builds and passes **37 DML Rust tests**, including strict AST/binds, exact summaries, supervisor and adapter cases; `dml-transport-index-tests.log`. The snapshot excluded the dependent uncommitted UI/Studio workflow |
+| Rust DML qualification | **51/51** focused tests before the later shutdown repair; final **15/15** Studio RecordingDriver tests include that repair. Earlier adapter suite **41/41**. Logs `dml-rust-focused-final.log`, `dml-shutdown-studio-suite.log`; these are local behavior, not account effects |
+| Helper / actual pinned SDK | **255 cases covered passing across two runs**: 107 actual-SDK loopback cases and 148 remaining helper cases. Includes 27 new DML fault cases across HTTP, verified TLS and CONNECT proxy, precise one-POST/effect assertions and no public status rows. SDK EOF seam uses `Helper.stop()`, not actual child IPC EOF. Logs `dml-sdk-full.log` and `dml-helper-nonsdk-final.log` |
+| Studio + actual Node/helper + synthetic SDK | **21/21** complete fixture cases, including five new DML cases: canonical repeated binds, exact counts/history across local SQLite restart, eleven-SQL cadence, denied final observer, lost ACK/no replay, queued metadata and dropped IPC waiter. `dml-studio-integrated-full.log`, 337.64 seconds. This full run precedes the subsequent TaskTracker repair; the 15 final Studio tests and full validation qualify that repair separately |
+| Browser | **7/7** headless isolated flows: four DML outcomes (normal, rollback-only, unknown, explicit pending-write disconnect) plus three transaction regressions. Keyboard Enter approves exact SQL/typed parameters; counts above 2^53 stay exact; prior metadata stays quiet across simulated 31-second intervals and resumes only on explicit coherent refresh. `dml-browser-final.log`, 35.7 seconds. RPCs are intercepted: UI evidence only |
+| Actual PostgreSQL regressions | **43/43** ignored fixture tests explicitly executed on a fresh `joinery-dml-acceptance` Compose project with synthetic data; `dml-postgres-regression.log`, 28.53 seconds. Includes manual transaction/error recovery, exact values, history-adjacent persistence paths, reviewed writes, DDL, imports, cancellation and shared execution. Its container, private fixture volume and network were removed afterward; the unrelated running container was preserved. This does not prove Snowflake semantics |
+| Hidden SDK native app | **3/3 runs**, **20 check categories** and **10 cleanup cycles** each. DML IPC reaches its Rust missing-plan guard; negative enrollment only, not positive account DML. Packaged SDK hello/EOF reports zero authentication/SQL. Logs/receipts `dml-native-build.log`, `dml-native-runs.log`, `dml-native-build.json`, `dml-native-runs.json` |
+| Normal SDK macOS bundle | **224.33 MiB**, strict ad-hoc signature valid; **15,106 resource entries, zero symlinks**. Actual packaged SDK 3.4.1 guarded hello/EOF sends **zero authentication/SQL requests**. Logs/receipt `dml-bundle-final.log`, `dml-bundle-final.json`; build exit 0. No normal-app sign-in, installation or release |
+| Independent review | Adapter/helper, transport, Studio and frontend reviews resolved material findings. Final read-only review found no outstanding material issue in the bounded scope. Setup SQL/cleanup semantics also reviewed; no account activity |
+
+The normal bundle executable SHA-256 is
+`3fd244000f171dfc8c124d21549ff4bfb01f9dccf70ccbc4d8c51475012abd6c`;
+the hidden native executable is
+`2c2cb0641d3e366d56e2556d624ff981a0671757841c62fdaa6b7d1bf36333cb`.
+Both use runtime manifest
+`4103035eec7994b25a14b823680c21d41b0da08c784df858fa803f2dab0066a8`.
+All **336 frozen application/runtime/tooling/test inputs** are unchanged through
+commit `fb091db` and these checks (`dml-source-freeze.json`,
+`dml-source-qualified.json`). The new, unenrolled pure DDL module is outside this
+DML package qualification. Build warnings include the pinned Rust toolchain's
+missing `libLLVM.dylib` for debug stripping (Cargo continued successfully),
+ts-rs ignoring a serde attribute during type generation, and a frontend chunk
+size warning. Runtime serde validation remains enforced. Developer ID signing,
+notarization, normal-app restart/credentials and owner acceptance remain open.
+
+Normal DML dispatch is five baseline observer reads, one DML and five final reads
+on the existing session. Preparation sends zero SQL. No automatic BEGIN/COMMIT,
+generic ten-read follow-up or metadata refresh is added. Session settings and
+actual commit semantics still need approved account testing. At the native lane,
+health, completion and browsing recheck a revisioned metadata hold before driver
+entry. Only a deliberate refresh with coherent transaction observation and normal
+authority clears it; unavailable or rollback-only refresh preserves the hold.
+
+Reproduced failures and fixes:
+
+- The first helper run failed one synthetic DML fixture missing its submission
+  guard method and four process fixtures launched from the wrong directory.
+  Corrected fixture setup/cwd passed the 148 non-SDK cases. All 107 actual-SDK
+  cases passed in that initial full log; do not read its overall failure as a
+  single 255-case pass.
+- A supervisor regression initially dropped the fixture's channel receivers and
+  misreported replacement admission as a full queue. Retaining those fixture
+  receivers fixed the test; no product bypass was introduced.
+- Initial browser run: all three new DML flows failed because the busy review
+  modal hid the pending-write disconnect control; all three existing transaction
+  cases passed. The review now closes after authorization and guards late closure
+  by plan ID. The corrected six flows passed, then the final seven also exercised
+  clicking disconnect and retaining the later unknown outcome.
+- Review found dropped IPC waiters could lose outcome history. A Studio-owned
+  task now finishes evidence independently. A subsequent focused regression
+  reproduced graceful shutdown returning before that owner persisted its ACK.
+  TaskTracker admission/close share the configuration gate; graceful shutdown
+  waits for owners before success. A ten-second drain timeout leaves the task
+  alive and the window open. The strengthened regression passes and checks
+  history exists when shutdown returns, exact counts, retirement and rejected
+  late admission. Logs `dml-shutdown-before-fix.log` (expected failure),
+  `dml-shutdown-after-fix.log` and `dml-shutdown-studio-suite.log`.
+
+Reproduce locally with pinned Node 24.22.2 / Rust 1.99.1 and no account sign-in:
+
+```sh
+pnpm validate
+pnpm --dir snowflake-helper test
+JOINERY_TEST_NODE=/absolute/path/to/pinned/node cargo test \
+  --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --features test-harness --lib dml -- --test-threads=1
+JOINERY_TEST_NODE=/absolute/path/to/pinned/node cargo test \
+  --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --features test-harness --lib execution::snowflake_connection_tests \
+  -- --test-threads=1
+pnpm exec playwright test tests/e2e/snowflake-sdk-dml.spec.ts \
+  tests/e2e/snowflake-sdk-transactions.spec.ts
+```
+
+The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
+Six exact proposed setup statements and one separately gated cleanup statement
+are rendered in a private 0600 offline proposal. It has no executable runner,
+runtime provenance, execution budget or authorization; **zero account statements
+were executed** for this increment. Build/review the bounded setup runner before
+requesting fresh execution/billing approval. Prior read approvals are consumed.
+The [DDL design](snowflake-sdk-ddl-design.md) is proposed and not implemented.
+
+During local testing, an agent mistakenly printed the environment in a tool
+response, exposing GitHub/Orca token values there. No raw values were stored in
+repository files, test fixtures or committed evidence. The owner was informed;
+subsequent diagnostics were restricted to named non-secret variables. Tokens are
+not reproduced here and no global configuration or credential was changed.
+
 ### SDK explicit transaction application controls (10 November 2026, locally qualified)
 
 The increment adds reviewed SDK BEGIN/COMMIT/ROLLBACK buttons, separate typed

@@ -8,14 +8,16 @@ Keep DataGrip available until your required workflows are accepted.
 
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.
-The SDK external-browser route is integrated for read-only SQL. The preceding
+The SDK external-browser route supports reads, separately reviewed bounded SQL
+INSERT/UPDATE/DELETE, and explicit transaction controls locally. Account mutation
+effects remain unqualified. The preceding
 profile/runtime increment passed its local browser, native and package checks;
 the later browsing increment has separate [qualification evidence](replacement-verification.md#sdk-relation-browsing-10-november-2026). Existing profiles retain their OAuth/SQL API
 route. SDK same-session completion is implemented and locally qualified under its
 [qualification contract](snowflake-sdk-metadata-design.md). Neither route satisfies
 the complete target. A distinct SDK relation catalog, column inspection and
 read-only preview is implemented locally; complete object/constraint inspection,
-editable browsing, writes, DDL, transactions and full account qualification remain
+editable browsing, broader writes, DDL, complete transactions and account qualification remain
 open. The fixture walkthrough
 below qualifies existing paths only; keep DataGrip until the required walkthrough
 is accepted. See [SDK integration and limits](snowflake-sdk-integration.md).
@@ -32,8 +34,9 @@ Keep an existing profile ReadOnly unless deliberately evaluating boundary contro
 in an approved isolated scope. An external-browser SDK profile can select Confirm,
 Guard, Silent or Password gated; production normalizes non-ReadOnly policy to
 Password gated. Switching to OAuth resets ReadOnly. This authorizes only the
-separate buttons, while public SQL writes, DDL and transaction statements remain
-blocked. The Auto-commit/Manual dropdown remains disabled for SDK sessions.
+separate buttons. SQL writes require an additional reviewed-DML opt-in; DDL and
+raw transaction statements remain blocked. The Auto-commit/Manual dropdown remains
+disabled for SDK sessions.
 
 After a fresh context observation, an idle console offers **Begin transaction**.
 An observed active transaction offers **Commit transaction** and **Rollback
@@ -51,6 +54,70 @@ inspect the remote state before reconnecting or repeating work. No automatic
 retry or reconnect occurs. These steps are a prepared walkthrough, not account
 transaction acceptance: no transaction/write approval has been consumed for this
 increment. See the [contract and required checks](snowflake-sdk-transactions-design.md).
+
+## Reviewed SDK SQL writes (prepared acceptance walkthrough)
+
+Use this only after the [disposable setup](snowflake-disposable-setup.md) and
+the exact account statement/billing scope have been separately approved. These
+steps are a concrete evaluation sequence, not permission to run account SQL.
+Local UI fixtures already exercise review, parameters and outcome presentation;
+actual Snowflake data effects and owner acceptance remain open.
+
+1. Edit an **External browser SSO** profile, deliberately choose the appropriate
+   non-ReadOnly Safe Mode, and check **Allow separately reviewed single INSERT,
+   UPDATE, and DELETE statements**. New and existing profiles default this off.
+   OAuth and ReadOnly cannot enable it. Production uses Password gated mode.
+2. Connect to the approved disposable database and obtain a coherent context
+   observation. Use a separate console for this test. Begin a transaction with
+   the explicit **Begin transaction** button; its review is independent of DML.
+   Then use **Refresh completion context** to restore normal metadata authority.
+3. Enter a single supported statement against the fully qualified disposable
+   table, for example `INSERT INTO "DB"."SCRATCH"."ROW_CHECKS" ("ID", "NOTE",
+"ACTIVE") VALUES (:id, :note, :active)`. Replace `DB` only with the exact
+   approved new database. Use Integer `9007199254740993`, Text `synthetic note`
+   and Boolean `true` in the parameter dialog. Integer text stays exact.
+4. Inspect the SQL, ordered typed parameters and warnings in **Review this
+   operation**. Approve once with the policy's confirmation/passphrase. The review
+   closes after approval. Running controls and background metadata pause; prior
+   query results remain labeled as belonging to the earlier execution.
+5. Inspect **Snowflake INSERT outcome**. Require acknowledged success and an
+   exact affected-row string of `1`; unavailable counts must say unavailable,
+   never zero. This is a statement receipt, not proof the row is committed.
+   Exercise equivalent reviewed UPDATE and DELETE plans only in the separately
+   approved synthetic sequence, checking exact counts and expected values.
+6. Use **Rollback transaction** and independently verify the inserted row is
+   absent. In a fresh separately approved transaction, repeat the insert and
+   deliberately **Commit transaction**, then verify persistence from a distinct
+   observer session. Never infer either effect from the button acknowledgement.
+7. Inspect **History**, quit normally and reopen an isolated evaluation profile.
+   Require the exact outcome/count receipt with no automatic connection or SQL
+   replay. Bound values are not stored in DML history. SQL text is retained only
+   when profile query-text storage is enabled; do not put secrets in SQL literals.
+
+Every new write requires a fresh review. Supported syntax is deliberately bounded:
+explicit INSERT columns with VALUES; plain UPDATE assignments and optional WHERE;
+plain DELETE and optional WHERE; scalar binds/literals and admitted expressions.
+MERGE, INSERT SELECT, functions/subqueries, joins, batches, bulk writes and DDL
+remain gaps. The review targets the displayed SQL name. It cannot pin an immutable
+Snowflake object: concurrent DDL, temporary-name shadows, defaults, policies and
+dependencies can change resolution or indirect effects. Grid editing is still
+disabled. These limits do not reduce the required DataGrip replacement scope.
+
+After a known result, explicitly **Refresh completion context** when ready to
+resume metadata; failed or incoherent refresh leaves the hold in place. If only
+rollback recovery remains, use **Rollback transaction** or disconnect. During a
+pending write, **Disconnect to stop write** ends local ownership but cannot prove
+server cancellation or rollback. An **unknown** outcome retires the session;
+inspect the remote state through an independently authorized route before
+reconnecting or preparing another write. No automatic retry occurs. A graceful
+close waits for retained outcome history and stays open if that drain times out;
+force-killing the process cannot provide the same guarantee.
+
+Record the app/package hash, approvals, exact SQL budget including all observers,
+statement IDs privately, before/after row counts, transaction effects, error paths
+and restart outcome in the [verification ledger](replacement-verification.md).
+The [DDL proposal](snowflake-sdk-ddl-design.md) describes the next required schema
+workflow; it is not currently available.
 
 ## Build and run
 
@@ -99,11 +166,12 @@ scalars. Logout, child reaping and private authentication-state cleanup passed.
 The earlier failed attempt is retained in the ledger. Both approvals are consumed
 and authorize no additional application workflows. See the
 [account pass and limits](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
-The current `929ae06` SDK bundle passes fresh normal packaging, ad-hoc signature,
-resources and guarded SDK startup without authentication/SQL; three current hidden
-native runs pass 20 check categories with ten cleanup cycles. Its local browser
-and helper evidence does not qualify actual account transaction effects. Normal application
-account acceptance remains open; a helper pass does not substitute for it.
+The current `fb091db` SDK bundle (224.33 MiB) passes normal packaging, strict
+ad-hoc signature, resources and guarded SDK startup without authentication/SQL.
+Three hidden native runs pass 20 check categories with ten cleanup cycles each.
+The reviewed DML workflow also passes local browser/helper and shutdown checks;
+these do not qualify actual Snowflake write or transaction effects. Normal
+application account acceptance remains open. The app is not installed or released.
 
 Create a Snowflake profile with **External browser SSO**, the existing account
 hostname and approved role/warehouse/database/schema. Existing OAuth profiles
