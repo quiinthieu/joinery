@@ -85,8 +85,10 @@ impl Postgres {
         });
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut roots = rustls::RootCertStore::empty();
-        for cert in rustls_native_certs::load_native_certs().certs {
-            let _ = roots.add(cert);
+        if profile.tls_mode == TlsMode::VerifyFull {
+            for cert in rustls_native_certs::load_native_certs().certs {
+                let _ = roots.add(cert);
+            }
         }
         if let Some(path) = &profile.ca_cert_path {
             let bytes = crate::files::read_bounded(path, 1024 * 1024)?;

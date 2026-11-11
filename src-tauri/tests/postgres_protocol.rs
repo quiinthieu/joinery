@@ -5,7 +5,10 @@ mod startup_cleanup {
     use joinery_core::{
         domain::*, drivers::postgres::Postgres, execution::Studio, secrets::MemorySecrets,
     };
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -13,6 +16,7 @@ mod startup_cleanup {
     };
 
     const BOUND: Duration = Duration::from_secs(3);
+    type StartupStages = Arc<Mutex<Vec<(&'static str, u128)>>>;
 
     fn profile(port: u16) -> ConnectionProfile {
         ConnectionProfile {
@@ -42,6 +46,8 @@ mod startup_cleanup {
     }
     struct Peer {
         port: u16,
+        started: Instant,
+        stages: StartupStages,
         identity: oneshot::Receiver<()>,
         eof: oneshot::Receiver<bool>,
         task: tokio::task::JoinHandle<()>,
@@ -53,24 +59,43 @@ mod startup_cleanup {
     }
     impl Peer {
         async fn new() -> Self {
+            let started = Instant::now();
+            let stages = Arc::new(Mutex::new(Vec::new()));
+            let observed_stages = stages.clone();
+            let mark = move |stage: &'static str| {
+                observed_stages
+                    .lock()
+                    .unwrap()
+                    .push((stage, started.elapsed().as_micros()));
+            };
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            mark("listener-ready");
             let port = listener.local_addr().unwrap().port();
             let (identity_tx, identity) = oneshot::channel();
             let (eof_tx, eof) = oneshot::channel();
             let task = tokio::spawn(async move {
+                mark("accept-wait");
                 let (mut stream, _) = listener.accept().await.unwrap();
+                mark("accepted");
                 let size = stream.read_u32().await.unwrap();
                 assert!((8..4096).contains(&size));
                 let mut startup = vec![0; size as usize - 4];
                 stream.read_exact(&mut startup).await.unwrap();
                 assert_eq!(&startup[..4], &196608_u32.to_be_bytes());
+                mark("startup-read");
                 let mut ready = Vec::new();
                 message(b'R', &0_i32.to_be_bytes(), &mut ready);
                 message(b'Z', b"I", &mut ready);
                 stream.write_all(&ready).await.unwrap();
+                mark("authentication-ready-written");
                 let mut identity_query = false;
+                let mut first_message = true;
                 loop {
                     let tag = stream.read_u8().await.unwrap();
+                    if first_message {
+                        mark("first-frontend-message");
+                        first_message = false;
+                    }
                     let size = stream.read_u32().await.unwrap();
                     assert!((4..4096).contains(&size));
                     let mut body = vec![0; size as usize - 4];
@@ -81,6 +106,7 @@ mod startup_cleanup {
                             .any(|window| window == b"SELECT version()");
                     }
                     if tag == b'S' {
+                        mark("identity-sync-received");
                         break;
                     }
                 }
@@ -110,16 +136,22 @@ mod startup_cleanup {
             });
             Self {
                 port,
+                started,
+                stages,
                 identity,
                 eof,
                 task,
             }
         }
         async fn dispatched(&mut self) {
-            tokio::time::timeout(BOUND, &mut self.identity)
-                .await
-                .unwrap()
-                .unwrap();
+            match tokio::time::timeout(BOUND, &mut self.identity).await {
+                Ok(Ok(())) => {}
+                outcome => panic!(
+                    "identity dispatch failed after {}us: {outcome:?}; peer stages={:?}",
+                    self.started.elapsed().as_micros(),
+                    self.stages.lock().unwrap()
+                ),
+            }
         }
         async fn assert_closed(&mut self) {
             assert!(
@@ -175,6 +207,37 @@ mod startup_cleanup {
         setup.abort();
         assert!(setup.await.err().unwrap().is_cancelled());
         peer.assert_closed().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_ca_validation_rejects_empty_and_invalid_pem_in_both_tls_modes() {
+        let directory = tempfile::tempdir().unwrap();
+        for mode in [TlsMode::Disable, TlsMode::VerifyFull] {
+            for (name, bytes, expected) in [
+                (
+                    "empty.pem",
+                    "",
+                    "The selected file contains no PEM certificates",
+                ),
+                (
+                    "invalid.pem",
+                    "-----BEGIN CERTIFICATE-----\n!\n-----END CERTIFICATE-----\n",
+                    "Invalid CA certificate",
+                ),
+            ] {
+                let path = directory.path().join(name);
+                std::fs::write(&path, bytes).unwrap();
+                let mut profile = profile(0);
+                profile.tls_mode = mode;
+                profile.ca_cert_path = Some(path.to_str().unwrap().into());
+                let error = match Postgres::open(&profile, None, "invalid-ca", None).await {
+                    Ok(_) => panic!("{mode:?}/{name} unexpectedly accepted an invalid CA file"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.code, ErrorCode::InvalidInput, "{mode:?}/{name}");
+                assert_eq!(error.message, expected, "{mode:?}/{name}");
+            }
+        }
     }
 }
 
