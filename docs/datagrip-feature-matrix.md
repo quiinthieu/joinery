@@ -24,7 +24,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `f5d02e4`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `e218aef`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -57,7 +57,9 @@ See the [contract](snowflake-sdk-browsing-design.md) and
 697 frontend / 471 standard Rust tests, 129 fixture ignores and strict checks.
 The changed browser flow and hidden native IPC/cleanup check pass. Strict Rust
 checks pass after the ACL fix. Independent review of both corrections has no
-material finding. The ledger records source boundaries and the failed runs.
+material finding. The normal local SDK-bearing package also passes on clean
+`e218aef`; it is uninstalled and actual account behavior remains unqualified.
+The ledger records source boundaries and the failed runs.
 These changes do not enable grid writes/import or general SQL execution. All
 required areas above and the additional applicability inventory remain open.
 

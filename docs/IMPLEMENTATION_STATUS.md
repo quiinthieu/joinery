@@ -21,6 +21,11 @@ checks and strict Clippy. Changed browser workflow and the hidden native IPC/
 cleanup check pass after the recorded initialization and ACL fixes. Account
 GET_DDL and normal packaged workflow acceptance remain open.
 Independent bounded review has no unresolved material finding.
+The normal SDK-bearing ARM64 app builds from clean `e218aef`; strict ad-hoc
+signature, runtime resources and guarded helper startup pass with zero account
+requests. Final verified regular-file bytes total 229.16 MiB, version 0.1.0.
+It remains local and uninstalled; Developer ID/notarization and normal app SSO
+are unqualified. See the ledger for source/hash and failed-run evidence.
 
 The separate qualification preview uses frozen source `103cb45`, private copied
 artifacts and a deliberately expired window. Its offline emit/verify pass does

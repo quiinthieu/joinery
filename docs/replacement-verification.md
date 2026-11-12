@@ -45,8 +45,10 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features -
 cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests:: -- --test-threads=3
 pnpm validate
 pnpm exec playwright test tests/e2e/snowflake-sdk-browsing.spec.ts
+pnpm check:rust
 pnpm desktop:smoke:build
 python3 scripts/native-smoke.py --runs 1
+pnpm desktop:snowflake:bundle:mac
 ```
 
 | Check                            | Terminal result and evidence                                                                                                                                                                                                                                                                                 |
@@ -137,9 +139,24 @@ recorded as dirty source at documentation HEAD `0c8433e`; all **21** final sourc
 hashes match the frozen manifest. Copied `native-final-build.json` and
 `native-final-runs.json` retain that provenance. Generated ACL verification finds
 only `define_relation` under `allow-define-relation` (`native-acl-generated.json`).
-No generated permission file is committed. The normal SDK-bearing application
-bundle still needs its own clean-source build; successful account GET_DDL,
-packaged SSO and owner acceptance remain open.
+No generated permission file is committed. Successful account GET_DDL, packaged
+SSO and owner acceptance remain open.
+
+The normal SDK-bearing macOS ARM64 package then passes
+`pnpm desktop:snowflake:bundle:mac` from clean feature commit **`e218aef`**
+(`normal-bundle.log`, exit **0**, optimized compilation 4m45s). It is a local
+version/build **0.1.0** at
+`src-tauri/target/release/bundle/macos/Joinery.app`. Final verified regular-file
+bytes total **240,288,137** (229.16 MiB); Tauri reports 224.96 MiB
+before the final ad-hoc signing step. The packaged binary SHA-256 is
+`1bf65d800fb4ad6c2447d07e3379ca1a6903d9540246dc571d8df9b089161c06`.
+Strict ad-hoc signature validation, **15,109** runtime entries/**zero** symlinks,
+and network-guarded bundled SDK **3.4.1** startup pass with **zero authentication
+and zero SQL requests**. All 21 frozen source hashes still match and the worktree
+is clean after the build. `normal-bundle-build-source.json` and
+`normal-bundle-artifacts.json` retain source/tree, hashes, version and check results.
+The normal application is not installed or opened for SSO. Developer ID signing,
+notarization, normal UI/account/restart behavior and owner acceptance remain open.
 
 The separate [expired offline preview](snowflake-existing-schema-qualification.md)
 uses frozen source `103cb45`, not this new feature. Its emit/verify exit 0 grants

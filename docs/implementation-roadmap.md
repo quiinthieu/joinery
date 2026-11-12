@@ -12,9 +12,12 @@ and [ledger](replacement-verification.md). Independent bounded review is clean.
 
 The changed browser workflow passes after the recorded initialization fix.
 The corrected hidden native IPC/cleanup check passes; strict Rust checks pass
-after the two ACL enrollment entries. Next, build the normal local SDK package
-from committed source and retain its evidence. Account definition privileges,
-secure views and supported Snowflake object families still need explicitly scoped acceptance. Continue broader metadata,
+after the two ACL enrollment entries. The normal local SDK-bearing ARM64 package
+passes on clean `e218aef`, including resources, strict ad-hoc signature and guarded
+helper startup with zero account requests. It remains uninstalled.
+Next, prepare a fresh reviewed qualification window and exact account/billing
+scope. Account definition privileges, secure views and supported Snowflake object
+families still need explicitly scoped acceptance. Continue broader metadata,
 object search, grid editing/import, multi-statement SQL, performance and million-row
 workflows; displaying a definition closes none of those required gates.
 
