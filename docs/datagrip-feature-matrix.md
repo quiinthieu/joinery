@@ -16,7 +16,7 @@ new source or actual Snowflake behavior.
 | Connections, authentication, TLS and tunnels | SDK external-browser profiles, retained helper lifecycle and verified runtime; bounded helper-only account SSO/read checks recorded in the [ledger](replacement-verification.md) | Normal packaged SSO, connection failure/reconnect and applicable TLS/tunnel workflows need account/native acceptance                                        |
 | Navigation, metadata and object search       | Same-session completion, browsing, columns, generated DDL, schema selection, declared PK/UQ/FK inventory, [ordered key mappings and retained reference selection](snowflake-sdk-key-mappings-design.md), [CHECK clauses](snowflake-sdk-check-constraints-design.md); local validation/browser/native/package checks pass | Cross-database/inbound/related-row navigation, dynamic-table mappings, complete object kinds, dependencies and search remain incomplete; actual CHECK/mapping shapes, privileges and refresh need account acceptance |
 | SQL editing and authoring                    | Bounded completion, formatting, parameters, diagnostics, navigation and refactoring slices; detailed source evidence below                                                       | Complete Snowflake semantics and the applicable DataGrip authoring workflow remain incomplete; daily native acceptance is open                              |
-| Query execution                              | Parameterized read-only scripts, generated actions and locally verified [reviewed retained mixed-SQL console](snowflake-sdk-console-workflow.md) with synthetic SDKs                                                                                                                                                     | Durable negative recovery is locally verified; long-running query behavior, complete mixed workflow verification and actual cancellation/interruption/account outcomes remain incomplete          |
+| Query execution                              | Parameterized read-only scripts, generated actions and locally verified [reviewed retained mixed-SQL console](snowflake-sdk-console-workflow.md) with synthetic SDKs                                                                                                                                                     | Review-bound configurable limits are locally verified; finite 24-hour ceiling, actual long queries, complete mixed workflows and cancellation/interruption/account outcomes remain incomplete          |
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
 | Safe data editing and import                 | Reviewed bounded SQL writes are locally integrated with one-use authority and retained original outcomes                                                                         | Snowflake grid editing and CSV import remain disabled; safe identity/concurrency handling and account data effects need implementation and proof            |
 | Transactions                                 | Separately reviewed BEGIN/COMMIT/ROLLBACK and rollback recovery; [transaction contract](snowflake-sdk-transactions-design.md)                                                    | Actual commit/rollback data effects, mode changes, console isolation and DML/DDL implicit-commit behavior remain unqualified                                |
@@ -62,6 +62,15 @@ and [ledger](replacement-verification.md).
 
 ## Required reviewed Snowflake consoles and mixed scripts
 
+The [configurable query-limit increment](snowflake-console-query-limits.md) is
+locally verified. It adds persisted per-profile limits bound
+into native review, rather than silently extending a running session. The
+[ledger](replacement-verification.md) records the reproduced fixed-limit defect,
+corrected SDK transport tests and browser settings/review/results/full restart.
+Normal packaging is pending. Real long-running Snowflake
+queries, the finite 24-hour ceiling and account cancellation remain gates even
+after local tests pass.
+
 The [design](snowflake-sdk-console-scripts-design.md) is prepared and independently
 reviewed. [Compiler and private transport foundations](snowflake-sdk-console-transport.md)
 and the [retained adapter/local journal](snowflake-sdk-console-journal.md) are
@@ -79,7 +88,7 @@ metadata, editing/import, authoring, performance and native usability in scope.
 
 | Application capability | Current evidence | Required gate |
 | --- | --- | --- |
-| Reviewed retained owner/UI | Durable refusal recovery: 205 focused frontend, 9 IPC and 71 focused native cases pass (one internal child ignored by default); full validation passes 893 frontend / 559 standard Rust cases (137 default ignores). Actual browser-to-Rust/helper/SQLite/Arrow recovery and bounded receipt layout pass with a synthetic SDK | Normal bundle checks pass; practical retention, long-running queries and actual Snowflake/native/owner acceptance |
+| Reviewed retained owner/UI | Current query-limit increment: 121 focused frontend, 80 focused native (one internal child ignored), 194 affected SDK cases; full validation 921 frontend / 561 standard Rust (137 default ignores). Later harness-only corrections pass three regressions/strict checks; browser settings/review/results/full restart passes with synthetic SDK | Current normal packaging pending; practical retention, finite query limits and actual Snowflake/native/owner acceptance |
 
 The following records the preceding private-foundation increment. Its last
 column identifies work outstanding at that source; the current owner/UI status

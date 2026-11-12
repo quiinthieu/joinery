@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable, PassThrough } from "node:stream";
-import { Helper } from "../src/helper.mjs";
+import { Helper, connectionOptions } from "../src/helper.mjs";
 import { Decoder, encode, FRAME_BYTES } from "../src/framing.mjs";
 const generation = "b512e129-c689-48bd-b5c2-848438b1231a";
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -1262,4 +1262,49 @@ test("cancel reentry cannot erase an already classified definitive boundary fail
   assert.equal(s.events.filter((e) => e.id === id && e.type === "terminal").length, 1);
   assert.equal(s.retired(), 1);
   assert.equal(JSON.stringify(s.events).includes("PRIVATE_DATABASE_ERROR"), false);
+});
+
+test("console timeout connect policy is closed, bounded and preserves ordinary SDK options", async () => {
+  const ordinary = connectionOptions(profile, "/owned/nonexistent");
+  assert.equal(Object.hasOwn(ordinary, "timeout"), false);
+  assert.equal(Object.hasOwn(ordinary, "reviewedConsoleTimeoutSeconds"), false);
+  for (const [seconds, milliseconds] of [
+    [1, 90000],
+    [65, 90000],
+    [120, 125000],
+    [86400, 86405000],
+  ]) {
+    const s = setup();
+    const id = s.send("connect", { ...profile, reviewedConsoleTimeoutSeconds: seconds });
+    await tick();
+    assert.equal(s.terminal(id)?.ok, true);
+    assert.deepEqual(s.options(), { ...ordinary, timeout: milliseconds });
+    assert.equal(Object.hasOwn(s.options(), "reviewedConsoleTimeoutSeconds"), false);
+  }
+  for (const value of [null, 0, -1, 1.5, 86401, 4294967296, "120", {}, [], true]) {
+    const s = setup();
+    const id = s.send("connect", { ...profile, reviewedConsoleTimeoutSeconds: value });
+    await tick();
+    assert.equal(s.terminal(id)?.error.code, "invalidInput");
+    assert.equal(s.options(), undefined);
+    assert.throws(
+      () =>
+        connectionOptions(
+          { ...profile, reviewedConsoleTimeoutSeconds: value },
+          "/owned/nonexistent",
+        ),
+      RangeError,
+    );
+  }
+  for (const extra of [
+    { timeout: 86405000 },
+    { requestConfig: { timeout: 86405000 } },
+    { parameters: { STATEMENT_TIMEOUT_IN_SECONDS: 86400 } },
+  ]) {
+    const s = setup();
+    const id = s.send("connect", { ...profile, ...extra });
+    await tick();
+    assert.equal(s.terminal(id)?.error.code, "invalidInput");
+    assert.equal(s.options(), undefined);
+  }
 });

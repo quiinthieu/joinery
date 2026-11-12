@@ -68,6 +68,7 @@ pub(crate) struct ReviewedConsole {
     driver: Arc<SnowflakeExternal>,
     nonce: String,
     context: Mutex<Option<ReviewedContext>>,
+    timeout_seconds: u32,
 }
 
 #[allow(
@@ -136,6 +137,12 @@ impl SnowflakeExternal {
                 "A reviewed Snowflake console requires an explicitly enabled writable profile",
             ));
         }
+        let timeout_seconds = self
+            .profile
+            .snowflake
+            .as_ref()
+            .ok_or_else(closed_error)?
+            .effective_console_timeout_seconds()?;
         self.invalidate_relation_catalog();
         self.invalidate_session_options();
         self.revoke_transaction_grant();
@@ -145,6 +152,7 @@ impl SnowflakeExternal {
             driver: self.clone(),
             nonce,
             context: Mutex::new(None),
+            timeout_seconds,
         })
     }
 }
@@ -154,6 +162,10 @@ impl SnowflakeExternal {
     reason = "Private foundation; the retained execution owner is not wired yet"
 )]
 impl ReviewedConsole {
+    pub(crate) fn timeout_seconds(&self) -> u32 {
+        self.timeout_seconds
+    }
+
     fn check(&self) -> AppResult<()> {
         if self.driver.is_closed() {
             return Err(closed_error());
@@ -333,6 +345,7 @@ impl ReviewedConsoleRun<'_> {
         }
         let driver = self.console.driver.clone();
         let mut dispatched = false;
+        let mut admitted_at = None;
         let admitted = admission.admit(&mut || {
             if std::mem::replace(&mut dispatched, true) {
                 return Err(AppError::new(ErrorCode::PolicyBlocked, "Console dispatch was already admitted"));
@@ -345,12 +358,13 @@ impl ReviewedConsoleRun<'_> {
             } else if driver.is_closed() || mode.as_deref() != Some(self.console.nonce.as_str()) {
                 Err(closed_error())
             } else {
+                let began = tokio::time::Instant::now();
                 driver.process.request("reviewed-console", "reviewedSql", json!({
                     "sql": wire.rewritten_sql, "binds": binds,
                     "expected": {"user": driver.identity["user"], "session": driver.identity["session"]},
                     "credits": 1, "maxRows": metadata::STANDARD_QUERY_MAX_ROWS,
                     "maxBytes": metadata::STANDARD_QUERY_MAX_BYTES,
-                }), Impact::Mutating).map_err(control_error)
+                }), Impact::Mutating).inspect(|_| { admitted_at = Some(began); }).map_err(control_error)
             }
         });
         let mut operation = match admitted {
@@ -379,7 +393,24 @@ impl ReviewedConsoleRun<'_> {
         let mut delivery_error = None;
         let mut truncated = false;
         let mut cancelled = false;
-        let deadline = tokio::time::sleep(Duration::from_secs(65));
+        let deadline_at = admitted_at.expect("successful synchronous admission")
+            + Duration::from_secs(u64::from(self.console.timeout_seconds));
+        // Recording/control/terminal ownership is retained independently. Recheck
+        // the absolute admission deadline after those awaits before publication.
+        let expired = |error: &mut Option<AppError>| {
+            if tokio::time::Instant::now() < deadline_at {
+                return false;
+            }
+            error.get_or_insert_with(|| {
+                AppError::new(
+                    ErrorCode::ConnectionClosed,
+                    "Reviewed console deadline expired",
+                )
+            });
+            driver.start_shutdown();
+            true
+        };
+        let deadline = tokio::time::sleep_until(deadline_at);
         tokio::pin!(deadline);
         loop {
             // ACK is sticky in the supervisor. Check again when columns become
@@ -388,11 +419,17 @@ impl ReviewedConsoleRun<'_> {
             recording
                 .observe(operation.statement_acknowledged(), recorder)
                 .await;
+            if expired(&mut delivery_error) {
+                break;
+            }
             let available_columns = operation.columns.borrow().clone();
             if !described && available_columns.is_some() {
                 recording
                     .observe(operation.statement_acknowledged(), recorder)
                     .await;
+                if expired(&mut delivery_error) {
+                    break;
+                }
                 if !recording.attempted {
                     delivery_error.get_or_insert_with(protocol_error);
                     driver.start_shutdown();
@@ -405,6 +442,9 @@ impl ReviewedConsoleRun<'_> {
                     delivery_error.get_or_insert(error);
                     driver.start_shutdown();
                 }
+            }
+            if expired(&mut delivery_error) {
+                break;
             }
             if !described
                 && recording.recorded
@@ -422,6 +462,9 @@ impl ReviewedConsoleRun<'_> {
                     }
                 }
             }
+            if expired(&mut delivery_error) {
+                break;
+            }
             tokio::select! {
                 biased;
                 _ = self.cancellation.cancelled(), if !cancelled => {
@@ -433,12 +476,12 @@ impl ReviewedConsoleRun<'_> {
                     }
                 }
                 _ = &mut deadline => {
-                    delivery_error.get_or_insert_with(|| AppError::new(ErrorCode::ConnectionClosed, "Reviewed console deadline expired"));
-                    driver.start_shutdown();
+                    expired(&mut delivery_error);
                     break;
                 }
                 changed = operation.columns.changed(), if !described && columns_open => { columns_open = changed.is_ok(); }
                 batch = operation.rows.recv() => {
+                    if expired(&mut delivery_error) { break; }
                     let Some(mut batch) = batch else { break; };
                     let rows = std::mem::take(&mut batch.rows);
                     drop(batch);
@@ -449,13 +492,14 @@ impl ReviewedConsoleRun<'_> {
                         let count = rows.len() as u64;
                         match sink.rows(rows) {
                             Ok(true) => retained_rows = retained_rows.saturating_add(count),
-                            Ok(false) => { truncated = true; retaining = false; sink.limit("Result retention limit reached"); },
+                            Ok(false) => { truncated = true; retaining = false; if !expired(&mut delivery_error) { sink.limit("Result retention limit reached"); } },
                             Err(error) => { delivery_error = Some(error); retaining = false; },
                         }
                         if !retaining && let Err(error) = driver.discard(&token, &mut operation).await {
                             delivery_error.get_or_insert(error); driver.start_shutdown();
                         }
                     }
+                    if expired(&mut delivery_error) { break; }
                     if retaining && operation.report().is_none() {
                         match driver.process.credit(&token, 1) {
                             Ok(mut credit) => {
@@ -479,6 +523,7 @@ impl ReviewedConsoleRun<'_> {
         recording
             .observe(report.statement_acknowledged.clone(), recorder)
             .await;
+        expired(&mut delivery_error);
         drop(active);
         self.in_flight = false;
         if let Some(ack) = &report.statement_acknowledged {
@@ -504,15 +549,19 @@ impl ReviewedConsoleRun<'_> {
                 == Some(true)
             {
                 truncated = true;
-                sink.limit("Snowflake helper result retention limit reached");
+                if !expired(&mut delivery_error) {
+                    sink.limit("Snowflake helper result retention limit reached");
+                }
             }
-            if delivery_error.is_none()
+            if !expired(&mut delivery_error)
+                && delivery_error.is_none()
                 && !cancelled
                 && let Err(error) = sink.complete(retained_rows)
             {
                 delivery_error = Some(error);
             }
         }
+        expired(&mut delivery_error);
         cancelled |= self.cancellation.is_cancelled();
         self.next += 1;
         if !report.ok

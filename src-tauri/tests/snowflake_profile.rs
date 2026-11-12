@@ -24,6 +24,7 @@ fn profile() -> ConnectionProfile {
             reviewed_dml: false,
             reviewed_ddl: false,
             reviewed_console: false,
+            reviewed_console_timeout_seconds: None,
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),
             schema: "PUBLIC".into(),
@@ -544,4 +545,124 @@ fn reviewed_console_consent_is_independent_persisted_and_sdk_only() {
     assert!(config.reviewed_console);
     assert!(!config.reviewed_dml);
     assert!(!config.reviewed_ddl);
+}
+
+#[test]
+fn reviewed_console_timeout_strict_values_legacy_default_and_native_validation() {
+    let encoded = serde_json::to_value(profile()).unwrap();
+    let legacy: ConnectionProfile = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(
+        legacy
+            .snowflake
+            .unwrap()
+            .effective_console_timeout_seconds()
+            .unwrap(),
+        65
+    );
+    for value in [
+        serde_json::json!(null),
+        serde_json::json!(0),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(86401),
+        serde_json::json!(4294967296u64),
+        serde_json::json!("120"),
+        serde_json::json!({}),
+        serde_json::json!(true),
+    ] {
+        let mut invalid = encoded.clone();
+        invalid["snowflake"]["reviewedConsoleTimeoutSeconds"] = value;
+        assert!(serde_json::from_value::<ConnectionProfile>(invalid).is_err());
+    }
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    for seconds in [0, 86401, u32::MAX] {
+        let mut invalid = profile();
+        invalid
+            .snowflake
+            .as_mut()
+            .unwrap()
+            .reviewed_console_timeout_seconds = Some(seconds);
+        assert_eq!(
+            studio.save_profile(invalid, None).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+    for seconds in [1, 65, 120, 86400] {
+        let mut valid = encoded.clone();
+        valid["snowflake"]["reviewedConsoleTimeoutSeconds"] = serde_json::json!(seconds);
+        let valid: ConnectionProfile = serde_json::from_value(valid).unwrap();
+        assert_eq!(
+            valid
+                .snowflake
+                .unwrap()
+                .effective_console_timeout_seconds()
+                .unwrap(),
+            seconds
+        );
+    }
+}
+
+#[test]
+fn reviewed_console_timeout_persists_reload_backup_and_rejects_malformed_storage() {
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let mut configured = profile();
+    configured.environment = Environment::Local;
+    configured.group_id = "local".into();
+    configured.safe_mode = SafeMode::Confirm;
+    let config = configured.snowflake.as_mut().unwrap();
+    config.authentication = SnowflakeAuthentication::ExternalBrowser;
+    config.reviewed_console = true;
+    config.reviewed_console_timeout_seconds = Some(86400);
+    let saved = studio.save_profile(configured, None).unwrap();
+    let backup = studio.create_metadata_backup().unwrap();
+    drop(studio);
+    let reopened = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let mut restored = reopened
+        .bootstrap()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|p| p.id == saved.id)
+        .unwrap();
+    assert_eq!(
+        restored
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .reviewed_console_timeout_seconds,
+        Some(86400)
+    );
+    restored
+        .snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(120);
+    reopened.save_profile(restored, None).unwrap();
+    reopened
+        .restore_metadata_backup(&backup.id, &backup.digest, "RESTORE", None)
+        .unwrap();
+    assert_eq!(
+        reopened
+            .bootstrap()
+            .unwrap()
+            .profiles
+            .into_iter()
+            .find(|p| p.id == saved.id)
+            .unwrap()
+            .snowflake
+            .unwrap()
+            .reviewed_console_timeout_seconds,
+        Some(86400)
+    );
+    let mut malformed = serde_json::to_value(saved.clone()).unwrap();
+    malformed["snowflake"]["reviewedConsoleTimeoutSeconds"] = serde_json::Value::Null;
+    let db = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    db.execute(
+        "UPDATE profiles SET json=?1 WHERE id=?2",
+        rusqlite::params![malformed.to_string(), saved.id],
+    )
+    .unwrap();
+    assert!(reopened.bootstrap().is_err());
 }

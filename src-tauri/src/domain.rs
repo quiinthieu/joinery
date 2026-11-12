@@ -129,9 +129,39 @@ pub struct SnowflakeConfig {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub reviewed_console: bool,
+    /// Per-unit execution/result-delivery budget; absent legacy profiles retain 65 seconds.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_console_timeout"
+    )]
+    #[ts(optional)]
+    pub reviewed_console_timeout_seconds: Option<u32>,
     pub role: String,
     pub warehouse: String,
     pub schema: String,
+}
+
+impl SnowflakeConfig {
+    pub fn effective_console_timeout_seconds(&self) -> AppResult<u32> {
+        let seconds = self.reviewed_console_timeout_seconds.unwrap_or(65);
+        if !(1..=86_400).contains(&seconds) {
+            return Err(AppError::invalid(
+                "Reviewed console timeout must be between 1 and 86400 seconds",
+            ));
+        }
+        Ok(seconds)
+    }
+}
+
+fn deserialize_console_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    let seconds = u32::deserialize(deserializer)?;
+    if !(1..=86_400).contains(&seconds) {
+        return Err(serde::de::Error::custom("Invalid reviewed console timeout"));
+    }
+    Ok(Some(seconds))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

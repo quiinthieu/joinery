@@ -1003,8 +1003,11 @@ export function Workbench({
           Reviewed Snowflake console · One retained physical session across runs. Write explicit
           BEGIN, COMMIT or ROLLBACK in reviewed SQL. Automatic metadata and context probes are
           disabled. For metadata, explicitly open a separate profile with reviewed console off; it
-          cannot share temporary objects or transactions. Each unit has a fixed 65-second delivery
-          deadline; long-running query parity is not available.
+          cannot share temporary objects or transactions. Each review shows the execution and
+          result-delivery limit per unit; profile changes apply to fresh sessions. Expiration closes
+          the console connection. Safe outcome recording and settlement may take longer; closing
+          does not prove server cancellation or transaction effects. SQL is never replayed
+          automatically.
         </div>
       )}
       {!consoleMode &&

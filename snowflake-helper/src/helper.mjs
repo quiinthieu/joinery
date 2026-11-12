@@ -2,8 +2,24 @@ import { deriveSetupLedger } from "./disposable-setup-ledger.mjs";
 import { SQL_CONTRACT } from "./sql-contract.mjs";
 
 export function connectionOptions(profile, clientConfigFile) {
+  const { reviewedConsoleTimeoutSeconds, ...identity } = profile;
+  if (
+    reviewedConsoleTimeoutSeconds !== undefined &&
+    (!Number.isInteger(reviewedConsoleTimeoutSeconds) ||
+      reviewedConsoleTimeoutSeconds < 1 ||
+      reviewedConsoleTimeoutSeconds > 86400)
+  )
+    throw new RangeError("Invalid reviewed console timeout");
   return {
-    ...profile,
+    ...identity,
+    // Connection-wide HTTP budget, not a server statement timeout. Keep the
+    // existing SDK 90s floor for authentication/bootstrap/control and allow the
+    // native unit deadline to expire first. Never accept arbitrary SDK options.
+    ...(reviewedConsoleTimeoutSeconds === undefined
+      ? {}
+      : {
+          timeout: Math.max(90000, reviewedConsoleTimeoutSeconds * 1000 + 5000),
+        }),
     authenticator: "EXTERNALBROWSER",
     rowMode: "array",
     fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON"],
@@ -243,7 +259,18 @@ export class Helper {
     if (this.state !== "new") return this.finish(r, "invalidInput");
     const p = r.payload;
     if (
-      !own(p, ["account", "host", "username", "role", "warehouse", "database", "schema"]) ||
+      !own(p, [
+        "account",
+        "host",
+        "username",
+        "role",
+        "warehouse",
+        "database",
+        "schema",
+        "reviewedConsoleTimeoutSeconds",
+      ]) ||
+      (Object.hasOwn(p, "reviewedConsoleTimeoutSeconds") &&
+        !integer(p.reviewedConsoleTimeoutSeconds, 1, 86400)) ||
       !text(p.account) ||
       !/^[a-zA-Z0-9_.-]+$/.test(p.account) ||
       !text(p.host, 253) ||

@@ -95,6 +95,7 @@ impl Snowflake {
                 "Use uppercase unquoted Snowflake role, warehouse, database, and schema names",
             ));
         }
+        config.effective_console_timeout_seconds()?;
         let explicit_boundary_policy =
             config.authentication == SnowflakeAuthentication::ExternalBrowser;
         if config.reviewed_dml
@@ -939,6 +940,7 @@ mod tests {
                 reviewed_dml: false,
                 reviewed_ddl: false,
                 reviewed_console: false,
+                reviewed_console_timeout_seconds: None,
                 role: "READ_ONLY".into(),
                 warehouse: "COMPUTE".into(),
                 schema: "PUBLIC".into(),

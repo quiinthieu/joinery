@@ -73,6 +73,9 @@ export function validateConsolePlan(plan: SnowflakeConsolePlan, sessionId: strin
   if (
     plan.review.sessionId !== sessionId ||
     !/^[a-f0-9]{64}$/.test(plan.digest) ||
+    !Number.isInteger(plan.timeoutSeconds) ||
+    plan.timeoutSeconds < 1 ||
+    plan.timeoutSeconds > 86_400 ||
     (plan.mode !== "parsedStatements" && plan.mode !== "selectedUnit") ||
     plan.review.statements.length === 0 ||
     plan.review.statements.length > 100 ||

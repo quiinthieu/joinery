@@ -511,6 +511,7 @@ fn original_decision(
 
 #[cfg(unix)]
 fn writable(profile: &ConnectionProfile) -> AppResult<()> {
+    crate::drivers::snowflake::Snowflake::validate_profile(profile)?;
     if !snowflake_dml::sdk_profile(profile)
         || !profile
             .snowflake
@@ -582,6 +583,7 @@ fn review(
         )
         .map_err(|_| AppError::internal("Could not fingerprint reviewed bindings"))?,
     )));
+    plan.warnings.push(format!("Each unit has a {} second execution/result-delivery deadline from admission. Original acknowledgement recording and bounded control/terminal settlement can finish later. Expiry retires the session; it does not prove cancellation, rollback or committed effects.", profile.snowflake.as_ref().unwrap().effective_console_timeout_seconds()?));
     plan.warnings.push("These exact ordered units run in the retained Snowflake session. Statements can change session settings, invoke procedures or commit implicitly. An acknowledgement does not prove committed effects or complete results. No automatic retry, observer, COMMIT or ROLLBACK is issued.".into());
     Ok(plan)
 }
@@ -615,6 +617,14 @@ impl Studio {
         self.flush_pending_snowflake_receipts()?;
         self.flush_console_recordings()?;
         let profile = self.persistence.profile(&session.profile.id)?;
+        if serde_json::to_value(&profile).ok() != serde_json::to_value(&session.profile).ok() {
+            return Err(expired());
+        }
+        let timeout_seconds = profile
+            .snowflake
+            .as_ref()
+            .ok_or_else(expired)?
+            .effective_console_timeout_seconds()?;
         let compiled = compile(request)?;
         let plan = review(&session, &profile, &compiled)?;
         let validations = compiled
@@ -641,6 +651,7 @@ impl Studio {
                 request: request.clone(),
                 compiled,
                 mode: safety::effective_mode(&profile),
+                timeout_seconds,
             },
             bytes,
         )?;
@@ -655,6 +666,7 @@ impl Studio {
             review: plan,
             digest,
             mode: request.mode,
+            timeout_seconds,
             validations,
         })
     }
@@ -734,11 +746,22 @@ impl Studio {
                 request: original,
                 compiled,
                 mode,
+                timeout_seconds,
             } = &stored.action
             else {
                 return Err(AppError::invalid("This is not a reviewed console plan"));
             };
             let profile = self.persistence.profile(&session.profile.id)?;
+            if serde_json::to_value(&profile).ok() != serde_json::to_value(&session.profile).ok()
+                || *timeout_seconds
+                    != profile
+                        .snowflake
+                        .as_ref()
+                        .ok_or_else(expired)?
+                        .effective_console_timeout_seconds()?
+            {
+                return Err(expired());
+            }
             let canonical = compile(original)?;
             compiled.verify(
                 &canonical
@@ -1135,7 +1158,12 @@ impl Studio {
         let began = Instant::now();
         let _lane = session.lane.lock().await;
         *session.active_run.lock() = Some(run_id.clone());
-        let Action::SnowflakeConsole { compiled, .. } = &stored.action else {
+        let Action::SnowflakeConsole {
+            compiled,
+            timeout_seconds,
+            ..
+        } = &stored.action
+        else {
             unreachable!()
         };
         let mut console = owner.lock().await;
@@ -1159,7 +1187,11 @@ impl Studio {
             error = Some(e);
         }
         if delivery_open && error.is_none() {
-            match console.begin_run(compiled, token.clone()).await {
+            match if console.timeout_seconds() != *timeout_seconds {
+                Err(expired())
+            } else {
+                console.begin_run(compiled, token.clone()).await
+            } {
                 Err(e) => error = Some(e),
                 Ok(mut run) => {
                     while !run.is_terminal() {

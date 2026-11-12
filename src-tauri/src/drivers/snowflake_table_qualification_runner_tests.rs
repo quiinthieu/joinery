@@ -308,6 +308,7 @@ export default sdk;
                         reviewed_dml: true,
                         reviewed_ddl: true,
                         reviewed_console: false,
+                        reviewed_console_timeout_seconds: None,
                         role: "QUALIFICATION".into(),
                         warehouse: "FIXTURE_WH".into(),
                         schema: SCHEMA.into(),

@@ -85,6 +85,7 @@ cases.push(["fixture-boundary", "http"]);
 for (const transport of ["http", "tls", "proxy"])
   for (const scenario of [
     "reviewed-success",
+    "reviewed-timeout-policy",
     "reviewed-context-partial",
     "reviewed-ack-drain",
     "reviewed-file-veto",
@@ -248,6 +249,10 @@ for (const [scenario, transport] of cases) {
             assert.equal(result.vetoCases, 4);
             assert.equal(result.helperTerminals, 4);
           } else {
+            if (scenario === "reviewed-timeout-policy") {
+              assert.equal(result.queryTimeoutObservationLayer, "follow-redirects-request");
+              assert.deepEqual(result.observedQueryTimeouts, [125000]);
+            }
             assert.equal(result.queryPosts, 1);
             assert.equal(result.guardAdmitted, 1);
             assert.equal(result.singleStatementParameter, true);

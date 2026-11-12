@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { Database, Loader2, ShieldCheck } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
@@ -109,6 +109,10 @@ export function ConnectionDialog({
     [passphrase, setPassphrase] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
+  const [consoleTimeout, setConsoleTimeout] = useState(() =>
+    String(initialProfile?.snowflake?.reviewedConsoleTimeoutSeconds ?? 65),
+  );
+  const consoleTimeoutDescription = useId();
   const [sshPassword, setSshPassword] = useState(""),
     [keyPassphrase, setKeyPassphrase] = useState("");
   const trust = useSshTrust();
@@ -125,13 +129,35 @@ export function ConnectionDialog({
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
+    let submitted = draft;
+    if (
+      draft.engine === "snowflake" &&
+      draft.snowflake?.reviewedConsole &&
+      snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+      draft.safeMode !== "readOnly"
+    ) {
+      const seconds = Number(consoleTimeout);
+      if (
+        !/^\d+$/.test(consoleTimeout) ||
+        !Number.isInteger(seconds) ||
+        seconds < 1 ||
+        seconds > 86_400
+      ) {
+        setError("Console query limit must be a whole number from 1 to 86400 seconds.");
+        return;
+      }
+      submitted = {
+        ...draft,
+        snowflake: { ...draft.snowflake, reviewedConsoleTimeoutSeconds: seconds },
+      };
+    }
     const attempt = setup.begin();
     if (!attempt) return;
     setBusy(true);
     setError(null);
     try {
       const saved = await client.call<ConnectionProfile>("save_profile", {
-        profile: draft,
+        profile: submitted,
         passphrase: passphrase || null,
       });
       if (!attempt.active) return;
@@ -767,9 +793,35 @@ export function ConnectionDialog({
                   connection belongs permanently to the console: automatic probes and metadata
                   queries are disabled to preserve statement history. Use a separate profile with
                   this option off for metadata; it cannot share temporary objects or transactions.
-                  PUT/GET file transfer is denied. The current fixed 65-second per-unit delivery
-                  deadline does not support long-running query parity. Joinery never automatically
-                  retries, commits, rolls back or reconnects a console.
+                  PUT/GET file transfer is denied. Joinery never automatically retries, commits,
+                  rolls back or reconnects a console.
+                </span>
+              </label>
+            )}
+          {draft.engine === "snowflake" &&
+            draft.snowflake?.reviewedConsole &&
+            snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+            draft.safeMode !== "readOnly" && (
+              <label className="span-2">
+                Console query limit (seconds)
+                <input
+                  type="number"
+                  aria-label="Console query limit (seconds)"
+                  aria-describedby={consoleTimeoutDescription}
+                  min={1}
+                  max={86_400}
+                  step={1}
+                  required
+                  value={consoleTimeout}
+                  onChange={(event) => setConsoleTimeout(event.target.value)}
+                />
+                <span className="optional" id={consoleTimeoutDescription}>
+                  Choose 1–86400 seconds per unit for execution and result delivery, including
+                  draining rows. Save and connect applies this setting to a fresh session; each
+                  review shows its bound limit. Expiration closes the console connection. Safe
+                  outcome recording and settlement may take longer. Closing does not prove server
+                  cancellation, commit, rollback or other effects; SQL is never replayed
+                  automatically.
                 </span>
               </label>
             )}

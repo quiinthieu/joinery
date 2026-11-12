@@ -119,6 +119,7 @@ async fn console_harness(safe_mode: SafeMode, enabled: bool) -> Harness {
             })());
           }
           if (checks"#)
+        .replace("options.complete(denied", "if (options.parameters?.MULTI_STATEMENT_COUNT === 1 && settings.holdReviewedComplete) { writeFileSync(file('held-reviewed-complete'), ''); (async () => { while (!existsSync(file('release')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5)); if (!cancelled) options.complete(denied ? {sqlState:unsupportedContext ? '42883' : '42501'} : null,statement); })(); return; }\n        options.complete(denied")
         .replace("const denied = checks", "const denied = options.parameters?.MULTI_STATEMENT_COUNT === 1 && settings.rejectReviewed || checks")
         .replace("{ clientConfigFile:'/nonexistent/synthetic'", "{ isFileTransfer: () => false, clientConfigFile:'/nonexistent/synthetic'");
     assert!(fixture.contains("reviewed-specs") && fixture.contains("isFileTransfer"));
@@ -877,6 +878,296 @@ async fn console_ack_recording_failure_preserves_original_ack_without_publicatio
         &h.queries()[before..],
         &["INSERT INTO DB.PUBLIC.T VALUES (1)"]
     );
+    drop(run);
+    drop(console);
+    finish_console(h).await;
+}
+
+#[tokio::test]
+async fn console_configured_deadline_retires_held_original_and_never_dispatches_suffix() {
+    let mut h = console_harness(SafeMode::Confirm, true).await;
+    Arc::get_mut(&mut h.driver)
+        .unwrap()
+        .profile
+        .snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(1);
+    h.settings(json!({"holdReviewedDrain":true}));
+    let mut console = h.driver.claim_reviewed_console().await.unwrap();
+    let compiled = script("SELECT 1; COMMIT;");
+    let before = h.queries().len();
+    let mut run = console
+        .begin_run(&compiled, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut recorder = TestRecorder::default();
+    let mut sink = ConsoleSink::default();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        run.next(&mut sink, &mut recorder, &mut TestAdmission),
+    )
+    .await
+    .expect("configured one-second deadline did not settle within five seconds")
+    .unwrap()
+    .unwrap();
+    assert!(outcome.attempted && outcome.acknowledgement_recorded);
+    assert_eq!(
+        outcome.delivery_error.unwrap().code,
+        ErrorCode::ConnectionClosed
+    );
+    assert!(outcome.report.unwrap().statement_acknowledged.is_some());
+    assert!(h.driver.is_closed() && run.is_stopped());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(&h.queries()[before..], &["SELECT 1"]);
+    drop(run);
+    drop(console);
+    finish_console(h).await;
+}
+
+fn set_console_timeout(h: &mut Harness, seconds: u32) {
+    Arc::get_mut(&mut h.driver)
+        .unwrap()
+        .profile
+        .snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(seconds);
+}
+
+#[tokio::test]
+async fn console_configured_deadline_before_ack_keeps_unknown_original_and_untouched_suffix() {
+    let mut h = console_harness(SafeMode::Confirm, true).await;
+    set_console_timeout(&mut h, 1);
+    h.settings(json!({"holdReviewedComplete":true}));
+    let mut console = h.driver.claim_reviewed_console().await.unwrap();
+    let compiled = script("SELECT 1; COMMIT;");
+    let before = h.queries().len();
+    let mut run = console
+        .begin_run(&compiled, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut recorder = TestRecorder::default();
+    let mut sink = ConsoleSink::default();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        run.next(&mut sink, &mut recorder, &mut TestAdmission),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert!(outcome.attempted && !outcome.acknowledgement_recorded);
+    assert!(outcome.delivery_error.is_some());
+    let report = outcome.report.unwrap();
+    assert!(report.statement_acknowledged.is_none());
+    assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+    assert_eq!(sink.events.load(Ordering::SeqCst), 0);
+    assert_eq!(recorder.calls.load(Ordering::SeqCst), 0);
+    assert!(h.driver.is_closed() && run.is_stopped());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(&h.queries()[before..], &["SELECT 1"]);
+    drop(run);
+    drop(console);
+    finish_console(h).await;
+}
+
+#[tokio::test]
+async fn console_configured_deadline_after_slow_ack_recording_preserves_ack_without_publication() {
+    let mut h = console_harness(SafeMode::Confirm, true).await;
+    set_console_timeout(&mut h, 1);
+    let mut console = h.driver.claim_reviewed_console().await.unwrap();
+    let compiled = script("SELECT 1; COMMIT;");
+    let before = h.queries().len();
+    let mut run = console
+        .begin_run(&compiled, CancellationToken::new())
+        .await
+        .unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let mut recorder = TestRecorder {
+        entered: Some(entered_tx),
+        release: Some(release_rx),
+        ..Default::default()
+    };
+    let mut sink = ConsoleSink::default();
+    let outcome = {
+        let mut admission = TestAdmission;
+        let future = run.next(&mut sink, &mut recorder, &mut admission);
+        tokio::pin!(future);
+        tokio::select! {
+            result = &mut future => panic!("recording barrier unexpectedly settled: {}",result.is_ok()),
+            entered = tokio::time::timeout(Duration::from_secs(5),entered_rx) => entered.unwrap().unwrap(),
+        }
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), future)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    };
+    assert!(outcome.acknowledgement_recorded && outcome.recording_error.is_none());
+    assert!(outcome.report.unwrap().statement_acknowledged.is_some());
+    assert!(outcome.delivery_error.is_some());
+    assert_eq!(recorder.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(sink.events.load(Ordering::SeqCst), 0);
+    assert!(h.driver.is_closed() && run.is_stopped());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(&h.queries()[before..], &["SELECT 1"]);
+    drop(run);
+    drop(console);
+    finish_console(h).await;
+}
+
+#[tokio::test]
+async fn console_configured_long_deadline_completes_after_former_sixty_five_second_limit() {
+    let mut h = console_harness(SafeMode::Confirm, true).await;
+    set_console_timeout(&mut h, 120);
+    h.settings(json!({"holdReviewedComplete":true}));
+    let mut console = h.driver.claim_reviewed_console().await.unwrap();
+    assert_eq!(console.timeout_seconds(), 120);
+    let compiled = script("SELECT 1;");
+    let before = h.queries().len();
+    let mut run = console
+        .begin_run(&compiled, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut recorder = TestRecorder::default();
+    let mut sink = ConsoleSink::default();
+    let release = h.scripts.path().join("release");
+    let releaser = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(66)).await;
+        std::fs::write(release, "").unwrap();
+    });
+    let began = Instant::now();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(80),
+        run.next(&mut sink, &mut recorder, &mut TestAdmission),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    releaser.await.unwrap();
+    assert!(began.elapsed() >= Duration::from_secs(65));
+    assert!(
+        outcome.acknowledgement_recorded
+            && outcome.delivery_error.is_none()
+            && outcome.recording_error.is_none()
+    );
+    assert!(outcome.report.unwrap().ok);
+    assert!(!h.driver.is_closed() && !run.is_stopped() && run.is_terminal());
+    assert_eq!(sink.rows.len(), 2);
+    assert_eq!(&h.queries()[before..], &["SELECT 1"]);
+    drop(run);
+    drop(console);
+    finish_console(h).await;
+}
+
+#[tokio::test]
+async fn console_configured_long_deadline_cancel_retains_ack_and_stops_commit_promptly() {
+    let mut h = console_harness(SafeMode::Confirm, true).await;
+    set_console_timeout(&mut h, 86400);
+    h.settings(json!({"holdReviewedDrain":true}));
+    let mut console = h.driver.claim_reviewed_console().await.unwrap();
+    let compiled = script("SELECT 1; COMMIT;");
+    let before = h.queries().len();
+    let token = CancellationToken::new();
+    let mut run = console.begin_run(&compiled, token.clone()).await.unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let mut recorder = TestRecorder {
+        entered: Some(entered_tx),
+        ..Default::default()
+    };
+    let mut sink = ConsoleSink::default();
+    let outcome = {
+        let mut admission = TestAdmission;
+        let future = run.next(&mut sink, &mut recorder, &mut admission);
+        tokio::pin!(future);
+        tokio::select! {
+            result = &mut future => panic!("held drain unexpectedly settled: {}",result.is_ok()),
+            entered = tokio::time::timeout(Duration::from_secs(5),entered_rx) => entered.unwrap().unwrap(),
+        }
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(5), future)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    };
+    assert!(outcome.cancellation_observed && outcome.acknowledgement_recorded);
+    assert!(outcome.report.unwrap().statement_acknowledged.is_some());
+    assert!(run.is_stopped());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(&h.queries()[before..], &["SELECT 1"]);
+    drop(run);
+    drop(console);
+    finish_console(h).await;
+}
+
+#[tokio::test]
+async fn console_configured_long_deadline_cancel_before_ack_retains_unknown_and_skips_suffix() {
+    let mut h = console_harness(SafeMode::Confirm, true).await;
+    set_console_timeout(&mut h, 86400);
+    h.settings(json!({"holdReviewedComplete":true}));
+    let mut console = h.driver.claim_reviewed_console().await.unwrap();
+    let compiled = script("SELECT 1; COMMIT;");
+    let before = h.queries().len();
+    let token = CancellationToken::new();
+    let mut run = console.begin_run(&compiled, token.clone()).await.unwrap();
+    let mut recorder = TestRecorder::default();
+    let mut sink = ConsoleSink::default();
+    let outcome = {
+        let mut admission = TestAdmission;
+        let future = run.next(&mut sink, &mut recorder, &mut admission);
+        tokio::pin!(future);
+        tokio::select! {
+            result = &mut future => panic!("held completion unexpectedly settled: {}",result.is_ok()),
+            _ = h.wait_until(||h.scripts.path().join("held-reviewed-complete").exists()) => {},
+        }
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(5), future)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    };
+    assert!(
+        outcome.attempted && outcome.cancellation_observed && !outcome.acknowledgement_recorded
+    );
+    let report = outcome.report.unwrap();
+    assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+    assert!(report.statement_acknowledged.is_none());
+    assert_eq!(sink.events.load(Ordering::SeqCst), 0);
+    assert!(run.is_stopped());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(&h.queries()[before..], &["SELECT 1"]);
     drop(run);
     drop(console);
     finish_console(h).await;

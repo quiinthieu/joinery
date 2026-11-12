@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { client } from "../../ipc/client";
+import type { ConnectionProfile } from "../../ipc/generated";
 import { useStudio } from "../../state/studio";
 import { SnowflakeConsoleReview } from "./SnowflakeConsoleReview";
 import { SnowflakeConsoleReceipts } from "./SnowflakeConsoleReceipts";
@@ -54,6 +55,7 @@ test("whole-script review preserves exact SQL, bound values and selected-unit va
     <SnowflakeConsoleReview
       plan={{
         ...plan,
+        timeoutSeconds: 120,
         mode: "selectedUnit",
         validations: ["serverAtExecution"],
         review: { ...plan.review, statements: plan.review.statements.slice(0, 1) },
@@ -64,7 +66,8 @@ test("whole-script review preserves exact SQL, bound values and selected-unit va
   );
   expect(screen.getByText("SELECT :value")).toBeTruthy();
   expect(screen.getByText('"immutable"')).toBeTruthy();
-  expect(screen.getByText(/fixed 65-second/)).toBeTruthy();
+  expect(screen.getByText(/120-second execution and result-delivery limit/)).toBeTruthy();
+  expect(screen.getByText(/Safe outcome recording and settlement may take longer/)).toBeTruthy();
   expect(screen.getByText(/validated by Snowflake only at execution/)).toBeTruthy();
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
   await waitFor(() => expect(execute).toHaveBeenCalledWith("approval"));
@@ -74,6 +77,44 @@ test("whole-script review preserves exact SQL, bound values and selected-unit va
     confirmation: null,
   });
 });
+test("review displays the immutable native plan limit rather than a changed profile setting", () => {
+  render(
+    <SnowflakeConsoleReview
+      plan={{ ...plan, timeoutSeconds: 86400 }}
+      profile={
+        {
+          id: "changed-profile",
+          name: "Changed profile",
+          database: "DB",
+          snowflake: { reviewedConsoleTimeoutSeconds: 120 },
+        } as ConnectionProfile
+      }
+      onExecute={vi.fn()}
+      onClose={vi.fn()}
+    />,
+  );
+  expect(screen.getByText(/86400-second execution and result-delivery limit/)).toBeTruthy();
+  expect(screen.queryByText(/120-second/)).toBeNull();
+  expect(screen.queryByText(/fixed 65-second/)).toBeNull();
+  expect(client.call).not.toHaveBeenCalled();
+});
+test.each([1, 65, 120, 86400])(
+  "native plan accepts an integer query limit of %s seconds",
+  (timeoutSeconds) => {
+    expect(() =>
+      validateConsolePlan({ ...plan, timeoutSeconds }, plan.review.sessionId),
+    ).not.toThrow();
+  },
+);
+test.each([undefined, null, NaN, Infinity, -Infinity, 0, -1, 1.5, 86401, "120"])(
+  "native plan rejects invalid query limit %j before approval",
+  (timeoutSeconds) => {
+    expect(() =>
+      validateConsolePlan({ ...plan, timeoutSeconds } as typeof plan, plan.review.sessionId),
+    ).toThrow("Invalid reviewed console plan");
+    expect(client.call).not.toHaveBeenCalled();
+  },
+);
 test("review close sends no execution or authorization", () => {
   const close = vi.fn(),
     execute = vi.fn();

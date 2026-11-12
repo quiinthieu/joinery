@@ -8,6 +8,182 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Configured console query limits (12 November 2026, locally verified)
+
+Base is clean `b86ac44` on `feat/datagrip-replacement`. The
+[contract](snowflake-console-query-limits.md) separates the selected execution/
+result-delivery budget from acknowledgement recording and safe settlement.
+Local synthetic verification passes within the source scopes below; normal
+packaging is pending. Historical passes do not establish new source or account
+behavior. Corrected fixture failures and their reruns are retained explicitly.
+
+Before changing the fixed runtime deadline, minimal optional-profile scaffolding
+and a held-drain regression were added. With a one-second setting the original
+runtime remained waiting beyond the fixture's five-second observation bound.
+The actual helper/framing synthetic-SDK case failed with
+`configured one-second deadline did not settle within five seconds: Elapsed(())`.
+It ran one test, failed one, and changed no captured native source during the
+check: **66.32 seconds** including **58.66 seconds** compile and **5.16 seconds**
+test time. This demonstrates the old fixed runtime ignored the newly introduced
+setting, not that earlier versions already offered configurable deadlines.
+Preserved evidence: `.cache/verification/reviewed-console/timeout-baseline.json`
+and adjacent log. No account authentication or SQL occurred.
+
+The frozen frontend settings/review increment passes **121 cases in five files**
+in **8.57 seconds**, including raw input bounds, legacy default, preserved config,
+native returned-plan validation and use of its reviewed value rather than a
+possibly changed profile. All eight captured frontend source hashes stayed
+unchanged; native implementation proceeded independently. See
+`timeout-frontend.json` and adjacent log under the same evidence directory.
+This Vitest run precedes native contract regeneration and is not TypeScript,
+browser, native runtime or packaged-app qualification.
+
+The initial complete native console build fails before executing tests with
+`E0425`: the new Studio fingerprint fixture called a private sibling `compile`
+function. The test-only correction calls the public script compiler with the
+same SQL, parsed-statements mode and parameters. Production code is unchanged.
+The failed **36.54-second** attempt preserves all **226 native source hashes**;
+see `timeout-integrated-validation.json` and its focused log. A corrected run is
+in progress under a separate label.
+
+The corrected focused native run executes **79 passing cases, one failing case
+and one internal child fixture ignored by default**, in **197.63 seconds** of
+test time. The new profile-edit case unwraps an absent journal record while
+waiting for its asynchronous admission. Source inspection confirms start returns
+an allocated run ID after scheduling the owner, before its preparation must be
+committed to SQLite. The test-only correction treats an absent row as not ready
+within its unchanged 15-second wait, still requiring the actual durable ACK
+before editing the profile. Independent review confirms the correction preserves
+the suffix and accounting assertions. Production is unchanged; a new frozen
+focused run is in progress. The failed run does not establish a passing
+profile-edit workflow.
+See `timeout-corrected-validation.json` and its focused log. The other new
+deadline, quiet-result, cancellation and policy-binding cases pass in this run.
+
+The synchronized frozen-source native run passes **80 cases**, with one internal
+child fixture ignored by default, in **287.04 seconds** including compile
+(**200.13 seconds** tests). All **226 native hashes** remain unchanged. It
+exercises a deliberately quiet result beyond the old 65-second limit, short
+expiry before/after ACK, a slow ACK recorder crossing expiry, cancellation with
+a 24-hour selected limit, trusted action binding, profile edits and SQL-free
+unknown-outcome recovery. No account activity occurs. See
+`timeout-synchronized-validation.json` and its focused log. After this run,
+target occupies **7,933,016 KiB**, with **212,002,541,568 bytes** free.
+
+The required full `pnpm validate` passes in **271.47 seconds** on unchanged
+captured native source: **921 frontend tests in 64 files**, **561 standard Rust
+tests** and **137 default fixture ignores**. Formatting, actual contract
+regeneration, TypeScript, production UI build, desktop compilation and strict
+all-target/all-feature Clippy pass. The generated DTO exposes optional
+`reviewedConsoleTimeoutSeconds` and required native `timeoutSeconds`. Both new
+strict-profile/persist/reload/backup/malformed-storage tests execute and pass.
+See `timeout-final-validation.json` and its full-validation log. Target occupies
+**8,046,368 KiB**, with **211,681,787,904 bytes** free afterward. This does not
+qualify default-ignored fixtures or actual Snowflake behavior.
+
+The first changed browser run fails in **61.84 seconds** including server build
+(**13.2 seconds** test time). The real form submits the exact synthetic profile
+with limit 120, but the test harness's `save_profile` guard rejects that profile:
+the new bounded normalization was applied to authentication, not the separate
+save guard. No console SQL is reached. The native response and request are
+preserved in `timeout-browser.json`, adjacent log and
+`timeout-browser-failure/trace.zip`. The correction is restricted to the isolated
+harness: share the exact fixed-profile predicate, allow only its bounded timeout
+change while the synthetic runtime is active, and reject changed identity/auth/
+policy. Production code is unchanged; affected checks and browser rerun are
+pending. The full validation above precedes this fixture-only correction.
+
+The exact-profile fixture correction passes **three binary regression tests** in
+**6.11 seconds**, with unchanged captured source; see `timeout-harness-tests.json`
+and log. Identity, authentication and other policy fields cannot vary; only the
+valid query limit can, and both save/auth exceptions require the active synthetic
+runtime. Independent bounded review finds no material issue. The affected strict
+checks and browser rerun use separate receipts. The browser command was queued
+before strict checks had fully terminated; its log records Cargo waiting for
+the exclusive build-directory lock, so compilation remains serialized. No
+additional Cargo command will start until both reach terminal results.
+
+The corrected harness's `pnpm check:rust` passes in **92.85 seconds**, including
+formatting, desktop compilation and strict all-target/all-feature Clippy. Captured
+source is unchanged; see `timeout-harness-strict.json` and log. Production and
+frontend source still match their preceding full-validation pins; only the
+test-harness predicate/regressions changed after that full run.
+
+The next browser run saves limit 120 and connects successfully but fails its
+visibility assertion for the hover-only sidebar Disconnect control. It takes
+**82.16 seconds** including the queued build (**16.2 seconds** test time).
+The trace preserves actual successful native save/connect responses; source
+`.connection-actions` uses `display: none` until row hover/focus. The test now
+hovers the same profile row before asserting that control, preserving the normal
+UI route, native checks and subsequent status/results/restart assertions.
+There is no force click, widened timeout or product change. See
+`timeout-browser-corrected.json`, log and
+`timeout-browser-corrected-failure/trace.zip`.
+
+The hover-corrected run reaches the intentional backend restart, then fails
+because its still-live page's ten-second `resource_usage` poll is forwarded while
+the owned backend is down. The proxy's uncaught `ECONNREFUSED` fails the test;
+this is not a Snowflake connection or product SQL failure. The run takes
+**20.36 seconds** (**13.3 seconds** test time); preserve
+`timeout-browser-hover.json`, log and `timeout-browser-hover-failure/trace.zip`.
+The lifecycle correction unloads the UI to `about:blank`, waits within the
+existing bounded assertion deadline for pending bridge forwarding to finish,
+then stops/restarts the backend and loads the UI afresh. It retains same-origin
+storage and all profile/review/receipt/no-auth/no-SQL assertions, without catching
+or masking proxy errors. Independent review confirms this qualifies complete
+application restart, not live-frontend resilience while its backend is absent.
+
+The lifecycle run exposes a separate existing browser polling race before
+reaching restart: the start-request counter increments before native admission,
+and `snowflake_console_run` may still return null. Dereferencing that result
+throws instead of waiting. The failed run takes **20.81 seconds** (**9.6 seconds**
+test time); retain `timeout-browser-lifecycle.json`, log and
+`timeout-browser-lifecycle-failure/trace.zip`. Nullable lookup now remains
+not-ready in the existing terminal/recording waits; the normal receipt accessor
+still requires a non-null view. No RPC errors are swallowed, absence cannot
+satisfy either wait, and mandatory post-restart receipts remain mandatory.
+
+The corrected actual browser workflow passes **1/1** in **32.70 seconds**
+(**24.0 seconds** test time), with all captured product source hashes unchanged;
+see `timeout-browser-admission.json` and log. It exercises the real form's legacy
+65-second default, saving 120, native returned review value, retained-session
+adjacency/transaction-shaped queries, Arrow results, lost positive/negative
+responses, ordinary hover/click/keyboard receipt interaction at 1024 × 720,
+complete UI/backend restart and persisted 120. Original receipts recover with
+zero restarted SDK authentication or SQL. This uses a synthetic SDK, not an
+actual Snowflake engine or native macOS webview. No test exception is masked and
+no force click or timeout widening is used.
+
+The initial complete helper run executes **389 cases: 386 pass and three fail**
+in **293.60 seconds**. All three new transport-policy cases successfully deliver
+the guarded SDK query but record no timeout calls because the test observes
+native `ClientRequest.setTimeout`; pinned Axios actually invokes the
+`follow-redirects` request facade. Pinned source confirms the latter delegates
+to its socket and timer without calling that native method. A transparent,
+test-only wrapper now observes the actual facade, preserving the request,
+receiver, arguments and return values. Production, SDK pins and the strict
+`[125000]` assertion are unchanged. The corrected **three HTTP/TLS/proxy cases
+pass in 7.62 seconds**, with unchanged captured helper hashes and zero account
+activity. Their delayed synthetic reply takes longer than the probe's ordinary
+one-second request budget. See `timeout-helper.json`, `timeout-sdk-policy.json`
+and adjacent logs. The corrected full affected SDK file then passes **194/194**
+in **285.35 seconds**, with all four captured helper hashes unchanged; see
+`timeout-sdk-corrected.json` and log. The other **195 helper cases** passed in
+the earlier full run, before the two test-observer files changed. This is
+source-scoped coverage across two runs, not a claim of one new 389-case pass.
+
+Runtime preparation first fails in **14.29 seconds** because the default offline
+cache lacks the locked `@smithy/types` 4.20.0 tarball (`ENOTCACHED`). Repeating
+with the existing repository cache `.cache/snowflake-helper-dev/npm-cache`
+succeeds offline in **23.69 seconds**, without changing any of the four captured
+helper source hashes. Resource verification passes in **0.55 seconds**, followed
+by guarded staged-helper startup in **1.78 seconds** with **zero authentication
+and SQL requests**. The SDK remains **3.4.1**, and the new staged manifest SHA256
+is `2f7ddcf0c2ad93b0179be8105456573b6e9a3467ba5dfb295acf7061dfc9a91a`.
+See `timeout-runtime-staging*.json`, `timeout-runtime-resources.json`,
+`timeout-runtime-startup.json` and adjacent logs. This is staged resource/startup
+evidence, not a new normal app bundle or UI acceptance.
+
 ### Durable console admission refusals (12 November 2026)
 
 Base is `4ac8eb2` on `feat/datagrip-replacement`. This increment adds SQL-free

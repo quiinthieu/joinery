@@ -286,17 +286,19 @@ impl SnowflakeExternal {
         let account = host
             .strip_suffix(".snowflakecomputing.com")
             .ok_or_else(|| AppError::invalid("Invalid Snowflake account hostname"))?;
+        let mut connect_payload = json!({
+            "account": account, "host": host, "username": profile.username,
+            "role": config.role, "warehouse": config.warehouse,
+            "database": profile.database, "schema": config.schema,
+        });
+        // This closed scalar is present only on permanently reviewed-console
+        // profiles. Ordinary and fixed qualification transport remains unchanged.
+        if config.reviewed_console {
+            connect_payload["reviewedConsoleTimeoutSeconds"] =
+                json!(config.effective_console_timeout_seconds()?);
+        }
         let mut connect = process
-            .request(
-                "connect",
-                "connect",
-                json!({
-                    "account": account, "host": host, "username": profile.username,
-                    "role": config.role, "warehouse": config.warehouse,
-                    "database": profile.database, "schema": config.schema,
-                }),
-                Impact::Control,
-            )
+            .request("connect", "connect", connect_payload, Impact::Control)
             .map_err(control_error)?;
         check_report(&connect.wait_bounded(Duration::from_secs(125)).await)?;
         let mut context = process
@@ -3875,6 +3877,7 @@ process.stdin.on('end', retire);
                     reviewed_dml,
                     reviewed_ddl,
                     reviewed_console,
+                    reviewed_console_timeout_seconds: None,
                     role: "ROLE".into(),
                     warehouse: "WH".into(),
                     schema: "PUBLIC".into(),

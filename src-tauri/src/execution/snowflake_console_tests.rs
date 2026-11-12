@@ -28,6 +28,7 @@ fn profile() -> ConnectionProfile {
             reviewed_dml: false,
             reviewed_ddl: false,
             reviewed_console: true,
+            reviewed_console_timeout_seconds: None,
             role: "ROLE".into(),
             warehouse: "WH".into(),
             schema: "PUBLIC".into(),
@@ -1220,4 +1221,209 @@ async fn reviewed_console_malformed_request_identity_never_creates_a_refusal() {
     );
     assert_eq!(queries(&f).len(), 2);
     studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_timeout_policy_is_reviewed_hashed_and_revalidated_before_dispatch() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let studio = new_studio(&f);
+    let mut p = profile();
+    p.snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(120);
+    let saved = studio.save_profile(p, None).unwrap();
+    let info = studio
+        .connect(&saved.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    let req = request("SELECT 1; COMMIT");
+    let first = studio.prepare_snowflake_console(&info.id, &req).unwrap();
+    assert_eq!(first.timeout_seconds, 120);
+    assert!(
+        first
+            .review
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("120 second"))
+    );
+    let original_digest = first.digest.clone();
+    // Hold the exact same PreparedPlan identity and SQL/binds while changing
+    // only trusted policy. Its fingerprint must change independently of text.
+    let changed = studio
+        .store_plan(
+            first.review.clone(),
+            Action::SnowflakeConsole {
+                request: req.clone(),
+                compiled: safety::snowflake_script::compile(
+                    &req.sql,
+                    safety::snowflake_script::Mode::ParsedStatements,
+                    req.parameters.as_deref(),
+                )
+                .unwrap(),
+                mode: SafeMode::Confirm,
+                timeout_seconds: 121,
+            },
+            0,
+        )
+        .unwrap();
+    assert_ne!(
+        studio.plans.lock().get(&changed.id).unwrap().digest,
+        original_digest
+    );
+    let approval = studio.authorize(&changed.id, None, None).unwrap();
+    let wrong_policy = SnowflakeConsoleStart {
+        session_id: info.id.clone(),
+        plan_id: changed.id,
+        plan_digest: studio
+            .plans
+            .lock()
+            .get(&first.review.id)
+            .unwrap()
+            .digest
+            .clone(),
+        client_request_id: new_id(),
+        approval: Some(approval),
+    };
+    assert_eq!(
+        start_run(&studio, &wrong_policy, Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    assert_eq!(queries(&f).len(), 2);
+    let prepared = studio.prepare_snowflake_console(&info.id, &req).unwrap();
+    let approval = studio.authorize(&prepared.review.id, None, None).unwrap();
+    let start = SnowflakeConsoleStart {
+        session_id: info.id.clone(),
+        plan_id: prepared.review.id,
+        plan_digest: prepared.digest,
+        client_request_id: new_id(),
+        approval: Some(approval),
+    };
+    // Simulate persisted policy drift without Studio's proactive session close;
+    // both prepare and start must independently reject the retained mismatch.
+    let mut changed = saved.clone();
+    changed
+        .snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(121);
+    studio.persistence.save_profile(&changed).unwrap();
+    assert_eq!(
+        studio
+            .prepare_snowflake_console(&info.id, &req)
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    assert_eq!(
+        start_run(&studio, &start, Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
+    assert_eq!(queries(&f).len(), 2);
+    studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_timeout_profile_edit_retires_owner_and_preserves_ack_without_suffix() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    std::fs::write(f.controls.join("hold-reviewed-drain"), "").unwrap();
+    let (studio, info) = connected(&f).await;
+    assert_eq!(
+        studio
+            .prepare_snowflake_console(&info.id, &request("SELECT 1"))
+            .unwrap()
+            .timeout_seconds,
+        65
+    );
+    let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
+    let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            // Start returns the allocated ID before the retained owner has
+            // necessarily committed its prepared row. Wait for durable ACK,
+            // including that initial preparation interval.
+            if studio
+                .persistence
+                .console_run(&id)
+                .unwrap()
+                .is_some_and(|run| {
+                    run.steps.first().is_some_and(|s| {
+                        matches!(s.outcome, Some(ConsoleStepOutcome::Acknowledged(_)))
+                    })
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut changed = studio.persistence.profile(&info.connection_id).unwrap();
+    changed
+        .snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(120);
+    studio.save_profile(changed, None).unwrap();
+    let view = finished(&studio, &start).await;
+    let accounting = view.run.terminal.unwrap().accounting;
+    assert_eq!(accounting.acknowledged, 1);
+    assert_eq!(accounting.not_attempted, 1);
+    assert_eq!(view.run.steps.len(), 1);
+    assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
+    assert!(
+        studio
+            .prepare_snowflake_console(&info.id, &request("COMMIT"))
+            .is_err()
+    );
+    studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_timeout_durable_unknown_skips_suffix_and_lookup_never_replays() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    std::fs::write(f.controls.join("hold-reviewed-ack"), "").unwrap();
+    let studio = new_studio(&f);
+    let mut p = profile();
+    p.snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(1);
+    let saved = studio.save_profile(p, None).unwrap();
+    let info = studio
+        .connect(&saved.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
+    let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
+    let view = tokio::time::timeout(Duration::from_secs(8), finished(&studio, &start))
+        .await
+        .unwrap();
+    let terminal = view.run.terminal.unwrap();
+    assert_eq!(terminal.reason, ConsoleStopReason::OutcomeUnknown);
+    assert_eq!(terminal.accounting.unknown, 1);
+    assert_eq!(terminal.accounting.not_attempted, 1);
+    assert!(view.results.is_empty());
+    assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
+    assert_eq!(start_run(&studio, &start, Arc::new(|_| true)).unwrap(), id);
+    studio.shutdown_and_wait().await.unwrap();
+    let reopened = new_studio(&f);
+    let recovered = reopened
+        .snowflake_console_run(&start.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        recovered.run.terminal.unwrap().reason,
+        ConsoleStopReason::OutcomeUnknown
+    );
+    assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
+    reopened.shutdown_and_wait().await.unwrap();
 }

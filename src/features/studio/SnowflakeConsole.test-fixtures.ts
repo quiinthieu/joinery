@@ -37,6 +37,7 @@ export const observations: ConsoleObservations = {
 };
 export const plan: SnowflakeConsolePlan = {
   digest: "a".repeat(64),
+  timeoutSeconds: 65,
   mode: "parsedStatements",
   validations: ["localSyntax", "localSyntax"],
   review: {

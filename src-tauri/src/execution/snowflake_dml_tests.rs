@@ -25,6 +25,7 @@ fn sdk_dml_fixture(
         reviewed_dml: true,
         reviewed_ddl: false,
         reviewed_console: false,
+        reviewed_console_timeout_seconds: None,
         role: "ROLE".into(),
         warehouse: "WH".into(),
         schema: "PUBLIC".into(),

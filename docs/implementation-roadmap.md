@@ -1,5 +1,28 @@
 # Joinery implementation roadmap
 
+## Query limits and retention investigation (12 November 2026)
+
+The [configured console query limit](snowflake-console-query-limits.md) is locally
+verified: immutable native review, independent transport/settlement bounds,
+delayed-result/cancellation cases and actual browser settings/full restart.
+Current evidence includes 80 focused native, 121 focused frontend, 194 affected
+SDK cases and full validation with 921 frontend / 561 standard Rust cases (137
+default ignores). The ledger records fixture corrections and affected reruns.
+Build the normal app next; actual Snowflake long-query/cancellation and native
+owner acceptance remain open.
+
+The bounded retention inventory at `b86ac44` found separate 10,000-positive and
+10,000-negative native limits, a combined 10,000-ID browser limit, retained full
+in-memory snapshots, whole-ledger startup validation and 64 MiB whole-database
+backup/restore limits. Simply increasing a count would leave daily-use failures.
+The next retention increment should keep full immutable evidence in one
+authoritative database, add paged SQL-free inventory/detail, compact only settled
+hot state, and support bounded-memory backup/restore. Archiving evidence must not
+erase deduplication or imply reclaimed journal disk. Keep explicit result-row
+release separate. The source-pinned inventory is retained locally at
+`.cache/verification/reviewed-console/retention-inventory.json`; this is design
+evidence, not implemented or measured lifetime retention.
+
 ## Durable console admission decisions (12 November 2026)
 
 This increment implements SQL-free durable admission refusals and request lookup,

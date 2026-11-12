@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { tableFromIPC } from "apache-arrow";
 import type {
+  Bootstrap,
+  SnowflakeConsolePlan,
   SnowflakeConsoleRunView,
   SnowflakeConsoleRequestLookup,
 } from "../../src/ipc/generated";
@@ -100,29 +102,44 @@ test("retained console preserves adjacency, recovers a lost start response and r
   };
   const commands: string[] = [];
   const starts: string[] = [];
+  const reviews: SnowflakeConsolePlan[] = [];
+  let pendingBridgeRequests = 0;
   await page.route("http://127.0.0.1:1422/**", async (route) => {
-    const url = new URL(route.request().url());
-    const command = url.pathname.split("/").at(-1)!;
-    commands.push(command);
-    if (command === "start_snowflake_console")
-      starts.push(route.request().postDataJSON().request.clientRequestId);
-    const response = await route.fetch({ url: bridge + url.pathname + url.search });
-    await route.fulfill({ response });
+    pendingBridgeRequests += 1;
+    try {
+      const url = new URL(route.request().url());
+      const command = url.pathname.split("/").at(-1)!;
+      commands.push(command);
+      if (command === "start_snowflake_console")
+        starts.push(route.request().postDataJSON().request.clientRequestId);
+      const response = await route.fetch({ url: bridge + url.pathname + url.search });
+      if (command === "prepare_snowflake_console") reviews.push((await response.json()).result);
+      await route.fulfill({ response });
+    } finally {
+      pendingBridgeRequests -= 1;
+    }
   });
-  const receipt = async (id: string) =>
-    rpc<SnowflakeConsoleRunView>("snowflake_console_run", { clientRequestId: id });
+  const lookupReceipt = async (id: string) =>
+    rpc<SnowflakeConsoleRunView | null>("snowflake_console_run", { clientRequestId: id });
+  const receipt = async (id: string) => {
+    const view = await lookupReceipt(id);
+    expect(view).not.toBeNull();
+    return view!;
+  };
   const run = async (sql: string) => {
     const before = starts.length;
     await page.getByRole("textbox", { name: "SQL editor" }).fill(sql);
     await page.getByRole("button", { name: "Run all statements", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Review this operation" });
     await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("120-second execution and result-delivery limit");
+    expect(reviews.at(-1)?.timeoutSeconds).toBe(120);
     await dialog.getByRole("button", { name: "Authorize and run", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await expect.poll(() => starts.length).toBe(before + 1);
     const id = starts[before];
-    await expect.poll(async () => (await receipt(id)).run.state).toBe("terminal");
-    await expect.poll(async () => (await receipt(id)).pendingRecording).toBe(false);
+    await expect.poll(async () => (await lookupReceipt(id))?.run.state).toBe("terminal");
+    await expect.poll(async () => (await lookupReceipt(id))?.pendingRecording).toBe(false);
     return receipt(id);
   };
   const values = async (view: SnowflakeConsoleRunView) => {
@@ -138,15 +155,20 @@ test("retained console preserves adjacency, recovers a lost start response and r
   try {
     await start();
     await page.goto("/");
-    await page
-      .getByRole("button", { name: "Synthetic retained Snowflake console", exact: true })
-      .click();
-    const connect = page.getByRole("dialog", {
-      name: "Connect to Synthetic retained Snowflake console",
-      exact: true,
-    });
-    await connect.getByRole("button", { name: "Connect", exact: true }).click();
-    await expect(connect).toHaveCount(0);
+    const profileName = "Synthetic retained Snowflake console";
+    await page.getByRole("button", { name: profileName, exact: true }).hover();
+    await page.getByRole("button", { name: `Edit ${profileName}`, exact: true }).click();
+    const settings = page.getByRole("dialog", { name: "Edit connection", exact: true });
+    const queryLimit = settings.getByLabel("Console query limit (seconds)", { exact: true });
+    await expect(queryLimit).toHaveValue("65");
+    await queryLimit.fill("120");
+    await settings.getByRole("button", { name: "Save and connect", exact: true }).click();
+    await expect(settings).toHaveCount(0);
+    expect(
+      (await rpc<Bootstrap>("bootstrap")).profiles.find((profile) => profile.name === profileName)
+        ?.snowflake?.reviewedConsoleTimeoutSeconds,
+    ).toBe(120);
+    await page.getByRole("button", { name: profileName, exact: true }).hover();
     await expect(
       page.getByRole("button", { name: "Disconnect Synthetic retained Snowflake console" }),
     ).toBeVisible();
@@ -320,10 +342,16 @@ test("retained console preserves adjacency, recovers a lost start response and r
     expect((await rpc<{ queries: string }>("test_synthetic_console_evidence")).queries).toBe(
       evidence.queries,
     );
+    await page.goto("about:blank");
+    await expect.poll(() => pendingBridgeRequests).toBe(0);
     await stop();
     await start();
     commands.length = 0;
-    await page.reload();
+    await page.goto("/");
+    expect(
+      (await rpc<Bootstrap>("bootstrap")).profiles.find((profile) => profile.name === profileName)
+        ?.snowflake?.reviewedConsoleTimeoutSeconds,
+    ).toBe(120);
     await expect(page.getByRole("region", { name: "Snowflake console receipts" })).toBeVisible();
     for (const id of ids) {
       const restored = await receipt(id);

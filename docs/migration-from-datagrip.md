@@ -29,6 +29,18 @@ keyboard-scrollable panel; its pending notices stay visible when settled history
 is collapsed. The panel can cover part of the lower results area while open,
 without displacing the editor or run toolbar.
 
+For the locally verified configurable query-limit increment, edit the opted-in
+external-browser profile and set **Console query limit (seconds)** before
+reconnecting. The accepted range is 1–86,400; a legacy profile defaults to 65.
+Saving closes existing sessions. Prepare a new console review and confirm its
+displayed execution/result-delivery limit before approving. The value belongs
+to that immutable review; editing the profile does not extend an existing run.
+Expiry retires the console and preserves its original receipt. It does not prove
+server cancellation, rollback or freedom from charges, so reconcile without SQL
+and investigate an uncertain original before considering another submission.
+See the [query-limit contract](snowflake-console-query-limits.md) and current
+ledger for verification status; the preceding bundle does not include this setting.
+
 This increment upgrades local metadata to schema 3. Earlier Joinery versions
 cannot open that format. Preserve a pre-upgrade metadata backup if you need to
 return to an earlier app; never run both versions against the same data directory.

@@ -350,6 +350,7 @@ impl Harness {
                 reviewed_dml: false,
                 reviewed_ddl: true,
                 reviewed_console: false,
+                reviewed_console_timeout_seconds: None,
                 role: "QUALIFICATION".into(),
                 warehouse: "FIXTURE_WH".into(),
                 schema: "BILLIE_TESTING".into(),

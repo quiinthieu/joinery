@@ -92,20 +92,25 @@ The synthetic browser case `tests/e2e/snowflake-retained-console.spec.ts` uses t
 real UI, Rust Studio, helper framing, journal and Arrow result store with an
 isolated synthetic SDK. It checks session adjacency, transaction-shaped sequences,
 lost-start-response recovery, committed-refusal response loss, and backend
-restart without replay. At 1024 × 720 it also checks ordinary run/review clicks
+restart without replay. It also edits the real profile form from the legacy
+65-second default to 120, verifies the native review value, and preserves that
+setting across full UI/backend restart. See the
+[query-limit contract](snowflake-console-query-limits.md). At 1024 × 720 it checks ordinary run/review clicks
 after eleven receipts and keyboard scrolling/reconciliation in the bounded panel.
-Full local validation passes 893 frontend / 559 standard Rust tests (137 default
-ignores). This does not qualify actual Snowflake effects, cancellation, SSO,
+Full local validation passes 921 frontend / 561 standard Rust tests (137 default
+ignores); later harness-only corrections pass three regressions and strict Rust
+checks, followed by the actual browser pass. This does not qualify actual Snowflake effects, cancellation, SSO,
 performance or packaged native UI behavior. Normal SDK-bearing ARM64 packaging
-from clean `9b20aa2` passes resources, strict ad-hoc signature and guarded helper
-startup with zero authentication/SQL. The local app remains uninstalled; normal
+from the preceding clean `9b20aa2` passes resources, strict ad-hoc signature and guarded helper
+startup with zero authentication/SQL. Current packaging is pending. The local app remains uninstalled; normal
 native UI/SSO/restart acceptance remains open.
 
 Account acceptance still needs a fresh exact reviewed plan and billing scope for
 the permitted disposable `SANDBOX.BILLIE_TESTING` target, then independently read
 back write/rollback/commit and DDL effects. Complete interruption, long-running
 query behavior, million-row paging/export, normal packaged macOS SSO/restart and
-hands-on acceptance. The current fixed foundation delivery deadline and bounded
-journal capacity need practical qualified replacements. All other applicable
+hands-on acceptance. The configurable local limit still has a finite 24-hour
+ceiling and needs account qualification; bounded journal capacity needs a practical
+qualified replacement. All other applicable
 DataGrip capabilities remain required by the
 [matrix](datagrip-feature-matrix.md).

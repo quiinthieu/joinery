@@ -67,11 +67,30 @@ fn synthetic_console_profile() -> ConnectionProfile {
             reviewed_dml: false,
             reviewed_ddl: false,
             reviewed_console: true,
+            reviewed_console_timeout_seconds: None,
             role: "ROLE".into(),
             warehouse: "WH".into(),
             schema: "PUBLIC".into(),
         }),
     }
+}
+
+#[cfg(unix)]
+fn matches_synthetic_console_profile(profile: &ConnectionProfile) -> bool {
+    // Only this bounded budget may vary. Every authentication, identity and
+    // other policy field must match the entirely synthetic runtime's profile.
+    let mut normalized = profile.clone();
+    let Some(config) = &mut normalized.snowflake else {
+        return false;
+    };
+    if config.effective_console_timeout_seconds().is_err() {
+        return false;
+    }
+    config.reviewed_console_timeout_seconds = None;
+    let Ok(expected) = serde_json::to_value(synthetic_console_profile()) else {
+        return false;
+    };
+    serde_json::to_value(normalized).is_ok_and(|actual| actual == expected)
 }
 
 fn authorized(headers: &HeaderMap, state: &Harness) -> bool {
@@ -90,21 +109,17 @@ fn arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> AppResult<T> 
 // never load a genuine SDK. The opt-in retained-console harness owns an entirely
 // synthetic runtime and permits only its immutable fixed fixture profile.
 fn allow_fixture_authentication(state: &Harness, id: &str) -> AppResult<()> {
-    if state
+    if let Some(profile) = state
         .studio
         .bootstrap()?
         .profiles
         .iter()
-        .any(|profile| profile.id == id && profile.engine == EngineKind::Snowflake)
+        .find(|profile| profile.id == id && profile.engine == EngineKind::Snowflake)
     {
+        #[cfg(not(unix))]
+        let _ = profile;
         #[cfg(unix)]
-        if state.synthetic_snowflake.is_some()
-            && id == synthetic_console_profile().id
-            && state.studio.bootstrap()?.profiles.iter().any(|profile| {
-                serde_json::to_value(profile).ok()
-                    == serde_json::to_value(synthetic_console_profile()).ok()
-            })
-        {
+        if state.synthetic_snowflake.is_some() && matches_synthetic_console_profile(profile) {
             return Ok(());
         }
         return Err(AppError::new(
@@ -216,7 +231,12 @@ async fn rpc(
                     && profile.ssh.is_none() && profile.environment == Environment::Local
                     && profile.safe_mode == SafeMode::ReadOnly
                     && !profile.remember_password;
-                if !offline_snowflake && (profile.host != "127.0.0.1"
+                #[cfg(unix)]
+                let synthetic_console = state.synthetic_snowflake.is_some()
+                    && matches_synthetic_console_profile(&profile);
+                #[cfg(not(unix))]
+                let synthetic_console = false;
+                if !offline_snowflake && !synthetic_console && (profile.host != "127.0.0.1"
                     || !allowed_fixture
                     || (profile.engine!=EngineKind::Redis && (profile.database!="joinery"||profile.username!="joinery"))
                     || (profile.engine==EngineKind::Redis && (profile.database!="0"||profile.username!="default"))
@@ -868,9 +888,24 @@ async fn main() {
     .unwrap();
     #[cfg(unix)]
     if synthetic_snowflake.is_some() {
-        studio
-            .save_profile(synthetic_console_profile(), None)
-            .unwrap();
+        let mut fixture_profile = synthetic_console_profile();
+        if let Some(saved) = studio
+            .bootstrap()
+            .unwrap()
+            .profiles
+            .iter()
+            .find(|profile| profile.id == fixture_profile.id)
+        {
+            fixture_profile
+                .snowflake
+                .as_mut()
+                .unwrap()
+                .reviewed_console_timeout_seconds = saved
+                .snowflake
+                .as_ref()
+                .and_then(|config| config.reviewed_console_timeout_seconds);
+        }
+        studio.save_profile(fixture_profile, None).unwrap();
     }
     let stop = Arc::new(tokio::sync::Notify::new());
     let state = Arc::new(Harness {
@@ -915,4 +950,97 @@ async fn main() {
         .with_graceful_shutdown(async move { stop.notified().await })
         .await
         .unwrap();
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_console_fixture_accepts_only_legacy_or_bounded_timeout_variation() {
+        for seconds in [None, Some(1), Some(65), Some(120), Some(86_400)] {
+            let mut profile = synthetic_console_profile();
+            profile
+                .snowflake
+                .as_mut()
+                .unwrap()
+                .reviewed_console_timeout_seconds = seconds;
+            assert!(matches_synthetic_console_profile(&profile), "{seconds:?}");
+            let restored: ConnectionProfile =
+                serde_json::from_value(serde_json::to_value(&profile).unwrap()).unwrap();
+            assert!(matches_synthetic_console_profile(&restored));
+        }
+    }
+
+    #[test]
+    fn synthetic_console_fixture_rejects_invalid_timeout_and_absent_configuration() {
+        for seconds in [0, 86_401, u32::MAX] {
+            let mut profile = synthetic_console_profile();
+            profile
+                .snowflake
+                .as_mut()
+                .unwrap()
+                .reviewed_console_timeout_seconds = Some(seconds);
+            assert!(!matches_synthetic_console_profile(&profile), "{seconds}");
+        }
+        for value in [
+            json!(null),
+            json!(0),
+            json!(86_401),
+            json!(1.5),
+            json!("120"),
+        ] {
+            let mut encoded = serde_json::to_value(synthetic_console_profile()).unwrap();
+            encoded["snowflake"]["reviewedConsoleTimeoutSeconds"] = value;
+            assert!(serde_json::from_value::<ConnectionProfile>(encoded).is_err());
+        }
+        let mut profile = synthetic_console_profile();
+        profile.snowflake = None;
+        assert!(!matches_synthetic_console_profile(&profile));
+    }
+
+    #[test]
+    fn synthetic_console_fixture_rejects_identity_authentication_and_policy_tampering() {
+        for (field, value) in [
+            ("id", json!("00000000-0000-4000-8000-00000000ce02")),
+            ("name", json!("Other profile")),
+            ("groupId", json!("other")),
+            ("engine", json!("postgres")),
+            ("host", json!("other.snowflakecomputing.com")),
+            ("port", json!(444)),
+            ("database", json!("OTHER")),
+            ("username", json!("other@example.test")),
+            ("environment", json!("production")),
+            ("safeMode", json!("silent")),
+            ("tlsMode", json!("disable")),
+            ("caCertPath", json!("/synthetic/other.pem")),
+            ("rememberPassword", json!(true)),
+            ("storeQueryText", json!(true)),
+            ("storeDrafts", json!(true)),
+            (
+                "ssh",
+                json!({"host":"127.0.0.1","port":22,"username":"other",
+                    "authentication":"password","privateKeyPath":null}),
+            ),
+        ] {
+            let mut encoded = serde_json::to_value(synthetic_console_profile()).unwrap();
+            encoded[field] = value;
+            let profile: ConnectionProfile = serde_json::from_value(encoded).unwrap();
+            assert!(!matches_synthetic_console_profile(&profile), "{field}");
+        }
+        for (field, value) in [
+            ("authentication", json!("localApplicationOauth")),
+            ("reviewedDml", json!(true)),
+            ("reviewedDdl", json!(true)),
+            ("reviewedConsole", json!(false)),
+            ("role", json!("OTHER_ROLE")),
+            ("warehouse", json!("OTHER_WH")),
+            ("schema", json!("OTHER_SCHEMA")),
+        ] {
+            let mut encoded = serde_json::to_value(synthetic_console_profile()).unwrap();
+            encoded["snowflake"][field] = value;
+            let profile: ConnectionProfile = serde_json::from_value(encoded).unwrap();
+            assert!(!matches_synthetic_console_profile(&profile), "{field}");
+        }
+    }
 }

@@ -77,7 +77,11 @@ test("console workbench exposes reviewed run/selection and suppresses generated 
   expect(screen.queryByRole("button", { name: "Explain" })).toBeNull();
   expect(screen.queryByLabelText("Transaction mode")).toBeNull();
   expect(screen.queryByRole("button", { name: "Commit transaction" })).toBeNull();
-  expect(screen.getByText(/fixed 65-second/)).toBeTruthy();
+  expect(
+    screen.getByText(/Each review shows the execution and result-delivery limit/),
+  ).toBeTruthy();
+  expect(screen.getByText(/Safe outcome recording and settlement may take longer/)).toBeTruthy();
+  expect(screen.queryByText(/fixed 65-second/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /Review and run/ }));
   expect(p.onRun).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole("button", { name: "Review selected server unit" }));

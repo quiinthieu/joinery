@@ -156,6 +156,7 @@ enum Action {
         request: SnowflakeConsoleRequest,
         compiled: safety::snowflake_script::CompiledScript,
         mode: SafeMode,
+        timeout_seconds: u32,
     },
     SnowflakeDdl {
         request: SnowflakeDdlRequest,
@@ -1501,6 +1502,7 @@ impl Studio {
                 request,
                 compiled,
                 mode,
+                timeout_seconds,
             } => fingerprint.update(
                 serde_json::to_vec(&(
                     request,
@@ -1510,6 +1512,7 @@ impl Studio {
                         .map(|u| u.bound())
                         .collect::<Vec<_>>(),
                     mode,
+                    timeout_seconds,
                 ))
                 .map_err(|_| AppError::internal("Could not fingerprint reviewed console"))?,
             ),

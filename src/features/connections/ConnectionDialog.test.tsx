@@ -785,7 +785,10 @@ for (const reset of ["readOnly", "oauth"] as const) {
       (screen.getByLabelText(/allow separately reviewed single INSERT/i) as HTMLInputElement)
         .checked,
     ).toBe(false);
-    expect(screen.getByText(/fixed 65-second per-unit delivery deadline/)).toBeTruthy();
+    expect((screen.getByLabelText("Console query limit (seconds)") as HTMLInputElement).value).toBe(
+      "65",
+    );
+    expect(screen.getByText(/Safe outcome recording and settlement may take longer/)).toBeTruthy();
     if (reset === "readOnly")
       fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "readOnly" } });
     else {
@@ -807,5 +810,106 @@ for (const reset of ["readOnly", "oauth"] as const) {
         }) as HTMLInputElement
       ).checked,
     ).toBe(false);
+    expect(screen.queryByLabelText("Console query limit (seconds)")).toBeNull();
   });
 }
+
+test.each([
+  { configured: undefined, edited: undefined, expected: 65 },
+  { configured: 120, edited: undefined, expected: 120 },
+  { configured: 120, edited: "1", expected: 1 },
+  { configured: undefined, edited: "86400", expected: 86400 },
+])(
+  "console query limit saves $expected seconds without changing other Snowflake settings",
+  async ({ configured, edited, expected }) => {
+    const existing: ConnectionProfile = {
+      ...snowflakeProfile("externalBrowser"),
+      safeMode: "confirm",
+      snowflake: {
+        ...snowflakeProfile("externalBrowser").snowflake!,
+        reviewedConsole: true,
+        reviewedDml: true,
+        reviewedDdl: false,
+        ...(configured === undefined ? {} : { reviewedConsoleTimeoutSeconds: configured }),
+      },
+    };
+    vi.mocked(client.call).mockImplementation(async (command, args) => {
+      if (command === "save_profile") return args!.profile;
+      if (command === "prepare_connection") throw new Error("Stop after profile save");
+      return null;
+    });
+    render(<ConnectionDialog profile={existing} onClose={vi.fn()} />);
+    const input = screen.getByLabelText("Console query limit (seconds)") as HTMLInputElement;
+    expect(input.value).toBe(String(configured ?? 65));
+    expect(input.min).toBe("1");
+    expect(input.max).toBe("86400");
+    expect(input.step).toBe("1");
+    expect(input.getAttribute("aria-describedby")).toBeTruthy();
+    if (edited !== undefined) fireEvent.change(input, { target: { value: edited } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save and connect" }).closest("form")!);
+    await waitFor(() =>
+      expect(client.call).toHaveBeenCalledWith("save_profile", {
+        profile: {
+          ...existing,
+          snowflake: { ...existing.snowflake, reviewedConsoleTimeoutSeconds: expected },
+        },
+        passphrase: null,
+      }),
+    );
+    await screen.findByRole("alert");
+  },
+);
+
+test.each(["", "0", "-1", "1.5", "86401", "NaN", "Infinity", "1e2"])(
+  "invalid console query limit %j cannot save a profile or begin connecting",
+  (value) => {
+    const existing = snowflakeProfile("externalBrowser");
+    render(
+      <ConnectionDialog
+        profile={{
+          ...existing,
+          safeMode: "confirm",
+          snowflake: { ...existing.snowflake!, reviewedConsole: true },
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Console query limit (seconds)"), { target: { value } });
+    // Invoke the handler directly through submit too: native form constraints are
+    // useful, but cannot be the only guard against an invalid numeric payload.
+    fireEvent.submit(screen.getByRole("button", { name: "Save and connect" }).closest("form")!);
+    expect(screen.getByRole("alert").textContent).toContain("whole number from 1 to 86400");
+    expect(client.call).not.toHaveBeenCalled();
+  },
+);
+
+test("a hidden console query limit is preserved without enabling console consent", async () => {
+  const existing = snowflakeProfile("externalBrowser");
+  existing.snowflake = {
+    ...existing.snowflake!,
+    reviewedConsole: false,
+    reviewedConsoleTimeoutSeconds: 120,
+  };
+  vi.mocked(client.call).mockImplementation(async (command, args) => {
+    if (command === "save_profile") return args!.profile;
+    if (command === "prepare_connection") throw new Error("Stop after profile save");
+    return null;
+  });
+  render(<ConnectionDialog profile={existing} onClose={vi.fn()} />);
+  expect(screen.queryByLabelText("Console query limit (seconds)")).toBeNull();
+  fireEvent.submit(screen.getByRole("button", { name: "Save and connect" }).closest("form")!);
+  await waitFor(() =>
+    expect(client.call).toHaveBeenCalledWith(
+      "save_profile",
+      expect.objectContaining({
+        profile: expect.objectContaining({
+          snowflake: expect.objectContaining({
+            reviewedConsole: false,
+            reviewedConsoleTimeoutSeconds: 120,
+          }),
+        }),
+      }),
+    ),
+  );
+  await screen.findByRole("alert");
+});

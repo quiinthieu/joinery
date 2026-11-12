@@ -16,7 +16,7 @@ import { gunzipSync } from "node:zlib";
 import assert from "node:assert/strict";
 import { installQuerySubmitGuard } from "../src/query-submit-guard.mjs";
 import { verifyTransportSources } from "../src/transport-source-pins.mjs";
-import { Helper } from "../src/helper.mjs";
+import { Helper, connectionOptions } from "../src/helper.mjs";
 import { deriveSetupLedger } from "../src/disposable-setup-ledger.mjs";
 
 const [scenario, transport] = process.argv.slice(2);
@@ -43,6 +43,7 @@ const allowed = new Set([
   "helper-ack-drain",
   "helper-database",
   "reviewed-success",
+  "reviewed-timeout-policy",
   "reviewed-context-partial",
   "reviewed-ack-drain",
   "reviewed-file-veto",
@@ -418,6 +419,7 @@ try {
             },
           ];
         }
+        if (scenario === "reviewed-timeout-policy") await pause(1500);
         return json(response, reply);
       }
       if (setupScenario) {
@@ -817,6 +819,30 @@ try {
   guard?.setAuthority({ protocol: `${protocol}:`, hostname: "127.0.0.1", port });
   phase = "sdk-import";
   const require = createRequire(new URL("../package.json", import.meta.url));
+  // Test-only observation at the actual Axios request facade. Pinned Axios
+  // calls RedirectableRequest.setTimeout; follow-redirects delegates that to
+  // the socket and its own timer, bypassing ClientRequest.setTimeout. Keep the
+  // real facade, SDK, admission guard, receiver, arguments and return values.
+  if (scenario === "reviewed-timeout-policy") {
+    report.observedQueryTimeouts = [];
+    report.queryTimeoutObservationLayer = "follow-redirects-request";
+    const redirects = require("follow-redirects");
+    for (const transport of [redirects.http, redirects.https]) {
+      const originalRequest = transport.request;
+      transport.request = function (...args) {
+        const queryRequest = args[0]?.path?.includes("/queries/v1/query-request");
+        const request = Reflect.apply(originalRequest, this, args);
+        if (queryRequest) {
+          const originalSetTimeout = request.setTimeout;
+          request.setTimeout = function (milliseconds, ...timeoutArgs) {
+            report.observedQueryTimeouts.push(milliseconds);
+            return Reflect.apply(originalSetTimeout, this, [milliseconds, ...timeoutArgs]);
+          };
+        }
+        return request;
+      };
+    }
+  }
   const sdk = require("snowflake-sdk");
   assert.equal(require("snowflake-sdk/package.json").version, "3.4.1");
   sdk.configure({
@@ -838,7 +864,13 @@ try {
     clientRequestMFAToken: false,
     clientStoreTemporaryCredential: false,
     keepAlive: false,
-    timeout: 1000,
+    timeout:
+      scenario === "reviewed-timeout-policy"
+        ? connectionOptions(
+            { reviewedConsoleTimeoutSeconds: 120 },
+            join(root, "disabled-config.json"),
+          ).timeout
+        : 1000,
     arrayBindingThreshold: 1_000_000,
     ...(scenario === "untrusted-tls" ? { retryTimeout: 0, sfRetryMaxLoginRetries: 0 } : {}),
     ...(proxyPort ? { proxyHost: "127.0.0.1", proxyPort, proxyProtocol: "http" } : {}),
@@ -954,6 +986,8 @@ try {
       send("1", SQL);
       await bounded(terminal);
       assert.equal(report.queryPosts, 1);
+      if (scenario === "reviewed-timeout-policy")
+        assert.deepEqual(report.observedQueryTimeouts, [125000]);
       assert.equal(report.singleStatementParameter, true);
       assert.equal(report.originalAck, true);
       assert.equal(report.ackBeforeTerminal, true);

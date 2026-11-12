@@ -1,5 +1,19 @@
 # Daily DataGrip replacement acceptance
 
+## Configured long-query behavior (12 November 2026)
+
+The [query-limit contract](snowflake-console-query-limits.md) adds concrete local
+acceptance for configurable execution/result-delivery budgets. Require native
+validation and persistence, exact server review/fingerprint binding, stale-profile
+revocation, completion beyond the former 65-second limit, short-limit retirement
+with untouched suffix, explicit cancellation and acknowledgement recording that
+crosses expiry without losing original evidence. Exercise the actual browser
+settings/review/results/restart flow. Local synthetic checks now pass, including
+the actual browser workflow; the ledger records exact source and fixture fixes.
+A finite 24-hour cap does not close
+complete long-query parity. Approved account qualification and packaged macOS
+evaluation remain required.
+
 ## Retained reviewed SQL console (12 November 2026, local integration)
 
 The [retained-console walkthrough](snowflake-sdk-console-workflow.md) describes

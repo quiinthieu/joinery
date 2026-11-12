@@ -40,6 +40,8 @@ pub struct SnowflakeConsolePlan {
     /// against the trusted stored plan before the first admission.
     pub digest: String,
     pub mode: SnowflakeConsoleMode,
+    /// Immutable per-unit execution/result-delivery budget; settlement is separate.
+    pub timeout_seconds: u32,
     /// Aligned with the immutable ordered review statements.
     pub validations: Vec<SnowflakeConsoleValidation>,
 }

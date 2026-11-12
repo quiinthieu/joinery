@@ -1,5 +1,18 @@
 # Implementation and release status
 
+## Configured console query limits (12 November 2026, locally verified)
+
+The [query-limit contract](snowflake-console-query-limits.md) defines persisted
+per-profile settings, immutable native review and separate execution/settlement
+bounds. Local verification passes 80 focused native cases (one internal child
+ignored), 121 focused frontend cases, 194 affected actual-SDK loopback cases,
+full validation with 921 frontend / 561 standard Rust cases (137 default ignores),
+and the actual browser settings/review/results/full-restart workflow. The later
+harness-only corrections pass three binary regressions and strict Rust checks;
+the ledger separates those source pins. Normal packaging is pending; the local
+bundle below describes the preceding source. Real long-query/cancellation, packaged UI and owner
+acceptance remain required.
+
 ## Durable console admission decisions (12 November 2026)
 
 Committed pre-admission refusals now have SQL-free recovery by client identity,

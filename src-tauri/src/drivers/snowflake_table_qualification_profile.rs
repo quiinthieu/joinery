@@ -133,6 +133,7 @@ impl Input {
                 reviewed_dml: true,
                 reviewed_ddl: true,
                 reviewed_console: false,
+                reviewed_console_timeout_seconds: None,
                 role: self.role.clone(),
                 warehouse: self.warehouse.clone(),
                 schema: self.schema.clone(),
