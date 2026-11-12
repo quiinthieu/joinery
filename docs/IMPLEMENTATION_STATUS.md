@@ -22,8 +22,16 @@ has no material finding. Full validation passes 823 frontend and 500 standard
 Rust tests (136 fixture/helper ignores), formatting, TypeScript, production UI
 build, compiler checks and strict all-target/all-feature Clippy. Hidden native
 startup/IPC and ten cleanup cycles pass on the same frozen source. The normal
-SDK-bearing package remains on its preceding named source until rebuilt from
-this feature commit; normal packaged UI/SSO/restart acceptance stays open.
+SDK-bearing ARM64 package builds from clean feature commit `278754b`; strict
+ad-hoc signature/resources and guarded SDK startup pass with zero authentication
+or SQL requests. Version/build 0.1.0 totals 229.35 MiB in final regular files.
+The app remains local and uninstalled; Developer ID/notarization and normal
+packaged UI/SSO/restart acceptance stay open.
+
+The next required workflow has a [reviewed SQL console/script design](snowflake-sdk-console-scripts-design.md).
+It preserves one physical session across runs without hidden SQL probes, retains
+original outcomes, and uses passive SDK context without inventing transaction
+knowledge. It remains design work, not implemented capability.
 
 Generalized mixed Snowflake scripts, account write/transaction/DDL effects,
 million-row Snowflake interaction/export, safe editing/import, broader metadata

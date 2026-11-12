@@ -116,11 +116,64 @@ running (fixture-cleanup.json). No user service or browser profile is changed.
 Relative file targets in the six changed documentation files pass (414 targets;
 fragments are not validated).
 
-The normal SDK-bearing package has not yet been rebuilt for this feature source;
-preceding package evidence retains its source boundary below. Owner hands-on
-acceptance, signing/notarization, generalized mixed scripts, actual Snowflake
-writes/transactions/DDL and complete applicable DataGrip parity remain open.
-No account activity or owner marker/profile-store access occurred.
+The implementation/regression increment is committed as
+`278754b688a05da045a5cf21e5e5f88dcd345aea`, tree
+`6a6e10107644d8bb876918c7d944b5df19dafc09`. The normal SDK-bearing ARM64 package
+passes `pnpm desktop:snowflake:bundle:mac`, exit 0 in 784.396 seconds, on that clean
+source with no changes during the check (normal-bundle.json / log). Artifact
+capture runs before any following documentation edits and verifies all 25 frozen
+source hashes (normal-bundle-build-source.json, normal-bundle-artifacts.json).
+Strict ad-hoc signature/resources and network-guarded SDK 3.4.1 startup pass:
+15,109 resource entries, zero symlinks, zero authentication and zero SQL requests.
+Version/build 0.1.0 totals 240,495,545 final regular-file bytes (229.35 MiB), at
+`src-tauri/target/release/bundle/macos/Joinery.app`. Binary SHA256 is
+37cec732c57030b7e6dfed54bf0d6df9442bd5e7dee688c8bba0692da29ab085;
+resource manifest SHA256 is
+74e1dfac7b3346d163fad04879dc7f558c73111d2eac6230a904a98e34621f1f.
+The known nonfatal rust-objcopy/libLLVM stripping warning remains recorded.
+
+The bundle is local and uninstalled/unpublished. Developer ID/notarization,
+normal packaged UI/SSO/restart, owner hands-on acceptance, generalized mixed
+scripts, actual Snowflake writes/transactions/DDL and complete applicable
+DataGrip parity remain open. Preceding package evidence retains its source
+boundary below. No account activity or owner marker/profile-store access occurred.
+
+### Next required reviewed SQL console/script design
+
+Three bounded read-only reviews use gpt-6.1-sol/high for backend architecture,
+UI integration and official Snowflake/SDK semantics. Their ignored reports are
+next-mixed-script-architecture.json, next-mixed-script-ui.json,
+next-mixed-script-official.json and next-mixed-script-response-context.json in
+.cache/verification/script-accounting. Source hashes match their captured paths;
+Tier 2 coverage generations 08:21:56Z/09:27:33Z and direct source reads cover the
+bounded evidence. SDK/dependency/generated paths are excluded and checked directly.
+These are design/research results, not application or account test passes.
+
+The resulting [required design](snowflake-sdk-console-scripts-design.md) keeps a
+retained console owner across runs, suppresses implicit SQL observers, separates
+passive SDK response context from generated-operation authority and preserves
+broader owner-authored SQL as required scope. Single-statement request overrides,
+scalar-only binds, exact pinned client file-transfer veto, original ACK/outcome
+receipts, lost-start recovery and rollback-only restrictions are specified.
+Independent review found two material omissions: lost-start-response admission
+correlation and explicit protection of recovery holds from the broad route. Both
+are resolved; final design review has no remaining material finding
+(mixed-script-design-review.json). Reviewed design SHA256 is
+d0345f36a0e093044977fde801a24a6ab6136eb4a15952722d6815718e130548.
+No application behavior, SQL admission, account plan or execution authority is
+changed by this design. Implementation, real Snowflake effects, normal packaged
+workflow and owner acceptance remain open. The private canonical hub is not
+published under the user's no-publication instruction; repository status remains
+the durable local record.
+
+The following documentation-only checkpoint checks all 381 relative file
+targets in its five owned files with no missing targets; fragments are not
+validated (doc-links-final.json). Git diff/identity checks pass. The new design
+passes Prettier. The four existing status/matrix/roadmap/ledger files have
+Prettier warnings on both committed baseline and current text, confirmed by
+read-only checks (doc-format-check.json); no unrelated bulk formatting is added.
+Application source is unchanged since the clean package capture, so application
+checks above retain their named source boundary.
 
 ### CHECK-constraint inspection (12 November 2026)
 

@@ -24,7 +24,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `313bc11`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `278754b`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -51,12 +51,25 @@ not substitute for completing the rows.
 | --- | --- | --- |
 | Truthful script terminal state | Result-limit stops with an unattempted suffix report Stopped; final events and history share planned/attempted/completed/not-attempted counts; [contract](script-execution-accounting.md) | Broader mixed Snowflake scripts remain incomplete; invocation counts do not prove server submission or commit |
 | Limits, interruption and transactions | Focused executor 13/13 and real isolated PostgreSQL 7/7 pass; byte/row limits, successful controls, errors, cancellation, explicit server termination, restart and skipped COMMIT/explicit rollback | Actual Snowflake effects/interruption and normal packaged behavior remain unqualified |
-| Editor/history/search workflow | Focused frontend 160/160 and real browser 1/1 pass; 1,000,001 synthetic PostgreSQL rows, independent untouched-UPDATE readback, metadata-only history, visible keyboard history search and fresh-run reset | Full validation passes 823 frontend / 500 standard Rust cases (136 ignores); hidden native startup/IPC and ten cleanup cycles pass; the new normal package, owner accessibility and daily acceptance remain open |
+| Editor/history/search workflow | Focused frontend 160/160 and real browser 1/1 pass; 1,000,001 synthetic PostgreSQL rows, independent untouched-UPDATE readback, metadata-only history, visible keyboard history search and fresh-run reset | Full validation passes 823 frontend / 500 standard Rust cases (136 ignores); hidden native startup/IPC, ten cleanup cycles and normal SDK-bearing package from clean `278754b` pass; owner accessibility and daily acceptance remain open |
 
-The implementation is local and unmerged. Prior package evidence below applies
-to its named source. No account requests, installation or full replacement
+The implementation is local and unmerged. The normal ARM64 package from clean
+`278754b` passes resources, strict ad-hoc signature and guarded helper startup
+with zero authentication/SQL requests. Prior evidence below applies to its named
+source. No account requests, installation or full replacement
 acceptance occurred. See the [walkthrough](migration-from-datagrip.md#script-stops-and-statement-counts)
 and [ledger](replacement-verification.md).
+
+## Required reviewed Snowflake consoles and mixed scripts
+
+The [design](snowflake-sdk-console-scripts-design.md) is prepared and independently
+reviewed; implementation and external qualification remain incomplete. It covers
+retained console ownership across runs, mixed reviewed SQL, scalar binds, explicit
+transactions, passive response context, SQL-free local outcome recovery and
+preserving LAST_QUERY_ID adjacency. Broad owner-authored SQL and separate file
+transfer/import permissions remain required. Existing probe-bearing actions
+cannot simply be looped to establish this workflow. The roadmap keeps broader
+metadata, editing/import, authoring, performance and native usability in scope.
 
 ## Local CHECK inspection (12 November 2026)
 

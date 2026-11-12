@@ -22,8 +22,11 @@ has no material finding. Full validation passes 823 frontend and 500 standard
 Rust tests (136 fixture/helper ignores), formatting, TypeScript, production UI
 build, compiler checks and strict all-target/all-feature Clippy. Hidden native
 startup/IPC and ten cleanup cycles pass on the same frozen source. The normal
-SDK-bearing package remains on its preceding named source until rebuilt from
-this feature commit; normal packaged UI/SSO/restart acceptance stays open.
+SDK-bearing ARM64 package builds from clean feature commit `278754b`; strict
+ad-hoc signature/resources and guarded SDK startup pass with zero authentication
+or SQL requests. Version/build 0.1.0 totals 229.35 MiB in final regular files.
+The app remains local and uninstalled; Developer ID/notarization and normal
+packaged UI/SSO/restart acceptance stay open.
 
 Generalized mixed Snowflake scripts, account write/transaction/DDL effects,
 million-row Snowflake interaction/export, safe editing/import, broader metadata
@@ -57,12 +60,16 @@ acceptance remain required. The Goal is active and incomplete.
 
 ### Next product priorities
 
-1. Add a retained, reviewed sequential mixed-script workflow using the existing
-   typed read/DML/boundary operations. Read-only Run all and typed batch parameters
-   already work; do not describe all multi-statement SQL as unsupported. Compile
-   the full script before SQL, preserve original outcomes across interruption and
-   reject disallowed suffixes before issuing anything. No automatic replay,
-   commit, rollback, reconnect or suffix resume.
+1. Implement the required [reviewed SQL console/script design](snowflake-sdk-console-scripts-design.md):
+   one retained owner across runs, private execution without hidden SQL observers,
+   broad reviewed owner-authored SQL, scalar binds and explicit transaction
+   boundaries. Reuse transport primitives beneath public probe-bearing actions;
+   looping those actions would alter LAST_QUERY_ID and session semantics. Retain
+   passive per-field SDK response context separately from coherent generated-action
+   authority. Preserve rollback-only recovery, lost-start-response correlation,
+   whole-plan local admission, original outcomes and an untouched suffix. No
+   automatic replay, settlement, reconnect or suffix resume. Read-only Run all and
+   typed batch parameters already work; the broader workflow remains incomplete.
 2. Continue complete metadata/search, safe grid editing/import, broader DDL/session
    commands, plans/performance, actual million-row Snowflake interaction/export
    and normal packaged persistence/accessibility. All remain in required scope.
