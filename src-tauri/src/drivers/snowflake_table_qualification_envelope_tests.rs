@@ -197,6 +197,7 @@ fn envelope_fixed_policy_is_recomputed_instead_of_restored_from_reviewed_bytes()
         ("authentication", json!("localApplicationOauth")),
         ("reviewedDml", json!(false)),
         ("reviewedDdl", json!(false)),
+        ("reviewedConsole", json!(true)),
         ("tlsMode", json!("disable")),
         ("port", json!(80)),
         ("ssh", json!(true)),

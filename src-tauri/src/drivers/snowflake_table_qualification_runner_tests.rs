@@ -307,6 +307,7 @@ export default sdk;
                         authentication: SnowflakeAuthentication::ExternalBrowser,
                         reviewed_dml: true,
                         reviewed_ddl: true,
+                        reviewed_console: false,
                         role: "QUALIFICATION".into(),
                         warehouse: "FIXTURE_WH".into(),
                         schema: SCHEMA.into(),

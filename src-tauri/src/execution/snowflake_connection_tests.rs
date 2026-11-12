@@ -33,6 +33,7 @@ fn profile() -> ConnectionProfile {
             authentication: SnowflakeAuthentication::ExternalBrowser,
             reviewed_dml: false,
             reviewed_ddl: false,
+            reviewed_console: false,
             role: "ROLE".into(),
             warehouse: "WH".into(),
             schema: "PUBLIC".into(),

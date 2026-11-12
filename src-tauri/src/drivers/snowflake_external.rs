@@ -34,6 +34,8 @@ use std::{
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::sync::CancellationToken;
 
+pub(crate) mod console;
+
 const SQL_BYTES: usize = 262_144;
 const DDL_GRANT_TTL: Duration = Duration::from_secs(60);
 
@@ -161,6 +163,8 @@ pub struct SnowflakeExternal {
     session_id: String,
     identity: Value,
     lane: AsyncMutex<()>,
+    // Permanent once claimed; releasing a run never reenables ordinary probes.
+    console_mode: Mutex<Option<String>>,
     active: Mutex<Option<Active>>,
     browsing: Mutex<BrowseState>,
     session_options: Mutex<SessionOptionsState>,
@@ -341,6 +345,7 @@ impl SnowflakeExternal {
             session_id: session_id.into(),
             identity,
             lane: AsyncMutex::new(()),
+            console_mode: Mutex::new(None),
             active: Mutex::new(None),
             browsing: Mutex::new(BrowseState::default()),
             session_options: Mutex::new(SessionOptionsState::default()),
@@ -419,9 +424,13 @@ impl SnowflakeExternal {
         self.shutdown.subscribe()
     }
     fn start_shutdown(&self) {
+        {
+            // Serialize local revocation with the console's final dispatch check.
+            let _mode = self.console_mode.lock();
+            self.closed.cancel();
+        }
         *self.transaction_authority.lock() = TransactionAuthorityState::default();
         *self.ddl_authority.lock() = DdlAuthorityState::default();
-        self.closed.cancel();
         self.invalidate_session_options();
         if self.shutdown_started.swap(true, Ordering::SeqCst) {
             return;
@@ -530,6 +539,7 @@ impl SnowflakeExternal {
     }
 
     fn require_unrestricted(&self) -> AppResult<()> {
+        self.require_ordinary_mode()?;
         #[cfg(all(unix, feature = "test-harness"))]
         self.check_metadata_observer()?;
         if self.is_closed() {
@@ -641,6 +651,7 @@ impl SnowflakeExternal {
         state: &TransactionAuthorityState,
         request: &TransactionControlRequest,
     ) -> AppResult<()> {
+        self.require_ordinary_mode()?;
         if self.is_closed() {
             return Err(closed_error());
         }
@@ -682,6 +693,7 @@ impl SnowflakeExternal {
         state: &TransactionAuthorityState,
         request: &SnowflakeDmlRequest,
     ) -> AppResult<crate::safety::snowflake_dml::Canonical> {
+        self.require_ordinary_mode()?;
         if self.is_closed() {
             return Err(closed_error());
         }
@@ -715,6 +727,7 @@ impl SnowflakeExternal {
     }
 
     fn require_ddl_policy(&self) -> AppResult<()> {
+        self.require_ordinary_mode()?;
         if self.is_closed() {
             return Err(closed_error());
         }
@@ -1174,6 +1187,7 @@ impl SnowflakeExternal {
         let _lane = tokio::time::timeout(Duration::from_millis(1500), self.lane.lock())
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The Snowflake session is busy"))?;
+        self.require_ordinary_mode()?;
         if self.is_closed() {
             return Err(closed_error().with_completion_invalidated());
         }
@@ -1457,6 +1471,7 @@ impl SnowflakeExternal {
         max_rows: u64,
         max_bytes: u64,
     ) -> AppResult<u64> {
+        self.require_ordinary_mode()?;
         #[cfg(all(unix, feature = "test-harness"))]
         self.check_metadata_observer()?;
         let mut operation = self
@@ -2398,6 +2413,7 @@ impl Driver for SnowflakeExternal {
     }
 
     async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        self.require_ordinary_mode()?;
         if session_id != self.session_id {
             return Err(AppError::invalid("Invalid Snowflake session"));
         }
@@ -2441,6 +2457,7 @@ impl Driver for SnowflakeExternal {
     }
 
     async fn session_context_options(&self, session_id: &str) -> AppResult<SessionContextOptions> {
+        self.require_ordinary_mode()?;
         if session_id != self.session_id {
             return Err(AppError::invalid("Invalid Snowflake session"));
         }
@@ -2990,7 +3007,10 @@ impl Driver for SnowflakeExternal {
             .await
     }
     async fn cancel(&self) -> AppResult<()> {
-        self.closed.cancel();
+        {
+            let _mode = self.console_mode.lock();
+            self.closed.cancel();
+        }
         let active = self.active.lock().clone();
         let result = if let Some(mut active) = active {
             let already_terminal = active.terminal.borrow().clone();
@@ -3429,6 +3449,10 @@ mod session_tests {
     use super::*;
     use std::path::PathBuf;
 
+    mod console_tests {
+        include!("snowflake_external/console_tests.rs");
+    }
+
     mod qualification_metadata_tests {
         include!("snowflake_qualification_metadata_adapter_tests.rs");
     }
@@ -3769,6 +3793,29 @@ process.stdin.on('end', retire);
                 crate::drivers::snowflake_qualification_transport::TransportAttachment,
             >,
         ) -> Self {
+            Self::open_fixture(
+                safe_mode,
+                reviewed_dml,
+                reviewed_ddl,
+                false,
+                metadata_observer,
+                transport,
+                FIXTURE,
+            )
+            .await
+        }
+
+        async fn open_fixture(
+            safe_mode: SafeMode,
+            reviewed_dml: bool,
+            reviewed_ddl: bool,
+            reviewed_console: bool,
+            metadata_observer: Option<MetadataAttachment>,
+            transport: Option<
+                crate::drivers::snowflake_qualification_transport::TransportAttachment,
+            >,
+            fixture: &str,
+        ) -> Self {
             let scripts = tempfile::tempdir().unwrap();
             let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -3779,7 +3826,7 @@ process.stdin.on('end', retire);
                     .unwrap()
                     .to_string()
             };
-            let script = FIXTURE
+            let script = fixture
                 .replace(
                     "HELPER_URL",
                     &serde_json::to_string(&source_url("helper.mjs")).unwrap(),
@@ -3826,6 +3873,7 @@ process.stdin.on('end', retire);
                     authentication: SnowflakeAuthentication::ExternalBrowser,
                     reviewed_dml,
                     reviewed_ddl,
+                    reviewed_console,
                     role: "ROLE".into(),
                     warehouse: "WH".into(),
                     schema: "PUBLIC".into(),

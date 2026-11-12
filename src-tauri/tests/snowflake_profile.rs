@@ -23,6 +23,7 @@ fn profile() -> ConnectionProfile {
             authentication: SnowflakeAuthentication::LocalApplicationOauth,
             reviewed_dml: false,
             reviewed_ddl: false,
+            reviewed_console: false,
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),
             schema: "PUBLIC".into(),
@@ -478,4 +479,69 @@ fn reviewed_ddl_is_independent_defaults_false_and_requires_non_read_only_sdk() {
     let saved = studio.save_profile(sdk_ddl, None).unwrap();
     assert!(saved.snowflake.as_ref().unwrap().reviewed_ddl);
     assert!(!saved.snowflake.as_ref().unwrap().reviewed_dml);
+}
+
+#[test]
+fn reviewed_console_consent_is_independent_persisted_and_sdk_only() {
+    let mut encoded = serde_json::to_value(profile()).unwrap();
+    encoded["snowflake"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewedConsole");
+    let legacy: ConnectionProfile = serde_json::from_value(encoded).unwrap();
+    assert!(!legacy.snowflake.as_ref().unwrap().reviewed_console);
+
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    for (authentication, safe_mode) in [
+        (
+            SnowflakeAuthentication::LocalApplicationOauth,
+            SafeMode::Confirm,
+        ),
+        (
+            SnowflakeAuthentication::LocalApplicationOauth,
+            SafeMode::ReadOnly,
+        ),
+        (SnowflakeAuthentication::ExternalBrowser, SafeMode::ReadOnly),
+    ] {
+        let mut denied = profile();
+        denied.group_id = "local".into();
+        denied.safe_mode = safe_mode;
+        let config = denied.snowflake.as_mut().unwrap();
+        config.authentication = authentication;
+        config.reviewed_console = true;
+        assert_eq!(
+            studio.save_profile(denied, None).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    let mut generated_only = profile();
+    generated_only.group_id = "local".into();
+    generated_only.safe_mode = SafeMode::Confirm;
+    let config = generated_only.snowflake.as_mut().unwrap();
+    config.authentication = SnowflakeAuthentication::ExternalBrowser;
+    config.reviewed_dml = true;
+    config.reviewed_ddl = true;
+    let saved = studio.save_profile(generated_only.clone(), None).unwrap();
+    assert!(!saved.snowflake.as_ref().unwrap().reviewed_console);
+
+    let config = generated_only.snowflake.as_mut().unwrap();
+    config.reviewed_dml = false;
+    config.reviewed_ddl = false;
+    config.reviewed_console = true;
+    let saved = studio.save_profile(generated_only, None).unwrap();
+    drop(studio);
+    let reopened = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let persisted = reopened
+        .bootstrap()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|p| p.id == saved.id)
+        .unwrap();
+    let config = persisted.snowflake.unwrap();
+    assert!(config.reviewed_console);
+    assert!(!config.reviewed_dml);
+    assert!(!config.reviewed_ddl);
 }

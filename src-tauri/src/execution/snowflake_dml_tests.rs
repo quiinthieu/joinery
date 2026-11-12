@@ -24,6 +24,7 @@ fn sdk_dml_fixture(
         authentication: SnowflakeAuthentication::ExternalBrowser,
         reviewed_dml: true,
         reviewed_ddl: false,
+        reviewed_console: false,
         role: "ROLE".into(),
         warehouse: "WH".into(),
         schema: "PUBLIC".into(),

@@ -55,6 +55,7 @@ fn qualification_profile_declaration_is_fixed_and_contains_no_private_identity()
         "authentication": "externalBrowser",
         "reviewedDml": true,
         "reviewedDdl": true,
+        "reviewedConsole": false,
         "tlsMode": "verifyFull",
         "port": 443,
         "ssh": false,
@@ -107,6 +108,7 @@ fn qualification_profile_private_input_has_exactly_seven_required_string_fields(
         "caCertPath",
         "reviewedDml",
         "reviewedDdl",
+        "reviewedConsole",
         "password",
         "passphrase",
         "rememberPassword",
@@ -308,6 +310,7 @@ fn qualification_profile_verification_rejects_policy_identity_and_privacy_drift(
         |p| p.snowflake = None,
         |p| p.snowflake.as_mut().unwrap().reviewed_dml = false,
         |p| p.snowflake.as_mut().unwrap().reviewed_ddl = false,
+        |p| p.snowflake.as_mut().unwrap().reviewed_console = true,
         |p| {
             p.snowflake.as_mut().unwrap().authentication =
                 SnowflakeAuthentication::LocalApplicationOauth

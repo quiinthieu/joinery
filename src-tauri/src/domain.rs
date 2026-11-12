@@ -123,6 +123,11 @@ pub struct SnowflakeConfig {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub reviewed_ddl: bool,
+    /// Separate consent for exact owner-authored console SQL. Generated DML/DDL
+    /// permissions and legacy profiles must never implicitly grant this.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_console: bool,
     pub role: String,
     pub warehouse: String,
     pub schema: String,
