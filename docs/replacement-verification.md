@@ -14,8 +14,9 @@ The independent retained-target CHECK action is implemented locally; the
 [contract](snowflake-sdk-check-constraints-design.md) and
 [prepared walkthrough](migration-from-datagrip.md#snowflake-check-constraints-prepared-acceptance-walkthrough)
 record its limits. Full validation, changed browser and hidden native checks
-pass; a new normal SDK-bearing package is pending. Preceding package/test results below do not qualify this
-changed source.
+pass. The normal SDK-bearing package passes on clean feature commit 313bc11;
+normal account/native acceptance remains open. Preceding package/test results
+below retain their own source boundaries.
 No account requests, owner marker-store access or account approvals are included.
 
 Evidence uses `.cache/verification/check-constraints/`. Base is clean 73e47c8 on
@@ -89,6 +90,45 @@ resources are absent in this fixture. It qualifies hidden startup, IPC and
 cleanup only, not normal account UI/SSO, cold visible startup or representative
 performance. The known rust-objcopy/libLLVM SIGABRT stripping warning remains
 nonfatal; no machine/toolchain/global setting is changed to suppress it.
+
+The implementation and regression/docs increment is committed as 313bc11
+(`feat(snowflake): inspect CHECK constraints`), tree
+`ddef55546eac43687cdcf5b2b53a3e39ef21e2c9`. The normal SDK-bearing ARM64
+package builds from this clean commit, exit 0 in 239.042 seconds (3m30s optimized
+compilation), with unchanged captured source (normal-bundle.json / log).
+normal-bundle-build-source.json records the clean pre-build source and no binary
+in-use handles. normal-bundle-artifacts.json binds the final app before any
+post-package documentation edit, checks all 21 frozen source hashes and records:
+
+- `src-tauri/target/release/bundle/macos/Joinery.app`, version/build 0.1.0,
+  240,477,449 final regular-file bytes (229.34 MiB).
+- Executable SHA256
+  `310662185fd77eb11f38a2d8e251eb21030bf8b85b64934b6a48523e1b5e4d7b`.
+- Strict ad-hoc signature/resources pass, SDK 3.4.1, 15,109 runtime entries and
+  zero symlinks; guarded bundled helper startup reports zero authentication and
+  zero SQL requests. Existing runtime manifest and Node hashes are preserved in
+  the artifact receipt.
+
+The normal app is local, uninstalled and unpublished. Developer ID/notarization,
+normal app UI/SSO/restart and real account acceptance remain unqualified. The
+private project Site is not published/updated under the user's no-publication
+instruction. Local Orca worktree status records progress. No owner process,
+browser profile, global configuration, account marker store or credentials are
+changed.
+
+A separate read-only SQL planning review (next-script-review.json) confirms in
+source that parameterized classified reads run serially on one SDK session;
+generalized mixed scripts remain restricted. Source suggests truncation can stop
+an unexecuted suffix while status/count reporting stays ambiguous. This is a
+source-level concern, not a reproduced runtime defect. Next work must reproduce
+row/byte-limit cases with a distinctive second read and a nontruncated control,
+then verify planned/completed/skipped accounting in UI/history. A later retained
+mixed-script coordinator must preserve typed write/boundary authority and
+original outcomes; broader DDL/session/scripting remains required. Tier 2
+generation 08:05:01Z matched evidence metadata; a recorded
+snowflake_process.rs:1314–1318 gap was read directly and noisy graph relationships
+were checked against source. No tests, builds, edits or account activity were
+performed for that review.
 
 Official source refresh (official-refresh.json) confirms the five VARCHAR fields,
 including CONSTRAINT_TABLE, and current-role visibility. The view supplies no

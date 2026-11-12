@@ -4,9 +4,12 @@
 
 A separate retained-target **View CHECK constraints** action is implemented
 locally. Focused/full validation, changed browser checks and independent review
-pass, as do hidden native startup/IPC and cleanup; new normal package evidence
-is pending. See the
-[ledger](replacement-verification.md) for actual completed commands. This read-only inventory neither enables editing nor closes
+pass, as do hidden native startup/IPC and cleanup. The normal SDK-bearing ARM64
+package builds from clean 313bc11 and passes resource/signature/guarded-startup
+checks without account requests. It is local and uninstalled; normal packaged
+SSO/usage and Developer ID/notarization remain open. See the
+[ledger](replacement-verification.md) for actual completed commands. This
+read-only inventory neither enables editing nor closes
 the full metadata or DataGrip replacement gate. No account activity is included.
 
 ## Closed read and retained authority

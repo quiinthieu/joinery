@@ -10,9 +10,12 @@ identity, complete bounded results and inert clause display. Focused frontend/IP
 passes 803 frontend / 486 standard Rust tests (129 fixture/helper ignores) and
 strict checks; the changed synthetic browser workflow passes 1/1. Independent
 bounded UI/integration and backend reviews have no material finding. Hidden
-native startup/IPC and 10 cleanup cycles pass; a new normal SDK-bearing package
-is pending. No account requests or production qualification-ledger expansion are
-included.
+native startup/IPC and 10 cleanup cycles pass. The normal SDK-bearing ARM64
+package builds from clean 313bc11; strict ad-hoc signature/resources and guarded
+helper startup pass with zero authentication/SQL requests. Version/build 0.1.0
+totals 229.34 MiB in final regular files. It remains local and uninstalled;
+Developer ID/notarization and normal app UI/SSO/restart acceptance remain open.
+No account requests or production qualification-ledger expansion are included.
 
 The [prepared walkthrough](migration-from-datagrip.md#snowflake-check-constraints-prepared-acceptance-walkthrough)
 leaves actual role visibility, output compatibility, interruption and normal
@@ -20,6 +23,28 @@ packaged usability open. CHECK creation/modification/validation, cross-database
 catalogs, inbound relationships, safe grid editing/import, broader SQL/DDL,
 performance investigation, actual million-row Snowflake workflows and owner
 acceptance remain required. The Goal is active and incomplete.
+
+### Next product priorities
+
+1. Reproduce script early-stop reporting: a first read exceeds a row/byte limit
+   and a distinctive second read must remain unsubmitted. Compare planned,
+   completed and skipped statements in UI/history; include the nontruncated
+   control. Source review found an ambiguity, not a reproduced runtime defect.
+2. Add a retained, reviewed sequential mixed-script workflow using the existing
+   typed read/DML/boundary operations. Read-only Run all and typed batch parameters
+   already work; do not describe all multi-statement SQL as unsupported. Compile
+   the full script before SQL, preserve original outcomes across interruption and
+   reject disallowed suffixes before issuing anything. No automatic replay,
+   commit, rollback, reconnect or suffix resume.
+3. Continue complete metadata/search, safe grid editing/import, broader DDL/session
+   commands, plans/performance, actual million-row Snowflake interaction/export
+   and normal packaged persistence/accessibility. All remain in required scope.
+
+The read-only planning review is recorded in the [ledger](replacement-verification.md)
+and ignored next-script-review.json; it ran no tests or account activity. Account
+qualification under owner-permitted SANDBOX.BILLIE_TESTING still requires a fresh
+reviewed exact Plan/window and possible-billing approval. The expired plan grants
+no authority; keep independent product work moving.
 
 ## Product increment: select a referenced table (12 November 2026)
 

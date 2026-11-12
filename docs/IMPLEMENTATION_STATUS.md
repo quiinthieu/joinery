@@ -10,9 +10,12 @@ identity, complete bounded results and inert clause display. Focused frontend/IP
 passes 803 frontend / 486 standard Rust tests (129 fixture/helper ignores) and
 strict checks; the changed synthetic browser workflow passes 1/1. Independent
 bounded UI/integration and backend reviews have no material finding. Hidden
-native startup/IPC and 10 cleanup cycles pass; a new normal SDK-bearing package
-is pending. No account requests or production qualification-ledger expansion are
-included.
+native startup/IPC and 10 cleanup cycles pass. The normal SDK-bearing ARM64
+package builds from clean 313bc11; strict ad-hoc signature/resources and guarded
+helper startup pass with zero authentication/SQL requests. Version/build 0.1.0
+totals 229.34 MiB in final regular files. It remains local and uninstalled;
+Developer ID/notarization and normal app UI/SSO/restart acceptance remain open.
+No account requests or production qualification-ledger expansion are included.
 
 The [prepared walkthrough](migration-from-datagrip.md#snowflake-check-constraints-prepared-acceptance-walkthrough)
 leaves actual role visibility, output compatibility, interruption and normal
