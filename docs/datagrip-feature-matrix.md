@@ -45,6 +45,17 @@ application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.
 
+## Checked receipt accounting (13 November 2026)
+
+| Capability | Implemented and verified scope | Remaining gate |
+| --- | --- | --- |
+| Independent logical charge validation | Bounded integer-row recomputation during startup/migration/restore; checked field, count, aggregate and SQLite integer bounds. Eight arithmetic/SQLite and two lifecycle cases pass; full validation 997 frontend / 629 standard Rust cases. Existing schema/trigger definitions unchanged | Durable reservation/admission enrollment, atomic history/audit and publisher sealing, full-capacity/resource and actual-account/owner acceptance |
+| Existing count boundaries | Source-pinned 10,000-positive and 10,000-refusal small-record cases pass, including preserved originals and atomic restore-union rejection | These profiles do not prove all-100-unit/max-payload capacity, 8 GiB policy, memory plateau or full-capacity recovery; `retentionEnabled=false` |
+
+See the [ledger](replacement-verification.md#checked-receipt-accounting-13-november-2026-local-source-verified).
+The local runnable package remains the `f9c1ce2` recovery app below; this backend
+accounting increment has not been packaged separately.
+
 ## Encrypted metadata recovery (12 November 2026, locally verified)
 
 | Capability | Current source status | Evidence / required gate |
@@ -1028,7 +1039,7 @@ every feature. Do not copy JetBrains code, icons, or proprietary assets.
 | X03 Async execution/cancellation — DG-X | X, D | IMPLEMENTED_UNVERIFIED / H | Owned cancellation/quarantine exist; rerun races and cleanup | P0 / High | Jobs/session lifetime; PMSR; engine | Queued/active/late cancellation, lost acknowledgements / existing |
 | X04 Transactions/session controls — DG-S | `drivers/{postgres,mysql}.rs`, `execution.rs` (`set_transaction_mode`, `commit_transaction`, `rollback_transaction`), `Workbench.tsx`, W | VERIFIED_COMPLETE / H (bounded R4) | Per-session `Auto-commit` vs `Manual commit` mode on PostgreSQL & MySQL/MariaDB, wire-observed `TransactionState` (`idle` / `inTransaction` / `failed`), explicit `Commit` (`ReadOnly` blocked, audit-logged) and `Rollback` (`Failed` recovery, audit-logged), `ErrorCode::Conflict` refusal on `Manual` → `Auto-commit` while open, MySQL phantom-tx cleanup, and independent grid commits. Savepoint UI and S/R transactions excluded | P1 / High | M06; PM; gate | Rust PG auto-BEGIN unit test, PG (`25P02` failed state) & MySQL/MariaDB manual-tx/grid-isolation integration tests, `studio.test.ts`, and browser PG/MySQL shared manual-tx Commit/Rollback/grid-isolation workflows; merged in PR #30 (`a0ba1a6`) / hold until released |
 | X05 Execution metrics — DG-X, DG-Q | QueryEvent, W, `QueryPlanView.tsx` | PARTIAL / H | Run-scoped queue wait, backend active/total, first nonempty row batch and client elapsed are distinct; missing values stay unavailable. PostgreSQL server plan times remain separate; general server/render profiling is open | P2 / Medium | Driver metrics; PMSR; read | Correct units and no client/server-time conflation / hold |
-| X06 Query history — DG-SQ | N, L, X | IMPLEMENTED_UNVERIFIED / H | Search/reopen and opt-in text exist; rerun privacy and replay paths | P1 / Low | Persistence/plans; PMSR; local | Metadata-only history and explicit rerun authorization / existing |
+| X06 Query history — DG-SQ | N, L, X | PARTIAL / H | Search/reopen and opt-in text exist. Current history reads the newest 1,000 complete rows before filtering; bounded paging/search across retained rows and atomic admitted/completed history remain required | P1 / High | Persistence/plans; PMSR; local | Existing metadata-only history and explicit rerun checks do not qualify crash-time opted-in SQL preservation, nullable pending/recovery timing, privacy suppression races or full retained-history discovery; [dependent contract](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract) |
 | X07 Raw EXPLAIN — DG-Q | `query_plan.rs`, `Studio::prepare_explain`, `QueryPlanView.tsx` | PARTIAL / H | Estimated PostgreSQL/MySQL/MariaDB/Snowflake plans; reviewed PostgreSQL plus capability-checked MariaDB JSON / MySQL TREE analysis. Raw/tree/grid share retained text. Snowflake has no executing analysis or qualified live account | P2 / Medium | A01; PM and separate S contract; gate | Current 148 frontend / 136 Rust tests and four synthetic Snowflake browser flows; prior PM fixture/browser evidence recorded separately. Local `48dfb21`, unreleased / hold |
 | X08 Error reporting/navigation — DG-X | AppError, QueryEvent.Error, W | PARTIAL / H | Error panel exists; statement source ranges/navigation absent | P1 / Medium | E07; PMSR; read | Unicode offsets and missing server positions / hold |
 

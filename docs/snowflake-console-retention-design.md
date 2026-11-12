@@ -47,6 +47,13 @@ separate from archive and preserves original outcomes.
 **The 10,000-positive and 10,000-refusal lifetime gates remain.** Native accounting
 reports logical charged bytes, while reservations, admission byte budget and
 available journal budget remain unavailable. `retentionEnabled` is false. The
+13 November accounting prerequisite independently recomputes those logical
+charges from bounded integer rows, with checked per-record/aggregate arithmetic,
+during startup, migration and restore. Its schema-4 trigger definitions remain
+unchanged; full validation passes 997 frontend / 629 standard Rust cases. The
+two 10,000-count small-record profiles do not establish full-payload capacity.
+See the [source-scoped results](replacement-verification.md#checked-receipt-accounting-13-november-2026-local-source-verified).
+The
 following [encrypted recovery increment](encrypted-metadata-recovery.md) now has
 full validation, actual browser/hidden-native acceptance and normal SDK-bearing
 packaging from clean `f9c1ce2`. Its 20-copy / 64 GiB aggregate / 16 GiB plaintext
@@ -210,6 +217,67 @@ and restore of terminal-but-unsettled branches. Check exact original ACKs and
 identity deduplication, retained reservations and zero additional remote SQL.
 The existing count gates and `retentionEnabled=false` remain unchanged while
 these prerequisites and full-capacity/resource acceptance are incomplete.
+
+### Atomic history lifecycle and privacy contract
+
+The dependent implementation must preserve opted-in query history across a crash
+after admission. Store the original permitted SQL once in a pending history row;
+keep lifecycle metadata, receipts, audits and replay/control payloads SQL-free.
+Do not omit the original text merely to simplify reservation recovery. Bind
+values and rewritten wire SQL remain excluded. This is a proposed contract,
+not current runtime behavior.
+
+Use transaction-scoped helpers in the same SQLite store:
+
+| Transition | Atomic local writes |
+| --- | --- |
+| Prepare | Original positive receipt, bounded SQL-free lifecycle metadata, pending history row and deterministic started audit. Exact commit/readback precedes positive admission confirmation and dispatch |
+| Completion | Original terminal, conditional update of the existing history row, exact finished audit and applied/suppressed disposition. Do not accept another SQL copy from an old in-memory completion payload |
+| Publisher seal | After every owned late observation is recorded, seal publication authority and settle the reservation. Failed or uncertain seal remains a recording obligation |
+| Recovery | Under the normal exclusive owner lease, preserve existing permitted history SQL, recover original receipt uncertainty locally and update history with explicit recovery provenance. No SQL dispatch |
+
+History is execution metadata, not permission to resume. A pending row means
+“admitted; completion pending,” not proof of dispatch or server submission.
+Give history-specific `status` and `elapsedMs` nullable representations plus
+closed provenance; legacy numeric duration/completed status remain readable.
+Render unavailable duration and pending/recovered state explicitly in the history
+view and Search Everywhere. Do not add a fake completed outcome to the shared
+`RunStatus` enum. Recovery of a nonterminal original cannot invent a measured
+duration, rollback, failure, cancellation or delivery result. An already committed
+terminal preserves its original completion status/duration even if publication
+later fails. Opening saved SQL requires an explicit new-tab action.
+
+History privacy/disposition is separate from immutable original receipt evidence.
+Clear history atomically removes history rows and suppresses already-admitted
+pending obligations. Pruning must do the same for removed pending rows. Profile
+opt-out/deletion redacts pending SQL irreversibly; re-enabling storage does not
+resurrect an existing run's text. If the pending history row is missing, mark
+completion suppressed rather than reinserting it. Applied-but-pruned/cleared
+completion must never become replayable. Restore merges this monotonic current
+suppression/redaction independently of original outcomes; compatible pending SQL
+is preserved, contradictory non-redacted original text/completion rejects, and
+backup-only pending history receives explicit restore-recovery provenance.
+
+The original-script limit is 1,048,576 UTF-8 bytes, each selected/parsed unit is
+at most 262,144 bytes, there are at most 100 units, and profile names are at most
+100 UTF-8 bytes (`safety/snowflake_script.rs`, `execution.rs`). JSON escaping adds
+encoding bytes. Charge the actual history row, lifecycle metadata, audits and
+indexes, with a checked allowance for remaining growth; 16 KiB is not a history
+bound. History currently reads up to 1,000 complete rows before searching
+(`Persistence::history`). Replace this with bounded summary pages and on-demand
+SQL detail as part of the dependent workflow. Search must cover all retained
+history rather than filtering only a truncated newest prefix. Current history
+prunes at 30 days/10,000 rows; retention-policy parity/visibility remains a
+separate required acceptance item, not evidence of complete DataGrip parity.
+
+Physical writer fencing must cover generic history/audit statements as well as
+console tables. An already-open older `clear_history` or pruning statement cannot
+be allowed to bypass new suppression rules. Versioned physical tables, exact
+allowlists and raw migration lease are the straightforward design; test statements
+prepared before migration. Extend current producers, backup/restore and startup
+validation together. Required acceptance includes crash-after-Prepare text
+preservation, terminal atomicity and retry, truthful unknown timing, clear/prune/
+opt-out races, pre-migration old SQL rejection and suppression-preserving restore.
 
 ### Recording failure and working-state limits
 

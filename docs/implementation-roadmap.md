@@ -1,5 +1,28 @@
 # Joinery implementation roadmap
 
+## Checked receipt accounting (13 November 2026, locally verified)
+
+Startup, migration and restore now independently recompute journal charges with
+a checked, bounded-memory row fold. Existing schema-4 trigger definitions and
+logical charges remain unchanged. Eight arithmetic/real-SQLite cases and two
+lifecycle cases cover UTF-8, escaping, shrinkage, late observations, restart,
+legacy migration and disjoint restore. Full validation passes 997 frontend /
+629 standard Rust cases; source-pinned count-boundary profiles pass. See the
+[ledger](replacement-verification.md#checked-receipt-accounting-13-november-2026-local-source-verified).
+
+This is the accounting prerequisite for durable reservations. Continue the
+complete reservation, atomic history/audit, publisher-settlement and crash
+recovery workflow below, then full-capacity/resource acceptance. Keep both count
+gates and `retentionEnabled=false`. The normal local package remains the verified
+`f9c1ce2` recovery app; this backend increment has not been packaged separately.
+
+The dependent [atomic history lifecycle](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract)
+must preserve opted-in SQL in one pending history row before dispatch, make
+terminal/history/audit writes atomic, respect clear/prune/opt-out suppression,
+and seal publishers before reservation settlement. Bounded history summary/detail
+pages are also required: current history loads 1,000 complete rows before search,
+which omits older retained matches and permits large query-text responses.
+
 ## Encrypted metadata recovery (12 November 2026, locally verified)
 
 The [complete local recovery workflow](encrypted-metadata-recovery.md) is implemented and locally

@@ -8,6 +8,52 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Checked receipt accounting (13 November 2026, local source verified)
+
+Base is `257bb7e` on `feat/datagrip-replacement`. The lead integrated an
+independent checked fold over two integer columns per stored journal row.
+A `gpt-6.1-sol` high-effort worker owned only the accounting module/tests; a
+separate high-effort agent reviewed the frozen four-file change. No material
+finding remains within that scope. The lead's graph transport was closed;
+the reviewer's generation `2026-11-12T17:03:31Z` reported matching metadata and
+no recorded issues for five relied paths. Material conclusions use direct source.
+
+The existing charging formulas and exact schema-4 trigger definitions are
+unchanged. The independent check derives a conservative current-journal ceiling
+of 3,335,896 logical bytes for a run with all 100 maximal bounded units, and 456
+bytes for a refusal using the reader's 64-byte code bound. These bounds exclude
+future durable history/audit/settlement storage and do not reserve filesystem
+space. Eight arithmetic/SQLite tests cover UTF-8/escaping, nullable fields,
+all-100-unit bounds, atomic overflow rejection and malformed aggregates. Two
+additional real SQLite cases cover growth and shrinkage, late terminal delivery
+observations, archive, reopen, v3 migration, exact originals and disjoint restore.
+
+Evidence labels refer to `.cache/verification/reviewed-console/`; JSON receipts
+record complete commands, source hashes and before/after disk usage:
+
+| Label | Actual result |
+| --- | --- |
+| `receipt-accounting-focused-first` | All 24 matching tests pass, including the eight new arithmetic/SQLite and two lifecycle cases; 20.097-second wrapper / 0.17-second tests. Captured source unchanged |
+| `receipt-accounting-full-validation` | `pnpm validate` passes: 997 frontend cases / 70 files, 629 standard Rust cases / 139 default fixture ignores, formatting, contracts, TypeScript, production UI build, desktop compile and strict all-target/all-feature Clippy. 149.277 seconds; all 547 source pins unchanged |
+| `receipt-accounting-count-boundary-profile` | Existing 10,000-positive small-prepared-record capacity/restore-union test passes in the source-pinned debug test binary: 1.27 seconds, 28,442,624-byte maximum RSS, zero swaps; 1.280-second wrapper |
+| `receipt-accounting-refusal-boundary-profile` | Existing 10,000-refusal dedup/independent-positive-capacity/atomic-restore-union test passes: 0.82 seconds, 24,231,936-byte maximum RSS, zero swaps; 0.824-second wrapper |
+
+The profiles measure complete test processes, including fixture construction;
+they do not isolate the new fold or compare it with the previous SQLite `SUM`.
+They do not establish all-100-unit/max-payload storage, an 8 GiB admission policy,
+full-capacity recovery or a memory plateau. The new row fold adds per-row FFI
+work; full-capacity performance remains an acceptance requirement. Unchanged
+ts-rs attribute/future proc-macro compatibility warnings remain visible. External
+database fixture cases were not requalified in this accounting-only increment.
+
+No new normal package was built. The runnable local encrypted-recovery app from
+`f9c1ce2` retains executable SHA-256
+`23f100e40a553d9e18c1f62c530d64aa63ca76f4082a0cd8b75188c21238f2b5`.
+No changed UI flow, account activity, installation or publication occurred. Both
+10,000-count gates, unavailable reservation/budget DTO fields and
+`retentionEnabled=false` remain. Continue durable lifecycle/reservation integration,
+full-capacity verification, all applicable DataGrip capabilities and owner acceptance.
+
 ### Encrypted metadata recovery (12 November 2026, local workflow verified)
 
 Base is `433fbac` on `feat/datagrip-replacement`. The new

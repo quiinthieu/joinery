@@ -1,5 +1,23 @@
 # Implementation and release status
 
+## Checked receipt accounting (13 November 2026, local source verified)
+
+The current source independently folds stored receipt byte lengths through
+checked arithmetic during startup, migration and restore. The schema-4 tables,
+trigger definitions, logical charging formula and admission count gates remain
+unchanged. Eight accounting and two real SQLite lifecycle regressions pass;
+full validation passes 997 frontend / 629 standard Rust cases, with 139 fixture
+cases ignored by default, plus strict checks. Independent bounded review is clean.
+Both small-record 10,000-count boundary profiles pass; these do not establish
+full-payload capacity or memory plateau. Exact commands/source pins are in the
+[ledger](replacement-verification.md#checked-receipt-accounting-13-november-2026-local-source-verified).
+
+Durable reservations, atomic completion/history/audit and publisher settlement
+remain required before expanded retention. `retentionEnabled=false`. No new
+normal package was built for this prerequisite: the local runnable app remains
+the `f9c1ce2` recovery package below, with its executable hash rechecked unchanged.
+No account activity, installation, publication or replacement acceptance occurred.
+
 ## Encrypted metadata recovery (12 November 2026, locally verified)
 
 The new [recovery workflow](encrypted-metadata-recovery.md) passes local browser and hidden native

@@ -95,7 +95,28 @@ pub(crate) fn schema_objects(version: i64) -> AppResult<Vec<(String, String)>> {
 }
 
 fn totals(connection: &Connection) -> AppResult<(i64, i64, i64)> {
-    connection.query_row("SELECT (SELECT count(*) FROM snowflake_console_runs_v4),(SELECT count(*) FROM snowflake_console_rejections_v4),(SELECT coalesce(sum(512+length(CAST(run_id||client_request_id||session_id||connection_id||plan_digest||state||observations_json||coalesce(terminal_json,'') AS BLOB))),0) FROM snowflake_console_runs_v4)+(SELECT coalesce(sum(256+length(CAST(client_request_id||session_id||plan_digest||code AS BLOB))),0) FROM snowflake_console_rejections_v4)+(SELECT coalesce(sum(256+length(CAST(coalesce(outcome_json,'')||observations_json AS BLOB))),0) FROM snowflake_console_steps_v4)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)
+    use super::accounting::{JournalTotals, RecordKind};
+
+    // Recompute independently of the maintained control row and trigger charge
+    // expressions. Each cursor row contains only two SQLite integers; payloads
+    // and lifetime-sized receipt collections never enter this accounting pass.
+    let mut statement = connection.prepare(
+        "SELECT 0,length(CAST(run_id||client_request_id||session_id||connection_id||plan_digest||state||observations_json||coalesce(terminal_json,'') AS BLOB)) FROM snowflake_console_runs_v4
+         UNION ALL SELECT 1,length(CAST(coalesce(outcome_json,'')||observations_json AS BLOB)) FROM snowflake_console_steps_v4
+         UNION ALL SELECT 2,length(CAST(client_request_id||session_id||plan_digest||code AS BLOB)) FROM snowflake_console_rejections_v4",
+    ).map_err(db_error)?;
+    let mut rows = statement.query([]).map_err(db_error)?;
+    let mut total = JournalTotals::default();
+    while let Some(row) = rows.next().map_err(db_error)? {
+        let kind = match row.get::<_, i64>(0).map_err(db_error)? {
+            0 => RecordKind::Run,
+            1 => RecordKind::Step,
+            2 => RecordKind::Refusal,
+            _ => return Err(invalid()),
+        };
+        total.add(kind, sqlite_nonnegative(row, 1).map_err(db_error)?)?;
+    }
+    total.finish()
 }
 
 /// Called in the parent's IMMEDIATE migration transaction under the raw lease.

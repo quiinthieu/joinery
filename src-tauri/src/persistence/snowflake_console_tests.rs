@@ -2858,3 +2858,222 @@ fn console_journal_sqlite_integer_boundaries_are_checked_without_wrapping() {
     );
     validate_records(&store.connection.lock()).unwrap();
 }
+
+fn expected_logical_charge(
+    runs: &[&ConsoleRunSnapshot],
+    refusals: &[&ConsoleAdmissionRejection],
+) -> u64 {
+    fn json_size(value: &impl Serialize) -> usize {
+        serde_json::to_vec(value).unwrap().len()
+    }
+    let mut bytes = 0usize;
+    for run in runs {
+        let metadata = &run.metadata;
+        bytes += 512
+            + metadata.run_id.len()
+            + metadata.client_request_id.len()
+            + metadata.session_id.len()
+            + metadata.connection_id.len()
+            + metadata.plan_digest.len()
+            + state_name(run.state).len()
+            + json_size(&run.observations)
+            + run.terminal.as_ref().map_or(0, json_size);
+        for step in &run.steps {
+            bytes +=
+                256 + step.outcome.as_ref().map_or(0, json_size) + json_size(&step.observations);
+        }
+    }
+    for refusal in refusals {
+        bytes += 256
+            + refusal.client_request_id.len()
+            + refusal.session_id.len()
+            + refusal.plan_digest.len()
+            + serde_json::to_value(refusal.code)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .len();
+    }
+    bytes as u64
+}
+
+fn assert_logical_accounting(
+    store: &Persistence,
+    runs: &[&ConsoleRunSnapshot],
+    refusals: &[&ConsoleAdmissionRejection],
+) {
+    let storage = store.console_storage().unwrap();
+    assert_eq!(storage.positive_count, runs.len().to_string());
+    assert_eq!(storage.refusal_count, refusals.len().to_string());
+    assert_eq!(
+        storage.charged_bytes,
+        Some(expected_logical_charge(runs, refusals).to_string())
+    );
+    assert!(storage.reserved_bytes.is_none());
+    assert!(storage.admission_budget_bytes.is_none());
+    assert!(storage.free_bytes.is_none());
+    assert!(!storage.retention_enabled);
+    // This independently streams the rows and checks the trigger-maintained
+    // totals rather than trusting the storage DTO's cached control row.
+    validate_records(&store.connection.lock()).unwrap();
+}
+
+#[test]
+fn console_accounting_tracks_utf8_growth_shrink_late_observations_and_migration() {
+    let (root, store, owner) = setup();
+    assert_logical_accounting(&store, &[], &[]);
+    let negative = refusal();
+    store.console_record_rejection(&owner, &negative).unwrap();
+    let prepared = prepared(&store, &owner, 1);
+    assert_logical_accounting(&store, &[&prepared], &[&negative]);
+    let intent = intended(&store, &owner, &prepared);
+    assert_logical_accounting(&store, &[&intent], &[&negative]);
+
+    let before = expected_logical_charge(&[&intent], &[&negative]);
+    let delivered = store
+        .console_observe(
+            &owner,
+            &intent.metadata.run_id,
+            intent.revision,
+            None,
+            ConsoleObservations {
+                delivered: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // Canonical JSON true is one byte shorter than false. Charge updates must
+    // allow shrinkage without an unsigned subtraction wrapping.
+    assert_eq!(
+        expected_logical_charge(&[&delivered], &[&negative]),
+        before - 1
+    );
+    assert_logical_accounting(&store, &[&delivered], &[&negative]);
+
+    let ConsoleStepOutcome::Acknowledged(mut ack) = acknowledgement() else {
+        unreachable!()
+    };
+    ack.context.database = Some("資料庫 \"quoted\" \\ 😀".into());
+    ack.context.schema = Some("schema\nwith\ttabs".into());
+    let acknowledged = store
+        .console_step_outcome(
+            &owner,
+            &delivered.metadata.run_id,
+            delivered.revision,
+            0,
+            ConsoleStepOutcome::Acknowledged(ack),
+            ConsoleObservations::default(),
+        )
+        .unwrap();
+    assert_logical_accounting(&store, &[&acknowledged], &[&negative]);
+    let terminal = store
+        .console_finish(
+            &owner,
+            &acknowledged.metadata.run_id,
+            acknowledged.revision,
+            ConsoleStopReason::Completed,
+            2000,
+        )
+        .unwrap();
+    assert_logical_accounting(&store, &[&terminal], &[&negative]);
+    let late = store
+        .console_observe(
+            &owner,
+            &terminal.metadata.run_id,
+            terminal.revision,
+            None,
+            ConsoleObservations {
+                delivery_failed: true,
+                first_error: Some(ConsoleErrorCode::Delivery),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_logical_accounting(&store, &[&late], &[&negative]);
+
+    let summary = store
+        .console_receipt_summary(&late.metadata.client_request_id)
+        .unwrap()
+        .unwrap();
+    store
+        .console_archive_receipts(
+            &owner,
+            &SnowflakeConsoleReceiptArchiveRequest {
+                inventory_epoch: summary.inventory_epoch.clone(),
+                items: vec![archive_item(&summary)],
+                archived: true,
+            },
+            3000,
+        )
+        .unwrap();
+    assert_logical_accounting(&store, &[&late], &[&negative]);
+    drop(owner);
+    drop(store);
+    let reopened = Persistence::open(root.path()).unwrap();
+    assert_logical_accounting(&reopened, &[&late], &[&negative]);
+    assert_eq!(
+        reopened.console_run(&late.metadata.run_id).unwrap(),
+        Some(late.clone())
+    );
+    drop(reopened);
+
+    let legacy = Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    downgrade_fixture_to_v3(&legacy);
+    drop(legacy);
+    let migrated = Persistence::open(root.path()).unwrap();
+    assert_logical_accounting(&migrated, &[&late], &[&negative]);
+    assert_eq!(
+        migrated.console_run(&late.metadata.run_id).unwrap(),
+        Some(late)
+    );
+}
+
+#[test]
+fn console_accounting_restore_recomputes_disjoint_decisions_without_losing_originals() {
+    let (_root, store, owner) = setup();
+    let intent = intended(&store, &owner, &prepared(&store, &owner, 1));
+    let ack = acknowledged(&store, &owner, &intent);
+    let terminal = store
+        .console_finish(
+            &owner,
+            &ack.metadata.run_id,
+            ack.revision,
+            ConsoleStopReason::Completed,
+            2000,
+        )
+        .unwrap();
+    let live_refusal = refusal();
+    store
+        .console_record_rejection(&owner, &live_refusal)
+        .unwrap();
+    let backup_refusal = refusal();
+    let mut backup = pinned();
+    insert_rejection(&backup, &backup_refusal).unwrap();
+    merge_for_restore(&store.connection.lock(), &mut backup).unwrap();
+    validate_records(&backup).unwrap();
+    validate_schema(&backup).unwrap();
+    let (positive, negative, bytes): (i64, i64, i64) = backup
+        .query_row(
+            "SELECT positive_count,refusal_count,charged_bytes FROM snowflake_console_retention_v4",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((positive, negative), (1, 2));
+    assert_eq!(
+        bytes as u64,
+        expected_logical_charge(&[&terminal], &[&live_refusal, &backup_refusal])
+    );
+    assert_eq!(
+        read_run(&backup, &terminal.metadata.run_id).unwrap(),
+        Some(terminal)
+    );
+    assert_eq!(
+        read_rejection(&backup, &live_refusal.client_request_id).unwrap(),
+        Some(live_refusal)
+    );
+    assert_eq!(
+        read_rejection(&backup, &backup_refusal.client_request_id).unwrap(),
+        Some(backup_refusal)
+    );
+}

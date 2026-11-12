@@ -13,6 +13,7 @@ use std::{
 };
 use ts_rs::TS;
 
+mod accounting;
 mod retention;
 pub(super) use retention::migrate_v4;
 pub(crate) use retention::schema_objects;
