@@ -17,6 +17,50 @@ No account approval question is pending while local verification proceeds.
 The [verification ledger](replacement-verification.md) records current checks;
 the paragraphs below preserve preceding implementation history.
 
+### Offline review snapshot (12 November 2026)
+
+A private local snapshot now preserves the tested command from `103cb45`, the
+fixed source/build inputs archived from that commit, and the complete bundled
+runtime. The copied command matches SHA-256
+`f58aa8e648e1a900aa8e6c135da0b88ad1563b3ee183d14c9c365687360428fc`.
+The runtime resource check passes with 15,109 entries and zero symbolic links;
+every copied file matches its original bytes. Network-guarded helper startup
+passes with zero authentication and SQL requests. This is byte identity evidence,
+not build-provenance attestation or qualification of future product changes.
+
+The seven-field qualification profile is derived from the existing non-secret
+repository-local connection context. It preserves the account, user, role and
+warehouse, and selects the permitted `SANDBOX.BILLIE_TESTING` context. It contains
+no credentials and does not alter the working connection.
+
+Offline emission and separate-process verification pass for the same original
+envelope, RUN and Plan. Their window is deliberately expired (`1000`–`2000` Unix
+milliseconds), so this preview cannot be executed. Its envelope digest is
+`89531e32a9e61c5f02379fa25665259a320d839485a42ffc8ec52d7b75a9354b`.
+Private evidence is under
+`.cache/snowflake-table-review-bbace18d50ca49919a73b3eb796bfeae/`.
+No approval file, permanent consumption marker, native owner store, SSO or
+account query is created by this preparation. A future account attempt needs a
+new current-window emission and exact approval; this expired preview supplies
+neither. Frozen artifacts allow independent product development without silently
+changing the reviewed qualification inputs.
+
+Independent read-only review confirms the 32-phase order and `386 + 7S`
+application-SQL ceiling (610 at 32 visible schemas). Approval must cover seven
+complete relation inventories across the frozen visible `SANDBOX` schema census,
+two additional `BILLIE_TESTING` inventories, and the session/parameter, exact-target,
+column/descriptor and generated-table readbacks in the source ledger. This is
+broader than metadata for one table; it does not read existing table rows. The
+ceiling excludes SDK authentication, result transport, cancellation and logout
+traffic. Local deadlines and statement counts do not cap billing or guarantee
+that already submitted remote work has stopped.
+
+The frozen `plan.json` is a summary, not a self-contained exhaustive SQL listing:
+it retains legacy `limits.*_missing` descriptions, and its startup-export flag
+does not inline the startup SQL. Review it with the frozen helper SQL contract
+and Rust physical ledger. A failed attempt can leave the table or an unknown
+remote outcome; it does not authorize additional cleanup SQL or a retry.
+
 The harness-only [offline definition](../src-tauri/src/drivers/snowflake_table_qualification.rs)
 and its [tests](../src-tauri/src/drivers/snowflake_table_qualification_tests.rs)
 now implement the generated target, production-compiled DDL/DML, ordered phases,
