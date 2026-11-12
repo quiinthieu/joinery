@@ -88,6 +88,11 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+# sha2 0.10 otherwise uses its software backend on ARM64. Its accelerated
+# backend detects CPU support and retains the software fallback.
+sha2 = { version = "0.10", features = ["asm"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1"
 

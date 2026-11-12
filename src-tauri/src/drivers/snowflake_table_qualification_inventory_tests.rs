@@ -74,6 +74,22 @@ fn inventory_complete_sorted_content_includes_root_and_empty_directories() {
 }
 
 #[test]
+fn inventory_full_file_hash_matches_standard_million_byte_vector() {
+    let fixture = Fixture::new();
+    // The standard SHA-256 million-'a' vector spans many inventory reads and
+    // compression blocks; keep it independent of the selected digest backend.
+    let path = fixture.file("million-a", &vec![b'a'; 1_000_000]);
+    let inventory = Inventory::capture(&path, InventoryKind::File).unwrap();
+    assert_eq!(inventory.entries.len(), 1);
+    assert_eq!(inventory.entries[0].length, 1_000_000);
+    assert_eq!(
+        inventory.entries[0].sha256.as_deref(),
+        Some("cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+    );
+    inventory.verify(&path).unwrap();
+}
+
+#[test]
 fn inventory_hashes_full_content_despite_same_length_and_restored_mtime() {
     let fixture = Fixture::new();
     let mut bytes = vec![b'a'; 3 * 64 * 1024 + 17];
