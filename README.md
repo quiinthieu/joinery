@@ -126,6 +126,17 @@ never rewrite `main` to repair author metadata.
 
 ### Validation and local packaging
 
+Development and test builds use line-table debug information and disable Rust
+incremental caches to limit disk growth. File/line backtraces remain available;
+full debugger variable/type inspection requires a temporary debug-info override.
+Recompiling edited Rust code can take longer. Release settings are unchanged.
+See [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html).
+Before and after substantial validation or packaging, check free space with
+`df -h .` and generated output with `du -sh src-tauri/target`. Stop starting builds
+when fewer than 20 GiB are free. Build caches still grow across configurations;
+this is a smaller default, not automatic garbage collection. Remove generated
+output only after reviewing its scope and confirming no build or app uses it.
+
 GitHub Actions validates pull requests and pushes to `main` using standard
 Linux, Windows, and macOS runners. Jobs only run while the repository is public,
 where standard runner minutes are free. The workflow has no artifact uploads,

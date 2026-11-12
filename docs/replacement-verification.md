@@ -8,6 +8,31 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Build storage recovery (12 November 2026)
+
+The owner reported low iMac storage during the next retained-console increment.
+Scoped `du` measured 142 GiB in `src-tauri/target`, including 136 GiB under
+`debug` (54 GiB incremental cache, 78 GiB dependencies/object/test artifacts).
+No Cargo/rustc/packaging process or open target file remained. After explicit
+approval, only `src-tauri/target/debug` was deleted. The completed cleanup receipt
+under `.cache/verification/build-storage/approved-debug-cleanup.json` records
+145,766,936,576 bytes (135.8 GiB) net free-space increase, with 140.6 GiB free.
+All 578 captured tracked/source hashes and the retained release binary SHA256
+`37cec732c57030b7e6dfed54bf0d6df9442bd5e7dee688c8bba0692da29ab085`
+match after cleanup. Source, release app, dependencies and verification evidence
+were preserved. APFS available-space measurements, rather than summed artifact
+sizes, establish the recovery.
+
+Repository development/test profiles now disable incremental caching and use
+line-table debug information. Cargo metadata parses offline successfully and
+the release profile is unchanged. These settings reduce future artifact growth
+but do not impose a size cap or perform automatic cleanup. Recompilation can be
+slower and full debugger variable/type information is absent. README requires
+space checks before/after substantial builds and no new builds below 20 GiB
+free. No rebuild was started for the cleanup/configuration check. Existing test
+results below remain evidence for their recorded frozen sources; the next
+retained adapter/journal increment is still being authored and is unverified.
+
 ### Reviewed Snowflake console foundations (12 November 2026)
 
 Base is clean `591055d` on `feat/datagrip-replacement`. The

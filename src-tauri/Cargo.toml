@@ -110,6 +110,12 @@ rand = "0.10"
 rcgen = "0.14"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
+# Bound development/test artifacts while retaining file/line backtraces.
+# The test profile inherits dev. Full symbols/incremental caches are opt-in.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
