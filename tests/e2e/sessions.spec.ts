@@ -152,7 +152,11 @@ for (const [engine, port] of [
       .locator("..")
       .getByRole("button", { name: /^Close / });
     await close.click();
-    await expect(page.getByRole("dialog")).toContainText("transactions");
+    const closeReview = page.getByRole("dialog", { name: "Close this workspace?", exact: true });
+    await expect(closeReview).toContainText(
+      "Verify any open or unknown transaction on the database after closing an isolated session.",
+    );
+    await expect(closeReview).toContainText("Completed writes are not undone.");
     await page.getByRole("button", { name: "Keep working", exact: true }).click();
     await expect.poll(async () => (await rpc("resource_usage")).sessionCount).toBe(2);
     await close.click();

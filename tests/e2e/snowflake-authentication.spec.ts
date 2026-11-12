@@ -19,7 +19,9 @@ test("new Snowflake SSO profiles persist when offline authentication is refused"
   await page.getByRole("button", { name: "New connection", exact: true }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
   await expect(page.getByLabel("Snowflake authentication")).toHaveValue("externalBrowser");
-  await expect(page.getByText(/metadata browsing is temporarily unavailable/)).toBeVisible();
+  await expect(page.getByText(/Writable SQL requires separate consent and review/)).toBeVisible();
+  await expect(page.getByText(/will not fall back to local application OAuth/)).toBeVisible();
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toHaveValue("readOnly");
   await page.getByLabel("Connection name", { exact: true }).fill(name);
   await page
     .getByLabel("Snowflake account hostname")
@@ -36,6 +38,10 @@ test("new Snowflake SSO profiles persist when offline authentication is refused"
   const { result } = (await response.json()) as { result: Bootstrap };
   const saved = result.profiles.find((profile) => profile.name === name)!;
   expect(saved.snowflake?.authentication).toBe("externalBrowser");
+  expect(saved.safeMode).toBe("readOnly");
+  expect(saved.snowflake?.reviewedConsole).toBe(false);
+  expect(saved.snowflake?.reviewedDml).toBe(false);
+  expect(saved.snowflake?.reviewedDdl).toBe(false);
   expect(calls.filter((command) => command === "connect_prepared")).toHaveLength(0);
   expect(calls).not.toContain("catalog");
   expect(calls).not.toContain("execute");

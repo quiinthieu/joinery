@@ -458,7 +458,10 @@ for (const fixture of fixtures) {
         if (source === "CSV") {
           await expect(importer).toContainText(`Imported 1 row into ${fixture.schema}.${table}`);
           await importer.getByRole("button", { name: "Done", exact: true }).click();
-        } else await expect(page.getByRole("status")).toContainText("Changes committed");
+        } else
+          await expect(
+            page.getByRole("status").filter({ hasText: "Changes committed" }),
+          ).toHaveText("Changes committed");
         expect(await observerRows(request, observer.id, fixture.schema, table)).toEqual(
           source === "CSV"
             ? [

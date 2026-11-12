@@ -88,7 +88,9 @@ test("keyboard palette keeps search focus, traps Tab and restores its trigger", 
   await expect(page.locator(".result-footer")).toContainText("1,000,000 rows");
 });
 
-test("Snowflake form requires browser sign-in and read-only mode", async ({ page }) => {
+test("Snowflake form defaults to read-only and requires separate SDK write consent", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
@@ -98,11 +100,31 @@ test("Snowflake form requires browser sign-in and read-only mode", async ({ page
   await expect(page.getByLabel("Warehouse", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Schema", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Safe Mode", { exact: true })).toHaveValue("readOnly");
-  await expect(page.getByLabel("Safe Mode", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toBeEnabled();
   await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Connect through an SSH bastion")).toHaveCount(0);
   await expect(page.getByLabel("Snowflake authentication")).toHaveValue("externalBrowser");
   await expect(page.getByText(/External browser SSO uses the Snowflake SDK/)).toBeVisible();
+  await expect(
+    page.getByLabel("Enable reviewed Snowflake SQL console", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByLabel("Safe Mode", { exact: true }).selectOption("confirm");
+  await expect(
+    page.getByRole("checkbox", { name: /^Allow separately reviewed single INSERT/ }),
+  ).not.toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: /^Allow separately reviewed CREATE TABLE/ }),
+  ).not.toBeChecked();
+  await expect(
+    page.getByLabel("Enable reviewed Snowflake SQL console", { exact: true }),
+  ).not.toBeChecked();
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toHaveValue("readOnly");
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toBeDisabled();
+  await expect(page.getByText(/Local application OAuth uses Snowflake SQL API/)).toBeVisible();
+  await expect(
+    page.getByLabel("Enable reviewed Snowflake SQL console", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("connects and runs SQL with separate binary-backed result tabs", async ({ page }) => {
@@ -173,7 +195,9 @@ test("reviews an inline change and reads the committed value back", async ({ pag
   await expect(page.locator(".sql-preview")).toContainText('UPDATE "public"."orders"');
   await page.getByRole("button", { name: "Apply changes", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("Changes committed");
+  await expect(page.getByRole("status").filter({ hasText: "Changes committed" })).toHaveText(
+    "Changes committed",
+  );
   await expect(page.locator(".dirty-count")).toHaveCount(0);
   await page.getByRole("button", { name: "New query tab" }).click();
   await page
@@ -379,7 +403,9 @@ test("edits a single-table SELECT query result with proven provenance and shows 
   await expect(page.locator(".sql-preview")).toContainText('UPDATE "public"."orders"');
   await page.getByRole("button", { name: "Apply changes", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("Changes committed");
+  await expect(page.getByRole("status").filter({ hasText: "Changes committed" })).toHaveText(
+    "Changes committed",
+  );
   await expect(page.getByTestId("result-provenance-badge")).toHaveText(
     "Read-only result · Result is a snapshot from before these changes. Re-run query to refresh.",
   );

@@ -12,6 +12,8 @@ import type {
   SnowflakeConsoleRunView,
   SnowflakeConsoleRequestLookup,
   SnowflakeConsoleReceiptPage,
+  SessionInfo,
+  ErrorCode,
 } from "../../src/ipc/generated";
 
 // Real browser -> loopback Rust Studio -> real helper/framing/ResultStore.
@@ -22,7 +24,7 @@ test.use({ actionTimeout: 10_000 });
 test("retained console preserves adjacency, recovers a lost start response and restores receipts without replay", async ({
   page,
   request,
-}) => {
+}, testInfo) => {
   test.setTimeout(120_000);
   const root = await mkdtemp(path.join(tmpdir(), "joinery-retained-console-"));
   const reservation = createServer();
@@ -163,7 +165,28 @@ test("retained console preserves adjacency, recovers a lost start response and r
     const queryLimit = settings.getByLabel("Console query limit (seconds)", { exact: true });
     await expect(queryLimit).toHaveValue("65");
     await queryLimit.fill("120");
+    const connecting = page.waitForResponse(
+      (response) => response.url() === "http://127.0.0.1:1422/rpc/connect_prepared",
+      { timeout: 10_000 },
+    );
     await settings.getByRole("button", { name: "Save and connect", exact: true }).click();
+    const connected = (await (await connecting).json()) as {
+      result?: Pick<SessionInfo, "id">;
+      error?: { code: ErrorCode };
+    };
+    const connectOutcome = {
+      errorCode: connected.error?.code ?? null,
+      sessionReturned: typeof connected.result?.id === "string" && connected.result.id.length > 0,
+    };
+    if (connectOutcome.errorCode !== null || !connectOutcome.sessionReturned) {
+      // Only this owned synthetic child's bounded diagnostics and the native
+      // error code are attached. Native error messages may contain private data.
+      await testInfo.attach("synthetic-console-connect-failure", {
+        body: JSON.stringify({ ...connectOutcome, helperDiagnostics: diagnostics.slice(-4000) }),
+        contentType: "application/json",
+      });
+    }
+    expect(connectOutcome).toEqual({ errorCode: null, sessionReturned: true });
     await expect(settings).toHaveCount(0);
     expect(
       (await rpc<Bootstrap>("bootstrap")).profiles.find((profile) => profile.name === profileName)
