@@ -31,15 +31,20 @@ Snowflake connector performance or replacement readiness.
 
 The owner permits creating new tables under `SANDBOX.BILLIE_TESTING`; the earlier
 database-creation approval was consumed by the rejected `CREATE DATABASE` attempt
-and must not be replayed. The current internal full-runtime benchmark passes all
+and must not be replayed. The recorded internal full-runtime benchmark passes all
 32 synthetic phases at S=1 (393 SQL requests). After a reproduced S=32
 admission timeout, the accelerated-source S=32 rerun passes all 32 phases /
 610 requests. The same-source S=1 rerun also passes all 32 phases / 393 requests;
-the complete module (204 tests) and application validation (679 frontend / 467
+on that source, the complete module (204 tests) and application validation (679 frontend / 467
 standard Rust tests, strict checks) pass. These are internal results, not product or
 account acceptance. Offline source/binary/full-runtime/profile binding and one-use
-consumption are implemented; the fixed account executable, exclusive private-file
-lifecycle and construction exclusively from bound roots remain open. Before any
+consumption are implemented. The private factory now owns exclusive persistent
+attempt/workspace/state, construction exclusively from consumed roots and final
+terminal evidence, including dropped waiters. The dedicated
+[offline command](snowflake-table-offline-command.md) can emit private review
+files and verify the original bytes without connecting or launching the helper.
+It has no execute command. The fixed account entry, independently fixed permanent
+marker location and cross-process consumption acceptance remain open. Before any
 account activity, a fresh exact generated table-only plan and fresh possible-billing
 approval are required. See the [qualification attachments](snowflake-qualification-attachments.md),
 [offline SQL ledger](snowflake-qualification-sql-ledger.md), and current

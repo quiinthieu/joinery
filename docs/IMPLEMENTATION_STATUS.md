@@ -1,6 +1,35 @@
 # Implementation and release status
 
-## Fresh consumed qualification factory (12 November 2026, local integration)
+## Dedicated offline table command (12 November 2026, local integration)
+
+The dedicated `snowflake-table-qualification` binary now exposes only offline
+`emit` and `verify`. Emission binds the actual running executable/build recipe,
+generates one fresh target and exclusively persists the canonical envelope and
+Plan with private modes, synchronization and final readback. Verification
+restores the original reviewed bytes/digest in a separate process. Closed JSON
+receipts exclude profile fields; unsafe arguments fail before output creation.
+See the [command guide](snowflake-table-offline-command.md) and
+[verification ledger](replacement-verification.md) for checks and scope.
+
+The final actual-binary process suite passes **7 tests**. Full `pnpm validate`
+passes **679 frontend / 467 standard Rust tests**, with **129 fixture ignores**,
+plus formatting/build/check/strict Clippy. All 44 final frozen source hashes match.
+The preceding optimized qualification run passes **252 tests / 0 failed /
+5 default ignores**, including all eight new storage regressions; it precedes
+the one-line parser correction required by Clippy. The affected command tests
+and full validation are rerun afterward. No trap helper/compiler launches occur.
+Independent review has no unresolved material finding; the UTF-8 receipt edge is
+fixed and covered. Source-specific results and the initial lint failure remain
+in the ledger.
+
+The account execute command, independently fixed permanent marker location and
+cross-process consumption acceptance remain incomplete. No helper/compiler/SSO
+launch or account activity is supplied by either offline operation. This closes
+no product replacement gate. Fresh exact approval for the proposed table-only
+workflow under `SANDBOX.BILLIE_TESTING`, normal packaged acceptance and all
+applicable DataGrip workflows remain required. The Goal is active and incomplete.
+
+## Fresh consumed qualification factory (12 November 2026, preceding integration)
 
 The internal factory now reserves exclusive persistent attempt, workspace and
 helper-state directories, a fresh journal and terminal file before permanent

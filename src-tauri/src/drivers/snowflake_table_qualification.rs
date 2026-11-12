@@ -8,6 +8,14 @@
 //! suffixes. Harness-only policy/Studio composition supplies physical admission,
 //! lifecycle observations and durable receipts. Source/binary/private-connection
 //! binding and an authorized account entry remain separate, unfinished gates.
+//! The dedicated command exposes only offline emission and verification.
+
+#[path = "snowflake_table_qualification_cli.rs"]
+mod cli;
+pub use cli::{OfflineCommandFailure, run_offline_command};
+
+#[path = "snowflake_table_qualification_emission.rs"]
+mod emission;
 
 #[cfg_attr(
     not(test),

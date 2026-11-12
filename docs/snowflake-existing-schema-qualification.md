@@ -8,6 +8,13 @@ authentication, transaction, DROP, or possible-billing approval described here.
 No account connection, credential access, or account SQL was used to prepare this
 document. No approval question is pending while the executable boundary is absent.
 
+The dedicated [offline command](snowflake-table-offline-command.md) now emits and
+verifies original private review evidence without helper/compiler/SSO launch.
+It deliberately exposes no execute route. The fixed account entry and permanent
+marker location remain incomplete; these offline outputs cannot be used as
+execution authority. See the current
+[verification ledger](replacement-verification.md) for checks and source scope.
+
 The harness-only [offline definition](../src-tauri/src/drivers/snowflake_table_qualification.rs)
 and its [tests](../src-tauri/src/drivers/snowflake_table_qualification_tests.rs)
 now implement the generated target, production-compiled DDL/DML, ordered phases,

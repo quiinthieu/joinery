@@ -1,5 +1,36 @@
 # Joinery implementation roadmap
 
+## Dedicated offline entry and remaining execution boundary (12 November 2026)
+
+The dedicated binary and narrow facade now provide offline `emit`/`verify` with
+actual-executable binding, the release build recipe, exclusive persistent Plan/
+envelope output and exact original-byte restoration. Only emission generates a
+new target. `execute` is rejected. The [command guide](snowflake-table-offline-command.md)
+documents reproducible local preparation; the
+[verification ledger](replacement-verification.md) records current checks.
+
+The final actual-command suite passes seven tests. Full validation passes
+679 frontend / 467 standard Rust tests (129 fixture ignores) plus strict checks;
+all 44 final source hashes match. Independent review has no material finding.
+The earlier 252-test qualification result precedes the parser-only lint cleanup;
+the ledger preserves that scope and the final affected-test rerun.
+
+Next, fix permanent consumption-store placement independently of caller paths,
+then connect one separately approved execute route to the private factory. Add
+cross-process permanent RUN reuse rejection and test interrupted callers through
+retained completion/terminal evidence. Prove the complete fixed entry with the
+synthetic SDK before presenting a fresh exact account plan, metadata scope,
+window, SQL ceiling and possible-billing approval for `SANDBOX.BILLIE_TESTING`.
+No account activity or approval question is pending during offline implementation.
+
+Normal packaged SSO/reconnect/cancellation/restart, actual Snowflake lifecycle
+effects, million-row results/export, grid editing/import, broader metadata/SQL/
+schema/performance tools and every remaining applicable DataGrip workflow stay
+required. These product workflows must advance alongside the qualification
+boundary; offline evidence does not establish replacement readiness. Owner
+hands-on acceptance remains required. No install, push, merge or publication
+occurs in this increment.
+
 ## Fresh consumed factory and next account boundary (12 November 2026)
 
 The private factory now implements persistent exclusive attempt/workspace/state

@@ -83,7 +83,7 @@ pub(super) struct Window {
 }
 
 impl Window {
-    fn validate(self) -> AppResult<()> {
+    pub(super) fn validate(self) -> AppResult<()> {
         if self.not_before_unix_ms == 0
             || self
                 .expires_unix_ms
@@ -282,12 +282,13 @@ impl Envelope {
                     "build",
                     "--manifest-path",
                     "src-tauri/Cargo.toml",
+                    "--release",
                     "--locked",
                     "--no-default-features",
                     "--features",
                     "test-harness",
                     "--bin",
-                    "test-harness",
+                    "snowflake-table-qualification",
                 ],
                 os: std::env::consts::OS,
                 architecture: std::env::consts::ARCH,

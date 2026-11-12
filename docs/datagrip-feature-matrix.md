@@ -36,13 +36,34 @@ from a short summary does not make a feature optional.
 
 The [acceptance gates](replacement-acceptance.md) define observable workflows;
 the [roadmap](implementation-roadmap.md) orders implementation. The immediate
-qualification dependency is the fixed account entry and permanent-store placement
-after the private bound-root factory, then a freshly reviewed table-only plan for
-`SANDBOX.BILLIE_TESTING`. No existing application-table access or account execution
-is authorized by this matrix. Broad product work remains required alongside
+qualification dependency is the execute entry and permanent-store placement
+after the private bound-root factory and offline command, then a freshly reviewed
+table-only plan for `SANDBOX.BILLIE_TESTING`. No existing application-table access
+or account execution is authorized by this matrix. Broad product work remains required alongside
 qualification; these internal checks do not substitute for completing the rows.
 
-## Fresh consumed qualification factory (12 November 2026, local integration)
+## Dedicated offline table command (12 November 2026, local integration)
+
+| Capability | Local implementation | Remaining gate |
+| ---------- | -------------------- | -------------- |
+| Offline plan emission | Dedicated binary, actual executable/build-recipe binding, new RUN, exclusive private canonical Plan/envelope files, final synchronization/readback | This grants no approval or account authority; build provenance and runtime SDK validity are not attested |
+| Original-byte verification | Separate-process restore against explicit digest and separately supplied roots; no regeneration or helper/compiler launch | Execute command, independently fixed permanent store, cross-process consumption and actual account effects remain incomplete |
+
+The [command guide](snowflake-table-offline-command.md) contains reproducible
+steps. The [verification ledger](replacement-verification.md) records process and
+storage checks, source identity and review. These are offline qualification
+capabilities; all twelve product gates above and the additional applicability
+inventory remain open. No Snowflake, package or owner acceptance is added.
+The final actual-binary suite passes **7 process tests**; full validation passes
+**679 frontend / 467 standard Rust tests**, with **129 fixture ignores**, plus
+formatting/build/check/strict Clippy. All 44 final frozen source hashes match.
+The preceding optimized qualification suite passes **252 tests / 0 failed /
+5 default ignores**, including the eight new storage cases; that count precedes
+a parser-only Clippy correction, followed by the final process/validation reruns.
+No trap helper/compiler launches occur. Independent review has no unresolved
+material finding. The ledger retains the initial lint failure and exact scope.
+
+## Fresh consumed qualification factory (12 November 2026, preceding integration)
 
 | Capability                  | Local implementation                                                                                                                                                                       | Remaining gate                                                                                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |

@@ -74,6 +74,21 @@ pub(super) enum AttemptDirectory<'a> {
     HelperState,
 }
 
+/// Closed offline plan output names; these never address consumption markers.
+#[derive(Clone, Copy)]
+pub(super) enum EmissionFile {
+    Envelope,
+    Plan,
+}
+impl EmissionFile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Envelope => "execution-envelope.json",
+            Self::Plan => "plan.json",
+        }
+    }
+}
+
 pub(super) const TERMINAL_FILE: &str = "terminal.json";
 
 pub(super) struct ConsumptionStore {
@@ -239,6 +254,59 @@ impl DirectoryProof {
 
     pub(super) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Exclusively create a fixed plan-RUN directory relative to this held fd.
+    /// Failures deliberately retain every newly created directory/file.
+    pub(super) fn reserve_emission_directory(&self, run: &str) -> AppResult<Self> {
+        if run.len() != 32
+            || !run
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+            || run.bytes().all(|b| b == b'0')
+        {
+            return Err(invalid());
+        }
+        self.validate_directory()?;
+        let name = format!("plan-{run}");
+        let name_c = CString::new(name.as_str()).map_err(|_| invalid())?;
+        // SAFETY: the held parent fd and generated basename remain live.
+        if unsafe { libc::mkdirat(self.directory.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0 {
+            return Err(unavailable());
+        }
+        let directory = open_relative(&self.directory, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+        let child = Self {
+            path: self.path.join(name),
+            identity: identity(&directory.metadata().map_err(|_| unavailable())?),
+            directory,
+        };
+        self.sync_directory()?;
+        child.sync_directory()?;
+        Ok(child)
+    }
+
+    pub(super) fn write_emission_file(&self, kind: EmissionFile, bytes: &[u8]) -> AppResult<File> {
+        self.validate_directory()?;
+        let mut file = open_relative(
+            &self.directory,
+            kind.name(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+        )?;
+        self.validate_emission_file(kind, &file, &[])?;
+        file.write_all(bytes).map_err(|_| unavailable())?;
+        file.sync_all().map_err(|_| unavailable())?;
+        self.sync_directory()?;
+        self.validate_emission_file(kind, &file, bytes)?;
+        Ok(file)
+    }
+
+    pub(super) fn validate_emission_file(
+        &self,
+        kind: EmissionFile,
+        held: &File,
+        expected: &[u8],
+    ) -> AppResult<()> {
+        self.validate_marker(kind.name(), held, expected)
     }
 
     pub(super) fn reserve_attempt_directory(&self, child: AttemptDirectory<'_>) -> AppResult<Self> {

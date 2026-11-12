@@ -8,6 +8,109 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Dedicated offline table command (12 November 2026)
+
+The new `snowflake-table-qualification` binary requires the existing
+`test-harness` feature, but starts neither the HTTP harness nor an async runtime.
+Its narrow facade dispatches only `emit`, `verify` and help. Unknown commands
+(including `execute`), duplicate/unknown/missing options, invalid windows and
+relative/non-UTF-8 paths fail with a closed JSON error before artifact/output I/O.
+Emission alone generates a fresh Plan. The actual current executable is selected
+internally; there is no executable/SQL/source-list/limit/policy override.
+
+Emission captures the fixed envelope, rejects source/output overlap and reserves
+one exclusive 0700 `plan-<RUN>` directory. Closed descriptor-relative names create
+0600 single-link `execution-envelope.json` and `plan.json` files, with no adoption,
+overwrite or cleanup. Success includes exact content/identity readback and file/
+directory synchronization after all writes. Envelope and Plan bounds remain
+16 MiB / 64 KiB. Partial failures retain output. Verification reads the original
+private envelope and explicit digest, recaptures separately supplied roots and
+requires full canonical equality without regenerating a RUN. It can inspect an
+expired window offline; it does not grant execution authority.
+
+The process regressions invoke the actual binary against disposable synthetic
+source, profile and runtime artifacts. Trap Node/compiler files must never run.
+They check exact persisted bytes/hashes/build recipe/current-executable path and
+hash, cross-process unchanged RUN/digests, read-only verification, source/profile/
+envelope tamper rejection, copied-executable rejection with identical bytes and
+permissions, path/argument failures and safe stdout/stderr. Eight storage tests
+cover private modes/bounds, same-RUN collisions/concurrency, links and changed
+identity/content, and retained partial evidence. These are local filesystem/
+process tests; the new command sends no authentication, SQL or account requests.
+
+The inventory explorer uses gpt-6-luna/high; the storage worker and independent
+reviewer use gpt-6.1-sol/high. Ownership is bounded; the lead integrates and runs
+checks serially. No selection is unavailable. Review identifies a non-UTF-8 output
+path that could persist before JSON receipt serialization panicked. The parser
+now rejects unencodable paths before I/O, with a real-process regression; this
+was a source-review finding, not a separately reproduced pre-fix binary failure.
+The reviewer confirms the fix and added actual-executable checks; no material
+finding remains. Parent graph calls report `Transport closed`, so current direct
+source reads are used. The storage worker reports no recorded coverage gap at
+generation `2026-11-12T02:54:30Z`; that bounded result is not completeness proof.
+
+The initial checked source identities are recorded in
+`.cache/verification/connection-attempts/offline-command-source-freeze.json`
+(44 source/build files). Use the pinned README toolchains and `JOINERY_TEST_NODE`.
+The focused all-target development check in `offline-command-check-initial.log`
+exits **0**, **1 minute 22 seconds**; later test-only additions and the path guard
+are verified by the final commands below, rather than attributed to that check.
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features test-harness --test snowflake_table_qualification_cli
+cargo test --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+pnpm validate
+```
+
+`offline-command-process-final-release.log` exits **0**: **7 passed / 0 failed /
+0 ignored**, **1.59 seconds** after the optimized build (**5 minutes 27 seconds**).
+Every actual-binary process case passes, including the reviewed UTF-8 and copied
+executable regressions. No trap executable runs. The profile fields remain absent
+from emitted/verified stdout; the private envelope intentionally contains them.
+
+`offline-command-qualification-final-release.log` exits **0**: **252 passed /
+0 failed / 5 default ignores**, **152.49 seconds**. All eight new emission storage
+tests and the preceding qualification/factory/error-route cases pass on that
+frozen source. The five default ignores are not counted as executed acceptance.
+
+The initial full application run, preserved as
+`offline-command-validate-initial-clippy.log`, exits **101** at strict Clippy's
+`chunks_exact_to_as_chunks` lint in the new parser. Frontend formatting/contracts/
+types/tests/build and **467 standard Rust tests / 129 fixture ignores** already
+pass; that is not a complete validation pass. The sole source correction changes
+`chunks_exact(2)` to `as_chunks::<2>().0`. The prior argument-count guard makes
+the remainder empty; independent review confirms equivalent pairs. No lint is
+suppressed. Final identities are recorded separately in
+`offline-command-source-freeze-final.json` (44 files); only the CLI parser differs
+from the earlier qualification run. The affected actual-command suite and full
+application validation are rerun on this final source. The 252-test qualification
+result above remains evidence for its explicitly preceding source, not a claimed
+rerun of the whole suite after the parser-only correction.
+
+`offline-command-process-after-clippy-release.log` exits **0** on the final source:
+**7 passed / 0 failed / 0 ignored**, **1.02 seconds**. Every real-process case is
+rerun, including argument pairing, tamper/identity rejection and zero trap launches.
+`offline-command-validate-final.log` exits **0**: **679 frontend tests / 57 files**,
+**467 standard Rust tests / 0 failed / 129 fixture ignores** across 22 summaries.
+Formatting, contracts/types, production frontend build, Rust formatting/check and
+strict all-target/all-feature Clippy pass. No ignored external/native acceptance
+is silently counted as run. All **44 final frozen source hashes match** after
+completed checks. The known `rust-objcopy` missing-LLVM strip warning, ts-rs serde
+attribute warnings and frontend chunk/timing warnings remain visible; no global
+toolchain/configuration repair or lint suppression is made. Git diff/identity and
+all seven edited documents' local link targets are checked before commit.
+
+The [command guide](snowflake-table-offline-command.md) supplies local emission/
+verification steps. The execute route, independently fixed permanent marker root
+and cross-process permanent consumption remain open. The preceding complete
+packaged-runtime performance checks and ignored full lifecycles apply only to
+their recorded source; none is counted as rerun here. No account activity,
+normal UI acceptance, package rebuild, installation, push, merge or publication
+occurs. The canonical private Site is not published because the owner forbids
+publication. Fresh exact account/billing approval under `SANDBOX.BILLIE_TESTING`,
+all applicable DataGrip capabilities and owner hands-on acceptance remain required.
+The Goal is active and incomplete.
+
 ### Fresh consumed factory and persistent terminal owner (12 November 2026)
 
 `AttemptStorage` reserves one exclusive persistent `attempt-<RUN>` directory,

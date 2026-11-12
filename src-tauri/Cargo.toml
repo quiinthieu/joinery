@@ -21,6 +21,11 @@ path = "src/bin/test-harness.rs"
 required-features = ["test-harness"]
 
 [[bin]]
+name = "snowflake-table-qualification"
+path = "src/bin/snowflake-table-qualification.rs"
+required-features = ["test-harness"]
+
+[[bin]]
 name = "export-contracts"
 path = "src/bin/export-contracts.rs"
 required-features = ["contracts"]
