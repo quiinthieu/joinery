@@ -1274,6 +1274,17 @@ pub(crate) mod studio_fixture {
                 br#"{"name":"snowflake-sdk","version":"3.4.1","type":"module","main":"index.mjs"}"#,
             )
             .unwrap();
+            // main.mjs loads the SDK's file-transfer predicates before its hello.
+            // This tiny synthetic SDK needs that module too. Genuine SDK branch
+            // behavior/source pins are qualified by the separate loopback suite.
+            fs::create_dir_all(root.join("helper/node_modules/snowflake-sdk/dist/lib")).unwrap();
+            fs::write(
+                root.join("helper/node_modules/snowflake-sdk/dist/lib/util.js"),
+                b"const prefix = sql => sql.trim().slice(0, 3).toUpperCase();\n\
+                  export const isPutCommand = sql => prefix(sql) === 'PUT';\n\
+                  export const isGetCommand = sql => prefix(sql) === 'GET';\n",
+            )
+            .unwrap();
             fs::write(
                 root.join("helper/node_modules/snowflake-sdk/index.mjs"),
                 include_str!("execution/synthetic_snowflake.mjs"),
