@@ -8,6 +8,106 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Fresh consumed factory and persistent terminal owner (12 November 2026)
+
+`AttemptStorage` reserves one exclusive persistent `attempt-<RUN>` directory,
+separate new `workspace`/`helper-state`, and exclusive 0600 journal/terminal
+files. Directories remain 0700. Strict original physical paths, effective owner,
+ancestor safety, held/named identities, single-link files and expected terminal
+bytes are checked. Transfer and terminal persistence are one-shot, including
+failure. Terminal encoding is limited to 1 MiB, 64 levels and 65,536 nodes;
+partial write and file/directory-sync fault tests preserve evidence and refuse
+retry. No production Drop/delete/reopen/resume/refund route is added.
+
+The factory rejects output overlap with permanent markers and reviewed
+artifacts before reservation. It reserves output before consuming approval,
+then revalidates the consumed identity and builds only the bound runtime with
+fresh state. Runtime rejection precedes SQLite or helper launch. The generic
+Studio opener receives only the newly allocated empty workspace. Profile save,
+reload and connection preparation use normal Studio APIs; fixed Staging/Confirm
+and privacy settings are rechecked. A deny-all secret provider counts calls and
+never initializes/delegates to OS credential storage. Test-only fixture injection
+reuses pins, not the supplied Studio/runtime/state object, and requires the same
+consumed root before loading fresh state.
+
+One detached owner retains construction, normal runner execution, shutdown and
+blocking terminal persistence. The receipt keeps original outcomes, completion
+errors, shutdown, settlement, final integrity, journal result and terminal result
+separate. Mutations and boundaries remain in terminal evidence even after a
+later journal/storage error. Metadata/read detail remains in the journal to
+bound terminal size. `executionSuccessful` describes execution only; terminal
+durability requires the separate successful persistence receipt/digest.
+Persistent workspace/state is not removed after failure or incomplete shutdown.
+
+The storage worker owns the attempt/consumption files, the test worker owns the
+factory regressions, and the lead owns integration. An independent bounded
+correctness review has no material finding. All three use gpt-6.1-sol/high;
+no unavailable model or fallback is involved. The initial optimized focused run
+exits **101**: **4 passed / 1 failed / 1 ignored**, **7.55 seconds**. The failure
+occurs after original CREATE ACK and error-retention assertions: the test wrongly
+requires an SDK destroy log after intentionally revoking journal/transport.
+An unchanged-binary backtrace reproduction exits **101**, **7.10 seconds**,
+confirming `records -> assert_factory_cleanup`. These runs precede final source.
+
+The corrected failure test requires local reaping/settlement, empty local helper
+state, the sole new connection/state path and fixed persisted profile, without
+claiming server logout. If a destroy callback exists it must be exactly one
+successful callback. The full successful lifecycle still requires that callback.
+Independent follow-up review confirms the distinction; no product repair is
+needed for this test expectation. The frozen 38-source manifest is
+`factory-owner-source-freeze.json` under `.cache/verification/connection-attempts/`.
+
+Use README's pinned toolchains and explicit `JOINERY_TEST_NODE`. The final checks
+are serial:
+
+```sh
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_factory_complete_lifecycle_outlives_dropped_waiter -- --ignored --test-threads=1
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_runtime:: -- --test-threads=3
+pnpm validate
+```
+
+`factory-owner-qualification-final-release.log` exits **0**: **244 passed /
+0 failed / 5 default ignores**, **155.42 seconds**. All 17 new active cases pass:
+nine filesystem tests, two store-separation tests and six factory tests. The
+CREATE failure case exercises actual Node/helper with a synthetic SDK and keeps
+the original ACK after both journal and terminal failure. The five ignores
+include the new detached-owner test run separately by the command above.
+
+`factory-owner-detached-final-release.log` exits **0**: **1 passed / 0 failed**,
+**55.61 seconds**. The caller is dropped at phase three; the retained owner still
+finishes all **32 phases / 393 synthetic SQL requests**, each original completion
+matching its validated evidence and the complete physical ledger. Terminal
+execution success, zero credential-provider calls, exact new persisted profile,
+one connection using fresh state, empty retired helper state and one successful
+SDK destroy callback are checked after the detached terminal persistence signal.
+This is the new minimal bound-runtime factory fixture, not a rerun of the full
+packaged-runtime performance gate or real account behavior.
+
+`factory-owner-runtime-final-release.log` exits **0**: **22 passed / 0 failed /
+0 ignored**, **0.11 seconds**. The final source remains frozen; release logs retain
+the existing nonfatal missing-`libLLVM.dylib` debug-strip and `ts-rs` warnings.
+
+`factory-owner-validate-final.log` exits **0**: **679 frontend tests / 57 files**,
+**467 standard Rust tests / 0 failed / 129 fixture ignores** across 21 summaries.
+Formatting, contracts/types, production frontend build, Rust format/check and
+strict all-target/all-feature Clippy pass. The existing frontend chunk/timing
+warnings remain visible. All **38 frozen source hashes match** after completed
+checks. Git diff/identity checks pass before the local commit. No material review
+finding remains, including the failure-route cleanup follow-up.
+
+No changed UI workflow or normal account path is claimed. Actual Node/helper
+fixtures use the synthetic SDK, isolated SQLite and test-owned filesystem state.
+The dedicated binary, independently fixed permanent marker location and
+cross-process entry acceptance remain open. Existing complete packaged-runtime
+performance checks apply only to their recorded source; the four preceding
+performance ignores are not counted as rerun here. No Snowflake authentication,
+SQL, package rebuild, installation, push, merge or publication occurs. The
+canonical private Site is not published because the owner forbids publication;
+repository evidence remains current. Fresh exact account/billing approval,
+normal packaged acceptance, all applicable DataGrip capabilities and owner
+hands-on acceptance remain required. The Goal is active and incomplete.
+
 ### Exact runtime and reserved journal construction (12 November 2026)
 
 The harness-only crate-private runtime constructor selects exactly the supplied

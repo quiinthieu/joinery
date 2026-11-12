@@ -2,7 +2,7 @@
 //!
 //! Capture/restore never spawn or authenticate. Consumption records permanent
 //! local markers but does not launch anything. The retained runner checks this
-//! capability; fixed account construction remains incomplete. Hashes bind bytes,
+//! capability; the fixed account command remains incomplete. Hashes bind bytes,
 //! not build provenance or immutable filesystem state; a same-user writer can
 //! race between checks. Full checks run outside process locks.
 
@@ -217,6 +217,27 @@ impl Write for BoundedBytes {
 }
 
 impl Envelope {
+    pub(super) fn plan(&self) -> Plan {
+        self.plan.clone()
+    }
+
+    /// Output must not mutate any reviewed artifact or contain its tree.
+    /// AttemptStorage separately rejects nonphysical original paths.
+    pub(super) fn require_separate_output(&self, output: &Path) -> AppResult<()> {
+        let output = output.canonicalize().map_err(|_| invalid())?;
+        for artifact in self.manifest.sources.iter().chain([
+            &self.manifest.runtime,
+            &self.manifest.executable,
+            &self.manifest.compiler,
+            &self.manifest.profile_file,
+        ]) {
+            if output.starts_with(&artifact.path) || artifact.path.starts_with(&output) {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn capture(roots: &Roots, plan: Plan, window: Window) -> AppResult<Self> {
         window.validate()?;
         let mut sources = Vec::with_capacity(SOURCE_TREES.len() + SOURCE_FILES.len());
@@ -427,6 +448,16 @@ impl Envelope {
 }
 
 impl ConsumedEnvelope {
+    /// Only the consumed identity selects construction inputs. The caller must
+    /// fully revalidate before constructing and before handing off to Runner.
+    pub(super) fn construction_inputs(&self) -> AppResult<(Profile, PathBuf)> {
+        self.check()?;
+        Ok((
+            self.envelope.manifest.profile.clone(),
+            self.envelope.manifest.runtime.path.clone(),
+        ))
+    }
+
     #[cfg(test)]
     pub(super) fn fixture_elapsed(&self) -> Duration {
         self.started.elapsed()
@@ -532,6 +563,15 @@ fn read_profile(path: &Path) -> AppResult<Profile> {
     let profile: Profile = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     profile.validate()?;
     Ok(profile)
+}
+
+#[cfg(test)]
+pub(super) fn fixture_unconsumed(
+    plan: Plan,
+    profile: serde_json::Value,
+    runtime_root: Option<PathBuf>,
+) -> (tempfile::TempDir, Envelope, ConsumptionStore, Vec<u8>) {
+    tests::fixture_unconsumed(plan, profile, runtime_root)
 }
 
 #[cfg(test)]

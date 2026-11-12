@@ -1,5 +1,38 @@
 # Implementation and release status
 
+## Fresh consumed qualification factory (12 November 2026, local integration)
+
+The internal factory now reserves exclusive persistent attempt, workspace and
+helper-state directories, a fresh journal and terminal file before permanent
+consumption. Output cannot overlap the permanent marker store or reviewed
+artifacts. Construction obtains the exact runtime and seven-field connection
+only from the consumed envelope, validates the runtime before opening SQLite,
+and saves a fresh Staging/Confirm profile through ordinary Studio APIs. A
+deny-all credential provider records attempted access without touching the OS
+keychain. No existing desktop workspace or caller-built Studio is adopted.
+
+The detached owner retains construction, execution, shutdown and final terminal
+fsync. Original mutation and transaction outcomes remain separate from completion,
+integrity, shutdown and storage failures. Neither Drop nor a failed check removes
+outputs or refunds consumption. Independent bounded review has no material
+finding. Exact commands, results and scope are in the
+[verification ledger](replacement-verification.md).
+
+Optimized checks pass **244 qualification tests / 5 default ignores** and
+**22 runtime tests**. The new detached-owner ignore passes separately: all
+**32 phases / 393 synthetic SQL requests** finish after dropping the caller,
+with matching original/validated journal evidence and final terminal persistence.
+Full `pnpm validate` passes **679 frontend / 467 standard Rust tests**, with
+**129 fixture ignores**, plus formatting/build/check/strict Clippy. All 38 frozen
+source hashes match after the completed checks.
+
+The dedicated offline/execute binary and independently fixed permanent marker
+location remain incomplete. This is internal local qualification infrastructure,
+not account or packaged UI acceptance. No Snowflake activity, package rebuild,
+installation or publication occurs. Fresh approval for the concrete table-only
+plan under `SANDBOX.BILLIE_TESTING`, all applicable DataGrip workflows and owner
+acceptance remain required; the Goal is active and incomplete.
+
 ## Qualification construction seams (12 November 2026, local integration)
 
 The private harness runtime constructor now selects the exact supplied root with

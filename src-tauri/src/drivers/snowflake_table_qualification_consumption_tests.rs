@@ -85,6 +85,72 @@ fn consumption_rejects_invalid_hashes_before_creating_any_markers() {
 }
 
 #[test]
+fn consumption_output_parent_must_be_physically_separate_and_remain_safe() {
+    let base = directory();
+    let base_path = physical(&base);
+    let markers = base_path.join("markers");
+    let output = base_path.join("output");
+    let below_markers = markers.join("output");
+    for path in [&markers, &output] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::create_dir(&below_markers).unwrap();
+    fs::set_permissions(&below_markers, fs::Permissions::from_mode(0o700)).unwrap();
+    let store = ConsumptionStore::open(&markers).unwrap();
+    let _consumed = store.consume(EXECUTION, RUN).unwrap();
+    let run_bytes = fs::read(marker(&markers, Marker::Run, RUN)).unwrap();
+    for rejected in [&markers, &base_path, &below_markers] {
+        assert!(
+            store.require_separate_from(rejected).is_err(),
+            "{rejected:?}"
+        );
+    }
+    store.require_separate_from(&output).unwrap();
+    let link = base_path.join("output-link");
+    symlink(&output, &link).unwrap();
+    assert!(store.require_separate_from(&link).is_err());
+    assert!(store.require_separate_from(Path::new("relative")).is_err());
+    fs::set_permissions(&output, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(store.require_separate_from(&output).is_err());
+    fs::set_permissions(&output, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&markers, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(store.require_separate_from(&output).is_err());
+    fs::set_permissions(&markers, fs::Permissions::from_mode(0o700)).unwrap();
+    store.require_separate_from(&output).unwrap();
+    assert_eq!(
+        fs::read(marker(&markers, Marker::Run, RUN)).unwrap(),
+        run_bytes
+    );
+    assert_eq!(
+        fs::read(marker(&markers, Marker::Plan, EXECUTION)).unwrap(),
+        run_bytes
+    );
+    assert!(store.consume(EXECUTION, RUN).is_err());
+}
+
+#[test]
+fn consumption_output_separation_rejects_replaced_store_identity() {
+    let base = directory();
+    let base_path = physical(&base);
+    let markers = base_path.join("markers");
+    let output = base_path.join("output");
+    for path in [&markers, &output] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let store = ConsumptionStore::open(&markers).unwrap();
+    let _consumed = store.consume(EXECUTION, RUN).unwrap();
+    let held = base_path.join("held-markers");
+    fs::rename(&markers, &held).unwrap();
+    fs::create_dir(&markers).unwrap();
+    fs::set_permissions(&markers, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(store.require_separate_from(&output).is_err());
+    assert_eq!(fs::read_dir(&held).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(&markers).unwrap().count(), 0);
+}
+
+#[test]
 fn consumption_simultaneous_threads_issue_exactly_one_capability() {
     let directory = directory();
     let store = Arc::new(ConsumptionStore::open(&physical(&directory)).unwrap());

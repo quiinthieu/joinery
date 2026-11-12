@@ -1,5 +1,6 @@
-//! Retained closed-plan Studio execution. No account entry or authority constructor exists.
-//! Consumed construction requires the sealed offline envelope; no account CLI exists.
+//! Retained closed-plan Studio execution. Consumed construction requires the
+//! sealed offline envelope; the private factory supplies fresh components.
+//! No account CLI exists.
 use super::{
     Operation, Plan, Readback, SCHEMA, StatementId,
     envelope::ConsumedEnvelope,
@@ -512,9 +513,13 @@ pub(super) struct RunnerReceipt {
 }
 
 impl Runner {
+    pub(super) fn retained_guard(&self) -> Option<Arc<Guard>> {
+        self.guard.clone()
+    }
+
     #[cfg(test)]
     pub(super) fn fixture_guard(&self) -> Option<Arc<Guard>> {
-        self.guard.clone()
+        self.retained_guard()
     }
 
     /// Same closed Studio route, backed by the consumed envelope and owning guard.
@@ -778,7 +783,7 @@ impl Runner {
         Ok(output)
     }
 
-    async fn run(mut self) -> RunnerReceipt {
+    pub(super) async fn run(mut self) -> RunnerReceipt {
         let mut outputs = Vec::new();
         let mut failure = None;
         let mut original_call_failure = None;

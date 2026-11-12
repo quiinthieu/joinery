@@ -36,13 +36,33 @@ from a short summary does not make a feature optional.
 
 The [acceptance gates](replacement-acceptance.md) define observable workflows;
 the [roadmap](implementation-roadmap.md) orders implementation. The immediate
-qualification dependency is the fixed account entry and construction from bound
-roots after the passed complete-runtime timing gate, then a freshly reviewed table-only plan for
+qualification dependency is the fixed account entry and permanent-store placement
+after the private bound-root factory, then a freshly reviewed table-only plan for
 `SANDBOX.BILLIE_TESTING`. No existing application-table access or account execution
 is authorized by this matrix. Broad product work remains required alongside
 qualification; these internal checks do not substitute for completing the rows.
 
-## Qualification construction seams (12 November 2026, local integration)
+## Fresh consumed qualification factory (12 November 2026, local integration)
+
+| Capability                  | Local implementation                                                                                                                                                                       | Remaining gate                                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Private one-attempt storage | Exclusive persistent directories, fresh journal and one-shot terminal file; strict paths/modes/identities; separate from permanent markers and reviewed artifacts                          | Fixed entry must choose the permanent store independently; same-user races and false fsync guarantees remain outside the local proof |
+| Exact consumed construction | Reviewed runtime/profile selected only from the consumed envelope; new SQLite workspace; fixed Staging/Confirm profile; deny-all credential provider; normal Studio prepare/execute routes | Dedicated command, actual account effects and normal packaged workflows remain open                                                  |
+| Retained terminal evidence  | Dropped waiter detaches the owner; original mutation/boundary outcomes survive independent later completion/storage failures; outputs are never automatically removed                      | Current local tests use a synthetic SDK, not Snowflake account acceptance                                                            |
+
+See the [verification ledger](replacement-verification.md) for current checks.
+Independent bounded review has no material finding. This increment closes none
+of the product readiness gates above and supplies no new account authority.
+
+The optimized qualification suite passes **244 tests / 5 default ignores**;
+**22 runtime tests** pass. The new detached-owner ignore passes separately,
+completing all **32 phases / 393 synthetic SQL requests** and terminal persistence
+after the caller is dropped. This is local synthetic-SDK evidence.
+Full validation passes **679 frontend / 467 standard Rust tests**, with
+**129 fixture ignores**, plus formatting/build/check/strict Clippy. All 38 source
+hashes remain fixed after verification.
+
+## Qualification construction seams (12 November 2026, preceding integration)
 
 | Capability                       | Local implementation                                                                                                                         | Remaining gate                                                                                                                          |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |

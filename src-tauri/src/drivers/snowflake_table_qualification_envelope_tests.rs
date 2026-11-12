@@ -88,6 +88,30 @@ fn approval(envelope: &Envelope) -> Vec<u8> {
 
 // Sibling guard/runner tests use the actual consume path and actual current
 // executable. Only source/runtime/compiler/profile inputs are synthetic.
+pub(super) fn fixture_unconsumed(
+    plan: Plan,
+    frozen_profile: Value,
+    runtime_root: Option<PathBuf>,
+) -> (tempfile::TempDir, Envelope, ConsumptionStore, Vec<u8>) {
+    let mut fixture = Fixture::new();
+    fixture.roots.executable = std::env::current_exe().unwrap();
+    fixture.window.expires_unix_ms = fixture.window.not_before_unix_ms + WINDOW_MS;
+    if let Some(runtime) = runtime_root {
+        fixture.roots.runtime = runtime;
+    } else {
+        fs::set_permissions(&fixture.roots.runtime, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::write(
+        &fixture.roots.profile,
+        serde_json::to_vec(&frozen_profile).unwrap(),
+    )
+    .unwrap();
+    let envelope = Envelope::capture(&fixture.roots, plan, fixture.window).unwrap();
+    let grant = approval(&envelope);
+    let store = fixture.store();
+    (fixture._directory, envelope, store, grant)
+}
+
 pub(super) fn fixture_consumed(
     plan: Plan,
     frozen_profile: Value,

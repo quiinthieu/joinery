@@ -61,8 +61,13 @@ with 525 successful admissions and no failures. The combined optimized module
 passes 204 tests and application validation passes 679 frontend / 467 standard
 Rust tests plus strict checks, with 129 fixtures ignored. See the ledger for
 the current result rather than treating preceding historical totals as current.
-The fixed account executable, exclusive private-file lifecycle and construction
-only from consumed bound roots remain incomplete. The default staged runtime
+The private factory now allocates exclusive persistent attempt/workspace/state,
+reserves journal/terminal output before consumption and constructs Studio only
+from the consumed runtime/profile. Its retained owner covers terminal persistence
+after dropped waiters; no failure automatically removes output or refunds markers.
+The dedicated account executable and fixed permanent-store placement remain
+incomplete. See the current [verification ledger](replacement-verification.md).
+The default staged runtime
 contains five dependency symlinks; the preceding normal macOS bundle has zero.
 Strict execution inventory must bind and fully inventory that or another zero-link
 resource tree. No normal desktop command exposes this module, and none of these
@@ -104,16 +109,17 @@ externalbrowser, verified TLS/443, no SSH/stored secrets and the exact test targ
 It is not a mutable environment/mode selector. Use the normal Staging group and
 `save_profile`, then verify the saved profile/effective mode before launch. The
 private profile module implements this normal save/reload verification, rejects
-existing profiles and checks account/host consistency. The future account factory
-must supply the exclusive fresh workspace and keychain-free secret store; the
-module alone does not prove those construction properties.
+existing profiles and checks account/host consistency. The private factory now
+supplies the exclusive fresh workspace and deny-all keychain-free secret store;
+the profile module alone does not prove those construction properties.
 
 The private runtime constructor now selects exactly the supplied reviewed root,
 using compiled pins without a packaged suffix or development fallback, and
 requires separate private state. Policy can consume the same reserved fresh
-journal after checking its Plan and held storage identity. Neither constructor
-proves exclusive factory allocation or consumed-root provenance; the fixed
-factory and retained terminal-output owner are still required before execution.
+journal after checking its Plan and held storage identity. The private factory
+now obtains these inputs only from the consumed envelope and retains exclusive
+output ownership through detached execution and terminal persistence. The fixed
+account entry and permanent-store placement remain required before execution.
 
 Existing application profiles are neither read nor changed. Normal Production
 profiles still require PasswordGated; this Confirm-only runner rejects a plan
@@ -122,7 +128,9 @@ Policy tampering, group/target/opt-in/TLS mismatches and missing/wrong/stale ord
 approval tokens must fail offline without fallback or downgrade. Profile/policy
 changes revoke pending plans. The wider Safe Mode matrix remains required and
 covered separately by local tests and later acceptance. This is a reviewed
-construction plan, not an implemented factory or new execution approval.
+construction policy, not new execution approval. A terminal's
+`executionSuccessful` field describes only the retained execution; terminal
+durability requires the separate successful persistence receipt and digest.
 
 Require the existing schema to be available, every DDL phase to observe idle
 AUTOCOMMIT=true state, and quoted-identifier policy false. Observe rather than

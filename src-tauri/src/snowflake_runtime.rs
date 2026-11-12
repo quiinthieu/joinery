@@ -69,7 +69,6 @@ impl SnowflakeRuntime {
     /// The supplied private state is separate; no packaged suffix, environment
     /// override or development fallback may change the selected resources.
     #[cfg(feature = "test-harness")]
-    #[allow(dead_code)] // Retained until the fixed qualification factory is wired.
     pub(crate) fn from_qualification_root(
         runtime_root: &Path,
         state_parent: &Path,
@@ -89,6 +88,22 @@ impl SnowflakeRuntime {
             return Err(invalid("Snowflake state parent must be private"));
         }
         Self::load(runtime_root.to_path_buf(), &state_parent, pins)
+    }
+
+    /// Tests reuse only the template's private fixture pins. The consumed root
+    /// is checked again and state is reconstructed in the new attempt owner.
+    #[cfg(all(test, feature = "test-harness"))]
+    pub(crate) fn from_qualification_fixture(
+        template: &Self,
+        runtime_root: &Path,
+        state_parent: &Path,
+    ) -> io::Result<Self> {
+        if runtime_root != template.root {
+            return Err(invalid(
+                "Qualification fixture root differs from consumed identity",
+            ));
+        }
+        Self::load_qualification_root(runtime_root, state_parent, template.pins.clone())
     }
 
     /// Explicit development route. Release builds cannot select the checkout.

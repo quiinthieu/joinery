@@ -7,7 +7,7 @@ use crate::domain::{AppError, AppResult};
 use serde_json::json;
 use std::{
     ffi::CString,
-    fs::{File, Metadata},
+    fs::{self, File, Metadata},
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
@@ -61,11 +61,20 @@ impl ConsumedAttempt {
 }
 
 #[derive(Debug)]
-struct DirectoryProof {
+pub(super) struct DirectoryProof {
     path: PathBuf,
     directory: File,
     identity: (u64, u64),
 }
+
+/// Fixed attempt storage names only; never a caller-selected relative path.
+pub(super) enum AttemptDirectory<'a> {
+    Run(&'a str),
+    Workspace,
+    HelperState,
+}
+
+pub(super) const TERMINAL_FILE: &str = "terminal.json";
 
 pub(super) struct ConsumptionStore {
     proof: Arc<DirectoryProof>,
@@ -107,14 +116,8 @@ type Hook = Box<dyn FnOnce(Marker, &Path) + Send>;
 impl ConsumptionStore {
     /// Requires an existing absolute physical path: no component follows symlinks.
     pub(super) fn open(path: &Path) -> AppResult<Self> {
-        let directory = open_directory(path)?;
-        let identity = identity(&directory.metadata().map_err(|_| unavailable())?);
         let store = Self {
-            proof: Arc::new(DirectoryProof {
-                path: path.to_path_buf(),
-                directory,
-                identity,
-            }),
+            proof: Arc::new(DirectoryProof::open(path)?),
             #[cfg(test)]
             fault: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -122,6 +125,25 @@ impl ConsumptionStore {
         };
         store.proof.validate_directory()?;
         Ok(store)
+    }
+
+    /// Permanent markers cannot share an output ancestor or descendant. Both
+    /// original path spellings must pass the strict physical-path checks first;
+    /// canonicalization here only compares already validated directory locations.
+    pub(super) fn require_separate_from(&self, output_parent: &Path) -> AppResult<()> {
+        self.proof.validate_directory()?;
+        let output = DirectoryProof::open(output_parent)?;
+        let store_path = fs::canonicalize(self.proof.path()).map_err(|_| unavailable())?;
+        let output_path = fs::canonicalize(output.path()).map_err(|_| unavailable())?;
+        self.proof.validate_directory()?;
+        output.validate_directory()?;
+        if self.proof.identity == output.identity
+            || output_path.starts_with(&store_path)
+            || store_path.starts_with(&output_path)
+        {
+            return Err(invalid());
+        }
+        Ok(())
     }
 
     pub(super) fn consume(
@@ -204,7 +226,75 @@ impl ConsumptionStore {
 }
 
 impl DirectoryProof {
-    fn validate_directory(&self) -> AppResult<()> {
+    pub(super) fn open(path: &Path) -> AppResult<Self> {
+        let directory = open_directory(path)?;
+        let proof = Self {
+            path: path.to_path_buf(),
+            identity: identity(&directory.metadata().map_err(|_| unavailable())?),
+            directory,
+        };
+        proof.validate_directory()?;
+        Ok(proof)
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn reserve_attempt_directory(&self, child: AttemptDirectory<'_>) -> AppResult<Self> {
+        let name = match child {
+            AttemptDirectory::Run(run) => {
+                if run.len() != 32
+                    || !run
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+                    || run.bytes().all(|b| b == b'0')
+                {
+                    return Err(invalid());
+                }
+                format!("attempt-{run}")
+            }
+            AttemptDirectory::Workspace => "workspace".into(),
+            AttemptDirectory::HelperState => "helper-state".into(),
+        };
+        self.validate_directory()?;
+        let name_c = CString::new(name.as_str()).map_err(|_| invalid())?;
+        // SAFETY: the parent fd and fixed/generated basename are live. mkdirat
+        // creates exclusively: existing names are never adopted or repaired.
+        if unsafe { libc::mkdirat(self.directory.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0 {
+            return Err(unavailable());
+        }
+        let child = Self::open(&self.path.join(name))?;
+        self.sync_directory()?;
+        child.sync_directory()?;
+        Ok(child)
+    }
+
+    pub(super) fn reserve_terminal(&self) -> AppResult<File> {
+        self.validate_directory()?;
+        let terminal = open_relative(
+            &self.directory,
+            TERMINAL_FILE,
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+        )?;
+        self.validate_terminal(&terminal, &[])?;
+        terminal.sync_all().map_err(|_| unavailable())?;
+        self.sync_directory()?;
+        self.validate_terminal(&terminal, &[])?;
+        Ok(terminal)
+    }
+
+    pub(super) fn validate_terminal(&self, held: &File, expected: &[u8]) -> AppResult<()> {
+        self.validate_marker(TERMINAL_FILE, held, expected)
+    }
+
+    pub(super) fn sync_directory(&self) -> AppResult<()> {
+        self.validate_directory()?;
+        self.directory.sync_all().map_err(|_| unavailable())?;
+        self.validate_directory()
+    }
+
+    pub(super) fn validate_directory(&self) -> AppResult<()> {
         let held = self.directory.metadata().map_err(|_| unavailable())?;
         private_directory(&held)?;
         let named = open_directory(&self.path)?;

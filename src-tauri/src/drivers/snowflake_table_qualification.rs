@@ -146,6 +146,20 @@ mod profile;
 #[path = "snowflake_table_qualification_guard.rs"]
 mod guard;
 
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "Fixed account entry remains closed")
+)]
+#[path = "snowflake_table_qualification_attempt.rs"]
+mod attempt;
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "Fixed account entry remains closed")
+)]
+#[path = "snowflake_table_qualification_factory.rs"]
+mod factory;
+
 use super::{snowflake_browsing as browsing, snowflake_metadata as metadata, snowflake_session};
 use crate::{
     domain::{

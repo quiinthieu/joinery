@@ -1,5 +1,35 @@
 # Joinery implementation roadmap
 
+## Fresh consumed factory and next account boundary (12 November 2026)
+
+The private factory now implements persistent exclusive attempt/workspace/state
+allocation before consumption, exact consumed runtime/profile construction,
+keychain-free ordinary Studio saving/preparation, and detached ownership through
+terminal fsync. Output is separate from both reviewed artifacts and permanent
+markers. Original acknowledgements are retained independently of final errors;
+failed or unsettled output is never automatically deleted or resumed. Independent
+bounded review is clean. See the [verification ledger](replacement-verification.md)
+for checked source and results; preceding construction notes below are historical.
+The optimized suite passes 244 qualification tests (5 default ignores) and 22
+runtime tests; the new detached-owner ignore passes separately through all 32
+phases / 393 synthetic requests. Full validation passes 679 frontend / 467
+standard Rust tests, with 129 fixture ignores, plus strict checks. All 38 frozen
+source hashes match. These local checks do not qualify account or normal UI use.
+
+Next, add the dedicated binary and narrow facade for offline emit/verify and
+separately approved execute. Fix permanent consumption-store placement independently
+of caller output, bind the actual binary/build recipe, and prove offline zero-launch
+and cross-process RUN reuse rejection. Restore the original reviewed envelope;
+generate a new Plan only during emission. Then present the exact table-only SQL,
+metadata scope, limits and billing implications for fresh approval before using
+`SANDBOX.BILLIE_TESTING`. No approval request is pending while that command is absent.
+
+Actual Snowflake lifecycle effects, normal packaged SSO/reconnect/cancellation/
+restart, million-row results/export, safe grid editing/import, broader metadata/
+SQL/schema tools, performance investigation and all remaining applicable DataGrip
+capabilities stay required. The final owner walkthrough remains an acceptance
+gate. No account activity, install, push, merge or publication occurs here.
+
 ## Complete-content performance gate (12 November 2026, passed locally)
 
 The complete optimized envelope capture/restore/consume test passes against the
