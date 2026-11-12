@@ -15,7 +15,8 @@ Local source, browser and hidden native checks pass. The
 defines exact retained-target navigation without an RPC or session switch.
 Cross-database navigation, inbound relationships, related-row navigation and
 actual account/native acceptance remain required. Earlier package evidence does
-not qualify changed source.
+not qualify changed source; the new normal package is bound to clean feature
+commit 5219db5 below.
 
 Evidence uses `.cache/verification/reference-navigation/`. The backend worker
 froze its two test files before checks; source-freeze-backend.json records those
@@ -109,9 +110,28 @@ native-final-runs.json preserve its source/binary identity and run details befor
 the normal build replaces the release binary. The known nonfatal LLVM
 rust-objcopy/libLLVM stripping warning is retained.
 
-All five final frozen source/browser files still match. A new normal package
-remains pending. No account requests, private marker-store access, installation,
-push or publication occurred.
+All five final frozen source/browser files match clean feature commit
+`5219db5bb20cecafca24c080385d4d0b687a3e80`, tree
+`e4a3f01304dd431077156bb504d0ffa0ca42609d`. The normal SDK-bearing ARM64 package
+then passes `pnpm desktop:snowflake:bundle:mac`, exit 0 with unchanged source
+(normal-bundle.log / json), 259.103 seconds including frontend and verification;
+optimized compilation takes 3m42s. normal-bundle-build-source.json records the
+clean source boundary, and normal-bundle-artifacts.json records final verified
+regular-file bytes and executable/resource identity. Strict ad-hoc signature
+verification passes. Both bundle resource/startup checks pass: 15,109 runtime
+entries, no symlinks, SDK 3.4.1 and zero authentication/SQL requests under the
+Node network guard. This guard is not an OS network sandbox or an SSO test.
+
+The runnable local bundle is
+`src-tauri/target/release/bundle/macos/Joinery.app`, version/build 0.1.0. Final
+verified regular files total 240,421,113 bytes (229.28 MiB); this differs from the
+pre-verification size printed by Tauri. Executable SHA-256:
+`e7722ef30db96d3c3a6f0746539f3bed7fac93387b486e75d400a72d1c4aa92b`.
+The bundle is uninstalled/unpublished. Developer ID/notarization, normal app
+UI/SSO/restart, actual account effects and owner replacement acceptance remain
+open. No account requests, private marker-store access, installation, push or
+publication occurred. The local Orca status card is updated. The private Site hub
+was not updated for this milestone because publishing changes is not authorized.
 
 ### Ordered Snowflake key columns (12 November 2026)
 

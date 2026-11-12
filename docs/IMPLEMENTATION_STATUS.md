@@ -16,11 +16,15 @@ SDK session regressions pass, and production backend source is unchanged. Full
 validation passes 762 frontend / 481 standard Rust tests with 129 fixture/helper
 ignores and strict checks; the changed synthetic browser workflow passes 1/1.
 Independent bounded review has no material finding. Hidden native startup/IPC
-and 10 cleanup cycles pass; normal packaging remains pending. The
+and 10 cleanup cycles pass. The normal SDK-bearing ARM64 package builds from
+clean feature commit 5219db5; strict ad-hoc signature/resources and guarded
+helper startup pass with zero authentication/SQL requests. Version/build 0.1.0
+totals 229.28 MiB in final regular files. The app remains local and uninstalled;
+Developer ID/notarization and normal UI/SSO/restart acceptance remain open. The
 [contract](snowflake-sdk-key-mappings-design.md#referenced-table-selection),
 [prepared walkthrough](migration-from-datagrip.md#referenced-snowflake-tables-prepared-acceptance-walkthrough)
 and [ledger](replacement-verification.md) record source-specific results and
-remaining checks. Earlier package evidence does not qualify this changed UI.
+remaining acceptance gates.
 
 Cross-database/inbound/related-row navigation, CHECK constraints, dynamic-table
 mappings and complete object coverage remain required. Live Snowflake writes,

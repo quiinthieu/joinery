@@ -5,7 +5,7 @@
 The ordered-mapping increment is locally verified on 54f59b6; source, browser,
 hidden native and package checks pass for that source. Referenced-table
 selection is a separate increment below; source, browser and hidden native
-checks pass, with normal packaging verification pending. The
+checks and the normal local package pass on clean 5219db5. The
 [verification ledger](replacement-verification.md) records completed checks and
 their source identity. Actual Snowflake and
 normal packaged acceptance remain open. This extends the
@@ -115,7 +115,8 @@ results. Late responses and mismatched returned identities cannot publish.
 ## Referenced-table selection
 
 Implemented locally; source/browser/hidden native checks and independent review
-pass. Normal packaging remains pending. **Select referenced table** is
+pass. The normal local package passes on clean 5219db5; actual normal-app/account
+acceptance remains open. **Select referenced table** is
 a local navigation action for a complete, available foreign-key mapping. Resolve
 the full database/schema/table identity against the entire retained catalog,
 including entries hidden by the current text filter. Require exactly one match

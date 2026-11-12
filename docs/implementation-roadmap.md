@@ -20,7 +20,11 @@ no material finding. Production backend source is unchanged. The
 [contract](snowflake-sdk-key-mappings-design.md#referenced-table-selection),
 [prepared walkthrough](migration-from-datagrip.md#referenced-snowflake-tables-prepared-acceptance-walkthrough)
 and [ledger](replacement-verification.md) record results. Hidden native
-startup/IPC and 10 cleanup cycles pass; normal packaging remains pending.
+startup/IPC and 10 cleanup cycles pass. The normal SDK-bearing ARM64 package
+builds from clean feature commit 5219db5; strict ad-hoc signature/resources and
+guarded helper startup pass with zero authentication/SQL requests. It is local
+and uninstalled; normal UI/SSO/restart, Developer ID/notarization and account
+acceptance remain open.
 
 Cross-database navigation remains required and needs a separately admitted
 database-scoped retained catalog; do not relax profile-database checks or borrow
