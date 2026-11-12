@@ -1,6 +1,9 @@
 //! App-owned metadata snapshots. Paths never cross IPC; result buffers and OS secrets
 //! are not part of this SQLite store. An incomplete SQLite backup rolls back on drop.
-use super::{Persistence, SCHEMA_VERSION, db_error, schema_version, validate_schema};
+use super::{
+    Persistence, SCHEMA_VERSION, db_error, initialize_schema, schema_version, snowflake_console,
+    validate_schema,
+};
 use crate::domain::*;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension,
@@ -57,7 +60,8 @@ fn copy(source: &Connection, destination: &mut Connection) -> AppResult<()> {
 }
 
 fn validate(connection: &Connection) -> AppResult<()> {
-    if schema_version(connection)? != SCHEMA_VERSION {
+    let version = schema_version(connection)?;
+    if version != 1 && version != SCHEMA_VERSION {
         return Err(AppError::invalid(
             "This backup needs a compatible Joinery version",
         ));
@@ -76,7 +80,15 @@ fn validate(connection: &Connection) -> AppResult<()> {
     super::library::read_bookmarks(connection)?;
     super::library::read_sql_format_settings(connection)?;
     super::library::read_sql_snippets(connection)?;
-    let unexpected: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND (type != 'table' OR name NOT IN ('profiles','groups','history','audit','settings'))", [], |r| r.get(0)).map_err(db_error)?;
+    if version >= 2 {
+        snowflake_console::validate_records(connection)?;
+    }
+    let allowed_tables = if version == 1 {
+        "'profiles','groups','history','audit','settings'"
+    } else {
+        "'profiles','groups','history','audit','settings','snowflake_console_runs','snowflake_console_steps'"
+    };
+    let unexpected: i64 = connection.query_row(&format!("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND (type != 'table' OR name NOT IN ({allowed_tables}))"), [], |r| r.get(0)).map_err(db_error)?;
     if unexpected != 0 {
         return Err(AppError::invalid(
             "The metadata backup contains unexpected schema objects",
@@ -270,6 +282,9 @@ impl Persistence {
         id: &str,
         digest: &str,
     ) -> AppResult<MetadataBackup> {
+        // The process-held lease prevents restore from replacing the journal
+        // while another application instance still owns an executing console.
+        let _console_owner = self.claim_console_journal_owner()?;
         let mut current = self.connection.lock();
         let path = self.backup_path(id)?;
         let before = info(&path, id)?;
@@ -302,6 +317,12 @@ impl Persistence {
                 "The backup changed during validation",
             ));
         }
+        // Upgrade a legacy snapshot privately. Unresolved restored attempts are
+        // sealed before replacement, so copying cannot create replayable work.
+        initialize_schema(&mut pinned)?;
+        snowflake_console::merge_for_restore(&current, &mut pinned)?;
+        snowflake_console::interrupt_records(&mut pinned)?;
+        validate(&pinned)?;
         // The verifier lives in the OS store, which is intentionally never backed up.
         let configured = current
             .query_row(
@@ -454,6 +475,146 @@ mod tests {
                     & 0o777,
                 0o600
             );
+        }
+    }
+
+    #[test]
+    fn version_one_backup_upgrades_privately_and_restores_existing_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        db.set_setting("legacy-marker", "before").unwrap();
+        let snapshot = db.create_metadata_backup().unwrap();
+        let path = db.backup_path(&snapshot.id).unwrap();
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(
+            "DROP TABLE snowflake_console_steps;
+             DROP TABLE snowflake_console_runs;
+             PRAGMA user_version=1;",
+        )
+        .unwrap();
+        drop(old);
+        let legacy = info(&path, &snapshot.id).unwrap();
+        let snapshot_bytes = fs::read(&path).unwrap();
+        db.set_setting("legacy-marker", "after").unwrap();
+        db.restore_metadata_backup(&legacy.id, &legacy.digest)
+            .unwrap();
+        assert_eq!(
+            db.setting("legacy-marker").unwrap().as_deref(),
+            Some("before")
+        );
+        assert_eq!(
+            schema_version(&db.connection.lock()).unwrap(),
+            SCHEMA_VERSION
+        );
+        snowflake_console::validate_schema(&db.connection.lock()).unwrap();
+        // Upgrading the private copy must not rewrite the user's backup.
+        assert_eq!(fs::read(path).unwrap(), snapshot_bytes);
+    }
+
+    #[test]
+    fn console_journal_old_and_legacy_restore_preserve_live_ack_and_client_identity() {
+        use snowflake_console::{
+            ConsoleAcknowledgement, ConsoleContext, ConsoleObservations, ConsoleRunMetadata,
+            ConsoleStatement, ConsoleStepOutcome, ConsoleStopReason,
+        };
+        for legacy in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let db = Persistence::open(root.path()).unwrap();
+            db.set_setting("restore-marker", "before").unwrap();
+            let snapshot = db.create_metadata_backup().unwrap();
+            let path = db.backup_path(&snapshot.id).unwrap();
+            if legacy {
+                let old = Connection::open(&path).unwrap();
+                old.execute_batch(
+                    "DROP TABLE snowflake_console_steps;
+                     DROP TABLE snowflake_console_runs;
+                     PRAGMA user_version=1;",
+                )
+                .unwrap();
+            }
+            let snapshot = info(&path, &snapshot.id).unwrap();
+            let backup_bytes = fs::read(&path).unwrap();
+            let owner = db.claim_console_journal_owner().unwrap();
+            let metadata = ConsoleRunMetadata {
+                run_id: new_id(),
+                client_request_id: new_id(),
+                session_id: new_id(),
+                connection_id: new_id(),
+                plan_digest: "a".repeat(64),
+                step_count: 1,
+                created_at: 1000,
+            };
+            let run = db
+                .console_prepare_run(&owner, metadata.clone())
+                .unwrap()
+                .run;
+            let pending = db
+                .console_step_intent(&owner, &metadata.run_id, run.revision, 0, 1001)
+                .unwrap();
+            let acknowledged = db
+                .console_step_outcome(
+                    &owner,
+                    &metadata.run_id,
+                    pending.revision,
+                    0,
+                    ConsoleStepOutcome::Acknowledged(ConsoleAcknowledgement {
+                        statement: ConsoleStatement {
+                            sdk_request_id: new_id(),
+                            query_id: Some(new_id()),
+                        },
+                        context: ConsoleContext::default(),
+                    }),
+                    ConsoleObservations::default(),
+                )
+                .unwrap();
+            let terminal = db
+                .console_finish(
+                    &owner,
+                    &metadata.run_id,
+                    acknowledged.revision,
+                    ConsoleStopReason::Completed,
+                    2000,
+                )
+                .unwrap();
+            db.set_setting("restore-marker", "after").unwrap();
+            // Even an idle retained console owns this journal across runs.
+            assert!(
+                db.restore_metadata_backup(&snapshot.id, &snapshot.digest)
+                    .is_err()
+            );
+            assert_eq!(
+                db.console_run(&metadata.run_id).unwrap(),
+                Some(terminal.clone())
+            );
+            assert_eq!(
+                db.setting("restore-marker").unwrap().as_deref(),
+                Some("after")
+            );
+            drop(owner);
+
+            db.restore_metadata_backup(&snapshot.id, &snapshot.digest)
+                .unwrap();
+            assert_eq!(
+                db.setting("restore-marker").unwrap().as_deref(),
+                Some("before")
+            );
+            assert_eq!(
+                db.console_run(&metadata.run_id).unwrap(),
+                Some(terminal.clone())
+            );
+            assert_eq!(
+                db.console_run_by_client_request(&metadata.client_request_id)
+                    .unwrap(),
+                Some(terminal.clone())
+            );
+            let owner = db.claim_console_journal_owner().unwrap();
+            let mut retry = metadata;
+            retry.run_id = new_id();
+            retry.created_at = 3000;
+            let existing = db.console_prepare_run(&owner, retry).unwrap();
+            assert!(!existing.created);
+            assert_eq!(existing.run, terminal);
+            assert_eq!(fs::read(path).unwrap(), backup_bytes);
         }
     }
 

@@ -8,6 +8,84 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Retained console adapter and journal (12 November 2026)
+
+Base is `f490d23` on `feat/datagrip-replacement`. The
+[contract](snowflake-sdk-console-journal.md) distinguishes private adapter/journal
+evidence from the still-missing Studio owner and usable UI. Independent bounded
+source review covers adapter ownership/revocation, ACK ordering, journal originals
+and accounting, migration, OS lease/crash recovery, restore and test fixtures.
+No material finding remains in that scope.
+
+The initial focused compile failed with new fixture references to the nonexistent
+`SafeMode::ConfirmWrites` and unsupported rusqlite `u64` conversions. No tests ran.
+Those were corrected to the real enum and checked SQLite `i64` boundaries. The
+second run passed 34 cases but failed an existing Studio helper-start test; an
+exact isolated rerun reproduced it. The prior helper change imports SDK
+`dist/lib/util.js` before hello, while the tiny synthetic SDK omitted that module.
+The fixture now supplies synthetic predicates. Genuine SDK source pins and
+loopback qualification remain separate and unchanged.
+
+Review also caught three integration hazards before admission wiring: ACKs must
+be recordable before publication, metadata restore must not roll back live ACKs/
+client identities, and a recorded intent followed by proven local non-dispatch
+must not become a database rejection or unknown. Mandatory async recording,
+compatible live-journal merge and a closed non-dispatch original resolve them.
+Original ACKs, terminal-time observations, later delivery failures and crash
+uncertainty stay separate.
+
+On the final frozen 223 Rust/manifest source paths, this command passes **35 cases**
+with one internal child fixture ignored (the parent explicitly invokes it):
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib console -- --test-threads=1
+```
+
+This includes 13 adapter, 19 journal, actual old/v1 metadata-restore, closed
+qualification-guard and existing Studio relation-lane cases. The real subprocess
+case proves a live owner blocks recovery, forced process termination releases
+the OS lease and later local recovery seals unresolved intent without SQL/replay.
+It does not prove any remote outcome or power-loss durability. Full `pnpm validate`
+passes in 346.4 seconds on unchanged Rust sources: 823 frontend tests, 545 standard
+Rust tests (137 default fixture/helper ignores), formatting, contracts, TypeScript,
+production UI build, native compiler checks and strict all-target/all-feature
+Clippy. Receipts/logs are ignored local evidence
+under `.cache/verification/reviewed-console/retained-{second,third}-validation.json`
+and adjacent logs; first compile evidence is `retained-validation.json`.
+
+Additional feature-gated checks on the same unchanged source pass **117 adapter
+cases**, **9 qualification-profile cases** and **18 qualification-envelope cases**
+(one internal envelope child ignored). The envelope mutation case rejects console
+authority even after untrusted fields are rehashed. Adding fixed false consent to
+the declaration changes its digest; future account qualification needs a fresh
+reviewed envelope and approval, without widening old authority.
+
+The first broader Studio scope passed 35/36 but failed
+`sdk_studio_stable_observation_preserves_plans_but_full_runtime_drift_revokes_them`
+at helper connection, before observation logic. Its exact isolated rerun passes
+1/1; the single full rerun passes **36/36** in 222.55 seconds. All runs retain
+unchanged source hashes. The startup failure remains unexplained: the current
+adapter maps process creation, hello timeout, EOF and invalid-frame failures to
+one message. Independent source/log review establishes no material runtime
+defect; host startup latency is plausible but unproven. No deadline was loosened.
+Closed test-only startup diagnostics remain a follow-up, and these reruns do not
+qualify actual SSO reliability. Receipts are
+`retained-regressions-validation.json` and
+`retained-final-boundaries-validation.json`, plus
+`studio-observation-isolated.log`. The final boundary receipt has all three
+stages exiting zero on the same 223 source hashes.
+
+After full validation, `target` is 11,406,688 KiB (10.9 GiB) with 147,823,386,624
+bytes (137.7 GiB) available. After the additional regressions, target size is
+unchanged and 148,024,225,792 bytes (137.9 GiB) is free. Smaller development
+settings preserve space; no automatic cache cleanup or size cap is claimed.
+No owner account/profile/approval-marker access,
+billable activity, packaging, installation, publication or owner acceptance ran.
+Current runnable release app remains the prior verified `278754b` bundle and does
+not contain these foundations. Full native console/SSO/restart, Snowflake data
+effects, million-row interaction/export and the complete DataGrip scope remain
+open. No new UI flow exists to qualify end to end yet.
+
 ### Build storage recovery (12 November 2026)
 
 The owner reported low iMac storage during the next retained-console increment.
@@ -30,8 +108,9 @@ but do not impose a size cap or perform automatic cleanup. Recompilation can be
 slower and full debugger variable/type information is absent. README requires
 space checks before/after substantial builds and no new builds below 20 GiB
 free. No rebuild was started for the cleanup/configuration check. Existing test
-results below remain evidence for their recorded frozen sources; the next
-retained adapter/journal increment is still being authored and is unverified.
+results below remain evidence for their recorded frozen sources. At cleanup the
+retained adapter/journal increment was unverified; subsequent verification is
+recorded in the section above.
 
 ### Reviewed Snowflake console foundations (12 November 2026)
 

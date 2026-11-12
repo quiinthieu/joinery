@@ -1,5 +1,34 @@
 # Implementation and release status
 
+## Retained console adapter and local journal (12 November 2026)
+
+The [private retained adapter and SQL-free journal](snowflake-sdk-console-journal.md)
+are implemented locally. Separate default-off console consent, sealed automatic
+SQL routes, sequential canonical dispatch and mandatory ACK recording before
+publication now have focused synthetic coverage. Atomic metadata schema 2 adds
+committed intents, immutable originals, proven local non-dispatch, client-ID
+deduplication and exclusive process ownership. Recovery never resumes SQL, and
+restoring old/version-1 settings preserves live ACKs and deduplication identities.
+
+Focused checks pass 35 cases, with one internal child fixture ignored by default;
+the parent test executes that child to prove real OS lease/crash behavior.
+Independent bounded review has no remaining material finding. Full validation
+passes 823 frontend and 545 standard Rust tests (137 default ignores), formatting,
+TypeScript/UI build, native compiler checks and strict all-feature Clippy;
+the [ledger](replacement-verification.md) owns source-scoped results.
+Broader checks pass 117 adapter, 36 Studio rerun, 9 qualification-profile and
+18 qualification-envelope cases. One intermittent Studio helper-start failure
+remains unexplained; isolated and full reruns passed without deadline changes.
+These are private foundations, with no new user command or console UI.
+
+Next is the retained Studio execution owner with immutable admission/review,
+policy revocation, mandatory durable recording/outbox holds, run-ID correlation,
+result/history events and UI integration. The journal's bounded capacity still
+needs a practical retention/archive workflow that preserves recovery identities.
+Actual Snowflake effects, million-row interaction/export, normal packaging and
+hands-on acceptance remain open. All applicable DataGrip capabilities remain
+required; this does not establish replacement readiness.
+
 ## Reviewed Snowflake console foundations (12 November 2026)
 
 The [pure compiler and private transport](snowflake-sdk-console-transport.md)

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 mod library;
 mod recovery;
+pub(crate) mod snowflake_console;
 mod workspace;
 
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -259,7 +260,7 @@ fn enable_wal(connection: &Connection, budget: Duration) -> rusqlite::Result<()>
     result.and(restored)
 }
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 fn schema_version(connection: &Connection) -> AppResult<i64> {
     let version = connection
@@ -292,6 +293,13 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
         ).map_err(db_error)?;
     }
     validate_schema(&transaction)?;
+    if version < 2 {
+        transaction
+            .execute_batch(snowflake_console::SCHEMA_SQL)
+            .map_err(db_error)?;
+        snowflake_console::validate_schema(&transaction)?;
+    }
+    snowflake_console::validate_records(&transaction)?;
     for (id, name, environment) in [
         ("production", "Production", Environment::Production),
         ("staging", "Staging", Environment::Staging),
@@ -312,7 +320,7 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
             )
             .map_err(db_error)?;
     }
-    if version == 0 {
+    if version < SCHEMA_VERSION {
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(db_error)?;
@@ -386,6 +394,9 @@ fn validate_schema(connection: &Connection) -> AppResult<()> {
             ));
         }
     }
+    if schema_version(connection)? >= 2 {
+        snowflake_console::validate_schema(connection)?;
+    }
     Ok(())
 }
 
@@ -425,6 +436,79 @@ mod tests {
                     .get::<_, String>(0))
                 .unwrap(),
             "preserve"
+        );
+    }
+
+    #[test]
+    fn version_one_metadata_migrates_atomically_without_losing_settings_or_groups() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("joinery.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE profiles(id TEXT PRIMARY KEY,json TEXT NOT NULL);
+             CREATE TABLE groups(id TEXT PRIMARY KEY,json TEXT NOT NULL);
+             CREATE TABLE history(id TEXT PRIMARY KEY,started_at INTEGER NOT NULL,json TEXT NOT NULL);
+             CREATE TABLE audit(id TEXT PRIMARY KEY,occurred_at INTEGER NOT NULL,connection_id TEXT NOT NULL,action TEXT NOT NULL,digest TEXT NOT NULL,outcome TEXT NOT NULL);
+             CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+             INSERT INTO settings VALUES('marker','preserved');
+             PRAGMA user_version=1;",
+        ).unwrap();
+        let group = ConnectionGroup {
+            id: "production".into(),
+            name: "Existing protected accounts".into(),
+            parent_id: None,
+            environment: Environment::Production,
+        };
+        connection
+            .execute(
+                "INSERT INTO groups VALUES(?1,?2)",
+                params![group.id, serde_json::to_string(&group).unwrap()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let db = Persistence::open(root.path()).unwrap();
+        assert_eq!(db.setting("marker").unwrap().as_deref(), Some("preserved"));
+        assert!(db.groups().unwrap().iter().any(|g| g.name == group.name));
+        let connection = db.connection.lock();
+        assert_eq!(schema_version(&connection).unwrap(), 2);
+        snowflake_console::validate_schema(&connection).unwrap();
+        snowflake_console::validate_records(&connection).unwrap();
+    }
+
+    #[test]
+    fn current_metadata_missing_journal_is_rejected_without_recreating_it() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        db.set_setting("marker", "preserved").unwrap();
+        db.connection
+            .lock()
+            .execute_batch("DROP TABLE snowflake_console_steps;")
+            .unwrap();
+        drop(db);
+        let path = root.path().join("joinery.sqlite");
+        let before = std::fs::read(&path).unwrap();
+        assert!(Persistence::open(root.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let connection = Connection::open(path).unwrap();
+        assert_eq!(schema_version(&connection).unwrap(), 2);
+        assert_eq!(
+            connection
+                .query_row("SELECT value FROM settings WHERE key='marker'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            "preserved"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_steps'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
         );
     }
 

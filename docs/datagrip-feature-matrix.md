@@ -64,9 +64,10 @@ and [ledger](replacement-verification.md).
 
 The [design](snowflake-sdk-console-scripts-design.md) is prepared and independently
 reviewed. [Compiler and private transport foundations](snowflake-sdk-console-transport.md)
-are implemented locally; application integration and external qualification
-remain incomplete. These foundations do not expose a new user workflow or
-change profile permissions. The required design covers
+and the [retained adapter/local journal](snowflake-sdk-console-journal.md) are
+implemented locally; application integration and external qualification remain
+incomplete. Separate default-off console consent is persisted, with no new UI
+or application command. The required design covers
 retained console ownership across runs, mixed reviewed SQL, scalar binds, explicit
 transactions, passive response context, SQL-free local outcome recovery and
 preserving LAST_QUERY_ID adjacency. Broad owner-authored SQL and separate file
@@ -77,7 +78,9 @@ metadata, editing/import, authoring, performance and native usability in scope.
 | Foundation | Recorded local evidence | Remaining required work |
 | --- | --- | --- |
 | Pure mixed-script compilation | 13/13 focused cases; ordered parsed units, selected server-validated units, global scalar bindings, canonical verification and size/expansion bounds | Trusted native review/admission and complete envelope bounds; no execution permission comes from compilation |
-| Private reviewed SQL transport | 385 helper cases including 12 new actual-SDK loopback cases, 70 process cases and 43 actual-child cases pass; original ACK/context, fixed per-request statement count, file veto and retirement ordering | Retained application owner, profile consent, review UI, durable run/step receipts and actual account semantics |
+| Private reviewed SQL transport | 385 helper cases including 12 new actual-SDK loopback cases, 70 process cases and 43 actual-child cases pass; original ACK/context, fixed per-request statement count, file veto and retirement ordering | Retained application owner, consent/review UI, durable owner/receipt integration and actual account semantics |
+| Retained physical adapter | 13 synthetic child cases pass within the 35-case focused suite; separate writable SDK consent, permanent owner, suppression of ordinary SQL/health/metadata, sequential dispatch and async ACK recording before publication | Trusted Studio admission, durable recorder/outbox hold across new runs, complete UI/background scheduling, configurable long-running queries beyond the foundation's 65-second delivery deadline and actual account semantics |
+| SQL-free local run evidence | 19 journal cases plus actual old/v1 restore regression pass; committed intents, immutable originals/local non-dispatch, honest suffix accounting, deduplication, real OS lease/crash test, monotonic observations and preserved live ACKs on restore. Full validation passes 823 frontend / 545 standard Rust cases (137 default ignores) and strict checks | Retained execution owner, local UI reconciliation, practical retention/archive, storage-failure shutdown barrier and normal app restart acceptance |
 | Complete daily console workflow | Design and bounded foundation review; qualification guard rejects substitution for all 393 existing account-ledger entries | End-to-end mixed reads/writes/DDL/transactions across runs, no hidden observers, interruption/restart, native usability and owner acceptance remain incomplete |
 
 All counts apply to the frozen foundation source recorded in the

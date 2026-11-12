@@ -1,5 +1,37 @@
 # Joinery implementation roadmap
 
+## Retained console adapter and local evidence (12 November 2026)
+
+The [retained adapter/journal contract](snowflake-sdk-console-journal.md) is
+implemented with focused local coverage (35 passing cases; one internal child
+fixture invoked by its parent). Separate profile consent, permanent physical
+session ownership, hidden-SQL suppression, ACK-before-publication ordering and
+SQL-free durable intent/original outcomes are available as private foundations.
+The SQLite journal distinguishes proven non-dispatch from crash uncertainty,
+deduplicates client correlation and preserves live evidence through old/v1
+metadata restore. Independent source review has no remaining material finding;
+full validation passes 823 frontend / 545 standard Rust cases (137 default
+ignores), build/compiler checks and strict Clippy on the recorded unchanged
+sources in the [ledger](replacement-verification.md).
+
+The broader adapter scope passes 117 cases and the Studio rerun passes 36.
+One initial Studio helper-start failure remains unexplained despite isolated
+and full rerun success. Add closed test-only startup diagnostics before making
+reliability claims; preserve the current deadline and avoid raw private errors.
+
+Advance to the complete Studio owner/UI workflow next: immutable one-use review
+and policy checks, durable intent/ACK sequencing with in-process outbox holds,
+SQL-free lost-start-response recovery/cancellation, honest results/history and
+suppression of implicit SQL across separate runs. Connect BEGIN, later DML and
+later explicit COMMIT/ROLLBACK on one physical console, plus SHOW/RESULT_SCAN,
+USE/SET/DDL and selected server-validated units. Test interruption and restart
+without automatic replay or settlement. Provide safe SQL completion and journal
+retention without erasing recovery/deduplication evidence. Replace fixed foundation
+delivery deadlines with qualified configurable long-running query behavior.
+Full native/account
+qualification and every other required DataGrip area remain open. The private
+foundations expose no new user command and do not qualify a daily console.
+
 ## Reviewed Snowflake console foundations (12 November 2026)
 
 The [pure compiler and private transport](snowflake-sdk-console-transport.md)
