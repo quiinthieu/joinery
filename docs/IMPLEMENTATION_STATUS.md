@@ -1,5 +1,27 @@
 # Implementation and release status
 
+## Qualification construction seams (12 November 2026, local integration)
+
+The private harness runtime constructor now selects the exact supplied root with
+compiled pins and no packaged/development fallback. Policy can take the same
+exclusively reserved journal after verifying its Plan, fresh header-only state
+and storage identity; used, failed or changed journals are rejected. These
+constructors remain separate from the unfinished fixed private factory.
+Optimized checks pass **227 qualification tests / 4 default ignores** and
+**22 runtime tests**, including all nine new cases. Full validation passes
+**679 frontend / 467 standard Rust tests**, with **129 fixture ignores**, plus
+formatting/build/check/strict Clippy. All four frozen source hashes match;
+bounded review has no unresolved material finding. See the
+[verification ledger](replacement-verification.md) for checks and scope.
+
+Persistent exclusive attempt/workspace/state allocation, retained terminal-file
+ownership, permanent consumption-store placement and the fixed account binary
+remain required. No account or normal UI workflow is newly qualified. Prior
+package/performance checks apply to their recorded source. Fresh execution and
+billing approval for the exact table-only plan under `SANDBOX.BILLIE_TESTING`
+must precede any account activity. All applicable DataGrip capabilities and owner
+acceptance remain required; the Goal is active and incomplete.
+
 ## Fixed qualification inputs (12 November 2026, local integration)
 
 The qualification envelope now recomputes a fixed isolated Staging/Confirm

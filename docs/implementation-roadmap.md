@@ -44,6 +44,18 @@ and terminal output before consumption, retain them through detached final
 persistence, and preserve them after incomplete shutdown. The current generic
 Studio opener must never receive an existing application workspace.
 
+The exact qualification runtime constructor now selects the supplied root with
+compiled pins and no packaged/development fallback, requiring separate private
+state. A reserved-journal constructor moves an already exclusively created,
+untouched header into Policy only for the same Plan/profile; used, failed or
+changed journals are rejected. These are closed construction seams, not the
+factory or account entry. Optimized checks pass 227 qualification tests with
+4 default ignores and 22 runtime tests, including all nine new cases.
+Full validation passes 679 frontend / 467 standard Rust tests, with 129 fixture
+ignores, plus formatting/build/check/strict Clippy; all four source hashes match.
+Their commands and scope are recorded in the
+[verification ledger](replacement-verification.md).
+
 - Add one dedicated binary and a narrow private entry facade for offline
   emit/verify and separately approved execute. Bind that binary's actual build
   recipe; only emission generates a Plan. Verify/execute restore original
@@ -54,7 +66,8 @@ Studio opener must never receive an existing application workspace.
   fix the permanent consumption root independently of output paths.
 - Construct Studio, runtime and the new connection attempt only from the consumed
   roots. The current assembled-component runner constructor is suitable for
-  fixtures, not proof of runtime provenance. Use fresh exclusive private storage;
+  fixtures, not proof of runtime provenance. Wire the exact runtime constructor
+  and reserved journal into one private owner. Use fresh exclusive private storage;
   the generic persistence opener can adopt existing databases and change modes.
 - Retain resource/guard/attempt/output ownership through journal and terminal
   receipt persistence, including dropped waiters and failed launches. Prove

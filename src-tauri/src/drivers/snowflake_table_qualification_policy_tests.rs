@@ -155,6 +155,125 @@ async fn owning_create_with_plan_rejects_invalid_profiles_before_journal_creatio
 }
 
 #[tokio::test]
+async fn owning_reserved_journal_moves_exact_header_into_policy_without_recreation() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let plan = Plan::generate().unwrap();
+    let hash = plan.sha256().unwrap();
+    let journal = Journal::create(directory.path(), &hash).unwrap();
+    let path = directory.path().join(super::super::journal::FILE_NAME);
+    let header = fs::read(&path).unwrap();
+    // The name is already reserved: another creator cannot replace it.
+    assert!(Journal::create(directory.path(), &hash).is_err());
+    let policy = Policy::from_reserved_journal(journal, profile(), plan.clone()).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), header);
+    assert_eq!(
+        policy.plan().canonical_json().unwrap(),
+        plan.canonical_json().unwrap()
+    );
+    assert_eq!(policy.frozen_profile(), profile());
+    let connect = Frame::new(1, "connect", Impact::Control, profile());
+    TransportPolicy::admit(&policy, connect.request())
+        .await
+        .unwrap();
+    let rows = records(directory.path());
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["event"]["planSha256"], hash);
+    assert_eq!(rows[1]["sequence"], 1);
+}
+
+#[test]
+fn owning_reserved_journal_rejects_different_plan_and_invalid_profile_without_writes() {
+    for wrong_plan in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let plan = Plan::generate().unwrap();
+        let journal = Journal::create(directory.path(), &plan.sha256().unwrap()).unwrap();
+        let path = directory.path().join(super::super::journal::FILE_NAME);
+        let header = fs::read(&path).unwrap();
+        let (input, requested) = if wrong_plan {
+            (profile(), Plan::generate().unwrap())
+        } else {
+            (Value::Null, plan)
+        };
+        assert!(Policy::from_reserved_journal(journal, input, requested).is_err());
+        assert_eq!(fs::read(&path).unwrap(), header);
+    }
+}
+
+#[test]
+fn owning_reserved_journal_rejects_used_or_failed_append_without_resuming_or_truncating() {
+    for failed_append in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let plan = Plan::generate().unwrap();
+        let mut journal = Journal::create(directory.path(), &plan.sha256().unwrap()).unwrap();
+        if failed_append {
+            // Invalid input poisons the owner without changing the fresh header.
+            // Metadata alone therefore cannot distinguish this case.
+            assert!(journal.append(&Value::Null).is_err());
+            assert_eq!(records(directory.path()).len(), 1);
+        } else {
+            journal
+                .append(&json!({"type":"synthetic-prior-owner"}))
+                .unwrap();
+        }
+        let path = directory.path().join(super::super::journal::FILE_NAME);
+        let prior = fs::read(&path).unwrap();
+        assert!(Policy::from_reserved_journal(journal, profile(), plan).is_err());
+        assert_eq!(fs::read(&path).unwrap(), prior);
+    }
+}
+
+#[test]
+fn owning_reserved_journal_rejects_changed_file_or_directory_without_repair() {
+    for mutation in [
+        "truncate",
+        "replace",
+        "symlink",
+        "file-mode",
+        "directory-mode",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let plan = Plan::generate().unwrap();
+        let journal = Journal::create(directory.path(), &plan.sha256().unwrap()).unwrap();
+        let path = directory.path().join(super::super::journal::FILE_NAME);
+        let header = fs::read(&path).unwrap();
+        match mutation {
+            "truncate" => fs::write(&path, b"").unwrap(),
+            "replace" | "symlink" => {
+                let original = directory.path().join("original-journal");
+                fs::rename(&path, &original).unwrap();
+                if mutation == "replace" {
+                    fs::write(&path, &header).unwrap();
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+                } else {
+                    std::os::unix::fs::symlink(&original, &path).unwrap();
+                }
+            }
+            "file-mode" => fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(),
+            "directory-mode" => {
+                fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap()
+            }
+            _ => unreachable!(),
+        }
+        let before = fs::read(&path).unwrap();
+        let mode = fs::symlink_metadata(&path).unwrap().permissions().mode();
+        assert!(
+            Policy::from_reserved_journal(journal, profile(), plan).is_err(),
+            "{mutation}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before, "{mutation}");
+        assert_eq!(
+            fs::symlink_metadata(&path).unwrap().permissions().mode(),
+            mode,
+            "{mutation}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn owning_admission_syncs_intent_and_prior_original_terminal_before_returning() {
     let (directory, policy) = policy().await;
     let connect = Frame::new(1, "connect", Impact::Control, profile());

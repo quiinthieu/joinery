@@ -42,6 +42,22 @@ roots after the passed complete-runtime timing gate, then a freshly reviewed tab
 is authorized by this matrix. Broad product work remains required alongside
 qualification; these internal checks do not substitute for completing the rows.
 
+## Qualification construction seams (12 November 2026, local integration)
+
+| Capability                       | Local implementation                                                                                                                         | Remaining gate                                                                                                                          |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Exact reviewed runtime selection | Harness-only constructor uses the supplied root and compiled pins, requires separate private state, and has no packaged/development fallback | Fixed factory must obtain the root exclusively from the consumed envelope and retain full inventory checks                              |
+| Reserved journal ownership       | Policy moves the same exclusive fresh header-only journal for its exact Plan; used, failed or changed journals are rejected                  | Private attempt/workspace/state allocation, terminal evidence in the detached owner, permanent store and fixed binary remain incomplete |
+
+Optimized checks pass **227 qualification tests / 4 default ignores** and
+**22 runtime tests**, including all nine new cases. Full validation passes
+**679 frontend / 467 standard Rust tests**, with **129 fixture ignores**, plus
+formatting/build/check/strict Clippy. Bounded review is clean. The
+[verification ledger](replacement-verification.md) records commands and scope.
+These construction seams qualify no account or normal UI workflow and close none
+of the twelve readiness areas above. All applicable DataGrip capabilities and
+owner acceptance remain required.
+
 ## Fixed qualification inputs (12 November 2026, local integration)
 
 | Capability                    | Local implementation                                                                                                                                                               | Remaining gate                                                                                                                                  |

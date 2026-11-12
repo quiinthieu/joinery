@@ -108,6 +108,13 @@ existing profiles and checks account/host consistency. The future account factor
 must supply the exclusive fresh workspace and keychain-free secret store; the
 module alone does not prove those construction properties.
 
+The private runtime constructor now selects exactly the supplied reviewed root,
+using compiled pins without a packaged suffix or development fallback, and
+requires separate private state. Policy can consume the same reserved fresh
+journal after checking its Plan and held storage identity. Neither constructor
+proves exclusive factory allocation or consumed-root provenance; the fixed
+factory and retained terminal-output owner are still required before execution.
+
 Existing application profiles are neither read nor changed. Normal Production
 profiles still require PasswordGated; this Confirm-only runner rejects a plan
 requiring a passphrase and does not qualify that separate production workflow.

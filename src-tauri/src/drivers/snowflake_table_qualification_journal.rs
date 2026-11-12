@@ -87,6 +87,7 @@ pub(super) struct Journal {
     file: File,
     directory_identity: (u64, u64),
     file_identity: (u64, u64),
+    plan_sha256: String,
     sequence: u64,
     previous: String,
     bytes: u64,
@@ -139,6 +140,7 @@ impl Journal {
             file,
             directory_identity: identity(&opened),
             file_identity: identity(&metadata),
+            plan_sha256: plan_sha256.to_owned(),
             sequence: 0,
             previous: ZERO_HASH.into(),
             bytes: 0,
@@ -154,6 +156,20 @@ impl Journal {
         journal.directory.sync_all().map_err(|_| unavailable())?;
         journal.validate_identity(journal.bytes)?;
         Ok(journal)
+    }
+
+    /// Only the untouched, exclusively created header may be moved into a new
+    /// policy. This checks the held file rather than reopening or resuming it.
+    /// Call outside async/process/policy locks, like all journal filesystem IO.
+    pub(super) fn validate_reserved(&self, plan_sha256: &str) -> AppResult<()> {
+        if self.failure.is_some()
+            || self.plan_sha256 != plan_sha256
+            || self.sequence != 0
+            || self.records != 1
+        {
+            return Err(invalid());
+        }
+        self.validate_identity(self.bytes)
     }
 
     pub(super) fn append(&mut self, event: &Value) -> AppResult<JournalReceipt> {

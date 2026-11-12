@@ -221,12 +221,30 @@ impl Policy {
         plan: Plan,
     ) -> AppResult<Self> {
         let sequence = Sequencer::with_plan(plan, frozen_profile)?;
-        let lifecycle = Lifecycle::new(sequence.plan());
         let hash = sequence.plan().sha256()?;
         let journal = tokio::task::spawn_blocking(move || Journal::create(&directory, &hash))
             .await
             .map_err(|_| denied())??;
-        Ok(Self {
+        Ok(Self::with_reserved_sequence(sequence, journal))
+    }
+
+    /// The fixed factory reserves storage before spending approval. Move that
+    /// exact fresh journal into the policy; never adopt an existing journal.
+    /// Blocking filesystem checks require an owner outside async/policy locks.
+    /// This grants no approval or Studio/runtime construction authority.
+    pub(super) fn from_reserved_journal(
+        journal: Journal,
+        frozen_profile: Value,
+        plan: Plan,
+    ) -> AppResult<Self> {
+        let sequence = Sequencer::with_plan(plan, frozen_profile)?;
+        journal.validate_reserved(&sequence.plan().sha256()?)?;
+        Ok(Self::with_reserved_sequence(sequence, journal))
+    }
+
+    fn with_reserved_sequence(sequence: Sequencer, journal: Journal) -> Self {
+        let lifecycle = Lifecycle::new(sequence.plan());
+        Self {
             state: Arc::new(Mutex::new(State {
                 sequence,
                 lifecycle,
@@ -249,7 +267,7 @@ impl Policy {
             journal: Arc::new(std::sync::Mutex::new(journal)),
             gate: tokio::sync::Mutex::new(()),
             flush_updates: tokio::sync::watch::channel(0).0,
-        })
+        }
     }
 
     fn interrupted(&self) -> Interrupted {

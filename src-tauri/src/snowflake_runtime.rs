@@ -65,6 +65,32 @@ impl SnowflakeRuntime {
         Self::load_packaged(resource_dir, state_parent, ExpectedPins::compiled()?)
     }
 
+    /// Fixed qualification entry only: select the exact already reviewed root.
+    /// The supplied private state is separate; no packaged suffix, environment
+    /// override or development fallback may change the selected resources.
+    #[cfg(feature = "test-harness")]
+    #[allow(dead_code)] // Retained until the fixed qualification factory is wired.
+    pub(crate) fn from_qualification_root(
+        runtime_root: &Path,
+        state_parent: &Path,
+    ) -> io::Result<Self> {
+        require_supported_host()?;
+        Self::load_qualification_root(runtime_root, state_parent, ExpectedPins::compiled()?)
+    }
+
+    #[cfg(feature = "test-harness")]
+    fn load_qualification_root(
+        runtime_root: &Path,
+        state_parent: &Path,
+        pins: ExpectedPins,
+    ) -> io::Result<Self> {
+        let state_parent = checked_directory(state_parent)?;
+        if fs::symlink_metadata(&state_parent)?.permissions().mode() & 0o777 != 0o700 {
+            return Err(invalid("Snowflake state parent must be private"));
+        }
+        Self::load(runtime_root.to_path_buf(), &state_parent, pins)
+    }
+
     /// Explicit development route. Release builds cannot select the checkout.
     #[cfg(debug_assertions)]
     pub fn from_development(state_parent: &Path) -> io::Result<Self> {
@@ -819,6 +845,163 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    #[cfg(feature = "test-harness")]
+    fn qualification_exact_root_ignores_packaged_parent_and_nested_decoy() {
+        let mut fixture = Fixture::new();
+        let reviewed = fixture.resources.join("reviewed-exact-root");
+        fs::rename(&fixture.root, &reviewed).unwrap();
+        fixture.root = reviewed;
+        let decoy = Fixture::new();
+        let nested = fixture.root.join("snowflake-runtime");
+        fs::rename(&decoy.root, &nested).unwrap();
+
+        let runtime = SnowflakeRuntime::load_qualification_root(
+            &fixture.root,
+            &fixture.state,
+            fixture.pins.clone(),
+        )
+        .unwrap();
+        assert_eq!(runtime.root, fixture.root);
+        assert_eq!(runtime.state_parent, fixture.state);
+        assert_ne!(runtime.root, nested);
+        assert!(
+            SnowflakeRuntime::load_qualification_root(
+                &fixture.resources,
+                &fixture.state,
+                fixture.pins.clone(),
+            )
+            .is_err(),
+            "a resource parent must not select its child as a packaged route"
+        );
+        assert_eq!(fs::read_dir(&fixture.state).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "test-harness")]
+    fn qualification_invalid_exact_root_never_falls_back() {
+        let fixture = Fixture::new();
+        let decoy = Fixture::new();
+        let nested = fixture.root.join("snowflake-runtime");
+        fs::rename(&decoy.root, &nested).unwrap();
+        // The alternate tree is valid under the same pins, but cannot repair
+        // the selected tree's missing or modified required resources.
+        SnowflakeRuntime::load_qualification_root(&nested, &fixture.state, fixture.pins.clone())
+            .unwrap();
+        for root in [fixture.resources.join("missing"), fixture.resources.clone()] {
+            assert!(
+                SnowflakeRuntime::load_qualification_root(
+                    &root,
+                    &fixture.state,
+                    fixture.pins.clone(),
+                )
+                .is_err()
+            );
+        }
+        fs::write(fixture.root.join("helper/main.mjs"), b"changed source").unwrap();
+        assert!(
+            SnowflakeRuntime::load_qualification_root(
+                &fixture.root,
+                &fixture.state,
+                fixture.pins.clone(),
+            )
+            .is_err()
+        );
+        fs::remove_file(fixture.root.join("manifest.json")).unwrap();
+        assert!(
+            SnowflakeRuntime::load_qualification_root(
+                &fixture.root,
+                &fixture.state,
+                fixture.pins.clone(),
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(&fixture.state).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "test-harness")]
+    fn qualification_exact_root_rejects_unsafe_or_overlapping_paths() {
+        let fixture = Fixture::new();
+        let nested_state = fixture.root.join("helper");
+        for (root, state) in [
+            (Path::new("relative"), fixture.state.as_path()),
+            (fixture.root.as_path(), Path::new("relative")),
+            (fixture.root.as_path(), fixture.root.as_path()),
+            (fixture.root.as_path(), fixture.resources.as_path()),
+            (fixture.root.as_path(), nested_state.as_path()),
+        ] {
+            assert!(
+                SnowflakeRuntime::load_qualification_root(root, state, fixture.pins.clone())
+                    .is_err()
+            );
+        }
+        let root_link = fixture.resources.join("reviewed-link");
+        symlink(&fixture.root, &root_link).unwrap();
+        let state_link = fixture.resources.join("state-link");
+        symlink(&fixture.state, &state_link).unwrap();
+        for (root, state) in [(&root_link, &fixture.state), (&fixture.root, &state_link)] {
+            assert!(
+                SnowflakeRuntime::load_qualification_root(root, state, fixture.pins.clone())
+                    .is_err()
+            );
+        }
+        for mode in [0o755, 0o777] {
+            fs::set_permissions(&fixture.state, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(
+                SnowflakeRuntime::load_qualification_root(
+                    &fixture.root,
+                    &fixture.state,
+                    fixture.pins.clone(),
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(fs::read_dir(&fixture.state).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "test-harness")]
+    fn qualification_exact_root_requires_supported_host_and_compiled_pins() {
+        let fixture = Fixture::new();
+        let error =
+            SnowflakeRuntime::from_qualification_root(&fixture.root, &fixture.state).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                io::ErrorKind::InvalidData
+            } else {
+                io::ErrorKind::Unsupported
+            },
+            "the production route must not accept fixture-declared synthetic pins"
+        );
+        assert_eq!(fs::read_dir(&fixture.state).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "test-harness")]
+    fn qualification_exact_root_validation_never_launches_or_allocates_state() {
+        let mut fixture = Fixture::new();
+        let sentinel = b"#!/bin/sh\n: > qualification-node-was-launched\n";
+        fs::write(fixture.root.join("bin/node"), sentinel).unwrap();
+        fixture.pins.node_sha256 = digest_bytes(sentinel);
+        fixture.change_manifest("/runtime/sha256", json!(fixture.pins.node_sha256));
+        let runtime = SnowflakeRuntime::load_qualification_root(
+            &fixture.root,
+            &fixture.state,
+            fixture.pins.clone(),
+        )
+        .unwrap();
+        drop(runtime);
+        assert!(
+            !fixture
+                .root
+                .join("helper/qualification-node-was-launched")
+                .exists()
+        );
+        assert_eq!(fs::read_dir(&fixture.state).unwrap().count(), 0);
     }
 
     #[test]

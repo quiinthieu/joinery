@@ -8,6 +8,73 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Exact runtime and reserved journal construction (12 November 2026)
+
+The harness-only crate-private runtime constructor selects exactly the supplied
+root with supported-host enforcement and compiled pins. It does not append a
+packaged suffix, discover an environment/development runtime or fall back to a
+different tree. Existing resource validation and the separate/private state
+requirement remain enforced. Five synthetic tests cover valid decoys, invalid
+roots, overlap, modes, symlinks, compiled-pin rejection and zero launch/state
+allocation. Complete consumed-inventory validation remains the factory's duty.
+
+Policy can now take ownership of an already exclusively reserved Journal for
+the same Plan and validated frozen profile. It accepts only the untouched
+header-only owner, rejects prior events or a failed append, and checks held/named
+storage identities, permissions, single-link status and length. It never reopens,
+resumes, truncates or repairs the journal. Four tests cover normal first admission,
+creation collision, mismatched Plan/profile, used and failed-but-header-only
+journals, truncation/replacement/symlink and changed file/directory modes. The
+ordinary create route keeps its validation-before-file-creation behavior.
+
+Independent bounded review has no material finding in the journal/policy delta;
+the lead reviewed the separately implemented runtime delta. This does not remove
+the documented same-user in-place rewrite limitation. Four changed source hashes
+are recorded in `factory-input-source-freeze.json` under
+`.cache/verification/connection-attempts/`.
+
+Use the pinned toolchains and `JOINERY_TEST_NODE` from README. Verification is
+serial, with the exact commands:
+
+```sh
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_runtime:: -- --test-threads=3
+pnpm validate
+```
+
+The initial focused `factory-input-journal-release.log` has terminal exit **0**,
+**4 passed / 0 failed**, **0.05 seconds**. That run precedes the additional
+failed-append assertion and is not final-source evidence for it. The final
+source is frozen before the full commands above. No earlier ignored full-runtime
+or packaged-artifact pass is counted as verification of this new source.
+
+`factory-input-qualification-final-release.log` has terminal exit **0**:
+**227 passed / 0 failed / 4 default ignores**, **148.93 seconds**.
+`factory-input-runtime-final-release.log` also exits **0**: **22 passed /
+0 failed / 0 ignored**, **0.08 seconds**. All nine new cases pass: four owning
+policy/journal tests and five runtime-selection tests. Existing actual-helper/
+synthetic-SDK lifecycle and fault cases complete successfully, including the
+long callback-loss case. The four full-runtime/performance ignores are not rerun
+for this source. Existing nonfatal release `rust-objcopy`/`libLLVM.dylib` and
+`ts-rs` warnings remain visible in the logs.
+
+`factory-input-validate-final.log` has terminal exit **0**: **679 frontend tests
+in 57 files**, **467 standard Rust tests / 0 failed / 129 fixture ignores** across
+21 Rust summaries. Formatting, contracts/types, production frontend build, Rust
+format/check and strict all-target/all-feature Clippy pass. All four frozen
+source hashes still match after the completed commands. Scoped documentation
+formatting and `pnpm check:git` also pass before the local commit. No material
+review finding remains; the suggested failed-but-header-only journal case is
+included in the final source and passes.
+
+The fixed private factory, attempt/workspace/state allocation, terminal evidence
+inside the detached owner, permanent consumption-store placement and dedicated
+binary remain incomplete. These constructors add no account or normal UI
+workflow. No SSO, account SQL, package rebuild, installation, push, merge or
+publication occurs. Fresh table-only execution/billing approval for
+`SANDBOX.BILLIE_TESTING`, actual data effects, all applicable DataGrip workflows
+and hands-on acceptance remain required.
+
 ### Fixed qualification profile and private envelope input (12 November 2026)
 
 The private seven-field connection input now validates the account against the
