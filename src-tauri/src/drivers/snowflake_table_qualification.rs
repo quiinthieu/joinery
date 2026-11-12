@@ -1,5 +1,4 @@
-//! Offline, closed existing-schema qualification definition. This is not an
-//! executable manifest, approval, SQL admission gate, or account runner.
+//! Closed existing-schema qualification definition and fixed private entry.
 //!
 //! Only `Plan::generate` chooses a fresh target. Internal snapshot restoration
 //! recompiles that same closed definition; there is no caller-selected SQL,
@@ -7,12 +6,16 @@
 //! describes exact production-derived SQL order and route-specific rejection
 //! suffixes. Harness-only policy/Studio composition supplies physical admission,
 //! lifecycle observations and durable receipts. Source/binary/private-connection
-//! binding and an authorized account entry remain separate, unfinished gates.
-//! The dedicated command exposes only offline emission and verification.
+//! binding and a reviewed one-use approval gate the dedicated execute command.
+//! Account qualification remains separate from local synthetic verification.
 
 #[path = "snowflake_table_qualification_cli.rs"]
 mod cli;
 pub use cli::{OfflineCommandFailure, run_offline_command};
+
+#[path = "snowflake_table_qualification_entry.rs"]
+mod entry;
+pub use entry::{CommandOutput, run_command};
 
 #[path = "snowflake_table_qualification_emission.rs"]
 mod emission;

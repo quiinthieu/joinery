@@ -1,19 +1,21 @@
 # Snowflake qualification in an existing disposable schema
 
-Prepared 11 November 2026. **Proposal only: unexecuted and not executable until
-a new runner, its regression tests, and current source/runtime pins are reviewed.**
-The owner permits creating fresh tables under `SANDBOX.BILLIE_TESTING`. That
-target permission persists; it does not supply the new SQL, metadata-disclosure,
-authentication, transaction, DROP, or possible-billing approval described here.
-No account connection, credential access, or account SQL was used to prepare this
-document. No approval question is pending while the executable boundary is absent.
+Prepared 11 November 2026. **Account proposal remains unexecuted.** The owner
+permits fresh tables under `SANDBOX.BILLIE_TESTING`; that permission does not
+supply new SQL, metadata-disclosure, authentication, transaction, DROP or
+possible-billing approval. No account connection, credential access or SQL was
+used to prepare this document. The earlier CREATE DATABASE approval is spent.
 
-The dedicated [offline command](snowflake-table-offline-command.md) now emits and
-verifies original private review evidence without helper/compiler/SSO launch.
-It deliberately exposes no execute route. The fixed account entry and permanent
-marker location remain incomplete; these offline outputs cannot be used as
-execution authority. See the current
-[verification ledger](replacement-verification.md) for checks and source scope.
+The dedicated [qualification command](snowflake-table-offline-command.md) emits
+and verifies original private evidence offline. Its separate execute entry now
+restores that evidence, selects fixed native markers and retains preparation,
+original calls, shutdown and terminal persistence through observed SIGINT/SIGTERM.
+Synthetic process checks use disposable homes and a synthetic SDK; production
+fixture injection is absent. Current executable/source/compiler/zero-link-runtime
+pins and a new exact approval window are still required before an account attempt.
+No account approval question is pending while local verification proceeds.
+The [verification ledger](replacement-verification.md) records current checks;
+the paragraphs below preserve preceding implementation history.
 
 The harness-only [offline definition](../src-tauri/src/drivers/snowflake_table_qualification.rs)
 and its [tests](../src-tauri/src/drivers/snowflake_table_qualification_tests.rs)
@@ -75,8 +77,8 @@ after dropped waiters; no failure automatically removes output or refunds marker
 The internal permanent store now selects a fixed macOS account-home namespace;
 synthetic subprocess checks exercise concurrent consumption and reuse independent
 of output paths. Explicit revocation retains original acknowledgements and the
-terminal owner. The dedicated account executable, process interruption handling
-and complete fixed-entry acceptance remain incomplete. See the current
+terminal owner. The later dedicated execute entry connects these boundaries;
+its process verification and current account gates are recorded in the
 [verification ledger](replacement-verification.md).
 The default staged runtime
 contains five dependency symlinks; the preceding normal macOS bundle has zero.

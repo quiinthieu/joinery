@@ -8,7 +8,170 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
-### Fixed permanent store and retained revocation (12 November 2026)
+### Fixed execute entry and real process signals (12 November 2026)
+
+The dedicated command dispatches `emit`/`verify` synchronously and `execute`
+through a two-worker Tokio runtime. Pure parsing rejects invalid arguments before
+I/O. Execute installs SIGINT/SIGTERM streams before blocking root/envelope/approval
+preparation, retains that task through observed cancellation, drains delivered
+signals before starting, and revokes future admissions through the existing
+sticky handle. The owner, original calls, shutdown and terminal persistence are
+awaited without task abortion or background runtime shutdown. Closed summaries
+separate command success, persisted terminal evidence and conservative possible
+account activity. Fixture home/runtime injection is entirely `cfg(test)`, absent
+from the production binary even with `test-harness` enabled.
+
+The helper shares its parent's foreground process group. A signal only to the
+Rust PID can retain the admitted callback; terminal Ctrl-C also reaches Node,
+whose handler exits immediately. The group test therefore requires an unknown
+original CREATE outcome rather than an invented acknowledgement. Neither form
+establishes remote cancellation or rollback. See the
+[command guide](snowflake-table-offline-command.md) for inputs, receipts and limits.
+
+Five substantive process acceptance tests explicitly select an internal child
+entry in the optimized library test executable. Each child has its own process
+group and only temporary synthetic home/runtime/profile/output. Parents send
+actual Unix signals to those owned PIDs/groups, inspect durable journal/terminal
+files and reap cleanup. No test invokes the owner's native home resolver or
+keychain, opens SSO or sends account SQL. The SDK is synthetic; Node and the helper
+are real. The internal child protocol is not a sixth substantive acceptance test.
+Actual-binary integration tests exercise only safe argument/early envelope failures
+for execute; no valid native account route is used by them.
+
+Before building changed source, the preceding source's existing optimized test
+binary is run directly with the pinned Node environment and three test threads:
+
+```text
+src-tauri/target/release/deps/joinery_core-f79e8f96716fc26d snowflake_table_qualification:: --test-threads=3
+```
+
+`entry-baseline-qualification-reproduction.log` exits **0**: **263 passed /
+0 failed / 6 default ignores**, **164.58 seconds**. Artifact record
+`entry-baseline-reproduction-artifact.json` binds executable SHA-256
+`e05593bce064110d4ae9497a079c75e5913ef7376fb58f8783e5b4ae0a9ce1ed`
+to the verified 45-file prior snapshot at commit `760e996`. This is an additional
+old-artifact repeat, not verification of the new entry. It does not reproduce or
+resolve the preceding intermittent three-case synthetic failure; that stability
+limitation remains open.
+
+The new 47-file source snapshot is recorded separately in
+`.cache/verification/connection-attempts/entry-source-freeze.json`. The commands,
+terminal results, review and final identity checks below apply only to their
+explicitly recorded snapshots. Logs and manifests remain ignored local evidence;
+no account approval, package rebuild, installation or product gate is added.
+
+Current-source commands use Rust **1.99.1** from its physical ARM64 toolchain,
+Node **24.22.2** from the repository-local prepared toolchain, and `JOINERY_TEST_NODE`
+set to that Node. No global settings change. Release checks run serially at the
+command level; the qualification module uses three test threads:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+cargo test --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features test-harness --lib snowflake_table_qualification::entry::tests:: -- --ignored --skip entry_subprocess_child --test-threads=1 --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features test-harness --test snowflake_table_qualification_cli
+pnpm validate
+```
+
+`entry-qualification-release.log` exits **0** on the frozen 47-file snapshot:
+**263 passed / 0 failed / 12 default ignores**, **156.77 seconds** after an
+optimized build of **4 minutes 2 seconds**. The six new default ignores are five
+substantive optimized process cases plus their internal child protocol. They are
+not counted as executed by this ordinary suite; their explicit command is above.
+The existing ts-rs attribute and missing LLVM `rust-objcopy` stripping warnings
+remain nonfatal and are not hidden by global configuration changes.
+
+The first explicit process run, `entry-process-acceptance-release.log`, exits
+**101**: **3 passed / 2 failed / 0 ignored**, **70.19 seconds**. The full
+32-phase lifecycle/fresh-process replay, invalid approval/tamper and both signals
+before preparation pass. Foreground-group and PID-held-CREATE cases fail their
+exact SQL-list comparison: the expected prefix selects every phase-3 entry,
+including five post-CREATE session observers. Actual revocation correctly stops
+at CREATE. Typed original outcome, terminal digest and settlement checks before
+that assertion pass; later assertions are not counted as executed.
+
+The correction changes only
+`snowflake_table_qualification_entry_tests.rs`: find the unique typed
+`SqlKind::Ddl(CreateTable)` ledger entry, assert phase 3 and exact equality to the
+Plan's CREATE SQL, and use the closed ledger slice through that entry inclusive.
+The strict actual-versus-expected SQL equality stays. No production behavior,
+deadline, ignored-test selection or full-success ledger changes. The corrected
+47-file manifest is `entry-source-freeze-corrected.json`; its sole difference
+from the first snapshot is this test file. Production entry source remains the
+same as in the passing 263-test run. The affected five-case process command is
+rerun on the corrected snapshot.
+
+`entry-process-acceptance-corrected-release.log` exits **0** on the corrected
+snapshot: **5 substantive cases passed / 0 failed / 0 ignored**, **82.30 seconds**
+after the optimized rebuild (**3 minutes 9 seconds**). Both SIGINT and SIGTERM
+before preparation launch no helper/SQLite. Both PID-only signals during held
+CREATE retain its successful original acknowledgement separately from later
+retirement, stop at the exact CREATE prefix and persist journal/terminal evidence.
+Foreground group SIGINT reaches the applied-but-pending CREATE, kills the helper,
+and preserves typed unknown/retired outcome with no acknowledgement or SQL suffix,
+settled cleanup, empty helper state and two spent markers. The full success case
+runs all **32 phases / 393 synthetic SQL requests**, checks every validated phase
+and exact ledger order, then rejects the original RUN/digest/approval from a fresh
+process with different output/environment before helper or SQLite construction.
+Invalid approval and changed original source fail without helper/keychain access.
+The internal child protocol is excluded from the five-case count.
+
+`entry-cli-integration-release.log` exits **0**: **9 actual-command tests passed /
+0 failed / 0 ignored**, **1.81 seconds** after the release build (**4 minutes
+38 seconds**). Offline emit/verify and trap zero-launch checks remain covered;
+new cases reject invalid execute grammar and a missing original envelope before
+approval/native-store access. Help accurately advertises the separate route
+without starting it. These tests do not execute a valid account attempt.
+
+Final `pnpm validate`, `entry-validate.log`, exits **0** on the corrected
+snapshot: Prettier, contracts/TypeScript, **679 frontend tests in 57 files**,
+frontend production build, **467 standard Rust tests / 129 fixture/helper
+ignores**, Rust formatting, normal compiler check and strict all-target/all-feature
+Clippy all pass. The ignored fixtures are not represented as executed acceptance.
+All **47** corrected source hashes match after the completed commands. All
+**362** local links across the seven changed documentation files resolve;
+`git diff --check` and `pnpm check:git` pass. No tested code changes follow verification.
+
+`entry-executable-artifact.json` records the actual release command at
+`src-tauri/target/release/snowflake-table-qualification`, **23,395,008 bytes**,
+SHA-256 `f58aa8e648e1a900aa8e6c135da0b88ad1563b3ee183d14c9c365687360428fc`,
+and its corrected source-manifest digest. This is a local tested artifact record,
+not build-provenance attestation or a current account approval envelope. Complete
+runtime/source/compiler/executable binding and a fresh review window still
+precede any account attempt. No native owner store, keychain or account is used
+by the new process tests. No normal package is rebuilt or installed. The private
+project Site is not published because publication remains unauthorized.
+
+Independent bounded review (`gpt-6.1-sol`, high effort) reports no material
+production finding. It identifies the foreground-group acceptance gap; the added
+owned-group SIGINT test and command guide receive a second clean review. Review
+covers entry/CLI/binary/parent/Cargo, fixture wrappers, actual process tests and
+the guide. Fresh graph evidence at generations `2026-11-12T04:20:36Z` and
+`2026-11-12T04:24:56Z` matches the reviewed paths with no recorded gaps; the
+helper-launch coverage gap is read directly. Root graph calls fail with
+`Transport closed`, so root uses targeted source reads and the review evidence,
+without treating an empty/unavailable graph as absence. Reviews perform no
+builds, writes, native owner-store access or account activity.
+
+A separate read-only debugging review (`gpt-6.1-sol`, high effort) examines the
+retained intermittent failure and current diagnostics. It establishes one factory
+case stopped in phase 1 after successful construction; the other two report a
+missing CREATE barrier (`RecvError` and a 120-second marker timeout), which does
+not establish their failed phase or a shared cause. Phase 1 includes guard
+revalidation and connection/authentication; its ordinal alone does not identify
+the failing operation. The old log lacks the terminal error/original result
+needed for attribution. Timeout/resource explanations remain hypotheses, and no
+unsafe dispatch or lost acknowledgement is demonstrated by this log. Earlier
+shorthand describing all three as failures before CREATE is too broad.
+
+Retain the existing diagnostics. At the next qualification validation opportunity,
+use the same frozen binary with the normal three-thread run. If failure recurs,
+preserve its terminal record, synthetic journal/SQL prefix and helper diagnostics
+before fixture cleanup, then compare a focused serial run of that same artifact.
+Further passing repeats alone cannot determine the cause. This investigation
+performs no edits, builds, process changes, private owner-state or account access.
+Account-entry stability remains unproven.
+
+### Fixed permanent store and retained revocation (12 November 2026, preceding integration)
 
 `ConsumptionStore::open_native` obtains the macOS account home with bounded
 `getpwuid_r` for the effective UID. The closed namespace is

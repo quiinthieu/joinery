@@ -1,19 +1,19 @@
-# Offline Snowflake table qualification command
+# Snowflake table qualification command
 
-This command prepares and checks local review evidence for the proposed
-[existing-schema lifecycle](snowflake-existing-schema-qualification.md). It has
-**no execution command** and grants no account or billing authority. It does not
-start Node, invoke the compiler, initialize Studio or the keychain, open SSO,
-connect to Snowflake, or create permanent consumption markers. Runtime inventory
-is byte binding; it does not establish SDK validity or build provenance.
+The dedicated command prepares, verifies and, after separate exact approval,
+executes the proposed [existing-schema lifecycle](snowflake-existing-schema-qualification.md).
+`emit` and `verify` remain offline: no Node/compiler launch, Studio/keychain,
+SSO, Snowflake connection or permanent marker creation. `execute` is a separate
+route through the fixed consumption store and retained private factory. Merely
+building the binary, emitting evidence or supplying an approval file grants no
+permission for account activity or billing. Runtime inventory binds bytes; it
+does not establish SDK validity or build provenance.
 
-The separately reviewed account command and complete fixed-entry acceptance
-remain required before requesting a new execution approval. Internal storage now
-provides a fixed macOS marker namespace, and prepared attempts provide an explicit
-retained revocation handle; neither is reachable from these offline operations.
-Permission to
-create a fresh table under `SANDBOX.BILLIE_TESTING` remains recorded. The earlier
-CREATE DATABASE approval is spent and cannot be reused.
+The owner permits a fresh table under `SANDBOX.BILLIE_TESTING`. The earlier
+CREATE DATABASE approval is spent. Current source/runtime/executable pins, exact
+SQL and metadata scope, a current window and fresh possible-billing approval
+remain required before any account attempt. Local synthetic checks do not qualify
+the account or normal packaged app. See the [verification ledger](replacement-verification.md).
 
 ## Build and prepare inputs
 
@@ -94,7 +94,7 @@ any partial output; the command never adopts or overwrites a directory. Do not
 delete or edit evidence to make a failed attempt reusable. Only `emit` generates
 a new RUN and `JOINERY_QUAL_<RUN>` table name. The receipt prints the envelope and
 Plan digests, sole target, 32 phases and the upper bound of 610 SQL statements
-(`386 + 7S`, for at most 32 census schemas). No SQL is sent by this command.
+(`386 + 7S`, for at most 32 census schemas). No SQL is sent by `emit`.
 
 Review the Plan together with the [physical SQL ledger](snowflake-qualification-sql-ledger.md)
 and [lifecycle proposal](snowflake-existing-schema-qualification.md). The Plan's
@@ -121,44 +121,99 @@ or accept source lists, executable paths, SQL, limits or policy from unchecked
 JSON. Changed source, runtime, compiler, executable, profile, window or envelope
 requires new review evidence; an old digest cannot qualify new bytes.
 
-Success produces one JSON stdout line with `executionAvailable: false` and
-`accountActivity: false`. Failures produce one JSON stderr line containing only
-a closed `failureCode`, and exit status 1. Unknown/duplicate/missing flags,
-unencodable/relative paths, invalid time windows and `execute` are rejected.
+Offline success produces one JSON stdout line with `executionAvailable: false`
+and `accountActivity: false`. Offline failures produce one JSON stderr line
+containing only a closed `failureCode`, and exit status 1. Unknown, duplicate or
+missing flags, unencodable/relative paths and invalid time windows are rejected.
 Receipts exclude profile data; the envelope itself is private and includes the
 non-secret connection fields and local artifact paths. Avoid sharing it publicly.
 
-## Acceptance scope
+## Separately approved execution
 
-The private native-store entry selects its permanent location from the
-effective UID's OS account record, independent of `HOME`, output or configuration:
+After exact approval has been obtained, an operator prepares a private `0600`
+JSON file of at most 4096 bytes with exactly these fields. The digest must be
+from the original reviewed envelope; the placeholder is deliberately invalid:
+
+```json
+{
+  "format": "joinery-snowflake-table-lifecycle-approval-v1",
+  "execution_sha256": "LOWERCASE_SHA256_FROM_APPROVED_EMISSION",
+  "scope": "one-externalbrowser-attempt-fixed-table-lifecycle-with-possible-billing",
+  "maximum_attempts": 1
+}
+```
+
+The command cannot verify that a human authorized the file. Recording approval
+is an operator responsibility; do not create or use it before the owner's exact
+approval. The closed invocation is:
+
+```text
+snowflake-table-qualification execute
+  --repository ABS --runtime ABS --compiler ABS --profile ABS
+  --envelope ABS --sha256 LOWERCASE_SHA256
+  --approval ABS --output-parent ABS
+```
+
+Execution restores the original envelope against separately supplied roots and
+its own executable, validates the approval and current window, reserves new
+private attempt/workspace/state/journal/terminal output, and permanently consumes
+both RUN and execution digest before construction. Output must be separate from
+the marker store and reviewed artifacts. No caller-selected marker root exists.
+A new process with another output, `HOME` or `XDG_DATA_HOME` cannot reuse the
+spent attempt. Failed, cancelled and partially constructed attempts retain their
+markers and evidence. Do not delete them to retry.
+
+The native store location comes from the effective UID's macOS account record:
 `Library/Application Support/Joinery/private-qualification/table-lifecycle-consumption-v1`
 under that account's physical home. Shared Library/Application Support directories
-may have safe `0755` permissions; the Joinery namespace and its descendants require
-`0700`. Unsafe existing paths fail without repair, deletion or alternate-root
-fallback. Native lookup fails closed outside macOS. Offline `emit`/`verify` never
-invoke that resolver or create this namespace. Do not delete markers to retry an
-attempt. Synthetic tests use a private temporary home, not the owner's home.
+may be safely `0755`; the Joinery namespace and descendants require `0700`.
+Unsafe paths fail without repair, deletion or alternate-root fallback. Other
+platforms fail closed. Offline operations never invoke the native resolver.
+Tests use a disposable synthetic home and never the owner's Application Support.
 
-A private revocation handle can stop future admissions while retaining the
-original call, shutdown and terminal evidence. Dropping its handle does not revoke;
-dropping the attempt's waiter does not abort the owner. This is not yet wired to
-an executable account route or process signal handling. Already started local
-construction may finish before its next check. Revocation does not imply server
-rollback, successful logout, remote cancellation or durable evidence after a
-process kill/power failure. Inspect recorded original outcomes before deciding
-what cleanup or follow-up to authorize; do not replay a spent attempt.
+## Interruptions, receipts and unresolved outcomes
 
-The process regression suite invokes the actual binary against disposable
-synthetic files, including trap Node/compiler executables. It checks emission,
-cross-process restoration, unchanged RUN/digests, read-only verification, tamper
-rejection, safe failure output and zero trap launches. Storage tests cover
-exclusive creation, permissions, bounds, links, concurrent same-RUN emission and
-retained partial outputs. These checks establish only local offline behavior.
+The dedicated execute process registers SIGINT/SIGTERM before blocking
+preparation. An observed signal revokes future admission; preparation, original
+calls, shutdown and terminal persistence stay owned and are awaited. Repeated
+signals do not refund consumption or cause an automatic retry. Ordinary runtime
+shutdown retains blocking work; see the pinned [Tokio runtime contract](https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html).
+The signal coordinator belongs to this dedicated process; installing Unix signal
+handlers changes process behavior for its remaining lifetime, as documented in
+[Tokio's signal contract](https://docs.rs/tokio/latest/tokio/signal/unix/struct.Signal.html).
 
-Same-user races between checks and storage that misreports synchronization remain
-outside this filesystem proof. Real Snowflake writes/transactions/DDL, normal
-packaged SSO/recovery, million-row results, remaining DataGrip workflows and
-owner hands-on acceptance remain open. See the
-[verification ledger](replacement-verification.md) for completed commands,
-results and source-specific limits.
+A signal addressed only to the Rust command lets its helper retain a pending
+callback. Foreground terminal Ctrl-C reaches the helper's process group too;
+the helper exits and an admitted operation can lose its acknowledgement. The
+command must preserve that unknown outcome rather than invent success or retry.
+Revocation does not establish server rollback, remote cancellation, successful
+logout or durable evidence after SIGKILL, power failure or storage failure.
+Already started local construction may finish before its next check.
+
+Execution emits one closed JSON summary: successful attempts go to stdout with
+exit 0; unsuccessful attempts go to stderr with exit 1. It includes RUN, execution
+digest, cancellation observation, any attempt output path and terminal receipt
+hash/size, `terminalPersisted`, `successful` and conservative
+`mayHaveAccountActivity`. A retained failure can return a receipt; receipt presence
+alone does not imply success. Early failures expose only a closed `failureCode`.
+Full underlying errors, profiles and SQL are not printed to either stream.
+The private terminal/journal contain the original outcomes and separate later
+completion, integrity, shutdown and persistence errors. Preserve and inspect
+those files before authorizing any cleanup or follow-up. A missing terminal
+receipt does not prove there was no account activity.
+
+## Acceptance scope
+
+Actual-binary tests cover offline emission/restoration, unchanged RUN/digests,
+read-only verification, tamper and argument rejection, safe failure output and
+zero trap helper/compiler launches. Process-level execute tests use the same
+parser, signal coordinator, preparation and factory with `cfg(test)`-only
+synthetic-home/runtime injection. That injection is absent from the production
+binary, including builds with `test-harness`. The helper is real; its SDK is
+synthetic. These checks do not establish Snowflake server behavior.
+
+The [verification ledger](replacement-verification.md) records completed tests,
+commands, source identities, failures and review. Same-user filesystem races and
+storage that misreports synchronization remain outside this proof. Real Snowflake
+writes/transactions/DDL, normal packaged SSO/recovery, million-row results,
+remaining DataGrip workflows and owner hands-on acceptance remain open.

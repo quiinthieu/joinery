@@ -433,5 +433,13 @@ fn terminal_record(
 }
 
 #[cfg(test)]
+pub(super) fn fixture_lifecycle(
+    plan: &super::Plan,
+    hold_create_ack: bool,
+) -> crate::snowflake_runtime::studio_fixture::Fixture {
+    tests::lifecycle_fixture_with_pending_create(plan, hold_create_ack)
+}
+
+#[cfg(test)]
 #[path = "snowflake_table_qualification_factory_tests.rs"]
 mod tests;

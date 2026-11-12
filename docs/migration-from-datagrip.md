@@ -41,15 +41,17 @@ account acceptance. Offline source/binary/full-runtime/profile binding and one-u
 consumption are implemented. The private factory now owns exclusive persistent
 attempt/workspace/state, construction exclusively from consumed roots and final
 terminal evidence, including dropped waiters. The dedicated
-[offline command](snowflake-table-offline-command.md) can emit private review
+[qualification command](snowflake-table-offline-command.md) can emit private review
 files and verify the original bytes without connecting or launching the helper.
-It has no execute command. Internal permanent storage now uses a fixed macOS
-account-home namespace, with synthetic cross-process reuse checks. A private
-revocation handle stops future admissions while retaining original completion
-and terminal evidence. The fixed account entry, whole-process interruption
-handling and complete synthetic-entry acceptance remain open. Before any
-account activity, a fresh exact generated table-only plan and fresh possible-billing
-approval are required. See the [qualification attachments](snowflake-qualification-attachments.md),
+Its separately approved execute route restores those original bytes, consumes
+fixed macOS account-home markers and retains the private factory through terminal
+persistence. SIGINT/SIGTERM revoke future admissions without aborting the owner;
+foreground Ctrl-C can also terminate the helper and leave an unknown original
+outcome. Never replay a spent attempt or infer rollback from interruption. Local
+process checks use synthetic homes and SDK responses; account and normal packaged
+acceptance remain open. Before account activity, current source/runtime/executable
+pins, a fresh exact table-only plan and fresh possible-billing approval are
+required. See the [qualification attachments](snowflake-qualification-attachments.md),
 [offline SQL ledger](snowflake-qualification-sql-ledger.md), and current
 [verification ledger](replacement-verification.md).
 

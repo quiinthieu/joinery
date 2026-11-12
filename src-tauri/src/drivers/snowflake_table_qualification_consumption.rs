@@ -131,6 +131,13 @@ struct Fault {
 type Hook = Box<dyn FnOnce(Marker, &Path) + Send>;
 
 impl ConsumptionStore {
+    /// Process acceptance supplies only a disposable synthetic home. The native
+    /// OS-account resolver and the owner's Application Support are never read.
+    #[cfg(test)]
+    pub(super) fn open_fixture_native_home(home: &Path) -> AppResult<Self> {
+        Self::open_native_home(home, owner())
+    }
+
     /// Production location comes only from the OS account for the effective UID.
     /// Neither an emission destination nor caller-controlled environment/config
     /// can select a fresh permanent marker namespace.

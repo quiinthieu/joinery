@@ -1,6 +1,53 @@
 # Implementation and release status
 
-## Fixed attempt storage and retained revocation (12 November 2026)
+## Dedicated execute entry (12 November 2026)
+
+The dedicated qualification binary now restores the original reviewed envelope
+for a separate execute route, uses the fixed macOS permanent consumption store,
+and starts only the retained private factory. Offline `emit`/`verify` remain
+without helper/compiler launch or account activity. The execute route registers
+SIGINT/SIGTERM before blocking preparation, carries observed revocation into
+startup, and awaits original operations, shutdown and terminal persistence.
+Closed receipts distinguish command success, durable terminal evidence and
+possible account activity. See the [command guide](snowflake-table-offline-command.md).
+
+Synthetic process coverage includes both signals before preparation and during
+a held CREATE callback, foreground group Ctrl-C that loses acknowledgement,
+invalid approval/source tamper, all 32 phases and fresh-process spent-marker
+rejection. The same parser/signal/preparation/factory path is used with synthetic
+home/runtime injection available only under `cfg(test)`. Production builds have
+no fixture home or runtime override. The [ledger](replacement-verification.md)
+records completed checks, source hashes and independent review.
+
+The five explicitly selected optimized process cases pass on the corrected test
+snapshot: all **32 phases / 393 synthetic SQL requests**, fresh-process reuse
+rejection, both signals before preparation/during CREATE, foreground-group unknown
+outcome, invalid approval and tamper. The ordinary qualification suite passes
+**263 tests / 12 default ignores** before the test-only expected-prefix correction;
+production source is unchanged. The ledger retains the initial **3-pass/2-fail**
+process run and its correction separately. These results are synthetic SDK/local
+process evidence, not Snowflake acceptance.
+
+All **9** actual-command integration tests pass. Final `pnpm validate` passes
+**679 frontend / 467 standard Rust tests**, with **129 fixture/helper ignores**,
+plus formatting, builds, compiler checks and strict all-target/all-feature Clippy.
+All **47** corrected source hashes match; independent bounded review has no
+unresolved material finding. Real account-entry stability remains separate from
+this completed local verification.
+
+A further run of the preceding optimized artifact passes **263 tests / 6 default
+ignores**. It does not reproduce or resolve the earlier intermittent failure:
+one case stopped in phase 1; two did not reach their expected CREATE barriers. Their cause
+and any shared origin remain unknown. That stability limitation is distinct from
+new entry verification.
+
+No further Snowflake activity, native owner-store access, package rebuild,
+installation or publication occurs. Current executable/source/compiler/runtime
+pins and fresh exact account/billing approval under `SANDBOX.BILLIE_TESTING`
+remain required. All applicable DataGrip workflows, normal packaged acceptance
+and owner hands-on evaluation remain open. The Goal is active and incomplete.
+
+## Fixed attempt storage and retained revocation (12 November 2026, preceding integration)
 
 A new private store entry chooses one fixed macOS Application Support
 namespace from the OS account record for the effective UID. Output paths, `HOME`

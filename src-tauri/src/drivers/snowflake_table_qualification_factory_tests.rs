@@ -205,7 +205,7 @@ fn lifecycle_fixture(plan: &Plan) -> Fixture {
     lifecycle_fixture_with_pending_create(plan, false)
 }
 
-fn lifecycle_fixture_with_pending_create(plan: &Plan, hold_create_ack: bool) -> Fixture {
+pub(super) fn lifecycle_fixture_with_pending_create(plan: &Plan, hold_create_ack: bool) -> Fixture {
     let fixture = Fixture::separated();
     let mut statements = serde_json::Map::new();
     for (name, id) in [

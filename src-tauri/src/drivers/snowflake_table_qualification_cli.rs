@@ -1,5 +1,5 @@
-//! Offline-only facade. No construction, consumption, process launch, credential
-//! provider or account route is reachable from the closed command dispatch.
+//! Closed command grammar and offline facade. The offline dispatcher continues
+//! to reject execute before IO; the separate entry owns execution and signals.
 
 use super::{
     DATABASE, MAX_SCHEMAS, PHASE_COUNT, Plan, SCHEMA,
@@ -19,7 +19,7 @@ pub struct OfflineCommandFailure {
 }
 
 impl OfflineCommandFailure {
-    fn new(failure_code: &'static str) -> Self {
+    pub(super) fn new(failure_code: &'static str) -> Self {
         Self { failure_code }
     }
     fn arguments() -> Self {
@@ -27,7 +27,7 @@ impl OfflineCommandFailure {
     }
 }
 
-enum Command {
+pub(super) enum Command {
     Help,
     Emit {
         roots: InputRoots,
@@ -39,9 +39,16 @@ enum Command {
         envelope: PathBuf,
         sha256: String,
     },
+    Execute {
+        roots: InputRoots,
+        envelope: PathBuf,
+        sha256: String,
+        approval: PathBuf,
+        output_parent: PathBuf,
+    },
 }
 
-struct InputRoots {
+pub(super) struct InputRoots {
     repository: PathBuf,
     runtime: PathBuf,
     compiler: PathBuf,
@@ -49,7 +56,7 @@ struct InputRoots {
 }
 
 impl InputRoots {
-    fn bind(self) -> Result<Roots, OfflineCommandFailure> {
+    pub(super) fn bind(self) -> Result<Roots, OfflineCommandFailure> {
         Ok(Roots {
             repository: self.repository,
             runtime: self.runtime,
@@ -69,7 +76,12 @@ impl InputRoots {
 pub fn run_offline_command(
     arguments: impl IntoIterator<Item = OsString>,
 ) -> Result<Value, OfflineCommandFailure> {
-    match parse(arguments)? {
+    run_parsed_offline(parse(arguments)?)
+}
+
+pub(super) fn run_parsed_offline(command: Command) -> Result<Value, OfflineCommandFailure> {
+    match command {
+        Command::Execute { .. } => Err(OfflineCommandFailure::arguments()),
         Command::Help => Ok(json!({
             "format": "joinery-snowflake-table-offline-command-v1",
             "commands": {
@@ -138,11 +150,13 @@ fn summary(operation: &str, envelope: &Envelope) -> Result<Value, OfflineCommand
     }))
 }
 
-fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, OfflineCommandFailure> {
+pub(super) fn parse(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Result<Command, OfflineCommandFailure> {
     // Closed argument count and lengths before inspecting any local artifact.
     let arguments: Vec<_> = arguments.into_iter().take(18).collect();
     if arguments.is_empty()
-        || arguments.len() > 15
+        || arguments.len() > 17
         || arguments.iter().any(|value| value.len() > 65_536)
     {
         return Err(OfflineCommandFailure::arguments());
@@ -153,7 +167,7 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Offli
     if matches!(operation, "help" | "--help") && arguments.len() == 1 {
         return Ok(Command::Help);
     }
-    if !matches!(operation, "emit" | "verify") || arguments.len() % 2 != 1 {
+    if !matches!(operation, "emit" | "verify" | "execute") || arguments.len() % 2 != 1 {
         return Err(OfflineCommandFailure::arguments());
     }
     let mut values = BTreeMap::new();
@@ -170,6 +184,10 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Offli
                 "--output-parent" | "--not-before-unix-ms" | "--expires-unix-ms"
             ),
             "verify" => matches!(key, "--envelope" | "--sha256"),
+            "execute" => matches!(
+                key,
+                "--envelope" | "--sha256" | "--approval" | "--output-parent"
+            ),
             _ => false,
         } {
             return Err(OfflineCommandFailure::arguments());
@@ -225,8 +243,13 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Offli
                 output_parent,
             })
         }
-        "verify" => {
+        "verify" | "execute" => {
             let envelope = path("--envelope")?;
+            let execute_paths = if operation == "execute" {
+                Some((path("--approval")?, path("--output-parent")?))
+            } else {
+                None
+            };
             let sha256 = values
                 .remove("--sha256")
                 .and_then(|value| value.into_string().ok())
@@ -237,11 +260,21 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Offli
                             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
                 })
                 .ok_or_else(OfflineCommandFailure::arguments)?;
-            Ok(Command::Verify {
-                roots,
-                envelope,
-                sha256,
-            })
+            if let Some((approval, output_parent)) = execute_paths {
+                Ok(Command::Execute {
+                    roots,
+                    envelope,
+                    sha256,
+                    approval,
+                    output_parent,
+                })
+            } else {
+                Ok(Command::Verify {
+                    roots,
+                    envelope,
+                    sha256,
+                })
+            }
         }
         _ => Err(OfflineCommandFailure::arguments()),
     }

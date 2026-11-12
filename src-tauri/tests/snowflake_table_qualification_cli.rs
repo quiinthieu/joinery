@@ -133,6 +133,21 @@ impl Fixture {
         arguments
     }
 
+    fn execute_arguments(&self) -> Vec<OsString> {
+        let mut arguments = self.roots("execute");
+        arguments.extend([
+            "--envelope".into(),
+            self.root.join("missing-envelope.json").into_os_string(),
+            "--sha256".into(),
+            "a".repeat(64).into(),
+            "--approval".into(),
+            self.root.join("missing-approval.json").into_os_string(),
+            "--output-parent".into(),
+            self.output.as_os_str().into(),
+        ]);
+        arguments
+    }
+
     fn no_launch(&self) {
         assert!(!self.root.join("unexpected-launch").exists());
     }
@@ -290,7 +305,7 @@ fn copied_executable_cannot_verify_another_executables_envelope() {
 }
 
 #[test]
-fn execute_unknown_duplicate_and_missing_flags_fail_without_io() {
+fn unknown_duplicate_and_missing_flags_fail_without_io() {
     let fixture = Fixture::new();
     let before = snapshot(&fixture.root);
     let mut duplicate = fixture.emit_arguments();
@@ -302,6 +317,47 @@ fn execute_unknown_duplicate_and_missing_flags_fail_without_io() {
     for arguments in [vec!["execute".into()], duplicate, unknown, missing, vec![]] {
         failure(&run(arguments), "invalid_arguments");
     }
+    assert_eq!(before, snapshot(&fixture.root));
+    fixture.no_launch();
+}
+
+#[test]
+fn execute_parser_rejects_invalid_arguments_without_io_or_native_store() {
+    let fixture = Fixture::new();
+    let before = snapshot(&fixture.root);
+    let base = fixture.execute_arguments();
+    let mut missing = base.clone();
+    missing.truncate(missing.len() - 2);
+    let mut duplicate = base.clone();
+    duplicate[15] = "--approval".into();
+    let mut unknown = base.clone();
+    unknown[15] = "--consumption-store".into();
+    let mut relative = base.clone();
+    relative[16] = "relative-output".into();
+    let mut bad_hash = base.clone();
+    bad_hash[12] = "A".repeat(64).into();
+    let mut unencodable = base;
+    unencodable[16] = fixture
+        .output
+        .join(OsString::from_vec(b"bad-\xff".to_vec()))
+        .into_os_string();
+    for arguments in [missing, duplicate, unknown, relative, bad_hash, unencodable] {
+        failure(&run(arguments), "invalid_arguments");
+    }
+    assert_eq!(before, snapshot(&fixture.root));
+    fixture.no_launch();
+}
+
+#[test]
+fn execute_missing_original_envelope_fails_before_native_store_or_launch() {
+    let fixture = Fixture::new();
+    let before = snapshot(&fixture.root);
+    // The original envelope does not exist. Shared preparation must reject it
+    // before reading approval or resolving/touching the OS account home/store.
+    failure(
+        &run(fixture.execute_arguments()),
+        "envelope_verification_failed",
+    );
     assert_eq!(before, snapshot(&fixture.root));
     fixture.no_launch();
 }
@@ -346,11 +402,20 @@ fn unsafe_output_and_source_overlap_fail_before_emission() {
 }
 
 #[test]
-fn help_is_offline_and_has_no_execute_route() {
+fn help_is_offline_and_describes_the_fixed_execute_route() {
+    let fixture = Fixture::new();
+    let before = snapshot(&fixture.root);
     let output = run(vec!["--help".into()]);
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let help: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(help["executionAvailable"], false);
-    assert!(help["commands"].get("execute").is_none());
+    assert_eq!(help["format"], "joinery-snowflake-table-command-v1");
+    assert_eq!(help["executionAvailable"], true);
+    assert_eq!(help["accountActivity"], false);
+    assert_eq!(
+        help["commands"]["execute"],
+        "--repository ABS --runtime ABS --compiler ABS --profile ABS --envelope ABS --sha256 LOWERCASE_SHA256 --approval ABS --output-parent ABS"
+    );
+    assert_eq!(before, snapshot(&fixture.root));
+    fixture.no_launch();
 }

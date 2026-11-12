@@ -1,6 +1,39 @@
 # Joinery implementation roadmap
 
-## Fixed store and revocation boundary (12 November 2026)
+## Execute entry and next qualification gates (12 November 2026)
+
+The dedicated command now connects original-envelope restoration to the fixed
+macOS consumption store and private factory. SIGINT/SIGTERM registration precedes
+blocking preparation; observed interruption revokes future admissions while the
+entry retains preparation, original calls, shutdown and terminal persistence.
+Closed receipts distinguish unsuccessful execution from successful receipt
+persistence. Offline emission and verification remain free of account activity.
+The [command guide](snowflake-table-offline-command.md) describes the boundary;
+the [ledger](replacement-verification.md) records completed source-specific checks.
+
+Five optimized process cases pass, covering both signals before preparation and
+during held CREATE, foreground process-group Ctrl-C with lost acknowledgement,
+the full 32-phase lifecycle and spent-marker rejection in a fresh process with
+another output/environment. Tests use synthetic homes and a synthetic SDK; the
+production binary has no fixture override. A prior case stopped in phase 1 and
+two CREATE barriers were unavailable; their cause and shared origin remain
+unconfirmed. Passing repeats do not close the account-entry stability gate.
+
+Next, bind the actual reviewed executable,
+current source/compiler and a complete zero-link runtime. Prepare original exact
+Plan/envelope evidence with the table-only SQL, metadata disclosure, window,
+ceilings and possible billing. Obtain fresh approval before any account attempt
+under `SANDBOX.BILLIE_TESTING`; the rejected CREATE DATABASE approval is spent.
+No account approval question is pending during local verification.
+
+The twelve product areas and additional applicability inventory in the
+[matrix](datagrip-feature-matrix.md) remain required. Normal packaged SSO/recovery,
+actual writes/transactions/DDL, million-row Snowflake results/export, grid
+editing/import, broader metadata/SQL/schema/performance tools and owner hands-on
+acceptance remain open. This command closes no product replacement gate. No
+publication or installation is included.
+
+## Fixed store and revocation boundary (12 November 2026, preceding integration)
 
 The internal macOS permanent store now uses a fixed namespace selected from the
 effective user's OS account record. Synthetic-home and subprocess tests exercise

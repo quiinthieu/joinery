@@ -36,13 +36,35 @@ from a short summary does not make a feature optional.
 
 The [acceptance gates](replacement-acceptance.md) define observable workflows;
 the [roadmap](implementation-roadmap.md) orders implementation. The immediate
-qualification dependency is the execute entry and complete fixed-entry proof
-after the private bound-root factory, fixed store and offline command, then a
+qualification dependency is current executable/source/runtime binding after
+local entry verification, followed by a
 freshly reviewed table-only plan for `SANDBOX.BILLIE_TESTING`. No existing application-table access
 or account execution is authorized by this matrix. Broad product work remains required alongside
 qualification; these internal checks do not substitute for completing the rows.
 
-## Fixed store and retained revocation (12 November 2026)
+## Dedicated execute entry (12 November 2026)
+
+| Capability | Local implementation | Remaining gate |
+| ---------- | -------------------- | -------------- |
+| One-use execute route | Original envelope/digest, explicit private approval, fixed OS-account store, private factory and closed success/failure receipts | Current executable/source/runtime pins and fresh exact account/billing approval; real Snowflake effects remain unqualified |
+| Retained signal coordination | SIGINT/SIGTERM registered before blocking preparation; pending revocation applied before start; original owner and terminal persistence awaited | Five explicit optimized process cases pass; real account and packaged app interruption remain open |
+| Foreground Ctrl-C outcomes | Helper shares the foreground process group, so acknowledgement loss must remain an unknown outcome with no automatic replay | Local owned-group SIGINT test passes; real server effects, cancellation and rollback remain unqualified |
+
+The [command guide](snowflake-table-offline-command.md) defines invocation,
+receipts and operator responsibilities. Tests use only synthetic homes/runtime;
+production fixture injection is absent. These internal checks close none of the
+twelve product gates or additional applicability inventory. The Goal is active.
+See the [ledger](replacement-verification.md) for completed checks and the still
+unconfirmed intermittent synthetic failure.
+
+The five explicit process cases and all nine actual-command tests pass. Final
+validation passes 679 frontend / 467 standard Rust tests (129 fixture/helper
+ignores), formatting/build/compiler checks and strict Clippy. All 47 corrected
+source hashes match. The 263-test ordinary qualification pass precedes only a
+test-prefix expectation correction; production entry source is unchanged. The
+ledger preserves that snapshot distinction and the initial failed process run.
+
+## Fixed store and retained revocation (12 November 2026, preceding integration)
 
 | Capability | Local implementation | Remaining gate |
 | ---------- | -------------------- | -------------- |

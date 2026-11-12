@@ -1,10 +1,10 @@
-//! Deliberately offline: this binary has no execute command or async runtime.
+//! Closed offline review and one-use private execution command.
 
 use std::io::{self, Write};
 
 fn main() {
     #[cfg(unix)]
-    let result = joinery_core::drivers::snowflake_table_qualification::run_offline_command(
+    let result = joinery_core::drivers::snowflake_table_qualification::run_command(
         std::env::args_os().skip(1),
     );
     #[cfg(not(unix))]
@@ -13,10 +13,13 @@ fn main() {
     }));
 
     let (value, success) = match result {
+        #[cfg(unix)]
+        Ok(output) => (output.value, output.successful),
+        #[cfg(not(unix))]
         Ok(value) => (value, true),
         Err(error) => (
             serde_json::to_value(error)
-                .unwrap_or_else(|_| serde_json::json!({"failureCode": "offline_command_failed"})),
+                .unwrap_or_else(|_| serde_json::json!({"failureCode": "command_failed"})),
             false,
         ),
     };
