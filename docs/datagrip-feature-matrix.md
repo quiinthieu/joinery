@@ -24,7 +24,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `99a3ca3` passes resources, strict ad-hoc signature, original license bytes and guarded helper startup with zero authentication/SQL                                                                                                                                                             | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open                                                            |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `adabd44` passes resources, strict ad-hoc signature, original license bytes and guarded helper startup with zero authentication/SQL                                                                                                                                                             | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open                                                            |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -54,7 +54,7 @@ not substitute for completing the rows.
 
 See the [ledger](replacement-verification.md#checked-receipt-accounting-13-november-2026-local-source-verified).
 At the accounting checkpoint, the local app was the `f9c1ce2` recovery build.
-The current `99a3ca3` history package includes this prerequisite; exact package
+The current `adabd44` history package includes this prerequisite; exact package
 and source evidence is in the ledger.
 
 ## Encrypted metadata recovery (12 November 2026, locally verified)

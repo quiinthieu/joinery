@@ -10,17 +10,26 @@ keeps its known status without inventing duration from wall-clock time.
 Full validation passes 1,038 frontend / 653 standard Rust cases, with 139 default
 fixture ignores. All eight new integration cases, four inline lifecycle cases,
 54 focused UI cases, 68 feature-specific Snowflake producer cases and five actual
-browser cases pass. Source scopes, initial
-failures, corrections and independent review are in the
+browser cases pass. Source scopes, initial failures, corrections and independent
+review are in the
 [ledger](replacement-verification.md#history-completion-evidence-13-november-2026).
 
 This is the model/presentation prerequisite. Production admission, restart and
 restore do not yet create pending/recovered history; atomic history/privacy,
 publisher settlement and durable reservations remain required. Keep both count
-gates and `retentionEnabled=false`. The preceding clean-`99a3ca3` app is preserved
-before packaging current source. Actual account effects, normal packaged owner
-UI/SSO/restart, installation/update and signing/notarization acceptance remain
-open. No account activity, installation, push or publication occurred.
+gates and `retentionEnabled=false`.
+
+The normal SDK-bearing ARM64 app packages from clean `adabd44`; resources,
+strict ad-hoc signature, original license bytes and guarded SDK startup pass
+with zero authentication/SQL. All 554 source hashes match validation/browser/
+producer checks. The app remains local and uninstalled at
+`src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0; executable
+SHA-256 is `5caf64e894f6767bfc69952e1e31f52a2f5a4c6365fa4d208369e76e4ce5f8dc`.
+All 15,120 inventory entries of the preserved `99a3ca3` app remain unchanged.
+About 189.6 GiB is free; debug artifacts occupy 8.9 GiB. Actual account effects,
+normal packaged owner UI/SSO/restart, installation/update and signing/notarization
+acceptance remain open. No account activity, installation, push or publication
+occurred.
 
 ## Paged query history (13 November 2026, locally verified)
 

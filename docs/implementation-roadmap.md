@@ -19,6 +19,13 @@ Independent review has no remaining material
 findings; attempts, corrections and source scopes are in the
 [ledger](replacement-verification.md#history-completion-evidence-13-november-2026).
 
+The normal SDK-bearing ARM64 app from clean `adabd44` passes package resources,
+strict ad-hoc signature, original license bytes and guarded SDK startup with zero
+authentication/SQL. All 554 source hashes match full validation and browser/
+producer checks. The preceding `99a3ca3` app is preserved with its full inventory
+unchanged. The new app remains local and uninstalled; normal owner UI/SSO/restart
+acceptance is open.
+
 This is a prerequisite for the complete atomic workflow. Production admission,
 restart and metadata restore do not yet create pending/recovered history.
 Next implement atomic admitted/completed history, clear/prune/opt-out suppression,

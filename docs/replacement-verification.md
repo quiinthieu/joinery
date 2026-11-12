@@ -43,6 +43,9 @@ exact commands, source hashes, elapsed time and before/after disk usage.
 | `history-lifecycle-browser` | All five actual headless Chromium cases pass, 30.307 seconds, all 554 captured sources unchanged. Four history cases use real SQLite with 1,011 entries, including five older fixed lifecycle fixtures; cover exact reopening, reload, keyboard palette, clear during delayed detail, and unknown completion/duration without reconnect or execution. The fifth uses isolated PostgreSQL for reviewed writes/NULL/injection-shaped bindings and template-only history. Only the lead's PostgreSQL fixture was started/stopped; the unrelated running container was preserved |
 | `history-lifecycle-snowflake-producers` | All 68 feature-specific native cases pass with `--features test-harness --lib execution::snowflake_ -- --test-threads=1`, 190.423 seconds, all 554 captured sources unchanged. Covers local synthetic SDK/helper and native execution paths, original ACK/history after DML/DDL, lost ACKs, shutdown, retries and publication panic with unavailable duration. No account connection or billable activity |
 | `history-lifecycle-prior-app-preservation` | The clean-`99a3ca3` app is preserved with APFS copy-on-write; all 15,120 inventory entries match and both strict signatures verify. Regular-file inventory is 242,393,335 bytes. The first helper assumed the executable's case and stopped before copying; it now reads the executable name from the bundle plist |
+| `history-lifecycle-normal-package` | Normal SDK-bearing ARM64 app packages from clean feature commit `adabd44` in 205.053 seconds. Resource verification, strict ad-hoc signature and guarded actual SDK 3.4.1 helper startup pass with zero authentication/SQL. All 554 source hashes equal full-validation/browser/feature-specific producer hashes and remain unchanged during packaging |
+| `history-lifecycle-app-artifact` | Version 0.1.0 executable is 34,477,520 bytes, SHA-256 `5caf64e894f6767bfc69952e1e31f52a2f5a4c6365fa4d208369e76e4ce5f8dc`. Original dependency-notice bytes equal source, Git and bundle. All 15,120 entries of the preserved `99a3ca3` app remain unchanged. Complete inventory and source/artifact proofs are retained; the new app is local and uninstalled |
+| `history-lifecycle-doc-links-final` | All 773 repository-relative Markdown path targets exist; no missing paths. Fragment targets were not validated |
 
 The full Rust run includes all eight new integration cases, 15 inline history
 cases and one backup-invariant case. Snowflake producer regressions, including
@@ -66,13 +69,18 @@ edges. Subsequent UI changes corrected test-only locators/matchers.
 The approved debug-cache deletion was already completed and reclaimed 135.8 GiB;
 its receipt is `.cache/verification/build-storage/approved-debug-cleanup.json`.
 Current checks run serially under the 20 GiB free-space preflight. After full
-validation and browser checks, about 189.6 GiB remains free; debug output is
-about 8.9 GiB, release output 3.0 GiB. No additional cache deletion is authorized
-or performed. The preceding clean-`99a3ca3` normal app is preserved before any
-new package build. Normal packaged owner UI/SSO/restart, actual account effects,
+validation, browser/producer checks and the one normal package, about 189.6 GiB
+remains free; debug output is about 8.9 GiB, release output 3.0 GiB. No additional
+cache deletion is authorized or performed. The preceding clean-`99a3ca3` normal
+app was preserved before this package build. Normal packaged owner UI/SSO/restart, actual account effects,
 installation/update and Developer ID/notarization remain open. No account activity,
 installation, push or publication occurred; the private project hub is unchanged
-because publication is not authorized.
+because publication is not authorized. The runnable local app is
+`src-tauri/target/release/bundle/macos/Joinery.app`; its predecessor is at
+`.cache/verification/reviewed-console/preserved-release-99a3ca3/Joinery.app`.
+The existing nonfatal `rust-objcopy`/LLVM loading warning recurs during release
+builds. No global toolchain/configuration change was made; packaging exits zero
+and all resource/signature/startup checks pass.
 
 ### Paged query history (13 November 2026)
 

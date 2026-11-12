@@ -98,10 +98,12 @@ with account qualification and owner acceptance. See the
 
 Current-source full validation passes 1,038 frontend and 653 standard Rust cases,
 including 15 inline history cases, a backup-invariant case and all eight new
-integration cases. All 54 focused UI and five actual browser cases pass. The
-preceding local package is from clean `99a3ca3`; package evidence is tracked
-separately in the ledger. Normal packaged owner interaction and restart
-acceptance remain open.
+integration cases. All 54 focused UI, 68 feature-specific Snowflake producer and
+five actual browser cases pass. The local SDK-bearing ARM64 app at
+`src-tauri/target/release/bundle/macos/Joinery.app` packages from clean `adabd44`;
+resources, strict ad-hoc signature, original license bytes and guarded SDK startup
+pass with zero authentication/SQL. The preceding `99a3ca3` app is preserved.
+Normal packaged owner interaction and restart acceptance remain open.
 
 Use the pinned Node/Rust toolchains and isolated fixture setup in the README.
 
