@@ -1,5 +1,24 @@
 # Implementation and release status
 
+## Retained console application integration (12 November 2026)
+
+The retained Studio owner, native review/start/SQL-free lookup commands and editor
+workflow are implemented locally. See the [usage and recovery walkthrough](snowflake-sdk-console-workflow.md).
+Whole-script review, client identity retained before submission, durable intent
+and ACK ordering, policy revocation, result/history outbox holds and app-wide
+receipts now connect the private foundations. Receipt-owned results survive
+editor cleanup and can be opened without SQL or a new connection.
+
+Local full validation, 18 retained-owner cases and one actual browser-to-Studio/
+helper workflow pass; the SDK is synthetic and account qualification stays open. Review
+reproduced a passphrase mutation-ordering defect before its fix, and found result
+lifetime and definite-refusal recovery defects. Corrected regression, integration
+and independent review results belong in the [ledger](replacement-verification.md).
+Lost definitive-refusal responses still need durable negative correlation;
+unknown outcomes remain held. Practical journal retention, configurable delivery
+deadlines, actual Snowflake effects/million-row workflows, normal packaging and
+owner acceptance remain required. The Goal stays active and incomplete.
+
 ## Retained console adapter and local journal (12 November 2026)
 
 The [private retained adapter and SQL-free journal](snowflake-sdk-console-journal.md)

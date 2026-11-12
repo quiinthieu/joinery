@@ -1,5 +1,27 @@
 # Joinery implementation roadmap
 
+## Retained console application integration (12 November 2026)
+
+The retained owner and UI are locally implemented and verified with synthetic SDKs:
+immutable review, one-use admission, same-client SQL-free recovery, revocation,
+intent/ACK outbox holds, history/audit and receipt-owned retained results. Follow
+the [workflow](snowflake-sdk-console-workflow.md) and source-scoped
+[ledger](replacement-verification.md); earlier private-foundation evidence below
+does not qualify this new integration.
+
+Full validation passes 872 frontend and 546 standard Rust tests (137 default
+fixture ignores); 18 owner cases and one actual browser-to-Studio/helper workflow
+also pass. Independent bounded review has no remaining material finding.
+
+Next verify normal packaging/startup. Implement
+[durable negative admission receipts](snowflake-console-negative-receipts-design.md)
+for a lost refusal response, practical journal retention that
+preserves deduplication/recovery, and qualified configurable long-running query
+behavior. Then execute a fresh approved disposable account plan for real
+Snowflake writes/DDL/transactions/interruption and million-row interaction/export.
+Normal macOS external-browser SSO/restart and hands-on acceptance remain open,
+alongside every other required DataGrip capability in the matrix.
+
 ## Retained console adapter and local evidence (12 November 2026)
 
 The [retained adapter/journal contract](snowflake-sdk-console-journal.md) is

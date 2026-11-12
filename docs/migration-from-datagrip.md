@@ -6,6 +6,13 @@ confirmed target and required workflows are recorded in
 and limits are in the [verification ledger](replacement-verification.md).
 Keep DataGrip available until your required workflows are accepted.
 
+The new [reviewed retained-console walkthrough](snowflake-sdk-console-workflow.md)
+describes opt-in connection setup, mixed-script review, retained session context,
+explicit transaction boundaries and SQL-free receipt/result recovery. It is a
+local implementation undergoing qualification. Existing private-foundation
+passes and synthetic SDK tests do not establish real Snowflake effects or daily
+replacement readiness.
+
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.
 The SDK external-browser route supports reads, separately reviewed bounded SQL

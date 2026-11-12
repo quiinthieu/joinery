@@ -1,5 +1,30 @@
 # Daily DataGrip replacement acceptance
 
+## Retained reviewed SQL console (12 November 2026, local integration)
+
+The [retained-console walkthrough](snowflake-sdk-console-workflow.md) describes
+the new opt-in mixed-SQL editor workflow and app-wide original receipts. Local
+checks pass with an isolated synthetic SDK; full native application and account
+acceptance remain open. The [ledger](replacement-verification.md) records source
+and results separately from the preceding private compiler/adapter/journal work.
+
+Require one physical session across separately reviewed SET/read,
+SHOW/RESULT_SCAN, temporary-object and BEGIN/write/ROLLBACK/COMMIT runs, with no
+automatic application SQL between them. Prove cancellation and result/recording
+failures preserve original acknowledgements and stop the untouched suffix. A
+lost start response must recover only by SQL-free correlation, without replay.
+Rows must remain openable after editor closure while their process still owns
+them; backend restart must restore honest SQL-free outcomes without signing in
+or implying unavailable rows were empty. A received exact pre-admission refusal
+may settle; a lost refusal still needs durable negative recovery. Configurable
+long-running query behavior and practical journal retention are required.
+
+Real Snowflake effects, one-million-row paging/export, normal packaged external-
+browser SSO/restart and the owner's complete daily evaluation remain open. The
+permitted disposable target is `SANDBOX.BILLIE_TESTING`; further account activity
+still needs a fresh exact reviewed plan and possible-billing approval. Every
+other applicable DataGrip capability remains in scope. The Goal is incomplete.
+
 ## Reviewed table DDL (11 November 2026, local integration)
 
 The SDK external-browser route now includes a separate opt-in for generated

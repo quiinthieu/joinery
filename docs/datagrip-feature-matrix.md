@@ -16,7 +16,7 @@ new source or actual Snowflake behavior.
 | Connections, authentication, TLS and tunnels | SDK external-browser profiles, retained helper lifecycle and verified runtime; bounded helper-only account SSO/read checks recorded in the [ledger](replacement-verification.md) | Normal packaged SSO, connection failure/reconnect and applicable TLS/tunnel workflows need account/native acceptance                                        |
 | Navigation, metadata and object search       | Same-session completion, browsing, columns, generated DDL, schema selection, declared PK/UQ/FK inventory, [ordered key mappings and retained reference selection](snowflake-sdk-key-mappings-design.md), [CHECK clauses](snowflake-sdk-check-constraints-design.md); local validation/browser/native/package checks pass | Cross-database/inbound/related-row navigation, dynamic-table mappings, complete object kinds, dependencies and search remain incomplete; actual CHECK/mapping shapes, privileges and refresh need account acceptance |
 | SQL editing and authoring                    | Bounded completion, formatting, parameters, diagnostics, navigation and refactoring slices; detailed source evidence below                                                       | Complete Snowflake semantics and the applicable DataGrip authoring workflow remain incomplete; daily native acceptance is open                              |
-| Query execution                              | Parameterized read-only scripts plus separately reviewed single INSERT/UPDATE/DELETE, explicit boundaries and generated table DDL; [DML contract](snowflake-sdk-dml-design.md)                             | Generalized mixed read/write/boundary scripts, broader SQL/session commands, actual cancellation/interruption/account outcomes remain incomplete                     |
+| Query execution                              | Parameterized read-only scripts, generated actions and locally verified [reviewed retained mixed-SQL console](snowflake-sdk-console-workflow.md) with synthetic SDKs | Durable negative recovery, long-running query behavior, complete mixed workflow verification and actual cancellation/interruption/account outcomes remain incomplete |
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
 | Safe data editing and import                 | Reviewed bounded SQL writes are locally integrated with one-use authority and retained original outcomes                                                                         | Snowflake grid editing and CSV import remain disabled; safe identity/concurrency handling and account data effects need implementation and proof            |
 | Transactions                                 | Separately reviewed BEGIN/COMMIT/ROLLBACK and rollback recovery; [transaction contract](snowflake-sdk-transactions-design.md)                                                    | Actual commit/rollback data effects, mode changes, console isolation and DML/DDL implicit-commit behavior remain unqualified                                |
@@ -65,15 +65,26 @@ and [ledger](replacement-verification.md).
 The [design](snowflake-sdk-console-scripts-design.md) is prepared and independently
 reviewed. [Compiler and private transport foundations](snowflake-sdk-console-transport.md)
 and the [retained adapter/local journal](snowflake-sdk-console-journal.md) are
-implemented locally; application integration and external qualification remain
-incomplete. Separate default-off console consent is persisted, with no new UI
-or application command. The required design covers
+implemented locally. The retained Studio owner, dedicated native review/start/
+lookup commands, default-off profile UI and app-wide receipts are now locally
+verified with synthetic SDKs; external qualification remains
+incomplete. See the [usage and recovery walkthrough](snowflake-sdk-console-workflow.md).
+The required design covers
 retained console ownership across runs, mixed reviewed SQL, scalar binds, explicit
 transactions, passive response context, SQL-free local outcome recovery and
 preserving LAST_QUERY_ID adjacency. Broad owner-authored SQL and separate file
 transfer/import permissions remain required. Existing probe-bearing actions
 cannot simply be looped to establish this workflow. The roadmap keeps broader
 metadata, editing/import, authoring, performance and native usability in scope.
+
+| Application capability | Current evidence | Required gate |
+| --- | --- | --- |
+| Reviewed retained owner/UI | Locally verified: 217 focused frontend, 6 focused IPC, 18 owner cases and 1 actual browser-to-Studio/helper workflow pass; full validation passes 872 frontend / 546 standard Rust cases (137 default ignores). Synthetic SDK; no account qualification | Durable lost-negative recovery, practical retention, long-running queries, normal packaging and actual Snowflake/native/owner acceptance |
+
+The following records the preceding private-foundation increment. Its last
+column identifies work outstanding at that source; the current owner/UI status
+above supersedes those historical implementation gaps, but does not close their
+verification or external acceptance gates.
 
 | Foundation | Recorded local evidence | Remaining required work |
 | --- | --- | --- |

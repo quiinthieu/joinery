@@ -8,6 +8,106 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Retained console application integration (12 November 2026)
+
+Base is `ec7e473` on `feat/datagrip-replacement`; native integration is committed
+as `e20c416` and UI/browser coverage as `c3bada6`. The retained Studio owner,
+native review/start/SQL-free lookup commands, opt-in profile and editor workflow
+are locally implemented. The [walkthrough](snowflake-sdk-console-workflow.md)
+describes explicit review, same-session runs and receipt/result recovery. No
+Snowflake account/profile/approval-marker access or billable activity occurs.
+Root graph access remains unavailable (Transport closed); workers record bounded
+Tier 2 graph coverage and exact source fallback in their local manifests.
+
+Independent review found partial passphrase rotation could mutate the secret and
+then fail its SQLite settings write without revoking a script's next statement.
+The actual synthetic-helper regression failed first (two ACKs instead of one;
+exit 101, `console-app-passphrase-reproduction.json` and log). Revocation now
+precedes the first secret mutation. The corrected focused suite passes **54
+cases**, with one internal child fixture ignored by default and invoked by its
+parent. This includes 17 retained Studio owner cases, adapter/journal regressions,
+real OS lease/crash recovery and actual SQLite history/audit retry/restart.
+All captured Rust source hashes remained unchanged during the run; see
+`console-app-corrected-validation.json` and adjacent log under
+`.cache/verification/reviewed-console/`. The initial compile before reproduction
+failed with a temporary admission fixture borrow; zero tests ran in that compile.
+
+The frontend owner records **217/217** focused cases across eight files and root
+IPC checks pass **6/6**. Receipt-owned native rows survive edit/rebind/close/next
+run and late delivery; reopening uses existing result IDs without SQL/sign-in.
+An exact native pre-admission negative settles only its matching unadmitted
+request. Lookup/lease uncertainty still throws; no arbitrary error or null lookup
+proves non-dispatch. A **lost negative response has no durable tombstone yet** and
+can remain held; durable negative recovery is required before daily acceptance.
+
+A final closed-coordinator lifecycle fix preserves known-run lookup/dedup after
+shutdown while preventing lease reacquisition through fresh starts or abandoned
+receipt recovery. The affected owner suite passes **18/18** on unchanged final
+source (127.28 seconds including compile; 73.42 seconds tests), including a real
+two-coordinator/SQLite lease regression with no additional helper SQL. See
+`console-app-owner-final.json` and log. Independent bounded final source review
+has no additional material finding across 38 captured paths; report
+`console-app-review.json` SHA256
+`256fa8e0a52ee6c760d43146db00da9bdba2816ff876168e7e9ba1ac5c6c09b8`.
+This includes the subsequent narrow TypeScript guard/test and Clippy corrections.
+Root compares the report's captured hashes again and finds no drift. The reviewer
+ran no tests.
+
+The first full validation stopped after contract generation at TypeScript
+TS2352: a generic connection response was cast directly to SessionInfo. The
+correction checks the response's string ID and true console flag before sealing
+those exact fields. The second run passes frontend/build and **546 standard Rust
+tests** (137 default ignores), then fails strict Clippy on three collapsible
+conditionals, one needless test borrow and the public fixture's missing Default.
+Those narrow fixes preserve evaluation order and journal lock lifetime; the
+reviewer reconstructed the exact earlier source hashes to confirm the delta.
+Both failed receipts are retained as `console-app-full-validation.json` and
+`console-app-full-corrected-validation.json` with their logs.
+
+The final full `pnpm validate` passes in **252.13 seconds**: **872 frontend tests**
+across 64 files, **546 standard Rust tests** with **137 default fixture ignores**,
+formatting, contracts, TypeScript, production UI build, native compiler checks and
+strict all-target/all-feature Clippy. All captured Rust hashes remained unchanged.
+See `console-app-final-check-validation.json` and adjacent log. After validation,
+target is 11,536,956 KiB (11.0 GiB), with 147,602,878,464 bytes (137.5 GiB) free.
+After the Clippy-only delta, the complete feature-gated owner suite again passes
+**18/18**, with unchanged source hashes in **109.18 seconds** including compile.
+See `console-app-owner-checked.json` and log.
+
+The first browser attempt failed before application exercise because Playwright
+looked outside the existing repository browser cache. Setting only the command's
+`PLAYWRIGHT_BROWSERS_PATH` uses the already cached Chromium headless shell 1248,
+without download or global configuration changes. The next attempt exposed a
+test-flow mistake: selecting the profile opens ConnectDialog, while a status-bar
+profile name alone does not prove a connection. The corrected test explicitly
+submits Connect, waits for the dialog to close and observes Disconnect before
+opening a query. Action waits are bounded to ten seconds.
+
+The final actual headless browser case passes **1/1** in **21.66 seconds** including
+server startup, on unchanged captured source. It exercises UI → Rust Studio →
+real helper/framing/journal/Arrow storage with an isolated synthetic SDK: SET/read,
+SHOW/RESULT_SCAN, temporary-table and transaction-shaped cross-run sequences,
+lost admission-response recovery with one SQL submission, edit/close and SQL-free
+retained-result reopen, then graceful backend restart and receipt restore with
+zero login or replay. Assertions inspect actual helper requests and Arrow bytes;
+no RPC response is mocked. See `console-app-browser-connected.json` and log.
+Failed attempts remain in `console-app-browser{,-cached}.json` and adjacent logs;
+the connection-step trace is archived locally. Reproduce with the pinned tools:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib execution::snowflake_console_tests:: -- --test-threads=1
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" pnpm exec playwright test tests/e2e/snowflake-retained-console.spec.ts
+```
+
+The browser-cache override is specific to this checkout; a fresh environment
+must install the Playwright headless shell as described in README.
+
+These results do not establish real Snowflake transaction semantics,
+SSO, million-row interaction/export, normal packaged operation or owner
+acceptance. The existing release app still predates this increment. Journal
+retention, configurable query deadlines and the remaining DataGrip scope stay
+required; the persistent Goal is incomplete.
+
 ### Retained console adapter and journal (12 November 2026)
 
 Base is `f490d23` on `feat/datagrip-replacement`. The

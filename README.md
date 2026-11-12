@@ -33,6 +33,13 @@ Neither route accepts a password/token in the form. Use a database-enforced
 read-only role and a bounded warehouse/query budget. Actual account qualification
 for the SDK route remains open.
 
+Local source also implements an explicitly opted-in
+[reviewed retained SQL console](docs/snowflake-sdk-console-workflow.md) for mixed
+owner-written SQL and explicit boundaries across runs. It permanently suppresses
+automatic metadata/probe SQL on that physical session and provides SQL-free
+receipts. Local synthetic checks pass; account/native acceptance remains open;
+use the walkthrough and current ledger before evaluating this route.
+
 The local-application OAuth route requires the account to enable
 `SNOWFLAKE$LOCAL_APPLICATION`. It supports read-only SQL, catalog discovery, lazy column completion,
 structure inspection, and unordered table previews capped at 500 rows or 2 MiB.
