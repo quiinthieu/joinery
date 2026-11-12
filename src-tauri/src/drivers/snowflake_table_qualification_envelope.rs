@@ -420,12 +420,49 @@ impl Envelope {
 }
 
 impl ConsumedEnvelope {
+    #[cfg(test)]
+    pub(super) fn fixture_elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture_runtime_root(&self) -> &Path {
+        &self.envelope.manifest.runtime.path
+    }
+
     pub(super) fn plan(&self) -> Plan {
         self.envelope.plan.clone()
     }
 
     pub(super) fn frozen_profile(&self) -> AppResult<serde_json::Value> {
         serde_json::to_value(&self.envelope.manifest.profile).map_err(|_| invalid())
+    }
+
+    /// Absolute read-completion bound. Repeated reads cannot renew the consumed
+    /// lifecycle, and the approval window can only shorten the remaining wait.
+    /// Like publication checks, this performs no artifact IO.
+    pub(super) fn completion_deadline(&self) -> AppResult<Instant> {
+        self.check()?;
+        let deadline = (|| {
+            let remaining_ms = self
+                .envelope
+                .manifest
+                .window
+                .expires_unix_ms
+                .checked_sub(now_ms()?)
+                .filter(|remaining| *remaining > 0)
+                .ok_or_else(invalid)?;
+            let wall = Instant::now()
+                .checked_add(Duration::from_millis(remaining_ms))
+                .ok_or_else(invalid)?;
+            let lifecycle = self.started.checked_add(DEADLINE).ok_or_else(invalid)?;
+            let deadline = wall.min(lifecycle);
+            if deadline <= Instant::now() {
+                return Err(invalid());
+            }
+            Ok(deadline)
+        })();
+        deadline.map_err(|error| self.fail(error))
     }
 
     /// Publication-safe time/failure check. Never reads artifact files or markers.
@@ -497,5 +534,18 @@ pub(super) fn fixture_consumed(
 }
 
 #[cfg(test)]
+pub(super) fn fixture_consumed_real_content(
+    plan: Plan,
+    profile: serde_json::Value,
+    runtime_root: PathBuf,
+) -> (tempfile::TempDir, ConsumedEnvelope, serde_json::Value) {
+    perf_tests::fixture_consumed_real_content(plan, profile, runtime_root)
+}
+
+#[cfg(test)]
 #[path = "snowflake_table_qualification_envelope_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "snowflake_table_qualification_envelope_perf_tests.rs"]
+mod perf_tests;

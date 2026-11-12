@@ -881,6 +881,7 @@ mod tests {
 pub(crate) mod studio_fixture {
     use super::*;
     use serde_json::json;
+    use std::os::unix::fs::MetadataExt;
     pub struct Fixture {
         pub directory: tempfile::TempDir,
         pub runtime: Arc<SnowflakeRuntime>,
@@ -889,6 +890,113 @@ pub(crate) mod studio_fixture {
     }
     use std::sync::Arc;
     impl Fixture {
+        pub fn runtime_root(&self) -> &Path {
+            &self.runtime.root
+        }
+
+        /// Tiny fixture with the same helper path and separate mutable output.
+        pub fn separated() -> Self {
+            let mut fixture = Self::new();
+            let controls = fs::canonicalize(fixture.directory.path())
+                .unwrap()
+                .join("controls");
+            fs::DirBuilder::new().mode(0o700).create(&controls).unwrap();
+            fs::write(
+                fixture
+                    .runtime_root()
+                    .join("helper/node_modules/snowflake-sdk/index.mjs"),
+                external_controls_sdk(&controls),
+            )
+            .unwrap();
+            fixture.controls = controls;
+            fixture
+        }
+
+        /// Complete independent copy, including every genuine dependency file.
+        /// Only the synthetic SDK entry/package routing and verifier are replaced
+        /// before inventory capture. No mutable output belongs to this tree.
+        pub fn copied_packaged() -> Self {
+            let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "target/release/bundle/macos/Joinery.app/Contents/Resources/snowflake-runtime",
+            );
+            let mut pins = ExpectedPins::compiled().unwrap();
+            validate_resources(&source, &pins).expect("prepared normal pinned runtime");
+            let directory = tempfile::tempdir().unwrap();
+            let base = fs::canonicalize(directory.path()).unwrap();
+            let resources = base.join("resources");
+            let root = resources.join("snowflake-runtime");
+            let state = base.join("state");
+            let controls = base.join("controls");
+            for path in [&resources, &state, &controls] {
+                fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+            }
+            copy_independent_tree(&source, &root);
+            let verifier = b"export function verifyTransportSources() {}\n";
+            let verifier_digest = digest_bytes(verifier);
+            pins.sources
+                .iter_mut()
+                .find(|(name, _)| *name == "transport-source-pins.mjs")
+                .unwrap()
+                .1 = verifier_digest.clone();
+            fs::write(root.join("helper/transport-source-pins.mjs"), verifier).unwrap();
+            let mut manifest: serde_json::Value =
+                read_json(&root.join("manifest.json"), MAX_MANIFEST_BYTES).unwrap();
+            manifest["helper"]["sourceSha256"]["transport-source-pins.mjs"] =
+                json!(verifier_digest);
+            fs::write(
+                root.join("manifest.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            let sdk = root.join("helper/node_modules/snowflake-sdk");
+            let mut package: serde_json::Value =
+                read_json(&sdk.join("package.json"), MAX_PACKAGE_BYTES).unwrap();
+            package["type"] = json!("module");
+            package["main"] = json!("index.mjs");
+            package["exports"] = json!("./index.mjs");
+            fs::write(
+                sdk.join("package.json"),
+                serde_json::to_vec(&package).unwrap(),
+            )
+            .unwrap();
+            fs::write(sdk.join("index.mjs"), external_controls_sdk(&controls)).unwrap();
+            let runtime =
+                Arc::new(SnowflakeRuntime::load_packaged(&resources, &state, pins).unwrap());
+            let fixture = Self {
+                directory,
+                runtime,
+                state,
+                controls,
+            };
+            fixture.assert_synthetic_resolution();
+            fixture
+        }
+
+        /// Resolve only; never import or execute the genuine SDK/account route.
+        pub fn assert_synthetic_resolution(&self) {
+            let output = std::process::Command::new(self.runtime_root().join("bin/node"))
+                .current_dir(self.runtime_root().join("helper"))
+                .args([
+                    "--input-type=module",
+                    "--eval",
+                    "process.stdout.write(import.meta.resolve('snowflake-sdk'))",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "offline synthetic SDK resolution failed"
+            );
+            let expected = url::Url::from_file_path(
+                self.runtime_root()
+                    .join("helper/node_modules/snowflake-sdk/index.mjs"),
+            )
+            .unwrap();
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected.as_str());
+            assert!(!self.controls.starts_with(self.runtime_root()));
+            assert!(!self.state.starts_with(self.runtime_root()));
+        }
+
         pub fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
             let base = fs::canonicalize(directory.path()).unwrap();
@@ -982,6 +1090,51 @@ pub(crate) mod studio_fixture {
                 runtime,
                 state,
                 controls,
+            }
+        }
+    }
+
+    fn external_controls_sdk(controls: &Path) -> String {
+        let controls_url = url::Url::from_directory_path(controls).unwrap();
+        let source = include_str!("execution/synthetic_snowflake.mjs");
+        let marker = "const controls = new URL('../../', import.meta.url);";
+        assert_eq!(source.matches(marker).count(), 1);
+        source.replace(
+            marker,
+            &format!(
+                "const controls = new URL({});",
+                serde_json::to_string(controls_url.as_str()).unwrap()
+            ),
+        )
+    }
+
+    fn copy_independent_tree(source: &Path, destination: &Path) {
+        let metadata = fs::symlink_metadata(source).unwrap();
+        assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(destination)
+            .unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let original = fs::symlink_metadata(entry.path()).unwrap();
+            let target = destination.join(entry.file_name());
+            if original.is_dir() && !original.file_type().is_symlink() {
+                copy_independent_tree(&entry.path(), &target);
+            } else {
+                assert!(
+                    original.is_file() && !original.file_type().is_symlink(),
+                    "normal runtime contains a link or special file"
+                );
+                assert_eq!(original.nlink(), 1, "normal runtime contains a hard link");
+                fs::copy(entry.path(), &target).unwrap();
+                let copied = fs::symlink_metadata(target).unwrap();
+                assert_eq!(copied.nlink(), 1);
+                assert_ne!(
+                    (original.dev(), original.ino()),
+                    (copied.dev(), copied.ino())
+                );
+                assert_eq!(copied.len(), original.len());
             }
         }
     }

@@ -216,6 +216,12 @@ async fn guard_full_admission_uses_same_policy_and_retains_plan() {
     assert_eq!(records[1]["event"]["wireId"], 1);
     assert_eq!(records[1]["event"]["ticket"], 0);
     assert!(fixture.guard.wait_for_settlement().await);
+    let measurements = fixture.guard.fixture_measurements();
+    assert_eq!(measurements.admissions, 1);
+    assert_eq!(measurements.successful_admissions, 1);
+    assert_eq!(measurements.failed_admissions, 0);
+    assert_eq!(measurements.admission_total, measurements.admission_max);
+    assert!(measurements.elapsed_since_consumption >= measurements.admission_total);
 }
 
 #[tokio::test]
@@ -254,8 +260,13 @@ async fn dropped_worker(admission: bool) {
         })
     };
     pause.entered().await;
+    assert_eq!(fixture.guard.fixture_measurements().admissions, 0);
     checking.abort();
     assert!(checking.await.unwrap_err().is_cancelled());
+    let measurements = fixture.guard.fixture_measurements();
+    assert_eq!(measurements.admissions, usize::from(admission));
+    assert_eq!(measurements.successful_admissions, 0);
+    assert_eq!(measurements.failed_admissions, usize::from(admission));
     let failure = fixture.guard.check().unwrap_err();
     assert_eq!(failure.code, ErrorCode::Cancelled);
     fixture.assert_revoked(&failure);
@@ -284,12 +295,18 @@ async fn guard_unpolled_dropped_check_is_already_revoked() {
         let fixture = Fixture::new().await;
         if admission {
             let connect = Connect::new();
-            drop(fixture.guard.admit(connect.request()));
+            let pending = fixture.guard.admit(connect.request());
+            assert_eq!(fixture.guard.fixture_measurements().admissions, 0);
+            drop(pending);
         } else {
             drop(fixture.guard.revalidate());
         }
         let failure = fixture.guard.check().unwrap_err();
         assert_eq!(failure.code, ErrorCode::Cancelled);
+        let measurements = fixture.guard.fixture_measurements();
+        assert_eq!(measurements.admissions, usize::from(admission));
+        assert_eq!(measurements.successful_admissions, 0);
+        assert_eq!(measurements.failed_admissions, usize::from(admission));
         fixture.assert_revoked(&failure);
         assert!(fixture.guard.wait_for_settlement().await);
         assert_eq!(fixture.records().len(), 1);

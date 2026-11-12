@@ -257,6 +257,7 @@ async fn read(
     closed_plan: &Plan,
     expected: Readback,
     cancel_on_stream: bool,
+    completion_deadline: Option<std::time::Instant>,
 ) -> Result<ReadCapture, CallError> {
     let id = if expected == Readback::Ownership {
         StatementId::OwnershipRead
@@ -288,7 +289,10 @@ async fn read(
         }
     });
     let run = studio.execute(&plan.id, approval.as_deref(), handler)?;
-    let settled = tokio::time::timeout(Duration::from_secs(15), async {
+    let deadline = completion_deadline
+        .map(tokio::time::Instant::from_std)
+        .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(15));
+    let settled = tokio::time::timeout_at(deadline, async {
         while {
             let (streaming, finished) = *completion.borrow_and_update();
             !(finished || cancel_on_stream && streaming)
@@ -508,6 +512,11 @@ pub(super) struct RunnerReceipt {
 }
 
 impl Runner {
+    #[cfg(test)]
+    pub(super) fn fixture_guard(&self) -> Option<Arc<Guard>> {
+        self.guard.clone()
+    }
+
     /// Same closed Studio route, backed by the consumed envelope and owning guard.
     /// This is not a manifest/account entry point or a source of profile authority.
     pub(super) fn consumed(
@@ -717,6 +726,10 @@ impl Runner {
                     &self.plan,
                     expected,
                     self.cancel_read(expected),
+                    self.guard
+                        .as_ref()
+                        .map(|guard| guard.completion_deadline())
+                        .transpose()?,
                 )
                 .await?,
             ),

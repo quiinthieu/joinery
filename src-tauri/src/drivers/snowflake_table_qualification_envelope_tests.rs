@@ -457,6 +457,7 @@ fn envelope_publication_checks_expiry_and_monotonic_deadline_without_artifact_io
             };
         }
         assert!(consumed.check().is_err());
+        assert!(consumed.completion_deadline().is_err());
         consumed.envelope.manifest.window = original_window;
         consumed.started = original_started;
         assert!(
@@ -464,4 +465,28 @@ fn envelope_publication_checks_expiry_and_monotonic_deadline_without_artifact_io
             "restored time cannot revive the attempt"
         );
     }
+}
+
+#[test]
+fn envelope_read_deadline_retains_consumption_time_and_shorter_wall_window() {
+    let (_directory, mut consumed, drift) = fixture_consumed(Plan::generate().unwrap(), profile());
+    // Missing artifact contents are deliberately invisible to this memory-only
+    // wait bound; full admission still performs the independent inventory check.
+    fs::remove_file(drift).unwrap();
+    consumed.started = Instant::now()
+        .checked_sub(DEADLINE - Duration::from_secs(1))
+        .unwrap();
+    let lifecycle = consumed.started.checked_add(DEADLINE).unwrap();
+    assert_eq!(consumed.completion_deadline().unwrap(), lifecycle);
+    assert_eq!(consumed.completion_deadline().unwrap(), lifecycle);
+
+    consumed.started = Instant::now();
+    let now = now_ms().unwrap();
+    consumed.envelope.manifest.window = Window {
+        not_before_unix_ms: now - 1,
+        expires_unix_ms: now + 60_000,
+    };
+    let deadline = consumed.completion_deadline().unwrap();
+    assert!(deadline <= Instant::now() + Duration::from_secs(60));
+    assert!(deadline < consumed.started.checked_add(DEADLINE).unwrap());
 }

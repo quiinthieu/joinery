@@ -41,8 +41,12 @@ struct OfflineHarness {
 
 impl OfflineHarness {
     async fn new(schema_count: usize, fault: Value) -> Self {
-        let cancel_read = matches!(fault["kind"].as_str(), Some("stallRead" | "stallReadError"));
         let fixture = Fixture::new();
+        Self::with_fixture(schema_count, fault, fixture).await
+    }
+
+    async fn with_fixture(schema_count: usize, fault: Value, fixture: Fixture) -> Self {
+        let cancel_read = matches!(fault["kind"].as_str(), Some("stallRead" | "stallReadError"));
         let studio = Studio::with_snowflake_runtime(
             &fixture.directory.path().join("workspace"),
             Arc::new(MemorySecrets::default()),
@@ -73,7 +77,7 @@ impl OfflineHarness {
             statements.insert(name.into(), json!(plan.statement(id).source_sql()));
         }
         fs::write(
-            fixture.controls.join("lifecycle-sdk.mjs"),
+            fixture.runtime_root().join("helper/lifecycle-sdk.mjs"),
             include_str!("../../tests/support/snowflake_table_qualification_sdk.mjs"),
         )
         .unwrap();
@@ -125,21 +129,41 @@ impl OfflineHarness {
             Value::Null
         };
         let stall_authentication = fault["kind"] == "stallAuthentication";
-        let sdk_fault = if child_exit.is_null() && drift.is_null() && !stall_authentication {
+        let delay_ownership_read = fault["kind"] == "delayOwnershipRead";
+        let sdk_fault = if child_exit.is_null()
+            && drift.is_null()
+            && !stall_authentication
+            && !delay_ownership_read
+        {
             fault
         } else {
             Value::Null
         };
         let options = json!({"schemaCount":schema_count,"tableName":plan.table(),"statements":statements,"fault":sdk_fault});
+        let lifecycle_url = serde_json::to_string(
+            url::Url::from_file_path(fixture.runtime_root().join("helper/lifecycle-sdk.mjs"))
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap();
+        let controls_url = serde_json::to_string(
+            url::Url::from_directory_path(&fixture.controls)
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap();
         let wrapper = format!(
-            r#"import {{makeSdk}} from '../../lifecycle-sdk.mjs';
+            r#"import {{makeSdk}} from {lifecycle_url};
 import {{appendFileSync}} from 'node:fs';
 import {{Readable}} from 'node:stream';
 const options={options};
 const childExit={child_exit};
 const drift={drift};
 const stallAuthentication={stall_authentication};
-const append=(name,value)=>appendFileSync(new URL('../../'+name,import.meta.url),JSON.stringify(value)+'\n');
+const delayOwnershipRead={delay_ownership_read};
+const controls=new URL({controls_url});
+const append=(name,value)=>appendFileSync(new URL(name,controls),JSON.stringify(value)+'\n');
+append('sdk-resolution',{{url:import.meta.url,synthetic:true}});
 const sdk=makeSdk({{...options,log:sql=>append('queries',sql)}});
 if (stallAuthentication) {{
   const create=sdk.createConnection.bind(sdk);
@@ -149,6 +173,29 @@ if (stallAuthentication) {{
       append('auth-entered',{{pid:process.pid}});
       return new Promise(()=>{{}});
     }};
+    return connection;
+  }};
+}}
+if (delayOwnershipRead) {{
+  const create=sdk.createConnection.bind(sdk);
+  sdk.createConnection=profile=>{{
+    const connection=create(profile);
+    const execute=connection.execute.bind(connection);
+    let delayed=false;
+    connection.execute=request=>execute({{...request,complete:(error,statement)=>{{
+      if (!error && request.sqlText === options.statements.OwnershipRead) {{
+        if (delayed) throw Error('Synthetic ownership read delay cannot repeat');
+        delayed=true;
+        const started=process.hrtime.bigint();
+        const delayMs=16000;
+        append('ownership-read-delay',{{stage:'entered',atUnixMs:Date.now(),delayMs}});
+        setTimeout(()=>{{
+          append('ownership-read-delay',{{stage:'completed',atUnixMs:Date.now(),
+            elapsedMs:Number(process.hrtime.bigint()-started)/1e6}});
+          request.complete(error,statement);
+        }},delayMs);
+      }} else request.complete(error,statement);
+    }}}});
     return connection;
   }};
 }}
@@ -232,8 +279,8 @@ export default sdk;
         );
         fs::write(
             fixture
-                .controls
-                .join("node_modules/snowflake-sdk/index.mjs"),
+                .runtime_root()
+                .join("helper/node_modules/snowflake-sdk/index.mjs"),
             wrapper,
         )
         .unwrap();
@@ -1628,6 +1675,113 @@ fn assert_final_guard_failed(journal: &[Value], error: &AppError) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_studio_runner_consumed_read_outlives_fixture_completion_limit() {
+    let (mut harness, _drift) =
+        OfflineHarness::consumed(1, json!({"kind":"delayOwnershipRead"})).await;
+    // Stop after retaining the original successful read, before any later SQL.
+    // This fault must remain distinguishable from premature read cancellation.
+    harness.break_journal_after = Some(5);
+    let receipt = harness.run().await;
+    assert_local_settlement(&receipt);
+    assert_eq!(receipt.outputs.len(), 5);
+    assert!(receipt.original_call_failure.is_none());
+    let Output::Read(original) = receipt.outputs.last().unwrap() else {
+        panic!("original ownership read was not retained")
+    };
+    assert!(matches!(
+        original.events.last(),
+        Some(QueryEvent::Finished {
+            status: RunStatus::Completed,
+            ..
+        })
+    ));
+    assert!(
+        original
+            .events
+            .iter()
+            .all(|event| !matches!(event, QueryEvent::Error { .. }))
+    );
+    let delay = fs::read_to_string(
+        receipt
+            .harness
+            .fixture
+            .controls
+            .join("ownership-read-delay"),
+    )
+    .unwrap()
+    .lines()
+    .map(|line| serde_json::from_str::<Value>(line).unwrap())
+    .collect::<Vec<_>>();
+    assert_eq!(delay.len(), 2, "one delayed SDK callback must complete");
+    assert_eq!(delay[0]["stage"], "entered");
+    assert_eq!(delay[0]["delayMs"], 16000);
+    assert_eq!(delay[1]["stage"], "completed");
+    assert!(
+        delay
+            .iter()
+            .all(|event| event["atUnixMs"].as_u64().is_some())
+    );
+    assert!(delay[1]["elapsedMs"].as_f64().unwrap() > 15000.0);
+    let ledger = receipt
+        .harness
+        .plan
+        .expand_physical_ledger(&SchemaCensus::freeze(&[SCHEMA.into()]).unwrap())
+        .unwrap();
+    assert_eq!(
+        receipt.queries,
+        ledger
+            .entries()
+            .iter()
+            .take_while(|entry| entry.phase() <= 5)
+            .map(|entry| entry.sql().to_owned())
+            .collect::<Vec<_>>()
+    );
+    let failure = receipt
+        .failure
+        .as_ref()
+        .expect("deliberate journal failure");
+    assert_eq!(failure.0, 5);
+    let expected = "Private qualification journal identity or permissions changed";
+    assert_eq!(failure.1.code, ErrorCode::Internal);
+    assert_eq!(failure.1.message, expected);
+    assert_eq!(
+        receipt.completion_record_error.as_ref().unwrap().message,
+        expected
+    );
+    assert_eq!(receipt.persisted.as_ref().unwrap_err().message, expected);
+    assert_eq!(
+        receipt
+            .guard_revalidation
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err()
+            .message,
+        expected
+    );
+    assert_eq!(receipt.guard_settled, Some(true));
+    assert!(receipt.guard_recorded.as_ref().unwrap().is_err());
+    assert!(
+        receipt
+            .harness
+            .transport
+            .first_error()
+            .is_none_or(|error| error.message == expected)
+    );
+    let validated = receipt
+        .journal
+        .iter()
+        .filter(|record| record["event"]["type"] == "validatedPhase")
+        .map(|record| record["event"]["phase"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(validated, [1, 2, 3, 4]);
+    assert!(receipt.journal.iter().all(|record| {
+        let event = &record["event"];
+        event["operation"] != "cancel" && event["report"]["retirement"].is_null()
+    }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn qualification_studio_runner_consumed_preauth_drift_stops_before_launch() {
     let (harness, drift) = OfflineHarness::consumed(1, Value::Null).await;
     fs::write(drift, b"changed synthetic runtime before authentication").unwrap();
@@ -1917,3 +2071,6 @@ async fn qualification_studio_runner_consumed_authentication_deadline_joins_real
             .all(|record| record["event"]["type"] != "validatedPhase")
     );
 }
+
+#[path = "snowflake_table_qualification_runner_perf_tests.rs"]
+mod perf;

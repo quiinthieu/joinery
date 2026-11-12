@@ -78,6 +78,45 @@ pub(super) struct Guard {
     limit: Duration,
     #[cfg(test)]
     pause: Option<Arc<tests::ScanPause>>,
+    #[cfg(test)]
+    measurements: Mutex<FixtureMeasurements>,
+}
+
+/// Read-only diagnostics for explicitly selected real-content fixtures. All
+/// durations include permit wait, inventory work and inner policy persistence.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct FixtureMeasurements {
+    pub(super) admissions: usize,
+    pub(super) successful_admissions: usize,
+    pub(super) failed_admissions: usize,
+    pub(super) admission_total: Duration,
+    pub(super) admission_max: Duration,
+    pub(super) elapsed_since_consumption: Duration,
+}
+
+#[cfg(test)]
+struct AdmissionMeasurement<'a> {
+    measurements: &'a Mutex<FixtureMeasurements>,
+    started: std::time::Instant,
+    successful: bool,
+}
+
+#[cfg(test)]
+impl Drop for AdmissionMeasurement<'_> {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed();
+        let mut measurements = self.measurements.lock();
+        measurements.admissions += 1;
+        if self.successful {
+            measurements.successful_admissions += 1;
+        } else {
+            // Includes cancellation and an unpolled dropped admission future.
+            measurements.failed_admissions += 1;
+        }
+        measurements.admission_total += elapsed;
+        measurements.admission_max = measurements.admission_max.max(elapsed);
+    }
 }
 
 impl Guard {
@@ -111,11 +150,28 @@ impl Guard {
             limit: CHECK_LIMIT,
             #[cfg(test)]
             pause: None,
+            #[cfg(test)]
+            measurements: Mutex::new(FixtureMeasurements::default()),
         }))
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture_measurements(&self) -> FixtureMeasurements {
+        let mut measurements = *self.measurements.lock();
+        measurements.elapsed_since_consumption = self.shared.consumed.fixture_elapsed();
+        measurements
     }
 
     pub(super) fn plan(&self) -> Plan {
         self.shared.consumed.plan()
+    }
+
+    pub(super) fn completion_deadline(&self) -> AppResult<std::time::Instant> {
+        self.check()?;
+        self.shared
+            .consumed
+            .completion_deadline()
+            .map_err(|error| self.shared.fail(error))
     }
 
     /// Strictly memory/time only; safe for final publication under Studio locks.
@@ -233,6 +289,12 @@ impl TransportPolicy for Guard {
         request: PhysicalRequest<'a>,
     ) -> Pin<Box<dyn Future<Output = AppResult<()>> + Send + 'a>> {
         let mut interrupted = self.interrupted();
+        #[cfg(test)]
+        let mut measurement = AdmissionMeasurement {
+            measurements: &self.measurements,
+            started: std::time::Instant::now(),
+            successful: false,
+        };
         Box::pin(async move {
             let result = tokio::time::timeout(self.limit, async {
                 self.check()?;
@@ -242,7 +304,15 @@ impl TransportPolicy for Guard {
                 self.check()
             })
             .await;
-            self.complete(result, &mut interrupted)
+            let result = self.complete(result, &mut interrupted);
+            #[cfg(test)]
+            {
+                measurement.successful = result.is_ok();
+                // Capture the whole Drop owner, rather than only its success
+                // field, so cancellation and completion measure the future.
+                drop(measurement);
+            }
+            result
         })
     }
 }
