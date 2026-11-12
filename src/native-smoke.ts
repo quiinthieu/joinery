@@ -69,6 +69,13 @@ export async function runNativeSmoke() {
         },
       ],
       [
+        "inspect_relation_constraints",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
         "preview_relation",
         {
           sessionId: "missing-native-fixture",

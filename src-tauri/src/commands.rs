@@ -249,6 +249,17 @@ pub async fn define_relation(
 }
 
 #[tauri::command]
+pub async fn inspect_relation_constraints(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: InspectRelationConstraintsRequest,
+) -> AppResult<RelationConstraints> {
+    studio
+        .inspect_relation_constraints(&session_id, &request)
+        .await
+}
+
+#[tauri::command]
 pub async fn preview_relation(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

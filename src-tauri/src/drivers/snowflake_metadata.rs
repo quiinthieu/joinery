@@ -33,6 +33,7 @@ pub(crate) enum ReadKind {
     Relations,
     ExactRelation,
     Definition,
+    Constraints,
     Columns,
     Describe,
     ZeroRowResolution,
@@ -44,6 +45,7 @@ pub(crate) enum ReadKind {
 pub(crate) struct ReadSpec {
     kind: ReadKind,
     sql: String,
+    binds: Vec<serde_json::Value>,
     max_rows: u64,
     max_bytes: u64,
 }
@@ -53,6 +55,7 @@ impl ReadSpec {
         Self {
             kind,
             sql: sql.into(),
+            binds: vec![],
             max_rows: rows,
             max_bytes: bytes,
         }
@@ -71,7 +74,7 @@ impl ReadSpec {
         self.max_bytes
     }
     pub(crate) fn binds(&self) -> &[serde_json::Value] {
-        &[]
+        &self.binds
     }
 }
 
@@ -166,6 +169,24 @@ pub(crate) fn definition_read(
         1,
         browsing::DEFINITION_MAX_BYTES as u64,
     ))
+}
+
+pub(crate) fn constraints_read(
+    target: &super::snowflake_browsing::BrowseRelation,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_browsing as browsing;
+    let mut read = ReadSpec::bounded(
+        ReadKind::Constraints,
+        browsing::constraints_sql(target)?,
+        (browsing::CONSTRAINT_LIMIT + 1) as u64,
+        browsing::CONSTRAINT_MAX_BYTES as u64,
+    );
+    read.binds = vec![
+        target.database.clone().into(),
+        target.table.schema.clone().into(),
+        target.table.name.clone().into(),
+    ];
+    Ok(read)
 }
 
 pub(crate) fn inspection_reads(

@@ -7,9 +7,11 @@ import type {
   BrowseCatalog,
   DefineRelationRequest,
   InspectRelationRequest,
+  InspectRelationConstraintsRequest,
   PreviewRelationRequest,
   RelationInspection,
   RelationDefinition,
+  RelationConstraints,
   RelationPreview,
   CellChange,
   ChangePreview,
@@ -95,6 +97,10 @@ export interface JoineryCommandMap {
   inspect_relation: {
     args: { sessionId: string; request: InspectRelationRequest };
     result: RelationInspection;
+  };
+  inspect_relation_constraints: {
+    args: { sessionId: string; request: InspectRelationConstraintsRequest };
+    result: RelationConstraints;
   };
   preview_relation: {
     args: { sessionId: string; request: PreviewRelationRequest };

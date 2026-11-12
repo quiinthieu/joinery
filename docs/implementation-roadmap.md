@@ -1,5 +1,26 @@
 # Joinery implementation roadmap
 
+## Product increment: declared keys (12 November 2026)
+
+Add a separate read-only key inventory to the Snowflake relation browser,
+preserving reported flags, hidden foreign-key references and explicit empty/error
+states. The implementation and focused tests are complete; independent review
+has no unresolved material finding. Full validation passes 718 frontend / 476
+standard Rust tests (129 fixture/helper ignores) and strict checks. The changed
+headless browser flow passes 1/1. Hidden native command registration/rejection
+and 10 cleanup cycles pass. Normal SDK-bearing package verification is pending.
+See the
+[contract](snowflake-sdk-constraints-design.md) and source-specific
+[ledger](replacement-verification.md).
+
+Next metadata work includes key column mappings, foreign-key table navigation,
+CHECK constraints, dependencies and complete object coverage. These declarations
+do not establish safe row identity. Grid editing/import, broader SQL and schema
+changes, performance investigation and million-row Snowflake workflows remain
+required alongside normal packaged SSO/recovery and owner acceptance. The
+separate frozen table-lifecycle account plan does not qualify this command.
+No account activity, installation or publication is part of local verification.
+
 ## Product increment: generated relation definitions (12 November 2026)
 
 The Snowflake relation browser now displays and copies generated table/view DDL
@@ -15,9 +36,10 @@ The corrected hidden native IPC/cleanup check passes; strict Rust checks pass
 after the two ACL enrollment entries. The normal local SDK-bearing ARM64 package
 passes on clean `e218aef`, including resources, strict ad-hoc signature and guarded
 helper startup with zero account requests. It remains uninstalled.
-The [fresh exact account plan](snowflake-table-attempt-9a8d9d3d.md) is prepared
-and independently reviewed for 05:52–06:22 UTC on 12 November; execution awaits
-explicit account, permanent marker-store and billing approval. Account definition
+The [reviewed exact account plan](snowflake-table-attempt-9a8d9d3d.md) for
+05:52–06:22 UTC on 12 November expired without approval or execution. Any account
+attempt needs a new reviewed Plan/window and explicit account, permanent
+marker-store and billing approval. Account definition
 privileges, secure views and supported Snowflake object
 families still need explicitly scoped acceptance. Continue broader metadata,
 object search, grid editing/import, multi-statement SQL, performance and million-row
@@ -25,9 +47,9 @@ workflows; displaying a definition closes none of those required gates.
 
 A separate offline review binds copied source `103cb45`, the actual binary,
 compiler and zero-link runtime. Both the expired preview and fresh Plan were
-emitted and verified without SSO or account activity. The fresh attempt's exact
-account/billing and permanent marker-store approval question is pending; the
-earlier CREATE DATABASE approval is spent. This qualification does not qualify
+emitted and verified without SSO or account activity. The later attempt expired
+at 06:22 UTC without an approval reply, approval file or owner marker-store access;
+the earlier CREATE DATABASE approval is spent. This qualification does not qualify
 the new definition command.
 Normal packaged SSO/recovery, actual database effects, all applicable DataGrip
 capabilities and owner hands-on acceptance remain required. No publication or

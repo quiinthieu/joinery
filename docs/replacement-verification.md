@@ -8,6 +8,88 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Declared Snowflake key constraints (12 November 2026)
+
+This increment adds a separate `inspect_relation_constraints` request to the SDK
+relation browser. Only the retained catalog revision and opaque target ID cross
+IPC. A closed query binds the retained exact table identity and reads the quoted
+database's TABLE_CONSTRAINTS/REFERENTIAL_CONSTRAINTS views. Primary, unique and
+foreign-key declarations retain their reported flags and reference visibility;
+they do not establish edit authority or validated existing data. The
+[contract](snowflake-sdk-constraints-design.md) records scope and official sources.
+Column mappings, CHECK/NOT NULL inventories, diagrams/navigation and account
+qualification remain required.
+
+Source manifests and terminal logs use
+`.cache/verification/relation-constraints/`. The first six-file frontend manifest
+was captured after the worker had frozen its files and the first 60-test run
+finished. Independent review then found a test-only matchOption value of NONE
+outside the backend's accepted FULL/SIMPLE/PARTIAL set. The two fixture files were
+aligned to FULL; no product code changed. The focused rerun passes all 60 tests,
+with `frontend-aligned-source.json` preserving that snapshot.
+
+The initial full source freeze contains 21 changed source/test files. A subsequent
+test-only MutexGuard scope correction in execution.rs ends the recording guard
+before a missing-session await. It precedes all focused Rust checks; no Clippy
+failure is claimed to have occurred. `source-freeze-final.json` captures all 21
+final hashes and differs only in that file. Contract generation was already
+compiling without cfg(test), so its product source is unaffected by the test fix.
+No global settings or user processes are changed.
+
+```sh
+pnpm contracts
+pnpm exec vitest run src/features/studio/RelationBrowser.test.tsx src/features/studio/ObjectInspectorView.test.tsx src/ipc/command-map.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib constraints -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests:: -- --test-threads=3
+pnpm validate
+pnpm exec playwright test tests/e2e/snowflake-sdk-browsing.spec.ts
+pnpm desktop:smoke:build
+python3 scripts/native-smoke.py --runs 1
+pnpm desktop:snowflake:bundle:mac
+```
+
+Pinned Rust 1.99.1, repository-local Node 24.22.2 and JOINERY_TEST_NODE select the
+same toolchains as the preceding increment; PLAYWRIGHT_BROWSERS_PATH selects the
+existing ignored repository-local browser cache. No user browser profile or OS
+clipboard is used by the synthetic browser flow.
+
+| Check | Current terminal evidence |
+| --- | --- |
+| Contracts | Exit 0, contracts.log |
+| Focused frontend, corrected fixtures | 60/60, exit 0, frontend-aligned.log; initial 60/60 in frontend-focused.log |
+| Focused Rust | 14/14, exit 0, rust-focused.log; includes 12 new regressions and two existing matching cases |
+| SDK session regressions | 87/87, exit 0, rust-sdk-regressions.log; synthetic SDK transport, no account effects |
+| Full validation | Exit 0, validate.log; 718 frontend / 476 standard Rust tests, 129 fixture/helper ignores, formatting/TypeScript/build/compiler checks and strict all-target/all-feature Clippy |
+| Changed browser workflow | 1/1, exit 0, browser.log; keyboard key inspection, hidden references, denial/empty retry and held response after refresh, plus existing definition/inspection/preview flow. Synthetic IPC, no account effects |
+| Hidden native build and smoke | Build/runner exit 0, native-build.log / native-smoke.log; 10 cleanup cycles, 3678 ms native elapsed, 97.47 MiB main-process peak RSS. Guard/cleanup evidence, not representative performance or successful Snowflake key inspection |
+| Normal SDK-bearing package | Pending; previous-increment package passes do not qualify this source |
+| Independent review | No unresolved material finding; final 21 hashes match. Tier 2 generation 2026-11-12T06:03:28Z, 22 relied source/test/docs paths checked plus direct source reads. Root MCP transport remains unavailable, with bounded direct-source fallback |
+
+Review covers the private ReadSpec binds change (all older factories retain SQL,
+limits and empty binds), target/context checks and lane serialization, complete
+bounded parser and hidden-reference states, UI retry/coexistence/invalidation,
+closed typed IPC and main-window-only command/ACL registration. New read kinds
+remain outside the frozen account qualification ledger. The single-table
+account plan uses copied source 103cb45 and does not test or authorize this new
+command. Synthetic SDK transport/browser and hidden native command rejection
+cannot establish actual Snowflake result typing, role visibility or normal app
+acceptance. No account requests, approval file or owner marker-store access have
+occurred for this increment. The separately reviewed account Plan expired at
+06:22 UTC on 12 November without approval or execution. Its
+[original review](snowflake-table-attempt-9a8d9d3d.md) remains retained; a new
+Plan/window and explicit approval are required before account activity.
+
+The hidden build compiles in 4m05s and records dirty source at documentation HEAD
+67b2e39. All 21 source hashes still match source-freeze-final.json. Copied
+native-final-build.json / native-final-runs.json retain the exact binary identity
+and runner result before the normal package build replaces the release binary.
+The WebView request reaches the structured missing-session guard; generated ACL
+inspection confirms only inspect_relation_constraints is allowed by its new
+main-window permission (native-acl-generated.json). No generated ACL files are
+committed. Existing ts-rs attribute and LLVM rust-objcopy stripping warnings remain
+nonfatal and visible in the logs. Normal packaged SSO and successful account key
+inspection remain unqualified.
+
 ### Generated Snowflake relation definitions (12 November 2026)
 
 This product increment adds `define_relation` to the same-session Snowflake

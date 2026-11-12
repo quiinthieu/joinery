@@ -16,9 +16,10 @@ profile/runtime increment passed its local browser, native and package checks;
 the later browsing increment has separate [qualification evidence](replacement-verification.md#sdk-relation-browsing-10-november-2026). Existing profiles retain their OAuth/SQL API
 route. SDK same-session completion is implemented and locally qualified under its
 [qualification contract](snowflake-sdk-metadata-design.md). Neither route satisfies
-the complete target. A distinct SDK relation catalog, column inspection and
-read-only preview is implemented locally; complete object/constraint inspection,
-editable browsing, broader writes/DDL, complete transactions and account qualification remain
+the complete target. SDK relation browsing, column inspection, generated DDL,
+declared key inspection and read-only preview are implemented locally. Complete
+object/constraint inspection, editable browsing, broader writes/DDL, complete
+transactions and account qualification remain
 open. The fixture walkthrough
 below qualifies existing paths only; keep DataGrip until the required walkthrough
 is accepted. See [SDK integration and limits](snowflake-sdk-integration.md).
@@ -54,6 +55,33 @@ pins, a fresh exact table-only plan and fresh possible-billing approval are
 required. See the [qualification attachments](snowflake-qualification-attachments.md),
 [offline SQL ledger](snowflake-qualification-sql-ledger.md), and current
 [verification ledger](replacement-verification.md).
+
+## Declared Snowflake keys (prepared acceptance walkthrough)
+
+Local focused/full validation, headless browser and hidden native IPC/cleanup
+checks pass; normal package and account gates are recorded in the ledger. Use a
+separately approved evaluation connection before sending account metadata reads.
+
+1. In an SDK Snowflake console, open **Browse relations**, filter by schema/name
+   and select a current available relation. Choose **View key constraints**;
+   successful column inspection or definition retrieval is not a prerequisite.
+2. Inspect the primary, unique and foreign-key declarations, reported enforcement,
+   deferrability, RELY and comments. Foreign keys show a qualified referenced
+   **constraint** and its rules when visible. This is not a table/column mapping;
+   **Not visible** retains the distinction from **Not applicable**.
+3. A successful empty response says no visible declared keys were returned. A
+   denied request says the keys are unavailable and allows an explicit retry.
+   Neither case proves that the table has no constraints.
+4. Refresh relations or change the selection/context. The previous key inventory
+   must disappear; a late response must not restore it. Check the same flow by
+   keyboard and confirm the dialog returns focus when closed.
+
+This view excludes key column mappings, CHECK and NOT NULL constraint inventories;
+column inspection separately shows nullability. Reported declarations and
+enforcement do not establish safe editing or validate existing data. Keep the
+remaining metadata acceptance gates open. See the
+[key inspection contract](snowflake-sdk-constraints-design.md) and
+[verification ledger](replacement-verification.md) for evidence and limits.
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 

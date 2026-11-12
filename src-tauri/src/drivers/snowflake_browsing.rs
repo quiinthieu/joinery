@@ -5,8 +5,10 @@
 use super::snowflake_metadata::{self as metadata, LiveContext, MetadataResult};
 use crate::domain::{AppError, AppResult, ColumnInfo, ColumnKind, ErrorCode, TableRef};
 use crate::relation_inspection::{
-    ColumnIdentity, ColumnInspection, InspectedColumnKind, RelationAvailability, RelationPreview,
-    RelationTargetSummary, RelationTraits, WriteDefaultObservationStatus,
+    ColumnIdentity, ColumnInspection, ConstraintReferenceStatus, InspectedColumnKind,
+    RelationAvailability, RelationConstraintReference, RelationKeyConstraint,
+    RelationKeyConstraintKind, RelationPreview, RelationTargetSummary, RelationTraits,
+    WriteDefaultObservationStatus,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +20,8 @@ pub(crate) const CATALOG_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const COLUMN_LIMIT: usize = 1000;
 pub(crate) const COLUMN_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFINITION_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const CONSTRAINT_LIMIT: usize = 1000;
+pub(crate) const CONSTRAINT_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const PREVIEW_LIMIT: usize = 500;
 pub(crate) const PREVIEW_MAX_BYTES: usize = 2 * 1024 * 1024;
 
@@ -58,6 +62,29 @@ const COLUMN_COLUMNS: [&str; 22] = [
     "COMMENT",
     "EXPRESSION",
     "KIND",
+];
+const CONSTRAINT_COLUMNS: [&str; 21] = [
+    "TABLE_CATALOG",
+    "TABLE_SCHEMA",
+    "TABLE_NAME",
+    "CONSTRAINT_CATALOG",
+    "CONSTRAINT_SCHEMA",
+    "CONSTRAINT_NAME",
+    "CONSTRAINT_TYPE",
+    "IS_DEFERRABLE",
+    "INITIALLY_DEFERRED",
+    "ENFORCED",
+    "RELY",
+    "COMMENT",
+    "FK_CONSTRAINT_CATALOG",
+    "FK_CONSTRAINT_SCHEMA",
+    "FK_CONSTRAINT_NAME",
+    "UNIQUE_CONSTRAINT_CATALOG",
+    "UNIQUE_CONSTRAINT_SCHEMA",
+    "UNIQUE_CONSTRAINT_NAME",
+    "MATCH_OPTION",
+    "UPDATE_RULE",
+    "DELETE_RULE",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -394,6 +421,126 @@ pub(crate) fn parse_definition(result: &MetadataResult) -> AppResult<String> {
         return Err(malformed());
     }
     Ok(ddl.to_owned())
+}
+
+pub(crate) fn constraints_sql(target: &BrowseRelation) -> AppResult<String> {
+    usable(target)?;
+    let database = metadata::quote_identifier(&target.database)?;
+    let projection = CONSTRAINT_COLUMNS
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let source = match index {
+                0..=11 => format!("TC.{name}"),
+                12..=14 => format!("RC.{}", name.trim_start_matches("FK_")),
+                _ => format!("RC.{name}"),
+            };
+            format!("{source} AS {name}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Names are only scoped labels. Join the complete constraint namespace,
+    // preserve missing reference visibility and reject duplicate output rows.
+    Ok(format!(
+        "SELECT {projection} FROM {database}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC LEFT JOIN {database}.INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS RC ON TC.CONSTRAINT_TYPE = 'FOREIGN KEY' AND TC.CONSTRAINT_CATALOG = RC.CONSTRAINT_CATALOG AND TC.CONSTRAINT_SCHEMA = RC.CONSTRAINT_SCHEMA AND TC.CONSTRAINT_NAME = RC.CONSTRAINT_NAME WHERE TC.TABLE_CATALOG = ? AND TC.TABLE_SCHEMA = ? AND TC.TABLE_NAME = ? ORDER BY TC.CONSTRAINT_CATALOG, TC.CONSTRAINT_SCHEMA, TC.CONSTRAINT_NAME, TC.CONSTRAINT_TYPE LIMIT {}",
+        CONSTRAINT_LIMIT + 1,
+    ))
+}
+
+pub(crate) fn parse_constraints(
+    target: &BrowseRelation,
+    result: &MetadataResult,
+) -> AppResult<Vec<RelationKeyConstraint>> {
+    usable(target)?;
+    exact(
+        result,
+        &CONSTRAINT_COLUMNS,
+        CONSTRAINT_LIMIT,
+        CONSTRAINT_MAX_BYTES,
+    )?;
+    let mut seen = HashSet::new();
+    let mut constraints = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        if identifier(&row[0])? != target.database
+            || identifier(&row[1])? != target.table.schema
+            || identifier(&row[2])? != target.table.name
+        {
+            return Err(malformed());
+        }
+        let catalog = identifier(&row[3])?;
+        let schema = identifier(&row[4])?;
+        let name = identifier(&row[5])?;
+        if catalog != target.database
+            || schema != target.table.schema
+            || !seen.insert((catalog, schema, name))
+        {
+            return Err(ambiguous());
+        }
+        let kind = match required(&row[6])? {
+            "PRIMARY KEY" => RelationKeyConstraintKind::PrimaryKey,
+            "UNIQUE" => RelationKeyConstraintKind::Unique,
+            "FOREIGN KEY" => RelationKeyConstraintKind::ForeignKey,
+            _ => return Err(malformed()),
+        };
+        let (reference, reference_status) = if row[12..].iter().all(Option::is_none) {
+            (
+                None,
+                if kind == RelationKeyConstraintKind::ForeignKey {
+                    ConstraintReferenceStatus::NotVisible
+                } else {
+                    ConstraintReferenceStatus::NotApplicable
+                },
+            )
+        } else {
+            if kind != RelationKeyConstraintKind::ForeignKey
+                || identifier(&row[12])? != catalog
+                || identifier(&row[13])? != schema
+                || identifier(&row[14])? != name
+            {
+                return Err(malformed());
+            }
+            let reference = RelationConstraintReference {
+                catalog: identifier(&row[15])?.to_owned(),
+                schema: identifier(&row[16])?.to_owned(),
+                name: identifier(&row[17])?.to_owned(),
+                match_option: constraint_match(required(&row[18])?)?.to_owned(),
+                update_rule: constraint_rule(required(&row[19])?)?.to_owned(),
+                delete_rule: constraint_rule(required(&row[20])?)?.to_owned(),
+            };
+            (Some(reference), ConstraintReferenceStatus::Available)
+        };
+        constraints.push(RelationKeyConstraint {
+            catalog: catalog.to_owned(),
+            schema: schema.to_owned(),
+            name: name.to_owned(),
+            kind,
+            // These are independent declarations. In particular NO/YES for
+            // deferrable/initially-deferred is observed, not inferred away.
+            is_deferrable: required_yes_no(&row[7])?,
+            initially_deferred: required_yes_no(&row[8])?,
+            enforced: required_yes_no(&row[9])?,
+            rely: required_yes_no(&row[10])?,
+            comment: optional_text(&row[11], 64 * 1024)?,
+            reference,
+            reference_status,
+        });
+    }
+    bounded(&constraints, CONSTRAINT_MAX_BYTES)?;
+    Ok(constraints)
+}
+
+fn constraint_match(value: &str) -> AppResult<&str> {
+    match value {
+        "FULL" | "SIMPLE" | "PARTIAL" => Ok(value),
+        _ => Err(malformed()),
+    }
+}
+
+fn constraint_rule(value: &str) -> AppResult<&str> {
+    match value {
+        "CASCADE" | "SET NULL" | "SET DEFAULT" | "RESTRICT" | "NO ACTION" => Ok(value),
+        _ => Err(malformed()),
+    }
 }
 
 pub(crate) fn parse_inspection(
@@ -901,6 +1048,10 @@ mod tests {
     use super::*;
     use crate::domain::TextRow;
     use crate::drivers::snowflake_metadata::SecondaryRoles;
+
+    mod constraints_tests {
+        include!("snowflake_constraints_tests.rs");
+    }
 
     fn context() -> LiveContext {
         LiveContext {

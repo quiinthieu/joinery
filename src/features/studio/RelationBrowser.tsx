@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   BrowseCatalog,
+  RelationConstraints,
   RelationDefinition,
   RelationInspection,
   RelationPreview,
@@ -97,6 +98,11 @@ export function RelationBrowser({
     contextKey: string;
     value: RelationDefinition;
   } | null>(null);
+  const [constraints, setConstraints] = useState<{
+    contextKey: string;
+    value: RelationConstraints;
+  } | null>(null);
+  const [constraintsError, setConstraintsError] = useState<string | null>(null);
   const [selected, setSelected] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
@@ -121,6 +127,8 @@ export function RelationBrowser({
       setInspection(null);
       setPreview(null);
       setDefinition(null);
+      setConstraints(null);
+      setConstraintsError(null);
       setSelected("");
       setBusy(false);
       setError(null);
@@ -137,7 +145,10 @@ export function RelationBrowser({
     });
   }, [sessionId, ownerTabId]);
 
-  const run = async (work: (current: () => boolean) => Promise<void>) => {
+  const run = async (
+    work: (current: () => boolean) => Promise<void>,
+    onFailure?: (message: string) => void,
+  ) => {
     const request = ++generation.current;
     const current = () =>
       mounted.current &&
@@ -146,16 +157,21 @@ export function RelationBrowser({
       relationContextKey(useStudio.getState(), sessionId, ownerTabId) === contextKey;
     setBusy(true);
     setError(null);
-    setDefinition(null);
     try {
       revokeSchemaSelectionBeforeWork(sessionId);
       await work(current);
     } catch (err) {
       if (current()) {
+        if (onFailure) {
+          onFailure(messageOf(err));
+          return;
+        }
         setCatalog(null);
         setInspection(null);
         setPreview(null);
         setDefinition(null);
+        setConstraints(null);
+        setConstraintsError(null);
         setSelected("");
         setError(messageOf(err));
       }
@@ -168,6 +184,8 @@ export function RelationBrowser({
     setInspection(null);
     setPreview(null);
     setDefinition(null);
+    setConstraints(null);
+    setConstraintsError(null);
     setSelected("");
     setRowPage(0);
     setColumnPage(0);
@@ -218,6 +236,7 @@ export function RelationBrowser({
   const loadDefinition = () => {
     const target = catalog?.relations.find((entry) => entry.targetId === selected);
     if (!catalog || target?.availability !== "available" || blocked || !ownerAvailable) return;
+    setDefinition(null);
     void run(async (current) => {
       const result = await client.call("define_relation", {
         sessionId,
@@ -234,6 +253,28 @@ export function RelationBrowser({
         throw new Error("Relation definition changed. Refresh relations and try again.");
       setDefinition({ contextKey, value: result });
     });
+  };
+  const loadConstraints = () => {
+    const target = catalog?.relations.find((entry) => entry.targetId === selected);
+    if (!catalog || target?.availability !== "available" || blocked || !ownerAvailable) return;
+    setConstraints(null);
+    setConstraintsError(null);
+    void run(async (current) => {
+      const result = await client.call("inspect_relation_constraints", {
+        sessionId,
+        request: { revision: catalog.revision, targetId: target.targetId },
+      });
+      if (!current()) return;
+      if (
+        result.revision !== catalog.revision ||
+        result.targetId !== target.targetId ||
+        result.database !== catalog.database ||
+        result.table.schema !== target.table.schema ||
+        result.table.name !== target.table.name
+      )
+        throw new Error("Key constraint target changed. Refresh relations and try again.");
+      setConstraints({ contextKey, value: result });
+    }, setConstraintsError);
   };
   const target = catalog?.relations.find((entry) => entry.targetId === selected);
   const matches =
@@ -299,6 +340,8 @@ export function RelationBrowser({
               setInspection(null);
               setPreview(null);
               setDefinition(null);
+              setConstraints(null);
+              setConstraintsError(null);
               setBusy(false);
             }}
           />
@@ -315,6 +358,8 @@ export function RelationBrowser({
               setInspection(null);
               setPreview(null);
               setDefinition(null);
+              setConstraints(null);
+              setConstraintsError(null);
               setBusy(false);
             }}
           >
@@ -361,6 +406,13 @@ export function RelationBrowser({
             onClick={loadDefinition}
           >
             View definition
+          </button>
+          <button
+            className="button small"
+            disabled={busy || blocked || !ownerAvailable || target?.availability !== "available"}
+            onClick={loadConstraints}
+          >
+            View key constraints
           </button>
           {canDdl && (
             <>
@@ -445,12 +497,102 @@ export function RelationBrowser({
               />
             </section>
           )}
+        {target?.availability === "available" && !blocked && ownerAvailable && (
+          <section aria-label="Relation key constraints">
+            <h3>Key constraints</h3>
+            <p role="note">
+              Visible key declarations may not be enforced and do not establish row editing safety.
+              Column mappings, CHECK constraints, and NOT NULL constraints are not included; column
+              inspection reports nullability.
+            </p>
+            {constraintsError ? (
+              <p className="inline-error" role="alert">
+                Key constraints are unavailable: {constraintsError}
+              </p>
+            ) : constraints &&
+              constraints.contextKey === contextKey &&
+              constraints.value.targetId === selected &&
+              constraints.value.revision === catalog?.revision ? (
+              constraints.value.constraints.length === 0 ? (
+                <p>No visible declared primary, unique, or foreign keys were returned.</p>
+              ) : (
+                <div className="relation-table-scroll">
+                  <table>
+                    <caption>Key constraint inventory</caption>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Enforced</th>
+                        <th>Deferrable</th>
+                        <th>Initially deferred</th>
+                        <th>Rely</th>
+                        <th>Comment</th>
+                        <th>Referenced constraint</th>
+                        <th>Match option</th>
+                        <th>Update rule</th>
+                        <th>Delete rule</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {constraints.value.constraints.map((constraint) => (
+                        <tr
+                          key={JSON.stringify([
+                            constraint.catalog,
+                            constraint.schema,
+                            constraint.name,
+                          ])}
+                        >
+                          <th scope="row">
+                            {[constraint.catalog, constraint.schema, constraint.name]
+                              .map((part) => `"${part.replaceAll('"', '""')}"`)
+                              .join(".")}
+                          </th>
+                          <td>
+                            {constraint.kind === "primaryKey"
+                              ? "Primary key"
+                              : constraint.kind === "unique"
+                                ? "Unique"
+                                : "Foreign key"}
+                          </td>
+                          <td>{constraint.enforced ? "yes" : "no"}</td>
+                          <td>{constraint.isDeferrable ? "yes" : "no"}</td>
+                          <td>{constraint.initiallyDeferred ? "yes" : "no"}</td>
+                          <td>{constraint.rely ? "yes" : "no"}</td>
+                          <td>{constraint.comment ?? "—"}</td>
+                          <td>
+                            {constraint.reference
+                              ? [
+                                  constraint.reference.catalog,
+                                  constraint.reference.schema,
+                                  constraint.reference.name,
+                                ]
+                                  .map((part) => `"${part.replaceAll('"', '""')}"`)
+                                  .join(".")
+                              : constraint.referenceStatus === "notVisible"
+                                ? "Not visible"
+                                : "Not applicable"}
+                          </td>
+                          <td>{constraint.reference?.matchOption ?? "—"}</td>
+                          <td>{constraint.reference?.updateRule ?? "—"}</td>
+                          <td>{constraint.reference?.deleteRule ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : (
+              <p>Key constraints have not been fetched.</p>
+            )}
+          </section>
+        )}
         {inspection && (
           <>
             <h3>
               {inspection.database}.{inspection.table.schema}.{inspection.table.name}
             </h3>
-            <p>Constraints have not been fetched. Metadata does not establish edit eligibility.</p>
+            <p>Column metadata does not establish edit eligibility.</p>
             <details open={!preview}>
               <summary>{inspection.columns.length} columns</summary>
               <div className="relation-table-scroll">

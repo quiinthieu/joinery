@@ -180,6 +180,7 @@ pub fn run() {
             commands::relation_catalog,
             commands::inspect_relation,
             commands::define_relation,
+            commands::inspect_relation_constraints,
             commands::preview_relation,
             commands::catalog,
             commands::database_objects,

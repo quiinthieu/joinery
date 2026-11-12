@@ -126,6 +126,15 @@ pub trait Driver: Send + Sync {
             "Session relation definitions are unavailable for this engine",
         ))
     }
+    async fn inspect_relation_constraints(
+        &self,
+        _request: &InspectRelationConstraintsRequest,
+    ) -> AppResult<RelationConstraints> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Session relation key constraints are unavailable for this engine",
+        ))
+    }
     async fn preview_relation(
         &self,
         _request: &PreviewRelationRequest,

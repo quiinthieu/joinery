@@ -43,6 +43,7 @@
     "allow-relation-catalog",
     "allow-inspect-relation",
     "allow-define-relation",
+    "allow-inspect-relation-constraints",
     "allow-preview-relation",
     "allow-redis-scan",
     "allow-redis-inspect",

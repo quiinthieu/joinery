@@ -75,6 +75,69 @@ pub struct RelationDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InspectRelationConstraintsRequest {
+    pub revision: String,
+    pub target_id: String,
+}
+
+/// Visible declared key constraints, without column mappings or edit authority.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationConstraints {
+    pub revision: String,
+    pub target_id: String,
+    pub database: String,
+    pub table: TableRef,
+    pub constraints: Vec<RelationKeyConstraint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationKeyConstraint {
+    pub catalog: String,
+    pub schema: String,
+    pub name: String,
+    pub kind: RelationKeyConstraintKind,
+    pub is_deferrable: bool,
+    pub initially_deferred: bool,
+    pub enforced: bool,
+    pub rely: bool,
+    pub comment: Option<String>,
+    pub reference: Option<RelationConstraintReference>,
+    pub reference_status: ConstraintReferenceStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationKeyConstraintKind {
+    PrimaryKey,
+    Unique,
+    ForeignKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConstraintReferenceStatus {
+    NotApplicable,
+    Available,
+    /// No REFERENTIAL_CONSTRAINTS row was returned by the current role.
+    NotVisible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationConstraintReference {
+    /// Identifies the referenced unique constraint, not its table or columns.
+    pub catalog: String,
+    pub schema: String,
+    pub name: String,
+    pub match_option: String,
+    pub update_rule: String,
+    pub delete_rule: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewRelationRequest {
     pub revision: String,
     pub target_id: String,
@@ -179,6 +242,17 @@ mod tests {
         .unwrap();
         assert_eq!(definition.revision, "r");
         assert_eq!(definition.target_id, "opaque");
+        for unknown in ["sql", "catalog", "schema", "table", "inspectionRevision"] {
+            let mut value = serde_json::json!({"revision":"r", "targetId":"opaque"});
+            value[unknown] = "caller input".into();
+            assert!(serde_json::from_value::<InspectRelationConstraintsRequest>(value).is_err());
+        }
+        let constraints: InspectRelationConstraintsRequest =
+            serde_json::from_value(serde_json::json!({
+                "revision":"r", "targetId":"opaque"
+            }))
+            .unwrap();
+        assert_eq!(constraints.target_id, "opaque");
         assert!(
             serde_json::from_value::<PreviewRelationRequest>(serde_json::json!({
                 "revision": "r", "targetId": "opaque", "inspectionRevision": "i",
@@ -195,6 +269,30 @@ mod tests {
 
     #[test]
     fn unavailable_constraints_and_unknown_traits_are_explicit_on_wire() {
+        assert_eq!(
+            serde_json::to_value(RelationKeyConstraintKind::PrimaryKey).unwrap(),
+            "primaryKey"
+        );
+        assert_eq!(
+            serde_json::to_value(RelationKeyConstraintKind::Unique).unwrap(),
+            "unique"
+        );
+        assert_eq!(
+            serde_json::to_value(RelationKeyConstraintKind::ForeignKey).unwrap(),
+            "foreignKey"
+        );
+        assert_eq!(
+            serde_json::to_value(ConstraintReferenceStatus::NotApplicable).unwrap(),
+            "notApplicable"
+        );
+        assert_eq!(
+            serde_json::to_value(ConstraintReferenceStatus::Available).unwrap(),
+            "available"
+        );
+        assert_eq!(
+            serde_json::to_value(ConstraintReferenceStatus::NotVisible).unwrap(),
+            "notVisible"
+        );
         assert_eq!(
             serde_json::to_value(ConstraintInspectionStatus::NotFetched).unwrap(),
             "notFetched"

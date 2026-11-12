@@ -3,13 +3,14 @@ import type {
   BrowseCatalog,
   ColumnInfo,
   ConnectionProfile,
+  RelationConstraints,
   RelationDefinition,
   RelationInspection,
   RelationPreview,
 } from "../../src/ipc/generated";
 
 // Synthetic RPCs exercise the real UI only; no Snowflake SSO/account SQL occurs.
-test("SDK console copies a definition, rejects stale results, inspects and previews qualified targets", async ({
+test("SDK console views keys and DDL, rejects stale results, inspects and previews qualified targets", async ({
   page,
 }) => {
   const sessionId = "synthetic-browse-session";
@@ -18,6 +19,8 @@ test("SDK console copies a definition, rejects stale results, inspects and previ
   let failRefresh = false;
   let definitionMode: "available" | "denied" | "held" = "available";
   let releaseDefinition: (() => void) | undefined;
+  let constraintsMode: "available" | "empty" | "denied" | "held" = "available";
+  let releaseConstraints: (() => void) | undefined;
   const catalog: BrowseCatalog = {
     revision: "catalog-r1",
     database: "DB",
@@ -121,6 +124,60 @@ test("SDK console copies a definition, rejects stale results, inspects and previ
     table: catalog.relations[0].table,
     ddl: 'CREATE OR REPLACE TABLE "DB"."S"."Quoted ""table" ("EXACT" NUMBER(38,0));',
   };
+  const keyConstraints: RelationConstraints = {
+    revision: catalog.revision,
+    targetId: catalog.relations[0].targetId,
+    database: catalog.database,
+    table: catalog.relations[0].table,
+    constraints: [
+      {
+        catalog: "DB",
+        schema: "S",
+        name: "PK synthetic",
+        kind: "primaryKey",
+        isDeferrable: false,
+        initiallyDeferred: false,
+        enforced: false,
+        rely: true,
+        comment: "Declared only",
+        referenceStatus: "notApplicable",
+        reference: null,
+      },
+      {
+        catalog: "DB",
+        schema: "S",
+        name: "FK synthetic",
+        kind: "foreignKey",
+        isDeferrable: false,
+        initiallyDeferred: false,
+        enforced: false,
+        rely: false,
+        comment: null,
+        referenceStatus: "available",
+        reference: {
+          catalog: "PARENT",
+          schema: "P",
+          name: "UQ parent",
+          matchOption: "FULL",
+          updateRule: "NO ACTION",
+          deleteRule: "CASCADE",
+        },
+      },
+      {
+        catalog: "DB",
+        schema: "S",
+        name: "FK hidden",
+        kind: "foreignKey",
+        isDeferrable: false,
+        initiallyDeferred: false,
+        enforced: false,
+        rely: false,
+        comment: null,
+        referenceStatus: "notVisible",
+        reference: null,
+      },
+    ],
+  };
   // Capture the app's copy request without touching the user's clipboard.
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
@@ -171,6 +228,23 @@ test("SDK console copies a definition, rejects stale results, inspects and previ
         return;
       }
       result = catalog;
+    } else if (command === "inspect_relation_constraints") {
+      expect(args).toEqual({
+        sessionId,
+        request: { revision: "catalog-r1", targetId: "opaque-r1-target" },
+      });
+      if (constraintsMode === "denied") {
+        await route.fulfill({
+          json: { error: { code: "database", message: "Synthetic key metadata denied" } },
+        });
+        return;
+      }
+      if (constraintsMode === "held")
+        await new Promise<void>((resolve) => {
+          releaseConstraints = resolve;
+        });
+      result =
+        constraintsMode === "empty" ? { ...keyConstraints, constraints: [] } : keyConstraints;
     } else if (command === "define_relation") {
       expect(args).toEqual({
         sessionId,
@@ -233,8 +307,60 @@ test("SDK console copies a definition, rejects stale results, inspects and previ
   await dialog.getByLabel("Relation", { exact: true }).selectOption("shadowed-target");
   await expect(dialog.getByRole("button", { name: "Inspect relation" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "View definition" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "View key constraints" })).toBeDisabled();
   await expect(dialog.getByRole("note")).toContainText("shadowed");
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
+  const viewKeys = dialog.getByRole("button", { name: "View key constraints" });
+  const keyRegion = dialog.getByRole("region", { name: "Relation key constraints" });
+  const keyTable = keyRegion.getByRole("table", { name: "Key constraint inventory" });
+  await expect(keyRegion).toContainText("Key constraints have not been fetched");
+  await viewKeys.focus();
+  await page.keyboard.press("Enter");
+  await expect(keyTable).toContainText('"DB"."S"."PK synthetic"');
+  await expect(keyTable).toContainText('"PARENT"."P"."UQ parent"');
+  await expect(keyTable).toContainText("Not visible");
+  await expect(keyTable).toContainText("CASCADE");
+  await expect(keyRegion.getByRole("note")).toContainText("do not establish row editing safety");
+  await expect(keyRegion.getByRole("note")).toContainText(
+    "Column mappings, CHECK constraints, and NOT NULL",
+  );
+  await expect(keyRegion.getByRole("button")).toHaveCount(0);
+  expect(
+    calls.filter((c) => c.command === "inspect_relation" || c.command === "define_relation"),
+  ).toHaveLength(0);
+  constraintsMode = "denied";
+  await viewKeys.click();
+  await expect(keyRegion.getByRole("alert")).toContainText("Synthetic key metadata denied");
+  await expect(keyTable).toHaveCount(0);
+  await expect(keyRegion).not.toContainText("No visible declared");
+  constraintsMode = "empty";
+  await viewKeys.click();
+  await expect(keyRegion).toContainText(
+    "No visible declared primary, unique, or foreign keys were returned",
+  );
+  await expect(keyRegion.getByRole("alert")).toHaveCount(0);
+  constraintsMode = "held";
+  await viewKeys.click();
+  await expect.poll(() => !!releaseConstraints).toBe(true);
+  await dialog.getByRole("button", { name: "Refresh relations" }).click();
+  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  const staleKeys = page.waitForResponse((response) =>
+    response.url().endsWith("/rpc/inspect_relation_constraints"),
+  );
+  releaseConstraints!();
+  await (await staleKeys).finished();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+  await expect(keyTable).toHaveCount(0);
+  await expect(viewKeys).toBeDisabled();
+  constraintsMode = "available";
+  await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
+  await viewKeys.click();
+  await expect(keyTable).toContainText("PK synthetic");
   // Native buttons expose the definition and exact copy flow to the keyboard,
   // independently of column inspection. The panel offers no execute/editor path.
   const viewDefinition = dialog.getByRole("button", { name: "View definition" });
@@ -242,6 +368,7 @@ test("SDK console copies a definition, rejects stale results, inspects and previ
   await page.keyboard.press("Enter");
   const definitionRegion = dialog.getByRole("region", { name: "Relation definition" });
   await expect(definitionRegion.getByLabel("Object DDL")).toHaveText(definition.ddl);
+  await expect(keyTable).toContainText("PK synthetic");
   await expect(definitionRegion.getByRole("note")).toContainText("CREATE OR REPLACE");
   await expect(definitionRegion.getByRole("note")).toContainText("replay is safe or complete");
   await expect(definitionRegion.getByRole("button")).toHaveCount(1);
@@ -284,7 +411,7 @@ test("SDK console copies a definition, rejects stale results, inspects and previ
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
   await dialog.getByRole("button", { name: "Inspect relation" }).click();
   await expect(dialog).toContainText("NUMBER(38,0)");
-  await expect(dialog).toContainText("Constraints have not been fetched");
+  await expect(dialog).toContainText("Key constraints have not been fetched");
   await dialog.getByRole("button", { name: "Preview rows" }).click();
   await expect(dialog.getByRole("table", { name: "Read-only preview" })).toContainText(
     "9007199254740993",
@@ -304,9 +431,13 @@ test("SDK console copies a definition, rejects stale results, inspects and previ
   await expect(open).toBeFocused();
   expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(1);
   for (const call of calls.filter((c) =>
-    ["relation_catalog", "define_relation", "inspect_relation", "preview_relation"].includes(
-      c.command,
-    ),
+    [
+      "relation_catalog",
+      "define_relation",
+      "inspect_relation_constraints",
+      "inspect_relation",
+      "preview_relation",
+    ].includes(c.command),
   ))
     expect(call.args.sessionId).toBe(sessionId);
 });

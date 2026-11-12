@@ -4,6 +4,7 @@ import { StrictMode } from "react";
 import type {
   BrowseCatalog,
   ColumnInfo,
+  RelationConstraints,
   RelationDefinition,
   RelationInspection,
   RelationPreview,
@@ -100,6 +101,73 @@ const definition: RelationDefinition = {
   table: catalog.relations[0].table,
   ddl: 'CREATE OR REPLACE TABLE "DB"."S"."Quoted Table" ("EXACT" NUMBER(38,0));',
 };
+const keyConstraints: RelationConstraints = {
+  revision: catalog.revision,
+  targetId: catalog.relations[0].targetId,
+  database: catalog.database,
+  table: catalog.relations[0].table,
+  constraints: [
+    {
+      catalog: "DB",
+      schema: "S",
+      name: "PK table",
+      kind: "primaryKey",
+      isDeferrable: false,
+      initiallyDeferred: false,
+      enforced: false,
+      rely: true,
+      comment: "Declared primary key",
+      referenceStatus: "notApplicable",
+      reference: null,
+    },
+    {
+      catalog: "DB",
+      schema: "S",
+      name: "UQ table",
+      kind: "unique",
+      isDeferrable: true,
+      initiallyDeferred: true,
+      enforced: true,
+      rely: false,
+      comment: null,
+      referenceStatus: "notApplicable",
+      reference: null,
+    },
+    {
+      catalog: "DB",
+      schema: "S",
+      name: 'FK "parent',
+      kind: "foreignKey",
+      isDeferrable: false,
+      initiallyDeferred: false,
+      enforced: false,
+      rely: false,
+      comment: "Visible reference",
+      referenceStatus: "available",
+      reference: {
+        catalog: "OTHER",
+        schema: "P",
+        name: 'PK "parent',
+        matchOption: "FULL",
+        updateRule: "NO ACTION",
+        deleteRule: "CASCADE",
+      },
+    },
+    {
+      catalog: "DB",
+      schema: "S",
+      name: "FK hidden",
+      kind: "foreignKey",
+      isDeferrable: false,
+      initiallyDeferred: false,
+      enforced: false,
+      rely: false,
+      comment: null,
+      referenceStatus: "notVisible",
+      reference: null,
+    },
+  ],
+};
 beforeEach(() => {
   vi.clearAllMocks();
   useStudio.setState({
@@ -119,6 +187,7 @@ beforeEach(() => {
     if (method === "inspect_relation") return inspection;
     if (method === "preview_relation") return preview;
     if (method === "define_relation") return definition;
+    if (method === "inspect_relation_constraints") return keyConstraints;
     throw new Error(`Unexpected ${method}`);
   });
 });
@@ -325,7 +394,7 @@ it("shows independent expression, descriptor and write defaults without conflati
 it("completes catalog → inspect → preview → refresh with opaque revisions and exact scalar rendering", async () => {
   render(<RelationBrowser sessionId="isolated-console" onClose={vi.fn()} />);
   await selectAndInspect();
-  expect(screen.getByText(/Constraints have not been fetched/)).toBeTruthy();
+  expect(screen.getByText(/Key constraints have not been fetched/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
   await screen.findByText("9007199254740993");
   expect(screen.getByLabelText("NULL")).toBeTruthy();
@@ -377,6 +446,9 @@ it.each(["shadowed", "ambiguous", "unknownTraits", "unsupportedKind"] as const)(
     ).toBe(true);
     expect(
       (screen.getByRole("button", { name: "View definition" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "View key constraints" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(screen.getByRole("note").textContent).toContain(availability);
     expect(client.call).toHaveBeenCalledTimes(1);
@@ -522,58 +594,68 @@ it.each(["revision", "targetId"] as const)(
   },
 );
 
-it.each([
-  "transaction",
-  "transientTransaction",
-  "metadata",
-  "ddlCatalog",
-  "schemaSwitch",
-  "context",
-])("suppresses a pending definition after %s changes the console context", async (change) => {
-  installSchemaAuthority();
-  let release!: (value: RelationDefinition) => void;
-  const held = new Promise<RelationDefinition>((resolve) => {
-    release = resolve;
-  });
-  vi.mocked(client.call).mockImplementation(async (method) => {
-    if (method === "relation_catalog") return catalog;
-    if (method === "define_relation") return held;
-    throw new Error(`Unexpected ${method}`);
-  });
-  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
-  await screen.findByText("1 visible relations · DB");
-  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
-  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
-  await waitFor(() => expect(client.call).toHaveBeenCalledTimes(2));
-  act(() => {
-    if (change === "transaction") useStudio.setState({ sessionTransactionPending: { s: true } });
-    else if (change === "transientTransaction") {
-      useStudio.setState({ sessionTransactionPending: { s: true } });
-      useStudio.setState({ sessionTransactionPending: {} });
-    } else if (change === "metadata")
-      useStudio.setState({ sessionMetadataRefreshRequired: { s: true } });
-    else if (change === "ddlCatalog")
-      useStudio.setState({ sessionDdlCatalogRefreshRequired: { s: true } });
-    else if (change === "schemaSwitch")
-      useStudio.setState({ sessionContextSwitching: { s: true } });
-    else
-      useStudio.setState((state) => ({
-        sessionStates: {
-          s: { ...state.sessionStates.s, activeContext: "OTHER", contextFingerprint: "changed" },
-        },
-      }));
-  });
-  await act(async () => {
-    release(definition);
-    await held;
-  });
-  expect(screen.queryByLabelText("Object DDL")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Copy DDL" })).toBeNull();
-  expect(
-    (screen.getByRole("button", { name: "View definition" }) as HTMLButtonElement).disabled,
-  ).toBe(true);
-  expect(client.call).toHaveBeenCalledTimes(2);
-});
+it.each(
+  [
+    "transaction",
+    "transientTransaction",
+    "metadata",
+    "ddlCatalog",
+    "schemaSwitch",
+    "context",
+  ].flatMap((change) => ["definition", "constraints"].map((workflow) => ({ change, workflow }))),
+)(
+  "suppresses pending $workflow after $change changes the console context",
+  async ({ change, workflow }) => {
+    installSchemaAuthority();
+    let release!: (value: RelationDefinition | RelationConstraints) => void;
+    const held = new Promise<RelationDefinition | RelationConstraints>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(client.call).mockImplementation(async (method) => {
+      if (method === "relation_catalog") return catalog;
+      if (method === "define_relation" || method === "inspect_relation_constraints") return held;
+      throw new Error(`Unexpected ${method}`);
+    });
+    render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+    await screen.findByText("1 visible relations · DB");
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: workflow === "definition" ? "View definition" : "View key constraints",
+      }),
+    );
+    await waitFor(() => expect(client.call).toHaveBeenCalledTimes(2));
+    act(() => {
+      if (change === "transaction") useStudio.setState({ sessionTransactionPending: { s: true } });
+      else if (change === "transientTransaction") {
+        useStudio.setState({ sessionTransactionPending: { s: true } });
+        useStudio.setState({ sessionTransactionPending: {} });
+      } else if (change === "metadata")
+        useStudio.setState({ sessionMetadataRefreshRequired: { s: true } });
+      else if (change === "ddlCatalog")
+        useStudio.setState({ sessionDdlCatalogRefreshRequired: { s: true } });
+      else if (change === "schemaSwitch")
+        useStudio.setState({ sessionContextSwitching: { s: true } });
+      else
+        useStudio.setState((state) => ({
+          sessionStates: {
+            s: { ...state.sessionStates.s, activeContext: "OTHER", contextFingerprint: "changed" },
+          },
+        }));
+    });
+    await act(async () => {
+      release(workflow === "definition" ? definition : keyConstraints);
+      await held;
+    });
+    expect(screen.queryByLabelText("Object DDL")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy DDL" })).toBeNull();
+    expect(screen.queryByRole("table", { name: "Key constraint inventory" })).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "View definition" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(client.call).toHaveBeenCalledTimes(2);
+  },
+);
 
 it("clears an already visible definition when the observed console context changes", async () => {
   installSchemaAuthority();
@@ -633,3 +715,218 @@ it("discards a pending definition when rebound to another console", async () => 
   expect(screen.queryByLabelText("Object DDL")).toBeNull();
   expect(screen.queryByRole("button", { name: "Copy DDL" })).toBeNull();
 });
+
+async function selectAndLoadConstraints() {
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+  return screen.findByRole("table", { name: "Key constraint inventory" });
+}
+
+it("shows declared keys and referenced constraint identities independently of columns and DDL", async () => {
+  render(<RelationBrowser sessionId="isolated-console" onClose={vi.fn()} />);
+  const table = await selectAndLoadConstraints();
+  expect(client.call).toHaveBeenCalledWith("inspect_relation_constraints", {
+    sessionId: "isolated-console",
+    request: { revision: "catalog-1", targetId: "opaque-target" },
+  });
+  expect(client.call).toHaveBeenCalledTimes(2);
+  const row = (name: string) => within(table).getByRole("rowheader", { name }).closest("tr")!;
+  expect(
+    within(row('"DB"."S"."PK table"'))
+      .getAllByRole("cell")
+      .map((cell) => cell.textContent),
+  ).toEqual([
+    "Primary key",
+    "no",
+    "no",
+    "no",
+    "yes",
+    "Declared primary key",
+    "Not applicable",
+    "—",
+    "—",
+    "—",
+  ]);
+  expect(
+    within(row('"DB"."S"."UQ table"'))
+      .getAllByRole("cell")
+      .map((cell) => cell.textContent),
+  ).toEqual(["Unique", "yes", "yes", "yes", "no", "—", "Not applicable", "—", "—", "—"]);
+  expect(
+    within(row('"DB"."S"."FK ""parent"'))
+      .getAllByRole("cell")
+      .map((cell) => cell.textContent),
+  ).toEqual([
+    "Foreign key",
+    "no",
+    "no",
+    "no",
+    "no",
+    "Visible reference",
+    '"OTHER"."P"."PK ""parent"',
+    "FULL",
+    "NO ACTION",
+    "CASCADE",
+  ]);
+  expect(within(row('"DB"."S"."FK hidden"')).getByText("Not visible")).toBeTruthy();
+  const region = screen.getByRole("region", { name: "Relation key constraints" });
+  expect(within(region).getByRole("note").textContent).toContain(
+    "do not establish row editing safety",
+  );
+  expect(within(region).getByRole("note").textContent).toContain(
+    "Column mappings, CHECK constraints, and NOT NULL",
+  );
+  expect(within(region).queryByRole("button")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  await screen.findByLabelText("Object DDL");
+  expect(screen.getByRole("table", { name: "Key constraint inventory" })).toBe(table);
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByRole("table", { name: "Column inspection" });
+  expect(screen.getByRole("table", { name: "Key constraint inventory" })).toBe(table);
+  expect(screen.getByLabelText("Object DDL").textContent).toBe(definition.ddl);
+  expect(screen.queryByText("Key constraints have not been fetched.")).toBeNull();
+});
+
+it("distinguishes an empty key inventory from not fetched and unavailable, and retries denial", async () => {
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await selectAndLoadConstraints();
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Synthetic key metadata denied"));
+  fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Key constraints are unavailable: Synthetic key metadata denied",
+  );
+  expect(screen.queryByRole("table", { name: "Key constraint inventory" })).toBeNull();
+  expect(screen.queryByText(/No visible declared/)).toBeNull();
+  expect(screen.queryByText("Key constraints have not been fetched.")).toBeNull();
+  vi.mocked(client.call).mockResolvedValueOnce({ ...keyConstraints, constraints: [] });
+  fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+  await screen.findByText("No visible declared primary, unique, or foreign keys were returned.");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByRole("table", { name: "Key constraint inventory" })).toBeNull();
+  expect(client.call).toHaveBeenCalledTimes(4);
+});
+
+it.each(["revision", "targetId", "database", "schema", "name"])(
+  "rejects key inventory with mismatched %s without retaining the previous inventory",
+  async (field) => {
+    render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+    await selectAndLoadConstraints();
+    const result = structuredClone(keyConstraints);
+    if (field === "schema" || field === "name") result.table[field] = "different";
+    else if (field === "revision" || field === "targetId" || field === "database")
+      result[field] = "different";
+    vi.mocked(client.call).mockResolvedValueOnce(result);
+    fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Key constraint target changed",
+    );
+    expect(screen.queryByRole("table", { name: "Key constraint inventory" })).toBeNull();
+  },
+);
+
+it.each(["selection", "filter", "refresh", "context"])(
+  "clears displayed key inventory on %s",
+  async (change) => {
+    render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+    await selectAndLoadConstraints();
+    if (change === "selection")
+      fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "" } });
+    else if (change === "filter")
+      fireEvent.change(screen.getByLabelText("Find relation"), { target: { value: "absent" } });
+    else if (change === "refresh")
+      fireEvent.click(screen.getByRole("button", { name: "Refresh relations" }));
+    else act(() => useStudio.setState({ sessionContextRevision: { s: 1 } }));
+    expect(screen.queryByRole("table", { name: "Key constraint inventory" })).toBeNull();
+  },
+);
+
+it.each(["resolve", "reject"])(
+  "a late key request %s cannot replace the newer inventory",
+  async (outcome) => {
+    let release!: (value: RelationConstraints) => void;
+    let reject!: (error: Error) => void;
+    const held = new Promise<RelationConstraints>((resolve, fail) => {
+      release = resolve;
+      reject = fail;
+    });
+    let count = 0;
+    vi.mocked(client.call).mockImplementation(async (method) => {
+      if (method === "relation_catalog") return catalog;
+      if (method === "inspect_relation_constraints")
+        return ++count === 1 ? held : { ...keyConstraints, constraints: [] };
+      throw new Error(`Unexpected ${method}`);
+    });
+    render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+    await screen.findByText("1 visible relations · DB");
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+    fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh relations" }));
+    await screen.findByText("1 visible relations · DB");
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+    fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+    await screen.findByText("No visible declared primary, unique, or foreign keys were returned.");
+    await act(async () => {
+      if (outcome === "resolve") release(keyConstraints);
+      else reject(new Error("stale denial"));
+      await held.catch(() => {});
+    });
+    expect(
+      screen.getByText("No visible declared primary, unique, or foreign keys were returned."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Key constraint inventory" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  },
+);
+
+it.each(["owner disappears", "session changes"])(
+  "discards a pending key inventory when its %s",
+  async (change) => {
+    const session: SessionInfo = {
+      id: "s",
+      connectionId: "synthetic-profile",
+      engine: "snowflake",
+      serverVersion: "synthetic",
+      latencyMs: 1,
+      encrypted: true,
+      capabilities: {
+        sql: true,
+        transactions: false,
+        cancellation: true,
+        tableBrowsing: false,
+        relationBrowsing: true,
+        tableEditing: false,
+        tableFiltering: false,
+        processes: false,
+      },
+    };
+    useStudio.setState({ sessions: { [session.connectionId]: session } });
+    const ownerTabId = useStudio.getState().openQuery(session.connectionId);
+    let release!: (value: RelationConstraints) => void;
+    const held = new Promise<RelationConstraints>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(client.call).mockImplementation(async (method) => {
+      if (method === "relation_catalog") return catalog;
+      if (method === "inspect_relation_constraints") return held;
+      throw new Error(`Unexpected ${method}`);
+    });
+    const { rerender } = render(
+      <RelationBrowser sessionId="s" ownerTabId={ownerTabId} onClose={vi.fn()} />,
+    );
+    await screen.findByText("1 visible relations · DB");
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+    fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+    await waitFor(() => expect(client.call).toHaveBeenCalledTimes(2));
+    if (change === "owner disappears") act(() => useStudio.setState({ tabs: [] }));
+    else rerender(<RelationBrowser sessionId="other" ownerTabId={ownerTabId} onClose={vi.fn()} />);
+    await act(async () => {
+      release(keyConstraints);
+      await held;
+    });
+    expect(screen.queryByRole("table", { name: "Key constraint inventory" })).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "View key constraints" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  },
+);

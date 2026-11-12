@@ -1,5 +1,33 @@
 # Implementation and release status
 
+## Declared Snowflake key inspection (12 November 2026)
+
+The relation browser adds **View key constraints** independently of column
+inspection and generated definitions. A closed typed command resolves the retained
+catalog target, binds its exact identity and reads declared primary/unique/foreign
+keys through the existing serialized metadata lane. It preserves enforcement,
+deferrability, RELY, comments and referenced-constraint visibility. Empty, hidden
+reference and denied-request states remain distinct; malformed, incomplete,
+ambiguous and oversized results fail without publishing a partial inventory.
+Selection, refresh, context and transaction/metadata holds invalidate old results.
+
+The [contract](snowflake-sdk-constraints-design.md) and
+[ledger](replacement-verification.md) record limits, source identity and checks.
+Focused frontend (60), focused Rust (14) and synthetic SDK session (87) tests
+pass. Full validation passes 718 frontend / 476 standard Rust tests (129 fixture/
+helper ignores), formatting/build/compiler checks and strict Clippy. The changed
+browser workflow passes 1/1 with synthetic IPC. Independent bounded review has no
+unresolved material finding. Hidden native command registration/rejection and
+10 cleanup cycles pass. A normal SDK-bearing package for this source is pending.
+No account requests have occurred for this increment.
+
+This is partial metadata coverage. Key column mappings, CHECK constraints,
+dependencies and complete object inspection remain required. Declared keys are
+not edit authority. The frozen table-only account plan does not exercise this
+new command. Actual Snowflake workflows, million-row interaction/export, normal
+packaged acceptance and owner hands-on evaluation remain open. The Goal is active
+and incomplete; nothing is installed, published or merged.
+
 ## Snowflake generated relation definitions (12 November 2026)
 
 Browse relations now offers **View definition** and **Copy DDL** for retained
@@ -28,10 +56,11 @@ It remains local and uninstalled; Developer ID/notarization and normal app SSO
 are unqualified. See the ledger for source/hash and failed-run evidence.
 
 The separate qualification uses frozen source `103cb45` and private copied
-artifacts. A [fresh reviewed attempt](snowflake-table-attempt-9a8d9d3d.md) is
-prepared for 05:52–06:22 UTC on 12 November. Offline emit/verify does not execute
-or qualify this new feature; account, permanent marker-store and billing approval
-remain required. Actual writes/transactions/DDL under `SANDBOX.BILLIE_TESTING`, million-row
+artifacts. The [reviewed attempt](snowflake-table-attempt-9a8d9d3d.md) for
+05:52–06:22 UTC on 12 November expired without approval or execution. Offline
+emit/verify does not qualify this feature. A fresh reviewed Plan/window and
+explicit account, permanent marker-store and billing approval remain required.
+Actual writes/transactions/DDL under `SANDBOX.BILLIE_TESTING`, million-row
 Snowflake interaction/export and every applicable DataGrip workflow remain open.
 The Goal is active and incomplete. Nothing is installed, published or merged.
 Repository evidence and the local Orca worktree status are updated. The private

@@ -96,6 +96,7 @@ fn build_desktop() {
             "relation_catalog",
             "inspect_relation",
             "define_relation",
+            "inspect_relation_constraints",
             "preview_relation",
             "catalog",
             "database_objects",

@@ -56,8 +56,11 @@ rows, stop after inspection and do not press **Preview rows**.
    database's visible schema and relation list. Use **Find relation** and select
    a listed target. Only targets marked available can be inspected.
 3. Choose **Inspect relation**. Review the type, nullability, defaults, identity,
-   kind, and comment observations. The modal explicitly says constraints have
-   not been fetched; do not infer primary keys, foreign keys, or edit eligibility.
+   kind, and comment observations. Column inspection does not fetch constraints.
+   The separate **View key constraints** action reads declared primary, unique
+   and foreign keys only when the approved scope covers those metadata views;
+   see the [key inspection contract](snowflake-sdk-constraints-design.md).
+   It does not resolve key column mappings or establish edit eligibility.
    If the approval includes `GET_DDL` on this target, **View definition** can be
    used before inspection. Review the warning and use **Copy DDL** to copy the
    complete returned text. This view has no execution action. A definition read

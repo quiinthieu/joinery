@@ -1,6 +1,11 @@
 # Snowflake table lifecycle attempt 9A8D9D3D
 
-Prepared 12 November 2026. **Not executed; fresh explicit approval is required.**
+Prepared 12 November 2026. **Expired at 06:22 UTC without execution.**
+No approval reply, approval file, native owner marker-store access or new account
+activity occurred for this attempt. Its original window and artifacts are kept
+below as review history. A new reviewed Plan/window and explicit account, local
+marker-store and possible-billing approval are required before any attempt;
+a late reply cannot authorize this expired envelope.
 The current connection uses external-browser SSO. This is one helper/Studio
 qualification attempt on frozen source `103cb45`; it does not establish normal
 app acceptance or qualify the newer relation-definition feature in `e218aef`.

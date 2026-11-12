@@ -10,6 +10,7 @@ import type {
   Bootstrap,
   PreparedPlan,
   RelationDefinition,
+  RelationConstraints,
   SchemaDdlPlan,
   TableSchema,
 } from "./generated";
@@ -38,6 +39,12 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       request: { revision: "catalog-1", targetId: "opaque-target" },
     });
     expectTypeOf(definitionPromise).toEqualTypeOf<Promise<RelationDefinition>>();
+
+    const constraintsPromise = typedClient.call("inspect_relation_constraints", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(constraintsPromise).toEqualTypeOf<Promise<RelationConstraints>>();
 
     const explicitGenericPromise = typedClient.call<TableSchema>("table_schema", {
       sessionId: "session-1",
@@ -82,12 +89,13 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     await Promise.all([
       bootstrapPromise,
       definitionPromise,
+      constraintsPromise,
       schemaPromise,
       explicitGenericPromise,
       migrationPrepPromise,
       releasePreviewPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(6);
+    expect(callMock).toHaveBeenCalledTimes(7);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -109,6 +117,17 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       void c.call("define_relation", {
         sessionId: "session-1",
         // @ts-expect-error — a retained target requires its catalog revision
+        request: { targetId: "opaque-target" },
+      });
+
+      void c.call("inspect_relation_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraint inspection never accepts caller SQL
+        request: { revision: "catalog-1", targetId: "opaque-target", sql: "SELECT 1" },
+      });
+      void c.call("inspect_relation_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraints require the retained catalog revision
         request: { targetId: "opaque-target" },
       });
 
