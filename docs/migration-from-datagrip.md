@@ -12,7 +12,7 @@ explicit transaction boundaries and SQL-free receipt/result recovery. It is a
 locally verified implementation with a synthetic SDK, including durable refusal
 response-loss/restart recovery, native paged history and a bounded receipt panel.
 This does not establish real Snowflake effects, current packaged native UI behavior or daily
-replacement readiness. The normal SDK-bearing ARM64 bundle from clean `72ee3e4`
+replacement readiness. The normal SDK-bearing ARM64 bundle from clean `f9c1ce2`
 passes resource/signature and guarded helper-startup checks. It is local and
 uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`; native UI/SSO
 acceptance remains open. See the ledger for its binary hash and build warning.
@@ -41,7 +41,7 @@ Expiry retires the console and preserves its original receipt. It does not prove
 server cancellation, rollback or freedom from charges, so reconcile without SQL
 and investigate an uncertain original before considering another submission.
 See the [query-limit contract](snowflake-console-query-limits.md) and current
-ledger for verification status. The `72ee3e4` bundle includes this setting;
+ledger for verification status. The current `f9c1ce2` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
 The new inventory source upgrades local metadata to schema 4 under exclusive
@@ -56,7 +56,8 @@ exact UUID lookup. **Archive receipt** changes browsing only and frees no journa
 space. **Release retained result rows** separately releases process-local buffers
 after confirmation, preserving original decisions. The existing 10,000-decision
 limits remain. The new [encrypted metadata recovery workflow](encrypted-metadata-recovery.md)
-passes local browser and hidden native verification and is not yet in the preserved release app. It adds
+passes local browser and hidden native verification and is included in the
+current `f9c1ce2` package. It adds
 separate backup passphrases, encrypted import/export, mandatory encrypted undo
 and bounded SQLite staging; full-capacity resource acceptance remains open.
 Use its disposable acceptance steps before replacing any real local metadata.

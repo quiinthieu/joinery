@@ -7,6 +7,8 @@ create/export/import, wrong-key preservation, restore with encrypted undo,
 receipt evidence union and restart without replay in a disposable application
 root. Native command enrollment, current-source browser/native workflows and
 packaging are separate gates in the [ledger](replacement-verification.md).
+Local browser/hidden-native workflows and normal SDK-bearing packaging from
+`f9c1ce2` pass; normal picker/installed/keychain and owner acceptance remain open.
 Do not use the older preserved release app as evidence for this source increment.
 Owner metadata remains untouched until an explicit evaluation setup is agreed.
 Passing this local workflow does not close account effects, large-capacity or

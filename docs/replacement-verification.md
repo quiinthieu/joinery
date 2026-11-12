@@ -12,8 +12,10 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 Base is `433fbac` on `feat/datagrip-replacement`. The new
 [workflow and acceptance steps](encrypted-metadata-recovery.md) pass local browser
-and hidden native acceptance. Normal packaging remains pending. The preserved runnable release app remains the earlier `72ee3e4`;
-it does not contain this increment. No account activity, installation or
+and hidden native acceptance. Feature commit `f9c1ce2` also passes normal
+SDK-bearing ARM64 packaging from a clean checkout. The earlier `72ee3e4` app is
+preserved separately with an unchanged complete inventory. No account activity,
+installation or
 publication occurred. Three bounded workers used `gpt-6.1-sol` at high effort for
 crypto/publishing and review, SQLite streaming recovery, and UI/workspace plus
 browser acceptance source. The UI worker additionally owns the isolated hidden
@@ -71,6 +73,8 @@ Evidence labels below refer to `.cache/verification/reviewed-console/`:
 | `encrypted-recovery-native-rebuilt` | Corrected hidden SDK-bearing macOS build passes in 264.524 seconds, unchanged captured product/test/tooling hashes; actual SDK 3.4.1 resource and guarded helper-startup checks pass with zero authentication/SQL. Existing non-fatal toolchain warnings remain |
 | `encrypted-recovery-native-corrected` | Actual encrypted native acceptance passes in 4.990 seconds, unchanged captured product/test/tooling hashes. All 22 setup and five fresh-process reopen checks pass; both child exits are clean. Real main ACL probes, Preferences create/wrong-key/restore/undo, exact two retained ciphertext identities and production single-scrypt N18 headers pass. Selected native connection/SQL counts remain zero. Full receipt is preserved as `encrypted-recovery-native-corrected-runs.json` |
 | `encrypted-recovery-native-postgres-restart` | Both real PostgreSQL/native close/reopen pairs pass in 2.974 seconds, unchanged captured product/test/tooling hashes. Actual pending-draft close exits in 56.34 and 54.80 ms, below the unchanged 400 ms debounce window. Close-cancel retains session/transaction; restart restores latest draft/preferences but no sessions/results/transactions or SQL replay; observer verifies rollback and drops only each generated test table. Four clean process exits. Full receipt is preserved as `encrypted-recovery-native-postgres-restart-runs.json` |
+| `encrypted-recovery-normal-package` | Normal SDK-bearing ARM64 package from clean `f9c1ce2` passes in 204.870 seconds, unchanged captured product/test/tooling hashes. Strict ad-hoc signature/resource checks and guarded SDK 3.4.1 helper startup pass with zero authentication/SQL requests. Build reports 226.86 MiB. Existing toolchain warnings remain non-fatal; Developer ID/notarization and installed/owner UI acceptance remain open |
+| `encrypted-recovery-final-package-attestation` | Actual package is version 0.1.0, ARM64; executable 34,355,344 bytes, SHA-256 `23f100e40a553d9e18c1f62c530d64aa63ca76f4082a0cd8b75188c21238f2b5`. Source/index/bundled original license bytes match exactly. All 546 validated source pins still match; all 13,055 files in preserved `72ee3e4` match its original inventory. Local and uninstalled |
 
 Review found and corrected early export cancellation cutoff, cancellation
 discarding a published artifact identity, and failed directory-sync paths losing
@@ -85,8 +89,8 @@ six receipt inventory/release commands and CSV-preview release were unavailable
 through the actual main WebView. Exact pinned Tauri source confirms denial before
 handler dispatch. Manifest and main capability are now aligned, with retired
 backup entries removed. New source-level enrollment regressions fail before the
-fix and pass after it. Actual native workflow coverage is being added; neither
-these regressions nor the HTTP browser harness qualify native invoke permissions.
+fix and pass after it. The subsequent actual main-WebView probes above also
+pass; source enrollment and HTTP harness checks alone did not establish that.
 
 The added dependency check has 48 package versions: 46 without returned OSV
 findings and two informational unmaintained compile-time macro dependencies.
@@ -95,8 +99,9 @@ security audit nor an advisory-free claim. Exact added-dependency original licen
 data notices are collected in `src-tauri/resources/recovery-dependency-notices.txt`
 (130,911 bytes; SHA-256
 `00504cf7c37bff567ef2c4711975538d8c5efd9adab672740d589b522cc54fbb`).
-The Tauri resource map includes this file; assembled bundle verification remains
-pending. Source provenance for the 48 packages is retained in
+The Tauri resource map includes this file; actual assembled bundle bytes match
+source and Git exactly in the final attestation. Source provenance for the 48
+packages is retained in
 `recovery-dependency-notices-sources.json` under the evidence directory. Full-capacity/resource and normal native
 workflow acceptance remain open; lifetime receipt gates stay unchanged.
 
@@ -177,6 +182,17 @@ been reused and no additional artifacts were deleted. Incremental caching stays
 disabled. Before rebuilding the normal app, the prior `72ee3e4` bundle was
 copy-on-write preserved with matching complete file inventories and strict
 signature verification (`encrypted-recovery-preserved-release.json`).
+
+Final package/storage attestation at 16:52 UTC records **203,807,354,880 bytes
+free (about 189.8 GiB)**, debug **9,234,044 KiB (about 8.8 GiB)** and release
+**3,192,248 KiB (about 3.0 GiB)**. The app is
+`src-tauri/target/release/bundle/macos/Joinery.app`. No further cache cleanup,
+installation, account activity or publication occurred. The private project hub
+is unchanged because publication is not authorized. The complete DataGrip
+replacement Goal, full-capacity recovery, normal picker/installed/keychain
+behavior and external/owner acceptance remain open. The original broader-suite
+helper-startup failure is still unexplained; subsequent scoped passes do not
+erase that observation.
 
 ### Paged receipt inventory and hot-state compaction (12 November 2026)
 

@@ -48,8 +48,8 @@ separate from archive and preserves original outcomes.
 reports logical charged bytes, while reservations, admission byte budget and
 available journal budget remain unavailable. `retentionEnabled` is false. The
 following [encrypted recovery increment](encrypted-metadata-recovery.md) now has
-source and focused regression evidence; full validation, browser acceptance and
-packaging are still pending. Its 20-copy / 64 GiB aggregate / 16 GiB plaintext
+full validation, actual browser/hidden-native acceptance and normal SDK-bearing
+packaging from clean `f9c1ce2`. Its 20-copy / 64 GiB aggregate / 16 GiB plaintext
 limits do not establish full-capacity performance. The earlier inventory-only
 slice used plaintext 64 MiB snapshots. No memory plateau, full-capacity recovery
 or actual-account qualification is claimed.

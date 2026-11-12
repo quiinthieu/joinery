@@ -6,7 +6,9 @@ The [complete local recovery workflow](encrypted-metadata-recovery.md) is implem
 verified on the existing feature branch. It connects streaming encrypted
 snapshots, native import/export pickers, mandatory encrypted undo, exact receipt
 union, activity admission, tracked status/cancellation and workspace-save
-reconciliation. It passes browser and hidden native acceptance; normal packaging remains pending. The preceding
+reconciliation. It passes browser and hidden native acceptance, and the normal
+SDK-bearing ARM64 package from clean `f9c1ce2` passes resources, strict ad-hoc
+signature and guarded helper startup. The preceding
 inventory increment below records its own source and historical limits.
 
 Focused checks pass 72 native and 61 App/workspace/close/recovery cases, including real SQLite/crash/undo
@@ -24,8 +26,8 @@ load duplication. All 27 actual encrypted macOS WebView checks pass across two
 fresh processes; both real PostgreSQL/native pending-close/reopen pairs also
 pass. The first encrypted reopen failure was a reproduced test-oracle key-order
 defect, corrected without weakening full-field or ciphertext checks.
-Next qualify the local package and update its exact source/hash. No account
-activity is needed for this increment.
+The [ledger](replacement-verification.md) records its exact source/hash and
+unchanged preserved predecessor. No account activity occurred in this increment.
 
 Keep receipt count gates and `retentionEnabled=false`. Remaining required work
 includes byte reservations/admission, full-capacity and memory measurements,
@@ -57,8 +59,9 @@ crash/storage-failure acceptance. The inventory-only predecessor used plaintext
 snapshots limited to 64 MiB / 20 copies.
 Archive is a browsing preference, never evidence deletion or journal reclamation.
 Actual Snowflake and normal packaged/macOS/owner acceptance remain open. The
-current local release bundle still comes from clean `72ee3e4` and does not include
-this new source increment. No installation or account activity is authorized.
+then-current release bundle came from clean `72ee3e4`; it is now separately
+preserved. The current package above includes inventory and encrypted recovery.
+No installation or account activity is authorized.
 
 The private project hub has not been updated: publication is not authorized.
 

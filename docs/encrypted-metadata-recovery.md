@@ -4,9 +4,13 @@
 
 Local source passes full validation, real database regressions, the browser
 recovery workflow and hidden macOS encrypted recovery/restart acceptance on
-`feat/datagrip-replacement`. Normal application packaging remains in progress.
-This document describes the new source workflow, not the preserved release app.
-Do not use it as evidence of a packaged, installed or externally qualified feature.
+`feat/datagrip-replacement`. The normal SDK-bearing ARM64 package from clean
+`f9c1ce2` passes resource, strict ad-hoc signature and guarded helper-startup
+checks. It is local and uninstalled at
+`src-tauri/target/release/bundle/macos/Joinery.app`.
+This document describes that source and local package. Installed-app behavior,
+native picker interaction, OS keychain, external accounts and owner acceptance
+remain unqualified.
 See the [verification ledger](replacement-verification.md) for actual results and
 the [retention design](snowflake-console-retention-design.md) for the full target.
 The DataGrip replacement Goal and all remaining required workflows stay open.

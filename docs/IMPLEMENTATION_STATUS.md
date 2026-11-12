@@ -3,7 +3,8 @@
 ## Encrypted metadata recovery (12 November 2026, locally verified)
 
 The new [recovery workflow](encrypted-metadata-recovery.md) passes local browser and hidden native
-acceptance. It is not part of the runnable release app. Focused checks
+acceptance and is included in the local SDK-bearing ARM64 package from clean
+`f9c1ce2`. Focused checks
 pass 72 native and 61 App/workspace/close/recovery cases, including real SQLite restore/undo, concurrent
 writer fencing and killed replacement. Initial compiler/header/staging defects
 are corrected and retained in the [ledger](replacement-verification.md). A small
@@ -20,7 +21,14 @@ reconciliation/fresh-reload gating passes. All 27 actual encrypted native checks
 pass across two clean processes, including main invoke permissions and exact
 ciphertext identity after restart. Two real PostgreSQL/native close/reopen pairs
 also pass, with pending-draft exits in 56.34 and 54.80 ms under the unchanged
-400 ms debounce window. Normal packaging remains pending. The broader browser run
+400 ms debounce window. Normal packaging passes resource, strict ad-hoc signature
+and guarded SDK 3.4.1 startup checks with zero authentication/SQL. The app remains
+local and uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`;
+binary SHA-256 is
+`23f100e40a553d9e18c1f62c530d64aa63ca76f4082a0cd8b75188c21238f2b5`.
+Bundled original license bytes match source and Git exactly. All 13,055 files in
+the separately preserved `72ee3e4` release remain unchanged. About 189.8 GiB is
+free; regenerated debug artifacts occupy about 8.8 GiB. The broader browser run
 had nine stale assertions and one unexplained synthetic helper startup failure;
 its isolated rerun passes without a production change. The preserved release app below
 and all external/owner acceptance gates remain unchanged. No publication,
