@@ -8,6 +8,182 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Fixed permanent store and retained revocation (12 November 2026)
+
+`ConsumptionStore::open_native` obtains the macOS account home with bounded
+`getpwuid_r` for the effective UID. The closed namespace is
+`Library/Application Support/Joinery/private-qualification/table-lifecycle-consumption-v1`
+under that physical home. No output, environment or configuration override selects
+the store. Other platforms fail closed. Descriptor-relative bootstrap permits
+safe existing shared user directories, requires private `0700` application
+directories, synchronizes parent/child entries and retains native ancestor
+descriptors, identities and mode checks for later consumption/revalidation.
+Unsafe existing nodes fail without chmod, adoption, deletion or alternate roots.
+The existing fixture store opener still requires an existing private leaf.
+
+The new isolated tests use synthetic temporary homes only; **the real OS-account
+resolver and owner's Application Support namespace are not invoked**. They check
+private creation under shared `0755` parents, unsafe modes, symlink/file collisions,
+UID mismatch, held-path replacement and later ancestor mode/identity drift. Four
+separate test processes start together against one synthetic fixed namespace;
+exactly one may consume. Reopening in another process with different output,
+`HOME` and `XDG_DATA_HOME` still rejects the spent markers. The subprocess protocol
+entry is ignored in the ordinary suite and explicitly selected by its parents;
+it is not an extra default acceptance pass. This tests the bootstrap and storage
+logic, not an executed native resolver or a complete account entry.
+
+`PreparedAttempt::revocation` now returns a cloneable capability containing only
+the shared sticky failure latch. `revoke` is memory-only, preserves an earlier
+failure and cannot restore authority. Dropping that handle does not cancel.
+Revocation before starting is checked before runtime/SQLite/helper construction.
+If local construction has already started, its current stage may finish before
+the next check. Future physical admissions remain guarded. Already admitted
+operations retain their original results independently of later cancellation,
+validation, shutdown and terminal storage errors. Permanent markers are never
+refunded; a stale revocation handle cannot rewrite finished evidence.
+
+Five new envelope/factory regressions check shared first-failure behavior,
+zero launch before startup and two retained CREATE paths. One pauses after the
+returned CREATE but before recording completion. The other holds the actual
+helper's synthetic SDK CREATE callback after the synthetic effect, then revokes
+and releases it. Both drop the caller's waiter, retain the original succeeded ACK
+in completion/journal/terminal evidence, and require the exact captured SQL prefix
+to remain unchanged. No ALTER, DROP, replay or cleanup SQL is newly authorized by
+revocation. These use actual pinned Node/helper/Studio paths with a synthetic SDK;
+they do not prove Snowflake data effects or remote cancellation.
+
+The two workers and independent reviewer use **gpt-6.1-sol/high**, with bounded
+file ownership; no requested selection is unavailable. The lead integrates and
+runs builds/checks serially. Review reports no material findings in the six changed
+Rust files. Parent graph calls return `Transport closed`; workers/reviewer obtain
+coverage with no recorded issue, latest review generation
+`2026-11-12T03:32:19Z`, and read final source directly. This bounded evidence is not
+repository completeness proof.
+
+The initial 45-file source manifest is
+`.cache/verification/connection-attempts/attempt-boundary-source-freeze.json`.
+Commands use the pinned README toolchains and `JOINERY_TEST_NODE`:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+cargo test --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features test-harness --test snowflake_table_qualification_cli
+pnpm validate
+```
+
+`attempt-boundary-qualification-release.log` preserves the initial run: exit
+**101**, **262 passed / 1 failed / 6 ignored**, **155.23 seconds** after a
+**2 minute 58 second** optimized build. The pending SDK callback case wrongly
+requires `completionRecordError` to be null. Its actual original CREATE ACK is
+retained; `Policy::record_operation_completion` correctly reports the already
+latched cancellation even when storing that original succeeds. The test now
+requires the cancellation, retained succeeded/retired ACK in journal and terminal,
+and unchanged SQL prefix. Independent review confirms the correction; production
+outcome handling is unchanged. Two narrow test-only `dead_code` annotations mark
+native entry/OS lookup intentionally unused by isolated tests; they do not invoke
+the owner's storage or suppress other checks. The final source manifest,
+`attempt-boundary-source-freeze-final.json`, records all 45 files separately.
+Only consumption annotations and the corrected factory test differ from the
+initial manifest; the complete qualification suite is rerun on this pre-Clippy
+snapshot. The later test-only loop correction is recorded below.
+
+`attempt-boundary-qualification-final-release.log` exits **0** on that snapshot:
+**263 passed / 0 failed / 6 default ignores**, **161.97 seconds** after
+the optimized build (**2 minutes 54 seconds**). All eleven new substantive
+regressions pass, including six native-store cases and five envelope/factory
+revocation cases. The child protocol runs only through its explicitly selecting
+subprocess parents. Other default ignores are not counted as executed acceptance.
+
+`attempt-boundary-process-release.log` exits **0**: **7 actual-command tests
+passed / 0 failed / 0 ignored**, **1.41 seconds**. Emission/restoration, copied
+executable and tamper rejection, safe arguments and zero trap launches remain
+covered on the same pre-Clippy snapshot. The known nonfatal missing-LLVM `rust-objcopy`
+stripping and ts-rs attribute warnings remain visible; no global toolchain or
+configuration changes are made.
+
+The first full validation, `attempt-boundary-validate.log`, exits **101** at
+strict Clippy's `needless_range_loop` in the new native-store collision test.
+Frontend checks/build, 679 frontend tests and 467 standard Rust tests already pass;
+this is not a complete validation pass. The correction enumerates `PARTS` and
+uses the same item directly instead of indexing it; all test cases/assertions and
+production behavior remain unchanged. No Clippy lint is suppressed.
+`attempt-boundary-clippy-corrected.log` then exits **0** for the complete strict
+all-target/all-feature command (**27.01 seconds**). The final checked 45-file
+manifest is `attempt-boundary-source-freeze-checked.json`; only that test file
+differs from the preceding snapshot. Qualification, actual-command and full
+validation checks are repeated against the checked source.
+
+The first repeat on that checked snapshot,
+`attempt-boundary-qualification-after-clippy-release.log`, exits **101**:
+**260 passed / 3 failed / 6 ignored**, **196.13 seconds**. The existing
+journal/terminal fault case stops at phase 1 instead of reaching CREATE at
+phase 3; the new pending-completion waiter closes early and pending-callback
+waiter times out. The run uses `--test-threads=3`. This is an unresolved repeat
+failure at this point, not a final qualification pass. Later process/validation
+steps in that serial check sequence do not run. Diagnostic follow-up must expose
+the earlier terminal failure before assigning a cause or changing fixture timing;
+production admission deadlines and evidence assertions remain unchanged.
+
+The diagnostic-only follow-up keeps a mutable reference to the retained waiter
+while awaiting the CREATE barrier. Early owner completion now reports its
+terminal record immediately; a failed barrier collects that record for up to
+ten seconds before failing. The successful path still revokes and drops the
+waiter, releases the original callback/completion, and checks the same original
+ACK and exact SQL prefix. The existing journal/terminal fault assertion also
+prints the early terminal record. Independent review finds no material issue;
+these diagnostics do not themselves fix the intermittent failure.
+
+The new 45-file manifest is `attempt-boundary-source-freeze-diagnostic.json`;
+only `snowflake_table_qualification_factory_tests.rs` differs from the checked
+snapshot. `attempt-boundary-factory-diagnostic-parallel.log` exits **0**:
+**9 passed / 0 failed / 1 ignored**, **7.57 seconds**, using three test threads
+after a **2 minute 48 second** optimized build. On the same unchanged source,
+`attempt-boundary-diagnostic-full-parallel.log` exits **0**: **263 passed /
+0 failed / 6 ignored**, **160.17 seconds**, again with three threads.
+
+The failure is not reproduced by those diagnostic runs; **its cause remains
+unconfirmed**. A bounded literal audit across Rust source and relevant synthetic
+JavaScript finds no parent environment/process-setting mutation; child
+`Command.env` and `Command.current_dir` remain confined to their subprocesses.
+This narrows an interaction hypothesis without proving absence of other races or
+resource pressure. The earlier failed repeat remains evidence, not a resolved
+defect. No production deadline is widened, no regression is newly ignored, and
+this increment does not establish reliable account entry or replacement readiness.
+
+Final source-specific checks on the diagnostic snapshot:
+
+- `attempt-boundary-factory-diagnostic-serial.log`: exit **0**, **9 passed /
+  0 failed / 1 ignored**, **21.37 seconds**, one test thread. This control also
+  does not reproduce the earlier failure.
+- `attempt-boundary-process-diagnostic-final.log`: exit **0**, **7 actual-command
+  tests passed / 0 failed / 0 ignored**, **1.47 seconds**. Offline emission,
+  restoration/tamper checks and zero trap launches remain covered.
+- `attempt-boundary-validate-diagnostic-final.log`: complete `pnpm validate`
+  exits **0**, including formatting, TypeScript/contracts, frontend build,
+  **679 frontend tests / 57 files**, **467 standard Rust tests / 129 fixture
+  ignores**, Rustfmt, compiler check and strict all-target/all-feature Clippy.
+  These standard counts do not include the separately selected qualification
+  tests above. Ignored fixtures are not claimed as executed acceptance.
+- All **45** frozen source hashes still match after the completed checks.
+  Local links in all seven changed documents resolve (**353 targets**);
+  `git diff --check` and `pnpm check:git` pass before staging. The final source
+  receives bounded independent review with no unresolved material finding.
+
+No UI behavior changes in this increment, and no new browser/native UI or
+package acceptance is claimed. The known nonfatal LLVM stripping and ts-rs
+warnings remain visible. Application validation passing does not explain the
+earlier qualification failure or qualify actual account effects. Next work must
+retain its diagnostics and the open stability limitation while completing the
+fixed execute entry and interruption handling.
+
+The command remains offline-only: the fixed native store and revocation capability
+are not yet connected to an account execute route. Whole-process SIGINT/SIGTERM,
+runtime teardown and SIGKILL/power-loss evidence are not qualified by detached
+task tests. No account, native app-state, new package, install or publication
+activity occurs. Source-specific preceding package/performance checks are not
+claimed as rerun. Fresh exact account/billing approval for the table-only plan
+under `SANDBOX.BILLIE_TESTING`, all applicable DataGrip product workflows and owner
+hands-on acceptance remain open; the Goal remains active.
+
 ### Dedicated offline table command (12 November 2026)
 
 The new `snowflake-table-qualification` binary requires the existing

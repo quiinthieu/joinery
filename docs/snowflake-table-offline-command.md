@@ -7,8 +7,11 @@ start Node, invoke the compiler, initialize Studio or the keychain, open SSO,
 connect to Snowflake, or create permanent consumption markers. Runtime inventory
 is byte binding; it does not establish SDK validity or build provenance.
 
-The separately reviewed account command and independently fixed permanent marker
-root remain required before requesting a new execution approval. Permission to
+The separately reviewed account command and complete fixed-entry acceptance
+remain required before requesting a new execution approval. Internal storage now
+provides a fixed macOS marker namespace, and prepared attempts provide an explicit
+retained revocation handle; neither is reachable from these offline operations.
+Permission to
 create a fresh table under `SANDBOX.BILLIE_TESTING` remains recorded. The earlier
 CREATE DATABASE approval is spent and cannot be reused.
 
@@ -126,6 +129,25 @@ Receipts exclude profile data; the envelope itself is private and includes the
 non-secret connection fields and local artifact paths. Avoid sharing it publicly.
 
 ## Acceptance scope
+
+The private native-store entry selects its permanent location from the
+effective UID's OS account record, independent of `HOME`, output or configuration:
+`Library/Application Support/Joinery/private-qualification/table-lifecycle-consumption-v1`
+under that account's physical home. Shared Library/Application Support directories
+may have safe `0755` permissions; the Joinery namespace and its descendants require
+`0700`. Unsafe existing paths fail without repair, deletion or alternate-root
+fallback. Native lookup fails closed outside macOS. Offline `emit`/`verify` never
+invoke that resolver or create this namespace. Do not delete markers to retry an
+attempt. Synthetic tests use a private temporary home, not the owner's home.
+
+A private revocation handle can stop future admissions while retaining the
+original call, shutdown and terminal evidence. Dropping its handle does not revoke;
+dropping the attempt's waiter does not abort the owner. This is not yet wired to
+an executable account route or process signal handling. Already started local
+construction may finish before its next check. Revocation does not imply server
+rollback, successful logout, remote cancellation or durable evidence after a
+process kill/power failure. Inspect recorded original outcomes before deciding
+what cleanup or follow-up to authorize; do not replay a spent attempt.
 
 The process regression suite invokes the actual binary against disposable
 synthetic files, including trap Node/compiler executables. It checks emission,

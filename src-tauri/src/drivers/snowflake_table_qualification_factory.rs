@@ -6,7 +6,7 @@
 use super::{
     attempt::{AttemptStorage, TerminalReceipt},
     consumption::ConsumptionStore,
-    envelope::{ConsumedEnvelope, Envelope},
+    envelope::{ConsumedEnvelope, ConsumedRevocation, Envelope},
     guard::Guard,
     policy::Policy,
     profile,
@@ -102,6 +102,16 @@ pub(super) struct AttemptReceipt {
 }
 
 impl PreparedAttempt {
+    /// Obtain revocation before transferring ownership to the retained task.
+    /// This grants no construction inputs and does not cancel on drop.
+    pub(super) fn revocation(&self) -> ConsumedRevocation {
+        self.owner
+            .consumed
+            .as_ref()
+            .expect("prepared attempt retains its consumed envelope until start")
+            .revocation()
+    }
+
     /// Blocking local work only. Reserve all evidence outputs before spending
     /// either permanent marker; no runtime, SQLite, authentication or SQL here.
     pub(super) fn prepare(

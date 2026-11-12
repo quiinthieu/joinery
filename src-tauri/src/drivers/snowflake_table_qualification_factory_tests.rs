@@ -8,7 +8,9 @@ use super::super::{
     runner::{FixtureControls, Pause},
 };
 use crate::{
-    domain::{ConnectionProfile, Environment, SafeMode, SnowflakeAuthentication, TlsMode},
+    domain::{
+        ConnectionProfile, Environment, ErrorCode, SafeMode, SnowflakeAuthentication, TlsMode,
+    },
     snowflake_runtime::studio_fixture::Fixture,
 };
 use serde_json::{Value, json};
@@ -200,6 +202,10 @@ async fn qualification_factory_runtime_failure_is_durable_and_cannot_be_reused()
 /// Minimal composition around the shared lifecycle SDK. Only the nine frozen
 /// statement strings vary; production framing, transport, guard and Studio run.
 fn lifecycle_fixture(plan: &Plan) -> Fixture {
+    lifecycle_fixture_with_pending_create(plan, false)
+}
+
+fn lifecycle_fixture_with_pending_create(plan: &Plan, hold_create_ack: bool) -> Fixture {
     let fixture = Fixture::separated();
     let mut statements = serde_json::Map::new();
     for (name, id) in [
@@ -235,7 +241,7 @@ fn lifecycle_fixture(plan: &Plan) -> Fixture {
     let options = json!({"schemaCount":1,"tableName":plan.table(),"statements":statements});
     let wrapper = format!(
         r#"import {{makeSdk}} from {lifecycle_url};
-import {{appendFileSync}} from 'node:fs';
+import {{appendFileSync,existsSync}} from 'node:fs';
 const controls=new URL({controls_url});
 const append=(name,value)=>appendFileSync(new URL(name,controls),JSON.stringify(value)+'\n');
 append('sdk-resolution',{{url:import.meta.url,synthetic:true}});
@@ -244,6 +250,19 @@ const create=sdk.createConnection.bind(sdk);
 sdk.createConnection=profile=>{{
   append('connections',{{profile,state:process.env.JOINERY_SNOWFLAKE_STATE_DIR}});
   const connection=create(profile);
+  if ({hold_create_ack}) {{
+    const execute=connection.execute.bind(connection);
+    connection.execute=options=>{{
+      if (!options.sqlText.startsWith('CREATE TABLE ')) return execute(options);
+      const complete=options.complete;
+      return execute({{...options,complete:(...args)=>{{
+        append('create-pending',{{applied:true}});
+        const resume=()=>existsSync(new URL('resume-create',controls))
+          ? complete(...args) : setTimeout(resume,5);
+        resume();
+      }}}});
+    }};
+  }}
   const destroy=connection.destroy.bind(connection);
   connection.destroy=callback=>destroy(error=>{{append('destroyed',{{ok:!error}});callback(error);}});
   return connection;
@@ -465,7 +484,12 @@ async fn qualification_factory_actual_create_ack_survives_journal_and_terminal_f
     assert!(receipt.construction_error.is_none());
     assert!(receipt.terminal.is_err());
     let execution = receipt.execution.as_ref().unwrap();
-    assert_eq!(execution.failure.as_ref().map(|failure| failure.0), Some(3));
+    assert_eq!(
+        execution.failure.as_ref().map(|failure| failure.0),
+        Some(3),
+        "factory did not reach CREATE fault barrier: {}",
+        receipt.terminal_record
+    );
     assert_eq!(execution.outputs.len(), 3);
     assert!(execution.original_call_failure.is_none());
     assert!(execution.completion_record_error.is_some());
@@ -511,4 +535,232 @@ async fn qualification_factory_actual_create_ack_survives_journal_and_terminal_f
             .all(|record| record["event"]["phase"].as_u64().unwrap() < 3)
     );
     assert_factory_cleanup(&fixture, &path, false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_factory_revoked_before_start_never_constructs_or_launches() {
+    let plan = Plan::generate().unwrap();
+    let fixture = lifecycle_fixture(&plan);
+    let (artifacts, envelope, store, approval) =
+        fixture_unconsumed(plan, profile(), Some(fixture.runtime_root().to_owned()));
+    let output = output_parent();
+    let prepared = prepared(PreparedAttempt::prepare(
+        envelope,
+        &store,
+        &approval,
+        &physical(&output),
+    ))
+    .with_fixture_runtime(fixture.runtime.clone());
+    let revoke = prepared.revocation();
+    revoke.clone().revoke();
+    let receipt = prepared.start().await.unwrap();
+    assert!(!receipt.successful());
+    assert!(receipt.execution.is_none());
+    assert_eq!(
+        receipt.construction_error.as_ref().unwrap().code,
+        ErrorCode::Cancelled
+    );
+    assert!(receipt.construction_shutdown.is_none());
+    assert_eq!(receipt.secret_store_calls(), 0);
+    assert!(receipt.terminal.is_ok());
+    assert!(!receipt.path.join("workspace/joinery.sqlite").exists());
+    assert_eq!(
+        fs::read_dir(receipt.path.join("helper-state"))
+            .unwrap()
+            .count(),
+        0
+    );
+    for name in ["sdk-resolution", "connections", "queries"] {
+        assert!(
+            !fixture.controls.join(name).exists(),
+            "unexpected helper {name}"
+        );
+    }
+    assert_eq!(markers(&artifacts), 2);
+    let terminal = fs::read(receipt.path.join("terminal.json")).unwrap();
+    assert_eq!(
+        records(&receipt.path.join("terminal.json"))[0]["result"],
+        receipt.terminal_record
+    );
+    drop(receipt);
+    revoke.revoke();
+    // A handle outliving its owner cannot create a request or rewrite evidence.
+    let path = fs::read_dir(physical(&output))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(fs::read(path.join("terminal.json")).unwrap(), terminal);
+    assert!(!fixture.controls.join("sdk-resolution").exists());
+    assert_eq!(markers(&artifacts), 2);
+}
+
+async fn revoked_create_retains_original_and_terminal(hold_callback: bool) {
+    let plan = Plan::generate().unwrap();
+    let fixture = lifecycle_fixture_with_pending_create(&plan, hold_callback);
+    let (artifacts, envelope, store, approval) = fixture_unconsumed(
+        plan.clone(),
+        profile(),
+        Some(fixture.runtime_root().to_owned()),
+    );
+    let output = output_parent();
+    let path = attempt_path(&physical(&output), &plan);
+    let (reached, ready) = tokio::sync::oneshot::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let (finished, completed) = tokio::sync::oneshot::channel();
+    let prepared = prepared(PreparedAttempt::prepare(
+        envelope,
+        &store,
+        &approval,
+        &physical(&output),
+    ))
+    .with_fixture_runtime(fixture.runtime.clone())
+    .with_controls(FixtureControls {
+        pause: (!hold_callback).then_some(Pause {
+            phase: 3,
+            reached,
+            resume: resume.clone(),
+        }),
+        ..FixtureControls::default()
+    })
+    .with_finished(finished);
+    let revoke = prepared.revocation();
+    let mut waiter = prepared.start();
+    let barrier = async {
+        if hold_callback {
+            while !fixture.controls.join("create-pending").exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Ok(())
+        } else {
+            ready.await.map_err(|error| error.to_string())
+        }
+    };
+    tokio::select! {
+        result = &mut waiter => {
+            panic!("factory ended before CREATE barrier (callback held: {hold_callback}): {:?}",
+                result.map(|receipt| receipt.terminal_record));
+        }
+        result = tokio::time::timeout(Duration::from_secs(120), barrier) => {
+            if !matches!(result, Ok(Ok(()))) {
+                let terminal = tokio::time::timeout(Duration::from_secs(10), &mut waiter)
+                    .await.map(|result| result.map(|receipt| receipt.terminal_record));
+                panic!("CREATE barrier unavailable (callback held: {hold_callback}): {result:?}; retained terminal: {terminal:?}");
+            }
+        }
+    }
+    if hold_callback {
+        assert_eq!(
+            records(&fixture.controls.join("create-pending")),
+            [json!({"applied":true})]
+        );
+    }
+    let admitted = queries(&fixture);
+    assert_eq!(
+        admitted
+            .iter()
+            .filter(|sql| sql.as_str() == plan.statement(StatementId::Create).source_sql())
+            .count(),
+        1
+    );
+    revoke.revoke();
+    drop(waiter);
+    // Revocation never aborts the retained original call or its evidence owner.
+    assert_eq!(fs::metadata(path.join("terminal.json")).unwrap().len(), 0);
+    if hold_callback {
+        fs::write(fixture.controls.join("resume-create"), b"resume").unwrap();
+    } else {
+        resume.notify_one();
+    }
+    tokio::time::timeout(Duration::from_secs(120), completed)
+        .await
+        .unwrap()
+        .unwrap();
+    let terminal = records(&path.join("terminal.json"));
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0]["result"]["executionSuccessful"], false);
+    assert_eq!(terminal[0]["result"]["secretStoreCalls"], 0);
+    let execution = &terminal[0]["result"]["execution"];
+    assert_eq!(execution["outputs"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        execution["outputs"][2]["value"]["statementOutcome"],
+        "succeeded"
+    );
+    assert_eq!(execution["failure"][0], 3);
+    assert!(execution["originalCallFailure"].is_null());
+    if hold_callback {
+        // Guard observes revocation while forwarding the real helper terminal.
+        // Original completion storage succeeds but still returns that first
+        // operation failure; neither result may erase the acknowledged CREATE.
+        assert_eq!(execution["completionRecordError"]["code"], "cancelled");
+        assert_eq!(execution["failure"][1]["code"], "cancelled");
+        assert_eq!(execution["persisted"]["Err"]["code"], "cancelled");
+        assert_eq!(execution["outputs"][2]["value"]["retired"], true);
+        assert_eq!(
+            execution["outputs"][2]["value"]["error"]["code"],
+            "connectionClosed"
+        );
+    } else {
+        assert!(execution["completionRecordError"].is_null());
+    }
+    assert_eq!(execution["settled"], true);
+    assert_eq!(execution["guardSettled"], true);
+    assert!(execution["guardRevalidation"].get("Err").is_some());
+    let journal = records(&path.join(FILE_NAME));
+    let completion = journal
+        .iter()
+        .find(|record| {
+            record["event"]["type"] == "operationCompletion" && record["event"]["phase"] == 3
+        })
+        .unwrap();
+    assert_eq!(completion["event"]["completion"]["status"], "returned");
+    assert_eq!(
+        completion["event"]["completion"]["original"],
+        execution["outputs"][2]
+    );
+    assert!(
+        journal
+            .iter()
+            .filter(|record| record["event"]["type"] == "validatedPhase")
+            .all(|record| record["event"]["phase"].as_u64().unwrap() < 3)
+    );
+    let ledger = plan
+        .expand_physical_ledger(&SchemaCensus::freeze(&[SCHEMA.into()]).unwrap())
+        .unwrap();
+    assert_eq!(
+        queries(&fixture),
+        admitted,
+        "no SQL may be admitted after revocation"
+    );
+    assert_eq!(
+        admitted,
+        ledger
+            .entries()
+            .iter()
+            .take(admitted.len())
+            .map(|entry| entry.sql().to_owned())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(markers(&artifacts), 2);
+    assert_factory_cleanup(&fixture, &path, false);
+    let terminal_bytes = fs::read(path.join("terminal.json")).unwrap();
+    let submitted = queries(&fixture);
+    revoke.revoke();
+    drop(revoke);
+    assert_eq!(queries(&fixture), submitted);
+    assert_eq!(
+        fs::read(path.join("terminal.json")).unwrap(),
+        terminal_bytes
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_factory_revoked_pending_create_completion_outlives_waiter() {
+    revoked_create_retains_original_and_terminal(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_factory_revoked_pending_create_callback_preserves_original_ack() {
+    revoked_create_retains_original_and_terminal(true).await;
 }

@@ -14,7 +14,7 @@ use super::{
     sequence::Sequencer,
 };
 use crate::{
-    domain::{AppError, AppResult},
+    domain::{AppError, AppResult, ErrorCode},
     drivers::snowflake_qualification_transport::TransportLimits,
 };
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use std::{
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -197,7 +197,30 @@ pub(super) struct ConsumedEnvelope {
     envelope: Envelope,
     consumed: ConsumedAttempt,
     started: Instant,
-    failure: Mutex<Option<AppError>>,
+    failure: Arc<Mutex<Option<AppError>>>,
+}
+
+/// Can only revoke the shared admission latch. It carries no profile, plan,
+/// marker or execution owner and cannot restore or reproduce authority.
+/// Dropping it leaves the retained attempt running.
+#[derive(Clone)]
+pub(super) struct ConsumedRevocation {
+    failure: Arc<Mutex<Option<AppError>>>,
+}
+
+impl ConsumedRevocation {
+    /// Memory only. Preserve any earlier failure and never interrupt ownership
+    /// of an already admitted call, original completion or terminal persistence.
+    pub(super) fn revoke(&self) {
+        if let Ok(mut failure) = self.failure.lock() {
+            failure.get_or_insert_with(|| {
+                AppError::new(
+                    ErrorCode::Cancelled,
+                    "Table qualification attempt cancelled",
+                )
+            });
+        }
+    }
 }
 
 struct BoundedBytes(Vec<u8>);
@@ -439,7 +462,7 @@ impl Envelope {
             envelope: self,
             consumed,
             started,
-            failure: Mutex::new(None),
+            failure: Arc::new(Mutex::new(None)),
         };
         // If revalidation fails, the permanent markers remain spent. There is
         // no resume path or retry on a freshly changed approval window.
@@ -449,6 +472,12 @@ impl Envelope {
 }
 
 impl ConsumedEnvelope {
+    pub(super) fn revocation(&self) -> ConsumedRevocation {
+        ConsumedRevocation {
+            failure: self.failure.clone(),
+        }
+    }
+
     /// Only the consumed identity selects construction inputs. The caller must
     /// fully revalidate before constructing and before handing off to Runner.
     pub(super) fn construction_inputs(&self) -> AppResult<(Profile, PathBuf)> {

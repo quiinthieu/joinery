@@ -1,6 +1,41 @@
 # Implementation and release status
 
-## Dedicated offline table command (12 November 2026, local integration)
+## Fixed attempt storage and retained revocation (12 November 2026)
+
+A new private store entry chooses one fixed macOS Application Support
+namespace from the OS account record for the effective UID. Output paths, `HOME`
+and configuration cannot choose another namespace. Bootstrap and subsequent
+checks retain physical directory identities, private namespace permissions and
+permanent markers; unsafe existing nodes fail without repair or removal. Tests
+use synthetic homes only. The native resolver is not invoked against the owner's
+home, and the offline command still creates no permanent markers.
+
+A prepared attempt now supplies a cloneable memory-only revocation handle before
+starting. Revocation latches the first failure, blocks future physical admissions
+and retains the original call, detached owner, shutdown and terminal persistence.
+An already started local construction stage may finish before its next check.
+This does not implement process signal handling or guarantee remote cancellation.
+The [verification ledger](replacement-verification.md) records the source-specific
+checks and independent review.
+
+The latest optimized qualification repeat passes **263 tests / 6 default
+ignores**; focused factory runs pass with three threads and serially. An earlier
+repeat fails three cases before CREATE. Added diagnostics have not reproduced
+that failure, and its cause remains unconfirmed. The ledger preserves both
+results; this is still an open stability limitation.
+
+Final full validation passes **679 frontend / 467 standard Rust tests**, with
+**129 fixture ignores**, plus formatting/build/compiler checks/strict Clippy.
+All **7** actual-command tests pass; all **45** frozen source hashes match.
+Independent bounded review has no unresolved material finding. These checks use
+isolated local fixtures and do not qualify Snowflake account effects.
+
+The account execute command and complete synthetic fixed-entry acceptance remain
+incomplete. No account, package, installation or normal UI acceptance is added.
+Fresh exact account/billing approval for `SANDBOX.BILLIE_TESTING`, all applicable
+DataGrip workflows and owner acceptance remain required. The Goal is active.
+
+## Dedicated offline table command (12 November 2026, preceding integration)
 
 The dedicated `snowflake-table-qualification` binary now exposes only offline
 `emit` and `verify`. Emission binds the actual running executable/build recipe,

@@ -43,8 +43,11 @@ attempt/workspace/state, construction exclusively from consumed roots and final
 terminal evidence, including dropped waiters. The dedicated
 [offline command](snowflake-table-offline-command.md) can emit private review
 files and verify the original bytes without connecting or launching the helper.
-It has no execute command. The fixed account entry, independently fixed permanent
-marker location and cross-process consumption acceptance remain open. Before any
+It has no execute command. Internal permanent storage now uses a fixed macOS
+account-home namespace, with synthetic cross-process reuse checks. A private
+revocation handle stops future admissions while retaining original completion
+and terminal evidence. The fixed account entry, whole-process interruption
+handling and complete synthetic-entry acceptance remain open. Before any
 account activity, a fresh exact generated table-only plan and fresh possible-billing
 approval are required. See the [qualification attachments](snowflake-qualification-attachments.md),
 [offline SQL ledger](snowflake-qualification-sql-ledger.md), and current

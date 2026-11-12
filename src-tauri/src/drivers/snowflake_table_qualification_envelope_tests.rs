@@ -642,3 +642,49 @@ fn envelope_read_deadline_retains_consumption_time_and_shorter_wall_window() {
     assert!(deadline <= Instant::now() + Duration::from_secs(60));
     assert!(deadline < consumed.started.checked_add(DEADLINE).unwrap());
 }
+
+#[test]
+fn envelope_revocation_is_shared_memory_only_sticky_and_does_not_refund() {
+    let (directory, consumed, drift) = fixture_consumed(Plan::generate().unwrap(), profile());
+    let revoke = consumed.revocation();
+    let clone = revoke.clone();
+    drop(revoke);
+    assert!(consumed.check().is_ok(), "dropping a handle cannot cancel");
+    fs::remove_file(drift).unwrap();
+    clone.revoke();
+    clone.revoke();
+    let cancelled = consumed.check().unwrap_err();
+    assert_eq!(cancelled.code, ErrorCode::Cancelled);
+    assert_eq!(cancelled.message, "Table qualification attempt cancelled");
+    // Missing artifacts cannot replace the memory-only cancellation result.
+    assert_eq!(
+        consumed.revalidate().unwrap_err().code,
+        ErrorCode::Cancelled
+    );
+    assert!(consumed.construction_inputs().is_err());
+    assert!(consumed.completion_deadline().is_err());
+    let later = consumed.fail(AppError::internal("later failure"));
+    assert_eq!(later.code, ErrorCode::Cancelled);
+    drop(consumed);
+    clone.revoke(); // A surviving handle has no owner from which to make requests.
+    assert_eq!(
+        fs::read_dir(directory.path().join("consumption"))
+            .unwrap()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn envelope_revocation_preserves_a_failure_latched_before_cancellation() {
+    let (_directory, consumed, _drift) = fixture_consumed(Plan::generate().unwrap(), profile());
+    let revoke = consumed.revocation();
+    let first = consumed.fail(AppError::internal("first qualification failure"));
+    revoke.revoke();
+    let checked = consumed.check().unwrap_err();
+    assert_eq!(checked.code, first.code);
+    assert_eq!(checked.message, first.message);
+    let checked = consumed.revalidate().unwrap_err();
+    assert_eq!(checked.code, first.code);
+    assert_eq!(checked.message, first.message);
+}

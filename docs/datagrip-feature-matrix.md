@@ -36,13 +36,29 @@ from a short summary does not make a feature optional.
 
 The [acceptance gates](replacement-acceptance.md) define observable workflows;
 the [roadmap](implementation-roadmap.md) orders implementation. The immediate
-qualification dependency is the execute entry and permanent-store placement
-after the private bound-root factory and offline command, then a freshly reviewed
-table-only plan for `SANDBOX.BILLIE_TESTING`. No existing application-table access
+qualification dependency is the execute entry and complete fixed-entry proof
+after the private bound-root factory, fixed store and offline command, then a
+freshly reviewed table-only plan for `SANDBOX.BILLIE_TESTING`. No existing application-table access
 or account execution is authorized by this matrix. Broad product work remains required alongside
 qualification; these internal checks do not substitute for completing the rows.
 
-## Dedicated offline table command (12 November 2026, local integration)
+## Fixed store and retained revocation (12 November 2026)
+
+| Capability | Local implementation | Remaining gate |
+| ---------- | -------------------- | -------------- |
+| Fixed permanent marker namespace | macOS effective-UID account home, fixed Application Support path, retained physical identities and private modes; synthetic concurrent subprocess/reuse coverage | Not yet connected to the account entry; real owner home is deliberately not opened by these tests |
+| Explicit retained revocation | Memory-only shared failure latch available before startup; original CREATE acknowledgement/completion and terminal owner retained after revocation | Process signal handling, complete fixed-entry proof and real account interruption/cancellation remain open |
+
+The [ledger](replacement-verification.md) records current-source checks and review.
+The public command remains offline-only. This closes none of the twelve product
+replacement gates or additional applicability inventory above.
+
+Current qualification evidence includes a passing 263-test repeat and an earlier
+three-case failure before CREATE. Diagnostic follow-up passes, but its cause is
+unconfirmed. That stability issue remains open alongside the missing execute
+entry; the ledger records the failed and passing snapshots separately.
+
+## Dedicated offline table command (12 November 2026, preceding integration)
 
 | Capability | Local implementation | Remaining gate |
 | ---------- | -------------------- | -------------- |

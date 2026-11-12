@@ -65,6 +65,8 @@ pub(super) struct DirectoryProof {
     path: PathBuf,
     directory: File,
     identity: (u64, u64),
+    #[cfg(any(target_os = "macos", test))]
+    native_ancestors: Vec<NativeDirectory>,
 }
 
 /// Fixed attempt storage names only; never a caller-selected relative path.
@@ -129,6 +131,93 @@ struct Fault {
 type Hook = Box<dyn FnOnce(Marker, &Path) + Send>;
 
 impl ConsumptionStore {
+    /// Production location comes only from the OS account for the effective UID.
+    /// Neither an emission destination nor caller-controlled environment/config
+    /// can select a fresh permanent marker namespace.
+    #[cfg_attr(
+        test,
+        allow(
+            dead_code,
+            reason = "Isolated tests must not open native account storage"
+        )
+    )]
+    pub(super) fn open_native() -> AppResult<Self> {
+        #[cfg(target_os = "macos")]
+        {
+            let (uid, home) = native_account_home()?;
+            Self::open_native_home(&home, uid)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Only the macOS Application Support layout is qualified here.
+            Err(unavailable())
+        }
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn open_native_home(home: &Path, uid: u32) -> AppResult<Self> {
+        if uid != owner() {
+            return Err(unavailable());
+        }
+        let mut chain = vec![NativeDirectory::open(home, false)?];
+        // These two shared user directories may already be owner-safe 0755.
+        // The application namespace and every component below it require 0700.
+        for (name, private) in [
+            ("Library", false),
+            ("Application Support", false),
+            ("Joinery", true),
+            ("private-qualification", true),
+            ("table-lifecycle-consumption-v1", true),
+        ] {
+            validate_native_chain(&chain, uid)?;
+            let parent = chain.last().ok_or_else(unavailable)?;
+            let name_c = CString::new(name).map_err(|_| invalid())?;
+            // SAFETY: held parent fd and fixed NUL-terminated basename are live.
+            // EEXIST permits concurrent initialization only after all ownership,
+            // mode, type, no-symlink and named/held identity checks below pass.
+            if unsafe { libc::mkdirat(parent.directory.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0
+                && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
+            {
+                return Err(unavailable());
+            }
+            let directory =
+                open_relative(&parent.directory, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+            let child = NativeDirectory {
+                path: parent.path.join(name),
+                identity: identity(&directory.metadata().map_err(|_| unavailable())?),
+                directory,
+                private,
+            };
+            child.validate()?;
+            // Sync existing nodes as well: another initializer may have created
+            // them but not yet made the parent entry durable. Never chmod/adopt
+            // an unsafe existing node, or remove a node after any failure.
+            child.directory.sync_all().map_err(|_| unavailable())?;
+            parent.directory.sync_all().map_err(|_| unavailable())?;
+            chain.push(child);
+            validate_native_chain(&chain, uid)?;
+        }
+        let leaf = chain.pop().ok_or_else(unavailable)?;
+        validate_native_chain(&chain, uid)?;
+        let store = Self {
+            proof: Arc::new(DirectoryProof {
+                path: leaf.path,
+                directory: leaf.directory,
+                identity: leaf.identity,
+                native_ancestors: chain,
+            }),
+            #[cfg(test)]
+            fault: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            hook: std::sync::Mutex::new(None),
+        };
+        store.proof.validate_directory()?;
+        if owner() != uid {
+            return Err(unavailable());
+        }
+        Ok(store)
+    }
+
     /// Requires an existing absolute physical path: no component follows symlinks.
     pub(super) fn open(path: &Path) -> AppResult<Self> {
         let store = Self {
@@ -240,6 +329,115 @@ impl ConsumptionStore {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "Isolated tests use only synthetic account homes")
+)]
+fn native_account_home() -> AppResult<(u32, PathBuf)> {
+    use std::ffi::{CStr, OsStr};
+
+    let uid = owner();
+    // Bound NSS/account-record storage independently of caller input. ERANGE
+    // retries are finite, and a missing/unusable account always fails closed.
+    let mut size = 16_384;
+    loop {
+        let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut buffer = vec![0_u8; size];
+        let mut found = std::ptr::null_mut();
+        // SAFETY: passwd, buffer and result storage remain valid for the call;
+        // successful getpwuid_r initializes record and its strings in buffer.
+        let result = unsafe {
+            libc::getpwuid_r(
+                uid,
+                record.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if result == libc::ERANGE && size < 1_048_576 {
+            size *= 2;
+            continue;
+        }
+        if result != 0 || found.is_null() || owner() != uid {
+            return Err(unavailable());
+        }
+        // SAFETY: a successful lookup with non-null result initialized record.
+        let record = unsafe { record.assume_init() };
+        if record.pw_uid != uid || record.pw_dir.is_null() {
+            return Err(unavailable());
+        }
+        // SAFETY: getpwuid_r supplies a valid NUL-terminated pw_dir in buffer,
+        // which is still live; copy it before dropping that backing storage.
+        let bytes = unsafe { CStr::from_ptr(record.pw_dir) }.to_bytes();
+        if bytes.is_empty() || bytes.len() > MAX_PATH_BYTES {
+            return Err(unavailable());
+        }
+        return Ok((uid, PathBuf::from(OsStr::from_bytes(bytes))));
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug)]
+struct NativeDirectory {
+    path: PathBuf,
+    directory: File,
+    identity: (u64, u64),
+    private: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl NativeDirectory {
+    fn open(path: &Path, private: bool) -> AppResult<Self> {
+        let directory = open_physical_directory(path, native_shared_directory)?;
+        let value = Self {
+            path: path.to_path_buf(),
+            identity: identity(&directory.metadata().map_err(|_| unavailable())?),
+            directory,
+            private,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    fn validate(&self) -> AppResult<()> {
+        let policy = if self.private {
+            private_directory
+        } else {
+            native_shared_directory
+        };
+        let held = self.directory.metadata().map_err(|_| unavailable())?;
+        policy(&held)?;
+        let named = open_physical_directory(&self.path, policy)?;
+        if identity(&held) != self.identity
+            || identity(&named.metadata().map_err(|_| unavailable())?) != self.identity
+        {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn native_shared_directory(metadata: &Metadata) -> AppResult<()> {
+    if !metadata.is_dir() || metadata.uid() != owner() || metadata.mode() & 0o7022 != 0 {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_native_chain(chain: &[NativeDirectory], uid: u32) -> AppResult<()> {
+    if owner() != uid {
+        return Err(unavailable());
+    }
+    for node in chain {
+        node.validate()?;
+    }
+    Ok(())
+}
+
 impl DirectoryProof {
     pub(super) fn open(path: &Path) -> AppResult<Self> {
         let directory = open_directory(path)?;
@@ -247,6 +445,8 @@ impl DirectoryProof {
             path: path.to_path_buf(),
             identity: identity(&directory.metadata().map_err(|_| unavailable())?),
             directory,
+            #[cfg(any(target_os = "macos", test))]
+            native_ancestors: Vec::new(),
         };
         proof.validate_directory()?;
         Ok(proof)
@@ -279,6 +479,8 @@ impl DirectoryProof {
             path: self.path.join(name),
             identity: identity(&directory.metadata().map_err(|_| unavailable())?),
             directory,
+            #[cfg(any(target_os = "macos", test))]
+            native_ancestors: Vec::new(),
         };
         self.sync_directory()?;
         child.sync_directory()?;
@@ -363,6 +565,8 @@ impl DirectoryProof {
     }
 
     pub(super) fn validate_directory(&self) -> AppResult<()> {
+        #[cfg(any(target_os = "macos", test))]
+        validate_native_chain(&self.native_ancestors, owner())?;
         let held = self.directory.metadata().map_err(|_| unavailable())?;
         private_directory(&held)?;
         let named = open_directory(&self.path)?;
@@ -460,6 +664,13 @@ fn ancestor(metadata: &Metadata) -> AppResult<()> {
 }
 
 fn open_directory(path: &Path) -> AppResult<File> {
+    open_physical_directory(path, private_directory)
+}
+
+fn open_physical_directory(
+    path: &Path,
+    leaf_policy: fn(&Metadata) -> AppResult<()>,
+) -> AppResult<File> {
     let raw = path.as_os_str().as_bytes();
     if !path.is_absolute() || raw.len() > MAX_PATH_BYTES || raw == b"/" || raw.contains(&0) {
         return Err(invalid());
@@ -499,7 +710,7 @@ fn open_directory(path: &Path) -> AppResult<File> {
         edges.push((directory, name, child_identity));
         directory = child;
     }
-    private_directory(&directory.metadata().map_err(|_| unavailable())?)?;
+    leaf_policy(&directory.metadata().map_err(|_| unavailable())?)?;
     // Recheck held parents and their named children after the complete walk so
     // moving/replacing an earlier component cannot validate a detached old path.
     for (parent, name, expected) in edges {
@@ -522,3 +733,7 @@ fn open_directory(path: &Path) -> AppResult<File> {
 #[cfg(test)]
 #[path = "snowflake_table_qualification_consumption_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "snowflake_table_qualification_consumption_native_store_tests.rs"]
+mod native_store_tests;

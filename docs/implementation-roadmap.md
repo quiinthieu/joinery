@@ -1,6 +1,37 @@
 # Joinery implementation roadmap
 
-## Dedicated offline entry and remaining execution boundary (12 November 2026)
+## Fixed store and revocation boundary (12 November 2026)
+
+The internal macOS permanent store now uses a fixed namespace selected from the
+effective user's OS account record. Synthetic-home and subprocess tests exercise
+bootstrap, unsafe path rejection, concurrent consumption and reuse independent
+of output/environment. A prepared attempt also exposes a memory-only revocation
+handle; retained-owner tests cover cancellation before startup and around CREATE
+acknowledgement/completion. See the [ledger](replacement-verification.md) for
+completed verification and its limits. These are internal qualification changes;
+the command remains offline-only and no account activity occurs.
+
+The latest full repeat passes 263 tests with six default ignores, but a preceding
+repeat fails three factory cases before CREATE. Diagnostic parallel/serial
+follow-up passes without reproducing it. Keep the unconfirmed early failure
+open and investigate with the retained terminal diagnostics before claiming a
+reliable account entry; do not widen production deadlines to mask it.
+
+Next, connect one separately approved execute route to this fixed store and the
+private factory. Register interruption handling before starting, revoke future
+SQL without aborting retained completion/terminal evidence, and prove the complete
+entry with the synthetic SDK. Then present the exact table-only SQL, metadata
+scope, window, ceiling and possible billing for fresh approval under
+`SANDBOX.BILLIE_TESTING`. No approval request is pending while that entry is absent.
+
+The twelve required product areas in the [matrix](datagrip-feature-matrix.md),
+the additional applicability inventory and owner hands-on acceptance remain open.
+In particular, normal packaged SSO/recovery, actual writes/transactions/DDL,
+million-row Snowflake results/export, grid editing/import and broader daily
+workflows still require implementation and evidence. No publication or install
+is included in this increment.
+
+## Dedicated offline entry and remaining execution boundary (12 November 2026, preceding integration)
 
 The dedicated binary and narrow facade now provide offline `emit`/`verify` with
 actual-executable binding, the release build recipe, exclusive persistent Plan/

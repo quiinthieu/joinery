@@ -72,8 +72,12 @@ The private factory now allocates exclusive persistent attempt/workspace/state,
 reserves journal/terminal output before consumption and constructs Studio only
 from the consumed runtime/profile. Its retained owner covers terminal persistence
 after dropped waiters; no failure automatically removes output or refunds markers.
-The dedicated account executable and fixed permanent-store placement remain
-incomplete. See the current [verification ledger](replacement-verification.md).
+The internal permanent store now selects a fixed macOS account-home namespace;
+synthetic subprocess checks exercise concurrent consumption and reuse independent
+of output paths. Explicit revocation retains original acknowledgements and the
+terminal owner. The dedicated account executable, process interruption handling
+and complete fixed-entry acceptance remain incomplete. See the current
+[verification ledger](replacement-verification.md).
 The default staged runtime
 contains five dependency symlinks; the preceding normal macOS bundle has zero.
 Strict execution inventory must bind and fully inventory that or another zero-link
@@ -126,7 +130,9 @@ requires separate private state. Policy can consume the same reserved fresh
 journal after checking its Plan and held storage identity. The private factory
 now obtains these inputs only from the consumed envelope and retains exclusive
 output ownership through detached execution and terminal persistence. The fixed
-account entry and permanent-store placement remain required before execution.
+account entry must select the native permanent store independently of its output,
+wire retained interruption handling and pass complete synthetic-entry acceptance
+before account execution.
 
 Existing application profiles are neither read nor changed. Normal Production
 profiles still require PasswordGated; this Confirm-only runner rejects a plan
