@@ -11,6 +11,7 @@ use std::{
     fs::{File, OpenOptions},
     path::PathBuf,
 };
+use ts_rs::TS;
 
 pub(crate) const MAX_STEPS: u32 = 100;
 pub(crate) const MAX_RUNS: u32 = 10_000;
@@ -40,29 +41,30 @@ CREATE TABLE snowflake_console_steps(
  PRIMARY KEY(run_id,ordinal)
 );";
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleRunMetadata {
+pub struct ConsoleRunMetadata {
     pub run_id: String,
     pub client_request_id: String,
     pub session_id: String,
     pub connection_id: String,
     pub plan_digest: String,
     pub step_count: u32,
+    #[ts(type = "number")]
     pub created_at: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum ConsoleRunState {
+pub enum ConsoleRunState {
     Prepared,
     Running,
     Terminal,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum ConsoleErrorCode {
+pub enum ConsoleErrorCode {
     InvalidInput,
     Unsupported,
     Database,
@@ -78,9 +80,9 @@ pub(crate) enum ConsoleErrorCode {
 
 /// These observations accumulate independently of the original statement result.
 /// `delivered` and `delivery_failed` may both be true for partial publication.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleObservations {
+pub struct ConsoleObservations {
     pub delivered: bool,
     pub delivery_failed: bool,
     pub cancellation_observed: bool,
@@ -128,47 +130,47 @@ impl ConsoleObservations {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleStatement {
+pub struct ConsoleStatement {
     pub sdk_request_id: String,
     pub query_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleContext {
+pub struct ConsoleContext {
     pub database: Option<String>,
     pub schema: Option<String>,
     pub role: Option<String>,
     pub warehouse: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleAcknowledgement {
+pub struct ConsoleAcknowledgement {
     pub statement: ConsoleStatement,
     pub context: ConsoleContext,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleRejection {
+pub struct ConsoleRejection {
     pub statement: Option<ConsoleStatement>,
     pub code: ConsoleErrorCode,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleUnknown {
+pub struct ConsoleUnknown {
     pub statement: Option<ConsoleStatement>,
 }
 
 /// This evidence requires a proven negative supervisor admission, not merely
 /// absence of a report or a remote error. No SDK request identity exists here.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum ConsoleNotDispatchedReason {
+pub enum ConsoleNotDispatchedReason {
     Cancelled,
     Revoked,
     SessionClosed,
@@ -176,39 +178,40 @@ pub(crate) enum ConsoleNotDispatchedReason {
     AdmissionRejected,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleNotDispatched {
+pub struct ConsoleNotDispatched {
     pub reason: ConsoleNotDispatchedReason,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "kind",
     content = "evidence",
     rename_all = "camelCase",
     deny_unknown_fields
 )]
-pub(crate) enum ConsoleStepOutcome {
+pub enum ConsoleStepOutcome {
     Acknowledged(ConsoleAcknowledgement),
     Rejected(ConsoleRejection),
     Unknown(ConsoleUnknown),
     NotDispatched(ConsoleNotDispatched),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleStep {
+pub struct ConsoleStep {
     /// Zero-based index in the immutable prepared execution units.
     pub ordinal: u32,
+    #[ts(type = "number")]
     pub intended_at: u64,
     pub outcome: Option<ConsoleStepOutcome>,
     pub observations: ConsoleObservations,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum ConsoleStopReason {
+pub enum ConsoleStopReason {
     Completed,
     ResultLimit,
     Cancelled,
@@ -218,9 +221,9 @@ pub(crate) enum ConsoleStopReason {
     RecordingFailed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleAccounting {
+pub struct ConsoleAccounting {
     pub planned: u32,
     /// Durable intents, not proof of helper invocation or remote submission.
     pub intended: u32,
@@ -235,20 +238,22 @@ pub(crate) struct ConsoleAccounting {
     pub not_attempted: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleTerminal {
+pub struct ConsoleTerminal {
     pub reason: ConsoleStopReason,
+    #[ts(type = "number")]
     pub finished_at: u64,
     pub accounting: ConsoleAccounting,
     /// Immutable terminal-time observations; later delivery evidence is separate.
     pub observations: ConsoleObservations,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConsoleRunSnapshot {
+pub struct ConsoleRunSnapshot {
     pub metadata: ConsoleRunMetadata,
+    #[ts(type = "number")]
     pub revision: u64,
     pub state: ConsoleRunState,
     pub observations: ConsoleObservations,

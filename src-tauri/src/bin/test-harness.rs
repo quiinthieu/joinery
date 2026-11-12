@@ -38,6 +38,40 @@ struct Harness {
     streams: Mutex<HashMap<String, Stream>>,
     export_streams: Mutex<HashMap<String, ExportStream>>,
     commit_proxies: tokio::sync::Mutex<HashMap<String, CommitProxy>>,
+    #[cfg(unix)]
+    synthetic_snowflake: Option<joinery_core::snowflake_runtime::studio_fixture::Fixture>,
+    stop: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(unix)]
+fn synthetic_console_profile() -> ConnectionProfile {
+    ConnectionProfile {
+        id: "00000000-0000-4000-8000-00000000ce01".into(),
+        name: "Synthetic retained Snowflake console".into(),
+        group_id: "local".into(),
+        engine: EngineKind::Snowflake,
+        host: "joinery-synthetic.invalid.snowflakecomputing.com".into(),
+        port: 443,
+        database: "DB".into(),
+        username: "synthetic@example.test".into(),
+        environment: Environment::Local,
+        safe_mode: SafeMode::Confirm,
+        tls_mode: TlsMode::VerifyFull,
+        ca_cert_path: None,
+        ssh: None,
+        remember_password: false,
+        store_query_text: false,
+        store_drafts: false,
+        snowflake: Some(SnowflakeConfig {
+            authentication: SnowflakeAuthentication::ExternalBrowser,
+            reviewed_dml: false,
+            reviewed_ddl: false,
+            reviewed_console: true,
+            role: "ROLE".into(),
+            warehouse: "WH".into(),
+            schema: "PUBLIC".into(),
+        }),
+    }
 }
 
 fn authorized(headers: &HeaderMap, state: &Harness) -> bool {
@@ -53,14 +87,26 @@ fn arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> AppResult<T> 
 }
 
 // Snowflake profile persistence can be exercised offline. This harness must
-// never start either authentication route, even if native resources appear.
-fn allow_fixture_authentication(studio: &Studio, id: &str) -> AppResult<()> {
-    if studio
+// never load a genuine SDK. The opt-in retained-console harness owns an entirely
+// synthetic runtime and permits only its immutable fixed fixture profile.
+fn allow_fixture_authentication(state: &Harness, id: &str) -> AppResult<()> {
+    if state
+        .studio
         .bootstrap()?
         .profiles
         .iter()
         .any(|profile| profile.id == id && profile.engine == EngineKind::Snowflake)
     {
+        #[cfg(unix)]
+        if state.synthetic_snowflake.is_some()
+            && id == synthetic_console_profile().id
+            && state.studio.bootstrap()?.profiles.iter().any(|profile| {
+                serde_json::to_value(profile).ok()
+                    == serde_json::to_value(synthetic_console_profile()).ok()
+            })
+        {
+            return Ok(());
+        }
         return Err(AppError::new(
             ErrorCode::Unsupported,
             "The browser test harness does not authenticate Snowflake profiles",
@@ -81,6 +127,23 @@ async fn rpc(
     let outcome: AppResult<Value> = async {
         let studio = &state.studio;
         Ok(match command.as_str() {
+            #[cfg(unix)]
+            "test_synthetic_console_evidence" => {
+                let fixture = state.synthetic_snowflake.as_ref().ok_or_else(|| AppError::invalid("Synthetic console mode is disabled"))?;
+                json!({
+                    "queries": std::fs::read_to_string(fixture.controls.join("queries")).unwrap_or_default(),
+                    "sdkEvents": std::fs::read_to_string(fixture.controls.join("sdk-events")).unwrap_or_default()
+                })
+            }
+            #[cfg(unix)]
+            "test_synthetic_console_shutdown" => {
+                if state.synthetic_snowflake.is_none() {
+                    return Err(AppError::invalid("Synthetic console mode is disabled"));
+                }
+                studio.shutdown_and_wait().await?;
+                state.stop.notify_one();
+                Value::Null
+            }
             "test_commit_proxy_start" => {
                 let mut proxies = state.commit_proxies.lock().await;
                 if proxies.len() >= 4 {
@@ -175,7 +238,7 @@ async fn rpc(
             }
             "prepare_connection" => {
                 let id: String = arg(&args, "id")?;
-                allow_fixture_authentication(studio, &id)?;
+                allow_fixture_authentication(&state, &id)?;
                 json!(studio.prepare_connection(&id)?)
             },
             "connect_prepared" => json!(
@@ -195,7 +258,7 @@ async fn rpc(
             ).await?),
             "connect" => {
                 let id: String = arg(&args, "id")?;
-                allow_fixture_authentication(studio, &id)?;
+                allow_fixture_authentication(&state, &id)?;
                 json!(studio.connect(&id, arg(&args, "secrets")?).await?)
             },
             "disconnect" => {
@@ -229,7 +292,14 @@ async fn rpc(
                 arg::<Option<String>>(&args, "passphrase")?.as_deref(),
                 arg::<Option<String>>(&args, "confirmation")?.as_deref()
             )?),
-            "execute_plan" => {
+            "prepare_snowflake_console" => json!(studio.prepare_snowflake_console(
+                &arg::<String>(&args, "sessionId")?,
+                &arg(&args, "request")?
+            )?),
+            "snowflake_console_run" => json!(studio.snowflake_console_run(
+                &arg::<String>(&args, "clientRequestId")?
+            )?),
+            "start_snowflake_console" | "execute_plan" => {
                 let stream_id: String = arg(&args, "streamId")?;
                 uuid::Uuid::parse_str(&stream_id)
                     .map_err(|_| AppError::invalid("Invalid stream identifier"))?;
@@ -252,10 +322,7 @@ async fn rpc(
                     );
                 }
                 let owner = state.clone();
-                json!(studio.execute(
-                    &arg::<String>(&args, "planId")?,
-                    arg::<Option<String>>(&args, "approval")?.as_deref(),
-                    Arc::new(move |event| {
+                let events: joinery_core::execution::EventHandler = Arc::new(move |event| {
                         let mut streams = owner.streams.lock();
                         let Some(stream) = streams.get_mut(&stream_id) else {
                             return false;
@@ -266,8 +333,16 @@ async fn rpc(
                         stream.finished = matches!(event, QueryEvent::Finished { .. });
                         stream.events.push(event);
                         true
-                    })
-                )?)
+                    });
+                if command == "start_snowflake_console" {
+                    json!(studio.start_snowflake_console(&arg(&args, "request")?, events)?)
+                } else {
+                    json!(studio.execute(
+                        &arg::<String>(&args, "planId")?,
+                        arg::<Option<String>>(&args, "approval")?.as_deref(),
+                        events
+                    )?)
+                }
             }
             "cancel_run" => {
                 studio.cancel(&arg::<String>(&args, "runId")?).await?;
@@ -764,12 +839,37 @@ async fn main() {
         .expect("Set a dedicated disposable test data directory");
     let sandbox =
         SandboxFileDialog::new(&std::path::Path::new(&root).join("sandbox-files")).unwrap();
+    #[cfg(unix)]
+    let synthetic_snowflake =
+        if std::env::var("JOINERY_TEST_SYNTHETIC_SNOWFLAKE").as_deref() == Ok("1") {
+            Some(joinery_core::snowflake_runtime::studio_fixture::Fixture::separated())
+        } else {
+            None
+        };
+    #[cfg(unix)]
+    let studio = Studio::with_snowflake_runtime(
+        std::path::Path::new(&root),
+        Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
+        synthetic_snowflake
+            .as_ref()
+            .map(|fixture| fixture.runtime.clone()),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
     let studio = Studio::with_secrets_and_dialog(
         std::path::Path::new(&root),
         Arc::new(MemorySecrets::default()),
         sandbox.clone(),
     )
     .unwrap();
+    #[cfg(unix)]
+    if synthetic_snowflake.is_some() {
+        studio
+            .save_profile(synthetic_console_profile(), None)
+            .unwrap();
+    }
+    let stop = Arc::new(tokio::sync::Notify::new());
     let state = Arc::new(Harness {
         studio,
         sandbox,
@@ -777,6 +877,9 @@ async fn main() {
         streams: Mutex::new(HashMap::new()),
         export_streams: Mutex::new(HashMap::new()),
         commit_proxies: tokio::sync::Mutex::new(HashMap::new()),
+        #[cfg(unix)]
+        synthetic_snowflake,
+        stop: stop.clone(),
     });
     let origin = HeaderValue::from_static("http://127.0.0.1:1421");
     let router = Router::new()
@@ -805,5 +908,8 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
-    axum::serve(listener, router).await.unwrap();
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move { stop.notified().await })
+        .await
+        .unwrap();
 }

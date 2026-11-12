@@ -1,5 +1,62 @@
 use super::*;
-use crate::drivers::snowflake_external::console::ReviewedConsoleAckRecorder;
+use crate::drivers::snowflake_external::console::{
+    ReviewedConsoleAckRecorder, ReviewedConsoleAdmission,
+};
+use crate::drivers::snowflake_process::Operation;
+
+struct TestAdmission;
+impl ReviewedConsoleAdmission for TestAdmission {
+    fn admit(
+        &mut self,
+        dispatch: &mut dyn FnMut() -> AppResult<Operation>,
+    ) -> AppResult<Operation> {
+        dispatch()
+    }
+}
+
+#[tokio::test]
+async fn console_final_admission_rejection_sends_no_unit_or_suffix() {
+    struct Revoked;
+    impl ReviewedConsoleAdmission for Revoked {
+        fn admit(&mut self, _: &mut dyn FnMut() -> AppResult<Operation>) -> AppResult<Operation> {
+            Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Synthetic policy revoked",
+            ))
+        }
+    }
+    let h = console_harness(SafeMode::Confirm, true).await;
+    let before = h.queries();
+    let mut console = h.driver.claim_reviewed_console().await.unwrap();
+    let compiled = script("INSERT INTO DB.PUBLIC.T VALUES (1); COMMIT;");
+    let mut run = console
+        .begin_run(&compiled, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut sink = ConsoleSink::default();
+    let mut recorder = TestRecorder::default();
+    assert_eq!(
+        run.next(&mut sink, &mut recorder, &mut Revoked)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::PolicyBlocked
+    );
+    assert!(run.is_stopped());
+    assert_eq!(h.queries(), before);
+    assert_eq!(recorder.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(sink.events.load(Ordering::SeqCst), 0);
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(run);
+    drop(console);
+    finish_console(h).await;
+}
 use crate::drivers::snowflake_process::ReviewedAcknowledgement;
 use std::sync::atomic::AtomicUsize;
 #[derive(Default)]
@@ -196,7 +253,7 @@ async fn console_retains_one_session_across_show_result_scan_and_transaction_run
             assert_eq!(run.next_index(), index);
             let mut sink = ConsoleSink::default();
             let outcome = run
-                .next(&mut sink, &mut TestRecorder::default())
+                .next(&mut sink, &mut TestRecorder::default(), &mut TestAdmission)
                 .await
                 .unwrap()
                 .unwrap();
@@ -208,10 +265,14 @@ async fn console_retains_one_session_across_show_result_scan_and_transaction_run
         }
         assert!(run.is_terminal() && !run.is_stopped());
         assert!(
-            run.next(&mut ConsoleSink::default(), &mut TestRecorder::default())
-                .await
-                .unwrap()
-                .is_none()
+            run.next(
+                &mut ConsoleSink::default(),
+                &mut TestRecorder::default(),
+                &mut TestAdmission
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
     }
     assert_eq!(
@@ -351,7 +412,11 @@ async fn console_pre_dispatch_cancel_stops_suffix_but_allows_new_explicit_review
     {
         let mut run = console.begin_run(&compiled, token).await.unwrap();
         let outcome = run
-            .next(&mut ConsoleSink::default(), &mut TestRecorder::default())
+            .next(
+                &mut ConsoleSink::default(),
+                &mut TestRecorder::default(),
+                &mut TestAdmission,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -360,10 +425,14 @@ async fn console_pre_dispatch_cancel_stops_suffix_but_allows_new_explicit_review
         assert_eq!(run.next_index(), 0);
         assert!(run.is_terminal() && run.is_stopped());
         assert!(
-            run.next(&mut ConsoleSink::default(), &mut TestRecorder::default())
-                .await
-                .unwrap()
-                .is_none()
+            run.next(
+                &mut ConsoleSink::default(),
+                &mut TestRecorder::default(),
+                &mut TestAdmission
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
     }
     assert_eq!(h.queries(), before);
@@ -373,13 +442,17 @@ async fn console_pre_dispatch_cancel_stops_suffix_but_allows_new_explicit_review
         .await
         .unwrap();
     assert!(
-        run.next(&mut ConsoleSink::default(), &mut TestRecorder::default())
-            .await
-            .unwrap()
-            .unwrap()
-            .report
-            .unwrap()
-            .ok
+        run.next(
+            &mut ConsoleSink::default(),
+            &mut TestRecorder::default(),
+            &mut TestAdmission
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .report
+        .unwrap()
+        .ok
     );
     drop(run);
     drop(console);
@@ -403,7 +476,7 @@ async fn console_sink_failure_and_result_limit_preserve_ack_and_stop_commit_suff
             ..Default::default()
         };
         let outcome = run
-            .next(&mut sink, &mut TestRecorder::default())
+            .next(&mut sink, &mut TestRecorder::default(), &mut TestAdmission)
             .await
             .unwrap()
             .unwrap();
@@ -420,7 +493,7 @@ async fn console_sink_failure_and_result_limit_preserve_ack_and_stop_commit_suff
         assert_eq!(outcome.truncated, !fail);
         assert!(run.is_stopped());
         assert!(
-            run.next(&mut sink, &mut TestRecorder::default())
+            run.next(&mut sink, &mut TestRecorder::default(), &mut TestAdmission)
                 .await
                 .unwrap()
                 .is_none()
@@ -448,7 +521,11 @@ async fn console_post_ack_drain_failure_retains_original_ack_and_retires_without
         .await
         .unwrap();
     let outcome = run
-        .next(&mut ConsoleSink::default(), &mut TestRecorder::default())
+        .next(
+            &mut ConsoleSink::default(),
+            &mut TestRecorder::default(),
+            &mut TestAdmission,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -457,10 +534,14 @@ async fn console_post_ack_drain_failure_retains_original_ack_and_retires_without
     assert_eq!(report.certainty, Certainty::StatementSucceeded);
     assert!(run.is_stopped());
     assert!(
-        run.next(&mut ConsoleSink::default(), &mut TestRecorder::default())
-            .await
-            .unwrap()
-            .is_none()
+        run.next(
+            &mut ConsoleSink::default(),
+            &mut TestRecorder::default(),
+            &mut TestAdmission
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     assert_eq!(
         &h.queries()[before..],
@@ -486,7 +567,8 @@ async fn console_cancel_after_ack_keeps_original_evidence_and_never_dispatches_s
         recorded: Some(recorder.recorded.clone()),
         ..Default::default()
     };
-    let (outcome, ()) = tokio::join!(run.next(&mut sink, &mut recorder), async {
+    let mut admission = TestAdmission;
+    let (outcome, ()) = tokio::join!(run.next(&mut sink, &mut recorder, &mut admission), async {
         h.wait_until(|| h.scripts.path().join("held-reviewed-drain").exists())
             .await;
         cancel.cancel();
@@ -498,7 +580,12 @@ async fn console_cancel_after_ack_keeps_original_evidence_and_never_dispatches_s
     let report = outcome.report.unwrap();
     assert!(report.statement_acknowledged.is_some());
     assert_eq!(report.certainty, Certainty::StatementSucceeded);
-    assert!(run.next(&mut sink, &mut recorder).await.unwrap().is_none());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         &h.queries()[before..],
         &["INSERT INTO DB.PUBLIC.T VALUES (1)"]
@@ -523,7 +610,8 @@ async fn console_abandoned_inflight_or_incomplete_run_closes_and_cannot_resume_s
             h.settings(json!({"holdReviewedDrain":true}));
             let mut sink = ConsoleSink::default();
             let mut recorder = TestRecorder::default();
-            let future = run.next(&mut sink, &mut recorder);
+            let mut admission = TestAdmission;
+            let future = run.next(&mut sink, &mut recorder, &mut admission);
             tokio::pin!(future);
             tokio::select! {
                 result = &mut future => panic!("held drain unexpectedly finished: {}",result.is_ok()),
@@ -558,10 +646,14 @@ async fn console_revoked_nonce_and_local_stop_submit_no_unit_or_automatic_settle
         run.stop();
         assert!(run.is_stopped() && run.is_terminal());
         assert!(
-            run.next(&mut ConsoleSink::default(), &mut TestRecorder::default())
-                .await
-                .unwrap()
-                .is_none()
+            run.next(
+                &mut ConsoleSink::default(),
+                &mut TestRecorder::default(),
+                &mut TestAdmission
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
     }
     *h.driver.console_mode.lock() = Some(new_id());
@@ -643,7 +735,11 @@ async fn console_preserves_canonical_scalar_binds_and_definitive_rejection_has_n
             .await
             .unwrap();
         let outcome = run
-            .next(&mut ConsoleSink::default(), &mut TestRecorder::default())
+            .next(
+                &mut ConsoleSink::default(),
+                &mut TestRecorder::default(),
+                &mut TestAdmission,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -654,10 +750,14 @@ async fn console_preserves_canonical_scalar_binds_and_definitive_rejection_has_n
         if rejected {
             assert!(run.is_stopped());
             assert!(
-                run.next(&mut ConsoleSink::default(), &mut TestRecorder::default())
-                    .await
-                    .unwrap()
-                    .is_none()
+                run.next(
+                    &mut ConsoleSink::default(),
+                    &mut TestRecorder::default(),
+                    &mut TestAdmission
+                )
+                .await
+                .unwrap()
+                .is_none()
             );
         } else {
             run.stop();
@@ -700,7 +800,8 @@ async fn console_awaits_exactly_one_async_ack_record_before_any_sink_publication
     };
     let events = sink.events.clone();
     let outcome = {
-        let future = run.next(&mut sink, &mut recorder);
+        let mut admission = TestAdmission;
+        let future = run.next(&mut sink, &mut recorder, &mut admission);
         tokio::pin!(future);
         tokio::select! {
             result = &mut future => panic!("held recorder unexpectedly finished: {}",result.is_ok()),
@@ -722,7 +823,12 @@ async fn console_awaits_exactly_one_async_ack_record_before_any_sink_publication
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(events.load(Ordering::SeqCst) >= 3); // describe, rows, complete
     run.stop();
-    assert!(run.next(&mut sink, &mut recorder).await.unwrap().is_none());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(&h.queries()[before..], &["SELECT 1"]);
     drop(run);
     drop(console);
@@ -747,7 +853,11 @@ async fn console_ack_recording_failure_preserves_original_ack_without_publicatio
         recorded: Some(recorder.recorded.clone()),
         ..Default::default()
     };
-    let outcome = run.next(&mut sink, &mut recorder).await.unwrap().unwrap();
+    let outcome = run
+        .next(&mut sink, &mut recorder, &mut TestAdmission)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(outcome.attempted && !outcome.acknowledgement_recorded);
     assert_eq!(outcome.recording_error.unwrap().code, ErrorCode::Conflict);
     assert!(outcome.delivery_error.is_none());
@@ -757,7 +867,12 @@ async fn console_ack_recording_failure_preserves_original_ack_without_publicatio
     assert_eq!(recorder.calls.load(Ordering::SeqCst), 1);
     assert_eq!(sink.events.load(Ordering::SeqCst), 0);
     assert!(run.is_stopped());
-    assert!(run.next(&mut sink, &mut recorder).await.unwrap().is_none());
+    assert!(
+        run.next(&mut sink, &mut recorder, &mut TestAdmission)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         &h.queries()[before..],
         &["INSERT INTO DB.PUBLIC.T VALUES (1)"]

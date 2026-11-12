@@ -20,6 +20,10 @@ export default {
     let transactionId = null;
     let ddlCreated = false;
     let ddlExecuted = false;
+    let consoleValue = null;
+    let tempRows = [];
+    let transactionRows = null;
+    let lastReviewed = { names: [], types: [], values: [] };
     const context = () => {
       if (!existsSync(marker('change-after-schema-recheck')) && !existsSync(marker('drift-during-schema'))) shiftedSchema = undefined;
       if (!existsSync(marker('policy-error-after-schema-recheck'))) {
@@ -48,6 +52,8 @@ export default {
         const id = ++sequence;
         const sql = options.sqlText;
         const current = context();
+        const reviewed = options.parameters?.MULTI_STATEMENT_COUNT === 1;
+        let cancelled = false;
         const boundary = ['BEGIN TRANSACTION', 'COMMIT', 'ROLLBACK'].includes(sql);
         const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /.test(sql);
         const ddl = /^(CREATE TABLE|ALTER TABLE|DROP TABLE) /.test(sql);
@@ -57,7 +63,36 @@ export default {
         let types = ['TEXT'];
         let values = [['1']];
         let failure = null;
-        if (ddl) {
+        if (reviewed) {
+          appendFileSync(marker('reviewed-specs'), JSON.stringify({sql,binds:options.binds,parameters:options.parameters}) + '\n');
+          names = ['VALUE']; types = ['TEXT'];
+          if (sql.startsWith('SET CONSOLE_VALUE = ')) {
+            consoleValue = sql.endsWith('?') ? options.binds[0] : sql.slice(20).replace(/^'|'$/g, '');
+            names = ['status']; values = [['Statement executed successfully.']];
+          } else if (sql === 'SELECT $CONSOLE_VALUE') {
+            values = [[consoleValue]];
+          } else if (sql === 'SHOW TABLES') {
+            names = ['name']; values = [['CONSOLE_TEMP']];
+          } else if (sql === 'SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))') {
+            ({ names, types, values } = structuredClone(lastReviewed));
+          } else if (sql === 'CREATE TEMPORARY TABLE CONSOLE_TEMP (V NUMBER)') {
+            tempRows = []; names = ['status']; values = [['Statement executed successfully.']];
+          } else if (sql === 'INSERT INTO CONSOLE_TEMP VALUES (7)') {
+            tempRows.push(['7']); names = ['number of rows inserted']; types = ['FIXED']; values = [['1']];
+          } else if (sql === 'SELECT * FROM CONSOLE_TEMP') {
+            names = ['V']; types = ['FIXED']; values = structuredClone(tempRows);
+          } else if (sql === 'BEGIN' || sql === 'BEGIN TRANSACTION') {
+            transactionRows = structuredClone(tempRows); names = []; types = []; values = [];
+          } else if (sql === 'ROLLBACK' || sql === 'COMMIT') {
+            if (sql === 'ROLLBACK' && transactionRows) tempRows = transactionRows;
+            transactionRows = null; names = []; types = []; values = [];
+          } else if (sql === 'SELECT CONSOLE_REJECT' || existsSync(marker('reject-reviewed'))) {
+            failure = Object.assign(Error('synthetic reviewed SQL rejected'), { sqlState: '42000' });
+          } else {
+            values = [[sql === 'SELECT ?' ? options.binds[0] : /^SELECT [0-9]+$/.test(sql) ? sql.slice(7) : '1']];
+          }
+          if (!failure) lastReviewed = structuredClone({ names, types, values });
+        } else if (ddl) {
           ddlExecuted = true;
           names = ['status']; types = ['TEXT']; values = [['Statement executed successfully.']];
           appendFileSync(marker('ddl-effects'), JSON.stringify({ sql }) + '\n');
@@ -177,16 +212,41 @@ export default {
         const statement = {
           getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
           getColumns: () => names.map((name, index) => ({ getName: () => name, getType: () => types[index] ?? 'TEXT' })),
-          streamRows: () => Readable.from(values),
-          cancel: callback => callback(null),
+          getSessionState: () => existsSync(marker('null-reviewed-context')) ? null : ({
+            getCurrentDatabase: () => profile.database,
+            getCurrentSchema: () => context().schema,
+            getCurrentRole: () => context().role,
+            getCurrentWarehouse: () => context().warehouse,
+          }),
+          streamRows() {
+            if (reviewed && existsSync(marker('fail-reviewed-drain'))) {
+              return Readable.from((async function*() { throw {sqlState:'58000'}; })());
+            }
+            if (reviewed && existsSync(marker('hold-reviewed-drain'))) {
+              writeFileSync(marker('reviewed-drain-entered'), '');
+              return Readable.from((async function*() {
+                while (!existsSync(marker('release-reviewed-drain')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5));
+                if (cancelled) throw {sqlState:'57014'};
+                yield* values;
+              })());
+            }
+            return Readable.from(values);
+          },
+          cancel: callback => { cancelled = true; callback(null); },
         };
         setImmediate(() => {
           // Test-only loss after synthetic execution and before its response.
           // This never claims logout or real Snowflake transaction effects.
+          if (reviewed && existsSync(marker('lose-reviewed-ack'))) process.exit(0);
           if (boundary && existsSync(marker('lose-transaction-ack'))) process.exit(0);
           if (dml && existsSync(marker('lose-dml-ack'))) process.exit(0);
           if (ddl && existsSync(marker('lose-ddl-ack'))) process.exit(0);
           const complete = () => {
+            if (reviewed && existsSync(marker('hold-reviewed-ack')) && !existsSync(marker('release-reviewed-ack')) && !cancelled) {
+              writeFileSync(marker('reviewed-ack-entered'), '');
+              setTimeout(complete, 10);
+              return;
+            }
             if (boundary && existsSync(marker('hold-transaction-ack')) && !existsSync(marker('release-transaction-ack'))) {
               setTimeout(complete, 10);
               return;

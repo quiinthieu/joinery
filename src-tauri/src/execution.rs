@@ -54,6 +54,9 @@ mod snowflake_connection_tests;
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
+mod snowflake_console;
+#[cfg(all(test, unix, feature = "test-harness"))]
+mod snowflake_console_tests;
 mod snowflake_ddl;
 mod snowflake_dml;
 mod snowflake_receipts;
@@ -147,6 +150,11 @@ enum Action {
         request: SnowflakeDmlRequest,
         bound: crate::params::BoundStatement,
         database: String,
+        mode: SafeMode,
+    },
+    SnowflakeConsole {
+        request: SnowflakeConsoleRequest,
+        compiled: safety::snowflake_script::CompiledScript,
         mode: SafeMode,
     },
     SnowflakeDdl {
@@ -255,6 +263,7 @@ pub struct Studio {
     plans: Mutex<HashMap<String, StoredPlan>>,
     ddl_preflights: Mutex<HashMap<String, snowflake_ddl::Preflight>>,
     pending_snowflake_receipts: Mutex<HashMap<String, snowflake_receipts::PendingReceipt>>,
+    console: snowflake_console::State,
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
@@ -361,6 +370,7 @@ impl Studio {
             ddl_preflights: Mutex::new(HashMap::new()),
             pending_snowflake_receipts: Mutex::new(HashMap::new()),
             configuration_gate: Mutex::new(()),
+            console: snowflake_console::State::default(),
             tunnels: SshManager::default(),
             #[cfg(unix)]
             snowflake_runtime,
@@ -494,6 +504,7 @@ impl Studio {
             self.verify_passphrase(passphrase)?;
         }
         let undo = self.persistence.restore_metadata_backup(id, digest)?;
+        self.console.revoke();
         self.plans.lock().clear();
         self.ddl_preflights.lock().clear();
         // Restoration replaces settings without restarting this Studio. Fail
@@ -591,6 +602,7 @@ impl Studio {
                 self.verify_passphrase(passphrase)?;
             }
         }
+        self.console.revoke();
         self.connection_attempts.cancel_profile(&profile.id);
         self.close_profile_sessions(&profile.id);
         if profiles
@@ -662,6 +674,7 @@ impl Studio {
                     .and_then(|g| g.parent_id.as_deref());
             }
         }
+        self.console.revoke();
         self.persistence.save_group(&group)?;
         Ok(group)
     }
@@ -688,12 +701,14 @@ impl Studio {
                 "Move this group's connections and child groups before removing it",
             ));
         }
+        self.console.revoke();
         self.persistence.delete_group(id)
     }
 
     pub fn delete_profile(&self, id: &str) -> AppResult<()> {
         let _configuration = self.configuration_gate.lock();
         let profile = self.persistence.profile(id)?;
+        self.console.revoke();
         self.connection_attempts.cancel_profile(id);
         self.close_profile_sessions(id);
         if profile.remember_password {
@@ -939,6 +954,10 @@ impl Studio {
             } else {
                 None
             };
+            #[cfg(unix)]
+            let mut console_owner = None;
+            #[cfg(not(unix))]
+            let console_owner = ();
             let (driver, info): (Arc<dyn Driver>, SessionInfo) = match profile.engine {
                 EngineKind::Redis => {
                     let (driver, info) = Redis::open(
@@ -1005,9 +1024,19 @@ impl Studio {
                                     }
                                     (launch, options)
                                 };
-                                let (d, i) =
+                                let (d, mut i) =
                                     SnowflakeExternal::open(&profile, &session_id, launch, options)
                                         .await?;
+                                if profile
+                                    .snowflake
+                                    .as_ref()
+                                    .is_some_and(|c| c.reviewed_console)
+                                {
+                                    self.flush_pending_snowflake_receipts()?;
+                                    self.flush_console_recordings()?;
+                                    console_owner = Some(d.claim_reviewed_console().await?);
+                                    i.console_mode = true;
+                                }
                                 (d as Arc<dyn Driver>, i)
                             }
                             #[cfg(not(unix))]
@@ -1016,9 +1045,9 @@ impl Studio {
                     }
                 }
             };
-            Ok::<_, AppError>((driver, info, tunnel))
+            Ok::<_, AppError>((driver, info, tunnel, console_owner))
         };
-        let (driver, info, tunnel) = tokio::select! {
+        let (driver, info, tunnel, console_owner) = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(connection_cancelled()),
             outcome = setup => outcome?,
@@ -1064,6 +1093,15 @@ impl Studio {
                     ));
                 }
             }
+            #[cfg(unix)]
+            if let Some(owner) = console_owner {
+                self.console
+                    .owners
+                    .lock()
+                    .insert(session_id.clone(), Arc::new(tokio::sync::Mutex::new(owner)));
+            }
+            #[cfg(not(unix))]
+            let _ = console_owner;
             sessions.insert(
                 session_id,
                 Arc::new(Session {
@@ -1174,6 +1212,8 @@ impl Studio {
     }
 
     pub fn disconnect(&self, id: &str) {
+        #[cfg(unix)]
+        self.console.owners.lock().remove(id);
         if let Some(session) = self.sessions.lock().remove(id) {
             session.closed.store(true, Ordering::Release);
             session.driver.close();
@@ -1198,7 +1238,7 @@ impl Studio {
             .result_sessions
             .lock()
             .iter()
-            .filter(|(_, s)| s.as_str() == id)
+            .filter(|(result, s)| s.as_str() == id && !self.console.owns_result(result))
             .map(|(r, _)| r.clone())
             .collect::<Vec<_>>();
         for result in results {
@@ -1239,11 +1279,14 @@ impl Studio {
             .hash_password(passphrase.as_bytes(), &salt)
             .map_err(|_| AppError::internal("Could not create passphrase verifier"))?
             .to_string();
+        // Rotation can change the secret even if the following SQLite write
+        // fails. Revoke queued and consumed review authority before either mutation.
+        self.console.revoke();
+        self.plans.lock().clear();
+        self.ddl_preflights.lock().clear();
         self.secrets.set("write-passphrase", &hash)?;
         self.persistence
             .set_setting("passphrase-configured", "true")?;
-        self.plans.lock().clear();
-        self.ddl_preflights.lock().clear();
         Ok(())
     }
 
@@ -1288,6 +1331,12 @@ impl Studio {
         error_source: Option<ExplainSource>,
     ) -> AppResult<PreparedPlan> {
         let session = self.session(session_id)?;
+        if session.info.console_mode {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Use the whole-script review for this retained Snowflake console",
+            ));
+        }
         if error_source.is_none() && snowflake_dml::sdk_profile(&session.profile) {
             let database = session.observed_runtime.lock().as_ref().map_or_else(
                 || session.profile.database.clone(),
@@ -1422,6 +1471,7 @@ impl Studio {
         action: Action,
         bytes: usize,
     ) -> AppResult<PreparedPlan> {
+        self.console.replace_preview(&plan.session_id);
         let mut plans = self.plans.lock();
         plans.retain(|_, p| p.deadline > Instant::now());
         // A newer preview replaces earlier previews for the same session.
@@ -1445,6 +1495,22 @@ impl Studio {
                 .map_err(|_| AppError::internal("Could not fingerprint query plan"))?,
         );
         match &action {
+            Action::SnowflakeConsole {
+                request,
+                compiled,
+                mode,
+            } => fingerprint.update(
+                serde_json::to_vec(&(
+                    request,
+                    compiled
+                        .units()
+                        .iter()
+                        .map(|u| u.bound())
+                        .collect::<Vec<_>>(),
+                    mode,
+                ))
+                .map_err(|_| AppError::internal("Could not fingerprint reviewed console"))?,
+            ),
             Action::Browse { table, query } => fingerprint.update(
                 serde_json::to_vec(&(table, query))
                     .map_err(|_| AppError::internal("Could not fingerprint table filter"))?,
@@ -1579,6 +1645,7 @@ impl Studio {
                 | Action::TransactionControl { .. }
                 | Action::SnowflakeDml { .. }
                 | Action::SnowflakeDdl { .. }
+                | Action::SnowflakeConsole { .. }
         ) {
             return Err(AppError::invalid(
                 "Use the dedicated typed command to execute this prepared action",
@@ -1919,7 +1986,8 @@ impl Studio {
             Action::Browse { .. }
             | Action::TransactionControl { .. }
             | Action::SnowflakeDml { .. }
-            | Action::SnowflakeDdl { .. } => {}
+            | Action::SnowflakeDdl { .. }
+            | Action::SnowflakeConsole { .. } => {}
         }
         if let Some(summary) = &mut execution_summary {
             // Preserve the actual stop cause, including failures/cancellation
@@ -2054,6 +2122,10 @@ impl Studio {
             job.token.cancel();
             (job.session_id.clone(), job.cancellation_sent.clone())
         };
+        if self.console.is_run(run_id) {
+            // The retained owner cancels only the original helper operation and records its ACK.
+            return Ok(());
+        }
         let session = self.session(&session_id)?;
         let _gate = session.cancellation_gate.lock().await;
         if session.active_run.lock().as_deref() != Some(run_id) {
@@ -5024,10 +5096,12 @@ impl Studio {
                 )
             })?;
         self.flush_pending_snowflake_receipts()?;
+        self.flush_console_recordings()?;
         #[cfg(unix)]
         self.snowflake_cleanup
             .wait_all(Duration::from_secs(10))
             .await?;
+        self.console.release_journal();
         Ok(())
     }
 }
@@ -5916,7 +5990,7 @@ mod browse_classification_tests {
     ) -> Arc<Session> {
         let profile = profile(EngineKind::Postgres, SafeMode::ReadOnly);
         let session = Arc::new(Session {
-            info: SessionInfo { id: new_id(), connection_id: profile.id.clone(), engine: EngineKind::Postgres, server_version: "fixture".into(), latency_ms: 0, encrypted: false, capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"cancellation":true,"tableBrowsing":false,"relationBrowsing":enabled,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
+            info: SessionInfo { console_mode: false, id: new_id(), connection_id: profile.id.clone(), engine: EngineKind::Postgres, server_version: "fixture".into(), latency_ms: 0, encrypted: false, capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"cancellation":true,"tableBrowsing":false,"relationBrowsing":enabled,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
             profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), metadata_gate: Mutex::new(MetadataGate::default()), observed_runtime: Mutex::new(None),
         });
         studio
@@ -5987,7 +6061,7 @@ mod browse_classification_tests {
             ..Default::default()
         });
         let session = Arc::new(Session {
-            info: SessionInfo { id: id.clone(), connection_id: profile.id.clone(), engine: EngineKind::Snowflake,
+            info: SessionInfo { console_mode: false, id: id.clone(), connection_id: profile.id.clone(), engine: EngineKind::Snowflake,
                 server_version: "synthetic".into(), latency_ms: 0, encrypted: true,
                 capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"explicitTransactionControls":true,"cancellation":true,"tableBrowsing":false,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
             profile, driver: driver.clone(), lane: tokio::sync::Mutex::new(()),
@@ -6924,6 +6998,7 @@ mod browse_classification_tests {
                         id.clone(),
                         Arc::new(Session {
                             info: SessionInfo {
+                                console_mode: false,
                                 id: id.clone(),
                                 connection_id: saved.id.clone(),
                                 engine,
@@ -7021,6 +7096,7 @@ mod browse_classification_tests {
             session_id.clone(),
             Arc::new(Session {
                 info: SessionInfo {
+                    console_mode: false,
                     id: session_id.clone(),
                     connection_id: saved.id.clone(),
                     engine: EngineKind::Postgres,
@@ -7213,6 +7289,7 @@ mod browse_classification_tests {
             session_id.clone(),
             Arc::new(Session {
                 info: SessionInfo {
+                    console_mode: false,
                     id: session_id.clone(),
                     connection_id: saved.id.clone(),
                     engine: EngineKind::Postgres,

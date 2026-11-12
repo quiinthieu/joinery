@@ -1,5 +1,5 @@
 //! Private retained-session authority. This is not a public approval/IPC boundary.
-use super::super::snowflake_process::{ReviewedAcknowledgement, ReviewedContext};
+use super::super::snowflake_process::{Operation, ReviewedAcknowledgement, ReviewedContext};
 use super::*;
 use crate::safety::snowflake_script::CompiledScript;
 use tokio::sync::MutexGuard;
@@ -10,6 +10,14 @@ use tokio::sync::MutexGuard;
 #[async_trait]
 pub(crate) trait ReviewedConsoleAckRecorder: Send {
     async fn record_ack(&mut self, acknowledgement: &ReviewedAcknowledgement) -> AppResult<()>;
+}
+
+/// The execution owner serializes final policy checks and durable intent with
+/// actual supervisor admission. `dispatch` is single use and performs no await.
+/// Lock ordering is owner configuration gate, then driver console ownership.
+pub(crate) trait ReviewedConsoleAdmission: Send {
+    fn admit(&mut self, dispatch: &mut dyn FnMut() -> AppResult<Operation>)
+    -> AppResult<Operation>;
 }
 
 struct AckRecording {
@@ -245,6 +253,7 @@ impl ReviewedConsoleRun<'_> {
         &mut self,
         sink: &mut dyn QuerySink,
         recorder: &mut dyn ReviewedConsoleAckRecorder,
+        admission: &mut dyn ReviewedConsoleAdmission,
     ) -> AppResult<Option<ReviewedConsoleUnitOutcome>> {
         if self.terminal {
             return Ok(None);
@@ -323,11 +332,17 @@ impl ReviewedConsoleRun<'_> {
             }));
         }
         let driver = self.console.driver.clone();
-        let admitted = {
+        let mut dispatched = false;
+        let admitted = admission.admit(&mut || {
+            if std::mem::replace(&mut dispatched, true) {
+                return Err(AppError::new(ErrorCode::PolicyBlocked, "Console dispatch was already admitted"));
+            }
             // start_shutdown/cancel serialize their immediate local revocation
-            // under this same lock. No await or callback lies before request.
+            // under this same lock. The owner's configuration gate is outermost.
             let mode = driver.console_mode.lock();
-            if driver.is_closed() || mode.as_deref() != Some(self.console.nonce.as_str()) {
+            if self.cancellation.is_cancelled() {
+                Err(AppError::new(ErrorCode::Cancelled, "Reviewed console run cancelled before dispatch"))
+            } else if driver.is_closed() || mode.as_deref() != Some(self.console.nonce.as_str()) {
                 Err(closed_error())
             } else {
                 driver.process.request("reviewed-console", "reviewedSql", json!({
@@ -337,7 +352,7 @@ impl ReviewedConsoleRun<'_> {
                     "maxBytes": metadata::STANDARD_QUERY_MAX_BYTES,
                 }), Impact::Mutating).map_err(control_error)
             }
-        };
+        });
         let mut operation = match admitted {
             Ok(operation) => operation,
             Err(error) => {

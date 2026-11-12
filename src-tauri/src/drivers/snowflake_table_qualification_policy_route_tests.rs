@@ -54,6 +54,7 @@ fn context() -> LiveContext {
 
 fn startup() -> SessionInfo {
     SessionInfo {
+        console_mode: false,
         id: "console-session".into(),
         connection_id: "connection".into(),
         engine: EngineKind::Snowflake,

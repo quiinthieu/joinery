@@ -69,6 +69,7 @@ fn check<'a>(
 
 fn info() -> SessionInfo {
     SessionInfo {
+        console_mode: false,
         id: "session".into(),
         connection_id: "connection".into(),
         engine: EngineKind::Snowflake,

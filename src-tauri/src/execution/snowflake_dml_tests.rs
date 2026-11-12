@@ -74,6 +74,7 @@ fn sdk_dml_fixture(
     });
     let session = Arc::new(Session {
         info: SessionInfo {
+            console_mode: false,
             id: id.clone(),
             connection_id: profile.id.clone(),
             engine: EngineKind::Snowflake,

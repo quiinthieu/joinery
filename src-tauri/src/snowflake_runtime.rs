@@ -1075,8 +1075,9 @@ mod tests {
 // Test-only resource tree: real core helper/guard and pinned Node, synthetic SDK
 // and source verifier. Only private fixture pins change; production main has no
 // profile, IPC or environment bypass. Actual transport proof uses the real SDK.
-#[cfg(all(test, feature = "test-harness"))]
-pub(crate) mod studio_fixture {
+#[cfg(feature = "test-harness")]
+#[doc(hidden)]
+pub mod studio_fixture {
     use super::*;
     use serde_json::json;
     use std::os::unix::fs::MetadataExt;
@@ -1300,6 +1301,12 @@ pub(crate) mod studio_fixture {
                 state,
                 controls,
             }
+        }
+    }
+
+    impl Default for Fixture {
+        fn default() -> Self {
+            Self::new()
         }
     }
 

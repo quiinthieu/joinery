@@ -202,6 +202,35 @@ pub async fn authorize_plan(
 }
 
 #[tauri::command]
+pub async fn prepare_snowflake_console(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SnowflakeConsoleRequest,
+) -> AppResult<SnowflakeConsolePlan> {
+    studio.prepare_snowflake_console(&session_id, &request)
+}
+
+#[tauri::command]
+pub async fn start_snowflake_console(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeConsoleStart,
+    on_event: Channel<QueryEvent>,
+) -> AppResult<SnowflakeConsoleStartResult> {
+    studio.inner().start_snowflake_console(
+        &request,
+        Arc::new(move |event| on_event.send(event).is_ok()),
+    )
+}
+
+#[tauri::command]
+pub async fn snowflake_console_run(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<Option<SnowflakeConsoleRunView>> {
+    studio.snowflake_console_run(&client_request_id)
+}
+
+#[tauri::command]
 pub async fn execute_plan(
     studio: State<'_, Arc<Studio>>,
     plan_id: String,

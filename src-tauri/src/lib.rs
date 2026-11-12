@@ -2,6 +2,7 @@ use serde::Serialize;
 
 pub mod compare;
 pub mod connection_attempts;
+pub mod console_contract;
 pub mod ddl;
 pub mod domain;
 pub mod drivers;
@@ -172,6 +173,9 @@ pub fn run() {
             commands::prepare_execution,
             commands::prepare_explain,
             commands::authorize_plan,
+            commands::prepare_snowflake_console,
+            commands::start_snowflake_console,
+            commands::snowflake_console_run,
             commands::execute_plan,
             commands::cancel_run,
             commands::completion_catalog,

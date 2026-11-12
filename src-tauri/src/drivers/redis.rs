@@ -101,6 +101,7 @@ impl Redis {
         };
         let wire = options.connect().await?;
         let info = SessionInfo {
+            console_mode: false,
             id: session.into(),
             connection_id: profile.id.clone(),
             engine: EngineKind::Redis,

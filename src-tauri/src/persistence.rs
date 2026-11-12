@@ -174,6 +174,36 @@ impl Persistence {
         tx.commit().map_err(db_error)
     }
 
+    /// A console outbox may retry after an uncertain local commit. An existing
+    /// identity must contain the exact original payload, never a replacement.
+    pub(crate) fn record_history_once(&self, entry: &HistoryEntry) -> AppResult<()> {
+        let json = serde_json::to_string(entry)
+            .map_err(|_| AppError::internal("Could not encode history"))?;
+        let mut conn = self.connection.lock();
+        let tx = conn.transaction().map_err(db_error)?;
+        tx.execute(
+            "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",
+            params![entry.id, entry.started_at as i64, json],
+        )
+        .map_err(db_error)?;
+        let stored: (i64, String) = tx
+            .query_row(
+                "SELECT started_at,json FROM history WHERE id=?1",
+                [&entry.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(db_error)?;
+        if stored != (entry.started_at as i64, json) {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "History identity already contains different evidence",
+            ));
+        }
+        let cutoff = now_ms().saturating_sub(30 * 24 * 60 * 60 * 1000);
+        tx.execute("DELETE FROM history WHERE started_at < ?1 OR id IN (SELECT id FROM history ORDER BY started_at DESC LIMIT -1 OFFSET 10000)", [cutoff as i64]).map_err(db_error)?;
+        tx.commit().map_err(db_error)
+    }
+
     pub fn history(&self, search: &str) -> AppResult<Vec<HistoryEntry>> {
         let entries: Vec<HistoryEntry> =
             self.json_rows("SELECT json FROM history ORDER BY started_at DESC LIMIT 1000")?;
@@ -222,6 +252,47 @@ impl Persistence {
             )
             .map_err(db_error)?;
         Ok(())
+    }
+
+    pub(crate) fn record_audit_once(&self, entry: &AuditEntry) -> AppResult<()> {
+        let timestamp = i64::try_from(entry.occurred_at)
+            .map_err(|_| AppError::invalid("Invalid audit timestamp"))?;
+        let mut conn = self.connection.lock();
+        let tx = conn.transaction().map_err(db_error)?;
+        tx.execute(
+            "INSERT INTO audit(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
+            params![entry.id, timestamp, entry.connection_id, entry.action, entry.digest, entry.outcome],
+        ).map_err(db_error)?;
+        let stored: (i64, String, String, String, String) = tx
+            .query_row(
+                "SELECT occurred_at,connection_id,action,digest,outcome FROM audit WHERE id=?1",
+                [&entry.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .map_err(db_error)?;
+        if stored
+            != (
+                timestamp,
+                entry.connection_id.clone(),
+                entry.action.clone(),
+                entry.digest.clone(),
+                entry.outcome.clone(),
+            )
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Audit identity already contains different evidence",
+            ));
+        }
+        tx.commit().map_err(db_error)
     }
 }
 
@@ -783,6 +854,55 @@ mod tests {
                 .unwrap()
                 .contains_key("executionSummary")
         );
+    }
+
+    #[test]
+    fn console_outbox_retries_preserve_exact_audit_and_history_across_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        let mut audit = AuditEntry {
+            id: format!("{}:started", new_id()),
+            occurred_at: now_ms(),
+            connection_id: "synthetic".into(),
+            action: "snowflake-console".into(),
+            digest: "a".repeat(64),
+            outcome: "started".into(),
+        };
+        let mut history = HistoryEntry {
+            id: new_id(),
+            connection_id: "synthetic".into(),
+            connection_name: "Synthetic".into(),
+            started_at: now_ms(),
+            sql: None,
+            statement_count: 2,
+            status: RunStatus::Failed,
+            elapsed_ms: 7,
+            execution_summary: None,
+            snowflake_dml: None,
+            snowflake_ddl: None,
+        };
+        db.record_audit_once(&audit).unwrap();
+        db.record_history_once(&history).unwrap();
+        drop(db);
+        let db = Persistence::open(root.path()).unwrap();
+        // Model a lost commit return: replay the same retained payload after
+        // reopening SQLite, without appending or replacing evidence.
+        db.record_audit_once(&audit).unwrap();
+        db.record_history_once(&history).unwrap();
+        assert_eq!(db.audit_log().unwrap().len(), 1);
+        assert_eq!(db.history("").unwrap().len(), 1);
+        audit.outcome = "completed".into();
+        history.status = RunStatus::Completed;
+        assert_eq!(
+            db.record_audit_once(&audit).unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            db.record_history_once(&history).unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(db.audit_log().unwrap()[0].outcome, "started");
+        assert_eq!(db.history("").unwrap()[0].status, RunStatus::Failed);
     }
 
     #[test]

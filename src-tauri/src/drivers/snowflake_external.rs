@@ -379,6 +379,7 @@ impl SnowflakeExternal {
             .filter(|v| !v.is_empty())
             .ok_or_else(protocol_error)?;
         let info = SessionInfo {
+            console_mode: false,
             id: session_id.into(),
             connection_id: profile.id.clone(),
             engine: EngineKind::Snowflake,

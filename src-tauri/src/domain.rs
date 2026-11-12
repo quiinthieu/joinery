@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use crate::console_contract::*;
 pub use crate::relation_inspection::*;
 
 pub use crate::ddl::{
@@ -160,6 +161,10 @@ pub struct SessionInfo {
     pub latency_ms: u32,
     pub encrypted: bool,
     pub capabilities: EngineCapabilities,
+    /// Permanent reviewed-console ownership; background SQL must stay paused.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub console_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

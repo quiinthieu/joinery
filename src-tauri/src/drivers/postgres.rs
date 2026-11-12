@@ -133,6 +133,7 @@ impl Postgres {
             context_fingerprint: None,
         };
         let info = SessionInfo {
+            console_mode: false,
             id: session_id.into(),
             connection_id: profile.id.clone(),
             engine: EngineKind::Postgres,
