@@ -91,6 +91,7 @@ import type {
   SnowflakeConsoleStart,
   SnowflakeConsoleStartResult,
   SnowflakeConsoleRunView,
+  SnowflakeConsoleRequestLookup,
 } from "./generated";
 
 /**
@@ -105,6 +106,10 @@ export interface JoineryCommandMap {
   start_snowflake_console: {
     args: { request: SnowflakeConsoleStart; onEvent?: unknown; streamId?: string };
     result: SnowflakeConsoleStartResult;
+  };
+  snowflake_console_request: {
+    args: { clientRequestId: string };
+    result: SnowflakeConsoleRequestLookup | null;
   };
   snowflake_console_run: {
     args: { clientRequestId: string };

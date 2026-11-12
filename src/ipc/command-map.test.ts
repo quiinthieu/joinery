@@ -26,6 +26,7 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       prepareSnowflakeConsole: vi.fn(),
       startSnowflakeConsole: vi.fn(),
       snowflakeConsoleRun: vi.fn(),
+      snowflakeConsoleRequest: vi.fn(),
       exportData: vi.fn(),
       range: vi.fn(),
     };

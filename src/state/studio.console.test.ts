@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, expect, test, vi } from "vitest";
 import { client } from "../ipc/client";
-import type { QueryEvent, ResultInfo } from "../ipc/generated";
+import type { QueryEvent, ResultInfo, SnowflakeConsoleRequestLookup } from "../ipc/generated";
 import {
   useStudio,
   revokeSchemaSelectionBeforeWork,
@@ -16,7 +16,7 @@ import {
   receiptView,
 } from "../features/studio/SnowflakeConsole.test-fixtures";
 vi.mock("../ipc/client", () => ({
-  client: { call: vi.fn(), startSnowflakeConsole: vi.fn(), snowflakeConsoleRun: vi.fn() },
+  client: { call: vi.fn(), startSnowflakeConsole: vi.fn(), snowflakeConsoleRequest: vi.fn() },
   messageOf: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
 const initial = { ...useStudio.getState() };
@@ -45,7 +45,10 @@ beforeEach(() => {
     true,
   );
   vi.mocked(client.call).mockResolvedValue(null);
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(receiptView());
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+    kind: "started",
+    view: receiptView(),
+  });
   vi.mocked(client.startSnowflakeConsole).mockResolvedValue({ kind: "started", runId });
 });
 afterEach(() => {
@@ -66,7 +69,7 @@ test("lost start response reconciles the same durable request once without resen
     }),
     expect.any(Function),
   );
-  expect(client.snowflakeConsoleRun).toHaveBeenCalledWith(clientId);
+  expect(client.snowflakeConsoleRequest).toHaveBeenCalledWith(clientId);
   expect(useStudio.getState().tabs[0].status).toBe("stopped");
   expect(
     useStudio.getState().snowflakeConsoleReceipts[clientId].view?.run.steps[0].outcome?.kind,
@@ -78,7 +81,7 @@ test("lost start response reconciles the same durable request once without resen
 test("null lookup retains the correlation and blocks a second start", async () => {
   const tab = setup();
   vi.mocked(client.startSnowflakeConsole).mockRejectedValue(new Error("lost"));
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(null);
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(null);
   await useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
   await useStudio.getState().refreshSnowflakeConsole(clientId);
   await expect(useStudio.getState().startSnowflakeConsole(tab, plan, "again")).rejects.toThrow(
@@ -92,7 +95,10 @@ test("null lookup retains the correlation and blocks a second start", async () =
 });
 test("terminal pending recording blocks another run while preserving the original ACK", async () => {
   const tab = setup();
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(receiptView({ pendingRecording: true }));
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+    kind: "started",
+    view: receiptView({ pendingRecording: true }),
+  });
   await useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
   await expect(useStudio.getState().startSnowflakeConsole(tab, plan, "again")).rejects.toThrow(
     /Reconcile/,
@@ -109,7 +115,7 @@ test("cancellation before start response recovers the original run ID without a 
   const view = receiptView();
   view.run.state = "running";
   view.run.terminal = null;
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(view);
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({ kind: "started", view: view });
   const work = useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
   await useStudio.getState().cancelSnowflakeConsole(clientId);
   expect(client.call).toHaveBeenCalledWith("cancel_run", { runId });
@@ -122,10 +128,10 @@ test.each(["edit", "rebind", "close"])(
   "%s keeps the receipt and prevents late result publication",
   async (action) => {
     const tab = setup();
-    const lookup = deferred<ReturnType<typeof receiptView>>();
-    vi.mocked(client.snowflakeConsoleRun).mockReturnValue(lookup.promise);
+    const lookup = deferred<SnowflakeConsoleRequestLookup>();
+    vi.mocked(client.snowflakeConsoleRequest).mockReturnValue(lookup.promise);
     const work = useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
-    await vi.waitFor(() => expect(client.snowflakeConsoleRun).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(client.snowflakeConsoleRequest).toHaveBeenCalledOnce());
     if (action === "edit")
       useStudio.getState().updateTab(tab, { revision: 99, sql: "SELECT 'new'", status: "idle" });
     else if (action === "rebind")
@@ -143,7 +149,7 @@ test.each(["edit", "rebind", "close"])(
         table: null,
       },
     ];
-    lookup.resolve(view);
+    lookup.resolve({ kind: "started", view });
     await work;
     expect(useStudio.getState().snowflakeConsoleReceipts[clientId].view?.run.metadata.runId).toBe(
       runId,
@@ -158,13 +164,13 @@ test("foreign or stale lookup cannot replace retained original evidence", async 
   const original = useStudio.getState().snowflakeConsoleReceipts[clientId].view;
   const stale = receiptView();
   stale.run.revision = 1;
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(stale);
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({ kind: "started", view: stale });
   await useStudio.getState().refreshSnowflakeConsole(clientId);
   expect(useStudio.getState().snowflakeConsoleReceipts[clientId].view).toBe(original);
   expect(consoleReceiptHeld(useStudio.getState().snowflakeConsoleReceipts[clientId])).toBe(true);
   const foreign = receiptView();
   foreign.run.metadata.sessionId = "different";
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(foreign);
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({ kind: "started", view: foreign });
   await useStudio.getState().refreshSnowflakeConsole(clientId);
   expect(useStudio.getState().snowflakeConsoleReceipts[clientId].view).toBe(original);
 });
@@ -252,7 +258,10 @@ test.each(["edit", "close", "rebind"])(
     emit({ type: "finished", runId, status: "completed", elapsedMs: 1 });
     expect(isConsoleOwnedResult(result)).toBe(true);
     expect(client.call).not.toHaveBeenCalledWith("release_result", { resultId: result.id });
-    vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(receiptView({ results: [result] }));
+    vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+      kind: "started",
+      view: receiptView({ results: [result] }),
+    });
     start.resolve({ kind: "started", runId });
     await work;
     await useStudio.getState().openSnowflakeConsoleResults(clientId);
@@ -266,7 +275,10 @@ test.each(["edit", "close", "rebind"])(
 test("closing and clearing console tabs never releases receipt-owned native rows", async () => {
   const tab = setup();
   const result = retainedResult();
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(receiptView({ results: [result] }));
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+    kind: "started",
+    view: receiptView({ results: [result] }),
+  });
   await useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
   useStudio.getState().closeTab(tab);
   expect(client.call).not.toHaveBeenCalledWith("release_result", { resultId: result.id });
@@ -275,7 +287,7 @@ test("closing and clearing console tabs never releases receipt-owned native rows
   // A second reviewed start may clear tab publication, but the first receipt owns its rows.
   vi.spyOn(crypto, "randomUUID").mockReturnValue("33333333-3333-4333-8333-333333333333");
   vi.mocked(client.startSnowflakeConsole).mockRejectedValue(new Error("lost"));
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(null);
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(null);
   await useStudio.getState().startSnowflakeConsole(reopened, plan, "approval");
   expect(client.call).not.toHaveBeenCalledWith("release_result", { resultId: result.id });
 });
@@ -287,7 +299,10 @@ test("opening restored rows uses only receipt lookup and does not bind a replace
     tabs: [],
   });
   const result = retainedResult();
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(receiptView({ results: [result] }));
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+    kind: "started",
+    view: receiptView({ results: [result] }),
+  });
   await useStudio.getState().openSnowflakeConsoleResults(clientId);
   const tab = useStudio.getState().tabs[0];
   expect(tab).toMatchObject({
@@ -296,7 +311,7 @@ test("opening restored rows uses only receipt lookup and does not bind a replace
     results: [result],
     dataSessionId: session.id,
   });
-  expect(client.snowflakeConsoleRun).toHaveBeenCalledWith(clientId);
+  expect(client.snowflakeConsoleRequest).toHaveBeenCalledWith(clientId);
   expect(client.startSnowflakeConsole).not.toHaveBeenCalled();
   expect(client.call).not.toHaveBeenCalled();
 });
@@ -324,20 +339,27 @@ test("matching native NotAdmitted settles only this identity and permits a fresh
   const receipt = useStudio.getState().snowflakeConsoleReceipts[clientId];
   expect(receipt.notAdmitted).toBe("approvalExpired");
   expect(consoleReceiptHeld(receipt)).toBe(false);
-  expect(restoredConsoleReceipts()).toEqual({});
-  expect(client.snowflakeConsoleRun).not.toHaveBeenCalled();
+  expect(Object.keys(restoredConsoleReceipts())).toEqual([clientId]);
+  expect(client.snowflakeConsoleRequest).not.toHaveBeenCalled();
   expect(client.startSnowflakeConsole).toHaveBeenCalledOnce();
   expect(useStudio.getState().tabs[0].status).toBe("failed");
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+    kind: "notAdmitted",
+    clientRequestId: clientId,
+    sessionId: session.id,
+    planDigest: plan.digest,
+    code: "approvalExpired",
+  });
   await useStudio.getState().refreshSnowflakeConsole(clientId);
   await useStudio.getState().cancelSnowflakeConsole(clientId);
   expect(client.call).not.toHaveBeenCalled();
-  expect(client.snowflakeConsoleRun).not.toHaveBeenCalled();
+  expect(client.snowflakeConsoleRequest).toHaveBeenCalledOnce();
 });
 test.each(["foreign", "afterEvent"])(
   "%s negative response cannot settle possible original admission",
   async (caseName) => {
     const tab = setup();
-    vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(null);
+    vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(null);
     vi.mocked(client.startSnowflakeConsole).mockImplementation(async (_request, emit) => {
       if (caseName === "afterEvent") emit({ type: "started", runId });
       return {
@@ -354,5 +376,220 @@ test.each(["foreign", "afterEvent"])(
     expect(consoleReceiptHeld(receipt)).toBe(true);
     expect(Object.keys(restoredConsoleReceipts())).toEqual([clientId]);
     expect(client.startSnowflakeConsole).toHaveBeenCalledOnce();
+  },
+);
+
+function rejection(): Extract<SnowflakeConsoleRequestLookup, { kind: "notAdmitted" }> {
+  return {
+    kind: "notAdmitted",
+    clientRequestId: clientId,
+    sessionId: session.id,
+    planDigest: plan.digest,
+    code: "approvalExpired",
+  };
+}
+test("lost refusal response is recovered from the authoritative request decision without resending", async () => {
+  const tab = setup();
+  vi.mocked(client.startSnowflakeConsole).mockRejectedValue(new Error("lost refusal response"));
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(rejection());
+  await useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
+  const receipt = useStudio.getState().snowflakeConsoleReceipts[clientId];
+  expect(receipt.notAdmitted).toBe("approvalExpired");
+  expect(consoleReceiptHeld(receipt)).toBe(false);
+  expect(client.startSnowflakeConsole).toHaveBeenCalledOnce();
+  expect(client.snowflakeConsoleRequest).toHaveBeenCalledWith(clientId);
+  expect(client.call).not.toHaveBeenCalled();
+  expect(Object.keys(restoredConsoleReceipts())).toEqual([clientId]);
+});
+test("restart restores only the opaque identity and recovers its negative proof without session or SQL", async () => {
+  const tab = setup();
+  vi.mocked(client.startSnowflakeConsole).mockResolvedValue(rejection());
+  await useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
+  const restored = restoredConsoleReceipts();
+  expect(restored[clientId]).toEqual({ clientRequestId: clientId, lookupPending: true });
+  expect(consoleReceiptHeld(restored[clientId])).toBe(true);
+  useStudio.setState({ tabs: [], sessions: {}, snowflakeConsoleReceipts: restored });
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(rejection());
+  await useStudio.getState().refreshSnowflakeConsole(clientId);
+  expect(useStudio.getState().snowflakeConsoleReceipts[clientId]).toMatchObject({
+    sessionId: session.id,
+    planDigest: plan.digest,
+    notAdmitted: "approvalExpired",
+    lookupPending: false,
+  });
+  expect(consoleReceiptHeld(useStudio.getState().snowflakeConsoleReceipts[clientId])).toBe(false);
+  expect(client.startSnowflakeConsole).toHaveBeenCalledOnce();
+  expect(client.call).not.toHaveBeenCalled();
+  expect(localStorage.getItem("joinery.snowflakeConsoleReceipts.v1")).toBe(
+    JSON.stringify([clientId]),
+  );
+});
+test.each(["client", "session", "digest", "positiveRun"])(
+  "%s contradiction cannot replace retained positive proof with a refusal",
+  async (which) => {
+    const tab = setup();
+    await useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
+    const original = useStudio.getState().snowflakeConsoleReceipts[clientId].view;
+    const decision = rejection();
+    if (which === "client") decision.clientRequestId = "33333333-3333-4333-8333-333333333333";
+    if (which === "session") decision.sessionId = "other-session";
+    if (which === "digest") decision.planDigest = "b".repeat(64);
+    vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(decision);
+    await useStudio.getState().refreshSnowflakeConsole(clientId);
+    const receipt = useStudio.getState().snowflakeConsoleReceipts[clientId];
+    expect(receipt.view).toBe(original);
+    expect(receipt.notAdmitted).toBeUndefined();
+    expect(consoleReceiptHeld(receipt)).toBe(true);
+    expect(client.startSnowflakeConsole).toHaveBeenCalledOnce();
+  },
+);
+test.each(["positive", "changedCode", "null", "error"])(
+  "%s after negative proof keeps original proof but holds reconciliation",
+  async (which) => {
+    useStudio.setState({
+      snowflakeConsoleReceipts: {
+        [clientId]: {
+          clientRequestId: clientId,
+          sessionId: session.id,
+          planDigest: plan.digest,
+          notAdmitted: "approvalExpired",
+          lookupPending: false,
+        },
+      },
+    });
+    if (which === "positive")
+      vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+        kind: "started",
+        view: receiptView(),
+      });
+    else if (which === "changedCode")
+      vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+        ...rejection(),
+        code: "policyBlocked",
+      });
+    else if (which === "null") vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(null);
+    else
+      vi.mocked(client.snowflakeConsoleRequest).mockRejectedValue(new Error("lookup unavailable"));
+    await useStudio.getState().refreshSnowflakeConsole(clientId);
+    const receipt = useStudio.getState().snowflakeConsoleReceipts[clientId];
+    expect(receipt.notAdmitted).toBe("approvalExpired");
+    expect(receipt.view).toBeUndefined();
+    expect(consoleReceiptHeld(receipt)).toBe(true);
+    expect(client.startSnowflakeConsole).not.toHaveBeenCalled();
+    expect(client.call).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["client", "session", "digest"])(
+  "a %s-mismatched negative cannot settle a request with no positive evidence",
+  async (which) => {
+    useStudio.setState({
+      snowflakeConsoleReceipts: {
+        [clientId]: {
+          clientRequestId: clientId,
+          sessionId: session.id,
+          planDigest: plan.digest,
+          lookupPending: true,
+        },
+      },
+    });
+    const decision = rejection();
+    if (which === "client") decision.clientRequestId = "33333333-3333-4333-8333-333333333333";
+    if (which === "session") decision.sessionId = "other-session";
+    if (which === "digest") decision.planDigest = "b".repeat(64);
+    vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(decision);
+    await useStudio.getState().refreshSnowflakeConsole(clientId);
+    const receipt = useStudio.getState().snowflakeConsoleReceipts[clientId];
+    expect(receipt.notAdmitted).toBeUndefined();
+    expect(receipt.sessionId).toBe(session.id);
+    expect(receipt.planDigest).toBe(plan.digest);
+    expect(consoleReceiptHeld(receipt)).toBe(true);
+    expect(client.startSnowflakeConsole).not.toHaveBeenCalled();
+    expect(client.call).not.toHaveBeenCalled();
+  },
+);
+
+test("negative then positive then original negative preserves a sticky contradiction hold", async () => {
+  useStudio.setState({
+    snowflakeConsoleReceipts: {
+      [clientId]: {
+        clientRequestId: clientId,
+        sessionId: session.id,
+        planDigest: plan.digest,
+        notAdmitted: "approvalExpired",
+        lookupPending: false,
+      },
+    },
+  });
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue({
+    kind: "started",
+    view: receiptView(),
+  });
+  await useStudio.getState().refreshSnowflakeConsole(clientId);
+  expect(useStudio.getState().snowflakeConsoleReceipts[clientId].decisionConflict).toBe(true);
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(rejection());
+  await useStudio.getState().refreshSnowflakeConsole(clientId);
+  const receipt = useStudio.getState().snowflakeConsoleReceipts[clientId];
+  expect(receipt.notAdmitted).toBe("approvalExpired");
+  expect(receipt.view).toBeUndefined();
+  expect(receipt.decisionConflict).toBe(true);
+  expect(consoleReceiptHeld(receipt)).toBe(true);
+  expect(client.startSnowflakeConsole).not.toHaveBeenCalled();
+  expect(client.call).not.toHaveBeenCalled();
+});
+test.each(["null", "error"])(
+  "a %s lookup can recover a previous negative only through a matching decision",
+  async (which) => {
+    useStudio.setState({
+      snowflakeConsoleReceipts: {
+        [clientId]: {
+          clientRequestId: clientId,
+          sessionId: session.id,
+          planDigest: plan.digest,
+          notAdmitted: "approvalExpired",
+          lookupPending: false,
+        },
+      },
+    });
+    if (which === "null") vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(null);
+    else
+      vi.mocked(client.snowflakeConsoleRequest).mockRejectedValue(new Error("temporary failure"));
+    await useStudio.getState().refreshSnowflakeConsole(clientId);
+    expect(consoleReceiptHeld(useStudio.getState().snowflakeConsoleReceipts[clientId])).toBe(true);
+    vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(rejection());
+    await useStudio.getState().refreshSnowflakeConsole(clientId);
+    expect(consoleReceiptHeld(useStudio.getState().snowflakeConsoleReceipts[clientId])).toBe(false);
+    expect(
+      useStudio.getState().snowflakeConsoleReceipts[clientId].decisionConflict,
+    ).toBeUndefined();
+  },
+);
+
+test.each(["response", "event"])(
+  "an in-flight positive %s after a recovered negative latches the contradiction",
+  async (which) => {
+    const tab = setup();
+    const start = deferred<{ kind: "started"; runId: string }>();
+    let emit!: (event: QueryEvent) => void;
+    vi.mocked(client.startSnowflakeConsole).mockImplementation((_request, onEvent) => {
+      emit = onEvent;
+      return start.promise;
+    });
+    const work = useStudio.getState().startSnowflakeConsole(tab, plan, "approval");
+    vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(rejection());
+    await useStudio.getState().refreshSnowflakeConsole(clientId);
+    expect(consoleReceiptHeld(useStudio.getState().snowflakeConsoleReceipts[clientId])).toBe(false);
+    if (which === "event") emit({ type: "result", result: retainedResult() });
+    start.resolve({ kind: "started", runId });
+    await work;
+    const receipt = useStudio.getState().snowflakeConsoleReceipts[clientId];
+    expect(receipt.notAdmitted).toBe("approvalExpired");
+    expect(receipt.decisionConflict).toBe(true);
+    expect(consoleReceiptHeld(receipt)).toBe(true);
+    if (which === "event") expect(isConsoleOwnedResult(retainedResult())).toBe(true);
+    expect(client.startSnowflakeConsole).toHaveBeenCalledOnce();
+    expect(client.call).not.toHaveBeenCalledWith("release_result", {
+      resultId: retainedResult().id,
+    });
   },
 );

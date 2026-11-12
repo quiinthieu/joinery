@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useStudio } from "../../state/studio";
 import { consoleReceiptHeld, type SnowflakeConsoleReceipt } from "./SnowflakeConsole";
 
@@ -8,7 +8,10 @@ function Receipt({ receipt }: { receipt: SnowflakeConsoleReceipt }) {
   const counts = view?.run.terminal?.accounting;
   const held = consoleReceiptHeld(receipt);
   return (
-    <article aria-label={`Console receipt ${receipt.clientRequestId}`}>
+    <article
+      className="snowflake-console-receipt"
+      aria-label={`Console receipt ${receipt.clientRequestId}`}
+    >
       <p>
         <strong>Client request</strong> <code>{receipt.clientRequestId}</code>
         {receipt.runId && (
@@ -25,10 +28,19 @@ function Receipt({ receipt }: { receipt: SnowflakeConsoleReceipt }) {
         </p>
       )}
       {receipt.error && <p role="alert">{receipt.error}</p>}
+      {receipt.decisionConflict && (
+        <p role="alert">
+          Conflicting native admission decisions were observed. New console runs remain held;
+          reconciliation will not erase the original evidence or resend SQL.
+        </p>
+      )}
       {receipt.notAdmitted && (
         <p role="status">
-          No SQL was admitted ({receipt.notAdmitted}). Review again to create a new request; this
-          request will not be resent.
+          Durable pre-admission refusal ({receipt.notAdmitted}).{" "}
+          {receipt.lookupPending
+            ? "Reconciliation is unresolved; new console runs remain held. "
+            : "No SQL was admitted. Review again to create a new request. "}
+          This request will not be resent.
         </p>
       )}
       {!view && !receipt.notAdmitted && (
@@ -133,16 +145,14 @@ function Receipt({ receipt }: { receipt: SnowflakeConsoleReceipt }) {
           Open retained results
         </button>
       )}
-      {!receipt.notAdmitted && (
-        <button
-          type="button"
-          className="button ghost small"
-          onClick={() => void state.refreshSnowflakeConsole(receipt.clientRequestId)}
-        >
-          Reconcile receipt (no SQL)
-        </button>
-      )}
-      {held && (
+      <button
+        type="button"
+        className="button ghost small"
+        onClick={() => void state.refreshSnowflakeConsole(receipt.clientRequestId)}
+      >
+        Reconcile receipt (no SQL)
+      </button>
+      {held && !receipt.notAdmitted && (
         <button
           type="button"
           className="button ghost small"
@@ -165,6 +175,7 @@ function Receipt({ receipt }: { receipt: SnowflakeConsoleReceipt }) {
 export function SnowflakeConsoleReceipts() {
   const receipts = useStudio((state) => state.snowflakeConsoleReceipts);
   const [expanded, setExpanded] = useState(false);
+  const historyId = useId();
   useEffect(() => {
     const reconcile = () => {
       const state = useStudio.getState();
@@ -178,24 +189,45 @@ export function SnowflakeConsoleReceipts() {
   }, []);
   const entries = Object.values(receipts);
   if (!entries.length) return null;
-  const held = entries.some(consoleReceiptHeld);
+  const pending = entries.filter(consoleReceiptHeld);
+  const settled = entries.filter((receipt) => !consoleReceiptHeld(receipt));
+  const held = pending.length > 0;
   return (
-    <section aria-label="Snowflake console receipts">
-      <button
-        type="button"
-        className="button ghost small"
-        aria-expanded={expanded}
-        onClick={() => setExpanded(!expanded)}
+    <section className="snowflake-console-receipts" aria-label="Snowflake console receipts">
+      <div className="snowflake-console-receipts-header">
+        <button
+          type="button"
+          className="button ghost small"
+          aria-expanded={expanded}
+          aria-controls={historyId}
+          title={expanded ? "Hide settled receipt history" : "Show settled receipt history"}
+          onClick={() => setExpanded(!expanded)}
+        >
+          Console receipts ({entries.length}){held ? " · reconciliation pending" : ""}
+        </button>
+        {held && (
+          <p role="status">
+            {pending.length} pending {pending.length === 1 ? "receipt remains" : "receipts remain"}{" "}
+            visible until reconciled.
+          </p>
+        )}
+      </div>
+      <div
+        className="snowflake-console-receipts-details"
+        role="region"
+        aria-label="Console receipt details"
+        tabIndex={0}
+        hidden={!expanded && !held}
       >
-        Console receipts ({entries.length}){held ? " · reconciliation pending" : ""}
-      </button>
-      {(expanded || held) && (
-        <div>
-          {entries.map((receipt) => (
+        {pending.map((receipt) => (
+          <Receipt key={receipt.clientRequestId} receipt={receipt} />
+        ))}
+        <div id={historyId} hidden={!expanded}>
+          {settled.map((receipt) => (
             <Receipt key={receipt.clientRequestId} receipt={receipt} />
           ))}
         </div>
-      )}
+      </div>
     </section>
   );
 }

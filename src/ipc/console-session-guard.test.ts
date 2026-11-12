@@ -36,6 +36,7 @@ test("reviewed execution, disconnect and SQL-free receipt/cancel/result/local op
     ).not.toThrow();
   for (const command of [
     "snowflake_console_run",
+    "snowflake_console_request",
     "cancel_run",
     "release_result",
     "authorize_plan",

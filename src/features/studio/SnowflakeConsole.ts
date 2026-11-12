@@ -1,4 +1,9 @@
-import type { SnowflakeConsolePlan, SnowflakeConsoleRunView, ErrorCode } from "../../ipc/generated";
+import type {
+  SnowflakeConsolePlan,
+  SnowflakeConsoleRunView,
+  SnowflakeConsoleRequestLookup,
+  ErrorCode,
+} from "../../ipc/generated";
 
 export interface SnowflakeConsoleReceipt {
   clientRequestId: string;
@@ -15,6 +20,7 @@ export interface SnowflakeConsoleReceipt {
   cancellationRequested?: boolean;
   error?: string;
   notAdmitted?: ErrorCode;
+  decisionConflict?: boolean;
 }
 
 const RECEIPT_KEY = "joinery.snowflakeConsoleReceipts.v1";
@@ -36,17 +42,16 @@ export function restoredConsoleReceipts(): Record<string, SnowflakeConsoleReceip
 }
 
 export function rememberConsoleReceipts(receipts: Record<string, SnowflakeConsoleReceipt>): void {
-  // Capacity fails closed. Do not silently evict unresolved correlation IDs.
-  const ids = Object.values(receipts)
-    .filter((receipt) => !receipt.notAdmitted)
-    .map((receipt) => receipt.clientRequestId);
+  // Capacity fails closed. Do not silently evict receipt correlation IDs.
+  const ids = Object.keys(receipts);
   if (ids.length > 10_000)
     throw new Error("Console receipt capacity reached; existing receipts were preserved.");
   localStorage.setItem(RECEIPT_KEY, JSON.stringify(ids));
 }
 
 export function consoleReceiptHeld(receipt: SnowflakeConsoleReceipt): boolean {
-  if (receipt.notAdmitted) return false;
+  if (receipt.decisionConflict) return true;
+  if (receipt.notAdmitted) return receipt.lookupPending || !!receipt.runId || !!receipt.view;
   return (
     (receipt.startPending === true && !receipt.view) ||
     receipt.lookupPending ||
@@ -95,6 +100,8 @@ export function validateConsoleReceipt(
   )
     throw new Error("Malformed console receipt; previous evidence was preserved.");
   if (
+    receipt.decisionConflict === true ||
+    receipt.notAdmitted !== undefined ||
     metadata.clientRequestId !== receipt.clientRequestId ||
     (receipt.sessionId !== undefined && metadata.sessionId !== receipt.sessionId) ||
     (receipt.connectionId !== undefined && metadata.connectionId !== receipt.connectionId) ||
@@ -111,6 +118,53 @@ export function validateConsoleReceipt(
     )
   )
     throw new Error("Receipt identity changed; the previous evidence was preserved.");
+}
+
+/** Only the same request identity can establish an opposite native decision. */
+export function consoleDecisionConflicts(
+  receipt: SnowflakeConsoleReceipt,
+  decision: SnowflakeConsoleRequestLookup,
+): boolean {
+  const identity = decision.kind === "started" ? decision.view.run.metadata : decision;
+  return (
+    identity.clientRequestId === receipt.clientRequestId &&
+    (receipt.sessionId === undefined || receipt.sessionId === identity.sessionId) &&
+    (receipt.planDigest === undefined || receipt.planDigest === identity.planDigest) &&
+    (decision.kind === "started"
+      ? receipt.notAdmitted !== undefined
+      : receipt.runId !== undefined || receipt.view !== undefined)
+  );
+}
+
+/** A native durable refusal is proof only for its exact retained identity. */
+export function adoptConsoleNotAdmitted(
+  receipt: SnowflakeConsoleReceipt,
+  decision: Extract<SnowflakeConsoleRequestLookup, { kind: "notAdmitted" }>,
+): SnowflakeConsoleReceipt {
+  if (
+    receipt.decisionConflict === true ||
+    decision.clientRequestId !== receipt.clientRequestId ||
+    !uuid.test(decision.clientRequestId) ||
+    !decision.sessionId ||
+    !/^[a-f0-9]{64}$/.test(decision.planDigest) ||
+    (receipt.sessionId !== undefined && decision.sessionId !== receipt.sessionId) ||
+    (receipt.planDigest !== undefined && decision.planDigest !== receipt.planDigest) ||
+    (receipt.notAdmitted !== undefined && receipt.notAdmitted !== decision.code) ||
+    receipt.runId !== undefined ||
+    receipt.view !== undefined
+  )
+    throw new Error(
+      "Pre-admission receipt conflicts with retained evidence; the original evidence was preserved.",
+    );
+  return {
+    ...receipt,
+    sessionId: decision.sessionId,
+    planDigest: decision.planDigest,
+    notAdmitted: decision.code,
+    startPending: false,
+    lookupPending: false,
+    error: undefined,
+  };
 }
 
 export function consoleRunStatus(view: SnowflakeConsoleRunView) {

@@ -42,6 +42,7 @@ vi.mock("../ipc/client", () => ({
     prepareSnowflakeConsole: vi.fn(),
     startSnowflakeConsole: vi.fn(),
     snowflakeConsoleRun: vi.fn(),
+    snowflakeConsoleRequest: vi.fn(),
   },
   messageOf: (e: unknown) => (e instanceof Error ? e.message : String(e)),
   appErrorOf: (e: unknown) => ({
@@ -88,7 +89,7 @@ beforeEach(() => {
     command === "extract_query_params" ? [] : command === "authorize_plan" ? "approval" : null,
   );
   vi.mocked(client.prepareSnowflakeConsole).mockResolvedValue(plan);
-  vi.mocked(client.snowflakeConsoleRun).mockResolvedValue(null);
+  vi.mocked(client.snowflakeConsoleRequest).mockResolvedValue(null);
 });
 afterEach(() => {
   cleanup();

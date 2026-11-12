@@ -218,6 +218,72 @@ test("received definite non-admission is settled and offers a fresh review, not 
   fireEvent.click(screen.getByRole("button", { name: /Console receipts/ }));
   expect(screen.getByText(/No SQL was admitted/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /Cancel retained/ })).toBeNull();
-  expect(screen.queryByRole("button", { name: /Reconcile/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /Reconcile/ })).toBeTruthy();
   expect(screen.queryByText(/Original outcome unavailable/)).toBeNull();
+});
+
+test("a durable negative keeps its opaque ID after reload, without storing its proof payload", () => {
+  rememberConsoleReceipts({
+    [clientId]: {
+      clientRequestId: clientId,
+      sessionId: "private-session",
+      planDigest: plan.digest,
+      notAdmitted: "approvalExpired",
+      lookupPending: false,
+    },
+  });
+  expect(localStorage.getItem("joinery.snowflakeConsoleReceipts.v1")).toBe(
+    JSON.stringify([clientId]),
+  );
+  expect(restoredConsoleReceipts()[clientId]).toEqual({
+    clientRequestId: clientId,
+    lookupPending: true,
+  });
+});
+test("unresolved refresh of an earlier refusal visibly holds new runs without claiming submission", () => {
+  useStudio.setState({
+    refreshSnowflakeConsole: vi.fn().mockResolvedValue(undefined),
+    snowflakeConsoleReceipts: {
+      [clientId]: {
+        clientRequestId: clientId,
+        sessionId: plan.review.sessionId,
+        notAdmitted: "approvalExpired",
+        lookupPending: true,
+        error: "Decision identity changed",
+      },
+    },
+  });
+  render(<SnowflakeConsoleReceipts />);
+  expect(screen.getByText(/new console runs remain held/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Reconcile receipt/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /Cancel retained/ })).toBeNull();
+});
+
+test("pending receipts stay visible while settled history expands independently in a keyboard scroll region", () => {
+  const receipts: ReturnType<typeof useStudio.getState>["snowflakeConsoleReceipts"] = {};
+  for (let i = 0; i < 11; i++)
+    receipts[`settled-${i}`] = {
+      clientRequestId: `settled-${i}`,
+      lookupPending: false,
+      view: receiptView(),
+    };
+  receipts[clientId] = { clientRequestId: clientId, lookupPending: true };
+  useStudio.setState({
+    refreshSnowflakeConsole: vi.fn().mockResolvedValue(undefined),
+    snowflakeConsoleReceipts: receipts,
+  });
+  render(<SnowflakeConsoleReceipts />);
+  const region = screen.getByRole("region", { name: "Console receipt details" });
+  expect(region.tabIndex).toBe(0);
+  expect(screen.getAllByRole("article")).toHaveLength(1);
+  expect(screen.getByRole("article", { name: `Console receipt ${clientId}` })).toBeTruthy();
+  const toggle = screen.getByRole("button", { name: /Console receipts/ });
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getAllByRole("article")).toHaveLength(12);
+  fireEvent.click(toggle);
+  expect(screen.getAllByRole("article")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Cancel retained run" })).toBeTruthy();
+  expect(screen.getByText(/pending receipt remains visible/)).toBeTruthy();
 });

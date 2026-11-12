@@ -10,6 +10,7 @@ import type {
   SnowflakeConsoleStart,
   SnowflakeConsoleStartResult,
   SnowflakeConsoleRunView,
+  SnowflakeConsoleRequestLookup,
 } from "./generated";
 import { assertConsoleCommandAllowed, sealConsoleSession } from "./console-session-guard";
 import type {
@@ -54,6 +55,7 @@ export interface StudioClient {
     onEvent: (event: QueryEvent) => void,
   ): Promise<SnowflakeConsoleStartResult>;
   snowflakeConsoleRun(clientRequestId: string): Promise<SnowflakeConsoleRunView | null>;
+  snowflakeConsoleRequest(clientRequestId: string): Promise<SnowflakeConsoleRequestLookup | null>;
   range(resultId: string, start: number, count: number): Promise<ArrayBuffer>;
 }
 
@@ -61,6 +63,11 @@ abstract class ConsoleClient {
   abstract call<T>(command: JoineryCommandName, args?: Record<string, unknown>): Promise<T>;
   prepareSnowflakeConsole(sessionId: string, request: SnowflakeConsoleRequest) {
     return this.call<SnowflakeConsolePlan>("prepare_snowflake_console", { sessionId, request });
+  }
+  snowflakeConsoleRequest(clientRequestId: string) {
+    return this.call<SnowflakeConsoleRequestLookup | null>("snowflake_console_request", {
+      clientRequestId,
+    });
   }
   snowflakeConsoleRun(clientRequestId: string) {
     return this.call<SnowflakeConsoleRunView | null>("snowflake_console_run", { clientRequestId });

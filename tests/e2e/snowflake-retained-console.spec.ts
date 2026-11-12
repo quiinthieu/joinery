@@ -6,7 +6,10 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { tableFromIPC } from "apache-arrow";
-import type { SnowflakeConsoleRunView } from "../../src/ipc/generated";
+import type {
+  SnowflakeConsoleRunView,
+  SnowflakeConsoleRequestLookup,
+} from "../../src/ipc/generated";
 
 // Real browser -> loopback Rust Studio -> real helper/framing/ResultStore.
 // Only the SDK is synthetic. No Snowflake login, database effects or performance
@@ -215,6 +218,12 @@ test("retained console preserves adjacency, recovers a lost start response and r
     await expect(page.getByRole("region", { name: "Snowflake console receipts" })).toContainText(
       "acknowledged",
     );
+    await page.setViewportSize({ width: 1024, height: 720 });
+    const details = page.getByRole("region", { name: "Console receipt details", exact: true });
+    await expect(details).toBeVisible();
+    await details.focus();
+    await details.press("End");
+    await expect.poll(() => details.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     await page
       .getByRole("article", { name: `Console receipt ${recovered.run.metadata.clientRequestId}` })
       .getByRole("button", { name: "Open retained results", exact: true })
@@ -239,6 +248,78 @@ test("retained console preserves adjacency, recovers a lost start response and r
     ).toBe(false);
 
     const ids = [...starts];
+    // The native request really lacks approval, and commits its refusal before
+    // this route discards the response. The browser must recover that SQLite
+    // proof without repeating start or sending any helper SQL.
+    await page.unroute("http://127.0.0.1:1422/rpc/start_snowflake_console");
+    let refusedId = "";
+    await page.route("http://127.0.0.1:1422/rpc/start_snowflake_console", async (route) => {
+      const body = route.request().postDataJSON();
+      refusedId = body.request.clientRequestId;
+      starts.push(refusedId);
+      const response = await route.fetch({
+        url: `${bridge}/rpc/start_snowflake_console`,
+        postData: JSON.stringify({ ...body, request: { ...body.request, approval: null } }),
+      });
+      expect(response.ok()).toBe(true);
+      const result = (await response.json()).result;
+      expect(result.kind).toBe("notAdmitted");
+      expect(result.clientRequestId).toBe(refusedId);
+      expect(result.code).toBe("approvalRequired");
+      await route.abort("connectionreset");
+    });
+    await page.getByRole("textbox", { name: "SQL editor" }).fill("SELECT 12345");
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    const review = page.getByRole("dialog", { name: "Review this operation" });
+    await review.getByRole("button", { name: "Authorize and run", exact: true }).click();
+    await expect(review).toHaveCount(0);
+    await expect.poll(() => refusedId).not.toBe("");
+    await expect
+      .poll(
+        async () =>
+          (
+            await rpc<SnowflakeConsoleRequestLookup>("snowflake_console_request", {
+              clientRequestId: refusedId,
+            })
+          ).kind,
+      )
+      .toBe("notAdmitted");
+    await expect(
+      page.getByRole("button", { name: "Run all statements", exact: true }),
+    ).toBeEnabled();
+    expect((await rpc<{ queries: string }>("test_synthetic_console_evidence")).queries).toBe(
+      evidence.queries,
+    );
+    expect(starts).toHaveLength(count + 1);
+    await page.getByRole("textbox", { name: "SQL editor" }).fill("");
+    const negative = page.getByRole("article", { name: `Console receipt ${refusedId}` });
+    await expect(negative).toContainText("No SQL was admitted");
+    await details.focus();
+    await details.press("End");
+    await expect(negative).toBeInViewport();
+    const reconcileRefusal = async () => {
+      const response = page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/rpc/snowflake_console_request") &&
+          response.request().postDataJSON().clientRequestId === refusedId,
+      );
+      await negative
+        .getByRole("button", { name: "Reconcile receipt (no SQL)", exact: true })
+        .click();
+      expect((await (await response).json()).result).toMatchObject({
+        kind: "notAdmitted",
+        clientRequestId: refusedId,
+        code: "approvalRequired",
+      });
+    };
+    const lookups = commands.filter((command) => command === "snowflake_console_request").length;
+    await reconcileRefusal();
+    await expect
+      .poll(() => commands.filter((command) => command === "snowflake_console_request").length)
+      .toBeGreaterThan(lookups);
+    expect((await rpc<{ queries: string }>("test_synthetic_console_evidence")).queries).toBe(
+      evidence.queries,
+    );
     await stop();
     await start();
     commands.length = 0;
@@ -249,8 +330,20 @@ test("retained console preserves adjacency, recovers a lost start response and r
       expect(restored.run.state).toBe("terminal");
       expect(restored.results).toEqual([]);
     }
-    expect((await rpc<{ queries: string }>("test_synthetic_console_evidence")).queries).toBe("");
-    expect(starts).toHaveLength(count);
+    const afterRestart = await rpc<{ queries: string; sdkEvents: string }>(
+      "test_synthetic_console_evidence",
+    );
+    expect(afterRestart.queries).toBe("");
+    expect(afterRestart.sdkEvents).toBe("");
+    const restoredNegative = await rpc<SnowflakeConsoleRequestLookup>("snowflake_console_request", {
+      clientRequestId: refusedId,
+    });
+    expect(restoredNegative).toMatchObject({
+      kind: "notAdmitted",
+      clientRequestId: refusedId,
+      code: "approvalRequired",
+    });
+    expect(starts).toHaveLength(count + 1);
     expect(
       commands.some((command) =>
         [
@@ -265,6 +358,12 @@ test("retained console preserves adjacency, recovers a lost start response and r
     await expect(page.getByRole("region", { name: "Snowflake console receipts" })).toContainText(
       "does not mean the statements returned zero rows",
     );
+    await expect(negative).toContainText("No SQL was admitted");
+    await reconcileRefusal();
+    expect(await rpc("test_synthetic_console_evidence")).toMatchObject({
+      queries: "",
+      sdkEvents: "",
+    });
   } finally {
     await page.close();
     try {

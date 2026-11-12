@@ -70,16 +70,19 @@ describe("retained console transport", () => {
     const events = vi.fn();
     await client.startSnowflakeConsole(request, events);
     await client.snowflakeConsoleRun(request.clientRequestId);
+    await client.snowflakeConsoleRequest(request.clientRequestId);
     expect(native.invoke.mock.calls.map(([command]) => command)).toEqual([
       "prepare_snowflake_console",
       "start_snowflake_console",
       "snowflake_console_run",
+      "snowflake_console_request",
     ]);
     expect(native.invoke.mock.calls[1][1].request).toEqual(request);
     const event = { type: "started", runId: "run", statementCount: 1 } as QueryEvent;
     native.invoke.mock.calls[1][1].onEvent.onmessage(event);
     expect(events).toHaveBeenCalledWith(event);
     expect(native.invoke.mock.calls[2][1]).toEqual({ clientRequestId: request.clientRequestId });
+    expect(native.invoke.mock.calls[3][1]).toEqual({ clientRequestId: request.clientRequestId });
   });
 
   it("reports stream loss without inventing a remote terminal outcome or retrying start", async () => {

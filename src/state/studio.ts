@@ -37,6 +37,8 @@ import type {
 import { client, messageOf } from "../ipc/client";
 import { sealConsoleSession } from "../ipc/console-session-guard";
 import {
+  adoptConsoleNotAdmitted,
+  consoleDecisionConflicts,
   consoleReceiptHeld,
   consoleReceiptBlocksSession,
   consoleRunStatus,
@@ -1012,6 +1014,22 @@ export const useStudio = create<StudioState>((set, get) => ({
             : null;
       if (eventRunId) {
         const current = get().snowflakeConsoleReceipts[clientRequestId];
+        if (current.notAdmitted) {
+          set((state) => ({
+            snowflakeConsoleReceipts: {
+              ...state.snowflakeConsoleReceipts,
+              [clientRequestId]: {
+                ...current,
+                runId: current.runId ?? eventRunId,
+                decisionConflict: true,
+                lookupPending: true,
+                error:
+                  "An original run event contradicts the retained refusal; execution remains held.",
+              },
+            },
+          }));
+          return;
+        }
         if (current.runId && current.runId !== eventRunId) {
           set((state) => ({
             snowflakeConsoleReceipts: {
@@ -1047,26 +1065,16 @@ export const useStudio = create<StudioState>((set, get) => ({
       );
       const recovered = get().snowflakeConsoleReceipts[clientRequestId];
       if (result.kind === "notAdmitted") {
-        if (
-          result.clientRequestId !== clientRequestId ||
-          result.sessionId !== session.id ||
-          result.planDigest !== plan.digest ||
-          recovered.runId ||
-          recovered.view
-        )
-          throw new Error(
-            "Pre-admission response conflicts with the original request; reconcile preserved evidence.",
-          );
-        const settled: SnowflakeConsoleReceipt = {
-          ...recovered,
-          notAdmitted: result.code,
-          startPending: false,
-          lookupPending: false,
-          error: undefined,
-        };
+        if (consoleDecisionConflicts(recovered, result))
+          set((state) => ({
+            snowflakeConsoleReceipts: {
+              ...state.snowflakeConsoleReceipts,
+              [clientRequestId]: { ...recovered, decisionConflict: true },
+            },
+          }));
+        const settled = adoptConsoleNotAdmitted(recovered, result);
         const receipts = { ...get().snowflakeConsoleReceipts, [clientRequestId]: settled };
-        // Only an exact received native proof settles absence. A lost response or
-        // null lookup must retain its persisted ID and admission hold.
+        // Keep the opaque ID so this durable decision can be recovered after reload.
         rememberConsoleReceipts(receipts);
         set({ snowflakeConsoleReceipts: receipts });
         const tab = get().tabs.find((entry) => entry.id === tabId && entry.revision === revision);
@@ -1082,6 +1090,17 @@ export const useStudio = create<StudioState>((set, get) => ({
         return;
       }
       const runId = result.runId;
+      if (recovered.notAdmitted) {
+        set((state) => ({
+          snowflakeConsoleReceipts: {
+            ...state.snowflakeConsoleReceipts,
+            [clientRequestId]: { ...recovered, decisionConflict: true },
+          },
+        }));
+        throw new Error(
+          "The original start response contradicts the retained refusal; execution remains held.",
+        );
+      }
       if (recovered.runId && recovered.runId !== runId)
         throw new Error(
           "Start response conflicts with the original recovered run; reconcile preserved evidence.",
@@ -1114,16 +1133,47 @@ export const useStudio = create<StudioState>((set, get) => ({
   async refreshSnowflakeConsole(clientRequestId) {
     if (receiptLookups.has(clientRequestId)) return;
     const before = get().snowflakeConsoleReceipts[clientRequestId];
-    if (!before || before.notAdmitted) return;
+    if (!before) return;
     receiptLookups.add(clientRequestId);
     try {
-      const view = await client.snowflakeConsoleRun(clientRequestId);
-      if (!view)
+      const decision = await client.snowflakeConsoleRequest(clientRequestId);
+      if (!decision)
         throw new Error(
           "No durable receipt found yet. Submission is not disproved; do not rerun to recover it.",
         );
       const current = get().snowflakeConsoleReceipts[clientRequestId];
       if (!current) return;
+      if (consoleDecisionConflicts(current, decision)) {
+        set((state) => ({
+          snowflakeConsoleReceipts: {
+            ...state.snowflakeConsoleReceipts,
+            [clientRequestId]: { ...current, decisionConflict: true },
+          },
+        }));
+        throw new Error(
+          "Opposite native decisions were observed for this request; execution remains held and the original evidence was preserved.",
+        );
+      }
+      if (decision.kind === "notAdmitted") {
+        const settled = adoptConsoleNotAdmitted(current, decision);
+        const receipts = { ...get().snowflakeConsoleReceipts, [clientRequestId]: settled };
+        rememberConsoleReceipts(receipts);
+        set({ snowflakeConsoleReceipts: receipts });
+        const tab = get().tabs.find(
+          (entry) => entry.id === current.tabId && entry.revision === current.tabRevision,
+        );
+        if (tab && querySessionForTab(tab, get().sessions)?.id === settled.sessionId)
+          get().updateTab(tab.id, {
+            status: "failed",
+            runId: null,
+            error: {
+              code: decision.code,
+              message: "No SQL was admitted. Review again to create a new request.",
+            },
+          });
+        return;
+      }
+      const view = decision.view;
       validateConsoleReceipt(current, view);
       const next: SnowflakeConsoleReceipt = {
         ...current,
