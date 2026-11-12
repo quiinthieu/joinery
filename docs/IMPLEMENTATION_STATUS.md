@@ -18,8 +18,11 @@ tests pass. Full validation passes 743 frontend / 481 standard Rust tests with
 129 fixture/helper ignores, formatting/build/compiler checks and strict Clippy.
 The changed synthetic browser workflow passes 1/1. Independent bounded review
 has no unresolved material finding. Hidden native command registration/rejection
-and 10 cleanup cycles pass. A normal package rebuild is pending; preceding
-package evidence does not qualify this source.
+and 10 cleanup cycles pass. The normal SDK-bearing ARM64 package builds from
+clean feature commit 54f59b6; strict ad-hoc signature/resources and guarded helper
+startup pass with zero authentication/SQL requests. Final regular files total
+229.28 MiB, version/build 0.1.0. The app is local and uninstalled; Developer
+ID/notarization and normal packaged UI/SSO acceptance remain open.
 
 Dynamic-table mappings, foreign-key navigation/inbound references, CHECK
 constraints, dependencies and complete object coverage remain required. Actual

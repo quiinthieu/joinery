@@ -51,6 +51,7 @@ pnpm validate
 pnpm exec playwright test tests/e2e/snowflake-sdk-browsing.spec.ts
 pnpm desktop:smoke:build
 python3 scripts/native-smoke.py --runs 1
+pnpm desktop:snowflake:bundle:mac
 ```
 
 These completed commands select the same pinned Rust 1.99.1 and repository-local
@@ -66,8 +67,9 @@ Both command receipts record unchanged source. Hidden native build and runner
 exit 0 (native-build.log / native-smoke.log), with 10 cleanup cycles, 3747 ms
 native elapsed and 99.36 MiB main-process peak RSS. Those synthetic measurements
 do not qualify representative performance, visible startup or total app memory.
-A normal package rebuild is still pending; earlier package evidence does not
-qualify the changed source.
+The normal SDK-bearing package also passes on clean feature commit 54f59b6;
+its source-specific artifact evidence follows below. Normal packaged UI/SSO and
+account acceptance remain open.
 
 The hidden build compiles in 4m05s (326.565 seconds including frontend and
 preparation) at dirty documentation HEAD d173215. All 22 frozen source hashes
@@ -89,6 +91,23 @@ installation, push or publication occurred. The expired table plan is unchanged
 and grants no authority for the mapping reads. Actual Snowflake pipe/result
 typing, role visibility, data effects, million-row workflows, normal packaged
 usage and owner acceptance remain required.
+
+The normal SDK-bearing ARM64 bundle builds from clean feature commit **54f59b6**
+with terminal exit **0**: 4m06s of optimized compilation, 290.983 seconds for the
+complete command (normal-bundle.log / normal-bundle.json). Version/build **0.1.0**
+is local at `src-tauri/target/release/bundle/macos/Joinery.app`. Final regular-file
+bytes total **240,421,113** (229.28 MiB); Tauri reports 225.09 MiB before final
+ad-hoc signing. The binary SHA-256 is
+`34dced95f634409209464e60d489f63c94a6b66e255e1dcd4326e83270abc09d`.
+Strict signature verification, **15,109** runtime entries / **zero** symlinks and
+network-guarded SDK **3.4.1** helper startup pass with **zero authentication and
+zero SQL requests**. The worktree stays clean during the build, and all 22 frozen
+source hashes still match. normal-bundle-build-source.json and
+normal-bundle-artifacts.json retain source/tree, artifact identity, version and
+checks. terminal-results.json records all 11 completed commands, including the
+two initial failed test runs and their passing corrections. Nothing is installed,
+pushed, published or merged. Developer ID/notarization, normal packaged daily
+usage, actual key inspection and every remaining required workflow stay open.
 
 ### Declared Snowflake key constraints (12 November 2026)
 

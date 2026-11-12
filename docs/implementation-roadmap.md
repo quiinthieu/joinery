@@ -14,7 +14,10 @@ acceptance. Focused tests and full validation pass (743 frontend / 481 standard
 Rust tests, 129 fixture/helper ignores and strict checks); the changed synthetic
 browser workflow passes 1/1. Independent bounded review has no unresolved
 material finding. Hidden native command registration/rejection and 10 cleanup
-cycles pass. A normal package rebuild is pending.
+cycles pass. The normal SDK-bearing ARM64 package builds from clean feature
+commit 54f59b6; strict ad-hoc signature/resources and guarded helper startup pass
+with zero account requests. It is local and uninstalled; normal app UI/SSO,
+Developer ID/notarization and account inspection remain unqualified.
 No new account execution or approval is included.
 
 Next required product work includes foreign-key table navigation/inbound
@@ -23,6 +26,31 @@ object coverage. Safe grid editing/import, general SQL/multiple statements,
 broader schema changes, performance tools and actual million-row Snowflake
 interaction/export remain required. Normal packaged SSO/recovery and owner
 hands-on acceptance remain gates; the Goal is active and incomplete.
+
+### Next increment: select a referenced table
+
+Planned, not implemented. Add a keyboard-accessible action that resolves a full
+foreign-key database/schema/table identity to exactly one available target in the
+retained catalog. Clear the filter and old details, select its existing opaque
+target ID and focus the relation selector without SQL. Inspection and preview
+remain separate explicit actions. Explain missing, ambiguous, unavailable and
+external-database destinations; never fall back to a name alone or automatically
+refresh, connect or switch context.
+
+Before activation, recheck live store ownership/context and the render's
+invalidation generation. A hold that begins and ends in one React batch must
+still revoke a captured old click handler. UI ownership is RelationBrowser.tsx,
+its unit tests and the existing browsing browser test. Backend changes should be
+limited to session regressions proving fully qualified retained cross-schema
+inspection uses the same connection without USE. Regression cases include
+quoted/duplicate names, self-references, zero RPCs on selection, keyboard focus
+and stale activation after refresh, owner replacement and transient holds.
+
+Cross-database navigation remains required and needs a separately admitted
+database-scoped retained catalog; do not relax existing profile-database context
+checks or borrow schema-switch authority. The independent read-only design used
+Tier 2 generation 2026-11-12T07:01:27Z, coverage for ten evidence paths and direct
+reads on clean 54f59b6. It made no edits, builds or account requests.
 
 ## Product increment: declared keys (12 November 2026)
 
