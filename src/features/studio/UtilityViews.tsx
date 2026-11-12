@@ -34,6 +34,7 @@ import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
 import { SnowflakeDmlHistorySummary } from "./SnowflakeDmlNotice";
 import { SnowflakeDdlHistorySummary } from "./SnowflakeDdlNotice";
+import { ExecutionSummary } from "./ExecutionSummary";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]),
@@ -145,10 +146,8 @@ export function HistoryView() {
                     <span>{new Date(entry.startedAt).toLocaleString()}</span>
                     <em>{entry.elapsedMs} ms</em>
                   </div>
-                  <code>
-                    {entry.sql ??
-                      `${entry.statementCount} statement${entry.statementCount === 1 ? "" : "s"} · SQL text not stored`}
-                  </code>
+                  <code>{entry.sql ?? "SQL text not stored"}</code>
+                  <ExecutionSummary summary={entry.executionSummary} status={entry.status} />
                   {entry.snowflakeDml && (
                     <SnowflakeDmlHistorySummary evidence={entry.snowflakeDml} />
                   )}

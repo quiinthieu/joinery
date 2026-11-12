@@ -1,5 +1,36 @@
 # Joinery implementation roadmap
 
+## Script early-stop accounting (12 November 2026)
+
+A reproduced defect marked a script Completed after its first classified read
+hit a result limit and the remaining suffix never ran. The executor now reports
+**Stopped** when that limit leaves a suffix. Final events, history, editor and
+history search retain planned, attempted, successful and unattempted counts plus
+the stop reason. Driver attempts do not prove server submission; successful
+returns do not prove commit or complete result retention. Existing history without
+accounting stays explicitly unknown. No automatic replay or transaction settlement
+is added. See the [contract](script-execution-accounting.md) and
+[usage walkthrough](migration-from-datagrip.md#script-stops-and-statement-counts).
+
+Focused checks pass 160 frontend cases and 13 executor cases. Seven real isolated
+PostgreSQL cases pass, including row/byte limits with a sequence proving the suffix
+untouched, cancellation, explicit server termination, error prefixes, restart
+persistence and a skipped COMMIT left open until explicit rollback. The real
+browser workflow passes 1/1 using 1,000,001 synthetic PostgreSQL rows and a fresh
+observer proving a skipped UPDATE did not execute. Independent bounded review
+has no material finding. Full validation passes 823 frontend and 500 standard
+Rust tests (136 fixture/helper ignores), formatting, TypeScript, production UI
+build, compiler checks and strict all-target/all-feature Clippy. Hidden native
+startup/IPC and ten cleanup cycles pass on the same frozen source. The normal
+SDK-bearing package remains on its preceding named source until rebuilt from
+this feature commit; normal packaged UI/SSO/restart acceptance stays open.
+
+Generalized mixed Snowflake scripts, account write/transaction/DDL effects,
+million-row Snowflake interaction/export, safe editing/import, broader metadata
+and performance tools remain required. The account plan expired unexecuted;
+SANDBOX.BILLIE_TESTING permission is recorded, but a fresh reviewed exact plan and
+possible-billing approval remain needed. The Goal is active and incomplete.
+
 ## Snowflake CHECK inspection (12 November 2026)
 
 A separate **View CHECK constraints** action is implemented through retained
@@ -26,17 +57,13 @@ acceptance remain required. The Goal is active and incomplete.
 
 ### Next product priorities
 
-1. Reproduce script early-stop reporting: a first read exceeds a row/byte limit
-   and a distinctive second read must remain unsubmitted. Compare planned,
-   completed and skipped statements in UI/history; include the nontruncated
-   control. Source review found an ambiguity, not a reproduced runtime defect.
-2. Add a retained, reviewed sequential mixed-script workflow using the existing
+1. Add a retained, reviewed sequential mixed-script workflow using the existing
    typed read/DML/boundary operations. Read-only Run all and typed batch parameters
    already work; do not describe all multi-statement SQL as unsupported. Compile
    the full script before SQL, preserve original outcomes across interruption and
    reject disallowed suffixes before issuing anything. No automatic replay,
    commit, rollback, reconnect or suffix resume.
-3. Continue complete metadata/search, safe grid editing/import, broader DDL/session
+2. Continue complete metadata/search, safe grid editing/import, broader DDL/session
    commands, plans/performance, actual million-row Snowflake interaction/export
    and normal packaged persistence/accessibility. All remain in required scope.
 

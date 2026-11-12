@@ -8,6 +8,120 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Script early-stop accounting (12 November 2026)
+
+Base is clean e8f0765 on feat/datagrip-replacement. Ignored evidence lives under
+`.cache/verification/script-accounting/`; source-freeze-initial.json binds the
+25 changed source/test paths used by the database/browser checks and initial
+review. Final commands use pinned Node 24.22.2, pnpm 11.23.0 and
+Rust/Cargo 1.99.1 with the repository-local Node/browser cache. Root graph calls
+still return Transport closed. Delegated Tier 2 coverage uses generation
+08:21:56Z, matching metadata/no recorded issues plus direct reads; coverage remains
+best effort. Independent bounded review reports no material finding and matches
+all 25 hashes (review.json, freeze-manifest SHA256
+50be0e767344e39ee246bb95fd87fd062157c3be4fcbccf911c30f4a9fab97fa).
+
+The corrected real PostgreSQL baseline fails 2/2 as intended, exit 101 in
+12.570 seconds, unchanged source (real-postgres-reproduction-corrected.json).
+Both classified reads truncate and leave a session-local sequence unadvanced,
+but the terminal event incorrectly says Completed and has no summary. The first
+baseline byte fixture used repeat(), which the classifier treats as Unknown; it
+therefore did not exercise the classified-read stop. That fixture was corrected
+to a large text literal with an explicit Read assertion. The earlier run and its
+changed-source flag remain recorded; neither is promoted to a clean baseline.
+
+The [fixed contract](script-execution-accounting.md) adds SQL-only optional
+executionSummary to Finished/history and Stopped only when a limited read leaves
+a suffix. Attempts count local driver invocations; successful returns remain
+separate from commit/full retention. Non-SQL and typed Snowflake mutation outcomes
+retain their prior contracts. No replay, reconnect, automatic commit/rollback,
+account admission or qualification allowlist expansion is added.
+
+Focused frontend passes 160/160, followed by the final search helper 11/11 and
+TypeScript after correcting one saved-query formatter caller. Frontend formatting
+and diff checks pass. Focused executor tests pass 13/13 in 0.080 seconds
+(27.340 seconds compilation); owned hashes are unchanged (studio-focused.json).
+Two earlier compile-only worker jobs were stopped with exit 130 and ran no tests.
+Initial lead contract generation ran before the execution fields were integrated
+and failed with two missing-field errors; corrected generation exits 0 in
+27.806 seconds while implementation continues. Generation is not a frozen check.
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --test script_execution -- --ignored --nocapture --test-threads=1
+pnpm exec playwright test tests/e2e/script-accounting.spec.ts
+```
+
+Real PostgreSQL cases pass 7/7, exit 0 in 7.410 seconds including compilation,
+unchanged captured backend source (real-postgres-corrected.json). They cover
+row/byte stopping with a sequence proving the suffix untouched, a successful
+control, metadata-only history across a fresh Studio, database error prefixes,
+actual cancellation, administrative termination, and a skipped COMMIT that leaves
+pending writes until explicit rollback. The preceding run passed six and failed
+one incorrect test expectation: pg_terminate_backend supplies PostgreSQL 57P01,
+which maps to explicit Database/Failed, not an unacknowledged socket loss. The
+corrected test asserts 57P01 before checking Failed. This is explicit server-
+termination evidence; unknown transport outcomes have separate synthetic coverage.
+Production behavior was not changed to fit the fixture.
+
+The isolated Docker Compose project joinery-script-accounting-20261112 starts
+only its own PostgreSQL 18 fixture on previously free 55432 with a separate test
+volume. Existing containers and user services are preserved. Tests use synthetic
+reads, session-local objects and uniquely named fixture tables only.
+
+The headless browser case passes 1/1, exit 0 in 50.519 seconds including harness
+startup (18.3 seconds test), unchanged frozen source (browser.json). It uses the
+actual core and isolated PostgreSQL, 1,000,001 generated rows, explicit SQL-text
+storage off, a fresh observer proving a skipped UPDATE untouched, run/history/
+keyboard history-search summaries, visible wrapping and next-run replacement.
+Screenshots are not the success criterion. It supplies no Snowflake account,
+normal macOS app, assistive-technology or million-row Snowflake qualification.
+
+The first full `pnpm validate` exits 101 in 544.762 seconds on unchanged
+captured source: 823 frontend and 500 standard Rust tests pass (136 fixture/helper
+ignores), as do formatting, TypeScript and the UI build. Strict all-feature
+Clippy then finds two new test-helper lints (let-and-return and a double-ended
+iterator lookup). These are implementation-introduced check failures, not
+pre-existing failures. The helper is corrected without production changes; the
+final validation result is recorded after rerun. The final source-freeze.json
+binds all 25 paths (manifest SHA256
+acb44aa4b75e27df9d2b162256a8f8315a1c2286701139f190ac81aeebc22c80).
+Only the synthetic executor helper differs from the initial freeze; production,
+real-database fixtures and browser source are unchanged. A separate read-only
+review confirms both corrections preserve test semantics and all final hashes
+match (review-final-delta.json).
+
+The final `pnpm validate` exits 0 in 939.155 seconds with unchanged captured
+source (validate-final.json / log): 823 frontend and 500 standard Rust tests,
+136 fixture/helper ignores, formatting, TypeScript, production UI build,
+compiler checks and strict all-target/all-feature Clippy. The 13 executor cases
+run again within this pass. Existing nonfatal ts-rs attribute and Vite chunk/
+timing warnings remain recorded. The seven ignored real database cases were run
+explicitly as above; the remaining skipped fixtures are not promoted to passes.
+Hidden native build exits 0 in 1,397.139 seconds (20m19s optimized compilation),
+with unchanged frozen source (native-build.json / log). The isolated native runner
+exits 0 in 6.074 seconds, passes all 20 categories and ten cleanup cycles,
+4,928 ms native elapsed and 99.30 MiB main-process peak RSS (native-smoke.json /
+log). native-final-build.json / native-final-runs.json preserve source/binary
+and run evidence before normal packaging replaces the release binary. The smoke
+binary SHA256 is
+76203d78d684c9394ce305a20e39aa82abbc7c4c33303b101c147319e51fb807.
+Resources are absent in this hidden fixture. This qualifies startup/IPC/cleanup,
+not normal packaged UI/SSO, fully cold visible startup or representative memory/
+performance. The known rust-objcopy/libLLVM stripping warning remains nonfatal;
+no machine/global setting or build flag is changed to suppress it.
+
+The task-owned Compose project and its volume are removed, exit 0 in 2.810 seconds
+(postgres-stop.json / log). The pre-existing unrelated database container remains
+running (fixture-cleanup.json). No user service or browser profile is changed.
+Relative file targets in the six changed documentation files pass (414 targets;
+fragments are not validated).
+
+The normal SDK-bearing package has not yet been rebuilt for this feature source;
+preceding package evidence retains its source boundary below. Owner hands-on
+acceptance, signing/notarization, generalized mixed scripts, actual Snowflake
+writes/transactions/DDL and complete applicable DataGrip parity remain open.
+No account activity or owner marker/profile-store access occurred.
+
 ### CHECK-constraint inspection (12 November 2026)
 
 The independent retained-target CHECK action is implemented locally; the

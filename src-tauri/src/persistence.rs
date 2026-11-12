@@ -671,11 +671,43 @@ mod tests {
     }
 
     #[test]
+    fn legacy_history_has_unknown_execution_accounting_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Persistence::open(dir.path()).unwrap();
+        let legacy = serde_json::json!({
+            "id": "legacy-script", "connectionId": "p",
+            "connectionName": "Local fixture", "startedAt": now_ms(),
+            "sql": null, "statementCount": 4, "status": "completed", "elapsedMs": 5
+        });
+        db.connection
+            .lock()
+            .execute(
+                "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
+                params!["legacy-script", now_ms() as i64, legacy.to_string()],
+            )
+            .unwrap();
+        drop(db);
+        let restarted = Persistence::open(dir.path()).unwrap();
+        let entries = restarted.history("").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].statement_count, 4);
+        assert!(entries[0].execution_summary.is_none());
+        assert!(
+            !serde_json::to_value(&entries[0])
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("executionSummary")
+        );
+    }
+
+    #[test]
     fn initializes_groups_and_keeps_history_metadata_without_sql() {
         let dir = tempfile::tempdir().unwrap();
         let db = Persistence::open(dir.path()).unwrap();
         assert_eq!(db.groups().unwrap().len(), 3);
         db.record_history(&HistoryEntry {
+            execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,
             id: new_id(),

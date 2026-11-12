@@ -342,7 +342,13 @@ export function SearchEverywhere({
               )}
               <span className="palette-item-text">
                 <span className="palette-item-label">{item.label}</span>
-                {item.subtitle && <small className="palette-item-subtitle">{item.subtitle}</small>}
+                {item.subtitle && (
+                  <small
+                    className={`palette-item-subtitle${item.kind === "history" ? " palette-history-summary" : ""}`}
+                  >
+                    {item.subtitle}
+                  </small>
+                )}
               </span>
               {item.kind === "command" && item.contextBadge && (
                 <em className="palette-context-badge">{item.contextBadge}</em>

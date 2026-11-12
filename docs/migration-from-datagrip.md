@@ -56,6 +56,38 @@ required. See the [qualification attachments](snowflake-qualification-attachment
 [offline SQL ledger](snowflake-qualification-sql-ledger.md), and current
 [verification ledger](replacement-verification.md).
 
+## Script stops and statement counts
+
+The [execution accounting contract](script-execution-accounting.md) distinguishes
+planned statements, attempted statements, successful acknowledgements and the
+unattempted suffix. The editor, query history and history search show the final
+summary. A result-limit stop with remaining statements displays **Stopped**, the
+limit reason and which statements were not attempted. A final limited read may
+show **Completed** with a result-limit reason; inspect the result's truncation
+label. Older history explicitly has no recorded counts.
+
+An attempt does not prove the server received SQL. Completed statements may still
+be uncommitted, and retained results may be incomplete. After a stop, inspect the
+observed transaction state before choosing an explicit commit or rollback. Nothing
+automatically resumes the suffix, retries SQL or changes transaction state.
+
+For local acceptance, connect to the isolated PostgreSQL fixture documented in
+README, turn SQL-text history off and leave temporary result storage off. Run
+`SELECT n FROM generate_series(1,1000001) n; SELECT 'unattempted suffix'` using
+**Run all statements**. Expect one truncated result and **Stopped**, 2 planned,
+1 attempted, 1 completed, 1 not attempted. Query history and the command palette's
+History scope must preserve that outcome without storing SQL text. A subsequent
+`SELECT 7` must replace the previous summary. The automated browser case also
+uses a uniquely named fixture table and a fresh observer connection to prove that
+an UPDATE suffix did not execute; cleanup touches only that table.
+
+The real Rust fixture additionally checks byte limits, cancellation, explicit
+server termination, a successful two-statement control, durable restart accounting
+and a skipped COMMIT that leaves the transaction open until explicit rollback.
+These checks qualify the common executor locally; account Snowflake execution,
+normal packaged UI usage and owner acceptance remain open. No account SQL is
+authorized by this walkthrough.
+
 ## Snowflake CHECK constraints (prepared acceptance walkthrough)
 
 The [CHECK contract](snowflake-sdk-check-constraints-design.md) and

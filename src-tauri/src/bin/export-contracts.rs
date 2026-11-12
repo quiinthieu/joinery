@@ -147,6 +147,8 @@ fn main() {
         ResultInfo::decl(),
         TablePage::decl(),
         RunStatus::decl(),
+        ExecutionStopReason::decl(),
+        ExecutionSummary::decl(),
         QueryEvent::decl(),
         CellChange::decl(),
         ResultChanges::decl(),

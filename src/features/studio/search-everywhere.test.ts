@@ -384,3 +384,94 @@ describe("buildSearchEverywhereResults", () => {
     });
   });
 });
+
+describe("script history accounting", () => {
+  const base: HistoryEntry = {
+    id: "script",
+    connectionId: "pg",
+    connectionName: "Accounting fixture",
+    startedAt: 1,
+    sql: null,
+    statementCount: 999,
+    status: "completed",
+    elapsedMs: 8,
+  };
+  function search(history: HistoryEntry[], query = "") {
+    return buildSearchEverywhereResults({
+      query,
+      scope: "history",
+      commands: [],
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: null,
+      profiles: [],
+      sessions: {},
+      catalog: {},
+      objects: {},
+      history,
+    }).items;
+  }
+
+  it("keeps legacy counts unknown without inventing SQL or using the old planned count", () => {
+    const [item] = search([base]);
+    expect(item.label).toBe("SQL text not stored");
+    expect(item.subtitle).toContain("Completed · Statement counts unknown");
+    expect(item.subtitle).not.toContain("999");
+    expect(item.subtitle).not.toContain("Attempted:");
+  });
+
+  it("shows and searches the stopped suffix even when SQL text was not stored", () => {
+    const entry: HistoryEntry = {
+      ...base,
+      status: "stopped",
+      executionSummary: {
+        planned: 3,
+        attempted: 1,
+        completed: 1,
+        notAttempted: 2,
+        stopReason: "resultLimit",
+      },
+    };
+    const [item] = search([entry], "not attempted");
+    expect(item.label).toBe("SQL text not stored");
+    expect(item.subtitle).toContain(
+      "Stopped · Planned: 3 · Attempted: 1 · Completed: 1 · Not attempted: 2",
+    );
+    expect(item.subtitle).toContain(
+      "Result retention limit reached · Statements 2–3 were not attempted",
+    );
+    expect(item.subtitle).toContain(
+      "Attempts may not reach the server; completed statements may be uncommitted",
+    );
+    expect(item.subtitle).not.toContain("999");
+  });
+
+  it.each([
+    ["completed", null, "Completed"],
+    ["cancelled", "cancelled", "Cancelled"],
+    ["failed", "failed", "Failed"],
+    ["outcomeUnknown", "outcomeUnknown", "Outcome unknown"],
+  ] as const)(
+    "keeps the %s outcome and authoritative counts in search results",
+    (status, stopReason, label) => {
+      const entry: HistoryEntry = {
+        ...base,
+        status,
+        sql: "SELECT\n  7",
+        executionSummary: {
+          planned: 1,
+          attempted: 1,
+          completed: status === "completed" ? 1 : 0,
+          notAttempted: 0,
+          stopReason,
+        },
+      };
+      const [item] = search([entry]);
+      expect(item.label).toBe("SELECT 7");
+      expect(item.subtitle).toContain(
+        `${label} · Planned: 1 · Attempted: 1 · Completed: ${entry.executionSummary!.completed} · Not attempted: 0`,
+      );
+      expect(entry.sql).toBe("SELECT\n  7");
+    },
+  );
+});

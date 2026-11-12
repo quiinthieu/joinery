@@ -986,9 +986,31 @@ pub struct TablePage {
 #[serde(rename_all = "camelCase")]
 pub enum RunStatus {
     Completed,
+    Stopped,
     Failed,
     Cancelled,
     OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionStopReason {
+    ResultLimit,
+    Cancelled,
+    Failed,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionSummary {
+    pub planned: usize,
+    /// Local driver invocations, not proof of remote SQL submission.
+    pub attempted: usize,
+    /// Successful driver returns, not proof of commit or complete retention.
+    pub completed: usize,
+    pub not_attempted: usize,
+    pub stop_reason: Option<ExecutionStopReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1047,6 +1069,9 @@ pub enum QueryEvent {
         run_id: String,
         status: RunStatus,
         elapsed_ms: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        execution_summary: Option<ExecutionSummary>,
     },
 }
 
@@ -1188,6 +1213,9 @@ pub struct LockWaitSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub execution_summary: Option<ExecutionSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub snowflake_dml: Option<SnowflakeDmlEvidence>,

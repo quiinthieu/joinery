@@ -1,3 +1,4 @@
+import { executionSummaryText } from "./ExecutionSummary";
 import type {
   ConnectionProfile,
   DatabaseObjectKind,
@@ -184,9 +185,9 @@ function scoreTextMatch(
   return 260;
 }
 
-function formatHistorySingleLine(sql: string | null, statementCount: number): string {
+function formatHistorySingleLine(sql: string | null): string {
   if (!sql) {
-    return `${statementCount} statement${statementCount === 1 ? "" : "s"} · SQL text not stored`;
+    return "SQL text not stored";
   }
   const collapsed = sql.replace(/\s+/g, " ").trim();
   return collapsed.length > 110 ? `${collapsed.slice(0, 109)}…` : collapsed;
@@ -388,7 +389,7 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
       const connName = saved.connectionId
         ? (profileById.get(saved.connectionId)?.name ?? null)
         : null;
-      const preview = formatHistorySingleLine(saved.sql, 1);
+      const preview = formatHistorySingleLine(saved.sql);
       savedItems.push({
         item: {
           id: `saved:${saved.id}`,
@@ -413,18 +414,19 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
   if (includeHistory) {
     for (const entry of input.history) {
       if (!queryLower && input.scope === "all" && !entry.sql) continue;
-      const preview = formatHistorySingleLine(entry.sql, entry.statementCount);
+      const preview = formatHistorySingleLine(entry.sql);
+      const execution = executionSummaryText(entry.executionSummary, entry.status);
       historyItems.push({
         item: {
           id: `hist:${entry.id}`,
           kind: "history",
           entry,
           label: preview,
-          subtitle: `${entry.connectionName} · ${entry.elapsedMs} ms`,
+          subtitle: `${entry.connectionName} · ${entry.elapsedMs} ms · ${execution}${entry.executionSummary ? " · Attempts may not reach the server; completed statements may be uncommitted" : ""}`,
           shortcut: "History",
         },
         primary: preview,
-        haystack: `${entry.sql ?? ""} ${entry.connectionName} history`,
+        haystack: `${entry.sql ?? ""} ${entry.connectionName} ${execution} history`,
       });
     }
   }

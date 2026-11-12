@@ -209,6 +209,7 @@ fn read_fixture(
             total_ms: 1,
         },
         QueryEvent::Finished {
+            execution_summary: None,
             run_id: "run".into(),
             status: RunStatus::Completed,
             elapsed_ms: 1,

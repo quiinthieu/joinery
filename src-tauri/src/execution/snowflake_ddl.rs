@@ -398,6 +398,7 @@ impl Studio {
             self.disconnect(&session_id);
         }
         let entry = HistoryEntry {
+            execution_summary: None,
             snowflake_ddl: Some(SnowflakeDdlEvidence {
                 kind: result.kind,
                 qualified_target: result.qualified_target.clone(),

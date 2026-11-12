@@ -70,7 +70,14 @@ import {
 export type TabKind =
   "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram" | "schemaDiff";
 export type TabStatus =
-  "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | "outcomeUnknown";
+  | "idle"
+  | "queued"
+  | "running"
+  | "completed"
+  | "stopped"
+  | "failed"
+  | "cancelled"
+  | "outcomeUnknown";
 export interface TablePageState {
   start: number;
   result: ResultInfo;
@@ -99,6 +106,7 @@ export interface StudioTab {
   runId: string | null;
   elapsedMs: number;
   runMetrics?: Extract<QueryEvent, { type: "runMetrics" }>;
+  executionSummary?: Extract<QueryEvent, { type: "finished" }>["executionSummary"];
   clientStartedAt?: number;
   clientElapsedMs?: number;
   error: AppError | null;
@@ -346,6 +354,7 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     runId: null,
     elapsedMs: 0,
     runMetrics: undefined,
+    executionSummary: undefined,
     clientStartedAt: undefined,
     clientElapsedMs: undefined,
     error: null,
@@ -945,6 +954,7 @@ export const useStudio = create<StudioState>((set, get) => ({
                 metrics: {},
                 elapsedMs: 0,
                 runMetrics: undefined,
+                executionSummary: undefined,
                 clientStartedAt: undefined,
                 clientElapsedMs: undefined,
                 revision: current.revision + 1,
@@ -996,6 +1006,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       metrics: {},
       elapsedMs: 0,
       runMetrics: undefined,
+      executionSummary: undefined,
       clientStartedAt: undefined,
       clientElapsedMs: undefined,
       revision: current.revision + 1,
@@ -1372,6 +1383,7 @@ export const useStudio = create<StudioState>((set, get) => ({
                     error: null,
                     runId: null,
                     dataSessionId: sessionId,
+                    executionSummary: undefined,
                     clientStartedAt: performance.now(),
                     clientElapsedMs: undefined,
                   }
@@ -1499,6 +1511,7 @@ export const useStudio = create<StudioState>((set, get) => ({
                     error: null,
                     runId: null,
                     dataSessionId: sessionId,
+                    executionSummary: undefined,
                     clientStartedAt: performance.now(),
                     clientElapsedMs: undefined,
                   }
@@ -2793,6 +2806,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         runId: null,
         activeResultId: null,
         status: "idle",
+        executionSummary: undefined,
         error: null,
         revision: tab.revision + 1,
       });
@@ -2852,6 +2866,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         if (event.type === "started") {
           next.runId = event.runId;
           next.status = "running";
+          next.executionSummary = undefined;
         }
         if (event.type === "result") {
           const at = next.results.findIndex((r) => r.id === event.result.id);
@@ -2878,10 +2893,11 @@ export const useStudio = create<StudioState>((set, get) => ({
           };
         }
         if (event.type === "runMetrics" && event.runId === next.runId) next.runMetrics = event;
-        if (event.type === "finished") {
+        if (event.type === "finished" && event.runId === next.runId) {
           if (next.clientStartedAt !== undefined)
             next.clientElapsedMs = Math.max(0, performance.now() - next.clientStartedAt);
           next.status = event.status;
+          next.executionSummary = event.executionSummary;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;
         }

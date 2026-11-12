@@ -464,6 +464,7 @@ fn qualification_studio_runner_event_overflow_never_becomes_complete_capture() {
         }));
     }
     assert!(!collector.push(QueryEvent::Finished {
+        execution_summary: None,
         run_id: "run".into(),
         status: RunStatus::Cancelled,
         elapsed_ms: 0
@@ -487,6 +488,7 @@ fn qualification_studio_runner_byte_overflow_never_becomes_complete_capture() {
         message: "x".repeat(READ_BYTES)
     }));
     assert!(!collector.push(QueryEvent::Finished {
+        execution_summary: None,
         run_id: "run".into(),
         status: RunStatus::Cancelled,
         elapsed_ms: 0
@@ -568,6 +570,7 @@ async fn qualification_studio_runner_incomplete_capture_journals_original_error_
         }));
     }
     assert!(!collector.push(QueryEvent::Finished {
+        execution_summary: None,
         run_id: "original-run".into(),
         status: RunStatus::Cancelled,
         elapsed_ms: 9
@@ -639,6 +642,7 @@ async fn qualification_studio_runner_late_finished_keeps_incomplete_original_pro
     let mut original = CallError::captured(original_error.clone(), collector.complete_snapshot());
     assert!(!original.capture_complete);
     assert!(collector.push(QueryEvent::Finished {
+        execution_summary: None,
         run_id: "original-run".into(),
         status: RunStatus::Cancelled,
         elapsed_ms: 17
@@ -695,6 +699,7 @@ fn qualification_studio_runner_recovered_snapshot_keeps_failed_first_drain() {
         message: "original prefix before failed first drain".into()
     }));
     assert!(collector.push(QueryEvent::Finished {
+        execution_summary: None,
         run_id: "original-run".into(),
         status: RunStatus::Cancelled,
         elapsed_ms: 23

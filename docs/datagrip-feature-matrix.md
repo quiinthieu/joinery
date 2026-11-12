@@ -16,7 +16,7 @@ new source or actual Snowflake behavior.
 | Connections, authentication, TLS and tunnels | SDK external-browser profiles, retained helper lifecycle and verified runtime; bounded helper-only account SSO/read checks recorded in the [ledger](replacement-verification.md) | Normal packaged SSO, connection failure/reconnect and applicable TLS/tunnel workflows need account/native acceptance                                        |
 | Navigation, metadata and object search       | Same-session completion, browsing, columns, generated DDL, schema selection, declared PK/UQ/FK inventory, [ordered key mappings and retained reference selection](snowflake-sdk-key-mappings-design.md), [CHECK clauses](snowflake-sdk-check-constraints-design.md); local validation/browser/native/package checks pass | Cross-database/inbound/related-row navigation, dynamic-table mappings, complete object kinds, dependencies and search remain incomplete; actual CHECK/mapping shapes, privileges and refresh need account acceptance |
 | SQL editing and authoring                    | Bounded completion, formatting, parameters, diagnostics, navigation and refactoring slices; detailed source evidence below                                                       | Complete Snowflake semantics and the applicable DataGrip authoring workflow remain incomplete; daily native acceptance is open                              |
-| Query execution                              | Parameterized read-only scripts plus separately reviewed single INSERT/UPDATE/DELETE, explicit boundaries and generated table DDL; [DML contract](snowflake-sdk-dml-design.md)                             | Generalized mixed read/write/boundary scripts, broader SQL/session commands, explicit early-stop accounting and actual cancellation/interruption/account outcomes remain incomplete                     |
+| Query execution                              | Parameterized read-only scripts plus separately reviewed single INSERT/UPDATE/DELETE, explicit boundaries and generated table DDL; [DML contract](snowflake-sdk-dml-design.md)                             | Generalized mixed read/write/boundary scripts, broader SQL/session commands, actual cancellation/interruption/account outcomes remain incomplete                     |
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
 | Safe data editing and import                 | Reviewed bounded SQL writes are locally integrated with one-use authority and retained original outcomes                                                                         | Snowflake grid editing and CSV import remain disabled; safe identity/concurrency handling and account data effects need implementation and proof            |
 | Transactions                                 | Separately reviewed BEGIN/COMMIT/ROLLBACK and rollback recovery; [transaction contract](snowflake-sdk-transactions-design.md)                                                    | Actual commit/rollback data effects, mode changes, console isolation and DML/DDL implicit-commit behavior remain unqualified                                |
@@ -44,6 +44,19 @@ metadata inventory. Offline review supplies no execution authority. No existing
 application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.
+
+## Script early-stop reporting (12 November 2026)
+
+| Capability | Local implementation and evidence | Remaining gate |
+| --- | --- | --- |
+| Truthful script terminal state | Result-limit stops with an unattempted suffix report Stopped; final events and history share planned/attempted/completed/not-attempted counts; [contract](script-execution-accounting.md) | Broader mixed Snowflake scripts remain incomplete; invocation counts do not prove server submission or commit |
+| Limits, interruption and transactions | Focused executor 13/13 and real isolated PostgreSQL 7/7 pass; byte/row limits, successful controls, errors, cancellation, explicit server termination, restart and skipped COMMIT/explicit rollback | Actual Snowflake effects/interruption and normal packaged behavior remain unqualified |
+| Editor/history/search workflow | Focused frontend 160/160 and real browser 1/1 pass; 1,000,001 synthetic PostgreSQL rows, independent untouched-UPDATE readback, metadata-only history, visible keyboard history search and fresh-run reset | Full validation passes 823 frontend / 500 standard Rust cases (136 ignores); hidden native startup/IPC and ten cleanup cycles pass; the new normal package, owner accessibility and daily acceptance remain open |
+
+The implementation is local and unmerged. Prior package evidence below applies
+to its named source. No account requests, installation or full replacement
+acceptance occurred. See the [walkthrough](migration-from-datagrip.md#script-stops-and-statement-counts)
+and [ledger](replacement-verification.md).
 
 ## Local CHECK inspection (12 November 2026)
 

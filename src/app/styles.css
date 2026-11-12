@@ -438,6 +438,18 @@ kbd {
 .status-dot.cancelled {
   background: var(--muted);
 }
+.status-dot.stopped {
+  background: #c1b17f;
+}
+.execution-summary {
+  margin: 8px 12px;
+}
+.execution-summary p {
+  margin: 0 0 4px;
+}
+.execution-summary small {
+  color: var(--muted);
+}
 .group-children {
   padding: 1px 0;
 }
@@ -2367,6 +2379,12 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.palette-history-summary {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .palette-commands > button > kbd {
   flex-shrink: 0;

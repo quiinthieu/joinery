@@ -1,4 +1,5 @@
 import { ExecutionTiming } from "../features/studio/ExecutionTiming";
+import { ExecutionSummary } from "../features/studio/ExecutionSummary";
 import {
   lazy,
   Suspense,
@@ -355,6 +356,7 @@ export function Workbench({
         status: "idle",
         error: null,
         metrics: {},
+        executionSummary: undefined,
         dataSessionId: null,
         querySession: null,
         querySessionClosed: false,
@@ -1375,6 +1377,13 @@ export function Workbench({
       {tab.kind === "query" && tab.clientStartedAt !== undefined && (
         <ExecutionTiming metrics={tab.runMetrics} clientElapsedMs={tab.clientElapsedMs} />
       )}
+      {tab.kind === "query" &&
+        tab.clientStartedAt !== undefined &&
+        !["idle", "queued", "running"].includes(tab.status) &&
+        !tab.snowflakeDmlResult &&
+        !tab.snowflakeDdlResult && (
+          <ExecutionSummary summary={tab.executionSummary} status={tab.status} />
+        )}
       {filtering && tab.view === "data" && (
         <TableFilterBar
           query={tab.query}

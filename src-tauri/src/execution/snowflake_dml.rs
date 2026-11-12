@@ -284,6 +284,7 @@ impl Studio {
         }
         // Neither local persistence nor a late close may erase remote ACKs.
         let entry = HistoryEntry {
+            execution_summary: None,
             snowflake_dml: Some(SnowflakeDmlEvidence {
                 kind: result.kind,
                 statement_outcome: result.statement_outcome,

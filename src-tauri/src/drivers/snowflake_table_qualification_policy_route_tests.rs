@@ -767,6 +767,7 @@ fn read_events(
             total_ms: 1,
         },
         QueryEvent::Finished {
+            execution_summary: None,
             run_id: result.run_id.clone(),
             status: RunStatus::Completed,
             elapsed_ms: 1,

@@ -1633,6 +1633,14 @@ impl Studio {
     ) {
         let started = Instant::now();
         let mut status = RunStatus::Completed;
+        let mut execution_summary =
+            matches!(&stored.action, Action::Sql { .. }).then(|| ExecutionSummary {
+                planned: stored.plan.statements.len(),
+                attempted: 0,
+                completed: 0,
+                not_attempted: stored.plan.statements.len(),
+                stop_reason: None,
+            });
         let serialized = !matches!(&stored.action, Action::CancelProcess { .. });
         let _lane = if serialized {
             Some(session.lane.lock().await)
@@ -1751,6 +1759,11 @@ impl Studio {
                         first_row_ms: &mut first_row_ms,
                         events: &events,
                     };
+                    // StatementStarted precedes local preflight. Count only
+                    // driver invocations; this does not prove remote submission.
+                    let summary = execution_summary.as_mut().expect("SQL execution summary");
+                    summary.attempted += 1;
+                    summary.not_attempted -= 1;
                     let outcome = if let Some(b) = bound.get(index).and_then(Option::as_ref) {
                         session
                             .driver
@@ -1764,6 +1777,7 @@ impl Studio {
                     };
                     match outcome {
                         Ok(affected) => {
+                            summary.completed += 1;
                             events(QueryEvent::StatementCompleted {
                                 run_id: run_id.clone(),
                                 index,
@@ -1838,6 +1852,10 @@ impl Studio {
                         }
                     }
                     if sink.truncated && statement.kind == StatementKind::Read {
+                        summary.stop_reason = Some(ExecutionStopReason::ResultLimit);
+                        if summary.not_attempted > 0 {
+                            status = RunStatus::Stopped;
+                        }
                         break;
                     }
                 }
@@ -1902,6 +1920,18 @@ impl Studio {
             | Action::TransactionControl { .. }
             | Action::SnowflakeDml { .. }
             | Action::SnowflakeDdl { .. } => {}
+        }
+        if let Some(summary) = &mut execution_summary {
+            // Preserve the actual stop cause, including failures/cancellation
+            // before any driver invocation and unknown outcomes after a prefix.
+            if summary.stop_reason.is_none() {
+                summary.stop_reason = match status {
+                    RunStatus::Cancelled => Some(ExecutionStopReason::Cancelled),
+                    RunStatus::Failed => Some(ExecutionStopReason::Failed),
+                    RunStatus::OutcomeUnknown => Some(ExecutionStopReason::OutcomeUnknown),
+                    RunStatus::Completed | RunStatus::Stopped => None,
+                };
+            }
         }
         if serialized {
             let observed_state = if matches!(stored.action, Action::Sql { .. })
@@ -1978,6 +2008,7 @@ impl Studio {
             None
         };
         let history = HistoryEntry {
+            execution_summary: execution_summary.clone(),
             snowflake_dml: None,
             snowflake_ddl: None,
             id: run_id.clone(),
@@ -2007,6 +2038,7 @@ impl Studio {
         }
         self.jobs.lock().remove(&run_id);
         events(QueryEvent::Finished {
+            execution_summary,
             run_id,
             status,
             elapsed_ms,
@@ -5964,6 +5996,11 @@ mod browse_classification_tests {
         });
         studio.sessions.lock().insert(id, session.clone());
         (root, studio, driver, session, request)
+    }
+
+    #[cfg(test)]
+    mod script_accounting_tests {
+        include!("execution/script_accounting_tests.rs");
     }
 
     include!("execution/snowflake_dml_tests.rs");

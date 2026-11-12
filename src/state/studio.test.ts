@@ -10,6 +10,7 @@ import type {
   TransactionControlResult,
   SnowflakeDmlResult,
   SnowflakeDdlResult,
+  ExecutionSummary,
 } from "../ipc/generated";
 import type { Bootstrap, ConnectionProfile } from "../ipc/generated";
 import {
@@ -2226,6 +2227,154 @@ test("saved queries, bookmarks, recent-locations ring buffer, and profile deleti
   }
   expect(useStudio.getState().recentLocations).toHaveLength(MAX_RECENT_LOCATIONS);
   expect(useStudio.getState().recentLocations[0]?.key).toBe("item:64");
+});
+
+test.each([
+  {
+    status: "stopped",
+    summary: { planned: 3, attempted: 1, completed: 1, notAttempted: 2, stopReason: "resultLimit" },
+  },
+  {
+    status: "completed",
+    summary: { planned: 1, attempted: 1, completed: 1, notAttempted: 0, stopReason: "resultLimit" },
+  },
+  {
+    status: "cancelled",
+    summary: { planned: 3, attempted: 0, completed: 0, notAttempted: 3, stopReason: "cancelled" },
+  },
+  {
+    status: "failed",
+    summary: { planned: 3, attempted: 1, completed: 0, notAttempted: 2, stopReason: "failed" },
+  },
+  {
+    status: "outcomeUnknown",
+    summary: {
+      planned: 3,
+      attempted: 1,
+      completed: 0,
+      notAttempted: 2,
+      stopReason: "outcomeUnknown",
+    },
+  },
+] as const)(
+  "retains authoritative $status script accounting independently of result/statement-start events",
+  ({ status, summary }) => {
+    const state = useStudio.getState();
+    const id = state.openQuery("profile");
+    const revision = useStudio.getState().tabs.find((tab) => tab.id === id)!.revision;
+    const retained = {
+      ...page(schema("prefix")).result,
+      runId: "run",
+      statementIndex: 0,
+      status: "truncated" as const,
+    };
+    state.applyEvents(
+      id,
+      [
+        { type: "started", runId: "run" },
+        { type: "statementStarted", runId: "run", index: 0 },
+      ],
+      revision,
+    );
+    if (summary.attempted > 0)
+      state.applyEvents(id, [{ type: "result", result: retained }], revision);
+    // statementStarted precedes actual driver dispatch and is not accounting.
+    expect(useStudio.getState().tabs[0].executionSummary).toBeUndefined();
+    state.applyEvents(
+      id,
+      [{ type: "finished", runId: "run", status, elapsedMs: 7, executionSummary: summary }],
+      revision,
+    );
+    const tab = useStudio.getState().tabs[0];
+    expect(tab.executionSummary).toEqual(summary);
+    expect(tab.status).toBe(status);
+    expect(tab.results).toEqual(summary.attempted > 0 ? [retained] : []);
+    expect(tab.runId).toBeNull();
+  },
+);
+
+test("foreign/stale finishes cannot replace script accounting and a new legacy finish remains unknown", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.updateTab(id, { revision: 4 });
+  const summary: ExecutionSummary = {
+    planned: 3,
+    attempted: 1,
+    completed: 1,
+    notAttempted: 2,
+    stopReason: "resultLimit",
+  };
+  state.applyEvents(id, [{ type: "started", runId: "current" }], 4);
+  state.applyEvents(
+    id,
+    [
+      {
+        type: "finished",
+        runId: "foreign",
+        status: "stopped",
+        elapsedMs: 1,
+        executionSummary: summary,
+      },
+    ],
+    4,
+  );
+  state.applyEvents(
+    id,
+    [
+      {
+        type: "finished",
+        runId: "current",
+        status: "stopped",
+        elapsedMs: 1,
+        executionSummary: summary,
+      },
+    ],
+    3,
+  );
+  expect(useStudio.getState().tabs[0]).toMatchObject({ status: "running", runId: "current" });
+  expect(useStudio.getState().tabs[0].executionSummary).toBeUndefined();
+  state.applyEvents(
+    id,
+    [
+      {
+        type: "finished",
+        runId: "current",
+        status: "stopped",
+        elapsedMs: 1,
+        executionSummary: summary,
+      },
+    ],
+    4,
+  );
+  expect(useStudio.getState().tabs[0].executionSummary).toEqual(summary);
+  state.applyEvents(id, [{ type: "started", runId: "next" }], 4);
+  expect(useStudio.getState().tabs[0].executionSummary).toBeUndefined();
+  state.applyEvents(
+    id,
+    [
+      { type: "statementCompleted", runId: "next", index: 0, affectedRows: "99", elapsedMs: 1 },
+      { type: "finished", runId: "next", status: "completed", elapsedMs: 1 },
+    ],
+    4,
+  );
+  expect(useStudio.getState().tabs[0].executionSummary).toBeUndefined();
+});
+
+test("script accounting is ephemeral and cleared when console ownership changes", () => {
+  const state = useStudio.getState();
+  const id = state.openQuery("profile");
+  state.updateTab(id, {
+    executionSummary: {
+      planned: 3,
+      attempted: 1,
+      completed: 1,
+      notAttempted: 2,
+      stopReason: "resultLimit",
+    },
+  });
+  expect(JSON.stringify(workspaceSnapshot())).not.toContain("executionSummary");
+  state.bindQuerySession(id, session);
+  expect(useStudio.getState().tabs[0].executionSummary).toBeUndefined();
 });
 
 test("execution timings retain measured zero, reject foreign/stale runs and stay out of restoration", () => {
