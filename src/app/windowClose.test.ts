@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { createWindowCloser, lockWindowInteraction } from "./windowClose";
+import { WorkspaceWriter } from "../state/workspace";
 
 function fixture() {
   let pending = false;
@@ -117,4 +118,19 @@ test("closing blocks input and shortcuts and restores prior interaction state", 
     document.removeEventListener("keydown", shortcut);
     root.remove();
   }
+});
+
+test("even approved close cannot treat a paused workspace drain as durable", async () => {
+  const f = fixture();
+  const writer = new WorkspaceWriter(vi.fn(), vi.fn());
+  await writer.pause();
+  f.actions.flush.mockImplementation(() => writer.flushDurably());
+  f.setPending();
+  await f.close();
+  await expect(f.approve()).rejects.toThrow("Resolve recovery before closing");
+  expect(f.actions.shutdown).not.toHaveBeenCalled();
+  expect(f.actions.destroy).not.toHaveBeenCalled();
+  writer.resume();
+  await f.approve();
+  expect(f.actions.destroy).toHaveBeenCalledOnce();
 });

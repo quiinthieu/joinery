@@ -8,6 +8,176 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Encrypted metadata recovery (12 November 2026, local workflow verified)
+
+Base is `433fbac` on `feat/datagrip-replacement`. The new
+[workflow and acceptance steps](encrypted-metadata-recovery.md) pass local browser
+and hidden native acceptance. Normal packaging remains pending. The preserved runnable release app remains the earlier `72ee3e4`;
+it does not contain this increment. No account activity, installation or
+publication occurred. Three bounded workers used `gpt-6.1-sol` at high effort for
+crypto/publishing and review, SQLite streaming recovery, and UI/workspace plus
+browser acceptance source. The UI worker additionally owns the isolated hidden
+macOS encrypted recovery runner and actual main-WebView probes. The lead owns
+integration, serialized builds and final checks. Cargo
+builds are serialized and gated on at least 20 GiB free space. The fixture
+Compose project is `joinery-recovery-1794497502`; its six initially healthy
+containers are independent of the pre-existing logistics database. Fixture
+startup/health and ports are retained in `encrypted-recovery-fixtures*.json`.
+
+Evidence labels below refer to `.cache/verification/reviewed-console/`:
+
+| Label | Actual result |
+| --- | --- |
+| `encrypted-recovery-ui-first` | 26 cases in three files pass; 9.098 seconds including wrapper, unchanged captured frontend hashes |
+| `encrypted-recovery-ui-second` | 27 cases in three files pass after unknown-outcome tombstone coverage; 4.341 seconds including wrapper, unchanged captured frontend hashes; precedes the later missing-ID global-fence change |
+| `encrypted-recovery-first-compile` | Exit 101 before tests: four unsupported SQLite `u64` conversions; 49.224 seconds, unchanged captured product hashes |
+| `encrypted-recovery-second-compile` | Compiles; 51 pass / 19 fail / 3 ignored / 998 filtered; 66.393 seconds total, unchanged captured product hashes. Most failures expose a 21-byte buffer for the 22-byte age prefix; separate staging fixture failure remains under correction |
+| `encrypted-recovery-stream-corrected` | 20 pass / one fail / one internal child ignored; 72.959 seconds total. Header defects corrected. Crash test asserted staging existence after inventory had already cleaned it |
+| `encrypted-recovery-stream-final` | 21 pass / one internal child ignored / 1051 filtered; 59.835 seconds total, unchanged captured native hashes. Real SQLite restore/undo, cancellation, concurrent-writer fencing, post-link sync failure, killed replacement and >64 MiB staging pass |
+| `encrypted-recovery-ui-fenced` | 28 pass / eight fail; new authority read made old immediate-click tests premature and two preference mocks incomplete. 8.608 seconds, unchanged captured frontend hashes |
+| `encrypted-recovery-ui-authority-corrected` | 36 cases in three files pass; 3.539 seconds total, unchanged captured frontend hashes. Tests wait for actual native-authority readiness; production checks remain enforced |
+| `encrypted-recovery-integrated-native` | 72 pass / three ignored / 998 filtered; 79.569 seconds total, unchanged captured product/test hashes. Includes retained jobs, two delayed starts rejected after unknown-ID fencing and restart reconciliation |
+| `encrypted-recovery-types` | TypeScript fails on three fixtures using null progress totals; generated contract incorrectly declared only number. Native nullable value is correct; fix the generation annotation before full validation |
+| `encrypted-recovery-production-kdf` | The already-built, source-pinned native test binary passes the real work-factor-18 encrypt/decrypt round trip: one pass, 1072 filtered, 35.03-second test / 35.146-second wrapper. `/usr/bin/time -l` measures 278,216,704-byte (265.3 MiB) maximum RSS, zero swaps. Small fixture in the debug test binary; not full restore or large-capacity performance |
+| `encrypted-recovery-full-first` | Full validation reaches 976 frontend passes / 67 files and 618 standard Rust passes (139 default fixture ignores), then fails desktop compilation because a cheap async `State` command returns bare `bool`. 180.127 seconds, unchanged captured product/test hashes. Getter changed to synchronous; final validation still required |
+| `encrypted-recovery-acl-regression-reproduced` | Both new cross-file enrollment tests fail in 1.115 seconds, unchanged captured product/test hashes: 14 normal handlers absent from app manifest, 15 absent from main capability, four retired backup entries still enrolled |
+| `encrypted-recovery-acl-regression-corrected` | Both enrollment tests pass in 1.187 seconds, unchanged captured product/test hashes after aligning handler/manifest/main permissions, removing retired entries and preserving separate test-only permissions. Actual native WebView verification remains required |
+| `encrypted-recovery-database-fixtures` | All 124 ignored database/SSH/transport cases pass across eight binaries; 83.876 seconds, unchanged captured native hashes. Real isolated PostgreSQL 18, MySQL 8.4, MariaDB 11.4 (including folded-name fixtures) and Redis 8.2; covers SQL execution, TLS/SSH, metadata, writes/DDL, cancellations, interrupted transports and transaction outcomes |
+| `encrypted-recovery-native-clippy` | Strict all-target/all-feature Clippy fails on four needless borrowed references and one platform-specific redundant filesystem-size cast; 37.770 seconds, unchanged captured native hashes. References corrected; filesystem available-byte multiplication now widens both fields to `u128` and checks conversion back to `u64`, preserving overflow rejection |
+| `encrypted-recovery-native-clippy-corrected` | Strict Clippy reaches test targets and rejects the new jobs test module preceding production items; 30.876 seconds, unchanged captured native hashes. Test module moved to the end without changing its cases; no lint suppression |
+| `encrypted-recovery-native-clippy-final` | Strict all-target/all-feature Clippy passes in 33.809 seconds, unchanged captured native hashes; informational proc-macro future-compatibility warning remains documented |
+| `encrypted-recovery-runner-tests` | All 11 new hidden-native runner acceptance tests pass, 0.561-second wrapper, unchanged captured product/test hashes. They validate report rejection, process/deadline checks, ciphertext/hash/source evidence; actual native execution is separate |
+| `encrypted-recovery-full-corrected` | Final `pnpm validate` passes: 978 frontend cases / 68 files, 619 standard Rust cases and 139 default fixture ignores; formatting, regenerated contracts, TypeScript, production UI build, desktop compile and strict all-target/all-feature Clippy. 181.469 seconds, unchanged captured product/test hashes |
+| `encrypted-recovery-browser-first` | Actual headless Chromium → Rust Studio/SQLite/encryption workflow passes in 118.210 seconds including server compilation/startup (about 1.5 minutes for the case), unchanged captured product/test hashes. Real create/export/import, exact ciphertext hash/size, source preservation, wrong-key no mutation, restore/undo and page reload; one admitted response deliberately lost, exactly six distinct original starts and same-ID lookup without replay |
+| `encrypted-recovery-browser-regressions` | Remaining 162 existing browser cases: 152 pass / 10 fail, 543.642 seconds, unchanged captured product/test hashes. Failures include obsolete transaction-warning wording, ambiguous global status queries, changed Snowflake form expectations and a retained-console profile-save failure under investigation. Original 30 trace/context/image files are preserved separately with hashes; no blanket browser pass is claimed |
+| `encrypted-recovery-startup-hold-reproduced` | New startup regression fails before the fix because the required recovery gate is absent; 2.892 seconds, unchanged captured product/test hashes |
+| `encrypted-recovery-startup-hold-frozen` | 58 cases across seven App/workspace/close/recovery/Preferences files pass in 4.007 seconds, unchanged captured frontend hashes. Startup gating, initial-bootstrap ordering, failed reconciliation, malformed/unreadable storage and strict durable close are covered; actual browser/native execution remains separate |
+| `encrypted-recovery-retained-isolated` | Retained-console workflow passes in isolation: 19.1-second case / 26.373-second wrapper, unchanged captured product/test/tooling hashes. No production change, retry or timeout extension. The earlier full-suite helper startup failure remains unexplained; an isolated pass does not prove it fixed |
+| `encrypted-recovery-startup-pause-reproduced` | Transient storage failure leaves the writer paused after the marker becomes readable/absent; new regression fails before the predicate fix. 2.934 seconds, unchanged captured frontend hashes |
+| `encrypted-recovery-startup-pause-escape-final` | 60 cases / seven files pass in 3.887 seconds, unchanged captured frontend hashes. An already-paused startup still gates editing; an absent original marker uses the existing unknown-ID global fence and fresh reload, with no fabricated UUID |
+| `encrypted-recovery-final-validation` | Exit 1 after 32.614 seconds, unchanged captured product/test/tooling hashes: TypeScript rejects the new App regression's overly broad `vi.fn` mock type as `initialize: () => Promise<void>`. Stops before full test execution; requires a precise test-only mock annotation and rerun |
+| `encrypted-recovery-startup-mock-typecheck`, `encrypted-recovery-startup-mock-focused` | Precise test-only async mock annotation: TypeScript passes in 5.723 seconds; seven App recovery cases pass in 2.201 seconds, unchanged captured frontend hashes. Production hashes remain exactly as independently reviewed |
+| `encrypted-recovery-final-corrected-validation` | Corrected-source `pnpm validate` passes: 989 frontend cases / 69 files, 619 standard Rust cases / 139 default fixture ignores; formatting, contracts, TypeScript, production UI build, desktop compile and strict all-target/all-feature Clippy. 169.352 seconds, unchanged captured product/test/tooling hashes |
+| `encrypted-recovery-browser-final` | Six affected files: 29 pass / one new startup case fails; 274.913 seconds, unchanged captured product/test/tooling hashes. Production-strength crypto workflow passes again (1.7 minutes); all nine corrected stale cases and the retained-console workflow (18.3 seconds) pass. The new test holds ordinal bootstrap 2, which is actually a second initial request under development StrictMode; the gate correctly waits rather than offering reconciliation. Four failure artifacts are retained with hashes. Initial-load duplication and test hold selection require correction before final runtime qualification |
+| `encrypted-recovery-startup-strictmode-reproduced` | Actual StrictMode component regression fails: expected one initial metadata load, observed two; 2.015 seconds, unchanged captured frontend hashes |
+| `encrypted-recovery-startup-strictmode-focused`, `encrypted-recovery-startup-strictmode-typecheck` | Shared initial promise across effect replay: 61 cases / seven files pass in 5.938 seconds; TypeScript passes in 8.825 seconds, unchanged captured frontend hashes. Bounded independent review verifies the exact App/test/E2E hashes in receipt `915259b22f5a6a3759996f30dd076ed45d6c4f0e41df1942714a74f38d8dc2bf` |
+| `encrypted-recovery-startup-browser-corrected` | Actual startup gate → same-ID native reconciliation → held fresh bootstrap → editing enabled passes, 1.5-second case / 7.875-second wrapper, unchanged captured product/test/tooling hashes. No connect, execution, export or recovery start. The hold is tied to observed reconciliation, not request ordinal |
+| `encrypted-recovery-strictmode-full-validation` | Final shared-initialization source passes `pnpm validate`: 990 frontend cases / 69 files, 619 standard Rust cases / 139 default fixture ignores, formatting, contracts, TypeScript, production UI build, desktop compile and strict all-target/all-feature Clippy. 190.114 seconds, unchanged captured product/test/tooling hashes |
+| `encrypted-recovery-native-smoke-build` | SDK-bearing hidden macOS build passes in 348.998 seconds, unchanged captured product/test/tooling hashes. Actual resource verification and network-guarded helper startup pass with SDK 3.4.1 and zero authentication/SQL requests. Rust reports a non-fatal debug-strip warning because this pinned toolchain's `rust-objcopy` cannot load `libLLVM.dylib`; no global toolchain changes or warning suppression. Native workflow execution remains separate |
+| `encrypted-recovery-native-actual` | Fails in 6.461 seconds, unchanged captured product/test/tooling hashes: all 22 native setup checks pass, but fresh-process reopen rejects its serialized inventory comparison. Full result preserved as `encrypted-recovery-native-first-runs.json`. Independent ciphertext-only recheck passes exact IDs, sizes and SHA-256 for both retained files; this does not establish the full metadata/restart contract. Comparison/serialization is under investigation; no native pass claimed |
+| `encrypted-recovery-native-inventory-reproduced` | One regression fails / six pass in 1.567 seconds, unchanged captured product/test/tooling hashes. The exact old stringify comparator rejects equal full inventories after `serde_json::Value` sorts object keys. Per-field/ordered-inventory mutations remain rejected. This reproduces an acceptance-oracle defect; native rerun remains required after correction |
+| `encrypted-recovery-native-inventory-corrected` | All seven regressions pass in 1.239 seconds, unchanged captured product/test/tooling hashes. Comparator preserves format, ID, creation time, size, digest, inventory length and array order while ignoring property insertion order. Fresh returned inventory is forwarded to independent runner ciphertext checks; native rebuild/rerun remains separate |
+| `encrypted-recovery-final-oracle-validation` | Final oracle-corrected source passes `pnpm validate`: 997 frontend cases / 70 files, 619 standard Rust cases / 139 default fixture ignores, formatting, contracts, TypeScript, production UI build, desktop compile and strict all-target/all-feature Clippy. 173.030 seconds, unchanged captured product/test/tooling hashes |
+| `encrypted-recovery-native-rebuilt` | Corrected hidden SDK-bearing macOS build passes in 264.524 seconds, unchanged captured product/test/tooling hashes; actual SDK 3.4.1 resource and guarded helper-startup checks pass with zero authentication/SQL. Existing non-fatal toolchain warnings remain |
+| `encrypted-recovery-native-corrected` | Actual encrypted native acceptance passes in 4.990 seconds, unchanged captured product/test/tooling hashes. All 22 setup and five fresh-process reopen checks pass; both child exits are clean. Real main ACL probes, Preferences create/wrong-key/restore/undo, exact two retained ciphertext identities and production single-scrypt N18 headers pass. Selected native connection/SQL counts remain zero. Full receipt is preserved as `encrypted-recovery-native-corrected-runs.json` |
+| `encrypted-recovery-native-postgres-restart` | Both real PostgreSQL/native close/reopen pairs pass in 2.974 seconds, unchanged captured product/test/tooling hashes. Actual pending-draft close exits in 56.34 and 54.80 ms, below the unchanged 400 ms debounce window. Close-cancel retains session/transaction; restart restores latest draft/preferences but no sessions/results/transactions or SQL replay; observer verifies rollback and drops only each generated test table. Four clean process exits. Full receipt is preserved as `encrypted-recovery-native-postgres-restart-runs.json` |
+
+Review found and corrected early export cancellation cutoff, cancellation
+discarding a published artifact identity, and failed directory-sync paths losing
+known publication identity. Unknown status after restart must remain unknown,
+not a fabricated cancellation or operation kind. A malformed browser marker also
+needs a native fence for all later starts rather than a new unrelated UUID. These
+corrections pass the focused checks above; full validation and final bounded independent
+rereview now pass as recorded here; runtime workflow gates remain. The generated nullable-total annotation is corrected
+and contracts regenerated before full validation. Independent review then found
+that the HTTP harness bypasses Tauri ACL enrollment: all eight recovery commands,
+six receipt inventory/release commands and CSV-preview release were unavailable
+through the actual main WebView. Exact pinned Tauri source confirms denial before
+handler dispatch. Manifest and main capability are now aligned, with retired
+backup entries removed. New source-level enrollment regressions fail before the
+fix and pass after it. Actual native workflow coverage is being added; neither
+these regressions nor the HTTP browser harness qualify native invoke permissions.
+
+The added dependency check has 48 package versions: 46 without returned OSV
+findings and two informational unmaintained compile-time macro dependencies.
+The guide records exact source pins and advisories. This is neither a whole-app
+security audit nor an advisory-free claim. Exact added-dependency original licenses, copyright notices and embedded
+data notices are collected in `src-tauri/resources/recovery-dependency-notices.txt`
+(130,911 bytes; SHA-256
+`00504cf7c37bff567ef2c4711975538d8c5efd9adab672740d589b522cc54fbb`).
+The Tauri resource map includes this file; assembled bundle verification remains
+pending. Source provenance for the 48 packages is retained in
+`recovery-dependency-notices-sources.json` under the evidence directory. Full-capacity/resource and normal native
+workflow acceptance remain open; lifetime receipt gates stay unchanged.
+
+Initial staging exposed automatic CRLF conversion and upstream trailing-space
+warnings in the original legal texts. A file-specific `.gitattributes` entry
+preserves this notice file's bytes and spacing; source whitespace checks remain
+unchanged. Restaging verifies exact working/index equality at the 130,911-byte
+SHA-256 above, and the staged diff check passes. No global Git settings changed.
+
+Final bounded review rechecked all 121 typed commands/handlers/manifest entries,
+118 main app grants and three isolated smoke grants. It found no remaining
+material issue after corrections in admission fencing, UI remount state, nullable
+progress, publication callbacks and SQLite writer witnesses. The added native
+runner source was reviewed separately: production work-factor-18 path, exact
+error probes, distinct original IDs, ciphertext hashes, real child-process exit
+and restart, unique roots and own-child-only timeout termination. The reviewer
+ran no checks. Graph coverage reported matching/no recorded issues where current;
+changed build/capability files were checked directly. Root graph transport remains
+unavailable. These bounded results do not prove graph or whole-app completeness.
+Native "no SQL" evidence uses selected command counters and empty sessions/results,
+not universal network tracing. Native picker dialogs, installed app, keychain,
+actual accounts and visible user interaction remain separate qualification.
+
+The native inventory-oracle correction was separately reviewed against exact
+source hashes `798f2d4d42baad250b85a7bdb5509b296425cd0b8ba3deb7aa39eb5d93c066bc`
+and `4036af59b197c379f6be8db823faf434d5e4c4e6a16ae2c5edb4cc9519d5af6f`.
+It preserves every current backup field and ordered inventory, forwards the
+fresh reopened inventory to independent physical-file/header/hash checks and
+changes no deadlines, retry behavior or selected no-SQL counters. No material
+finding remains in this bounded delta; actual execution is recorded separately.
+Final independent receipt review confirms distinct native setup/reopen PIDs,
+22 + 5 true named checks, four original operation IDs, two exact physical
+ciphertext identities and clean process exits. All 546 captured source hashes
+still match across validation, rebuilt binary and native acceptance. The reviewer
+executed no tests. After both PostgreSQL/native close/reopen pairs passed, only
+the six `joinery-recovery-1794497502` fixture containers were stopped, preserving
+their volumes. The pre-existing logistics database remains running.
+
+A subsequent integration review found a material startup/close gap not covered
+by the preceding passes: a remembered recovery operation pauses workspace saves,
+but the ordinary close path can treat a paused no-op flush as durable success.
+Recovery is mounted only after Preferences opens; a new draft entered before
+reconciliation could also be discarded by metadata reload. Both this path and a
+transient-storage/absent-marker variant were reproduced and corrected. Startup
+editing now remains blocked until native fencing and fresh metadata reload;
+strict close refuses a paused save. The final 60 focused cases pass, and an
+independent reviewer checked the exact three production hashes in receipt
+`encrypted-recovery-startup-pause-implementation.json` (SHA-256
+`b933f1e3b30e7ed236a8d19a3d496a73c913caccf0f849b346e513317a661420`).
+No further material issue was found in those bounded paths. Fresh graph coverage
+reported matching metadata/no recorded issue for eight reviewed evidence paths,
+with direct source confirmation; this does not establish graph completeness.
+Browser/native and final validation of this corrected source remain separate.
+
+History confirms nine full-browser failures predate base `433fbac`: transaction
+warning text changed in `b204fed`, statement summaries added another status in
+`278754b`, and opted-in SDK write controls changed the form in `c3bada6`. Tests now
+select the intended commit notification, retain independent database readback,
+check both transaction warnings and verify default-off SDK consents plus forced
+read-only OAuth. The retained-console test retains its full workflow and now
+asserts the actual connection response early, attaching only its closed error
+code and bounded synthetic-child diagnostics on failure. The original helper
+startup failure remains unexplained despite the isolated pass.
+
+The five existing browser-spec corrections are separately committed as
+`874821e` (`test(e2e): update current workflow assertions`). Bounded independent
+review found no material weakening or diagnostic disclosure: real database
+readbacks and resource checks remain, and failure attachments are restricted to
+the owned synthetic child's bounded output plus a closed connection outcome.
+This is provenance for this fixture, not general-purpose log redaction or a
+diagnosis of the original helper failure.
+
+Storage follow-up at 15:57 UTC: debug artifacts **9,493,088 KiB** (about 9.1 GiB),
+release **2,501,696 KiB**, free **204,499,623,936 bytes** (about 190.5 GiB).
+`build-storage/encrypted-recovery-followup-space.json` retains that measurement.
+The earlier approved cleanup reclaimed 135.8 GiB; its delayed approval has not
+been reused and no additional artifacts were deleted. Incremental caching stays
+disabled. Before rebuilding the normal app, the prior `72ee3e4` bundle was
+copy-on-write preserved with matching complete file inventories and strict
+signature verification (`encrypted-recovery-preserved-release.json`).
+
 ### Paged receipt inventory and hot-state compaction (12 November 2026)
 
 Base is `cfdcb23` on the existing `feat/datagrip-replacement` branch. The

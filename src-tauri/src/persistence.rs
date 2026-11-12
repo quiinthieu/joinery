@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 mod library;
 mod recovery;
+pub(crate) mod recovery_crypto;
+pub(crate) mod recovery_stream;
 pub(crate) mod snowflake_console;
 mod workspace;
 

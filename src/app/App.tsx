@@ -48,6 +48,7 @@ import {
   hasPendingConnections,
 } from "../features/connections/connectionSetup";
 import { Preferences } from "../features/studio/Preferences";
+import { MetadataRecovery } from "../features/studio/MetadataRecovery";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
 import { SchemaDiffView } from "../features/schema-diff/SchemaDiffView";
@@ -110,7 +111,14 @@ import {
   matchesKeyboardEvent,
   type ShortcutActionId,
 } from "../features/studio/shortcuts";
-import { flushWorkspace, watchWorkspace } from "../state/workspace";
+import {
+  flushWorkspaceForClose,
+  watchWorkspace,
+  initializeWorkspaceRecoveryStartupHold,
+  workspaceRecoveryStartupHeld,
+  subscribeWorkspaceRecovery,
+  workspaceRecoveryHeld,
+} from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
 import { COPY_FORMATS } from "../features/grid/copy-format";
@@ -210,6 +218,14 @@ export function pendingCountFor(tab: StudioTab) {
 }
 
 export function App() {
+  useState(initializeWorkspaceRecoveryStartupHold);
+  const recoveryStartupHeld = useSyncExternalStore(
+    subscribeWorkspaceRecovery,
+    workspaceRecoveryStartupHeld,
+  );
+  const [startupBootstrapSettled, setStartupBootstrapSettled] = useState(false);
+  const initialBootstrap = useRef<Promise<void> | null>(null);
+  const [recoveryCloseError, setRecoveryCloseError] = useState<string | null>(null);
   const state = useStudio(),
     [dialog, setDialog] = useState<Dialog | null>(null),
     [selectedCell, setSelectedCell] = useState<CellTarget | null>(null),
@@ -534,7 +550,16 @@ export function App() {
       : []),
   ];
   useEffect(() => {
-    void state.initialize();
+    let active = true;
+    // StrictMode replays effects; both setups must drain the same initial
+    // request before a reconciled reload can replace the workspace.
+    initialBootstrap.current ??= state.initialize();
+    void initialBootstrap.current.finally(() => {
+      if (active) setStartupBootstrapSettled(true);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
   useEffect(watchWorkspace, []);
   useLayoutEffect(() => {
@@ -545,6 +570,7 @@ export function App() {
     const hasPendingWork = () => {
       const snap = useStudio.getState();
       return (
+        workspaceRecoveryHeld() ||
         hasPendingConnections() ||
         Object.values(snap.snowflakeConsoleReceipts).some(consoleReceiptHeld) ||
         snap.tabs.some(
@@ -573,19 +599,27 @@ export function App() {
     const windowHandle = getCurrentWindow();
     const requestClose = createWindowCloser({
       hasPendingWork,
-      flush: flushWorkspace,
+      flush: flushWorkspaceForClose,
       cancelConnections: cancelPendingConnections,
       shutdown: () => client.call("app_shutdown"),
       destroy: () => windowHandle.destroy(),
       lockInteraction: lockWindowInteraction,
-      confirm: (approve) =>
+      confirm: (approve) => {
+        if (workspaceRecoveryHeld()) {
+          const message =
+            "Workspace saving is paused for metadata recovery. Resolve recovery before closing Joinery; drafts have not been saved.";
+          setRecoveryCloseError(message);
+          useStudio.getState().notify(message);
+          return;
+        }
         setDialog({
           kind: "confirm",
           title: "Close Joinery?",
           description:
             "Pending edits will be discarded and active sessions closed. Running statements and open transactions may need verification on the database. Completed writes are not undone.",
           action: approve,
-        }),
+        });
+      },
     });
     const unsubscribe = windowHandle.onCloseRequested((event) => {
       event.preventDefault();
@@ -1172,6 +1206,7 @@ export function App() {
   };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (workspaceRecoveryStartupHeld()) return;
       if (references.current.dialog) return;
       const snap = useStudio.getState();
       const active = references.current.current;
@@ -1311,6 +1346,22 @@ export function App() {
       state.notify(messageOf(error));
     }
   }
+
+  if (recoveryStartupHeld)
+    return (
+      <Modal title="Resolve metadata recovery" busy onClose={() => {}}>
+        <p role="status">
+          Workspace saving is paused. Resolve the retained recovery operation before editing or
+          closing Joinery. Existing drafts remain held; nothing will be replayed.
+        </p>
+        {recoveryCloseError && <InlineError message={recoveryCloseError} />}
+        {startupBootstrapSettled ? (
+          <MetadataRecovery onBusy={() => {}} />
+        ) : (
+          <p>Reading local metadata before recovery reconciliation…</p>
+        )}
+      </Modal>
+    );
 
   return (
     <div className={`app-shell ${!state.sidebarVisible ? "sidebar-hidden" : ""}`}>

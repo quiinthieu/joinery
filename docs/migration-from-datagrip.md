@@ -55,9 +55,12 @@ In the new source, use **Console receipts** for 25-row history pages, filters an
 exact UUID lookup. **Archive receipt** changes browsing only and frees no journal
 space. **Release retained result rows** separately releases process-local buffers
 after confirmation, preserving original decisions. The existing 10,000-decision
-limits remain; encrypted streaming backup and full-capacity resource acceptance
-are unfinished. Current metadata backups are plaintext, limited to 64 MiB / 20
-copies. The [workflow guide](snowflake-sdk-console-workflow.md) contains the
+limits remain. The new [encrypted metadata recovery workflow](encrypted-metadata-recovery.md)
+passes local browser and hidden native verification and is not yet in the preserved release app. It adds
+separate backup passphrases, encrypted import/export, mandatory encrypted undo
+and bounded SQLite staging; full-capacity resource acceptance remains open.
+Use its disposable acceptance steps before replacing any real local metadata.
+The [workflow guide](snowflake-sdk-console-workflow.md) contains the
 concrete inspection/recovery steps and unchanged uncertainty holds.
 
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all

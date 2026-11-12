@@ -1,5 +1,38 @@
 # Joinery implementation roadmap
 
+## Encrypted metadata recovery (12 November 2026, locally verified)
+
+The [complete local recovery workflow](encrypted-metadata-recovery.md) is implemented and locally
+verified on the existing feature branch. It connects streaming encrypted
+snapshots, native import/export pickers, mandatory encrypted undo, exact receipt
+union, activity admission, tracked status/cancellation and workspace-save
+reconciliation. It passes browser and hidden native acceptance; normal packaging remains pending. The preceding
+inventory increment below records its own source and historical limits.
+
+Focused checks pass 72 native and 61 App/workspace/close/recovery cases, including real SQLite/crash/undo
+and cancellation cases. The production KDF round trip passes on a small fixture.
+Initial integer/header defects are corrected; failures remain in the
+[ledger](replacement-verification.md). Full validation then exposed a Tauri
+command signature error; independent review found missing native ACL enrollment.
+Both are corrected, with enrollment regression coverage. Final full validation
+passes 997 frontend / 619 standard Rust cases, and all 124 real database/SSH/
+transport cases pass. Browser encryption/import/export/restore/undo passes on the
+preceding source. Startup edit/close protection and transient-storage recovery
+were then reproduced, corrected and independently reviewed. The actual browser
+startup gate/fresh-reload case also passes after correcting StrictMode initial
+load duplication. All 27 actual encrypted macOS WebView checks pass across two
+fresh processes; both real PostgreSQL/native pending-close/reopen pairs also
+pass. The first encrypted reopen failure was a reproduced test-oracle key-order
+defect, corrected without weakening full-field or ciphertext checks.
+Next qualify the local package and update its exact source/hash. No account
+activity is needed for this increment.
+
+Keep receipt count gates and `retentionEnabled=false`. Remaining required work
+includes byte reservations/admission, full-capacity and memory measurements,
+actual Snowflake effects and all applicable DataGrip workflows in the
+[matrix](datagrip-feature-matrix.md), plus owner acceptance. Publication and
+installation remain unauthorized.
+
 ## Paged receipt inventory and bounded hot state (12 November 2026)
 
 The first [retention slice](snowflake-console-retention-design.md) implements
@@ -18,9 +51,10 @@ native cases, the actual browser full-restart workflow and independent review.
 These are source-scoped local results with a synthetic SDK.
 
 Keep the original lifetime count gates and `retentionEnabled=false`. Next required
-work is encrypted bounded-memory metadata backup/restore, byte reservations and
-admission budgets, full-capacity/resource measurements and crash/storage-failure
-acceptance. Existing snapshots remain plaintext and limited to 64 MiB / 20 copies.
+work is verification of the encrypted metadata recovery increment above, byte
+reservations and admission budgets, full-capacity/resource measurements and
+crash/storage-failure acceptance. The inventory-only predecessor used plaintext
+snapshots limited to 64 MiB / 20 copies.
 Archive is a browsing preference, never evidence deletion or journal reclamation.
 Actual Snowflake and normal packaged/macOS/owner acceptance remain open. The
 current local release bundle still comes from clean `72ee3e4` and does not include

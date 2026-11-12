@@ -43,6 +43,8 @@ function workerRoundtrip(worker: Worker, payload: unknown) {
   });
 }
 export async function runNativeSmoke() {
+  const { runNativeEncryptedRecovery } = await import("./native-encrypted-recovery");
+  if (await runNativeEncryptedRecovery()) return;
   const { runNativeRecovery } = await import("./native-recovery");
   if (await runNativeRecovery()) return;
   const started = performance.now();

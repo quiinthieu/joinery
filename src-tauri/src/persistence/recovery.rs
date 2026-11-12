@@ -59,7 +59,7 @@ fn copy(source: &Connection, destination: &mut Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn validate(connection: &Connection) -> AppResult<()> {
+pub(super) fn validate(connection: &Connection) -> AppResult<()> {
     let version = schema_version(connection)?;
     if !(1..=SCHEMA_VERSION).contains(&version) {
         return Err(AppError::invalid(

@@ -85,7 +85,7 @@ impl Studio {
         sql: &str,
         parameters: Option<&[QueryParamInput]>,
     ) -> AppResult<PreparedPlan> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let session = self.session(session_id)?;
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
@@ -144,13 +144,14 @@ impl Studio {
         plan_id: &str,
         approval: Option<&str>,
     ) -> AppResult<SnowflakeDmlResult> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let studio = self.clone();
         let plan_id = plan_id.to_owned();
         let approval = approval.map(str::to_owned);
         // Detaching the IPC waiter must not drop acknowledged remote evidence.
         // The owner task finishes retirement and durable history independently.
         let owner = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             // TaskTracker.close does not itself reject new tasks. Admission
             // and shutdown share this gate so the final drain cannot miss one.
             if self.dml_tasks.is_closed() {
@@ -159,7 +160,9 @@ impl Studio {
                     "Joinery is closing; no database write was started",
                 ));
             }
+            let recovery_activity = self.retain_recovery_activity()?;
             self.dml_tasks.spawn(async move {
+                let _recovery_activity = recovery_activity;
                 studio
                     .execute_snowflake_dml_owned(&plan_id, approval.as_deref())
                     .await
@@ -194,7 +197,7 @@ impl Studio {
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         let (request, kind, digest) = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             self.flush_pending_snowflake_receipts()?;
             let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
             if stored.deadline <= Instant::now() || stored.plan.session_id != session_id {

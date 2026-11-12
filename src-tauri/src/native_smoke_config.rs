@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub enum RecoveryStage {
     Setup,
     Verify,
+    EncryptedSetup,
+    EncryptedVerify,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -46,8 +48,11 @@ impl SmokeOptions {
     }
 
     pub fn timeout_seconds(self) -> u64 {
-        if self.recovery_stage.is_some() {
-            return 90;
+        match self.recovery_stage {
+            Some(RecoveryStage::EncryptedSetup) => return 900,
+            Some(RecoveryStage::EncryptedVerify) => return 120,
+            Some(RecoveryStage::Setup | RecoveryStage::Verify) => return 90,
+            None => {}
         }
         30 + u64::from(self.cleanup_cycles) + 2 * u64::from(self.idle_ms).div_ceil(1000)
     }
@@ -102,6 +107,19 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn encrypted_recovery_has_separate_bounded_production_kdf_deadlines() {
+        for (stage, seconds) in [("encryptedSetup", 900), ("encryptedVerify", 120)] {
+            let options = SmokeOptions::parse(
+                format!(r#"{{"cleanupCycles":10,"idleMs":1000,"recoveryStage":"{stage}"}}"#)
+                    .as_bytes(),
+            )
+            .unwrap();
+            assert_eq!(options.timeout_seconds(), seconds);
+            assert!(options.fixture_port.is_none());
         }
     }
 }

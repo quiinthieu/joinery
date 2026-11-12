@@ -753,8 +753,14 @@ pub async fn native_smoke_checkpoint(
             "execute": NATIVE_SMOKE_EXECUTE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
         },
     });
-    if state.options.recovery_stage == Some(crate::native_smoke_config::RecoveryStage::Verify) {
-        let path = state.root.join("report-setup.json");
+    if let Some(setup_name) = match state.options.recovery_stage {
+        Some(crate::native_smoke_config::RecoveryStage::Verify) => Some("report-setup.json"),
+        Some(crate::native_smoke_config::RecoveryStage::EncryptedVerify) => {
+            Some("report-encrypted-setup.json")
+        }
+        _ => None,
+    } {
+        let path = state.root.join(setup_name);
         let bytes = crate::files::read_bounded(
             path.to_str()
                 .ok_or_else(|| AppError::invalid("Invalid native recovery path"))?,
@@ -794,11 +800,19 @@ pub async fn native_smoke_report(
             .map_err(|_| AppError::internal("Could not encode native test report"))?,
     )
     .map_err(|_| AppError::internal("Could not write native test report"))?;
-    if passed
-        && state.options.recovery_stage == Some(crate::native_smoke_config::RecoveryStage::Setup)
-    {
+    if let Some(setup_name) = if passed {
+        match state.options.recovery_stage {
+            Some(crate::native_smoke_config::RecoveryStage::Setup) => Some("report-setup.json"),
+            Some(crate::native_smoke_config::RecoveryStage::EncryptedSetup) => {
+                Some("report-encrypted-setup.json")
+            }
+            _ => None,
+        }
+    } else {
+        None
+    } {
         std::fs::write(
-            state.root.join("report-setup.json"),
+            state.root.join(setup_name),
             serde_json::to_vec_pretty(&report)
                 .map_err(|_| AppError::internal("Could not encode native recovery setup report"))?,
         )

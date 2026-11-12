@@ -405,6 +405,21 @@ in `.cache/native-smoke/recovery-runs.json`. `--runs 1` runs one pair;
 fixed test database and credentials. This does not qualify the normal installed
 bundle, the OS credential store, other engines or an owner's live database.
 
+Encrypted metadata recovery has a separate hidden WebView close/reopen test:
+
+```sh
+pnpm desktop:snowflake:smoke:build
+pnpm test:native:encrypted-recovery:runner
+pnpm test:native:encrypted-recovery
+```
+
+It uses only a fresh local metadata root and synthetic keys, with production
+encryption strength and actual main-window command permissions. The
+[recovery guide](docs/encrypted-metadata-recovery.md) explains the workflow,
+scope, deadlines and separate browser import/export checks. Consult the
+[verification ledger](docs/replacement-verification.md) for actual run status;
+this does not qualify native picker interaction or the normal installed app.
+
 To explicitly qualify the native credential store with one disposable random entry:
 
 ```sh

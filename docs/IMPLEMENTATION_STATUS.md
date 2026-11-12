@@ -1,5 +1,31 @@
 # Implementation and release status
 
+## Encrypted metadata recovery (12 November 2026, locally verified)
+
+The new [recovery workflow](encrypted-metadata-recovery.md) passes local browser and hidden native
+acceptance. It is not part of the runnable release app. Focused checks
+pass 72 native and 61 App/workspace/close/recovery cases, including real SQLite restore/undo, concurrent
+writer fencing and killed replacement. Initial compiler/header/staging defects
+are corrected and retained in the [ledger](replacement-verification.md). A small
+production-work-factor encryption/decryption round trip passes in 35 seconds
+with 265.3 MiB peak RSS; this is not large-backup performance evidence. Final
+`pnpm validate` passes 997 frontend / 619 standard Rust cases (139 default fixture
+ignores), production UI build and strict native checks. All 124 real isolated
+database/SSH/transport cases pass. Enrollment regressions reproduce and correct
+15 missing native grants. Actual encrypted create/export/import/restore/undo
+passes in the browser on the preceding source; startup edit/close gaps were
+subsequently reproduced and corrected with bounded review, including one shared
+initial load across StrictMode effect replay. Actual browser startup
+reconciliation/fresh-reload gating passes. All 27 actual encrypted native checks
+pass across two clean processes, including main invoke permissions and exact
+ciphertext identity after restart. Two real PostgreSQL/native close/reopen pairs
+also pass, with pending-draft exits in 56.34 and 54.80 ms under the unchanged
+400 ms debounce window. Normal packaging remains pending. The broader browser run
+had nine stale assertions and one unexplained synthetic helper startup failure;
+its isolated rerun passes without a production change. The preserved release app below
+and all external/owner acceptance gates remain unchanged. No publication,
+installation or account activity occurred.
+
 ## Paged console receipt inventory (12 November 2026)
 
 Local source implements schema-4 migration/old-writer fencing, SQL-free paged
@@ -18,8 +44,9 @@ case passes paging, archive response loss, explicit row release and full restart
 with a synthetic SDK. Independent review has no remaining material findings.
 
 Lifetime count limits remain unchanged; `retentionEnabled` is false. Byte
-reservations/admission budget and encrypted streaming backup are unimplemented;
-existing metadata snapshots are plaintext with 64 MiB / 20-copy limits. Capacity,
+reservations/admission budget remain unimplemented. This inventory-only slice
+used plaintext snapshots with 64 MiB / 20-copy limits; the following recovery
+implementation and its actual qualification are described above. Capacity,
 memory plateau, real Snowflake, normal native UI and owner acceptance remain open.
 The release app below is the preserved earlier source, not this increment. The
 private hub is unchanged because publication is not authorized.

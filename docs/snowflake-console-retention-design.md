@@ -4,7 +4,7 @@
 
 Partially implemented locally, 12 November 2026. This document specifies the
 complete target; the inventory/compaction slice below does not qualify unlimited
-lifetime retention, encryption, account effects or daily replacement. It follows
+lifetime retention, full-capacity recovery, account effects or daily replacement. It follows
 the [roadmap](implementation-roadmap.md), the
 [console workflow](snowflake-sdk-console-workflow.md) and the
 [durable admission decision contract](snowflake-console-negative-receipts-design.md).
@@ -46,10 +46,13 @@ separate from archive and preserves original outcomes.
 
 **The 10,000-positive and 10,000-refusal lifetime gates remain.** Native accounting
 reports logical charged bytes, while reservations, admission byte budget and
-available journal budget remain unavailable. `retentionEnabled` is false. Current
-metadata backup remains plaintext, whole-file and limited to 64 MiB / 20 snapshots.
-There is no encrypted streaming recovery implementation in this slice. No memory
-plateau, full-capacity recovery or actual-account qualification is claimed.
+available journal budget remain unavailable. `retentionEnabled` is false. The
+following [encrypted recovery increment](encrypted-metadata-recovery.md) now has
+source and focused regression evidence; full validation, browser acceptance and
+packaging are still pending. Its 20-copy / 64 GiB aggregate / 16 GiB plaintext
+limits do not establish full-capacity performance. The earlier inventory-only
+slice used plaintext 64 MiB snapshots. No memory plateau, full-capacity recovery
+or actual-account qualification is claimed.
 See the [verification ledger](replacement-verification.md) and
 [usage walkthrough](snowflake-sdk-console-workflow.md) for source-scoped checks.
 The remaining sections describe the full design, including unimplemented gates.
@@ -69,7 +72,7 @@ verification results do not verify this design.
 | Results         | Separate 100-descriptor, 64 MiB RAM, 1,000,000-row/result and optional 8 GiB temporary-disk limits      | Receipt archive alone cannot release result capacity or preserve rows across restart.                         |
 | Metadata backup | At most 20 snapshots, each at most 64 MiB; whole-file digest buffer and in-memory restore copy          | A valid lifetime journal can outgrow recovery before reaching a decision-count limit.                         |
 
-Current metadata snapshots are **plaintext SQLite**, protected by filesystem
+At this baseline, metadata snapshots are **plaintext SQLite**, protected by filesystem
 permissions. The current OS-stored write-passphrase secret is an Argon2 verifier,
 not a backup encryption key. Existing backup creation has no encryption-password
 workflow. The new encryption design below is a separate capability.

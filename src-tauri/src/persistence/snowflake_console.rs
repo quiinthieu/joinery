@@ -329,7 +329,7 @@ fn owner_error() -> AppError {
 }
 
 impl ConsoleJournalOwner {
-    fn validate(&self, store: &Persistence) -> AppResult<()> {
+    pub(crate) fn validate(&self, store: &Persistence) -> AppResult<()> {
         self.validate_root(&store.root)
     }
 

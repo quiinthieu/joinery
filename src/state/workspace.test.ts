@@ -52,6 +52,96 @@ test("a failed save remains available for an explicit flush retry", async () => 
   expect(save).toHaveBeenCalledTimes(2);
 });
 
+test("recovery pause drains the current save and prevents queued or page-hide flushes", async () => {
+  vi.useFakeTimers();
+  let release!: () => void;
+  const save = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    )
+    .mockResolvedValue(undefined);
+  const writer = new WorkspaceWriter(save, vi.fn());
+  writer.schedule(snapshot("old-inflight"));
+  const flushing = writer.flush();
+  writer.schedule(snapshot("old-queued"));
+  const paused = writer.pause();
+  release();
+  await Promise.all([flushing, paused]);
+  writer.schedule(snapshot("old-edited"));
+  await writer.flush();
+  await vi.runAllTimersAsync();
+  expect(save.mock.calls.map(([value]) => value.theme)).toEqual(["old-inflight"]);
+  writer.discard();
+  writer.resume();
+  writer.schedule(snapshot("restored"));
+  await writer.flush();
+  expect(save.mock.calls.map(([value]) => value.theme)).toEqual(["old-inflight", "restored"]);
+});
+
+test("discarded obsolete saves cannot return after a late failed write", async () => {
+  vi.useFakeTimers();
+  let reject!: (error: Error) => void;
+  const save = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((_, fail) => {
+          reject = fail;
+        }),
+    )
+    .mockResolvedValue(undefined);
+  const writer = new WorkspaceWriter(save, vi.fn());
+  writer.schedule(snapshot("obsolete"));
+  const flushing = writer.flush();
+  const paused = writer.pause();
+  writer.discard();
+  reject(new Error("late original failure"));
+  await expect(flushing).rejects.toThrow("late original failure");
+  await expect(paused).rejects.toThrow("late original failure");
+  writer.resume();
+  await writer.flush();
+  expect(save).toHaveBeenCalledTimes(1);
+});
+
+test("durable close rejects paused snapshots while recovery's internal drain stays safe", async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  const writer = new WorkspaceWriter(save, vi.fn());
+  await writer.pause();
+  writer.schedule(snapshot("unsaved-draft"));
+  await writer.flush();
+  await expect(writer.flushDurably()).rejects.toThrow("Resolve recovery before closing");
+  expect(save).not.toHaveBeenCalled();
+  writer.discard();
+  writer.resume();
+  writer.schedule(snapshot("fresh-restored"));
+  await writer.flushDurably();
+  expect(save.mock.calls.map(([value]) => value.theme)).toEqual(["fresh-restored"]);
+});
+
+test("a recovery pause arriving during durable close cannot report a saved workspace", async () => {
+  let release!: () => void;
+  const save = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const writer = new WorkspaceWriter(save, vi.fn());
+  writer.schedule(snapshot("in-flight"));
+  const closing = writer.flushDurably();
+  const paused = writer.pause();
+  writer.schedule(snapshot("held"));
+  release();
+  await expect(closing).rejects.toThrow("Workspace saving is paused");
+  await paused;
+  expect(save).toHaveBeenCalledTimes(1);
+  writer.discard();
+});
+
 test("workspaceSnapshot includes pinned draft state, sidebarCollapsed, and custom shortcuts", () => {
   useStudio.setState({
     bootstrap: {

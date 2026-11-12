@@ -30,7 +30,7 @@ impl Studio {
         session_id: &str,
         request: &TransactionControlRequest,
     ) -> AppResult<PreparedPlan> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let session = self.session(session_id)?;
         if !session.info.capabilities.explicit_transaction_controls {
             return Err(AppError::new(
@@ -66,18 +66,21 @@ impl Studio {
         plan_id: &str,
         approval: Option<&str>,
     ) -> AppResult<TransactionControlResult> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let studio = self.clone();
         let plan_id = plan_id.to_owned();
         let approval = approval.map(str::to_owned);
         let owner = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             if self.dml_tasks.is_closed() {
                 return Err(AppError::new(
                     ErrorCode::ConnectionClosed,
                     "Joinery is closing; no transaction action was started",
                 ));
             }
+            let recovery_activity = self.retain_recovery_activity()?;
             self.dml_tasks.spawn(async move {
+                let _recovery_activity = recovery_activity;
                 studio
                     .execute_transaction_control_owned(&plan_id, approval.as_deref())
                     .await
@@ -113,7 +116,7 @@ impl Studio {
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         let (request, digest, started_pending) = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             // Recovery rollback remains available while local recording is
             // unavailable. It never replays the earlier action or its SQL.
             let flush = self.flush_pending_snowflake_receipts();

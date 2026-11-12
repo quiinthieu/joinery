@@ -1296,6 +1296,84 @@ pub struct MetadataBackup {
     pub digest: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryBackupFormat {
+    LegacySqlite,
+    EncryptedV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryBackup {
+    pub metadata: MetadataBackup,
+    pub format: RecoveryBackupFormat,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryPhase {
+    Staging,
+    Validating,
+    Encrypting,
+    Decrypting,
+    Merging,
+    CreatingUndo,
+    Replacing,
+    Finalizing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryProgress {
+    pub phase: RecoveryPhase,
+    #[ts(type = "number")]
+    pub completed_bytes: u64,
+    #[ts(type = "number | null")]
+    pub total_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryOperationKind {
+    Create,
+    Restore,
+    Import,
+    Export,
+}
+
+/// Secret input travels separately and is never included in operation status.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryRequest {
+    pub kind: RecoveryOperationKind,
+    pub backup_id: Option<String>,
+    pub digest: Option<String>,
+    pub confirmation: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryOperationState {
+    Running,
+    Succeeded,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryOperation {
+    pub id: String,
+    /// Absent when reconciling an identifier whose process-local status was lost.
+    pub kind: Option<RecoveryOperationKind>,
+    pub state: RecoveryOperationState,
+    pub progress: RecoveryProgress,
+    pub cancellation_requested: bool,
+    pub backup: Option<RecoveryBackup>,
+    pub error: Option<AppError>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedQuery {

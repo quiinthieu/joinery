@@ -132,6 +132,7 @@ impl Studio {
         &self,
         request: &SnowflakeDdlPreflightRequest,
     ) -> AppResult<SnowflakeDdlPreflightResponse> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.flush_pending_snowflake_receipts()?;
         let session = self.session(&request.session_id)?;
         let revision = session.metadata_gate.lock().revision.clone();
@@ -139,7 +140,7 @@ impl Studio {
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             writable_profile(&self.persistence.profile(&session.profile.id)?)?;
             if !session.info.capabilities.snowflake_reviewed_ddl {
                 return Err(AppError::new(
@@ -181,7 +182,7 @@ impl Studio {
                 "DDL preflight exceeded its review bound",
             ));
         }
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let profile = self.persistence.profile(&session.profile.id)?;
         writable_profile(&profile)?;
         if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
@@ -222,7 +223,7 @@ impl Studio {
         session_id: &str,
         request: &SnowflakeDdlRequest,
     ) -> AppResult<PreparedPlan> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let session = self.session(session_id)?;
         session.metadata_gate.lock().check(None, false)?;
         if session.active_run.lock().is_some() {
@@ -269,18 +270,21 @@ impl Studio {
         plan_id: &str,
         approval: Option<&str>,
     ) -> AppResult<SnowflakeDdlResult> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let studio = self.clone();
         let plan_id = plan_id.to_owned();
         let approval = approval.map(str::to_owned);
         let owner = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             if self.dml_tasks.is_closed() {
                 return Err(AppError::new(
                     ErrorCode::ConnectionClosed,
                     "Joinery is closing; no database write was started",
                 ));
             }
+            let recovery_activity = self.retain_recovery_activity()?;
             self.dml_tasks.spawn(async move {
+                let _recovery_activity = recovery_activity;
                 studio
                     .execute_snowflake_ddl_owned(&plan_id, approval.as_deref())
                     .await
@@ -314,7 +318,7 @@ impl Studio {
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
         let (request, preflight, digest) = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             self.flush_pending_snowflake_receipts()?;
             let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
             if stored.deadline <= Instant::now() || stored.plan.session_id != session_id {
@@ -444,6 +448,7 @@ impl Studio {
         &self,
         session_id: &str,
     ) -> AppResult<SessionContextOptions> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         #[cfg(all(unix, feature = "test-harness"))]
         let reconciled = self
             .refresh_snowflake_ddl_metadata_qualification(session_id)
@@ -459,6 +464,7 @@ impl Studio {
         &self,
         session_id: &str,
     ) -> AppResult<(SessionContextOptions, BrowseCatalog)> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.reconcile_snowflake_ddl_metadata(session_id).await
     }
 

@@ -267,6 +267,40 @@ impl State {
         journal.details = DetailCache::default();
         journal.owner.take();
     }
+
+    /// The caller holds configuration admission closed and has drained owners.
+    /// Taking this lease never performs abandoned-intent recovery.
+    pub(super) fn take_recovery_owner(&self) -> AppResult<Option<ConsoleJournalOwner>> {
+        #[cfg(unix)]
+        if !self.owners.lock().is_empty() {
+            return Err(recording_error());
+        }
+        let mut journal = self.journal.lock();
+        if !journal.active.is_empty()
+            || !journal.publishers.is_empty()
+            || !journal.dirty.is_empty()
+            || !journal.rejections.is_empty()
+            || journal
+                .runs
+                .values()
+                .any(|retained| retained.pending() || retained.run.terminal.is_none())
+        {
+            return Err(recording_error());
+        }
+        // No hot terminal snapshot may survive replacement and masquerade as a
+        // fresh restored observation. Compaction here changes memory only.
+        journal.compact();
+        journal.details = DetailCache::default();
+        Ok(journal.owner.take())
+    }
+
+    /// Recovery retains exclusive ownership until its worker and publication
+    /// have settled. It returns that same lease before reopening admission.
+    pub(super) fn return_recovery_owner(&self, owner: Option<ConsoleJournalOwner>) {
+        if let Some(owner) = owner {
+            self.journal.lock().retain_owner(owner);
+        }
+    }
 }
 
 fn recording_error() -> AppError {
@@ -551,13 +585,21 @@ impl Studio {
         &self,
         client_request_id: &str,
     ) -> AppResult<Option<SnowflakeConsoleRequestLookup>> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.snowflake_console_request_inner(client_request_id)
+    }
+
+    fn snowflake_console_request_inner(
+        &self,
+        client_request_id: &str,
+    ) -> AppResult<Option<SnowflakeConsoleRequestLookup>> {
         if uuid::Uuid::parse_str(client_request_id)
             .ok()
             .is_none_or(|id| id.to_string() != client_request_id)
         {
             return Err(AppError::invalid("Invalid console request identifier"));
         }
-        if let Some(view) = self.snowflake_console_run(client_request_id)? {
+        if let Some(view) = self.snowflake_console_run_inner(client_request_id)? {
             return Ok(Some(SnowflakeConsoleRequestLookup::Started { view }));
         }
         if self
@@ -579,6 +621,14 @@ impl Studio {
     /// retrieval. Incomplete receipts can be sealed locally after exclusive journal
     /// ownership succeeds; completed receipt retrieval needs no lease.
     pub fn snowflake_console_run(
+        &self,
+        client_request_id: &str,
+    ) -> AppResult<Option<SnowflakeConsoleRunView>> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.snowflake_console_run_inner(client_request_id)
+    }
+
+    fn snowflake_console_run_inner(
         &self,
         client_request_id: &str,
     ) -> AppResult<Option<SnowflakeConsoleRunView>> {
@@ -690,6 +740,7 @@ impl Studio {
     }
 
     pub fn snowflake_console_pending(&self) -> AppResult<SnowflakeConsolePending> {
+        let _configuration = self.configuration_mutation_guard()?;
         let _ = self.flush_console_recordings();
         let journal = self.console.journal.lock();
         let mut clients: HashSet<_> = journal.rejections.keys().cloned().collect();
@@ -715,7 +766,7 @@ impl Studio {
         &self,
         request: &SnowflakeConsoleReceiptArchiveRequest,
     ) -> AppResult<SnowflakeConsoleReceiptArchiveResult> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         if self.dml_tasks.is_closed() {
             return Err(AppError::new(
                 ErrorCode::ConnectionClosed,
@@ -749,7 +800,7 @@ impl Studio {
 
     /// Explicit row-buffer disposal is independent of archive and original proof.
     pub fn release_snowflake_console_results(&self, client_request_id: &str) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.flush_console_recordings()?;
         let journal = self.console.journal.lock();
         if let Some(reason) = journal.archive_block(client_request_id) {
@@ -925,7 +976,7 @@ impl Studio {
         session_id: &str,
         request: &SnowflakeConsoleRequest,
     ) -> AppResult<SnowflakeConsolePlan> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let session = self.session(session_id)?;
         if !session.info.console_mode || !self.console.owners.lock().contains_key(session_id) {
             return Err(AppError::new(
@@ -1006,7 +1057,8 @@ impl Studio {
         request: &SnowflakeConsoleStart,
         events: EventHandler,
     ) -> AppResult<SnowflakeConsoleStartResult> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
+        let recovery_activity = self.retain_recovery_activity()?;
         validate_console_request_identity(
             &request.client_request_id,
             &request.session_id,
@@ -1014,7 +1066,7 @@ impl Studio {
         )?;
         // Stable identity returns its original positive or negative decision even
         // after policy changes, plan consumption, session removal or shutdown.
-        if let Some(existing) = self.snowflake_console_request(&request.client_request_id)? {
+        if let Some(existing) = self.snowflake_console_request_inner(&request.client_request_id)? {
             return original_decision(existing, request);
         }
         // Shutdown releases the lease only after recording and cleanup finish.
@@ -1041,7 +1093,7 @@ impl Studio {
                 journal.retain_owner(self.persistence.claim_console_journal_owner()?);
             }
         }
-        if let Some(existing) = self.snowflake_console_request(&request.client_request_id)? {
+        if let Some(existing) = self.snowflake_console_request_inner(&request.client_request_id)? {
             return original_decision(existing, request);
         }
         let admission = (|| -> AppResult<String> {
@@ -1186,6 +1238,7 @@ impl Studio {
             let studio = self.clone();
             let task_id = run_id.clone();
             self.dml_tasks.spawn(async move {
+                let _recovery_activity = recovery_activity;
                 use futures_util::FutureExt;
                 // This guard outlives normal Finished publication AND the panic
                 // fallback. Its drop is the final publisher/owner boundary.
@@ -1227,7 +1280,9 @@ impl Studio {
             Err(error) => {
                 // Once a positive owner exists its outcome can only be Started,
                 // including failures before the first dispatch or local commit.
-                if let Some(existing) = self.snowflake_console_run(&request.client_request_id)? {
+                if let Some(existing) =
+                    self.snowflake_console_run_inner(&request.client_request_id)?
+                {
                     return original_decision(
                         SnowflakeConsoleRequestLookup::Started { view: existing },
                         request,
@@ -1249,7 +1304,7 @@ impl Studio {
                 // refusal has independently become durable. Lookup enforces it.
                 let _ = self.flush_console_recordings();
                 let decision = self
-                    .snowflake_console_request(&request.client_request_id)?
+                    .snowflake_console_request_inner(&request.client_request_id)?
                     .ok_or_else(recording_error)?;
                 original_decision(decision, request)
             }
@@ -1347,7 +1402,7 @@ impl ReviewedConsoleAdmission for Admission<'_> {
         &mut self,
         dispatch: &mut dyn FnMut() -> AppResult<Operation>,
     ) -> AppResult<Operation> {
-        let _configuration = self.studio.configuration_gate.lock();
+        let _configuration = self.studio.configuration_mutation_guard()?;
         if self.token.is_cancelled() {
             return Err(AppError::new(
                 ErrorCode::Cancelled,

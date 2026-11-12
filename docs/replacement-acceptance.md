@@ -1,5 +1,17 @@
 # Daily DataGrip replacement acceptance
 
+## Local metadata recovery acceptance
+
+The [encrypted recovery walkthrough](encrypted-metadata-recovery.md) specifies
+create/export/import, wrong-key preservation, restore with encrypted undo,
+receipt evidence union and restart without replay in a disposable application
+root. Native command enrollment, current-source browser/native workflows and
+packaging are separate gates in the [ledger](replacement-verification.md).
+Do not use the older preserved release app as evidence for this source increment.
+Owner metadata remains untouched until an explicit evaluation setup is agreed.
+Passing this local workflow does not close account effects, large-capacity or
+complete DataGrip replacement acceptance.
+
 ## Receipt inventory and explicit row release acceptance
 
 This local inventory/compaction increment preserves the existing capacity gates.
@@ -39,7 +51,7 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" pnpm exec playwright 
 These checks use real SQLite, process leases, native Studio, helper framing and
 Arrow with a synthetic SDK. They do not establish Snowflake transaction effects,
 SSO, live million-row behavior, packaged accessibility or daily replacement.
-Encrypted streaming backup, byte reservations and measured full-capacity resource
+Encrypted streaming backup verification, byte reservations and measured full-capacity resource
 behavior are still required before the lifetime count gates can change.
 
 ## Configured long-query behavior (12 November 2026)

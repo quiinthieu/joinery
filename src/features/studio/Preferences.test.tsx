@@ -39,7 +39,8 @@ beforeEach(() => {
 test("temporary result storage requires successful explicit opt-in", async () => {
   let resolveSave!: (value: boolean) => void;
   vi.mocked(client.call).mockImplementation((async (command: string) => {
-    if (command === "metadata_backups") return [];
+    if (command === "recovery_backups") return [];
+    if (command === "metadata_recovery_admission_closed") return false;
     if (command === "set_temporary_result_storage") {
       return new Promise<boolean>((resolve) => {
         resolveSave = resolve;
@@ -48,6 +49,12 @@ test("temporary result storage requires successful explicit opt-in", async () =>
     throw new Error(`Unexpected command ${command}`);
   }) as typeof client.call);
   render(<Preferences onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Backup passphrase"), {
+    target: { value: "separate backup key" },
+  });
+  fireEvent.change(screen.getByLabelText("Confirm backup passphrase"), {
+    target: { value: "separate backup key" },
+  });
   const checkbox = screen.getByRole("checkbox", {
     name: "Temporary disk storage for large results",
   }) as HTMLInputElement;
@@ -99,7 +106,8 @@ test("Preferences updates SQL formatting settings and manages custom SQL snippet
     if (command === "delete_sql_snippet") {
       return null;
     }
-    if (command === "metadata_backups") return [];
+    if (command === "recovery_backups") return [];
+    if (command === "metadata_recovery_admission_closed") return false;
     throw new Error(`Unexpected command ${command}`);
   }) as typeof client.call);
 
@@ -183,9 +191,15 @@ test("rapid preference changes compose and persist in order, with actionable sav
   vi.mocked(client.call).mockImplementation((command) =>
     command === "save_sql_format_settings"
       ? new Promise((resolve) => releases.push(resolve))
-      : Promise.resolve([]),
+      : Promise.resolve(command === "metadata_recovery_admission_closed" ? false : []),
   );
   render(<Preferences onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Backup passphrase"), {
+    target: { value: "separate backup key" },
+  });
+  fireEvent.change(screen.getByLabelText("Confirm backup passphrase"), {
+    target: { value: "separate backup key" },
+  });
   fireEvent.change(screen.getByLabelText("SQL keyword case"), { target: { value: "lower" } });
   fireEvent.change(screen.getByLabelText("SQL indent width"), { target: { value: "4" } });
   await waitFor(() => expect(releases).toHaveLength(1));
@@ -217,7 +231,13 @@ test("rapid preference changes compose and persist in order, with actionable sav
 
 test("engine styles inherit, stay independent, persist across scope switches and reset", async () => {
   vi.mocked(client.call).mockImplementation((command, args) =>
-    Promise.resolve(command === "save_sql_format_settings" ? args?.settings : []),
+    Promise.resolve(
+      command === "save_sql_format_settings"
+        ? args?.settings
+        : command === "metadata_recovery_admission_closed"
+          ? false
+          : [],
+    ),
   );
   render(<Preferences onClose={vi.fn()} />);
   fireEvent.change(screen.getByLabelText("Formatting style"), { target: { value: "postgres" } });
@@ -256,7 +276,9 @@ test("engine styles inherit, stay independent, persist across scope switches and
 });
 
 test("edits keyboard shortcuts, flags conflicts and reserved chords, and resets bindings", () => {
-  vi.mocked(client.call).mockResolvedValue([]);
+  vi.mocked(client.call).mockImplementation((command) =>
+    Promise.resolve(command === "metadata_recovery_admission_closed" ? false : []),
+  );
   render(<Preferences onClose={vi.fn()} />);
 
   const paletteInput = screen.getByLabelText(

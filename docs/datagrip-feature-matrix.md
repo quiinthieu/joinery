@@ -45,6 +45,21 @@ application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.
 
+## Encrypted metadata recovery (12 November 2026, locally verified)
+
+| Capability | Current source status | Evidence / required gate |
+| --- | --- | --- |
+| Encrypted backup and native import/export | Locally browser/hidden-native verified; picker/package acceptance open | Fixed-buffer encryption, private staging, opaque identities and native-selected handles; [workflow](encrypted-metadata-recovery.md). 21 real SQLite cases, actual browser ciphertext/source-preservation checks and hidden native Preferences create pass. Native picker interaction remains unqualified |
+| Restore and undo | Locally browser/hidden-native verified | Mandatory encrypted undo, exact evidence union, cross-writer detection and SQLite atomic replacement; real SQLite restore/crash/cancellation cases, browser restore/undo and actual native restore/undo plus fresh-process ciphertext identity pass |
+| Operation recovery and cancellation | Locally verified within recorded scopes | Retained UUID lookup, no automatic replay, publication identity and unknown-ID admission fence; 72 integrated native cases, browser lost-response recovery and actual native fence/restart checks pass. Full-capacity/storage-failure and normal owner interaction remain separate |
+| Native command enrollment | Verified in hidden main WebView | Cross-file regression reproduces missing grants for eight recovery, six receipt and one CSV-preview command; corrected source and all 15 actual main-WebView probes pass |
+| UI and workspace safety | Locally browser/hidden-native verified | 61 focused App/close/workspace/recovery cases and 72 integrated native cases pass. Startup editing, transient-storage/absent-marker and StrictMode initialization defects were reproduced and corrected. Actual browser startup reconciliation/fresh reload passes; both real PostgreSQL/native close/reopen pairs preserve pending drafts and verify rollback |
+| Resource and release readiness | Incomplete | Small production-KDF round trip passes (35 seconds, 265.3 MiB peak RSS); final validation passes 997 frontend / 619 standard Rust cases and actual browser/hidden-native workflows pass. Full-capacity evidence and current-source packaging remain pending. Existing app is the preserved earlier `72ee3e4` |
+
+The ledger records failures as well as passes. This source increment establishes
+no account effects, native owner acceptance or complete lifetime capacity. The
+following receipt-inventory section records its predecessor's verified source.
+
 ## Receipt inventory and retention slice (12 November 2026)
 
 | Capability | Implemented local behavior | Verification / remaining gate |
@@ -52,7 +67,7 @@ not substitute for completing the rows.
 | Durable native history | Schema 4 physically fences old writers; keyset pages and exact UUID lookup discover originals/refusals independently of profiles/browser IDs | Real SQLite migration, OS ownership and restore tests; [ledger](replacement-verification.md) records source-scoped results. Full-capacity startup/restore resource measurements remain required |
 | Browse/archive | 25-row pages, visibility/decision/connection filters, one expanded detail, exact CAS browsing revisions; archive preserves original evidence and unknown outcomes | Actual browser lost-response, paging, keyboard/focus and full restart case passes with synthetic SDK; normal native/macOS and owner evaluation remain open |
 | Hot state and row release | Separate active/publisher/dirty owners, 16-entry / 16 MiB detail caches, four background slots/backoff, independent result registry and explicit buffer release | Regression checks cover delayed running snapshots, release/lookup overlap, queued row events, lost responses and browser storage failure; real-account million-row and memory-plateau evidence remain open |
-| Lifetime capacity and recovery | Existing 10,000-positive / 10,000-refusal gates preserved; logical charged-byte reporting only | Incomplete: encrypted streaming backup/restore, byte reservations/budget, capacity/storage-failure/crash measurements. Current snapshots remain plaintext, 64 MiB / 20 copies; `retentionEnabled=false` |
+| Lifetime capacity and recovery | Existing 10,000-positive / 10,000-refusal gates preserved; logical charged-byte reporting only | Incomplete: byte reservations/budget and full-capacity/resource acceptance. Encrypted streaming recovery is under verification above; the preceding snapshots remain plaintext, 64 MiB / 20 copies; `retentionEnabled=false` |
 
 The runnable release bundle remains the earlier clean `72ee3e4` build; it does not
 contain this source increment. No account activity, installation, publication or

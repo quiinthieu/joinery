@@ -37,7 +37,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -54,6 +54,9 @@ mod snowflake_connection_tests;
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
+mod recovery_activity;
+mod recovery_files;
+mod recovery_jobs;
 mod snowflake_console;
 #[cfg(all(test, unix, feature = "test-harness"))]
 mod snowflake_console_tests;
@@ -274,6 +277,10 @@ pub struct Studio {
     connection_attempts: ConnectionAttempts,
     dml_tasks: tokio_util::task::TaskTracker,
     configuration_gate: Mutex<()>,
+    recovery_active: AtomicBool,
+    recovery_activity: AtomicUsize,
+    recovery_jobs: Mutex<recovery_jobs::RecoveryJobs>,
+    recovery_finished: tokio::sync::Notify,
     tunnels: SshManager,
     #[cfg(unix)]
     snowflake_runtime: Option<Arc<SnowflakeRuntime>>,
@@ -371,6 +378,10 @@ impl Studio {
             ddl_preflights: Mutex::new(HashMap::new()),
             pending_snowflake_receipts: Mutex::new(HashMap::new()),
             configuration_gate: Mutex::new(()),
+            recovery_active: AtomicBool::new(false),
+            recovery_activity: AtomicUsize::new(0),
+            recovery_jobs: Mutex::new(recovery_jobs::RecoveryJobs::default()),
+            recovery_finished: tokio::sync::Notify::new(),
             console: snowflake_console::State::default(),
             tunnels: SshManager::default(),
             #[cfg(unix)]
@@ -407,7 +418,7 @@ impl Studio {
     }
 
     pub fn set_temporary_result_storage(&self, enabled: bool) -> AppResult<bool> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.set_setting(
             "temporary-result-storage",
             if enabled { "true" } else { "false" },
@@ -420,37 +431,37 @@ impl Studio {
         &self,
         settings: SqlFormatSettings,
     ) -> AppResult<SqlFormatSettings> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.save_sql_format_settings(settings)
     }
 
     pub fn save_sql_snippet(&self, input: SqlSnippetInput) -> AppResult<SqlSnippet> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.save_sql_snippet(input)
     }
 
     pub fn delete_sql_snippet(&self, id: &str) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.delete_sql_snippet(id)
     }
 
     pub fn save_saved_query(&self, input: SavedQueryInput) -> AppResult<SavedQuery> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.save_saved_query(input)
     }
 
     pub fn delete_saved_query(&self, id: &str) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.delete_saved_query(id)
     }
 
     pub fn save_bookmark(&self, label: &str, target: BookmarkTarget) -> AppResult<SavedBookmark> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.save_bookmark(label, target)
     }
 
     pub fn delete_bookmark(&self, id: &str) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.delete_bookmark(id)
     }
 
@@ -459,15 +470,17 @@ impl Studio {
     }
 
     pub fn save_workspace(&self, workspace: SavedWorkspace) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.save_workspace(workspace)
     }
 
     pub fn create_metadata_backup(&self) -> AppResult<MetadataBackup> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.persistence.create_metadata_backup()
     }
 
     pub fn delete_metadata_backup(&self, id: &str, digest: &str) -> AppResult<()> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.persistence.delete_metadata_backup(id, digest)
     }
 
@@ -481,7 +494,7 @@ impl Studio {
         if confirmation != "RESTORE" {
             return Err(AppError::invalid("Type RESTORE to replace local metadata"));
         }
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         if self.connection_attempts.has_pending() {
             return Err(AppError::invalid(
                 "Cancel connection setup before restoring metadata",
@@ -527,7 +540,7 @@ impl Studio {
         mut profile: ConnectionProfile,
         passphrase: Option<&str>,
     ) -> AppResult<ConnectionProfile> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         if profile.id.is_empty() {
             profile.id = new_id();
         }
@@ -620,7 +633,7 @@ impl Studio {
     }
 
     pub fn save_group(&self, mut group: ConnectionGroup) -> AppResult<ConnectionGroup> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let groups = self.persistence.groups()?;
         let previous = groups.iter().find(|g| g.id == group.id);
         if previous.is_none() && (uuid::Uuid::parse_str(&group.id).is_err() || groups.len() >= 256)
@@ -683,7 +696,7 @@ impl Studio {
     }
 
     pub fn delete_group(&self, id: &str) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let groups = self.persistence.groups()?;
         if ["production", "staging", "local"].contains(&id) {
             return Err(AppError::invalid(
@@ -709,7 +722,7 @@ impl Studio {
     }
 
     pub fn delete_profile(&self, id: &str) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let profile = self.persistence.profile(id)?;
         self.console.revoke();
         self.connection_attempts.cancel_profile(id);
@@ -723,7 +736,7 @@ impl Studio {
     /// Reserve capacity and issue the only identifier accepted by connect_prepared.
     /// The identifier becomes the session ID if setup wins publication.
     pub fn prepare_connection(&self, profile_id: &str) -> AppResult<String> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         self.persistence.profile(profile_id)?;
         let (live_total, live_for_profile) = {
             let sessions = self.sessions.lock();
@@ -769,6 +782,7 @@ impl Studio {
 
     /// Compatibility wrapper: every legacy request still has a tracked owner.
     pub async fn connect(&self, id: &str, secrets: ConnectionSecrets) -> AppResult<SessionInfo> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let attempt_id = self.prepare_connection(id)?;
         self.connect_prepared(&attempt_id, secrets).await
     }
@@ -778,6 +792,7 @@ impl Studio {
         attempt_id: &str,
         secrets: ConnectionSecrets,
     ) -> AppResult<SessionInfo> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.connect_prepared_attached(
             attempt_id,
             secrets,
@@ -803,6 +818,7 @@ impl Studio {
         secrets: ConnectionSecrets,
         qualification: QualificationAttachment,
     ) -> AppResult<SessionInfo> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.connect_prepared_attached(attempt_id, secrets, Some(qualification))
             .await
     }
@@ -851,7 +867,7 @@ impl Studio {
             .as_ref()
             .and_then(|attachment| attachment.before_publication.clone());
         let (profile, password, known_host) = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             if cancellation.is_cancelled() {
                 return Err(connection_cancelled());
             }
@@ -923,7 +939,7 @@ impl Studio {
         // Hashing/allocation happen outside the gate, with a retained pending
         // cleanup permit. Recheck before any authentication future is polled.
         {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             if cancellation.is_cancelled() {
                 return Err(connection_cancelled());
             }
@@ -1059,7 +1075,7 @@ impl Studio {
         if let Some(before_publication) = qualification_before_publication {
             before_publication();
         }
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         if cancellation.is_cancelled() {
             driver.close();
             return Err(connection_cancelled());
@@ -1146,6 +1162,7 @@ impl Studio {
     }
 
     pub async fn probe_ssh(&self, profile_id: &str) -> AppResult<SshHostKey> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.probe_ssh_with_attempt(profile_id, None).await
     }
 
@@ -1154,6 +1171,7 @@ impl Studio {
         profile_id: &str,
         attempt_id: Option<&str>,
     ) -> AppResult<SshHostKey> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let prepared = attempt_id.is_some();
         let id = match attempt_id {
             Some(id) => id.to_owned(),
@@ -1162,7 +1180,7 @@ impl Studio {
         let attempt = self.connection_attempts.claim(&id)?;
         let cancellation = attempt.cancellation();
         let (ssh, known) = {
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             if cancellation.is_cancelled() {
                 return Err(connection_cancelled());
             }
@@ -1186,7 +1204,7 @@ impl Studio {
             _ = cancellation.cancelled() => return Err(connection_cancelled()),
             outcome = self.tunnels.probe(&ssh, known) => outcome?,
         };
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         if cancellation.is_cancelled() {
             return Err(connection_cancelled());
         }
@@ -1266,7 +1284,7 @@ impl Studio {
     }
 
     pub fn set_passphrase(&self, passphrase: &str, previous: Option<&str>) -> AppResult<()> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         if self
             .persistence
             .setting("passphrase-configured")?
@@ -1326,6 +1344,7 @@ impl Studio {
         sql: &str,
         params: Option<Vec<QueryParamInput>>,
     ) -> AppResult<PreparedPlan> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.prepare_execution_inner(session_id, sql, params, None)
     }
 
@@ -1424,6 +1443,7 @@ impl Studio {
         analyze: bool,
         params: Option<Vec<QueryParamInput>>,
     ) -> AppResult<PreparedPlan> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         if analyze && !session.info.capabilities.explain_analyze {
             return Err(AppError::new(
@@ -1595,7 +1615,7 @@ impl Studio {
         target_confirmation: Option<&str>,
         ddl: bool,
     ) -> AppResult<String> {
-        let _configuration = self.configuration_gate.lock();
+        let _configuration = self.configuration_mutation_guard()?;
         let mut plans = self.plans.lock();
         let stored = plans.get_mut(plan_id).ok_or_else(expired)?;
         if stored.deadline <= Instant::now() {
@@ -1643,6 +1663,8 @@ impl Studio {
         approval: Option<&str>,
         events: EventHandler,
     ) -> AppResult<String> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let recovery_activity = self.retain_recovery_activity()?;
         let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
         if stored.deadline <= Instant::now() {
             return Err(expired());
@@ -1690,6 +1712,7 @@ impl Studio {
         let studio = self.clone();
         let run = run_id.clone();
         tokio::spawn(async move {
+            let _recovery_activity = recovery_activity;
             studio
                 .run_plan(run, session, stored, token, cancellation_sent, events)
                 .await;
@@ -2144,6 +2167,7 @@ impl Studio {
     }
 
     pub async fn session_contexts(&self, session_id: &str) -> AppResult<SessionContextOptions> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.session_contexts_with_refresh(session_id, false).await
     }
 
@@ -2152,6 +2176,7 @@ impl Studio {
         session_id: &str,
         resume_metadata: bool,
     ) -> AppResult<SessionContextOptions> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let revision = session.metadata_gate.lock().revision.clone();
         if session.active_run.lock().is_some() {
@@ -2210,6 +2235,7 @@ impl Studio {
         session_id: &str,
         target: &str,
     ) -> AppResult<SessionContextOptions> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
@@ -2245,6 +2271,7 @@ impl Studio {
         session_id: &str,
         request: &SwitchSchemaRequest,
     ) -> AppResult<SessionContextOptions> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
@@ -2295,6 +2322,7 @@ impl Studio {
         session_id: &str,
         mode: TransactionMode,
     ) -> AppResult<SessionRuntimeState> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         if mode == TransactionMode::Unknown {
             return Err(AppError::invalid(
                 "Unknown is not a requested transaction mode",
@@ -2339,6 +2367,7 @@ impl Studio {
     }
 
     pub async fn commit_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id).inspect_err(|error| {
             if error.code == ErrorCode::ConnectionClosed {
                 self.disconnect(session_id);
@@ -2391,6 +2420,7 @@ impl Studio {
     }
 
     pub async fn rollback_transaction(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id).inspect_err(|error| {
             if error.code == ErrorCode::ConnectionClosed {
                 self.disconnect(session_id);
@@ -2521,6 +2551,7 @@ impl Studio {
 
     /// Read a bounded context snapshot on the existing editor execution lane.
     pub async fn completion_catalog(&self, session_id: &str) -> AppResult<CompletionCatalog> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         self.ddl_preflights.lock().remove(session_id);
         if session.active_run.lock().is_some() {
@@ -2592,6 +2623,7 @@ impl Studio {
         revision: &str,
         table: &TableRef,
     ) -> AppResult<TableSchema> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.editor_schema(session_id, revision, table, false).await
     }
 
@@ -2601,6 +2633,7 @@ impl Studio {
         revision: &str,
         table: &TableRef,
     ) -> AppResult<TableSchema> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.editor_schema(session_id, revision, table, true).await
     }
 
@@ -2754,6 +2787,7 @@ impl Studio {
     }
 
     pub async fn relation_catalog(&self, session_id: &str) -> AppResult<BrowseCatalog> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         self.ddl_preflights.lock().remove(session_id);
         // Refresh revokes targets even if the outer console lane is busy.
@@ -2768,6 +2802,7 @@ impl Studio {
         session_id: &str,
         request: &InspectRelationRequest,
     ) -> AppResult<RelationInspection> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(&session, session.driver.inspect_relation(request).await)
@@ -2778,6 +2813,7 @@ impl Studio {
         session_id: &str,
         request: &DefineRelationRequest,
     ) -> AppResult<RelationDefinition> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(&session, session.driver.define_relation(request).await)
@@ -2788,6 +2824,7 @@ impl Studio {
         session_id: &str,
         request: &InspectRelationConstraintsRequest,
     ) -> AppResult<RelationConstraints> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(
@@ -2801,6 +2838,7 @@ impl Studio {
         session_id: &str,
         request: &InspectRelationCheckConstraintsRequest,
     ) -> AppResult<RelationCheckConstraints> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(
@@ -2817,6 +2855,7 @@ impl Studio {
         session_id: &str,
         request: &InspectRelationConstraintMappingsRequest,
     ) -> AppResult<RelationConstraintMappings> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(
@@ -2833,12 +2872,14 @@ impl Studio {
         session_id: &str,
         request: &PreviewRelationRequest,
     ) -> AppResult<RelationPreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(&session, session.driver.preview_relation(request).await)
     }
 
     pub async fn catalog(&self, session_id: &str) -> AppResult<Vec<TableInfo>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = if snowflake_dml::sdk_profile(&session.profile) {
             Some(Self::relation_lane(&session).await?)
@@ -2851,6 +2892,7 @@ impl Studio {
         &self,
         session_id: &str,
     ) -> AppResult<Vec<DatabaseObjectSummary>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let mut objects = self.session(session_id)?.driver.database_objects().await?;
         if objects.len() > 10_000 {
             objects.truncate(10_000);
@@ -2862,6 +2904,7 @@ impl Studio {
         session_id: &str,
         object: &DatabaseObjectRef,
     ) -> AppResult<ObjectDetails> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         const MAX_OBJECT_DDL_BYTES: usize = 256 * 1024;
         const MAX_OBJECT_DEPS: usize = 200;
         let mut details = self
@@ -2876,6 +2919,7 @@ impl Studio {
         Ok(details)
     }
     pub async fn schema(&self, session_id: &str, table: &TableRef) -> AppResult<TableSchema> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         self.schema_for_session(&session, table).await
     }
@@ -2944,12 +2988,14 @@ impl Studio {
         session_id: &str,
         table: &TableRef,
     ) -> AppResult<Vec<InboundForeignKey>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.session(session_id)?
             .driver
             .referencing_keys(table)
             .await
     }
     pub async fn schema_diagram(&self, session_id: &str, schema: &str) -> AppResult<SchemaDiagram> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         if schema.is_empty() || schema.len() > 1024 || schema.contains('\0') {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
@@ -2970,6 +3016,7 @@ impl Studio {
         session_id: &str,
         schema: &str,
     ) -> AppResult<SchemaSnapshot> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         if schema.is_empty() || schema.len() > 1024 || schema.contains('\0') {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
@@ -3049,6 +3096,7 @@ impl Studio {
         session_id: &str,
         action: IndexConstraintAction,
     ) -> AppResult<PreparedPlan> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         if !session.info.capabilities.ddl_editing {
             return Err(AppError::new(
@@ -3093,6 +3141,7 @@ impl Studio {
         session_id: &str,
         action: TableObjectAction,
     ) -> AppResult<PreparedPlan> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         if !session.info.capabilities.ddl_editing {
             return Err(AppError::new(
@@ -3144,6 +3193,7 @@ impl Studio {
         session_id: &str,
         action: TableMaintenanceAction,
     ) -> AppResult<PreparedPlan> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let preview = crate::ddl::build_table_maintenance_sql(session.profile.engine, &action)?;
         let sql = preview.statement.sql;
@@ -3176,6 +3226,7 @@ impl Studio {
         expected_snapshot: SchemaSnapshot,
         statements: Vec<crate::ddl::DdlStatement>,
     ) -> AppResult<PreparedPlan> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         if !matches!(
             session.profile.engine,
@@ -3309,6 +3360,7 @@ impl Studio {
         pattern: &str,
         cursor: Option<&str>,
     ) -> AppResult<RedisScanPage> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = session.lane.lock().await;
         tokio::time::timeout(
@@ -3329,6 +3381,7 @@ impl Studio {
         argument: &str,
         cursor: Option<&str>,
     ) -> AppResult<RedisValuePreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let _lane = session.lane.lock().await;
         tokio::time::timeout(
@@ -3344,6 +3397,7 @@ impl Studio {
         })?
     }
     pub async fn health(&self, session_id: &str) -> AppResult<u32> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         // SDK health sends SQL and revokes observer authority. Serialize and
         // recheck the native hold before entering the driver at all.
@@ -3359,9 +3413,11 @@ impl Studio {
         session.driver.health().await
     }
     pub async fn processes(&self, session_id: &str) -> AppResult<Vec<ProcessInfo>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.session(session_id)?.driver.processes().await
     }
     pub async fn lock_waits(&self, session_id: &str) -> AppResult<LockWaitSnapshot> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         if !session.info.capabilities.lock_inspection {
             return Err(AppError::new(
@@ -3378,6 +3434,7 @@ impl Studio {
         table: &TableRef,
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<TablePage> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.browse_with(session_id, table, after, &BrowseQuery::default())
             .await
     }
@@ -3388,6 +3445,7 @@ impl Studio {
         table: &TableRef,
         query: &BrowseQuery,
     ) -> AppResult<Option<PreparedPlan>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let query = query.normalized();
         if !query.has_raw_clauses() {
             return Ok(None);
@@ -3426,6 +3484,7 @@ impl Studio {
         after: Option<Vec<Option<String>>>,
         query: &BrowseQuery,
     ) -> AppResult<TablePage> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.browse_with_approval(session_id, table, after, query, None)
             .await
     }
@@ -3438,6 +3497,7 @@ impl Studio {
         query: &BrowseQuery,
         approval: Option<&BrowseApproval>,
     ) -> AppResult<TablePage> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let query = query.normalized();
         let session = self.session(session_id)?;
         let _lane = session.lane.lock().await;
@@ -3550,6 +3610,7 @@ impl Studio {
         result_id: &str,
         changes: Vec<CellChange>,
     ) -> AppResult<ChangePreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.prepare_changes_batch(
             session_id,
             vec![ResultChanges {
@@ -3564,6 +3625,7 @@ impl Studio {
         session_id: &str,
         inputs: Vec<ResultChanges>,
     ) -> AppResult<ChangePreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.prepare_table_changes(
             session_id,
             TableChanges {
@@ -3613,6 +3675,7 @@ impl Studio {
         session_id: &str,
         changes: TableChanges,
     ) -> AppResult<ChangePreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let anchor_id = changes
             .result_id
@@ -3913,6 +3976,7 @@ impl Studio {
         id: &str,
         identity: &str,
     ) -> AppResult<PreparedPlan> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
         let mut plan = safety::prepare(
             session_id,
@@ -3942,6 +4006,7 @@ impl Studio {
         self.persistence.history(search)
     }
     pub fn clear_history(&self) -> AppResult<()> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         self.persistence.clear_history()
     }
     pub fn audit_log(&self) -> AppResult<Vec<AuditEntry>> {
@@ -3952,6 +4017,7 @@ impl Studio {
         suggested_name: &str,
         format: ExportFormat,
     ) -> AppResult<Option<FileSelection>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let mut sanitized = FileCapabilities::validate_suggested_name(suggested_name)?;
         let ext_suffix = format!(".{}", format.extension());
         if !sanitized.to_ascii_lowercase().ends_with(&ext_suffix) {
@@ -3968,6 +4034,8 @@ impl Studio {
         request: ExportRequest,
         events: ExportEventHandler,
     ) -> AppResult<String> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let recovery_activity = self.retain_recovery_activity()?;
         self.file_capabilities
             .verify_write_grant(&request.destination_token)?;
         if self.exports.lock().len() >= 16 {
@@ -4118,6 +4186,7 @@ impl Studio {
         let studio = self.clone();
         let id = export_id.clone();
         tokio::spawn(async move {
+            let _recovery_activity = recovery_activity;
             studio
                 .run_export(id, prepared, file_session, token, events)
                 .await;
@@ -4394,6 +4463,7 @@ impl Studio {
     }
 
     pub async fn pick_import_source(&self) -> AppResult<Option<FileSelection>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let Some(path) = self.file_dialog.pick_open_csv().await? else {
             return Ok(None);
         };
@@ -4403,6 +4473,7 @@ impl Studio {
     }
 
     pub async fn open_sql_file(&self) -> AppResult<Option<OpenedSqlFile>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let Some(path) = self.file_dialog.pick_open_sql().await? else {
             return Ok(None);
         };
@@ -4425,6 +4496,7 @@ impl Studio {
         suggested_name: &str,
         content: &str,
     ) -> AppResult<Option<SavedSqlFile>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         FileCapabilities::validate_sql_content(content)?;
         if let Some(existing_token) = token.map(str::trim).filter(|t| !t.is_empty()) {
             let path = self
@@ -4508,6 +4580,7 @@ impl Studio {
         options: CsvImportOptions,
         mappings: Vec<CsvColumnMapping>,
     ) -> AppResult<CsvImportPreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let (session, _schema) = self.verify_import_target(session_id, table).await?;
         let target = session.driver.edit_target(table).await?;
         let schema = target.schema.clone();
@@ -4595,6 +4668,7 @@ impl Studio {
         batch_index: usize,
         preview_token: &str,
     ) -> AppResult<ChangePreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let (session, mut schema) = self.verify_import_target(session_id, table).await?;
         let (identity, import_preview_key) = if matches!(
             session.profile.engine,
@@ -4982,6 +5056,7 @@ impl Studio {
     }
 
     pub async fn compare_data(&self, request: CompareRequest) -> AppResult<DataCompareReport> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let mut left_prepared = self
             .prepare_compare_side(request.left, "Left dataset")
             .await?;
@@ -5033,10 +5108,11 @@ impl Studio {
     /// New work may proceed afterward; a real shutdown remains irreversible.
     #[cfg(any(test, feature = "test-harness"))]
     pub async fn reset_fixtures(&self) -> AppResult<()> {
+        let _recovery_activity = self.begin_recovery_activity()?;
         let (pending, cleanup) = {
             // Publication shares this gate: a setup either enters the session
             // snapshot or is cancelled before it can publish.
-            let _configuration = self.configuration_gate.lock();
+            let _configuration = self.configuration_mutation_guard()?;
             let pending = self.connection_attempts.cancel_fixture_snapshot();
             for export in self.exports.lock().values() {
                 export.token.cancel();
@@ -5076,6 +5152,7 @@ impl Studio {
         // snapshot, or the irreversible attempt barrier rejects publication.
         let _configuration = self.configuration_gate.lock();
         self.connection_attempts.shutdown();
+        self.cancel_recovery_for_shutdown();
         self.dml_tasks.close();
         for export in self.exports.lock().values() {
             export.token.cancel();
@@ -5092,6 +5169,9 @@ impl Studio {
     /// of remote rollback or completed asynchronous engine cleanup.
     pub async fn shutdown_and_wait(&self) -> AppResult<()> {
         self.shutdown();
+        tokio::time::timeout(Duration::from_secs(10), self.wait_metadata_recovery_idle())
+            .await.map_err(|_| AppError::new(ErrorCode::Conflict,
+                "Local metadata recovery is still finishing; keep Joinery open and try closing again"))?;
         self.connection_attempts.wait_idle().await;
         // Child reaping does not establish that its Studio owner has persisted
         // retained acknowledgements. A timeout keeps the window open and the

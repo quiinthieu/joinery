@@ -40,7 +40,9 @@ import type {
   IndexConstraintAction,
   IndexConstraintPreview,
   LockWaitSnapshot,
-  MetadataBackup,
+  RecoveryBackup,
+  RecoveryOperation,
+  RecoveryRequest,
   ObjectDetails,
   OpenedSqlFile,
   PreparedPlan,
@@ -198,26 +200,43 @@ export interface JoineryCommandMap {
     args: { workspace: SavedWorkspace };
     result: void;
   };
-  metadata_backups: {
+  recovery_backups: {
     args?: Record<string, unknown>;
-    result: MetadataBackup[];
+    result: RecoveryBackup[];
   };
-  create_metadata_backup: {
-    args?: Record<string, unknown>;
-    result: MetadataBackup;
-  };
-  delete_metadata_backup: {
-    args: { id: string; digest: string };
-    result: void;
-  };
-  restore_metadata_backup: {
+  start_metadata_recovery: {
     args: {
       id: string;
-      digest: string;
-      confirmation: string;
-      passphrase?: string | null;
+      request: RecoveryRequest;
+      backupPassphrase: string;
+      backupConfirmation: string;
+      writePassphrase?: string | null;
     };
-    result: MetadataBackup;
+    result: RecoveryOperation;
+  };
+  delete_recovery_backup: {
+    args: { id: string; digest: string; confirmation: string };
+    result: void;
+  };
+  metadata_recovery_operation: {
+    args: { id: string };
+    result: RecoveryOperation;
+  };
+  cancel_metadata_recovery: {
+    args: { id: string };
+    result: RecoveryOperation;
+  };
+  reconcile_metadata_recovery: {
+    args: { id: string };
+    result: RecoveryOperation;
+  };
+  reconcile_unknown_metadata_recovery: {
+    args?: Record<string, unknown>;
+    result: RecoveryOperation;
+  };
+  metadata_recovery_admission_closed: {
+    args?: Record<string, unknown>;
+    result: boolean;
   };
   save_group: {
     args: { group: ConnectionGroup };

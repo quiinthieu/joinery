@@ -199,6 +199,14 @@ async fn rpc(
             }
             "bootstrap" => json!(studio.bootstrap()?),
             "save_workspace" => json!(studio.save_workspace(arg(&args, "workspace")?)?),
+            "recovery_backups" => json!(studio.recovery_backups()?),
+            "delete_recovery_backup" => json!(studio.delete_recovery_backup(&arg::<String>(&args, "id")?, &arg::<String>(&args, "digest")?, &arg::<String>(&args, "confirmation")?)?),
+            "start_metadata_recovery" => json!(studio.start_metadata_recovery(arg(&args, "id")?, arg(&args, "request")?, zeroize::Zeroizing::new(arg(&args, "backupPassphrase")?), zeroize::Zeroizing::new(arg(&args, "backupConfirmation")?), arg::<Option<String>>(&args, "writePassphrase")?.map(zeroize::Zeroizing::new))?),
+            "metadata_recovery_operation" => json!(studio.metadata_recovery_operation(&arg::<String>(&args, "id")?)?),
+            "cancel_metadata_recovery" => json!(studio.cancel_metadata_recovery(&arg::<String>(&args, "id")?)?),
+            "reconcile_metadata_recovery" => json!(studio.reconcile_metadata_recovery(&arg::<String>(&args, "id")?)?),
+            "reconcile_unknown_metadata_recovery" => json!(studio.reconcile_unknown_metadata_recovery()?),
+            "metadata_recovery_admission_closed" => json!(studio.metadata_recovery_admission_closed()),
             // Test-only isolation for recovery flows; never enrolled in desktop IPC.
             "disconnect_fixtures" => { studio.reset_fixtures().await?; Value::Null },
             "metadata_backups" => json!(studio.metadata_backups()?),
