@@ -364,7 +364,7 @@ test("new Snowflake profiles default to external browser SSO and explain both mo
   expect(safeMode.value).toBe("readOnly");
   expect(safeMode.disabled).toBe(false);
   expect(screen.queryByLabelText(/allow separately reviewed single INSERT/i)).toBeNull();
-  expect(screen.getByText(/metadata browsing is temporarily unavailable/i)).toBeTruthy();
+  expect(screen.getByText(/Writable SQL requires separate consent/i)).toBeTruthy();
   expect(screen.getByText(/will not fall back to local application OAuth/i)).toBeTruthy();
 
   fireEvent.change(safeMode, { target: { value: "confirm" } });
@@ -374,11 +374,7 @@ test("new Snowflake profiles default to external browser SSO and explain both mo
   expect(reviewedDml.checked).toBe(false);
   expect(screen.getAllByText(/may incur warehouse charges/i).length).toBeGreaterThan(0);
   expect(screen.getByText(/does not automatically retry submitted SQL/i)).toBeTruthy();
-  expect(
-    screen.getByText(
-      /Safe Mode controls review and approval for explicit transaction boundaries, opted-in single INSERT, UPDATE, and DELETE statements/i,
-    ),
-  ).toBeTruthy();
+  expect(screen.getByText(/Safe Mode controls approval for opted-in operations/i)).toBeTruthy();
 
   fireEvent.change(authentication, { target: { value: "localApplicationOauth" } });
   expect(authentication.value).toBe("localApplicationOauth");
@@ -414,11 +410,7 @@ test("Snowflake OAuth transitions reset policy and never restore an earlier elev
   expect(safeMode.disabled).toBe(false);
   fireEvent.change(safeMode, { target: { value: "confirm" } });
   expect((screen.getByLabelText(reviewedDmlLabel) as HTMLInputElement).checked).toBe(false);
-  expect(
-    screen.getByText(
-      /safe mode controls review and approval for explicit transaction boundaries, opted-in single INSERT, UPDATE, and DELETE statements/i,
-    ),
-  ).toBeTruthy();
+  expect(screen.getByText(/Safe Mode controls approval for opted-in operations/i)).toBeTruthy();
 });
 
 test("ReadOnly clears reviewed DML consent and does not restore it when policy is elevated", () => {
@@ -773,3 +765,47 @@ test("reviewed Snowflake DDL is independent and revoked by ReadOnly and OAuth tr
   fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
   expect((screen.getByLabelText(ddl) as HTMLInputElement).checked).toBe(false);
 });
+
+for (const reset of ["readOnly", "oauth"] as const) {
+  test(`reviewed console consent is independent, defaults off, and clears on ${reset}`, () => {
+    enableSnowflakeEngine();
+    render(
+      <ConnectionDialog
+        profile={{ ...snowflakeProfile("externalBrowser"), safeMode: "confirm" }}
+        onClose={vi.fn()}
+      />,
+    );
+    const consoleOption = screen.getByRole("checkbox", {
+      name: "Enable reviewed Snowflake SQL console",
+    }) as HTMLInputElement;
+    expect(consoleOption.checked).toBe(false);
+    fireEvent.click(consoleOption);
+    expect(consoleOption.checked).toBe(true);
+    expect(
+      (screen.getByLabelText(/allow separately reviewed single INSERT/i) as HTMLInputElement)
+        .checked,
+    ).toBe(false);
+    expect(screen.getByText(/fixed 65-second per-unit delivery deadline/)).toBeTruthy();
+    if (reset === "readOnly")
+      fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "readOnly" } });
+    else {
+      fireEvent.change(screen.getByLabelText("Snowflake authentication"), {
+        target: { value: "localApplicationOauth" },
+      });
+      fireEvent.change(screen.getByLabelText("Snowflake authentication"), {
+        target: { value: "externalBrowser" },
+      });
+    }
+    expect(
+      screen.queryByRole("checkbox", { name: "Enable reviewed Snowflake SQL console" }),
+    ).toBeNull();
+    fireEvent.change(screen.getByLabelText("Safe Mode"), { target: { value: "confirm" } });
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "Enable reviewed Snowflake SQL console",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+  });
+}

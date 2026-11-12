@@ -52,6 +52,13 @@ import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
 import { SchemaDiffView } from "../features/schema-diff/SchemaDiffView";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
+import { SnowflakeConsoleReview } from "../features/studio/SnowflakeConsoleReview";
+import { SnowflakeConsoleReceipts } from "../features/studio/SnowflakeConsoleReceipts";
+import {
+  consoleReceiptHeld,
+  consoleReceiptBlocksSession,
+  validateConsolePlan,
+} from "../features/studio/SnowflakeConsole";
 import { ExportDialog } from "../features/grid/ExportDialog";
 import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
 import { DataCompareDialog } from "../features/grid/DataCompareDialog";
@@ -78,6 +85,8 @@ import type {
   ResourceUsage,
   TableChanges,
   ExplicitTransactionAction,
+  SnowflakeConsoleMode,
+  SnowflakeConsolePlan,
 } from "../ipc/generated";
 import {
   useStudio,
@@ -85,6 +94,9 @@ import {
   beginEventBatch,
   querySessionForTab,
   metadataSessionForTab,
+  isSnowflakeConsoleSession,
+  assertOrdinarySession,
+  isConsoleOwnedResult,
   isLastOwnerOfSecondarySession,
   sessionHasOpenTransaction,
   isTabFileDirty,
@@ -129,6 +141,15 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Dialog =
+  | {
+      kind: "snowflakeConsoleReview";
+      plan: SnowflakeConsolePlan;
+      tabId: string;
+      sessionId: string;
+      document: string;
+      revision: number;
+      profile?: ConnectionProfile;
+    }
   | { kind: "connection"; profile?: ConnectionProfile; groupId?: string }
   | { kind: "connect"; profile: ConnectionProfile; tabId?: string }
   | { kind: "settings" }
@@ -161,6 +182,7 @@ type Dialog =
       profile?: ConnectionProfile;
       allowSaveOnly?: boolean;
       explain?: "estimate" | "analyze";
+      consoleMode?: SnowflakeConsoleMode;
     }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
@@ -263,6 +285,7 @@ export function App() {
       return;
     }
     try {
+      assertOrdinarySession(session.id);
       const all = await client.call<InboundForeignKey[]>("referencing_foreign_keys", {
         sessionId: session.id,
         table: current.table,
@@ -523,6 +546,7 @@ export function App() {
       const snap = useStudio.getState();
       return (
         hasPendingConnections() ||
+        Object.values(snap.snowflakeConsoleReceipts).some(consoleReceiptHeld) ||
         snap.tabs.some(
           (tab) =>
             pendingCountFor(tab) > 0 ||
@@ -598,6 +622,7 @@ export function App() {
       const current = useStudio.getState();
       if (
         document.visibilityState === "hidden" ||
+        isSnowflakeConsoleSession(current, session.id) ||
         current.isSessionContextPending(session.id) ||
         current.sessionStates[session.id]?.transactionControlAuthority?.status === "rollbackOnly" ||
         current.sessionMetadataRefreshRequired[session.id] ||
@@ -666,7 +691,8 @@ export function App() {
       for (const previous of active.results) {
         resultCache.release(previous.id);
         dirtyStore.clearTab(previous.id, [previous.id]);
-        await client.call("release_result", { resultId: previous.id });
+        if (!isConsoleOwnedResult(previous))
+          await client.call("release_result", { resultId: previous.id });
       }
       state.updateTab(tabId, { results: [], activeResultId: null });
     }
@@ -726,6 +752,7 @@ export function App() {
     const active = snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId);
     if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
     const selected = querySessionForTab(active, snapshot.sessions);
+    if (selected) assertOrdinarySession(selected.id);
     if (!selected?.capabilities.explicitTransactionControls)
       throw new Error("Explicit transaction controls are unavailable for this session");
     if (snapshot.sessionTransactionPending[selected.id])
@@ -775,9 +802,49 @@ export function App() {
     targetProfile?: ConnectionProfile,
     explain?: "estimate" | "analyze",
     origin?: SqlExecutionOrigin,
+    consoleMode: SnowflakeConsoleMode = "parsedStatements",
   ) {
-    const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision;
+    const owner = useStudio.getState().tabs.find((tab) => tab.id === tabId);
+    const revision = owner?.revision;
     try {
+      if (isSnowflakeConsoleSession(useStudio.getState(), sessionId)) {
+        if (explain)
+          throw new Error(
+            "Use exact reviewed EXPLAIN SQL in the console; generated Explain is disabled.",
+          );
+        if (
+          Object.values(useStudio.getState().snowflakeConsoleReceipts).some((entry) =>
+            consoleReceiptBlocksSession(entry, sessionId),
+          )
+        )
+          throw new Error("Reconcile the retained console run before preparing another execution.");
+        const plan = await client.prepareSnowflakeConsole(sessionId, {
+          sql: targetSql,
+          mode: consoleMode,
+          parameters: params ?? null,
+        });
+        validateConsolePlan(plan, sessionId);
+        const latest = useStudio.getState();
+        const current = latest.tabs.find((entry) => entry.id === tabId);
+        if (
+          !owner ||
+          !current ||
+          current.sql !== owner.sql ||
+          current.revision !== revision ||
+          querySessionForTab(current, latest.sessions)?.id !== sessionId
+        )
+          throw new Error("The editor or session changed. Prepare another immutable review.");
+        setDialog({
+          kind: "snowflakeConsoleReview",
+          plan,
+          tabId,
+          sessionId,
+          document: owner.sql,
+          revision: owner.revision,
+          profile: targetProfile,
+        });
+        return;
+      }
       revokeSchemaSelectionBeforeWork(sessionId);
       const plan = await client.call<PreparedPlan>(
         explain ? "prepare_explain" : "prepare_execution",
@@ -805,7 +872,12 @@ export function App() {
       throw error;
     }
   }
-  async function runSql(sql?: string, explain?: "estimate" | "analyze", fromUtf16?: number) {
+  async function runSql(
+    sql?: string,
+    explain?: "estimate" | "analyze",
+    fromUtf16?: number,
+    consoleMode: SnowflakeConsoleMode = "parsedStatements",
+  ) {
     const active = references.current.current;
     if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
     const selected = querySessionForTab(active, useStudio.getState().sessions);
@@ -843,6 +915,7 @@ export function App() {
             profile: target,
             allowSaveOnly: false,
             explain,
+            consoleMode,
           });
           return;
         }
@@ -855,6 +928,7 @@ export function App() {
         target,
         explain,
         origin,
+        consoleMode,
       );
     } catch (error) {
       const latest = useStudio.getState().tabs.find((tab) => tab.id === active.id);
@@ -943,6 +1017,7 @@ export function App() {
         deletes,
         inserts,
       };
+      assertOrdinarySession(session.id);
       const preview = await client.call<ChangePreview>("prepare_table_changes", {
         sessionId: session.id,
         changes,
@@ -1193,6 +1268,19 @@ export function App() {
       } else if (key === "g" && event.shiftKey) {
         event.preventDefault();
         void actions.current.goToReferencing();
+      } else if (
+        key === "." &&
+        active &&
+        Object.values(snap.snowflakeConsoleReceipts).some(
+          (entry) => entry.tabId === active.id && consoleReceiptHeld(entry),
+        )
+      ) {
+        event.preventDefault();
+        for (const receipt of Object.values(snap.snowflakeConsoleReceipts))
+          if (receipt.tabId === active.id && consoleReceiptHeld(receipt))
+            void snap
+              .cancelSnowflakeConsole(receipt.clientRequestId)
+              .catch((error) => snap.notify(messageOf(error)));
       } else if (key === "." && active?.runId) {
         event.preventDefault();
         void client
@@ -1212,6 +1300,7 @@ export function App() {
   async function cancelProcess(process: ProcessInfo) {
     if (!current || !session) return;
     try {
+      assertOrdinarySession(session.id);
       const plan = await client.call<PreparedPlan>("prepare_process_cancel", {
         sessionId: session.id,
         id: process.id,
@@ -1402,6 +1491,14 @@ export function App() {
               />
             ) : current.kind === "history" ? (
               <HistoryView />
+            ) : session &&
+              isSnowflakeConsoleSession(state, session.id) &&
+              current.kind !== "query" ? (
+              <p role="status">
+                Metadata, monitoring and generated operations are disabled on this reviewed console
+                connection. Open a separate profile with reviewed console off; temporary objects and
+                transactions are not shared.
+              </p>
             ) : current.kind === "processes" ? (
               <ProcessesView tab={current} onCancel={(process) => void cancelProcess(process)} />
             ) : current.kind === "diagram" ? (
@@ -1433,6 +1530,15 @@ export function App() {
                 onRun={(sql, from) => void runSql(sql, undefined, from)}
                 onExplain={() => void runSql(undefined, "estimate")}
                 onAnalyze={() => void runSql(undefined, "analyze")}
+                onRunConsoleScript={() => void runSql(current.sql)}
+                onRunConsoleSelected={() => {
+                  const selected = editor.current?.selection();
+                  if (!selected?.trim()) {
+                    state.notify("Select the exact SQL unit first.");
+                    return;
+                  }
+                  void runSql(selected, undefined, 0, "selectedUnit");
+                }}
                 onOpenParameters={(slots) => {
                   if (current.kind !== "query") return;
                   const selectedSession = querySessionForTab(
@@ -1661,11 +1767,37 @@ export function App() {
                     dialog.profile,
                     dialog.explain,
                     dialog.origin,
+                    dialog.consoleMode,
                   );
                 }
               : undefined
           }
           onClose={() => setDialog(null)}
+        />
+      )}
+      <SnowflakeConsoleReceipts />
+      {dialog?.kind === "snowflakeConsoleReview" && (
+        <SnowflakeConsoleReview
+          plan={dialog.plan}
+          profile={dialog.profile}
+          onClose={() => setDialog(null)}
+          onExecute={async (approval) => {
+            const latest = useStudio.getState();
+            const owner = latest.tabs.find((entry) => entry.id === dialog.tabId);
+            if (
+              !owner ||
+              owner.sql !== dialog.document ||
+              owner.revision !== dialog.revision ||
+              querySessionForTab(owner, latest.sessions)?.id !== dialog.sessionId
+            )
+              throw new Error(
+                "The editor or physical session changed. Review again before executing.",
+              );
+            setDialog(null);
+            await latest
+              .startSnowflakeConsole(dialog.tabId, dialog.plan, approval)
+              .catch((error) => latest.notify(messageOf(error)));
+          }}
         />
       )}
       {dialog?.kind === "review" && (

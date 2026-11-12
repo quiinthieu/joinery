@@ -57,6 +57,9 @@ import {
   isTabFileDirty,
   bookmarkTargetForTab,
   findBookmarkForTarget,
+  isSnowflakeConsoleSession,
+  assertOrdinarySession,
+  isConsoleOwnedResult,
 } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
@@ -86,6 +89,8 @@ import {
   SnowflakeDmlPendingControl,
 } from "../features/studio/SnowflakeDmlNotice";
 
+import { consoleReceiptBlocksSession } from "../features/studio/SnowflakeConsole";
+
 const SqlEditor = lazy(() =>
   import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
 );
@@ -98,6 +103,8 @@ interface Props {
   editorRef: RefObject<EditorHandle>;
   gridRef: RefObject<DatabaseGridHandle>;
   onRun(sql?: string, fromUtf16?: number): void;
+  onRunConsoleScript?(): void;
+  onRunConsoleSelected?(): void;
   onExplain(): void;
   onAnalyze(): void;
   onOpenParameters(slots: QueryParamSlot[]): void;
@@ -125,6 +132,8 @@ export function Workbench({
   editorRef,
   gridRef,
   onRun,
+  onRunConsoleScript,
+  onRunConsoleSelected,
   onExplain,
   onAnalyze,
   onOpenParameters,
@@ -166,7 +175,11 @@ export function Workbench({
     [relationBrowserRevision, setRelationBrowserRevision] = useState<number | null>(null),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
-  const objectExplorerSupported = Boolean(session?.capabilities.objectExplorer);
+  const consoleMode = !!session && isSnowflakeConsoleSession(state, session.id);
+  const heldReceipt = Object.values(state.snowflakeConsoleReceipts).find(
+    (receipt) => !!session && consoleReceiptBlocksSession(receipt, session.id),
+  );
+  const objectExplorerSupported = !consoleMode && Boolean(session?.capabilities.objectExplorer);
   const tableCatalogMatch =
     tab.kind === "table" && tab.table && tab.connectionId
       ? state.catalog[tab.connectionId]?.find(
@@ -201,12 +214,14 @@ export function Workbench({
   const rollbackOnly =
     session &&
     state.sessionStates[session.id]?.transactionControlAuthority?.status === "rollbackOnly";
-  const running = tab.status === "running" || tab.status === "queued" || controlPending;
+  const running =
+    tab.status === "running" || tab.status === "queued" || controlPending || !!heldReceipt;
   const dmlPending =
     tab.kind === "query" && tab.status === "running" && !tab.runId && controlPending;
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const queryResultEditable =
     tab.kind === "query" &&
+    !consoleMode &&
     !!result &&
     result.editability?.status === "editable" &&
     profile?.safeMode !== "readOnly" &&
@@ -231,6 +246,7 @@ export function Workbench({
   const filtering = tab.kind === "table" && !!session?.capabilities.tableFiltering;
   const tableEditable =
     tab.kind === "table" &&
+    !consoleMode &&
     tab.view === "data" &&
     !!tab.schema?.editable &&
     !!session &&
@@ -347,7 +363,8 @@ export function Workbench({
       for (const result of tab.results) {
         resultCache.release(result.id);
         dirtyStore.clearTab(result.id, [result.id]);
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
       }
       state.updateTab(tab.id, {
         connectionId: connectionId || null,
@@ -400,6 +417,7 @@ export function Workbench({
     let active = true;
     setTableDetailsLoadingKey(tableObjectKey);
     setTableDetailsErrorState((prev) => (prev?.key === tableObjectKey ? null : prev));
+    assertOrdinarySession(session.id);
     void client
       .call<ObjectDetails>("object_details", { sessionId: session.id, object: objectRef })
       .then((data) => {
@@ -445,6 +463,13 @@ export function Workbench({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end, { once: true });
   }
+  if (consoleMode && tab.kind !== "query")
+    return (
+      <p role="status">
+        Metadata is disabled on this reviewed SQL console session. Open a separate profile with
+        reviewed console off; temporary objects and transactions are not shared.
+      </p>
+    );
   return (
     <>
       <div className="query-toolbar">
@@ -621,6 +646,7 @@ export function Workbench({
           )}
           {tab.kind === "query" &&
             session &&
+            !consoleMode &&
             (session.capabilities.transactions || session.engine === "snowflake") && (
               <>
                 <select
@@ -760,7 +786,7 @@ export function Workbench({
           )}
           {tab.kind === "query" && (
             <>
-              {session?.capabilities.relationBrowsing && (
+              {!consoleMode && session?.capabilities.relationBrowsing && (
                 <button
                   className="button ghost small"
                   disabled={running || !!state.sessionMetadataRefreshRequired[session.id]}
@@ -770,6 +796,7 @@ export function Workbench({
                       : undefined
                   }
                   onClick={() => {
+                    assertOrdinarySession(session.id);
                     setRelationBrowserRevision(state.sessionContextRevision[session.id] ?? 0);
                     setRelationBrowserSession(session.id);
                   }}
@@ -836,12 +863,13 @@ export function Workbench({
               ) : running && !controlPending ? (
                 <button
                   className="button cancel-query"
-                  onClick={() =>
-                    tab.runId &&
-                    void client
-                      .call("cancel_run", { runId: tab.runId })
-                      .catch((error) => state.notify(messageOf(error)))
-                  }
+                  onClick={() => {
+                    if (heldReceipt) void state.cancelSnowflakeConsole(heldReceipt.clientRequestId);
+                    else if (tab.runId)
+                      void client
+                        .call("cancel_run", { runId: tab.runId })
+                        .catch((error) => state.notify(messageOf(error)));
+                  }}
                 >
                   <Square size={11} />
                   Cancel<kbd>⌘ .</kbd>
@@ -853,36 +881,49 @@ export function Workbench({
                   disabled={!session || controlPending || rollbackOnly}
                 >
                   <Play size={12} fill="currentColor" />
-                  Run<kbd>⌘ ↵</kbd>
+                  {consoleMode ? "Review and run" : "Run"}
+                  <kbd>⌘ ↵</kbd>
                 </button>
               )}
-              {profile && ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
+              {!consoleMode &&
+                profile &&
+                ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
+                  <button
+                    className="button ghost small"
+                    disabled={running || !session || rollbackOnly}
+                    title="Estimate the selected query or current statement without ANALYZE"
+                    onClick={onExplain}
+                  >
+                    <Gauge size={13} />
+                    Explain
+                  </button>
+                )}
+              {!consoleMode &&
+                Boolean(
+                  session
+                    ? (session.capabilities.explainAnalyze ??
+                        (profile?.engine === "postgres" ||
+                          session.capabilities.actualPlan === "mariaDbJson" ||
+                          session.capabilities.actualPlan === "mysqlTree"))
+                    : profile?.engine === "postgres",
+                ) && (
+                  <button
+                    className="button ghost small"
+                    disabled={running || !session || rollbackOnly}
+                    title="Executes the selected query or current statement after review to collect actual measurements"
+                    onClick={onAnalyze}
+                  >
+                    <Gauge size={13} />
+                    Analyze
+                  </button>
+                )}
+              {consoleMode && (
                 <button
                   className="button ghost small"
-                  disabled={running || !session || rollbackOnly}
-                  title="Estimate the selected query or current statement without ANALYZE"
-                  onClick={onExplain}
+                  disabled={running || !session}
+                  onClick={onRunConsoleSelected}
                 >
-                  <Gauge size={13} />
-                  Explain
-                </button>
-              )}
-              {Boolean(
-                session
-                  ? (session.capabilities.explainAnalyze ??
-                      (profile?.engine === "postgres" ||
-                        session.capabilities.actualPlan === "mariaDbJson" ||
-                        session.capabilities.actualPlan === "mysqlTree"))
-                  : profile?.engine === "postgres",
-              ) && (
-                <button
-                  className="button ghost small"
-                  disabled={running || !session || rollbackOnly}
-                  title="Executes the selected query or current statement after review to collect actual measurements"
-                  onClick={onAnalyze}
-                >
-                  <Gauge size={13} />
-                  Analyze
+                  Review selected server unit
                 </button>
               )}
               <button
@@ -890,7 +931,7 @@ export function Workbench({
                 title="Run all statements · ⇧⌘↵"
                 aria-label="Run all statements"
                 disabled={running || !session || rollbackOnly}
-                onClick={() => onRun(tab.sql, 0)}
+                onClick={() => (consoleMode ? onRunConsoleScript?.() : onRun(tab.sql, 0))}
               >
                 <ChevronDown size={13} />
               </button>
@@ -957,7 +998,17 @@ export function Workbench({
           )}
         </div>
       </div>
-      {relationBrowserSession &&
+      {consoleMode && tab.kind === "query" && (
+        <div className="query-notice" role="note">
+          Reviewed Snowflake console · One retained physical session across runs. Write explicit
+          BEGIN, COMMIT or ROLLBACK in reviewed SQL. Automatic metadata and context probes are
+          disabled. For metadata, explicitly open a separate profile with reviewed console off; it
+          cannot share temporary objects or transactions. Each unit has a fixed 65-second delivery
+          deadline; long-running query parity is not available.
+        </div>
+      )}
+      {!consoleMode &&
+        relationBrowserSession &&
         session?.id === relationBrowserSession &&
         relationBrowserRevision === (state.sessionContextRevision[session.id] ?? 0) &&
         !state.sessionMetadataRefreshRequired[session.id] &&
@@ -992,7 +1043,7 @@ export function Workbench({
                 onRun={onRun}
                 onOpenParameters={onOpenParameters}
                 onOpenObject={
-                  session && tab.connectionId
+                  !consoleMode && session && tab.connectionId
                     ? (object, highlightedColumn, catalogRevision) =>
                         state.openSessionObject(tab.id, object, highlightedColumn, catalogRevision)
                     : undefined

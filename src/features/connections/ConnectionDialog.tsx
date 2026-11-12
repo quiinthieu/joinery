@@ -63,6 +63,10 @@ export function ConnectionDialog({
                 : profile.safeMode,
           snowflake: {
             ...withSnowflakeAuthentication(profile.snowflake, authentication),
+            reviewedConsole:
+              authentication === "externalBrowser" && profile.safeMode !== "readOnly"
+                ? (profile.snowflake.reviewedConsole ?? false)
+                : false,
             reviewedDml:
               authentication === "externalBrowser" && profile.safeMode !== "readOnly"
                 ? (profile.snowflake.reviewedDml ?? false)
@@ -270,6 +274,7 @@ export function ConnectionDialog({
                               role: "",
                               warehouse: "",
                               schema: "",
+                              reviewedConsole: false,
                               reviewedDml: false,
                               reviewedDdl: false,
                             },
@@ -360,6 +365,11 @@ export function ConnectionDialog({
                       snowflake: current.snowflake
                         ? {
                             ...withSnowflakeAuthentication(current.snowflake, authentication),
+                            reviewedConsole:
+                              authentication === "externalBrowser" &&
+                              snowflakeAuthentication(current.snowflake) === "externalBrowser"
+                                ? (current.snowflake.reviewedConsole ?? false)
+                                : false,
                             reviewedDml:
                               authentication === "externalBrowser" &&
                               snowflakeAuthentication(current.snowflake) === "externalBrowser"
@@ -416,9 +426,8 @@ export function ConnectionDialog({
               <p className="form-note span-2">
                 {snowflakeAuthentication(draft.snowflake) === "externalBrowser" ? (
                   <>
-                    External browser SSO uses the Snowflake SDK. SQL access is read-only; metadata
-                    browsing is temporarily unavailable for this sign-in mode. Joinery will not fall
-                    back to local application OAuth.
+                    External browser SSO uses the Snowflake SDK. Writable SQL requires separate
+                    consent and review. Joinery will not fall back to local application OAuth.
                   </>
                 ) : (
                   <>
@@ -650,7 +659,12 @@ export function ConnectionDialog({
                   safeMode,
                   ...(safeMode === "readOnly" && current.snowflake
                     ? {
-                        snowflake: { ...current.snowflake, reviewedDml: false, reviewedDdl: false },
+                        snowflake: {
+                          ...current.snowflake,
+                          reviewedConsole: false,
+                          reviewedDml: false,
+                          reviewedDdl: false,
+                        },
                       }
                     : {}),
                 }));
@@ -729,10 +743,40 @@ export function ConnectionDialog({
                 </span>
               </label>
             )}
+          {draft.engine === "snowflake" &&
+            draft.snowflake &&
+            snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+            draft.safeMode !== "readOnly" && (
+              <label className="checkbox-label span-2">
+                <input
+                  type="checkbox"
+                  aria-label="Enable reviewed Snowflake SQL console"
+                  checked={draft.snowflake.reviewedConsole ?? false}
+                  onChange={(event) =>
+                    change("snowflake", {
+                      ...draft.snowflake!,
+                      reviewedConsole: event.target.checked,
+                    })
+                  }
+                />
+                Enable reviewed Snowflake SQL console
+                <span className="optional">
+                  Authorize exact owner-written SQL, scalar parameters and explicit transaction
+                  boundaries. SQL can change data, schema, session settings and incur warehouse
+                  charges. Every run requires review. After initial sign-in bootstrap, this physical
+                  connection belongs permanently to the console: automatic probes and metadata
+                  queries are disabled to preserve statement history. Use a separate profile with
+                  this option off for metadata; it cannot share temporary objects or transactions.
+                  PUT/GET file transfer is denied. The current fixed 65-second per-unit delivery
+                  deadline does not support long-running query parity. Joinery never automatically
+                  retries, commits, rolls back or reconnects a console.
+                </span>
+              </label>
+            )}
           {draft.engine === "snowflake" && (
             <p className="form-note span-2">
               {snowflakeAuthentication(draft.snowflake) === "externalBrowser"
-                ? "Safe Mode controls review and approval for explicit transaction boundaries, opted-in single INSERT, UPDATE, and DELETE statements, and separately opted-in generated table schema changes. Broader SQL write and DDL grammar remains unavailable."
+                ? "Safe Mode controls approval for opted-in operations. A separately enabled reviewed SQL console authorizes exact owner-written SQL, including server-validated selected units; otherwise generated DML/DDL keep their existing limits."
                 : "This authentication route supports read-only SQL."}
             </p>
           )}

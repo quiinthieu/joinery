@@ -1,5 +1,17 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { AppError, ErrorCode, ExportEvent, ExportRequest, QueryEvent } from "./generated";
+import type {
+  AppError,
+  ErrorCode,
+  ExportEvent,
+  ExportRequest,
+  QueryEvent,
+  SnowflakeConsoleRequest,
+  SnowflakeConsolePlan,
+  SnowflakeConsoleStart,
+  SnowflakeConsoleStartResult,
+  SnowflakeConsoleRunView,
+} from "./generated";
+import { assertConsoleCommandAllowed, sealConsoleSession } from "./console-session-guard";
 import type {
   JoineryCommandCallTuple,
   JoineryCommandMap,
@@ -33,17 +45,59 @@ export interface StudioClient {
     onEvent: (event: QueryEvent) => void,
   ): Promise<string>;
   exportData(request: ExportRequest, onEvent: (event: ExportEvent) => void): Promise<string>;
+  prepareSnowflakeConsole(
+    sessionId: string,
+    request: SnowflakeConsoleRequest,
+  ): Promise<SnowflakeConsolePlan>;
+  startSnowflakeConsole(
+    request: SnowflakeConsoleStart,
+    onEvent: (event: QueryEvent) => void,
+  ): Promise<SnowflakeConsoleStartResult>;
+  snowflakeConsoleRun(clientRequestId: string): Promise<SnowflakeConsoleRunView | null>;
   range(resultId: string, start: number, count: number): Promise<ArrayBuffer>;
 }
 
-class NativeClient implements StudioClient {
-  call<T>(command: JoineryCommandName, args: Record<string, unknown> = {}) {
-    return invoke<T>(command, args);
+abstract class ConsoleClient {
+  abstract call<T>(command: JoineryCommandName, args?: Record<string, unknown>): Promise<T>;
+  prepareSnowflakeConsole(sessionId: string, request: SnowflakeConsoleRequest) {
+    return this.call<SnowflakeConsolePlan>("prepare_snowflake_console", { sessionId, request });
+  }
+  snowflakeConsoleRun(clientRequestId: string) {
+    return this.call<SnowflakeConsoleRunView | null>("snowflake_console_run", { clientRequestId });
+  }
+}
+
+function observeConnection<T>(command: JoineryCommandName, result: T): T {
+  if (
+    (command === "connect" || command === "connect_prepared") &&
+    result &&
+    typeof result === "object" &&
+    "id" in result &&
+    typeof result.id === "string" &&
+    "consoleMode" in result &&
+    result.consoleMode === true
+  )
+    sealConsoleSession({ id: result.id, consoleMode: true });
+  return result;
+}
+
+class NativeClient extends ConsoleClient implements StudioClient {
+  async call<T>(command: JoineryCommandName, args: Record<string, unknown> = {}) {
+    assertConsoleCommandAllowed(command, args);
+    return observeConnection(command, await invoke<T>(command, args));
   }
   execute(planId: string, approval: string | null, onEvent: (event: QueryEvent) => void) {
     const onEventChannel = new Channel<QueryEvent>();
     onEventChannel.onmessage = onEvent;
     return this.call<string>("execute_plan", { planId, approval, onEvent: onEventChannel });
+  }
+  startSnowflakeConsole(request: SnowflakeConsoleStart, onEvent: (event: QueryEvent) => void) {
+    const channel = new Channel<QueryEvent>();
+    channel.onmessage = onEvent;
+    return this.call<SnowflakeConsoleStartResult>("start_snowflake_console", {
+      request,
+      onEvent: channel,
+    });
   }
   exportData(request: ExportRequest, onEvent: (event: ExportEvent) => void) {
     const onEventChannel = new Channel<ExportEvent>();
@@ -68,17 +122,19 @@ class NativeClient implements StudioClient {
   }
 }
 
-class BrowserTestClient implements StudioClient {
+class BrowserTestClient extends ConsoleClient implements StudioClient {
   constructor(
     private readonly url: string,
     private readonly token: string,
   ) {
+    super();
     if (new URL(url).hostname !== "127.0.0.1") throw new Error("Test transport must use loopback");
   }
   private headers() {
     return { "Content-Type": "application/json", Authorization: `Bearer ${this.token}` };
   }
   async call<T>(command: JoineryCommandName, args: Record<string, unknown> = {}): Promise<T> {
+    assertConsoleCommandAllowed(command, args);
     const response = await fetch(`${this.url}/rpc/${command}`, {
       method: "POST",
       headers: this.headers(),
@@ -87,7 +143,7 @@ class BrowserTestClient implements StudioClient {
     if (!response.ok) throw new Error("The browser test service is unavailable");
     const body = (await response.json()) as { result: T; error?: AppError };
     if (body.error) throw body.error;
-    return body.result;
+    return observeConnection(command, body.result);
   }
   async execute(planId: string, approval: string | null, onEvent: (event: QueryEvent) => void) {
     const streamId = crypto.randomUUID();
@@ -110,6 +166,39 @@ class BrowserTestClient implements StudioClient {
     };
     void poll();
     return runId;
+  }
+  async startSnowflakeConsole(
+    request: SnowflakeConsoleStart,
+    onEvent: (event: QueryEvent) => void,
+  ) {
+    const streamId = crypto.randomUUID();
+    const result = await this.call<SnowflakeConsoleStartResult>("start_snowflake_console", {
+      request,
+      streamId,
+    });
+    if (result.kind !== "started") return result;
+    const poll = async () => {
+      try {
+        const response = await fetch(`${this.url}/events/${streamId}`, { headers: this.headers() });
+        if (!response.ok) throw new Error("The execution stream disconnected");
+        const events = (await response.json()) as QueryEvent[];
+        events.forEach(onEvent);
+        if (!events.some((event) => event.type === "finished")) setTimeout(() => void poll(), 60);
+      } catch {
+        // Transport loss says nothing about remote completion. The SQL-free
+        // durable run lookup owns recovery; never invent a terminal receipt.
+        onEvent({
+          type: "error",
+          error: {
+            code: "connectionClosed",
+            message: "The result stream disconnected; check the console receipt",
+          },
+          statementIndex: 0,
+        });
+      }
+    };
+    void poll();
+    return result;
   }
   async exportData(request: ExportRequest, onEvent: (event: ExportEvent) => void) {
     const streamId = crypto.randomUUID();
@@ -149,7 +238,7 @@ class BrowserTestClient implements StudioClient {
   }
 }
 
-class PreviewClient implements StudioClient {
+class PreviewClient extends ConsoleClient implements StudioClient {
   async call<T>(command: JoineryCommandName, args?: Record<string, unknown>): Promise<T> {
     if (command === "bootstrap")
       return {
@@ -204,6 +293,9 @@ class PreviewClient implements StudioClient {
     );
   }
   async execute(): Promise<string> {
+    throw new Error("Database execution is available in the desktop app");
+  }
+  async startSnowflakeConsole(): Promise<SnowflakeConsoleStartResult> {
     throw new Error("Database execution is available in the desktop app");
   }
   async exportData(): Promise<string> {

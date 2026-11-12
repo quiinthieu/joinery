@@ -23,6 +23,9 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     const typedClient: StudioClient = {
       call: callMock as unknown as StudioClient["call"],
       execute: vi.fn(),
+      prepareSnowflakeConsole: vi.fn(),
+      startSnowflakeConsole: vi.fn(),
+      snowflakeConsoleRun: vi.fn(),
       exportData: vi.fn(),
       range: vi.fn(),
     };

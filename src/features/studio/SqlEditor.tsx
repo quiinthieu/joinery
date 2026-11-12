@@ -58,6 +58,7 @@ import {
 } from "../../data/sql-format";
 import {
   useStudio,
+  isSnowflakeConsoleSession,
   revokeSchemaSelectionBeforeWork,
   observeTemplateSessionContext,
 } from "../../state/studio";
@@ -350,8 +351,15 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const metadataRefreshRequired = useStudio((s) =>
     props.sessionId ? s.sessionMetadataRefreshRequired[props.sessionId] === true : false,
   );
+  const consoleMode = useStudio(
+    (s) => !!props.sessionId && isSnowflakeConsoleSession(s, props.sessionId),
+  );
   const metadataBlocked =
-    contextSwitchPending || transactionPending || rollbackOnly || metadataRefreshRequired;
+    consoleMode ||
+    contextSwitchPending ||
+    transactionPending ||
+    rollbackOnly ||
+    metadataRefreshRequired;
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
@@ -379,7 +387,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   };
   const configure = () => {
     const config = latest.current;
-    const snapshot = liveRef.current;
+    const snapshot =
+      config.sessionId && isSnowflakeConsoleSession(useStudio.getState(), config.sessionId)
+        ? null
+        : liveRef.current;
     if (config.engine === "redis") return config;
     return {
       ...config,
@@ -463,7 +474,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
 
   const buildSymbolContext = (): SqlSymbolContext => {
     const config = latest.current;
-    const snapshot = liveRef.current;
+    const snapshot =
+      config.sessionId && isSnowflakeConsoleSession(useStudio.getState(), config.sessionId)
+        ? null
+        : liveRef.current;
     return {
       engine: config.engine,
       tables: snapshot?.tables ?? [],
@@ -599,6 +613,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             : null;
     const sessionId = latest.current.sessionId;
     if (catalogObject && sessionId && latest.current.objectExplorerSupported) {
+      revokeSchemaSelectionBeforeWork(sessionId);
       setNavDetailsLoading(true);
       void client
         .call<ObjectDetails>("object_details", { sessionId, object: catalogObject })
@@ -736,7 +751,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     try {
       await contextLoadRef.current;
       if (!current()) return;
-      const snapshot = liveRef.current;
+      const snapshot = isSnowflakeConsoleSession(useStudio.getState(), sessionId)
+        ? null
+        : liveRef.current;
       if (!snapshot) throw new Error("Current console metadata is unavailable. Refresh and retry.");
       const context = renameContext();
       const plan = prepareColumnInspection(state, state.selection.main.head, buildSymbolContext());
@@ -747,6 +764,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         bytes = 0;
       for (const table of plan.tables) {
         if (!current() || renameContext() !== context) return;
+        revokeSchemaSelectionBeforeWork(sessionId);
         const schema = await client.call<TableSchema>("inspection_schema", {
           sessionId,
           revision: snapshot.revision,
@@ -1147,6 +1165,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             setLive(snapshot);
             if (props.objectExplorerSupported) {
               try {
+                revokeSchemaSelectionBeforeWork(props.sessionId!);
                 const objects = await client.call<DatabaseObjectSummary[]>("database_objects", {
                   sessionId: props.sessionId,
                 });
@@ -1220,6 +1239,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         : availableContexts
       : [];
   const showContextSwitcher =
+    !consoleMode &&
     Boolean(props.sessionId) &&
     (contextOptions.length > 0 || runtimeState?.transactionObservation !== undefined) &&
     runtimeState !== undefined &&
@@ -1305,19 +1325,21 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
               >
                 {!props.sessionId
                   ? "Connect to run parameterized SQL"
-                  : transactionPending
-                    ? "Transaction action in progress…"
-                    : rollbackOnly
-                      ? "Only rollback recovery is available"
-                      : metadataRefreshRequired
-                        ? "Refresh completion context after the transaction action"
-                        : contextSwitchPending
-                          ? "Changing schema…"
-                          : contextError
-                            ? `Completion unavailable: ${contextError}`
-                            : live
-                              ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                              : "Loading completion context…"}
+                  : consoleMode
+                    ? "Reviewed console · static authoring only; automatic metadata SQL is disabled"
+                    : transactionPending
+                      ? "Transaction action in progress…"
+                      : rollbackOnly
+                        ? "Only rollback recovery is available"
+                        : metadataRefreshRequired
+                          ? "Refresh completion context after the transaction action"
+                          : contextSwitchPending
+                            ? "Changing schema…"
+                            : contextError
+                              ? `Completion unavailable: ${contextError}`
+                              : live
+                                ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                                : "Loading completion context…"}
               </span>
               {paramSlots.length > 0 && props.onOpenParameters && (
                 <button
@@ -1383,7 +1405,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                   className="button ghost small"
                   style={{ flexShrink: 0 }}
                   aria-label="Refresh completion context"
-                  disabled={transactionPending || contextSwitchPending || rollbackOnly}
+                  disabled={
+                    consoleMode || transactionPending || contextSwitchPending || rollbackOnly
+                  }
                   onClick={() => {
                     if (props.sessionId && metadataRefreshRequired) {
                       // Resume the native hold with explicit owner intent before

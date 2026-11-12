@@ -86,6 +86,11 @@ import type {
   SnowflakeDdlPreflightResponse,
   SnowflakeDdlRequest,
   SnowflakeDdlResult,
+  SnowflakeConsoleRequest,
+  SnowflakeConsolePlan,
+  SnowflakeConsoleStart,
+  SnowflakeConsoleStartResult,
+  SnowflakeConsoleRunView,
 } from "./generated";
 
 /**
@@ -93,6 +98,18 @@ import type {
  * command with its exact argument payload and result DTO.
  */
 export interface JoineryCommandMap {
+  prepare_snowflake_console: {
+    args: { sessionId: string; request: SnowflakeConsoleRequest };
+    result: SnowflakeConsolePlan;
+  };
+  start_snowflake_console: {
+    args: { request: SnowflakeConsoleStart; onEvent?: unknown; streamId?: string };
+    result: SnowflakeConsoleStartResult;
+  };
+  snowflake_console_run: {
+    args: { clientRequestId: string };
+    result: SnowflakeConsoleRunView | null;
+  };
   relation_catalog: { args: { sessionId: string }; result: BrowseCatalog };
   define_relation: {
     args: { sessionId: string; request: DefineRelationRequest };
