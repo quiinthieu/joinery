@@ -14,9 +14,12 @@ helper workflow pass; the SDK is synthetic and account qualification stays open.
 reproduced a passphrase mutation-ordering defect before its fix, and found result
 lifetime and definite-refusal recovery defects. Corrected regression, integration
 and independent review results belong in the [ledger](replacement-verification.md).
+The normal SDK-bearing ARM64 app builds from clean `12fef9a`; strict ad-hoc
+signature/resources and guarded helper startup pass with zero authentication/SQL
+requests. It is local and uninstalled; normal app UI startup is not yet qualified.
 Lost definitive-refusal responses still need durable negative correlation;
 unknown outcomes remain held. Practical journal retention, configurable delivery
-deadlines, actual Snowflake effects/million-row workflows, normal packaging and
+deadlines, actual Snowflake effects/million-row workflows, packaged UI/SSO/restart and
 owner acceptance remain required. The Goal stays active and incomplete.
 
 ## Retained console adapter and local journal (12 November 2026)

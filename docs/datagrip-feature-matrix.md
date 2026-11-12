@@ -24,7 +24,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `278754b`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `12fef9a`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -79,7 +79,7 @@ metadata, editing/import, authoring, performance and native usability in scope.
 
 | Application capability | Current evidence | Required gate |
 | --- | --- | --- |
-| Reviewed retained owner/UI | Locally verified: 217 focused frontend, 6 focused IPC, 18 owner cases and 1 actual browser-to-Studio/helper workflow pass; full validation passes 872 frontend / 546 standard Rust cases (137 default ignores). Synthetic SDK; no account qualification | Durable lost-negative recovery, practical retention, long-running queries, normal packaging and actual Snowflake/native/owner acceptance |
+| Reviewed retained owner/UI | Locally verified: 217 focused frontend, 6 focused IPC, 18 owner cases and 1 actual browser-to-Studio/helper workflow pass; full validation passes 872 frontend / 546 standard Rust cases (137 default ignores). Normal ARM64 bundle checks pass; workflow SDK is synthetic, with no account qualification | Durable lost-negative recovery, practical retention, long-running queries and actual Snowflake/native/owner acceptance |
 
 The following records the preceding private-foundation increment. Its last
 column identifies work outstanding at that source; the current owner/UI status

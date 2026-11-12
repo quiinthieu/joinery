@@ -12,8 +12,11 @@ does not qualify this new integration.
 Full validation passes 872 frontend and 546 standard Rust tests (137 default
 fixture ignores); 18 owner cases and one actual browser-to-Studio/helper workflow
 also pass. Independent bounded review has no remaining material finding.
+The normal SDK-bearing ARM64 app builds from clean `12fef9a`; strict ad-hoc
+signature/resources and network-guarded helper startup pass with no sign-in or
+SQL. It remains local and uninstalled; packaged UI startup is not established.
 
-Next verify normal packaging/startup. Implement
+Next implement
 [durable negative admission receipts](snowflake-console-negative-receipts-design.md)
 for a lost refusal response, practical journal retention that
 preserves deduplication/recovery, and qualified configurable long-running query

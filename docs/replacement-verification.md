@@ -102,11 +102,35 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" pnpm exec playwright 
 The browser-cache override is specific to this checkout; a fresh environment
 must install the Playwright headless shell as described in README.
 
+Normal SDK-bearing macOS packaging passes in **520.08 seconds**, from clean
+committed source `12fef9a`, with unchanged captured source. Command:
+`pnpm desktop:snowflake:bundle:mac`. The ARM64 0.1.0 app at
+`src-tauri/target/release/bundle/macos/Joinery.app` contains **240,961,177 regular
+file bytes (229.80 MiB)**. Its binary SHA256 is
+`ab95811a6fbb21ef15031ff9a2eec5e5132e234c4491bfbbcbfc68ef3d61c996`.
+Strict ad-hoc signature/resource checks and the genuine bundled SDK helper's
+network-guarded startup pass with **zero authentication and SQL requests**.
+This checks helper startup, not ordinary app UI startup. Developer ID and
+notarization remain open. The compiler reported that its `rust-objcopy` could
+not load `libLLVM.dylib` while stripping library and executable debug information;
+the build still exited zero and all bundle checks passed. No global toolchain
+configuration was changed, and complete stripping is not claimed.
+
+The preceding `278754b` app is preserved under
+`.cache/verification/reviewed-console/preserved-release-278754b/Joinery.app`.
+All 15,118 captured entries were verified on copying, and retained file bytes/
+symlink targets were checked again after packaging. See
+`prior-release-preservation.json`, `console-app-package.json`/log and
+`console-app-artifact.json`. Final free space is **147,337,420,800 bytes (137.2
+GiB)**; debug output is 5,392,944 KiB (5.14 GiB), and release output is 6,321,976
+KiB (6.03 GiB). The smaller development profile is not an automatic cache cap.
+Browser fixture servers have stopped; unrelated workspace listeners remain.
+
 These results do not establish real Snowflake transaction semantics,
 SSO, million-row interaction/export, normal packaged operation or owner
-acceptance. The existing release app still predates this increment. Journal
-retention, configurable query deadlines and the remaining DataGrip scope stay
-required; the persistent Goal is incomplete.
+acceptance. The new app is local, uninstalled and unpublished. Journal retention,
+durable negative admission recovery, configurable query deadlines and the
+remaining DataGrip scope stay required; the persistent Goal is incomplete.
 
 ### Retained console adapter and journal (12 November 2026)
 
