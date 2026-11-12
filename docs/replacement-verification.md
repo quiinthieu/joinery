@@ -62,7 +62,7 @@ clipboard is used by the synthetic browser flow.
 | Full validation | Exit 0, validate.log; 718 frontend / 476 standard Rust tests, 129 fixture/helper ignores, formatting/TypeScript/build/compiler checks and strict all-target/all-feature Clippy |
 | Changed browser workflow | 1/1, exit 0, browser.log; keyboard key inspection, hidden references, denial/empty retry and held response after refresh, plus existing definition/inspection/preview flow. Synthetic IPC, no account effects |
 | Hidden native build and smoke | Build/runner exit 0, native-build.log / native-smoke.log; 10 cleanup cycles, 3678 ms native elapsed, 97.47 MiB main-process peak RSS. Guard/cleanup evidence, not representative performance or successful Snowflake key inspection |
-| Normal SDK-bearing package | Pending; previous-increment package passes do not qualify this source |
+| Normal SDK-bearing package | Exit 0, normal-bundle.log; clean feature commit fabeb62, strict ad-hoc signature/resources and network-guarded SDK startup pass with zero authentication/SQL requests. Local and uninstalled; normal app/SSO acceptance remains open |
 | Independent review | No unresolved material finding; final 21 hashes match. Tier 2 generation 2026-11-12T06:03:28Z, 22 relied source/test/docs paths checked plus direct source reads. Root MCP transport remains unavailable, with bounded direct-source fallback |
 
 Review covers the private ReadSpec binds change (all older factories retain SQL,
@@ -89,6 +89,22 @@ main-window permission (native-acl-generated.json). No generated ACL files are
 committed. Existing ts-rs attribute and LLVM rust-objcopy stripping warnings remain
 nonfatal and visible in the logs. Normal packaged SSO and successful account key
 inspection remain unqualified.
+
+The normal SDK-bearing ARM64 bundle builds from clean feature commit **fabeb62**
+in 4m43s of optimized compilation, with terminal exit **0**. It is local
+version/build **0.1.0** at
+`src-tauri/target/release/bundle/macos/Joinery.app`. Final verified regular-file
+bytes total **240,344,585** (229.21 MiB); Tauri reports 225.01 MiB before final
+ad-hoc signing. The binary SHA-256 is
+`c37fd9cdf80adcdcd7c9b5ad6e0d18e53bd6178e951b2f7114ce1b83a510839b`.
+Strict signature verification, **15,109** runtime entries / **zero** symlinks and
+network-guarded SDK **3.4.1** startup pass, with **zero authentication and zero SQL
+requests**. All 21 frozen source hashes still match and the worktree is clean
+after the build. normal-bundle-build-source.json / normal-bundle-artifacts.json
+retain source/tree, artifact identity, version and check results; terminal-results.json
+records all ten completed commands. The normal app is not installed or opened
+for SSO. Developer ID/notarization, successful account key inspection and every
+normal packaged daily workflow remain open. Nothing is pushed or published.
 
 ### Generated Snowflake relation definitions (12 November 2026)
 

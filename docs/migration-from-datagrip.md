@@ -58,8 +58,9 @@ required. See the [qualification attachments](snowflake-qualification-attachment
 
 ## Declared Snowflake keys (prepared acceptance walkthrough)
 
-Local focused/full validation, headless browser and hidden native IPC/cleanup
-checks pass; normal package and account gates are recorded in the ledger. Use a
+Local focused/full validation, headless browser, hidden native IPC/cleanup and
+normal SDK-bearing package checks pass on the source recorded in the ledger.
+Normal packaged SSO/daily usage and account acceptance remain open. Use a
 separately approved evaluation connection before sending account metadata reads.
 
 1. In an SDK Snowflake console, open **Browse relations**, filter by schema/name

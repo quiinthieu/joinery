@@ -8,8 +8,10 @@ states. The implementation and focused tests are complete; independent review
 has no unresolved material finding. Full validation passes 718 frontend / 476
 standard Rust tests (129 fixture/helper ignores) and strict checks. The changed
 headless browser flow passes 1/1. Hidden native command registration/rejection
-and 10 cleanup cycles pass. Normal SDK-bearing package verification is pending.
-See the
+and 10 cleanup cycles pass. The normal SDK-bearing ARM64 package builds from
+clean fabeb62, with strict ad-hoc signature/resources and guarded SDK startup
+passing without account requests. It is local and uninstalled; normal SSO/usage,
+Developer ID/notarization and account key visibility remain unqualified. See the
 [contract](snowflake-sdk-constraints-design.md) and source-specific
 [ledger](replacement-verification.md).
 

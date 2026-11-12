@@ -24,7 +24,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `e218aef`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle rebuilt on clean `fabeb62`; resources, ad-hoc signature and network-guarded helper startup pass                                                  | Recorded bundle is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -51,7 +51,7 @@ not substitute for completing the rows.
 | --- | --- | --- |
 | Primary/unique/foreign-key declarations | Retained target/revision, bound exact identity, fixed bounded metadata query, reported flags and comments | Actual role visibility, output typing and hybrid/standard enforcement need account qualification |
 | Foreign-key reference details | Referenced constraint identity and match/update/delete rules; hidden reference remains explicit | Referenced table/column mappings and navigation remain incomplete |
-| Reliable read-only UI | Independent request, explicit empty/error/retry, stale-result invalidation; focused/full tests (718 frontend / 476 standard Rust, 129 ignores), changed browser (1/1) and hidden native IPC/cleanup checks pass | Normal package for this source pending; packaged account acceptance remains open |
+| Reliable read-only UI | Independent request, explicit empty/error/retry, stale-result invalidation; focused/full tests (718 frontend / 476 standard Rust, 129 ignores), changed browser (1/1), hidden native IPC/cleanup and normal local package checks pass | Normal packaged SSO/daily usage and actual account key inspection remain unqualified |
 
 Independent bounded review has no unresolved material finding. See the
 [contract](snowflake-sdk-constraints-design.md),

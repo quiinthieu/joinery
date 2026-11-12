@@ -18,8 +18,12 @@ pass. Full validation passes 718 frontend / 476 standard Rust tests (129 fixture
 helper ignores), formatting/build/compiler checks and strict Clippy. The changed
 browser workflow passes 1/1 with synthetic IPC. Independent bounded review has no
 unresolved material finding. Hidden native command registration/rejection and
-10 cleanup cycles pass. A normal SDK-bearing package for this source is pending.
-No account requests have occurred for this increment.
+10 cleanup cycles pass. The normal SDK-bearing ARM64 bundle builds on clean
+feature commit fabeb62; strict ad-hoc signature/resources and guarded SDK startup
+pass with zero authentication/SQL requests. Version/build 0.1.0 totals 229.21 MiB
+in final regular files. It remains local and uninstalled; Developer ID/notarization
+and normal packaged SSO/daily usage remain unqualified. No account requests have
+occurred for this increment.
 
 This is partial metadata coverage. Key column mappings, CHECK constraints,
 dependencies and complete object inspection remain required. Declared keys are
