@@ -8,10 +8,12 @@ import type {
   DefineRelationRequest,
   InspectRelationRequest,
   InspectRelationConstraintsRequest,
+  InspectRelationConstraintMappingsRequest,
   PreviewRelationRequest,
   RelationInspection,
   RelationDefinition,
   RelationConstraints,
+  RelationConstraintMappings,
   RelationPreview,
   CellChange,
   ChangePreview,
@@ -101,6 +103,10 @@ export interface JoineryCommandMap {
   inspect_relation_constraints: {
     args: { sessionId: string; request: InspectRelationConstraintsRequest };
     result: RelationConstraints;
+  };
+  inspect_relation_constraint_mappings: {
+    args: { sessionId: string; request: InspectRelationConstraintMappingsRequest };
+    result: RelationConstraintMappings;
   };
   preview_relation: {
     args: { sessionId: string; request: PreviewRelationRequest };

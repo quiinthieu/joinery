@@ -286,6 +286,7 @@ async fn rpc(
             "refresh_snowflake_ddl_metadata" => json!(studio.refresh_snowflake_ddl_metadata(&arg::<String>(&args, "sessionId")?).await?),
             "inspect_relation" => json!(studio.inspect_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
             "define_relation" => json!(studio.define_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
+            "inspect_relation_constraint_mappings" => json!(studio.inspect_relation_constraint_mappings(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
             "inspect_relation_constraints" => json!(studio.inspect_relation_constraints(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
             "preview_relation" => json!(studio.preview_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),

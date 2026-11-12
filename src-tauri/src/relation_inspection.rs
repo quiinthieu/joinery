@@ -138,6 +138,58 @@ pub struct RelationConstraintReference {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InspectRelationConstraintMappingsRequest {
+    pub revision: String,
+    pub target_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationConstraintMappings {
+    pub revision: String,
+    pub target_id: String,
+    pub database: String,
+    pub table: TableRef,
+    pub mappings: Vec<RelationConstraintMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationConstraintMapping {
+    pub catalog: String,
+    pub schema: String,
+    pub name: String,
+    pub kind: RelationKeyConstraintKind,
+    pub status: ConstraintMappingStatus,
+    pub columns: Vec<RelationConstraintColumnMapping>,
+    pub referenced_table: Option<RelationConstraintTableReference>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConstraintMappingStatus {
+    Available,
+    NotVisible,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationConstraintColumnMapping {
+    pub ordinal: u32,
+    pub column_name: String,
+    pub referenced_column_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationConstraintTableReference {
+    pub database: String,
+    pub table: TableRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewRelationRequest {
     pub revision: String,
     pub target_id: String,
@@ -245,6 +297,10 @@ mod tests {
         for unknown in ["sql", "catalog", "schema", "table", "inspectionRevision"] {
             let mut value = serde_json::json!({"revision":"r", "targetId":"opaque"});
             value[unknown] = "caller input".into();
+            assert!(
+                serde_json::from_value::<InspectRelationConstraintMappingsRequest>(value.clone())
+                    .is_err()
+            );
             assert!(serde_json::from_value::<InspectRelationConstraintsRequest>(value).is_err());
         }
         let constraints: InspectRelationConstraintsRequest =
@@ -269,6 +325,13 @@ mod tests {
 
     #[test]
     fn unavailable_constraints_and_unknown_traits_are_explicit_on_wire() {
+        for (status, wire) in [
+            (ConstraintMappingStatus::Available, "available"),
+            (ConstraintMappingStatus::NotVisible, "notVisible"),
+            (ConstraintMappingStatus::Unsupported, "unsupported"),
+        ] {
+            assert_eq!(serde_json::to_value(status).unwrap(), wire);
+        }
         assert_eq!(
             serde_json::to_value(RelationKeyConstraintKind::PrimaryKey).unwrap(),
             "primaryKey"

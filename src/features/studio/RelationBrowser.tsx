@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   BrowseCatalog,
+  RelationConstraintMappings,
   RelationConstraints,
   RelationDefinition,
   RelationInspection,
@@ -14,6 +15,10 @@ import { DdlPanel } from "./ObjectInspectorView";
 
 const PAGE_ROWS = 25;
 const PAGE_COLUMNS = 20;
+
+function quotedName(...parts: string[]) {
+  return parts.map((part) => `"${part.replaceAll('"', '""')}"`).join(".");
+}
 
 function relationContextKey(
   state: ReturnType<typeof useStudio.getState>,
@@ -103,6 +108,11 @@ export function RelationBrowser({
     value: RelationConstraints;
   } | null>(null);
   const [constraintsError, setConstraintsError] = useState<string | null>(null);
+  const [mappings, setMappings] = useState<{
+    contextKey: string;
+    value: RelationConstraintMappings;
+  } | null>(null);
+  const [mappingsError, setMappingsError] = useState<string | null>(null);
   const [selected, setSelected] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
@@ -129,6 +139,8 @@ export function RelationBrowser({
       setDefinition(null);
       setConstraints(null);
       setConstraintsError(null);
+      setMappings(null);
+      setMappingsError(null);
       setSelected("");
       setBusy(false);
       setError(null);
@@ -172,6 +184,8 @@ export function RelationBrowser({
         setDefinition(null);
         setConstraints(null);
         setConstraintsError(null);
+        setMappings(null);
+        setMappingsError(null);
         setSelected("");
         setError(messageOf(err));
       }
@@ -186,6 +200,8 @@ export function RelationBrowser({
     setDefinition(null);
     setConstraints(null);
     setConstraintsError(null);
+    setMappings(null);
+    setMappingsError(null);
     setSelected("");
     setRowPage(0);
     setColumnPage(0);
@@ -277,6 +293,38 @@ export function RelationBrowser({
     }, setConstraintsError);
   };
   const target = catalog?.relations.find((entry) => entry.targetId === selected);
+  const loadMappings = () => {
+    if (!catalog || target?.availability !== "available" || blocked || !ownerAvailable) return;
+    setMappings(null);
+    setMappingsError(null);
+    void run(async (current) => {
+      const result = await client.call("inspect_relation_constraint_mappings", {
+        sessionId,
+        request: { revision: catalog.revision, targetId: target.targetId },
+      });
+      if (!current()) return;
+      if (
+        result.revision !== catalog.revision ||
+        result.targetId !== target.targetId ||
+        result.database !== catalog.database ||
+        result.table.schema !== target.table.schema ||
+        result.table.name !== target.table.name
+      )
+        throw new Error("Key column mapping target changed. Refresh relations and try again.");
+      if (
+        result.mappings.some(
+          (mapping) =>
+            mapping.status === "available" &&
+            (mapping.columns.length === 0 ||
+              (mapping.kind === "foreignKey" &&
+                (!mapping.referencedTable ||
+                  mapping.columns.some((column) => column.referencedColumnName === null)))),
+        )
+      )
+        throw new Error("Key column mappings are incomplete. Refresh relations and try again.");
+      setMappings({ contextKey, value: result });
+    }, setMappingsError);
+  };
   const matches =
     catalog?.relations.filter((entry) =>
       `${entry.table.schema}.${entry.table.name}`
@@ -342,6 +390,8 @@ export function RelationBrowser({
               setDefinition(null);
               setConstraints(null);
               setConstraintsError(null);
+              setMappings(null);
+              setMappingsError(null);
               setBusy(false);
             }}
           />
@@ -360,6 +410,8 @@ export function RelationBrowser({
               setDefinition(null);
               setConstraints(null);
               setConstraintsError(null);
+              setMappings(null);
+              setMappingsError(null);
               setBusy(false);
             }}
           >
@@ -413,6 +465,13 @@ export function RelationBrowser({
             onClick={loadConstraints}
           >
             View key constraints
+          </button>
+          <button
+            className="button small"
+            disabled={busy || blocked || !ownerAvailable || target?.availability !== "available"}
+            onClick={loadMappings}
+          >
+            View key column mappings
           </button>
           {canDdl && (
             <>
@@ -502,8 +561,8 @@ export function RelationBrowser({
             <h3>Key constraints</h3>
             <p role="note">
               Visible key declarations may not be enforced and do not establish row editing safety.
-              Column mappings, CHECK constraints, and NOT NULL constraints are not included; column
-              inspection reports nullability.
+              This declaration inventory excludes column mappings, CHECK constraints, and NOT NULL
+              constraints; column inspection reports nullability.
             </p>
             {constraintsError ? (
               <p className="inline-error" role="alert">
@@ -584,6 +643,103 @@ export function RelationBrowser({
               )
             ) : (
               <p>Key constraints have not been fetched.</p>
+            )}
+          </section>
+        )}
+        {target?.availability === "available" && !blocked && ownerAvailable && (
+          <section aria-label="Relation key column mappings">
+            <h3>Key column mappings</h3>
+            <p role="note">
+              Visible column mappings can lag schema changes and do not establish row editing
+              safety. Foreign key columns are paired with referenced columns in local key order.
+            </p>
+            {mappingsError ? (
+              <p className="inline-error" role="alert">
+                Key column mappings are unavailable: {mappingsError}
+              </p>
+            ) : mappings &&
+              mappings.contextKey === contextKey &&
+              mappings.value.targetId === selected &&
+              mappings.value.revision === catalog?.revision ? (
+              mappings.value.mappings.length === 0 ? (
+                <p>No visible key column mappings were returned.</p>
+              ) : (
+                <div className="relation-table-scroll">
+                  <table>
+                    <caption>Key column mapping inventory</caption>
+                    <thead>
+                      <tr>
+                        <th>Constraint</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Ordinal</th>
+                        <th>Column</th>
+                        <th>Referenced table</th>
+                        <th>Referenced column</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mappings.value.mappings.flatMap((mapping) => {
+                        const identity = quotedName(mapping.catalog, mapping.schema, mapping.name);
+                        const kind =
+                          mapping.kind === "primaryKey"
+                            ? "Primary key"
+                            : mapping.kind === "unique"
+                              ? "Unique"
+                              : "Foreign key";
+                        const status =
+                          mapping.status === "available"
+                            ? "Available"
+                            : mapping.status === "notVisible"
+                              ? "Not visible"
+                              : "Unsupported";
+                        const columns =
+                          mapping.status === "available"
+                            ? [...mapping.columns].sort(
+                                (left, right) => left.ordinal - right.ordinal,
+                              )
+                            : [null];
+                        return columns.map((column) => (
+                          <tr
+                            key={JSON.stringify([
+                              mapping.catalog,
+                              mapping.schema,
+                              mapping.name,
+                              column?.ordinal,
+                            ])}
+                          >
+                            <th scope="row">{identity}</th>
+                            <td>{kind}</td>
+                            <td>{status}</td>
+                            <td>{column?.ordinal ?? "—"}</td>
+                            <td>{column ? quotedName(column.columnName) : "—"}</td>
+                            <td>
+                              {mapping.status !== "available"
+                                ? "—"
+                                : mapping.referencedTable
+                                  ? quotedName(
+                                      mapping.referencedTable.database,
+                                      mapping.referencedTable.table.schema,
+                                      mapping.referencedTable.table.name,
+                                    )
+                                  : "Not applicable"}
+                            </td>
+                            <td>
+                              {column?.referencedColumnName == null
+                                ? mapping.status === "available" && mapping.kind !== "foreignKey"
+                                  ? "Not applicable"
+                                  : "—"
+                                : quotedName(column.referencedColumnName)}
+                            </td>
+                          </tr>
+                        ));
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : (
+              <p>Key column mappings have not been fetched.</p>
             )}
           </section>
         )}

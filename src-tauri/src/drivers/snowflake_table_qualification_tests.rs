@@ -424,7 +424,9 @@ fn ledger_tag(kind: SqlKind) -> &'static str {
         SqlKind::Read(Schemas) => "G",
         SqlKind::Read(Relations) => "B",
         SqlKind::Read(ExactRelation) => "R",
-        SqlKind::Read(Definition | Constraints) => {
+        SqlKind::Read(
+            Definition | Constraints | PrimaryKeyMapping | UniqueKeyMapping | ForeignKeyMapping,
+        ) => {
             panic!("Relation detail reads are outside the qualification ledger")
         }
         SqlKind::Read(Columns) => "I",

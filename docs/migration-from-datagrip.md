@@ -77,12 +77,48 @@ separately approved evaluation connection before sending account metadata reads.
    must disappear; a late response must not restore it. Check the same flow by
    keyboard and confirm the dialog returns focus when closed.
 
-This view excludes key column mappings, CHECK and NOT NULL constraint inventories;
+This declaration view excludes key column mappings, CHECK and NOT NULL constraint inventories;
 column inspection separately shows nullability. Reported declarations and
 enforcement do not establish safe editing or validate existing data. Keep the
 remaining metadata acceptance gates open. See the
 [key inspection contract](snowflake-sdk-constraints-design.md) and
 [verification ledger](replacement-verification.md) for evidence and limits.
+
+## Snowflake key columns (prepared acceptance walkthrough)
+
+Implementation and local verification are tracked separately in the
+[mapping contract](snowflake-sdk-key-mappings-design.md) and
+[ledger](replacement-verification.md). This walkthrough is not completed account
+acceptance. Use a separately approved evaluation scope covering browsing,
+declaration reads and the three per-table SHOW/pipe projections. Existing
+table-lifecycle approvals do not include the new commands. Any fixture creation
+or data changes require their own approved disposable SQL plan.
+
+1. Select a current available ordinary table with known composite primary,
+   unique and foreign keys. Choose **View key column mappings**. Neither column
+   inspection nor **View key constraints** is a prerequisite.
+2. Compare the displayed order with the known declaration. For a foreign key
+   whose referenced columns have a different order, verify each local column
+   stays paired with its corresponding referenced column and that the full
+   database/schema/table is correct. Quoted names must remain distinguishable.
+3. Compare **View key constraints** with the independent mapping view. A hidden
+   reference declaration can coexist with a visible SHOW mapping. **Not visible**
+   mappings must not be described as a key with zero columns or no key; metadata
+   visibility and propagation may differ. Dynamic tables report **Unsupported**
+   mappings; targets with unknown traits remain unavailable for inspection.
+4. Under an approved denied-privilege fixture, verify a mapping failure leaves
+   earlier declarations, columns and definitions available. Restore only the
+   approved fixture permission and explicitly retry. A successful empty inventory
+   must remain distinct from the failed action.
+5. Refresh, change the selection/context and apply a metadata hold while a
+   request is pending. Old results must disappear and a late response must not
+   restore them. Repeat by keyboard in the normal packaged macOS app and record
+   focus behavior, source version and observed account outcomes.
+
+The current mapping workflow displays referenced identities; table navigation and
+inbound references remain required. Mappings and reported enforcement do not
+validate existing values or establish editing safety. Keep these account and
+owner acceptance gates open until demonstrated.
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 

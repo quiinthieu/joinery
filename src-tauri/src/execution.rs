@@ -2684,6 +2684,22 @@ impl Studio {
         )
     }
 
+    pub async fn inspect_relation_constraint_mappings(
+        &self,
+        session_id: &str,
+        request: &InspectRelationConstraintMappingsRequest,
+    ) -> AppResult<RelationConstraintMappings> {
+        let session = self.session(session_id)?;
+        let _lane = Self::relation_lane(&session).await?;
+        Self::publish_relation(
+            &session,
+            session
+                .driver
+                .inspect_relation_constraint_mappings(request)
+                .await,
+        )
+    }
+
     pub async fn preview_relation(
         &self,
         session_id: &str,
@@ -5464,6 +5480,7 @@ mod browse_classification_tests {
         relation_result: Mutex<Option<AppResult<BrowseCatalog>>>,
         definition_calls: Mutex<Vec<DefineRelationRequest>>,
         constraints_calls: Mutex<Vec<InspectRelationConstraintsRequest>>,
+        mapping_calls: Mutex<Vec<InspectRelationConstraintMappingsRequest>>,
         relation_invalidated: AtomicBool,
         switch_saw_invalidation: AtomicBool,
         close_during_relation: bool,
@@ -5547,6 +5564,25 @@ mod browse_classification_tests {
                     name: "item".into(),
                 },
                 constraints: vec![],
+            })
+        }
+        async fn inspect_relation_constraint_mappings(
+            &self,
+            request: &InspectRelationConstraintMappingsRequest,
+        ) -> AppResult<RelationConstraintMappings> {
+            self.mapping_calls.lock().push(request.clone());
+            if self.close_during_relation {
+                self.close();
+            }
+            Ok(RelationConstraintMappings {
+                revision: request.revision.clone(),
+                target_id: request.target_id.clone(),
+                database: "fixture".into(),
+                table: TableRef {
+                    schema: "public".into(),
+                    name: "item".into(),
+                },
+                mappings: vec![],
             })
         }
         async fn session_state(&self, session_id: &str) -> AppResult<SessionRuntimeState> {
@@ -6605,6 +6641,92 @@ mod browse_classification_tests {
             assert_eq!(
                 studio
                     .inspect_relation_constraints("missing", &request)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ConnectionClosed
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn relation_constraint_mappings_admission_forwards_only_retained_requests_on_available_sessions()
+     {
+        for state in [
+            "unsupported",
+            "running",
+            "lane-held",
+            "metadata-held",
+            "closed",
+            "closed-during-read",
+            "ready",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let studio = Studio::with_secrets(
+                root.path(),
+                Arc::new(crate::secrets::MemorySecrets::default()),
+            )
+            .unwrap();
+            let driver = Arc::new(RecordingDriver {
+                close_during_relation: state == "closed-during-read",
+                ..Default::default()
+            });
+            let session = relation_test_session(&studio, driver.clone(), state != "unsupported");
+            if state == "running" {
+                *session.active_run.lock() = Some("query".into());
+            }
+            if state == "closed" {
+                session.closed.store(true, Ordering::Release);
+            }
+            let lane = if state == "lane-held" {
+                Some(session.lane.lock().await)
+            } else {
+                None
+            };
+            if state == "metadata-held" {
+                session.metadata_gate.lock().hold();
+            }
+            let request = InspectRelationConstraintMappingsRequest {
+                revision: "catalog-revision".into(),
+                target_id: "opaque-target".into(),
+            };
+            let result = studio
+                .inspect_relation_constraint_mappings(&session.info.id, &request)
+                .await;
+            drop(lane);
+            if state == "ready" {
+                let result = result.unwrap();
+                assert_eq!(result.revision, request.revision);
+                assert_eq!(result.target_id, request.target_id);
+                assert!(result.mappings.is_empty());
+                assert!(studio.session(&session.info.id).is_ok());
+                assert!(!session.closed.load(Ordering::Acquire));
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    match state {
+                        "unsupported" => ErrorCode::Unsupported,
+                        "running" | "lane-held" | "metadata-held" => ErrorCode::Conflict,
+                        _ => ErrorCode::ConnectionClosed,
+                    }
+                );
+            }
+            {
+                let calls = driver.mapping_calls.lock();
+                assert_eq!(
+                    calls.len(),
+                    usize::from(matches!(state, "ready" | "closed-during-read"))
+                );
+                if let Some(call) = calls.first() {
+                    assert_eq!(call.revision, request.revision);
+                    assert_eq!(call.target_id, request.target_id);
+                }
+            }
+            assert_eq!(driver.relation_calls.load(Ordering::Relaxed), 0);
+            assert!(driver.definition_calls.lock().is_empty());
+            assert_eq!(
+                studio
+                    .inspect_relation_constraint_mappings("missing", &request)
                     .await
                     .unwrap_err()
                     .code,

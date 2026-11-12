@@ -11,8 +11,11 @@ The required user workflow is: select a current visible relation, request its
 declared keys, inspect names, types, enforcement and foreign-key reference rules,
 recover from a denied request and refresh safely after context or catalog changes.
 
-The full replacement still requires key column ordering/mappings, inbound and
-outbound table navigation, CHECK constraints, complete object inspection and
+The separate [key column mapping increment](snowflake-sdk-key-mappings-design.md)
+tracks ordered local/referenced columns without changing this declaration view.
+The full replacement still requires verification of key column mappings on the
+actual account, inbound and outbound table navigation, CHECK constraints,
+complete object inspection and
 database-qualified editing/concurrency behavior. Column nullability remains in
 column inspection; this view is not a complete constraint inventory. Nothing in
 this change enables writes or establishes edit eligibility.

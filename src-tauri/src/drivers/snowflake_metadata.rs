@@ -34,6 +34,9 @@ pub(crate) enum ReadKind {
     ExactRelation,
     Definition,
     Constraints,
+    PrimaryKeyMapping,
+    UniqueKeyMapping,
+    ForeignKeyMapping,
     Columns,
     Describe,
     ZeroRowResolution,
@@ -187,6 +190,26 @@ pub(crate) fn constraints_read(
         target.table.name.clone().into(),
     ];
     Ok(read)
+}
+
+pub(crate) fn mapping_reads(
+    target: &super::snowflake_browsing::BrowseRelation,
+) -> AppResult<[ReadSpec; 3]> {
+    use super::snowflake_browsing as browsing;
+    use crate::relation_inspection::RelationKeyConstraintKind as Kind;
+    let make = |kind, tag| -> AppResult<ReadSpec> {
+        Ok(ReadSpec::bounded(
+            tag,
+            browsing::mapping_sql(target, kind)?,
+            (browsing::CONSTRAINT_LIMIT + 1) as u64,
+            browsing::CONSTRAINT_MAX_BYTES as u64,
+        ))
+    };
+    Ok([
+        make(Kind::PrimaryKey, ReadKind::PrimaryKeyMapping)?,
+        make(Kind::Unique, ReadKind::UniqueKeyMapping)?,
+        make(Kind::ForeignKey, ReadKind::ForeignKeyMapping)?,
+    ])
 }
 
 pub(crate) fn inspection_reads(

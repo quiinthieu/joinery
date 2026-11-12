@@ -1,5 +1,34 @@
 # Implementation and release status
 
+## Ordered Snowflake key columns (12 November 2026)
+
+The relation browser adds a separate **View key column mappings** action for
+retained Snowflake targets. It resolves exact primary/unique/foreign-key
+declarations, validates numeric column order and preserves composite foreign-key
+pairings and fully qualified referenced tables. Missing mappings, unsupported
+table families, no declarations and failed requests remain distinct. Mapping
+failure leaves other metadata available; context, refresh and transaction/metadata
+holds invalidate stale results. These mappings do not grant editing authority.
+
+The [contract](snowflake-sdk-key-mappings-design.md),
+[prepared walkthrough](migration-from-datagrip.md#snowflake-key-columns-prepared-acceptance-walkthrough)
+and [ledger](replacement-verification.md) record source-specific evidence and
+limits. Focused frontend (85), focused Rust (12) and synthetic SDK session (94)
+tests pass. Full validation passes 743 frontend / 481 standard Rust tests with
+129 fixture/helper ignores, formatting/build/compiler checks and strict Clippy.
+The changed synthetic browser workflow passes 1/1. Independent bounded review
+has no unresolved material finding. Hidden native command registration/rejection
+and 10 cleanup cycles pass. A normal package rebuild is pending; preceding
+package evidence does not qualify this source.
+
+Dynamic-table mappings, foreign-key navigation/inbound references, CHECK
+constraints, dependencies and complete object coverage remain required. Actual
+Snowflake result shapes, visibility and eventual consistency are unqualified.
+The expired table-only account plan grants no authority for the new mapping
+reads. Account writes/transactions/DDL, million-row interaction/export, normal
+packaged SSO/recovery and owner acceptance remain open. The Goal is active and
+incomplete; nothing is installed, published or merged.
+
 ## Declared Snowflake key inspection (12 November 2026)
 
 The relation browser adds **View key constraints** independently of column

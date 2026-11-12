@@ -8,6 +8,88 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Ordered Snowflake key columns (12 November 2026)
+
+Local source verification passes. The independent
+`inspect_relation_constraint_mappings` command resolves a retained catalog target,
+re-reads declarations and runs three fixed per-table SHOW/pipe projections. The
+[contract](snowflake-sdk-key-mappings-design.md) records official/owned source
+evidence, strict matching and bounds. This is descriptive metadata with no edit
+authority. Dynamic-table mappings, unknown-trait inspection, table navigation and
+normal account behavior remain unqualified/unsupported as described there.
+
+Logs and command receipts are under `.cache/verification/relation-key-mappings/`.
+The contracts receipt captures 21 source files before the first check. The
+browser test was initially outside that collector's path prefix; subsequent
+receipts include all 22 source/browser files. The first frontend run passed
+84 tests and failed one because the lead's IPC test still expected seven calls
+after adding the eighth call. Awaiting the new promise and correcting that count
+produced an 85/85 focused pass, without a product change.
+
+The first focused Rust run passed seven tests and failed five in the shared
+fixture's final SQL inventory assertion, which did not yet admit the new SHOW
+reads. The test-only correction admits the three complete closed factory strings
+for DB.PUBLIC.ORDERS by equality; it does not accept arbitrary SHOW statements.
+Independent review confirmed only that assertion changed, with no production or
+frozen qualification-ledger expansion. The command receipt records a source
+change during the first Rust run because of the unrelated IPC test correction;
+the Rust files did not change during that run. Initial failures remain retained.
+
+The corrected focused Rust run passes all 12 tests: four pure mapping cases,
+seven synthetic SDK session cases and one Studio admission case. The complete
+synthetic SDK session suite passes 94/94. `source-freeze-final.json` captures all
+22 final source/browser hashes after both test-only corrections; those hashes
+match current source. Command JSON receipts retain before/after source identity,
+terminal exit status, elapsed time and the corresponding log name.
+
+```sh
+pnpm contracts
+pnpm exec vitest run src/features/studio/RelationBrowser.test.tsx src/features/studio/ObjectInspectorView.test.tsx src/ipc/command-map.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib mappings_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests:: -- --test-threads=3
+pnpm validate
+pnpm exec playwright test tests/e2e/snowflake-sdk-browsing.spec.ts
+pnpm desktop:smoke:build
+python3 scripts/native-smoke.py --runs 1
+```
+
+These completed commands select the same pinned Rust 1.99.1 and repository-local
+Node 24.22.2/JOINERY_TEST_NODE as the preceding increment. They make no account
+requests. Full validation exits 0 with 743 frontend / 481 standard Rust tests,
+129 fixture/helper ignores, formatting/TypeScript/production build/compiler
+checks and strict all-target/all-feature Clippy (validate.log). The changed
+browser workflow passes 1/1 (browser.log): keyboard access, composite column
+ordering/pairing and quoted identities, hidden/unsupported states, denial/empty
+retry preserving other metadata, and held responses after refresh. It uses
+synthetic IPC and a page-local clipboard stub, not an account or OS clipboard.
+Both command receipts record unchanged source. Hidden native build and runner
+exit 0 (native-build.log / native-smoke.log), with 10 cleanup cycles, 3747 ms
+native elapsed and 99.36 MiB main-process peak RSS. Those synthetic measurements
+do not qualify representative performance, visible startup or total app memory.
+A normal package rebuild is still pending; earlier package evidence does not
+qualify the changed source.
+
+The hidden build compiles in 4m05s (326.565 seconds including frontend and
+preparation) at dirty documentation HEAD d173215. All 22 frozen source hashes
+still match. native-final-build.json / native-final-runs.json preserve the binary
+identity and runner evidence before the normal build replaces the release binary.
+The WebView mapping request reaches the structured missing-session guard, not
+successful Snowflake inspection. Generated ACL inspection verifies the new
+permission admits only inspect_relation_constraint_mappings and is granted to
+the main window only (native-acl-generated.json). Existing ts-rs attribute and
+LLVM rust-objcopy stripping warnings are retained and nonfatal. No generated
+ACL or verification artifacts are committed.
+
+The independent source review found no material issue, including the test-only
+corrections. Tier 2 generation 2026-11-12T06:39:41Z matched the repository; coverage
+checked 25 increment paths plus the qualification ledger. A reported stale IPC
+test was directly re-read. Root graph calls still fail with Transport closed;
+bounded direct reads were used. No account requests, private marker-store access,
+installation, push or publication occurred. The expired table plan is unchanged
+and grants no authority for the mapping reads. Actual Snowflake pipe/result
+typing, role visibility, data effects, million-row workflows, normal packaged
+usage and owner acceptance remain required.
+
 ### Declared Snowflake key constraints (12 November 2026)
 
 This increment adds a separate `inspect_relation_constraints` request to the SDK

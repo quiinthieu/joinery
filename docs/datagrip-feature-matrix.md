@@ -14,7 +14,7 @@ new source or actual Snowflake behavior.
 | Required area                                | Local implementation and recorded evidence                                                                                                                                       | Remaining replacement gate                                                                                                                                  |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Connections, authentication, TLS and tunnels | SDK external-browser profiles, retained helper lifecycle and verified runtime; bounded helper-only account SSO/read checks recorded in the [ledger](replacement-verification.md) | Normal packaged SSO, connection failure/reconnect and applicable TLS/tunnel workflows need account/native acceptance                                        |
-| Navigation, metadata and object search       | Same-session completion, browsing, columns, generated DDL, schema selection and declared PK/UQ/FK inventory; [browsing contract](snowflake-sdk-browsing-design.md) and [keys](snowflake-sdk-constraints-design.md) | Key column mappings, CHECK constraints, complete object kinds, dependencies, search, privileges and refresh need implementation/account acceptance |
+| Navigation, metadata and object search       | Same-session completion, browsing, columns, generated DDL, schema selection, declared PK/UQ/FK inventory and [ordered key mappings](snowflake-sdk-key-mappings-design.md); [browsing contract](snowflake-sdk-browsing-design.md) | Dynamic-table mappings, reference navigation, CHECK constraints, complete object kinds, dependencies and search remain incomplete; actual mapping shapes, privileges and refresh need account acceptance |
 | SQL editing and authoring                    | Bounded completion, formatting, parameters, diagnostics, navigation and refactoring slices; detailed source evidence below                                                       | Complete Snowflake semantics and the applicable DataGrip authoring workflow remain incomplete; daily native acceptance is open                              |
 | Query execution                              | Reads plus separately reviewed single INSERT/UPDATE/DELETE, explicit boundaries and generated table DDL; [DML contract](snowflake-sdk-dml-design.md)                             | General multi-statement execution, broader SQL/session commands and actual cancellation/interruption/account outcomes remain incomplete                     |
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
@@ -45,6 +45,21 @@ application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.
 
+## Ordered key column mappings (12 November 2026)
+
+| Capability | Local implementation and evidence | Remaining gate |
+| --- | --- | --- |
+| Ordered primary/unique/foreign-key columns | Separate retained-target action; closed per-table SHOW/pipe projections; numeric ordinal validation and same-row FK pairing | Actual Snowflake pipe/output compatibility, role visibility and eventual metadata propagation remain unqualified |
+| Qualified referenced tables | Full database/schema/table from imported-key output; visible referenced-constraint identity crosschecked; hidden declaration visibility stays independent | Clickable table navigation/inbound references and broader object coverage remain incomplete |
+| Complete results and recoverable UI | Explicit not fetched, empty, notVisible, unsupported and error states; denial preserves other metadata; focused frontend 85/85, Rust 12/12 and synthetic SDK regressions 94/94 pass; full validation (743 frontend / 481 standard Rust, 129 ignores), changed browser (1/1) and hidden native command/cleanup checks pass | Normal package rebuild is pending; normal packaged usage and owner acceptance remain open |
+| Dynamic and unknown traits | Dynamic mappings explicitly unsupported; unknown-trait targets rejected before SQL | Dynamic-table declared/derived key support remains required; no inferred keys or editing authority |
+
+The [contract](snowflake-sdk-key-mappings-design.md),
+[walkthrough](migration-from-datagrip.md#snowflake-key-columns-prepared-acceptance-walkthrough)
+and [ledger](replacement-verification.md) retain source-specific evidence and
+open gates. No actual Snowflake request is added or authorized by local checks.
+This closes no full replacement capability area.
+
 ## Declared key inspection (12 November 2026)
 
 | Capability | Local implementation and evidence | Remaining gate |
@@ -56,8 +71,9 @@ not substitute for completing the rows.
 Independent bounded review has no unresolved material finding. See the
 [contract](snowflake-sdk-constraints-design.md),
 [walkthrough](migration-from-datagrip.md#declared-snowflake-keys-prepared-acceptance-walkthrough)
-and [ledger](replacement-verification.md). Key column mappings, CHECK/NOT NULL
-inventories, complete object coverage and safe editing remain required. This
+and [ledger](replacement-verification.md). Ordered column mappings have a separate
+local increment above; dynamic mappings, CHECK/NOT NULL inventories, complete
+object coverage and safe editing remain required. This
 increment adds no account activity and closes no full replacement gate.
 
 ## Generated relation definitions (12 November 2026)

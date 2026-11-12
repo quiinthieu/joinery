@@ -5,14 +5,20 @@
 use super::snowflake_metadata::{self as metadata, LiveContext, MetadataResult};
 use crate::domain::{AppError, AppResult, ColumnInfo, ColumnKind, ErrorCode, TableRef};
 use crate::relation_inspection::{
-    ColumnIdentity, ColumnInspection, ConstraintReferenceStatus, InspectedColumnKind,
-    RelationAvailability, RelationConstraintReference, RelationKeyConstraint,
-    RelationKeyConstraintKind, RelationPreview, RelationTargetSummary, RelationTraits,
-    WriteDefaultObservationStatus,
+    ColumnIdentity, ColumnInspection, ConstraintMappingStatus, ConstraintReferenceStatus,
+    InspectedColumnKind, RelationAvailability, RelationConstraintColumnMapping,
+    RelationConstraintMapping, RelationConstraintReference, RelationConstraintTableReference,
+    RelationKeyConstraint, RelationKeyConstraintKind, RelationPreview, RelationTargetSummary,
+    RelationTraits, WriteDefaultObservationStatus,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
+
+mod mappings {
+    include!("snowflake_constraint_mappings.rs");
+}
+pub(crate) use mappings::{mapping_sql, parse_mappings, unsupported_mappings};
 
 pub(crate) const SCHEMA_LIMIT: usize = 1000;
 pub(crate) const RELATION_LIMIT: usize = 10_000;

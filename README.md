@@ -53,6 +53,8 @@ same-session relation/column completion in the observed current database. The
 [completion contract](docs/snowflake-sdk-metadata-design.md) records local evidence
 and remaining account qualification. Local source also provides revision-bound
 [relation browsing, column inspection and read-only preview](docs/snowflake-sdk-browsing-design.md),
+generated table/view DDL, [declared key inspection](docs/snowflake-sdk-constraints-design.md)
+and [ordered key column mappings](docs/snowflake-sdk-key-mappings-design.md),
 explicit [session observations](docs/snowflake-sdk-session-observation.md), and
 [guarded schema selection](docs/snowflake-sdk-session-design.md), whose local
 application qualification passes. Separately reviewed

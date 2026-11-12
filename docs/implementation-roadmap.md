@@ -1,5 +1,29 @@
 # Joinery implementation roadmap
 
+## Product increment: ordered key columns (12 November 2026)
+
+The separate Snowflake **View key column mappings** action is implemented locally.
+It pairs composite foreign-key columns by ordinal,
+reports qualified referenced tables, preserves missing/unsupported states and
+leaves declaration/column/definition views available on a mapping failure.
+Dynamic-table mappings and unknown-trait targets remain gated. The
+[contract](snowflake-sdk-key-mappings-design.md),
+[prepared walkthrough](migration-from-datagrip.md#snowflake-key-columns-prepared-acceptance-walkthrough)
+and [ledger](replacement-verification.md) distinguish local checks from account
+acceptance. Focused tests and full validation pass (743 frontend / 481 standard
+Rust tests, 129 fixture/helper ignores and strict checks); the changed synthetic
+browser workflow passes 1/1. Independent bounded review has no unresolved
+material finding. Hidden native command registration/rejection and 10 cleanup
+cycles pass. A normal package rebuild is pending.
+No new account execution or approval is included.
+
+Next required product work includes foreign-key table navigation/inbound
+references, dynamic-table mappings, CHECK constraints, dependencies and complete
+object coverage. Safe grid editing/import, general SQL/multiple statements,
+broader schema changes, performance tools and actual million-row Snowflake
+interaction/export remain required. Normal packaged SSO/recovery and owner
+hands-on acceptance remain gates; the Goal is active and incomplete.
+
 ## Product increment: declared keys (12 November 2026)
 
 Add a separate read-only key inventory to the Snowflake relation browser,

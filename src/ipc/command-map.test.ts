@@ -11,6 +11,7 @@ import type {
   PreparedPlan,
   RelationDefinition,
   RelationConstraints,
+  RelationConstraintMappings,
   SchemaDdlPlan,
   TableSchema,
 } from "./generated";
@@ -45,6 +46,12 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       request: { revision: "catalog-1", targetId: "opaque-target" },
     });
     expectTypeOf(constraintsPromise).toEqualTypeOf<Promise<RelationConstraints>>();
+
+    const mappingsPromise = typedClient.call("inspect_relation_constraint_mappings", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(mappingsPromise).toEqualTypeOf<Promise<RelationConstraintMappings>>();
 
     const explicitGenericPromise = typedClient.call<TableSchema>("table_schema", {
       sessionId: "session-1",
@@ -90,12 +97,13 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       bootstrapPromise,
       definitionPromise,
       constraintsPromise,
+      mappingsPromise,
       schemaPromise,
       explicitGenericPromise,
       migrationPrepPromise,
       releasePreviewPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(7);
+    expect(callMock).toHaveBeenCalledTimes(8);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -128,6 +136,17 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       void c.call("inspect_relation_constraints", {
         sessionId: "session-1",
         // @ts-expect-error — constraints require the retained catalog revision
+        request: { targetId: "opaque-target" },
+      });
+
+      void c.call("inspect_relation_constraint_mappings", {
+        sessionId: "session-1",
+        // @ts-expect-error — mappings resolve names from the retained target only
+        request: { revision: "catalog-1", targetId: "opaque-target", table: "orders" },
+      });
+      void c.call("inspect_relation_constraint_mappings", {
+        sessionId: "session-1",
+        // @ts-expect-error — mapping reads require the retained catalog revision
         request: { targetId: "opaque-target" },
       });
 

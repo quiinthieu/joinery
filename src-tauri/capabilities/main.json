@@ -44,6 +44,7 @@
     "allow-inspect-relation",
     "allow-define-relation",
     "allow-inspect-relation-constraints",
+    "allow-inspect-relation-constraint-mappings",
     "allow-preview-relation",
     "allow-redis-scan",
     "allow-redis-inspect",
