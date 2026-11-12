@@ -35,6 +35,12 @@ actual Snowflake effects and all applicable DataGrip workflows in the
 [matrix](datagrip-feature-matrix.md), plus owner acceptance. Publication and
 installation remain unauthorized.
 
+The next [reservation implementation](snowflake-console-retention-design.md#settlement-prerequisite-durable-side-write-obligations)
+must also persist exact audit/history obligations and recover terminal-but-unsettled
+owners. Source review found those outboxes are currently process-local, so a
+terminal receipt cannot safely release a durable disk reservation after a crash.
+This prerequisite is recorded as design work; runtime budgets remain incomplete.
+
 ## Paged receipt inventory and bounded hot state (12 November 2026)
 
 The first [retention slice](snowflake-console-retention-design.md) implements

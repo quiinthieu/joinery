@@ -152,6 +152,67 @@ Return unused reservation only after terminal recording and all late publisher,
 audit/history and journal work have settled. Recording already-admitted work
 uses its reserved allowance even when new admission is closed.
 
+### Settlement prerequisite: durable side-write obligations
+
+A bounded source review at `5b52968` on 12 November 2026 identified a prerequisite
+for implementing this reservation policy. This is design evidence, not an
+implemented budget or a new runtime verification result. The source hashes are
+recorded in `.cache/verification/reviewed-console/receipt-budget-source-inventory.json`.
+
+In [the execution owner](../src-tauri/src/execution/snowflake_console.rs),
+`flush_console_recordings` confirms journal snapshots, then the started audit,
+history and finished audit. Those side-write obligations currently live in
+`Retained` memory. A terminal receipt alone does not prove their completion after
+a crash. The existing
+[late-Finished regression](../src-tauri/src/execution/snowflake_console_retention_tests.rs)
+also demonstrates `pending_recording == false` while publisher ownership remains:
+the `Finished` callback can still append a delivery-failure observation.
+
+Implement the following together before releasing durable reservations:
+
+1. Persist bounded, exact, replayable audit/history obligations and their
+   completion evidence. Make obligation creation durable before the corresponding
+   failure window; inserting it only after a terminal commit leaves a crash gap.
+   Preserve the query-text storage preference and confidentiality contract.
+   Specify bounds for optional stored SQL and profile names separately from
+   receipt JSON. Include their disk charge in the reservation policy or maintain
+   an explicit separate budget; the existing 16 KiB receipt field limit does not
+   bound history. Recovery must not invent lost SQL, timing or delivery facts.
+2. Make settlement an explicit idempotent local recording obligation. Enqueue it
+   only after active and publisher ownership are removed, including panic/owner
+   completion paths. Confirm all original journal, final observations and
+   audit/history obligations before transactionally settling the reservation.
+   A settlement failure retains dirty/hot ownership and the shutdown/admission
+   hold. Account for it in `Retained::pending`, the empty-dirty early return and
+   compaction eligibility. Do not use UI `pending_recording` as release authority.
+3. Recover terminal-but-unsettled reservations through a separate bounded scan
+   under the exclusive normal journal owner lease. Current
+   [interruption recovery](../src-tauri/src/persistence/snowflake_console.rs)
+   visits nonterminal runs. Reconcile exact durable side-write evidence before
+   releasing an allowance; absent evidence stays unresolved rather than being
+   treated as completed. No recovery path may dispatch SQL or replay a suffix.
+4. Define authority for any later terminal observation. `console_observe` currently
+   permits monotonic observations on terminal originals. Either durably seal the
+   corresponding observation authority after all publishers settle, or keep a
+   checked tail allowance for every still-permitted mutation. Releasing the whole
+   reservation and then allowing uncharged late growth would violate the budget.
+   A seal must never suppress a still-owned original publication failure.
+5. Version and physically fence writers that cannot preserve these obligations.
+   Update schema validation, version-specific backup allowlists, encrypted
+   manifest compatibility, migration and restore union/accounting together.
+   Migration/restore must distinguish legacy absence of obligations from proven
+   settlement; neither a terminal flag nor a cached byte total establishes it.
+
+Required regressions include crash after terminal but before history, delayed or
+failed `Finished` publication, settlement commit/readback ambiguity, failed
+settlement followed by ordinary shutdown, owner panic, repeated restart recovery
+and restore of terminal-but-unsettled branches. Check exact original ACKs and
+identity deduplication, retained reservations and zero additional remote SQL.
+The existing count gates and `retentionEnabled=false` remain unchanged while
+these prerequisites and full-capacity/resource acceptance are incomplete.
+
+### Recording failure and working-state limits
+
 Logical reservation and a free-space check cannot guarantee physical writes:
 other processes, WAL/copy amplification and I/O faults can still exhaust disk.
 Do not call sparse file allocation a guarantee. A failed intent write prevents
