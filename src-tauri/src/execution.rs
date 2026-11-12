@@ -503,6 +503,8 @@ impl Studio {
         {
             self.verify_passphrase(passphrase)?;
         }
+        self.flush_pending_snowflake_receipts()?;
+        self.flush_console_recordings()?;
         let undo = self.persistence.restore_metadata_backup(id, digest)?;
         self.console.revoke();
         self.plans.lock().clear();

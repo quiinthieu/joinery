@@ -37,15 +37,16 @@ impl Persistence {
         connection
             .busy_timeout(DATABASE_BUSY_TIMEOUT)
             .map_err(db_error)?;
-        initialize_schema(&mut connection)?;
+        let root = std::fs::canonicalize(root)
+            .map_err(|_| AppError::internal("Could not resolve application data directory"))?;
+        initialize_schema(&mut connection, Some(&root))?;
         enable_wal(&connection, DATABASE_BUSY_TIMEOUT).map_err(db_error)?;
         connection
             .execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")
             .map_err(db_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
-            root: std::fs::canonicalize(root)
-                .map_err(|_| AppError::internal("Could not resolve application data directory"))?,
+            root,
         })
     }
 
@@ -331,7 +332,7 @@ fn enable_wal(connection: &Connection, budget: Duration) -> rusqlite::Result<()>
     result.and(restored)
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 fn schema_version(connection: &Connection) -> AppResult<i64> {
     let version = connection
@@ -346,7 +347,7 @@ fn schema_version(connection: &Connection) -> AppResult<i64> {
     Ok(version)
 }
 
-fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
+fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>) -> AppResult<()> {
     // Check before persistent pragmas and again under the writer lock. A second
     // app may have migrated between the first check and transaction acquisition.
     schema_version(connection)?;
@@ -354,6 +355,15 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(db_error)?;
     let version = schema_version(&transaction)?;
+    // A live version-2 coordinator must finish recording before its physical
+    // tables are renamed. Private backup copies need no external lease.
+    let _migration_lease = if version == 2 {
+        migration_root
+            .map(snowflake_console::claim_migration_lease)
+            .transpose()?
+    } else {
+        None
+    };
     if version == 0 {
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -368,8 +378,27 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
         transaction
             .execute_batch(snowflake_console::SCHEMA_SQL)
             .map_err(db_error)?;
-        snowflake_console::validate_schema(&transaction)?;
     }
+    if version < 3 {
+        transaction
+            .execute_batch(
+                "ALTER TABLE snowflake_console_runs RENAME TO snowflake_console_runs_v3;
+             ALTER TABLE snowflake_console_steps RENAME TO snowflake_console_steps_v3;",
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute_batch(snowflake_console::REJECTION_SCHEMA_SQL)
+            .map_err(db_error)?;
+        for (_, sql) in snowflake_console::DECISION_TRIGGERS {
+            transaction.execute_batch(sql).map_err(db_error)?;
+        }
+    }
+    if version < SCHEMA_VERSION {
+        transaction
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(db_error)?;
+    }
+    snowflake_console::validate_schema(&transaction)?;
     snowflake_console::validate_records(&transaction)?;
     for (id, name, environment) in [
         ("production", "Production", Environment::Production),
@@ -389,11 +418,6 @@ fn initialize_schema(connection: &mut Connection) -> AppResult<()> {
                 "INSERT OR IGNORE INTO groups(id,json) VALUES(?1,?2)",
                 params![id, json],
             )
-            .map_err(db_error)?;
-    }
-    if version < SCHEMA_VERSION {
-        transaction
-            .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(db_error)?;
     }
     transaction.commit().map_err(db_error)
@@ -542,7 +566,7 @@ mod tests {
         assert_eq!(db.setting("marker").unwrap().as_deref(), Some("preserved"));
         assert!(db.groups().unwrap().iter().any(|g| g.name == group.name));
         let connection = db.connection.lock();
-        assert_eq!(schema_version(&connection).unwrap(), 2);
+        assert_eq!(schema_version(&connection).unwrap(), SCHEMA_VERSION);
         snowflake_console::validate_schema(&connection).unwrap();
         snowflake_console::validate_records(&connection).unwrap();
     }
@@ -554,7 +578,7 @@ mod tests {
         db.set_setting("marker", "preserved").unwrap();
         db.connection
             .lock()
-            .execute_batch("DROP TABLE snowflake_console_steps;")
+            .execute_batch("DROP TABLE snowflake_console_steps_v3;")
             .unwrap();
         drop(db);
         let path = root.path().join("joinery.sqlite");
@@ -562,7 +586,7 @@ mod tests {
         assert!(Persistence::open(root.path()).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let connection = Connection::open(path).unwrap();
-        assert_eq!(schema_version(&connection).unwrap(), 2);
+        assert_eq!(schema_version(&connection).unwrap(), SCHEMA_VERSION);
         assert_eq!(
             connection
                 .query_row("SELECT value FROM settings WHERE key='marker'", [], |r| {
@@ -574,7 +598,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_steps'",
+                    "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_steps_v3'",
                     [],
                     |r| r.get::<_, i64>(0)
                 )

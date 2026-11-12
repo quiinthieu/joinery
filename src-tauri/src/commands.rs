@@ -231,6 +231,14 @@ pub async fn snowflake_console_run(
 }
 
 #[tauri::command]
+pub async fn snowflake_console_request(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<Option<SnowflakeConsoleRequestLookup>> {
+    studio.snowflake_console_request(&client_request_id)
+}
+
+#[tauri::command]
 pub async fn execute_plan(
     studio: State<'_, Arc<Studio>>,
     plan_id: String,

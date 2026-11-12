@@ -91,6 +91,7 @@ fn build_desktop() {
             "prepare_snowflake_console",
             "start_snowflake_console",
             "snowflake_console_run",
+            "snowflake_console_request",
             "execute_plan",
             "cancel_run",
             "completion_catalog",

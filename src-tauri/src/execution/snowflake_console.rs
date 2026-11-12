@@ -8,7 +8,9 @@ use crate::drivers::{
     },
     snowflake_process::{Certainty, Operation, ReviewedAcknowledgement, StatementIdentity},
 };
-use crate::persistence::snowflake_console::ConsoleJournalOwner;
+#[cfg(unix)]
+use crate::persistence::snowflake_console::validate_console_request_identity;
+use crate::persistence::snowflake_console::{ConsoleAdmissionRejection, ConsoleJournalOwner};
 use std::{collections::VecDeque, sync::atomic::AtomicU64};
 
 #[derive(Default)]
@@ -24,6 +26,7 @@ pub(super) struct State {
 struct Journal {
     owner: Option<ConsoleJournalOwner>,
     runs: HashMap<String, Retained>,
+    rejections: HashMap<String, ConsoleAdmissionRejection>,
 }
 
 struct Retained {
@@ -63,6 +66,10 @@ enum Mutation {
 }
 
 impl State {
+    #[cfg(all(test, unix, feature = "test-harness"))]
+    pub(super) fn pending_rejection(&self, id: &str) -> Option<ConsoleAdmissionRejection> {
+        self.journal.lock().rejections.get(id).cloned()
+    }
     pub(super) fn revoke(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
@@ -246,11 +253,34 @@ impl Studio {
     /// never discarded on failure, event detachment or session removal.
     pub(super) fn flush_console_recordings(&self) -> AppResult<()> {
         let mut journal = self.console.journal.lock();
-        if journal.runs.is_empty() {
+        if journal.runs.is_empty() && journal.rejections.is_empty() {
             return Ok(());
         }
-        let Journal { owner, runs } = &mut *journal;
+        let Journal {
+            owner,
+            runs,
+            rejections,
+        } = &mut *journal;
         let owner = owner.as_ref().ok_or_else(recording_error)?;
+        let pending: Vec<_> = rejections.keys().cloned().collect();
+        for id in pending {
+            let receipt = &rejections[&id];
+            // A commit error is uncertain. Only the exact immutable readback
+            // establishes a durable refusal; otherwise retain the frozen outbox.
+            if self
+                .persistence
+                .console_record_rejection(owner, receipt)
+                .is_err()
+                && self
+                    .persistence
+                    .console_rejection_by_client_request(&id)?
+                    .as_ref()
+                    != Some(receipt)
+            {
+                return Err(recording_error());
+            }
+            rejections.remove(&id);
+        }
         for retained in runs.values_mut() {
             while let Some(write) = retained.writes.front() {
                 let durable = self
@@ -338,6 +368,36 @@ impl Studio {
             .ok_or_else(recording_error)
     }
 
+    /// Read a durable admission decision without reconnecting or submitting SQL.
+    /// Pending local refusal writes never masquerade as committed proof.
+    pub fn snowflake_console_request(
+        &self,
+        client_request_id: &str,
+    ) -> AppResult<Option<SnowflakeConsoleRequestLookup>> {
+        if uuid::Uuid::parse_str(client_request_id)
+            .ok()
+            .is_none_or(|id| id.to_string() != client_request_id)
+        {
+            return Err(AppError::invalid("Invalid console request identifier"));
+        }
+        if let Some(view) = self.snowflake_console_run(client_request_id)? {
+            return Ok(Some(SnowflakeConsoleRequestLookup::Started { view }));
+        }
+        if self
+            .console
+            .journal
+            .lock()
+            .rejections
+            .contains_key(client_request_id)
+        {
+            return Err(recording_error());
+        }
+        Ok(self
+            .persistence
+            .console_rejection_by_client_request(client_request_id)?
+            .map(refusal_view))
+    }
+
     /// This lookup performs no helper request, reconnect, metadata query or SQL
     /// retrieval. Incomplete receipts can be sealed locally after exclusive journal
     /// ownership succeeds; completed receipt retrieval needs no lease.
@@ -398,6 +458,55 @@ impl Studio {
             results: Vec::new(),
         }))
     }
+}
+
+fn refusal_view(receipt: ConsoleAdmissionRejection) -> SnowflakeConsoleRequestLookup {
+    SnowflakeConsoleRequestLookup::NotAdmitted {
+        client_request_id: receipt.client_request_id,
+        session_id: receipt.session_id,
+        plan_digest: receipt.plan_digest,
+        code: receipt.code,
+    }
+}
+
+#[cfg(unix)]
+fn original_decision(
+    decision: SnowflakeConsoleRequestLookup,
+    request: &SnowflakeConsoleStart,
+) -> AppResult<SnowflakeConsoleStartResult> {
+    let result = match decision {
+        SnowflakeConsoleRequestLookup::Started { view }
+            if view.run.metadata.session_id == request.session_id
+                && view.run.metadata.plan_digest == request.plan_digest =>
+        {
+            Some(SnowflakeConsoleStartResult::Started {
+                run_id: view.run.metadata.run_id,
+            })
+        }
+        SnowflakeConsoleRequestLookup::NotAdmitted {
+            client_request_id,
+            session_id,
+            plan_digest,
+            code,
+        } if client_request_id == request.client_request_id
+            && session_id == request.session_id
+            && plan_digest == request.plan_digest =>
+        {
+            Some(SnowflakeConsoleStartResult::NotAdmitted {
+                client_request_id,
+                session_id,
+                plan_digest,
+                code,
+            })
+        }
+        _ => None,
+    };
+    result.ok_or_else(|| {
+        AppError::new(
+            ErrorCode::Conflict,
+            "This console request identifier belongs to a different review",
+        )
+    })
 }
 
 #[cfg(unix)]
@@ -556,22 +665,15 @@ impl Studio {
         events: EventHandler,
     ) -> AppResult<SnowflakeConsoleStartResult> {
         let _configuration = self.configuration_gate.lock();
-        uuid::Uuid::parse_str(&request.client_request_id)
-            .map_err(|_| AppError::invalid("Invalid console request identifier"))?;
-        // Stable request identity is authoritative even after its one-use plan
-        // was consumed or its physical session was removed. Never re-submit.
-        if let Some(existing) = self.snowflake_console_run(&request.client_request_id)? {
-            if existing.run.metadata.session_id == request.session_id
-                && existing.run.metadata.plan_digest == request.plan_digest
-            {
-                return Ok(SnowflakeConsoleStartResult::Started {
-                    run_id: existing.run.metadata.run_id,
-                });
-            }
-            return Err(AppError::new(
-                ErrorCode::Conflict,
-                "This console request identifier belongs to a different review",
-            ));
+        validate_console_request_identity(
+            &request.client_request_id,
+            &request.session_id,
+            &request.plan_digest,
+        )?;
+        // Stable identity returns its original positive or negative decision even
+        // after policy changes, plan consumption, session removal or shutdown.
+        if let Some(existing) = self.snowflake_console_request(&request.client_request_id)? {
+            return original_decision(existing, request);
         }
         // Shutdown releases the lease only after recording and cleanup finish.
         // Keep the closed coordinator readable, but never let a fresh request
@@ -590,22 +692,9 @@ impl Studio {
             if journal.owner.is_none() {
                 journal.owner = Some(self.persistence.claim_console_journal_owner()?);
             }
-            if let Some(existing) = self
-                .persistence
-                .console_run_by_client_request(&request.client_request_id)?
-            {
-                if existing.metadata.session_id == request.session_id
-                    && existing.metadata.plan_digest == request.plan_digest
-                {
-                    return Ok(SnowflakeConsoleStartResult::Started {
-                        run_id: existing.metadata.run_id,
-                    });
-                }
-                return Err(AppError::new(
-                    ErrorCode::Conflict,
-                    "This request identifier belongs to a different review",
-                ));
-            }
+        }
+        if let Some(existing) = self.snowflake_console_request(&request.client_request_id)? {
+            return original_decision(existing, request);
         }
         let admission = (|| -> AppResult<String> {
             self.flush_pending_snowflake_receipts()?;
@@ -768,15 +857,38 @@ impl Studio {
             });
             Ok(run_id)
         })();
-        Ok(match admission {
-            Ok(run_id) => SnowflakeConsoleStartResult::Started { run_id },
-            Err(error) => SnowflakeConsoleStartResult::NotAdmitted {
-                client_request_id: request.client_request_id.clone(),
-                session_id: request.session_id.clone(),
-                plan_digest: request.plan_digest.clone(),
-                code: error.code,
-            },
-        })
+        match admission {
+            Ok(run_id) => Ok(SnowflakeConsoleStartResult::Started { run_id }),
+            Err(error) => {
+                // Once a positive owner exists its outcome can only be Started,
+                // including failures before the first dispatch or local commit.
+                if let Some(existing) = self.snowflake_console_run(&request.client_request_id)? {
+                    return original_decision(
+                        SnowflakeConsoleRequestLookup::Started { view: existing },
+                        request,
+                    );
+                }
+                let receipt = ConsoleAdmissionRejection {
+                    client_request_id: request.client_request_id.clone(),
+                    session_id: request.session_id.clone(),
+                    plan_digest: request.plan_digest.clone(),
+                    code: error.code,
+                    recorded_at: now_ms(),
+                };
+                self.console
+                    .journal
+                    .lock()
+                    .rejections
+                    .insert(receipt.client_request_id.clone(), receipt);
+                // Ignore unrelated recording errors only if this exact frozen
+                // refusal has independently become durable. Lookup enforces it.
+                let _ = self.flush_console_recordings();
+                let decision = self
+                    .snowflake_console_request(&request.client_request_id)?
+                    .ok_or_else(recording_error)?;
+                original_decision(decision, request)
+            }
+        }
     }
 }
 

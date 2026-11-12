@@ -296,6 +296,9 @@ async fn rpc(
                 &arg::<String>(&args, "sessionId")?,
                 &arg(&args, "request")?
             )?),
+            "snowflake_console_request" => json!(studio.snowflake_console_request(
+                &arg::<String>(&args, "clientRequestId")?,
+            )?),
             "snowflake_console_run" => json!(studio.snowflake_console_run(
                 &arg::<String>(&args, "clientRequestId")?
             )?),

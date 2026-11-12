@@ -56,8 +56,8 @@ pub struct SnowflakeConsoleStart {
     pub approval: Option<String>,
 }
 
-/// A negative is authoritative only when native admission has proved that this
-/// exact client identity was absent before any journal insertion or dispatch.
+/// A negative is authoritative only after native admission durably records this
+/// exact identity as refused before any positive journal insertion or dispatch.
 /// Transport errors and a missing lookup receipt never imply NotAdmitted.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -85,4 +85,22 @@ pub struct SnowflakeConsoleRunView {
     /// an empty list after restart does not mean the original query had no rows.
     pub results: Vec<ResultInfo>,
     pub pending_recording: bool,
+}
+
+/// SQL-free recovery for both durable admission decisions. Absence stays unknown.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SnowflakeConsoleRequestLookup {
+    Started {
+        view: SnowflakeConsoleRunView,
+    },
+    NotAdmitted {
+        #[serde(rename = "clientRequestId")]
+        client_request_id: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "planDigest")]
+        plan_digest: String,
+        code: ErrorCode,
+    },
 }

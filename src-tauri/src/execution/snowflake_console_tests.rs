@@ -257,7 +257,28 @@ async fn reviewed_console_whole_review_approval_and_client_dedup_are_one_use() {
             .code,
         ErrorCode::ApprovalRequired
     );
+    // A refused client is immutable even after authorization is restored.
     start.approval = approval;
+    assert!(matches!(
+        studio
+            .start_snowflake_console(&start, Arc::new(|_| true))
+            .unwrap(),
+        SnowflakeConsoleStartResult::NotAdmitted {
+            code: ErrorCode::ApprovalRequired,
+            ..
+        }
+    ));
+    assert_eq!(queries(&f).len(), 2);
+    assert!(matches!(
+        studio
+            .snowflake_console_request(&start.client_request_id)
+            .unwrap(),
+        Some(SnowflakeConsoleRequestLookup::NotAdmitted {
+            code: ErrorCode::ApprovalRequired,
+            ..
+        })
+    ));
+    start.client_request_id = new_id();
     let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
     assert_eq!(
         start_run(
@@ -451,7 +472,23 @@ async fn reviewed_console_cancellation_after_ack_preserves_original_and_skips_co
     let (studio, info) = connected(&f).await;
     let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
     let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
-    marker(&f, "reviewed-drain-entered").await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        marker(&f, "reviewed-drain-entered").await;
+        // The helper can enter streamRows before the parent commits its ACK.
+        // Cancel only after SQLite proves the acknowledgement is durable.
+        loop {
+            let run = studio.persistence.console_run(&id).unwrap().unwrap();
+            if matches!(
+                &run.steps[0].outcome,
+                Some(ConsoleStepOutcome::Acknowledged(_))
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("original acknowledgement must commit before cancellation");
     assert!(matches!(
         &studio.persistence.console_run(&id).unwrap().unwrap().steps[0].outcome,
         Some(ConsoleStepOutcome::Acknowledged(_))
@@ -497,7 +534,7 @@ async fn reviewed_console_ack_recording_failure_blocks_rows_suffix_and_shutdown_
     let f = Fixture::new();
     let (studio, info) = connected(&f).await;
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_ack BEFORE UPDATE OF outcome_json ON snowflake_console_steps BEGIN SELECT RAISE(FAIL,'fixture receipt failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_ack BEFORE UPDATE OF outcome_json ON snowflake_console_steps_v3 BEGIN SELECT RAISE(FAIL,'fixture receipt failure'); END;").unwrap();
     let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
     let results = Arc::new(Mutex::new(0));
     let observed = results.clone();
@@ -693,7 +730,7 @@ async fn reviewed_console_prepare_recording_failure_retains_identity_but_never_d
     let (studio, info) = connected(&f).await;
     let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_prepare BEFORE INSERT ON snowflake_console_runs BEGIN SELECT RAISE(FAIL,'fixture prepare failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_prepare BEFORE INSERT ON snowflake_console_runs_v3 BEGIN SELECT RAISE(FAIL,'fixture prepare failure'); END;").unwrap();
     let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
     let view = finished(&studio, &start).await;
     assert!(view.pending_recording);
@@ -861,20 +898,21 @@ async fn reviewed_console_definite_negative_is_distinct_from_unreadable_original
     );
     assert_eq!(queries(&f).len(), 2);
     start.approval = approval;
+    start.client_request_id = new_id();
     let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
     finished(&studio, &start).await;
     // Another coordinator has no in-memory evidence. Failure to read the
     // original cannot turn an already acknowledged action into NotAdmitted.
     let observer = new_studio(&f);
     let db = database(&f);
-    db.execute_batch("ALTER TABLE snowflake_console_runs RENAME TO held_console_runs;")
+    db.execute_batch("ALTER TABLE snowflake_console_runs_v3 RENAME TO held_console_runs;")
         .unwrap();
     assert!(
         observer
             .start_snowflake_console(&start, Arc::new(|_| true))
             .is_err()
     );
-    db.execute_batch("ALTER TABLE held_console_runs RENAME TO snowflake_console_runs;")
+    db.execute_batch("ALTER TABLE held_console_runs RENAME TO snowflake_console_runs_v3;")
         .unwrap();
     assert_eq!(
         start_run(&observer, &start, Arc::new(|_| true)).unwrap(),
@@ -966,4 +1004,220 @@ async fn reviewed_console_closed_coordinator_keeps_dedup_without_reclaiming_repl
     assert!(!recovered.pending_recording);
     assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
     replacement.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_committed_refusal_survives_restart_without_helper_activity() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let (studio, info) = connected(&f).await;
+    let mut start = approved(&studio, &info.id, "INSERT INTO CONSOLE_TEMP VALUES (7)");
+    start.approval = None;
+    // Discard the native response: recovery must rely on the actual SQLite row.
+    let _lost = studio
+        .start_snowflake_console(
+            &start,
+            Arc::new(|_| panic!("refusal emits no execution event")),
+        )
+        .unwrap();
+    let original = studio
+        .persistence
+        .console_rejection_by_client_request(&start.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.code, ErrorCode::ApprovalRequired);
+    assert_eq!(queries(&f).len(), 2);
+    studio.shutdown_and_wait().await.unwrap();
+    drop(studio);
+    let reopened = new_studio(&f);
+    let lookup = reopened
+        .snowflake_console_request(&start.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        lookup,
+        SnowflakeConsoleRequestLookup::NotAdmitted {
+            code: ErrorCode::ApprovalRequired,
+            ..
+        }
+    ));
+    assert!(
+        reopened
+            .snowflake_console_run(&start.client_request_id)
+            .unwrap()
+            .is_none()
+    );
+    start.approval = Some("changed authorization must not execute".into());
+    assert!(matches!(
+        reopened
+            .start_snowflake_console(&start, Arc::new(|_| panic!("dedup cannot execute")))
+            .unwrap(),
+        SnowflakeConsoleStartResult::NotAdmitted {
+            code: ErrorCode::ApprovalRequired,
+            ..
+        }
+    ));
+    assert_eq!(
+        reopened
+            .persistence
+            .console_rejection_by_client_request(&start.client_request_id)
+            .unwrap()
+            .unwrap(),
+        original
+    );
+    let mut changed = start.clone();
+    changed.session_id = new_id();
+    assert_eq!(
+        reopened
+            .start_snowflake_console(&changed, Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    changed = start.clone();
+    changed.plan_digest = "f".repeat(64);
+    assert_eq!(
+        reopened
+            .start_snowflake_console(&changed, Arc::new(|_| true))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        queries(&f).len(),
+        2,
+        "recovery cannot connect or run helper SQL"
+    );
+    reopened.shutdown_and_wait().await.unwrap();
+    // A closed coordinator may read a known negative but cannot reclaim a lease.
+    assert!(matches!(
+        reopened
+            .start_snowflake_console(&start, Arc::new(|_| true))
+            .unwrap(),
+        SnowflakeConsoleStartResult::NotAdmitted { .. }
+    ));
+    let replacement = new_studio(&f);
+    let _lease = replacement
+        .persistence
+        .claim_console_journal_owner()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_refusal_write_failure_remains_frozen_until_sql_free_reconciliation() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let (studio, info) = connected(&f).await;
+    let mut start = approved(&studio, &info.id, "SELECT 1");
+    let approval = start.approval.take();
+    let backup = studio.create_metadata_backup().unwrap();
+    let db = database(&f);
+    db.execute_batch("CREATE TRIGGER deny_console_refusal BEFORE INSERT ON snowflake_console_rejections_v3 BEGIN SELECT RAISE(FAIL,'fixture refusal failure'); END;").unwrap();
+    assert!(
+        studio
+            .start_snowflake_console(&start, Arc::new(|_| true))
+            .is_err()
+    );
+    let frozen = studio
+        .console
+        .pending_rejection(&start.client_request_id)
+        .unwrap();
+    assert_eq!(frozen.code, ErrorCode::ApprovalRequired);
+    assert!(
+        studio
+            .snowflake_console_request(&start.client_request_id)
+            .is_err()
+    );
+    start.approval = approval;
+    assert!(
+        studio
+            .start_snowflake_console(&start, Arc::new(|_| true))
+            .is_err()
+    );
+    assert_eq!(
+        studio.console.pending_rejection(&start.client_request_id),
+        Some(frozen.clone())
+    );
+    assert_eq!(queries(&f).len(), 2);
+    assert!(
+        studio.shutdown_and_wait().await.is_err(),
+        "refusal-only outbox must hold shutdown"
+    );
+    assert!(
+        studio
+            .restore_metadata_backup(&backup.id, &backup.digest, "RESTORE", None)
+            .is_err(),
+        "metadata restore must not bypass an unrecorded refusal"
+    );
+    db.execute_batch("DROP TRIGGER deny_console_refusal;")
+        .unwrap();
+    assert!(matches!(
+        studio
+            .snowflake_console_request(&start.client_request_id)
+            .unwrap(),
+        Some(SnowflakeConsoleRequestLookup::NotAdmitted {
+            code: ErrorCode::ApprovalRequired,
+            ..
+        })
+    ));
+    assert_eq!(
+        studio
+            .persistence
+            .console_rejection_by_client_request(&start.client_request_id)
+            .unwrap(),
+        Some(frozen)
+    );
+    assert!(
+        studio
+            .console
+            .pending_rejection(&start.client_request_id)
+            .is_none()
+    );
+    assert_eq!(
+        queries(&f).len(),
+        2,
+        "outbox reconciliation cannot submit SQL"
+    );
+    studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_malformed_request_identity_never_creates_a_refusal() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let (studio, info) = connected(&f).await;
+    let original = approved(&studio, &info.id, "SELECT 1");
+    for field in ["client", "session", "digest"] {
+        let mut invalid = original.clone();
+        match field {
+            "client" => invalid.client_request_id = "not-a-uuid".into(),
+            "session" => invalid.session_id = "not-a-uuid".into(),
+            _ => invalid.plan_digest = "A".repeat(64),
+        }
+        assert_eq!(
+            studio
+                .start_snowflake_console(&invalid, Arc::new(|_| true))
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+    }
+    let db = database(&f);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM snowflake_console_rejections_v3",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(
+        studio
+            .console
+            .pending_rejection(&original.client_request_id)
+            .is_none()
+    );
+    assert_eq!(queries(&f).len(), 2);
+    studio.shutdown_and_wait().await.unwrap();
 }

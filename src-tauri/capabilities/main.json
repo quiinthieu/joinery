@@ -35,6 +35,7 @@
     "allow-prepare-snowflake-console",
     "allow-start-snowflake-console",
     "allow-snowflake-console-run",
+    "allow-snowflake-console-request",
     "allow-execute-plan",
     "allow-cancel-run",
     "allow-catalog",

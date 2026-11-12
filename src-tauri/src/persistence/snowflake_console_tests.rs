@@ -77,7 +77,770 @@ fn pinned() -> Connection {
     let connection = Connection::open_in_memory().unwrap();
     connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
     connection.execute_batch(SCHEMA_SQL).unwrap();
+    connection.execute_batch("ALTER TABLE snowflake_console_runs RENAME TO snowflake_console_runs_v3; ALTER TABLE snowflake_console_steps RENAME TO snowflake_console_steps_v3;").unwrap();
+    connection.execute_batch(REJECTION_SCHEMA_SQL).unwrap();
+    for (_, sql) in DECISION_TRIGGERS {
+        connection.execute_batch(sql).unwrap();
+    }
     connection
+        .pragma_update(None, "user_version", super::super::SCHEMA_VERSION)
+        .unwrap();
+    connection
+}
+
+fn refusal() -> ConsoleAdmissionRejection {
+    ConsoleAdmissionRejection {
+        client_request_id: crate::domain::new_id(),
+        session_id: crate::domain::new_id(),
+        plan_digest: "a".repeat(64),
+        code: ErrorCode::ApprovalRequired,
+        recorded_at: 1000,
+    }
+}
+
+fn for_refusal(value: &ConsoleAdmissionRejection) -> ConsoleRunMetadata {
+    ConsoleRunMetadata {
+        client_request_id: value.client_request_id.clone(),
+        session_id: value.session_id.clone(),
+        plan_digest: value.plan_digest.clone(),
+        ..metadata(1)
+    }
+}
+
+fn downgrade_fixture_to_v2(connection: &Connection) {
+    for (name, _) in DECISION_TRIGGERS {
+        connection
+            .execute_batch(&format!("DROP TRIGGER {name};"))
+            .unwrap();
+    }
+    connection
+        .execute_batch(
+            "DROP TABLE snowflake_console_rejections_v3;
+         ALTER TABLE snowflake_console_runs_v3 RENAME TO snowflake_console_runs;
+         ALTER TABLE snowflake_console_steps_v3 RENAME TO snowflake_console_steps;
+         PRAGMA user_version=2;",
+        )
+        .unwrap();
+}
+
+#[test]
+fn console_negative_reopen_dedup_is_immutable_and_independent_of_history_and_profile_retention() {
+    let (root, store, owner) = setup();
+    let value = refusal();
+    assert_eq!(
+        store.console_record_rejection(&owner, &value).unwrap(),
+        value
+    );
+    assert_eq!(
+        store.console_record_rejection(&owner, &value).unwrap(),
+        value
+    );
+    assert!(
+        store
+            .console_run_by_client_request(&value.client_request_id)
+            .unwrap()
+            .is_none()
+    );
+    for field in 0..4 {
+        let mut changed = value.clone();
+        match field {
+            0 => changed.session_id = crate::domain::new_id(),
+            1 => changed.plan_digest = "b".repeat(64),
+            2 => changed.code = ErrorCode::PolicyBlocked,
+            _ => changed.recorded_at += 1,
+        }
+        assert_eq!(
+            store
+                .console_record_rejection(&owner, &changed)
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+    }
+    store.clear_history().unwrap();
+    store.delete_profile(&crate::domain::new_id()).unwrap();
+    store
+        .set_setting(
+            "changed-policy",
+            "new authorization cannot revive a refused client",
+        )
+        .unwrap();
+    drop(owner);
+    drop(store);
+    let reopened = Persistence::open(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .console_rejection_by_client_request(&value.client_request_id)
+            .unwrap(),
+        Some(value.clone())
+    );
+    let owner = reopened.claim_console_journal_owner().unwrap();
+    assert_eq!(
+        reopened
+            .console_prepare_run(&owner, for_refusal(&value))
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert!(
+        reopened
+            .console_rejection_by_client_request(&crate::domain::new_id())
+            .unwrap()
+            .is_none()
+    );
+    validate_records(&reopened.connection.lock()).unwrap();
+}
+
+#[test]
+fn console_negative_identity_time_and_closed_payload_reject_without_writes() {
+    let (_root, store, owner) = setup();
+    for field in 0..7 {
+        let mut value = refusal();
+        match field {
+            0 => value.client_request_id = "not-an-id".into(),
+            1 => value.client_request_id = "11111111-AAAA-4111-8111-111111111111".into(),
+            2 => value.session_id = "foreign-session".into(),
+            3 => value.plan_digest = "A".repeat(64),
+            4 => value.plan_digest = "a".repeat(65),
+            5 => value.recorded_at = u64::MAX,
+            _ => value.session_id = "x".repeat(100_000),
+        }
+        assert!(store.console_record_rejection(&owner, &value).is_err());
+    }
+    assert!(rejection_ids(&store.connection.lock()).unwrap().is_empty());
+    let mut raw = serde_json::to_value(refusal()).unwrap();
+    raw["sql"] = serde_json::json!("must not be admitted into a receipt");
+    assert!(serde_json::from_value::<ConsoleAdmissionRejection>(raw).is_err());
+    let mut raw = serde_json::to_value(refusal()).unwrap();
+    raw["code"] = serde_json::json!("futureOrArbitraryErrorText");
+    assert!(serde_json::from_value::<ConsoleAdmissionRejection>(raw).is_err());
+    let mut limit = refusal();
+    limit.recorded_at = i64::MAX as u64;
+    store.console_record_rejection(&owner, &limit).unwrap();
+    assert_eq!(
+        store
+            .console_rejection_by_client_request(&limit.client_request_id)
+            .unwrap(),
+        Some(limit)
+    );
+}
+
+#[test]
+fn console_negative_foreign_owner_and_both_decision_orders_cannot_overwrite_evidence() {
+    let (_root, store, owner) = setup();
+    let (_other_root, other, other_owner) = setup();
+    assert_eq!(
+        store
+            .console_record_rejection(&other_owner, &refusal())
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        other
+            .console_record_rejection(&owner, &refusal())
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let negative = refusal();
+    store.console_record_rejection(&owner, &negative).unwrap();
+    assert_eq!(
+        store
+            .console_prepare_run(&owner, for_refusal(&negative))
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Conflict
+    );
+    let positive = prepared(&store, &owner, 1);
+    let denied = ConsoleAdmissionRejection {
+        client_request_id: positive.metadata.client_request_id.clone(),
+        session_id: positive.metadata.session_id.clone(),
+        plan_digest: positive.metadata.plan_digest.clone(),
+        ..refusal()
+    };
+    assert_eq!(
+        store
+            .console_record_rejection(&owner, &denied)
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        store.console_run(&positive.metadata.run_id).unwrap(),
+        Some(positive)
+    );
+    assert_eq!(
+        store
+            .console_rejection_by_client_request(&negative.client_request_id)
+            .unwrap(),
+        Some(negative)
+    );
+}
+
+#[test]
+fn console_negative_sqlite_insert_commit_and_readback_failures_never_return_a_receipt() {
+    let (_root, store, owner) = setup();
+    let value = refusal();
+    store.connection.lock().execute_batch("CREATE TRIGGER refuse_negative_insert BEFORE INSERT ON snowflake_console_rejections_v3 BEGIN SELECT RAISE(FAIL,'fixture insert failure'); END;").unwrap();
+    assert!(store.console_record_rejection(&owner, &value).is_err());
+    assert!(
+        store
+            .console_rejection_by_client_request(&value.client_request_id)
+            .unwrap()
+            .is_none()
+    );
+    store.connection.lock().execute_batch("DROP TRIGGER refuse_negative_insert;
+        CREATE TABLE refusal_commit_fault(parent TEXT REFERENCES settings(key) DEFERRABLE INITIALLY DEFERRED);
+        CREATE TRIGGER refuse_negative_commit AFTER INSERT ON snowflake_console_rejections_v3 BEGIN INSERT INTO refusal_commit_fault VALUES('missing-commit-parent'); END;").unwrap();
+    assert!(
+        store.console_record_rejection(&owner, &value).is_err(),
+        "deferred FK must fail at COMMIT"
+    );
+    assert!(
+        store
+            .console_rejection_by_client_request(&value.client_request_id)
+            .unwrap()
+            .is_none(),
+        "failed commit must roll back the inserted refusal"
+    );
+    assert_eq!(
+        store
+            .connection
+            .lock()
+            .query_row("SELECT count(*) FROM refusal_commit_fault", [], |row| row
+                .get::<_, u32>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
+    store
+        .connection
+        .lock()
+        .execute_batch("DROP TRIGGER refuse_negative_commit; DROP TABLE refusal_commit_fault;")
+        .unwrap();
+    store.console_record_rejection(&owner, &value).unwrap();
+    store.connection.lock().execute("UPDATE snowflake_console_rejections_v3 SET code='unrecognized' WHERE client_request_id=?1", [&value.client_request_id]).unwrap();
+    assert!(
+        store
+            .console_rejection_by_client_request(&value.client_request_id)
+            .is_err(),
+        "unreadable evidence is not an absent or valid refusal"
+    );
+    assert!(
+        store.console_record_rejection(&owner, &value).is_err(),
+        "retry cannot overwrite malformed evidence"
+    );
+}
+
+#[test]
+fn console_negative_database_guards_and_all_readers_reject_dual_decisions() {
+    let (_root, store, owner) = setup();
+    let negative = refusal();
+    store.console_record_rejection(&owner, &negative).unwrap();
+    let positive = ConsoleRunSnapshot {
+        metadata: for_refusal(&negative),
+        revision: 0,
+        state: ConsoleRunState::Prepared,
+        observations: ConsoleObservations::default(),
+        steps: vec![],
+        terminal: None,
+    };
+    assert!(
+        insert_snapshot(&store.connection.lock(), &positive).is_err(),
+        "DB guard must reject raw conflicting INSERT"
+    );
+    let other = prepared(&store, &owner, 1);
+    assert!(
+        store
+            .connection
+            .lock()
+            .execute(
+                "UPDATE snowflake_console_runs_v3 SET client_request_id=?1 WHERE run_id=?2",
+                params![negative.client_request_id, other.metadata.run_id]
+            )
+            .is_err()
+    );
+    let denied = ConsoleAdmissionRejection {
+        client_request_id: other.metadata.client_request_id.clone(),
+        ..refusal()
+    };
+    assert!(insert_rejection(&store.connection.lock(), &denied).is_err());
+    assert!(store.connection.lock().execute("UPDATE snowflake_console_rejections_v3 SET client_request_id=?1 WHERE client_request_id=?2", params![other.metadata.client_request_id,negative.client_request_id]).is_err());
+    // Deliberately corrupt a fixture after proving the database guard, to test
+    // the independent read-time defense rather than assuming triggers exist.
+    store
+        .connection
+        .lock()
+        .execute_batch("DROP TRIGGER console_run_insert_decision;")
+        .unwrap();
+    insert_snapshot(&store.connection.lock(), &positive).unwrap();
+    assert!(store.console_run(&positive.metadata.run_id).is_err());
+    assert!(
+        store
+            .console_run_by_client_request(&negative.client_request_id)
+            .is_err()
+    );
+    assert!(
+        store
+            .console_rejection_by_client_request(&negative.client_request_id)
+            .is_err()
+    );
+    assert!(validate_records(&store.connection.lock()).is_err());
+}
+
+fn fill_refusal_capacity(connection: &Connection, seed: &ConsoleAdmissionRejection) {
+    connection.execute("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO snowflake_console_rejections_v3(client_request_id,session_id,plan_digest,code,recorded_at) SELECT printf('%08x-0000-4000-8000-000000000002',n),?1,?2,'approvalRequired',1000 FROM numbers", params![seed.session_id,seed.plan_digest]).unwrap();
+}
+
+#[test]
+fn console_negative_capacity_preserves_lookup_dedup_and_rejects_restore_union_atomically() {
+    let (_root, store, owner) = setup();
+    let seed = refusal();
+    fill_refusal_capacity(&store.connection.lock(), &seed);
+    assert_eq!(
+        store
+            .console_record_rejection(&owner, &seed)
+            .unwrap_err()
+            .code,
+        ErrorCode::ResultLimitReached
+    );
+    let first = store
+        .console_rejection_by_client_request("00000001-0000-4000-8000-000000000002")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.console_record_rejection(&owner, &first).unwrap(),
+        first
+    );
+    assert_eq!(
+        rejection_ids(&store.connection.lock()).unwrap().len(),
+        MAX_REJECTIONS as usize
+    );
+    assert!(
+        store.console_prepare_run(&owner, metadata(1)).is_ok(),
+        "refusal budget is independent of positive-run capacity"
+    );
+    let mut full = pinned();
+    fill_refusal_capacity(&full, &seed);
+    let extra = pinned();
+    insert_rejection(&extra, &seed).unwrap();
+    assert!(merge_for_restore(&extra, &mut full).is_err());
+    assert!(
+        read_rejection(&full, &seed.client_request_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(rejection_ids(&full).unwrap().len(), MAX_REJECTIONS as usize);
+}
+
+#[test]
+fn console_negative_restore_union_preserves_exact_refusals_and_rejects_both_cross_conflicts() {
+    let (_root, store, owner) = setup();
+    let value = refusal();
+    store.console_record_rejection(&owner, &value).unwrap();
+    let mut backup = pinned();
+    insert_rejection(&backup, &value).unwrap();
+    let backup_only = refusal();
+    insert_rejection(&backup, &backup_only).unwrap();
+    merge_for_restore(&store.connection.lock(), &mut backup).unwrap();
+    assert_eq!(
+        read_rejection(&backup, &value.client_request_id).unwrap(),
+        Some(value.clone())
+    );
+    assert_eq!(
+        read_rejection(&backup, &backup_only.client_request_id).unwrap(),
+        Some(backup_only)
+    );
+    let mut changed = pinned();
+    let mut different = value.clone();
+    different.recorded_at += 1;
+    insert_rejection(&changed, &different).unwrap();
+    assert!(merge_for_restore(&store.connection.lock(), &mut changed).is_err());
+    assert_eq!(
+        read_rejection(&changed, &value.client_request_id).unwrap(),
+        Some(different)
+    );
+    let mut backup_positive = pinned();
+    let run = ConsoleRunSnapshot {
+        metadata: for_refusal(&value),
+        revision: 0,
+        state: ConsoleRunState::Prepared,
+        observations: ConsoleObservations::default(),
+        steps: vec![],
+        terminal: None,
+    };
+    insert_snapshot(&backup_positive, &run).unwrap();
+    assert!(merge_for_restore(&store.connection.lock(), &mut backup_positive).is_err());
+    assert_eq!(
+        read_run(&backup_positive, &run.metadata.run_id).unwrap(),
+        Some(run)
+    );
+    let positive = prepared(&store, &owner, 1);
+    let mut backup_negative = pinned();
+    let denied = ConsoleAdmissionRejection {
+        client_request_id: positive.metadata.client_request_id.clone(),
+        ..refusal()
+    };
+    insert_rejection(&backup_negative, &denied).unwrap();
+    assert!(merge_for_restore(&store.connection.lock(), &mut backup_negative).is_err());
+    assert_eq!(
+        read_rejection(&backup_negative, &denied.client_request_id).unwrap(),
+        Some(denied)
+    );
+}
+
+#[test]
+fn console_negative_v3_migration_excludes_live_owner_and_fences_an_already_open_v2_writer() {
+    let (root, store, owner) = setup();
+    let start = prepared(&store, &owner, 2);
+    let pending = intended(&store, &owner, &start);
+    let canonical_root = store.root.clone();
+    drop(owner);
+    drop(store);
+    let old = Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    downgrade_fixture_to_v2(&old);
+    // Prepare actual version-2 statements before migration, keeping this same
+    // SQLite handle alive throughout. Reopening an old app would miss the race.
+    let mut old_insert = old.prepare("INSERT INTO snowflake_console_runs(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json) VALUES(?1,?2,?3,?4,?5,?6,?7,0,'prepared',?8,NULL)").unwrap();
+    let mut old_update = old.prepare("UPDATE snowflake_console_runs SET revision=?1,state=?2,observations_json=?3,terminal_json=?4 WHERE run_id=?5 AND revision=?6").unwrap();
+    let mut old_step_update = old.prepare("UPDATE snowflake_console_steps SET outcome_json=?1 WHERE run_id=?2 AND ordinal=?3 AND outcome_json IS NULL").unwrap();
+    let mut old_claim = old.prepare("SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs WHERE state!='terminal' ORDER BY run_id LIMIT 10001").unwrap();
+    let lease = claim_migration_lease(&canonical_root).unwrap();
+    assert_eq!(
+        Persistence::open(root.path()).err().unwrap().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(super::super::schema_version(&old).unwrap(), 2);
+    assert_eq!(
+        read_run(&old, &pending.metadata.run_id).unwrap(),
+        Some(pending.clone())
+    );
+    assert_eq!(old.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('snowflake_console_runs_v3','snowflake_console_steps_v3','snowflake_console_rejections_v3')", [], |row| row.get::<_,u32>(0)).unwrap(), 0);
+    drop(lease);
+    let upgraded = Persistence::open(root.path()).unwrap();
+    assert_eq!(
+        upgraded.console_run(&pending.metadata.run_id).unwrap(),
+        Some(pending.clone()),
+        "migration must not recover or reclassify an original intent"
+    );
+    let another = metadata(1);
+    let error = old_insert
+        .execute(params![
+            another.run_id,
+            another.client_request_id,
+            another.session_id,
+            another.connection_id,
+            another.plan_digest,
+            another.step_count,
+            1000,
+            encode(&ConsoleObservations::default()).unwrap()
+        ])
+        .unwrap_err();
+    assert!(error.to_string().contains("no such table"));
+    let error = old_update
+        .execute(params![
+            sqlite_integer(pending.revision + 1).unwrap(),
+            "terminal",
+            encode(&ConsoleObservations::default()).unwrap(),
+            Option::<String>::None,
+            pending.metadata.run_id,
+            sqlite_integer(pending.revision).unwrap()
+        ])
+        .unwrap_err();
+    assert!(error.to_string().contains("no such table"));
+    let error = old_step_update
+        .execute(params![
+            encode(&ConsoleStepOutcome::Unknown(ConsoleUnknown {
+                statement: None
+            }))
+            .unwrap(),
+            pending.metadata.run_id,
+            0
+        ])
+        .unwrap_err();
+    assert!(error.to_string().contains("no such table"));
+    // query() only creates a lazy cursor. Exercise the actual old recovery
+    // reader's first sqlite_step, where SQLite invalidates the cached schema.
+    let mut old_rows = old_claim.query([]).unwrap();
+    let error = old_rows
+        .next()
+        .expect_err("the stale recovery SELECT must fail when stepped");
+    assert!(error.to_string().contains("no such table"));
+    drop(old_rows);
+    assert_eq!(
+        upgraded.console_run(&pending.metadata.run_id).unwrap(),
+        Some(pending.clone())
+    );
+    let owner = upgraded.claim_console_journal_owner().unwrap();
+    let recovered = upgraded
+        .console_run(&pending.metadata.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        recovered.terminal.unwrap().reason,
+        ConsoleStopReason::Interrupted
+    );
+    assert!(matches!(
+        &recovered.steps[0].outcome,
+        Some(ConsoleStepOutcome::Unknown(_))
+    ));
+    let refused = refusal();
+    upgraded.console_record_rejection(&owner, &refused).unwrap();
+    assert_eq!(
+        upgraded
+            .console_rejection_by_client_request(&refused.client_request_id)
+            .unwrap(),
+        Some(refused)
+    );
+}
+
+#[test]
+fn console_negative_all_journal_mutation_paths_recheck_schema_version_without_changing_evidence() {
+    let (_root, store, owner) = setup();
+    let start = prepared(&store, &owner, 1);
+    let pending = intended(&store, &owner, &start);
+    for version in [2, super::super::SCHEMA_VERSION + 1] {
+        store
+            .connection
+            .lock()
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        assert_eq!(
+            store
+                .console_prepare_run(&owner, metadata(1))
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store
+                .console_record_rejection(&owner, &refusal())
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store
+                .console_step_intent(&owner, &start.metadata.run_id, pending.revision, 1, 2000)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store
+                .console_step_outcome(
+                    &owner,
+                    &start.metadata.run_id,
+                    pending.revision,
+                    0,
+                    acknowledgement(),
+                    ConsoleObservations::default()
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store
+                .console_observe(
+                    &owner,
+                    &start.metadata.run_id,
+                    pending.revision,
+                    None,
+                    ConsoleObservations::default()
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store
+                .console_finish(
+                    &owner,
+                    &start.metadata.run_id,
+                    pending.revision,
+                    ConsoleStopReason::Cancelled,
+                    2000
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store
+                .console_interrupt_incomplete_runs(&owner)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            interrupt_records(&mut store.connection.lock())
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store.console_run(&start.metadata.run_id).unwrap_err().code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            store
+                .console_rejection_by_client_request(&refusal().client_request_id)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+        store
+            .connection
+            .lock()
+            .pragma_update(None, "user_version", super::super::SCHEMA_VERSION)
+            .unwrap();
+        assert_eq!(
+            store.console_run(&start.metadata.run_id).unwrap(),
+            Some(pending.clone())
+        );
+        assert!(rejection_ids(&store.connection.lock()).unwrap().is_empty());
+    }
+    drop(owner);
+    store
+        .connection
+        .lock()
+        .pragma_update(None, "user_version", super::super::SCHEMA_VERSION + 1)
+        .unwrap();
+    assert_eq!(
+        store.claim_console_journal_owner().err().unwrap().code,
+        ErrorCode::Unsupported
+    );
+    store
+        .connection
+        .lock()
+        .pragma_update(None, "user_version", super::super::SCHEMA_VERSION)
+        .unwrap();
+    assert_eq!(
+        store.console_run(&start.metadata.run_id).unwrap(),
+        Some(pending)
+    );
+}
+
+#[test]
+fn console_negative_concurrent_current_writers_commit_exactly_one_decision() {
+    use std::sync::{Arc, Barrier};
+    let (_root, store, owner) = setup();
+    let store = Arc::new(store);
+    let owner = Arc::new(owner);
+    let negative = refusal();
+    let positive = for_refusal(&negative);
+    let ready = Arc::new(Barrier::new(3));
+    let writes: Vec<_> = [false, true]
+        .into_iter()
+        .map(|reject| {
+            let (store, owner, ready, negative, positive) = (
+                store.clone(),
+                owner.clone(),
+                ready.clone(),
+                negative.clone(),
+                positive.clone(),
+            );
+            std::thread::spawn(move || {
+                ready.wait();
+                if reject {
+                    store
+                        .console_record_rejection(&owner, &negative)
+                        .map(|_| ())
+                } else {
+                    store.console_prepare_run(&owner, positive).map(|_| ())
+                }
+            })
+        })
+        .collect();
+    ready.wait();
+    let outcomes: Vec<_> = writes
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes.into_iter().find_map(Result::err).unwrap().code,
+        ErrorCode::Conflict
+    );
+    let yes = store
+        .console_run_by_client_request(&negative.client_request_id)
+        .unwrap()
+        .is_some();
+    let no = store
+        .console_rejection_by_client_request(&negative.client_request_id)
+        .unwrap()
+        .is_some();
+    assert_ne!(yes, no);
+    validate_records(&store.connection.lock()).unwrap();
+}
+
+#[test]
+fn console_negative_two_coordinators_cannot_admit_while_other_lease_is_live() {
+    use std::sync::{Arc, Barrier};
+    let root = tempfile::tempdir().unwrap();
+    let one = Persistence::open(root.path()).unwrap();
+    let two = Persistence::open(root.path()).unwrap();
+    let negative = refusal();
+    let positive = for_refusal(&negative);
+    let ready = Arc::new(Barrier::new(3));
+    let attempted = Arc::new(Barrier::new(2));
+    let writes: Vec<_> = [(one, false), (two, true)]
+        .into_iter()
+        .map(|(store, reject)| {
+            let (ready, attempted, negative, positive) = (
+                ready.clone(),
+                attempted.clone(),
+                negative.clone(),
+                positive.clone(),
+            );
+            std::thread::spawn(move || {
+                ready.wait();
+                match store.claim_console_journal_owner() {
+                    Ok(owner) => {
+                        let result = if reject {
+                            store
+                                .console_record_rejection(&owner, &negative)
+                                .map(|_| ())
+                        } else {
+                            store.console_prepare_run(&owner, positive).map(|_| ())
+                        };
+                        attempted.wait(); // retain the owner until the other claim finishes
+                        result
+                    }
+                    Err(error) => {
+                        attempted.wait();
+                        Err(error)
+                    }
+                }
+            })
+        })
+        .collect();
+    ready.wait();
+    let outcomes: Vec<_> = writes
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes.into_iter().find_map(Result::err).unwrap().code,
+        ErrorCode::Conflict
+    );
+    let observed = Persistence::open(root.path()).unwrap();
+    let yes = observed
+        .console_run_by_client_request(&negative.client_request_id)
+        .unwrap()
+        .is_some();
+    let no = observed
+        .console_rejection_by_client_request(&negative.client_request_id)
+        .unwrap()
+        .is_some();
+    assert_ne!(yes, no);
 }
 
 #[test]
@@ -538,7 +1301,7 @@ fn console_journal_rejects_corrupt_gaps_unknown_fields_and_oversized_records() {
         .connection
         .lock()
         .execute(
-            "UPDATE snowflake_console_steps SET ordinal=1 WHERE run_id=?1",
+            "UPDATE snowflake_console_steps_v3 SET ordinal=1 WHERE run_id=?1",
             [id],
         )
         .unwrap();
@@ -559,7 +1322,7 @@ fn console_journal_rejects_corrupt_gaps_unknown_fields_and_oversized_records() {
         .connection
         .lock()
         .execute(
-            "UPDATE snowflake_console_steps SET ordinal=0,outcome_json=?1 WHERE run_id=?2",
+            "UPDATE snowflake_console_steps_v3 SET ordinal=0,outcome_json=?1 WHERE run_id=?2",
             params![
                 r#"{"kind":"unknown","evidence":{"statement":null,"sql":"must-not-load"}}"#,
                 id
@@ -567,7 +1330,7 @@ fn console_journal_rejects_corrupt_gaps_unknown_fields_and_oversized_records() {
         )
         .unwrap();
     assert!(validate_records(&store.connection.lock()).is_err());
-    store.connection.lock().execute("UPDATE snowflake_console_steps SET outcome_json=NULL,observations_json=?1 WHERE run_id=?2", params![" ".repeat(MAX_JSON_BYTES + 1), id]).unwrap();
+    store.connection.lock().execute("UPDATE snowflake_console_steps_v3 SET outcome_json=NULL,observations_json=?1 WHERE run_id=?2", params![" ".repeat(MAX_JSON_BYTES + 1), id]).unwrap();
     assert!(store.console_run(id).is_err());
 }
 
@@ -672,7 +1435,7 @@ fn console_journal_restore_preserves_current_ack_tombstones_and_seals_backup_onl
     );
     let clients: u32 = backup
         .query_row(
-            "SELECT count(*) FROM snowflake_console_runs WHERE client_request_id IN (?1,?2)",
+            "SELECT count(*) FROM snowflake_console_runs_v3 WHERE client_request_id IN (?1,?2)",
             params![
                 start.metadata.client_request_id,
                 imported.metadata.client_request_id
@@ -716,7 +1479,7 @@ fn console_journal_restore_rejects_newer_or_conflicting_backup_evidence_atomical
 }
 
 fn fill_capacity(connection: &Connection, seed: &ConsoleRunMetadata) {
-    connection.execute("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO snowflake_console_runs(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json) SELECT printf('%08x-0000-4000-8000-000000000000',n),printf('%08x-0000-4000-8000-000000000001',n),?1,?2,?3,1,1000,0,'prepared',?4 FROM numbers",
+    connection.execute("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO snowflake_console_runs_v3(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json) SELECT printf('%08x-0000-4000-8000-000000000000',n),printf('%08x-0000-4000-8000-000000000001',n),?1,?2,?3,1,1000,0,'prepared',?4 FROM numbers",
         params![seed.session_id,seed.connection_id,seed.plan_digest,encode(&ConsoleObservations::default()).unwrap()]).unwrap();
 }
 
@@ -1060,7 +1823,7 @@ fn console_journal_rejects_malformed_persisted_terminal_snapshot() {
             .connection
             .lock()
             .execute(
-                "UPDATE snowflake_console_runs SET terminal_json=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_runs_v3 SET terminal_json=?1 WHERE run_id=?2",
                 params![value.to_string(), start.metadata.run_id],
             )
             .unwrap();
@@ -1071,7 +1834,7 @@ fn console_journal_rejects_malformed_persisted_terminal_snapshot() {
         .connection
         .lock()
         .execute(
-            "UPDATE snowflake_console_runs SET terminal_json=?1 WHERE run_id=?2",
+            "UPDATE snowflake_console_runs_v3 SET terminal_json=?1 WHERE run_id=?2",
             params![original.to_string(), start.metadata.run_id],
         )
         .unwrap();
@@ -1321,14 +2084,14 @@ fn console_journal_sqlite_integer_boundaries_are_checked_without_wrapping() {
         for column in ["created_at", "revision"] {
             connection
                 .execute(
-                    &format!("UPDATE snowflake_console_runs SET {column}=-1 WHERE run_id=?1"),
+                    &format!("UPDATE snowflake_console_runs_v3 SET {column}=-1 WHERE run_id=?1"),
                     [&next.metadata.run_id],
                 )
                 .unwrap();
             assert!(read_run(&connection, &next.metadata.run_id).is_err());
             connection
                 .execute(
-                    &format!("UPDATE snowflake_console_runs SET {column}=?1 WHERE run_id=?2"),
+                    &format!("UPDATE snowflake_console_runs_v3 SET {column}=?1 WHERE run_id=?2"),
                     params![
                         if column == "created_at" {
                             1000_i64
@@ -1342,27 +2105,27 @@ fn console_journal_sqlite_integer_boundaries_are_checked_without_wrapping() {
         }
         connection
             .execute(
-                "UPDATE snowflake_console_steps SET intended_at=-1 WHERE run_id=?1",
+                "UPDATE snowflake_console_steps_v3 SET intended_at=-1 WHERE run_id=?1",
                 [&start.metadata.run_id],
             )
             .unwrap();
         assert!(read_run(&connection, &start.metadata.run_id).is_err());
         connection
             .execute(
-                "UPDATE snowflake_console_steps SET intended_at=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_steps_v3 SET intended_at=?1 WHERE run_id=?2",
                 params![i64::MAX, start.metadata.run_id],
             )
             .unwrap();
         connection
             .execute(
-                "UPDATE snowflake_console_runs SET revision=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_runs_v3 SET revision=?1 WHERE run_id=?2",
                 params![i64::MAX, next.metadata.run_id],
             )
             .unwrap();
         assert!(read_run(&connection, &next.metadata.run_id).is_err());
         connection
             .execute(
-                "UPDATE snowflake_console_runs SET revision=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_runs_v3 SET revision=?1 WHERE run_id=?2",
                 params![
                     sqlite_integer(MAX_REVISION - 1).unwrap(),
                     next.metadata.run_id

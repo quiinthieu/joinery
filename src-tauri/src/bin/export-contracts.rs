@@ -83,6 +83,7 @@ fn main() {
         SnowflakeConsoleStart::decl(),
         SnowflakeConsoleStartResult::decl(),
         SnowflakeConsoleRunView::decl(),
+        SnowflakeConsoleRequestLookup::decl(),
         ConsoleAccounting::decl(),
         ConsoleAcknowledgement::decl(),
         ConsoleContext::decl(),

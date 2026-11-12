@@ -61,7 +61,7 @@ fn copy(source: &Connection, destination: &mut Connection) -> AppResult<()> {
 
 fn validate(connection: &Connection) -> AppResult<()> {
     let version = schema_version(connection)?;
-    if version != 1 && version != SCHEMA_VERSION {
+    if !(1..=SCHEMA_VERSION).contains(&version) {
         return Err(AppError::invalid(
             "This backup needs a compatible Joinery version",
         ));
@@ -83,12 +83,23 @@ fn validate(connection: &Connection) -> AppResult<()> {
     if version >= 2 {
         snowflake_console::validate_records(connection)?;
     }
-    let allowed_tables = if version == 1 {
-        "'profiles','groups','history','audit','settings'"
-    } else {
-        "'profiles','groups','history','audit','settings','snowflake_console_runs','snowflake_console_steps'"
+    let allowed_tables = match version {
+        1 => "'profiles','groups','history','audit','settings'",
+        2 => {
+            "'profiles','groups','history','audit','settings','snowflake_console_runs','snowflake_console_steps'"
+        }
+        _ => {
+            "'profiles','groups','history','audit','settings','snowflake_console_runs_v3','snowflake_console_steps_v3','snowflake_console_rejections_v3'"
+        }
     };
-    let unexpected: i64 = connection.query_row(&format!("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND (type != 'table' OR name NOT IN ({allowed_tables}))"), [], |r| r.get(0)).map_err(db_error)?;
+    // Version 3 admits only the exact validated decision guards. Arbitrary
+    // triggers/views remain forbidden, including on legacy backups.
+    let allowed_triggers = if version >= 3 {
+        "'console_run_insert_decision','console_run_update_decision','console_rejection_insert_decision','console_rejection_update_decision'"
+    } else {
+        "''"
+    };
+    let unexpected: i64 = connection.query_row(&format!("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND NOT ((type='table' AND name IN ({allowed_tables})) OR (type='trigger' AND name IN ({allowed_triggers})))"), [], |r| r.get(0)).map_err(db_error)?;
     if unexpected != 0 {
         return Err(AppError::invalid(
             "The metadata backup contains unexpected schema objects",
@@ -319,7 +330,7 @@ impl Persistence {
         }
         // Upgrade a legacy snapshot privately. Unresolved restored attempts are
         // sealed before replacement, so copying cannot create replayable work.
-        initialize_schema(&mut pinned)?;
+        initialize_schema(&mut pinned, None)?;
         snowflake_console::merge_for_restore(&current, &mut pinned)?;
         snowflake_console::interrupt_records(&mut pinned)?;
         validate(&pinned)?;
@@ -487,8 +498,9 @@ mod tests {
         let path = db.backup_path(&snapshot.id).unwrap();
         let old = Connection::open(&path).unwrap();
         old.execute_batch(
-            "DROP TABLE snowflake_console_steps;
-             DROP TABLE snowflake_console_runs;
+            "DROP TABLE snowflake_console_steps_v3;
+             DROP TABLE snowflake_console_runs_v3;
+             DROP TABLE snowflake_console_rejections_v3;
              PRAGMA user_version=1;",
         )
         .unwrap();
@@ -526,8 +538,9 @@ mod tests {
             if legacy {
                 let old = Connection::open(&path).unwrap();
                 old.execute_batch(
-                    "DROP TABLE snowflake_console_steps;
-                     DROP TABLE snowflake_console_runs;
+                    "DROP TABLE snowflake_console_steps_v3;
+                     DROP TABLE snowflake_console_runs_v3;
+                     DROP TABLE snowflake_console_rejections_v3;
                      PRAGMA user_version=1;",
                 )
                 .unwrap();
@@ -616,6 +629,132 @@ mod tests {
             assert_eq!(existing.run, terminal);
             assert_eq!(fs::read(path).unwrap(), backup_bytes);
         }
+    }
+
+    #[test]
+    fn console_negative_legacy_and_version_two_restore_preserve_live_refusals() {
+        use snowflake_console::{ConsoleAdmissionRejection, ConsoleRunMetadata};
+        for version in [1, 2, 3] {
+            let root = tempfile::tempdir().unwrap();
+            let db = Persistence::open(root.path()).unwrap();
+            db.set_setting("refusal-restore", "before").unwrap();
+            let backup = db.create_metadata_backup().unwrap();
+            let path = db.backup_path(&backup.id).unwrap();
+            if version < 3 {
+                let old = Connection::open(&path).unwrap();
+                for (name, _) in snowflake_console::DECISION_TRIGGERS {
+                    old.execute_batch(&format!("DROP TRIGGER {name};")).unwrap();
+                }
+                old.execute_batch("DROP TABLE snowflake_console_rejections_v3;")
+                    .unwrap();
+                if version == 1 {
+                    old.execute_batch("DROP TABLE snowflake_console_steps_v3; DROP TABLE snowflake_console_runs_v3;").unwrap();
+                } else {
+                    old.execute_batch("ALTER TABLE snowflake_console_runs_v3 RENAME TO snowflake_console_runs; ALTER TABLE snowflake_console_steps_v3 RENAME TO snowflake_console_steps;").unwrap();
+                }
+                old.pragma_update(None, "user_version", version).unwrap();
+            }
+            let backup = info(&path, &backup.id).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            let owner = db.claim_console_journal_owner().unwrap();
+            let refused = ConsoleAdmissionRejection {
+                client_request_id: new_id(),
+                session_id: new_id(),
+                plan_digest: "a".repeat(64),
+                code: ErrorCode::ApprovalRequired,
+                recorded_at: 1000,
+            };
+            db.console_record_rejection(&owner, &refused).unwrap();
+            db.set_setting("refusal-restore", "after").unwrap();
+            drop(owner);
+            db.restore_metadata_backup(&backup.id, &backup.digest)
+                .unwrap();
+            assert_eq!(
+                db.setting("refusal-restore").unwrap().as_deref(),
+                Some("before")
+            );
+            assert_eq!(
+                db.console_rejection_by_client_request(&refused.client_request_id)
+                    .unwrap(),
+                Some(refused.clone())
+            );
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "private migration must preserve backup bytes"
+            );
+            let owner = db.claim_console_journal_owner().unwrap();
+            assert_eq!(
+                db.console_prepare_run(
+                    &owner,
+                    ConsoleRunMetadata {
+                        run_id: new_id(),
+                        client_request_id: refused.client_request_id,
+                        session_id: refused.session_id,
+                        connection_id: new_id(),
+                        plan_digest: refused.plan_digest,
+                        step_count: 1,
+                        created_at: 2000,
+                    }
+                )
+                .err()
+                .unwrap()
+                .code,
+                ErrorCode::Conflict
+            );
+        }
+    }
+
+    #[test]
+    fn console_negative_backup_conflicts_and_changed_guards_never_replace_live_store() {
+        use snowflake_console::ConsoleAdmissionRejection;
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        let owner = db.claim_console_journal_owner().unwrap();
+        let refused = ConsoleAdmissionRejection {
+            client_request_id: new_id(),
+            session_id: new_id(),
+            plan_digest: "a".repeat(64),
+            code: ErrorCode::PolicyBlocked,
+            recorded_at: 1000,
+        };
+        db.console_record_rejection(&owner, &refused).unwrap();
+        drop(owner);
+        let backup = db.create_metadata_backup().unwrap();
+        let path = db.backup_path(&backup.id).unwrap();
+        db.set_setting("live-refusal", "preserved").unwrap();
+        let copy = Connection::open(&path).unwrap();
+        copy.execute("UPDATE snowflake_console_rejections_v3 SET recorded_at=2000 WHERE client_request_id=?1", [&refused.client_request_id]).unwrap();
+        drop(copy);
+        let changed = info(&path, &backup.id).unwrap();
+        assert_eq!(
+            db.restore_metadata_backup(&changed.id, &changed.digest)
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            db.console_rejection_by_client_request(&refused.client_request_id)
+                .unwrap(),
+            Some(refused.clone())
+        );
+        let copy = Connection::open(&path).unwrap();
+        copy.execute_batch("DROP TRIGGER console_run_insert_decision; CREATE TRIGGER console_run_insert_decision BEFORE INSERT ON snowflake_console_runs_v3 BEGIN SELECT 1; END;").unwrap();
+        drop(copy);
+        let tampered = info(&path, &backup.id).unwrap();
+        assert!(
+            db.restore_metadata_backup(&tampered.id, &tampered.digest)
+                .is_err()
+        );
+        assert_eq!(
+            db.setting("live-refusal").unwrap().as_deref(),
+            Some("preserved")
+        );
+        assert_eq!(
+            db.console_rejection_by_client_request(&refused.client_request_id)
+                .unwrap(),
+            Some(refused)
+        );
     }
 
     #[test]
