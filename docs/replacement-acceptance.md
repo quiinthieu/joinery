@@ -10,9 +10,11 @@ with untouched suffix, explicit cancellation and acknowledgement recording that
 crosses expiry without losing original evidence. Exercise the actual browser
 settings/review/results/restart flow. Local synthetic checks now pass, including
 the actual browser workflow; the ledger records exact source and fixture fixes.
-A finite 24-hour cap does not close
-complete long-query parity. Approved account qualification and packaged macOS
-evaluation remain required.
+Normal SDK-bearing ARM64 packaging from clean `72ee3e4` passes resource,
+strict ad-hoc signature and guarded helper startup with zero authentication/SQL.
+This does not exercise the native UI or account. A finite 24-hour cap does not
+close complete long-query parity. Approved account qualification and packaged
+macOS evaluation remain required.
 
 ## Retained reviewed SQL console (12 November 2026, local integration)
 

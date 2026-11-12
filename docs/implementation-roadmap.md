@@ -8,8 +8,11 @@ delayed-result/cancellation cases and actual browser settings/full restart.
 Current evidence includes 80 focused native, 121 focused frontend, 194 affected
 SDK cases and full validation with 921 frontend / 561 standard Rust cases (137
 default ignores). The ledger records fixture corrections and affected reruns.
-Build the normal app next; actual Snowflake long-query/cancellation and native
-owner acceptance remain open.
+Normal SDK-bearing ARM64 packaging from clean `72ee3e4` passes resource, strict
+ad-hoc signature and guarded helper startup with zero authentication/SQL. The
+app remains local and uninstalled. Advance the reviewed receipt-retention
+workflow next; actual Snowflake long-query/cancellation and native owner
+acceptance remain open.
 
 The bounded retention inventory at `b86ac44` found separate 10,000-positive and
 10,000-negative native limits, a combined 10,000-ID browser limit, retained full

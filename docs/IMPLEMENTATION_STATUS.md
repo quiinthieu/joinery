@@ -9,9 +9,15 @@ ignored), 121 focused frontend cases, 194 affected actual-SDK loopback cases,
 full validation with 921 frontend / 561 standard Rust cases (137 default ignores),
 and the actual browser settings/review/results/full-restart workflow. The later
 harness-only corrections pass three binary regressions and strict Rust checks;
-the ledger separates those source pins. Normal packaging is pending; the local
-bundle below describes the preceding source. Real long-query/cancellation, packaged UI and owner
-acceptance remain required.
+the ledger separates those source pins. Normal SDK-bearing ARM64 packaging from
+clean `72ee3e4` passes resource, strict ad-hoc signature and network-guarded
+helper-startup checks with zero authentication/SQL. The local, uninstalled app is
+`src-tauri/target/release/bundle/macos/Joinery.app`; its binary SHA-256 is
+`e29d03ee6c653361d7a9e7ef1ddf295c5a84991c52fd5c57cafac3748baf0732`.
+The preceding `9b20aa2` app is separately preserved and byte-for-byte unchanged.
+After packaging, the Rust target occupies about 7.7 GiB and 196.3 GiB remains
+free. Real long-query/cancellation, packaged UI and owner acceptance remain
+required; receipt retention is still a reviewed proposal.
 
 ## Durable console admission decisions (12 November 2026)
 
@@ -30,13 +36,14 @@ ordinary clicks/keyboard receipt scrolling at 1024 × 720. A bounded receipt pan
 keeps pending notices visible without displacing the editor. See the
 [ledger](replacement-verification.md) for source-scoped evidence and failures.
 
-The normal SDK-bearing ARM64 bundle from clean `9b20aa2` passes resources,
-strict ad-hoc signature and network-guarded helper startup with zero authentication
-or SQL requests. It is available at
-`src-tauri/target/release/bundle/macos/Joinery.app`, local and uninstalled. The
+At this predecessor, the normal SDK-bearing ARM64 bundle from clean `9b20aa2`
+passed resources, strict ad-hoc signature and network-guarded helper startup with
+zero authentication or SQL requests. That app is now preserved at
+`.cache/verification/reviewed-console/preserved-release-9b20aa2/Joinery.app`,
+local and uninstalled. The
 previous default build output became absent before this increment; all bytes of
 the separately preserved `278754b` app remain unchanged. The ledger records the
-current binary hash, storage measurements and nonfatal stripping-tool warning.
+historical binary hash, storage measurements and nonfatal stripping-tool warning.
 Packaged native UI/SSO/restart, practical retention, long-running behavior and
 complete Snowflake/macOS/owner acceptance remain required; the Goal stays active.
 

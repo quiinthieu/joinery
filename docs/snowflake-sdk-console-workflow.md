@@ -101,9 +101,10 @@ Full local validation passes 921 frontend / 561 standard Rust tests (137 default
 ignores); later harness-only corrections pass three regressions and strict Rust
 checks, followed by the actual browser pass. This does not qualify actual Snowflake effects, cancellation, SSO,
 performance or packaged native UI behavior. Normal SDK-bearing ARM64 packaging
-from the preceding clean `9b20aa2` passes resources, strict ad-hoc signature and guarded helper
-startup with zero authentication/SQL. Current packaging is pending. The local app remains uninstalled; normal
-native UI/SSO/restart acceptance remains open.
+from clean `72ee3e4` includes the configured limit and passes resources, strict
+ad-hoc signature and guarded helper startup with zero authentication/SQL. The
+local app remains uninstalled; normal native UI/SSO/restart acceptance remains
+open. The ledger records its binary hash and preserved predecessor.
 
 Account acceptance still needs a fresh exact reviewed plan and billing scope for
 the permitted disposable `SANDBOX.BILLIE_TESTING` target, then independently read

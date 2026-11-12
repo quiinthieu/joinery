@@ -24,7 +24,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `9b20aa2` passes resources, strict ad-hoc signature and guarded helper startup with zero authentication/SQL                                                                                                                                                             | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open                                                            |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `72ee3e4` passes resources, strict ad-hoc signature and guarded helper startup with zero authentication/SQL                                                                                                                                                             | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open                                                            |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -67,9 +67,10 @@ locally verified. It adds persisted per-profile limits bound
 into native review, rather than silently extending a running session. The
 [ledger](replacement-verification.md) records the reproduced fixed-limit defect,
 corrected SDK transport tests and browser settings/review/results/full restart.
-Normal packaging is pending. Real long-running Snowflake
-queries, the finite 24-hour ceiling and account cancellation remain gates even
-after local tests pass.
+Normal SDK-bearing ARM64 packaging from clean `72ee3e4` passes resources, strict
+ad-hoc signature and guarded helper startup with zero authentication/SQL. Real
+long-running Snowflake queries, the finite 24-hour ceiling and account
+cancellation remain gates even after local tests pass.
 
 The [design](snowflake-sdk-console-scripts-design.md) is prepared and independently
 reviewed. [Compiler and private transport foundations](snowflake-sdk-console-transport.md)
@@ -88,7 +89,7 @@ metadata, editing/import, authoring, performance and native usability in scope.
 
 | Application capability | Current evidence | Required gate |
 | --- | --- | --- |
-| Reviewed retained owner/UI | Current query-limit increment: 121 focused frontend, 80 focused native (one internal child ignored), 194 affected SDK cases; full validation 921 frontend / 561 standard Rust (137 default ignores). Later harness-only corrections pass three regressions/strict checks; browser settings/review/results/full restart passes with synthetic SDK | Current normal packaging pending; practical retention, finite query limits and actual Snowflake/native/owner acceptance |
+| Reviewed retained owner/UI | Current query-limit increment: 121 focused frontend, 80 focused native (one internal child ignored), 194 affected SDK cases; full validation 921 frontend / 561 standard Rust (137 default ignores). Later harness-only corrections pass three regressions/strict checks; browser settings/review/results/full restart passes with synthetic SDK | Normal ARM64 package from clean `72ee3e4` passes resource/signature/guarded startup checks; practical retention, finite query limits and actual Snowflake/native/owner acceptance remain open |
 
 The following records the preceding private-foundation increment. Its last
 column identifies work outstanding at that source; the current owner/UI status

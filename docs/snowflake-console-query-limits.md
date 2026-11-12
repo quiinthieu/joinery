@@ -6,9 +6,11 @@ The 12 November 2026 increment replaces the fixed console delivery deadline with
 an explicitly configured, reviewed execution and result-delivery limit. Local
 synthetic verification passes, including the actual browser form, native review,
 results and full application restart. The [verification ledger](replacement-verification.md)
-records source-scoped checks and corrected fixture failures. Normal packaging of
-this increment is pending. This does not establish account qualification,
-unlimited execution, or complete DataGrip parity.
+records source-scoped checks and corrected fixture failures. Normal SDK-bearing
+ARM64 packaging from clean `72ee3e4` passes resources, strict ad-hoc signature and
+network-guarded helper startup with zero authentication/SQL. The app remains local
+and uninstalled. This does not establish packaged native UI acceptance, account
+qualification, unlimited execution, or complete DataGrip parity.
 
 DataGrip's current [Run queries documentation](https://www.jetbrains.com/help/datagrip/run-a-query.html)
 describes completion notifications for long-running database queries. Its HTTP

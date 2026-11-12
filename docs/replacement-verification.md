@@ -13,8 +13,8 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 Base is clean `b86ac44` on `feat/datagrip-replacement`. The
 [contract](snowflake-console-query-limits.md) separates the selected execution/
 result-delivery budget from acknowledgement recording and safe settlement.
-Local synthetic verification passes within the source scopes below; normal
-packaging is pending. Historical passes do not establish new source or account
+Local synthetic verification and normal packaging pass within the source scopes
+below. Historical passes do not establish new source or account
 behavior. Corrected fixture failures and their reruns are retained explicitly.
 
 Before changing the fixed runtime deadline, minimal optional-profile scaffolding
@@ -183,6 +183,68 @@ is `2f7ddcf0c2ad93b0179be8105456573b6e9a3467ba5dfb295acf7061dfc9a91a`.
 See `timeout-runtime-staging*.json`, `timeout-runtime-resources.json`,
 `timeout-runtime-startup.json` and adjacent logs. This is staged resource/startup
 evidence, not a new normal app bundle or UI acceptance.
+
+The reviewed product/test increment is committed as `b3ce956`; the separate
+retention proposal and roadmap link are `72ee3e4`. The final bounded independent
+review reports no remaining material findings. Its ignored report is
+`console-timeout-final-review.json`, SHA-256
+`9c8019e472eaddf4e07440da60a23ed60cba7af58775827a696332521cb7ebbc`.
+It independently matches all 30 final-browser product hashes and the 226 native
+pins, attributing the later harness-only change to its separate three binary,
+strict and browser checks. It ran no additional builds or tests. Receipt retention
+remains a design, not implemented capacity or recovery qualification.
+
+Before replacing the default bundle, the complete `9b20aa2` app was preserved at
+`.cache/verification/reviewed-console/preserved-release-9b20aa2/Joinery.app`
+using macOS `cp -cRp` APFS cloning. All **13,055 regular files**, **241,019,097
+bytes** and zero symlinks match the source before/after copying; strict deep
+signature verification passes. Observed free space changes by less than 3 MiB
+while data blocks are shared; that whole-volume change is not an exact clone
+allocation measurement. See `timeout-prior-app-preservation.json`.
+
+The single serialized `pnpm desktop:snowflake:bundle:mac` run passes in
+**315.99 seconds** from clean commit
+`72ee3e4248a302388c9bc91d0384f8ab188ada2d`, tree
+`0ae509c15aa1ad95103c15a43c19dd497486b21c`. The checkout stays clean throughout.
+It rebuilds the production UI/desktop app, verifies resources and the strict
+deep ad-hoc signature, then checks the packaged helper behind a network guard:
+SDK **3.4.1**, **zero authentication / SQL requests**. Packaged resource manifest
+SHA-256 is `2f7ddcf0c2ad93b0179be8105456573b6e9a3467ba5dfb295acf7061dfc9a91a`,
+with **15,109 resource entries and zero symlinks**. Existing `ts-rs` ignored-serde
+attribute warnings recur. The installed Rust toolchain's optional `rust-objcopy`
+strip step again warns about missing `libLLVM.dylib`/SIGABRT; the build proceeds
+and all final bundle checks pass. No global toolchain changes are made.
+
+The normal local app at `src-tauri/target/release/bundle/macos/Joinery.app` is
+**ARM64, version/build 0.1.0**. Its executable is **33,235,136 bytes**, SHA-256
+`e29d03ee6c653361d7a9e7ef1ddf295c5a84991c52fd5c57cafac3748baf0732`.
+The complete app has **13,055 regular files**, **241,021,796 bytes** and zero
+symlinks. A separate post-build whole-file comparison confirms the preserved
+`9b20aa2` app remains unchanged; both signatures still verify. See
+`timeout-app-package.json`, its adjacent log and `timeout-app-artifact.json`.
+The app is neither installed nor launched for native UI acceptance. These checks
+do not establish external-browser SSO, account semantics or daily replacement.
+
+Independent package/docs follow-up finds no material issue and independently
+checks the current executable hash and unchanged non-document source/dependency
+pins. Its separate report `console-timeout-package-review.json` has SHA-256
+`d95fa5e35967fccb0f2c5464bdfdbdf9baa37330025e2dd29c43f5c0e8c1c594`;
+the historical final source review above remains unchanged. Storage and complete
+preserved-app comparisons are attributed to the lead's checks. The reviewer ran
+no builds, tests, native UI or account operations.
+
+The pre-build 20 GiB free-space gate observes **211,172,790,272 bytes** free;
+post-build observation is **210,786,861,056 bytes (196.3 GiB)**. These are actual
+whole-volume observations, not an allocation attribution. Scoped `du` reports
+**8,080,336 KiB (7.7 GiB)** for the whole Rust target, including **5,577,920 KiB**
+debug and **2,502,408 KiB** release. The earlier specifically approved cleanup
+receipt remains `../build-storage/approved-debug-cleanup.json`: it already
+reclaimed **145,766,936,576 bytes (135.8 GiB)**. The delayed approval does not
+authorize deleting rebuilt caches again. Source, release apps, test evidence,
+dependencies and application data remain preserved. Development builds retain
+the committed smaller-symbol/no-incremental policy; no automatic cache deletion
+is introduced. Actual Snowflake/native/owner acceptance and full applicable
+DataGrip parity remain open; the Goal stays active.
 
 ### Durable console admission refusals (12 November 2026)
 
