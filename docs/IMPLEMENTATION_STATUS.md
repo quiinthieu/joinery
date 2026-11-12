@@ -27,10 +27,11 @@ requests. Final verified regular-file bytes total 229.16 MiB, version 0.1.0.
 It remains local and uninstalled; Developer ID/notarization and normal app SSO
 are unqualified. See the ledger for source/hash and failed-run evidence.
 
-The separate qualification preview uses frozen source `103cb45`, private copied
-artifacts and a deliberately expired window. Its offline emit/verify pass does
-not execute or qualify this new feature. There is no pending account approval
-question. Actual writes/transactions/DDL under `SANDBOX.BILLIE_TESTING`, million-row
+The separate qualification uses frozen source `103cb45` and private copied
+artifacts. A [fresh reviewed attempt](snowflake-table-attempt-9a8d9d3d.md) is
+prepared for 05:52–06:22 UTC on 12 November. Offline emit/verify does not execute
+or qualify this new feature; account, permanent marker-store and billing approval
+remain required. Actual writes/transactions/DDL under `SANDBOX.BILLIE_TESTING`, million-row
 Snowflake interaction/export and every applicable DataGrip workflow remain open.
 The Goal is active and incomplete. Nothing is installed, published or merged.
 Repository evidence and the local Orca worktree status are updated. The private

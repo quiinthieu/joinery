@@ -36,10 +36,10 @@ from a short summary does not make a feature optional.
 
 The [acceptance gates](replacement-acceptance.md) define observable workflows;
 the [roadmap](implementation-roadmap.md) orders implementation. The immediate
-qualification gate is a fresh exact-window Plan and account/billing approval
-for one generated table under `SANDBOX.BILLIE_TESTING`, including its disclosed
-broader metadata inventory. An expired offline preview retains the reviewed
-executable/source/runtime; it supplies no execution authority. No existing
+qualification gate is explicit account, permanent marker-store and billing approval
+for the [fresh exact-window Plan](snowflake-table-attempt-9a8d9d3d.md), covering
+one generated table under `SANDBOX.BILLIE_TESTING` and the disclosed broader
+metadata inventory. Offline review supplies no execution authority. No existing
 application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.

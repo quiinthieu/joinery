@@ -12,10 +12,15 @@ restores that evidence, selects fixed native markers and retains preparation,
 original calls, shutdown and terminal persistence through observed SIGINT/SIGTERM.
 Synthetic process checks use disposable homes and a synthetic SDK; production
 fixture injection is absent. Current executable/source/compiler/zero-link-runtime
-pins and a new exact approval window are still required before an account attempt.
-No account approval question is pending while local verification proceeds.
+pins and a new exact approval window are required before an account attempt.
+The fresh attempt below supplies those pins; explicit approval is still required.
 The [verification ledger](replacement-verification.md) records current checks;
 the paragraphs below preserve preceding implementation history.
+
+A [fresh exact attempt](snowflake-table-attempt-9a8d9d3d.md) is prepared for
+12 November 2026, 05:52–06:22 UTC. Offline emit/verify and independent artifact
+comparison pass. It has not run and requires new explicit account, permanent
+marker-store and billing approval; the expired preview below grants none.
 
 ### Offline review snapshot (12 November 2026)
 
