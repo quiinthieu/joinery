@@ -8,6 +8,58 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Paged query history (13 November 2026)
+
+Base is `2b4ee70` on `feat/datagrip-replacement`. The lead coordinates three
+bounded `gpt-6.1-sol` high-effort agents for SQLite/API implementation,
+history/palette UI and independent read-only review. The
+[workflow guide](query-history.md) records limits and reproducible acceptance.
+History and palette readers now request summary pages, search the retained store
+before limiting matches, and fetch exact current SQL only on explicit activation.
+Shared clear invalidation fences both surfaces and pending detail opens. Stored
+empty SQL is distinct from metadata-only history. No schema migration or account
+execution is included.
+
+Evidence labels below refer to `.cache/verification/reviewed-console/`. Receipts
+capture exact commands, complete source hashes and before/after disk usage.
+
+| Label | Actual result |
+| --- | --- |
+| `history-paging-older-match-reproduced` | Expected exit 101 before the production fix: older match omitted after the newest 1,000 rows; zero matches instead of one. 17.837 seconds, unchanged captured sources |
+| `history-paging-focused-rust` | Ten pass / one fails: SQLite empty-BLOB substring returns NULL, losing the empty saved preview. 17.029 seconds, unchanged captured sources |
+| `history-paging-focused-ui` | 37 pass / one fails: a test-fixture edit incorrectly renamed saved-query/session SQL fields. Production contracts retained; fixture corrected. 3.699 seconds, unchanged captured sources |
+| `history-paging-focused-corrected` | All 11 real SQLite cases pass, 16.407 seconds, unchanged captured sources. Includes full-retention/compatibility-cap search, ties, Unicode and embedded-NUL previews, empty/unavailable/exact SQL, reopen/clear, metadata terms, malformed cursors and corrupt identities |
+| `history-paging-ui-corrected` | All 38 focused cases in three files pass, 3.545 seconds, unchanged captured sources. Includes page replacement, deep server matches, exact detail, retry/error and search/refresh/unmount/shared-clear races |
+| `history-paging-full-first` | `pnpm validate` passes: 1,022 frontend cases / 71 files, 640 standard Rust cases / 139 default fixture ignores, formatting, regenerated contracts, TypeScript, production frontend, desktop compilation and strict all-target/all-feature Clippy. 140.019 seconds, unchanged captured sources |
+| `history-paging-browser` | All four actual headless Chromium cases pass, 27.191 seconds including Rust bridge startup, unchanged captured sources. Three new real-SQLite history cases cover 1,006 tied-time entries, old/deep Unicode search, bounded summary payload, exact full SQL opening without execution, renderer reload, keyboard palette, empty/metadata-only SQL and clear during an actually delayed detail response. The fourth uses isolated PostgreSQL for reviewed writes/NULL/injection-shaped bindings and verifies only templates enter history. The lead started/stopped only its PostgreSQL fixture; the unrelated running container was preserved |
+| `history-paging-native-build` | Hidden native release build passes, 200.490 seconds, unchanged captured sources. The existing nonfatal `rust-objcopy`/LLVM loading warning also occurs in the preceding normal-package log; no toolchain/global configuration was changed |
+| `history-paging-native-webview` | Actual hidden main WebView passes all 21 checks including new history-page and missing-detail IPC permissions, plus ten cleanup cycles; exit zero, 3.568-second runner / 3,109-ms native elapsed, unchanged captured sources. Exact build and run metadata are preserved as `history-paging-native-build-metadata.json` / `history-paging-native-webview-runs.json` |
+| `history-paging-final-metadata` | All 12 real SQLite cases pass after the review correction; 17.706 seconds, unchanged captured sources. New metadata-only positive/negative fixtures check both summary pages and compatibility search, validated UPDATE multi-joined counts and unavailable DML/DDL summary status |
+| `history-paging-full-final` | Corrected-source `pnpm validate` passes: 1,022 frontend cases / 71 files, 641 standard Rust cases / 139 default fixture ignores, formatting, contracts, TypeScript, production UI, desktop compile and strict Clippy. 136.747 seconds, all 551 captured product/test/tooling files unchanged during the check |
+| `history-paging-browser-final` | All four browser cases pass again on the corrected metadata-search source, 27.102 seconds, all 551 captured source files unchanged. Exact full-SQL reopening, delayed-response clear protection and actual PostgreSQL template-only history remain verified; the lead's PostgreSQL fixture is stopped afterward |
+
+The browser and native runs above precede the review correction for two displayed
+Snowflake summary search fields. Enrollment, UI and detail/paging logic remain
+unchanged; final source checks separately qualify the corrected search terms.
+Independent review identified omitted multi-joined-row counts and unavailable
+summary status. The correction indexes validated counts only, preserving the
+displayed distinction between unavailable and verified summaries.
+Final independent review has no material findings. The reviewer reconstructed
+the preceding reviewed `history.rs` hash exactly by reversing only the narrow
+search blocks, one new regression and comment-spacing changes. Final SHA-256 is
+`5de03aa428148ace3ccca7f3938a7e44ccd05e677b0be22a4177c90149dd9e52`.
+The lead's graph transport was closed. Review used Tier 2 generation
+`2026-11-12T17:28:35Z`, then `17:39:52Z` for the final history/display paths,
+with matching metadata and no recorded coverage gaps plus direct source reads.
+Unreliable graph edges were not used as call-path evidence.
+
+Search streams one SQL row at a time under the shared SQLite mutex; the sorter
+holds keys. This is not a bound on arbitrary legacy row bytes or proof of
+full-capacity latency/memory. The compatibility API retains its 1,000 matching
+full-entry cap, while current UI readers use summaries. Atomic pending/completed
+history, durable reservations, publisher settlement, configurable retention,
+actual Snowflake and owner acceptance remain required. `retentionEnabled=false`.
+
 ### Checked receipt accounting (13 November 2026, local source verified)
 
 Base is `257bb7e` on `feat/datagrip-replacement`. The lead integrated an

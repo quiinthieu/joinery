@@ -263,10 +263,11 @@ at most 262,144 bytes, there are at most 100 units, and profile names are at mos
 100 UTF-8 bytes (`safety/snowflake_script.rs`, `execution.rs`). JSON escaping adds
 encoding bytes. Charge the actual history row, lifecycle metadata, audits and
 indexes, with a checked allowance for remaining growth; 16 KiB is not a history
-bound. History currently reads up to 1,000 complete rows before searching
-(`Persistence::history`). Replace this with bounded summary pages and on-demand
-SQL detail as part of the dependent workflow. Search must cover all retained
-history rather than filtering only a truncated newest prefix. Current history
+bound. The [history browsing workflow](query-history.md) now uses bounded summary
+pages and explicit exact-SQL detail. Search filters all retained rows before its
+page limit; the compatibility API caps matching full entries at 1,000. These
+read APIs do not implement the atomic lifecycle and privacy suppression required
+above. Current history
 prunes at 30 days/10,000 rows; retention-policy parity/visibility remains a
 separate required acceptance item, not evidence of complete DataGrip parity.
 

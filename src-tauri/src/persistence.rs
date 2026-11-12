@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod history;
 mod library;
 mod recovery;
 pub(crate) mod recovery_crypto;
@@ -208,21 +209,7 @@ impl Persistence {
     }
 
     pub fn history(&self, search: &str) -> AppResult<Vec<HistoryEntry>> {
-        let entries: Vec<HistoryEntry> =
-            self.json_rows("SELECT json FROM history ORDER BY started_at DESC LIMIT 1000")?;
-        let search = search.to_lowercase();
-        Ok(entries
-            .into_iter()
-            .filter(|e| {
-                search.is_empty()
-                    || e.connection_name.to_lowercase().contains(&search)
-                    || e.sql
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&search)
-            })
-            .collect())
+        history::compatibility_history(self, search)
     }
 
     pub fn clear_history(&self) -> AppResult<()> {
@@ -864,16 +851,17 @@ mod tests {
     fn legacy_history_has_unknown_execution_accounting_after_restart() {
         let dir = tempfile::tempdir().unwrap();
         let db = Persistence::open(dir.path()).unwrap();
+        let started_at = now_ms();
         let legacy = serde_json::json!({
             "id": "legacy-script", "connectionId": "p",
-            "connectionName": "Local fixture", "startedAt": now_ms(),
+            "connectionName": "Local fixture", "startedAt": started_at,
             "sql": null, "statementCount": 4, "status": "completed", "elapsedMs": 5
         });
         db.connection
             .lock()
             .execute(
                 "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
-                params!["legacy-script", now_ms() as i64, legacy.to_string()],
+                params!["legacy-script", started_at as i64, legacy.to_string()],
             )
             .unwrap();
         drop(db);

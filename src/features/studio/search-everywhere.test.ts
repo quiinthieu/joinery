@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ConnectionProfile,
   DatabaseObjectSummary,
-  HistoryEntry,
+  HistorySummary,
   SessionInfo,
   TableInfo,
 } from "../../ipc/generated";
@@ -148,13 +148,14 @@ describe("buildSearchEverywhereResults", () => {
     ],
   };
 
-  const history: HistoryEntry[] = [
+  const history: HistorySummary[] = [
     {
       id: "h-1",
       connectionId: "pg-1",
       connectionName: "Local Postgres",
       startedAt: 1700000000000,
-      sql: "SELECT count(*) FROM public.orders WHERE status = 'paid';",
+      sqlPreview: "SELECT count(*) FROM public.orders WHERE status = 'paid';",
+      sqlStored: true,
       statementCount: 1,
       status: "completed",
       elapsedMs: 4,
@@ -386,17 +387,18 @@ describe("buildSearchEverywhereResults", () => {
 });
 
 describe("script history accounting", () => {
-  const base: HistoryEntry = {
+  const base: HistorySummary = {
     id: "script",
     connectionId: "pg",
     connectionName: "Accounting fixture",
     startedAt: 1,
-    sql: null,
+    sqlPreview: null,
+    sqlStored: false,
     statementCount: 999,
     status: "completed",
     elapsedMs: 8,
   };
-  function search(history: HistoryEntry[], query = "") {
+  function search(history: HistorySummary[], query = "") {
     return buildSearchEverywhereResults({
       query,
       scope: "history",
@@ -421,7 +423,7 @@ describe("script history accounting", () => {
   });
 
   it("shows and searches the stopped suffix even when SQL text was not stored", () => {
-    const entry: HistoryEntry = {
+    const entry: HistorySummary = {
       ...base,
       status: "stopped",
       executionSummary: {
@@ -454,10 +456,11 @@ describe("script history accounting", () => {
   ] as const)(
     "keeps the %s outcome and authoritative counts in search results",
     (status, stopReason, label) => {
-      const entry: HistoryEntry = {
+      const entry: HistorySummary = {
         ...base,
         status,
-        sql: "SELECT\n  7",
+        sqlPreview: "SELECT\n  7",
+        sqlStored: true,
         executionSummary: {
           planned: 1,
           attempted: 1,
@@ -471,7 +474,46 @@ describe("script history accounting", () => {
       expect(item.subtitle).toContain(
         `${label} · Planned: 1 · Attempted: 1 · Completed: ${entry.executionSummary!.completed} · Not attempted: 0`,
       );
-      expect(entry.sql).toBe("SELECT\n  7");
+      expect(entry.sqlPreview).toBe("SELECT\n  7");
     },
   );
+});
+
+// A 256-character summary cannot independently verify a match deep in stored SQL.
+describe("native history matches", () => {
+  const entry: HistorySummary = {
+    id: "deep",
+    connectionId: "pg",
+    connectionName: "Local",
+    startedAt: 1,
+    sqlPreview: "SELECT /* preview only */",
+    sqlStored: true,
+    statementCount: 1,
+    status: "completed",
+    elapsedMs: 1,
+  };
+  const input = {
+    query: "far_beyond_preview",
+    scope: "history" as const,
+    commands: [],
+    tabs: [],
+    activeTabId: null,
+    preferredConnectionId: null,
+    profiles: [],
+    sessions: {},
+    catalog: {},
+    objects: {},
+    history: [entry],
+  };
+  it("preserves a native deep-SQL match for the exact requested query", () => {
+    expect(
+      buildSearchEverywhereResults({ ...input, historyMatchedQuery: input.query }).items,
+    ).toHaveLength(1);
+  });
+  it("does not treat an old query's native matches as matches for a new query", () => {
+    expect(
+      buildSearchEverywhereResults({ ...input, historyMatchedQuery: "previous query" }).items,
+    ).toHaveLength(0);
+    expect(buildSearchEverywhereResults(input).items).toHaveLength(0);
+  });
 });

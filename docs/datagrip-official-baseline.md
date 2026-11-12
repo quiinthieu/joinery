@@ -12,8 +12,8 @@ rows. The source-linked [Snowflake benchmark](snowflake-official-baseline.md)
 records that inventory and connector constraints. JetBrains' official
 [release API](https://data.services.jetbrains.com/products/releases?code=DG&latest=true&type=release)
 confirms **2026.3**, build `263.7307.216`, released 5 November 2026, as the latest
-stable release checked on 9 November and rechecked on 10, 11 and 12 November.
-The 12 November check also reconfirms the official non-commercial FAQ's same-feature
+stable release checked on 9 November and rechecked on 10, 11, 12 and 13 November.
+The 13 November check also reconfirms the official non-commercial FAQ's same-feature
 statement. These targeted checks do not refresh every capability page below;
 the broader source research retains its original observation date.
 
@@ -70,6 +70,13 @@ relationship-authoring workflows. See
 This targeted page check does not change the stable-release baseline above.
 
 ## Scope notes for comparisons
+
+The 13 November targeted history refresh observed the 2026.3
+[Run queries documentation](https://www.jetbrains.com/help/datagrip/run-a-query.html):
+executed-statement history supports text filtering and explicit insertion into a
+console. This does not qualify Joinery's complete history, SQL log or Local
+History workflow; [paged history](query-history.md) closes a narrower browsing
+defect and leaves the other required gates open.
 
 - Official feature pages describe the product generally; they do not guarantee
   identical operations across every DBMS or JDBC driver. State engine-specific

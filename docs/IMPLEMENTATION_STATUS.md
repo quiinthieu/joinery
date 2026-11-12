@@ -1,5 +1,24 @@
 # Implementation and release status
 
+## Paged query history (13 November 2026, locally verified)
+
+History and the keyboard palette now search across retained rows before limiting
+matches. Browsing returns short SQL summaries; explicit activation fetches exact
+current SQL into a new editor without execution. Tied timestamps use stable
+keyset ordering, and shared clear invalidation fences pending pages/detail opens.
+Twelve real SQLite and 38 focused UI cases pass. Four actual headless browser
+cases pass, including isolated PostgreSQL parameter-history privacy, and all 21
+hidden native checks pass with the new main-WebView permissions. These runs and
+the final metadata-search review correction have precise source scopes in the
+[ledger](replacement-verification.md#paged-query-history-13-november-2026).
+See the [usage and acceptance guide](query-history.md).
+Final full validation passes 1,022 frontend / 641 standard Rust cases, with 139
+fixture cases ignored by default, plus formatting, compilation and strict checks.
+
+Atomic admitted/completed history, durable reservations, publisher settlement,
+configurable retention, full-capacity/resource and actual Snowflake/owner gates
+remain open. `retentionEnabled=false`. No installation or publication occurred.
+
 ## Checked receipt accounting (13 November 2026, local source verified)
 
 The current source independently folds stored receipt byte lengths through

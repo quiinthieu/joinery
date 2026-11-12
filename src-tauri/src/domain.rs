@@ -1274,6 +1274,54 @@ pub struct HistoryEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryCursor {
+    #[ts(type = "number")]
+    pub started_at: u64,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryPageRequest {
+    pub search: String,
+    pub cursor: Option<HistoryCursor>,
+    pub limit: u32,
+}
+
+/// Bounded SQL preview; opening a row explicitly retrieves its current detail.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub execution_summary: Option<ExecutionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_dml: Option<SnowflakeDmlEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_ddl: Option<SnowflakeDdlEvidence>,
+    pub id: String,
+    pub connection_id: String,
+    pub connection_name: String,
+    #[ts(type = "number")]
+    pub started_at: u64,
+    pub sql_preview: Option<String>,
+    pub sql_stored: bool,
+    pub statement_count: usize,
+    pub status: RunStatus,
+    pub elapsed_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub entries: Vec<HistorySummary>,
+    pub next_cursor: Option<HistoryCursor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditEntry {
     pub id: String,

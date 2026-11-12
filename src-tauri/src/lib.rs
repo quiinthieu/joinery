@@ -230,6 +230,8 @@ pub fn run() {
             commands::prepare_process_cancel,
             commands::health,
             commands::history,
+            commands::history_page,
+            commands::history_entry,
             commands::clear_history,
             commands::resource_usage,
             commands::probe_ssh,

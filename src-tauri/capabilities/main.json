@@ -89,6 +89,8 @@
     "allow-prepare-process-cancel",
     "allow-health",
     "allow-history",
+    "allow-history-page",
+    "allow-history-entry",
     "allow-clear-history",
     "allow-resource-usage",
     "allow-probe-ssh",

@@ -145,6 +145,8 @@ fn build_desktop() {
             "prepare_process_cancel",
             "health",
             "history",
+            "history_page",
+            "history_entry",
             "clear_history",
             "resource_usage",
             "probe_ssh",

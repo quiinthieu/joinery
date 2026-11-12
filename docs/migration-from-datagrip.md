@@ -6,6 +6,11 @@ confirmed target and required workflows are recorded in
 and limits are in the [verification ledger](replacement-verification.md).
 Keep DataGrip available until your required workflows are accepted.
 
+For local execution history, follow the [paged history walkthrough](query-history.md):
+search all retained entries, browse summaries and open exact saved SQL explicitly
+without executing it. This does not close atomic crash-time history, configurable
+retention, full-capacity or actual Snowflake acceptance requirements.
+
 The new [reviewed retained-console walkthrough](snowflake-sdk-console-workflow.md)
 describes opt-in connection setup, mixed-script review, retained session context,
 explicit transaction boundaries and SQL-free receipt/result recovery. It is a

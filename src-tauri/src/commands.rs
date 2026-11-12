@@ -649,8 +649,33 @@ pub async fn history(
 }
 
 #[tauri::command]
+pub async fn history_page(
+    studio: State<'_, Arc<Studio>>,
+    request: HistoryPageRequest,
+) -> AppResult<HistoryPage> {
+    let studio = Arc::clone(studio.inner());
+    tokio::task::spawn_blocking(move || studio.history_page(&request))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn history_entry(
+    studio: State<'_, Arc<Studio>>,
+    id: String,
+) -> AppResult<Option<HistoryEntry>> {
+    let studio = Arc::clone(studio.inner());
+    tokio::task::spawn_blocking(move || studio.history_entry(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
 pub async fn clear_history(studio: State<'_, Arc<Studio>>) -> AppResult<()> {
-    studio.clear_history()
+    let studio = Arc::clone(studio.inner());
+    tokio::task::spawn_blocking(move || studio.clear_history())
+        .await
+        .map_err(join_error)?
 }
 
 #[tauri::command]

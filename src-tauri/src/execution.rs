@@ -4005,6 +4005,12 @@ impl Studio {
     pub fn history(&self, search: &str) -> AppResult<Vec<HistoryEntry>> {
         self.persistence.history(search)
     }
+    pub fn history_page(&self, request: &HistoryPageRequest) -> AppResult<HistoryPage> {
+        self.persistence.history_page(request)
+    }
+    pub fn history_entry(&self, id: &str) -> AppResult<Option<HistoryEntry>> {
+        self.persistence.history_entry(id)
+    }
     pub fn clear_history(&self) -> AppResult<()> {
         let _recovery_activity = self.begin_recovery_activity()?;
         self.persistence.clear_history()

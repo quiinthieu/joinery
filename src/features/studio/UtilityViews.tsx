@@ -14,6 +14,9 @@ import type {
   ConstraintKind,
   DatabaseObjectRef,
   HistoryEntry,
+  HistoryCursor,
+  HistoryPage,
+  HistorySummary,
   LockWaitSnapshot,
   ObjectDetails,
   ProcessInfo,
@@ -35,51 +38,162 @@ import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./stora
 import { SnowflakeDmlHistorySummary } from "./SnowflakeDmlNotice";
 import { SnowflakeDdlHistorySummary } from "./SnowflakeDdlNotice";
 import { ExecutionSummary } from "./ExecutionSummary";
+import {
+  beginHistoryClear,
+  historyAccessEpoch,
+  historyClearPending,
+  historySearchError,
+  useHistoryAccessEpoch,
+} from "./history-access";
 
 export function HistoryView() {
-  const [entries, setEntries] = useState<HistoryEntry[]>([]),
-    [search, setSearch] = useState(""),
-    [error, setError] = useState<string | null>(null);
-  const [audit, setAudit] = useState(false),
-    [clearing, setClearing] = useState(false),
-    [busy, setBusy] = useState(false);
+  const [entries, setEntries] = useState<HistorySummary[]>([]);
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [audit, setAudit] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<HistoryCursor | null>(null);
+  const [previous, setPrevious] = useState<(HistoryCursor | null)[]>([]);
+  const [nextCursor, setNextCursor] = useState<HistoryCursor | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const epoch = useHistoryAccessEpoch();
+  const request = useRef(0);
+  const detail = useRef(0);
+  const mounted = useRef(false);
+
+  function invalidate() {
+    request.current += 1;
+    detail.current += 1;
+    setOpening(null);
+    setEntries([]);
+    setNextCursor(null);
+  }
+  function firstPage() {
+    setCursor(null);
+    setPrevious([]);
+  }
   useEffect(() => {
-    let active = true;
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      request.current += 1;
+      detail.current += 1;
+    };
+  }, []);
+  useEffect(() => {
+    const generation = ++request.current;
+    detail.current += 1;
+    setOpening(null);
+    setEntries([]);
+    setNextCursor(null);
+    setError(null);
+    if (audit || historyClearPending()) {
+      setLoading(false);
+      return;
+    }
+    const invalid = historySearchError(search);
+    if (invalid) {
+      setError(invalid);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     const timer = setTimeout(() => {
       void client
-        .call<HistoryEntry[]>("history", { search })
-        .then((entries) => {
-          if (active) setEntries(entries);
+        .call<HistoryPage>("history_page", { request: { search, cursor, limit: 50 } })
+        .then((page) => {
+          if (!mounted.current || request.current !== generation || historyAccessEpoch() !== epoch)
+            return;
+          setEntries(page.entries);
+          setNextCursor(page.nextCursor);
         })
-        .catch((error) => {
-          if (active) setError(messageOf(error));
+        .catch((cause) => {
+          if (mounted.current && request.current === generation && historyAccessEpoch() === epoch)
+            setError(messageOf(cause));
+        })
+        .finally(() => {
+          if (mounted.current && request.current === generation && historyAccessEpoch() === epoch)
+            setLoading(false);
         });
     }, 120);
     return () => {
-      active = false;
       clearTimeout(timer);
+      request.current += 1;
     };
-  }, [search]);
+  }, [search, cursor, refresh, audit, epoch]);
+
+  async function openEntry(entry: HistorySummary) {
+    if (opening || historyClearPending()) return;
+    const generation = ++detail.current;
+    const access = historyAccessEpoch();
+    setOpening(entry.id);
+    setError(null);
+    try {
+      const current = await client.call<HistoryEntry | null>("history_entry", { id: entry.id });
+      if (!mounted.current || detail.current !== generation || historyAccessEpoch() !== access)
+        return;
+      if (!current) throw new Error("This history entry was deleted or cleared. Refresh history.");
+      if (
+        current.id !== entry.id ||
+        current.connectionId !== entry.connectionId ||
+        current.startedAt !== entry.startedAt
+      )
+        throw new Error("The history entry identity changed. Refresh history.");
+      if (current.sql !== null) useStudio.getState().openQuery(current.connectionId, current.sql);
+      else useStudio.getState().notify("Only execution metadata was saved for this query.");
+    } catch (cause) {
+      if (mounted.current && detail.current === generation && historyAccessEpoch() === access)
+        setError(messageOf(cause));
+    } finally {
+      if (mounted.current && detail.current === generation) setOpening(null);
+    }
+  }
+  async function clearHistory() {
+    invalidate();
+    firstPage();
+    setBusy(true);
+    setClearError(null);
+    const finish = beginHistoryClear();
+    try {
+      await client.call("clear_history");
+      if (mounted.current) setClearing(false);
+    } catch (cause) {
+      if (mounted.current) setClearError(messageOf(cause));
+    } finally {
+      finish();
+      if (mounted.current) setBusy(false);
+    }
+  }
   return (
     <div className="utility-view">
       <header className="utility-header">
         <div>
           <span className="eyebrow">YOUR WORK, REMEMBERED</span>
           <h1>Query history</h1>
-          <p>Recent executions across your connections.</p>
+          <p>Search retained executions. Open saved SQL in a new tab without running it.</p>
         </div>
         <div className="utility-actions">
-          <button className="button ghost" onClick={() => setClearing(true)}>
+          <button
+            className="button ghost"
+            disabled={busy}
+            onClick={() => {
+              setClearError(null);
+              setClearing(true);
+            }}
+          >
             Clear history
           </button>
           <button
             className="button ghost"
+            disabled={busy}
             onClick={() => {
-              setSearch("");
-              void client
-                .call<HistoryEntry[]>("history", { search: "" })
-                .then(setEntries)
-                .catch((error) => setError(messageOf(error)));
+              invalidate();
+              firstPage();
+              setRefresh((value) => value + 1);
             }}
           >
             <RefreshCw size={14} />
@@ -91,14 +205,26 @@ export function HistoryView() {
         <button
           className={!audit ? "selected" : ""}
           aria-pressed={!audit}
-          onClick={() => setAudit(false)}
+          disabled={busy}
+          onClick={() => {
+            if (audit) {
+              invalidate();
+              setAudit(false);
+            }
+          }}
         >
           Executions
         </button>
         <button
           className={audit ? "selected" : ""}
           aria-pressed={audit}
-          onClick={() => setAudit(true)}
+          disabled={busy}
+          onClick={() => {
+            if (!audit) {
+              invalidate();
+              setAudit(true);
+            }
+          }}
         >
           Audit log
         </button>
@@ -111,54 +237,93 @@ export function HistoryView() {
             <Search size={15} />
             <input
               aria-label="Search history"
-              placeholder="Search SQL or connection names…"
+              placeholder="Search SQL, connection names, or execution metadata…"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              disabled={busy}
+              onChange={(event) => {
+                invalidate();
+                firstPage();
+                setSearch(event.target.value);
+              }}
             />
           </div>
-          {error && <div className="inline-error">{error}</div>}
-          {!entries.length ? (
-            <div className="utility-empty">
-              <History size={30} />
-              <h3>No queries here yet</h3>
-              <p>
-                Your executed queries will appear here. SQL text is saved only when enabled for a
-                connection.
-              </p>
-            </div>
-          ) : (
-            <div className="history-list">
-              {entries.map((entry) => (
-                <button
-                  className="history-entry"
-                  key={entry.id}
-                  onClick={() => {
-                    if (entry.sql) useStudio.getState().openQuery(entry.connectionId, entry.sql);
-                    else
-                      useStudio
-                        .getState()
-                        .notify("Only execution metadata was saved for this query.");
-                  }}
-                >
-                  <div className="history-entry-top">
-                    <span className={`status-dot ${entry.status}`} />
-                    <strong>{entry.connectionName}</strong>
-                    <span>{new Date(entry.startedAt).toLocaleString()}</span>
-                    <em>{entry.elapsedMs} ms</em>
-                  </div>
-                  <code>{entry.sql ?? "SQL text not stored"}</code>
-                  <ExecutionSummary summary={entry.executionSummary} status={entry.status} />
-                  {entry.snowflakeDml && (
-                    <SnowflakeDmlHistorySummary evidence={entry.snowflakeDml} />
-                  )}
-                  {entry.snowflakeDdl && (
-                    <SnowflakeDdlHistorySummary evidence={entry.snowflakeDdl} />
-                  )}
-                  {entry.sql && <ArrowUpRight size={15} className="history-open" />}
-                </button>
-              ))}
+          {error && (
+            <div role="alert" className="inline-error">
+              {error}{" "}
+              <button
+                className="button ghost"
+                disabled={busy}
+                onClick={() => {
+                  invalidate();
+                  setRefresh((value) => value + 1);
+                }}
+              >
+                Retry history
+              </button>
             </div>
           )}
+          {loading && <p role="status">Loading history…</p>}
+          {!loading && !error && !entries.length && (
+            <div className="utility-empty">
+              <History size={30} />
+              <h3>{search ? "No matching query history" : "No queries here yet"}</h3>
+              <p>SQL text is saved only when enabled for a connection.</p>
+            </div>
+          )}
+          <div className="history-list" aria-busy={loading}>
+            {entries.map((entry) => (
+              <button
+                className="history-entry"
+                key={entry.id}
+                disabled={busy || opening !== null}
+                onClick={() => void openEntry(entry)}
+              >
+                <div className="history-entry-top">
+                  <span className={`status-dot ${entry.status}`} />
+                  <strong>{entry.connectionName}</strong>
+                  <span>{new Date(entry.startedAt).toLocaleString()}</span>
+                  <em>{entry.elapsedMs} ms</em>
+                </div>
+                <code>
+                  {entry.sqlPreview === null
+                    ? "SQL text not stored"
+                    : entry.sqlPreview || "Empty SQL text"}
+                </code>
+                <ExecutionSummary summary={entry.executionSummary} status={entry.status} />
+                {entry.snowflakeDml && <SnowflakeDmlHistorySummary evidence={entry.snowflakeDml} />}
+                {entry.snowflakeDdl && <SnowflakeDdlHistorySummary evidence={entry.snowflakeDdl} />}
+                {entry.sqlStored && <ArrowUpRight size={15} className="history-open" />}
+              </button>
+            ))}
+          </div>
+          {opening && <p role="status">Opening saved SQL…</p>}
+          <nav aria-label="History pages" className="utility-actions">
+            <button
+              className="button ghost"
+              aria-label="Previous history page"
+              disabled={loading || busy || previous.length === 0}
+              onClick={() => {
+                invalidate();
+                setCursor(previous[previous.length - 1]);
+                setPrevious(previous.slice(0, -1));
+              }}
+            >
+              Previous history page
+            </button>
+            <span>Page {previous.length + 1} · up to 50 entries</span>
+            <button
+              className="button ghost"
+              aria-label="Next history page"
+              disabled={loading || busy || !nextCursor}
+              onClick={() => {
+                invalidate();
+                setPrevious([...previous, cursor]);
+                setCursor(nextCursor);
+              }}
+            >
+              Next history page
+            </button>
+          </nav>
         </>
       )}
       {clearing && (
@@ -167,27 +332,13 @@ export function HistoryView() {
             <p className="confirmation-description">
               This removes saved execution history from this device. Audit entries are retained.
             </p>
-            <InlineError message={error} />
+            <InlineError message={clearError} />
           </div>
           <footer className="modal-footer">
             <button className="button ghost" disabled={busy} onClick={() => setClearing(false)}>
               Cancel
             </button>
-            <button
-              className="button danger"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                void client
-                  .call("clear_history")
-                  .then(() => {
-                    setEntries([]);
-                    setClearing(false);
-                  })
-                  .catch((error) => setError(messageOf(error)))
-                  .finally(() => setBusy(false));
-              }}
-            >
+            <button className="button danger" disabled={busy} onClick={() => void clearHistory()}>
               Clear local history
             </button>
           </footer>

@@ -36,6 +36,8 @@ import type {
   ExportRequest,
   FileSelection,
   HistoryEntry,
+  HistoryPage,
+  HistoryPageRequest,
   InboundForeignKey,
   IndexConstraintAction,
   IndexConstraintPreview,
@@ -454,6 +456,14 @@ export interface JoineryCommandMap {
   history: {
     args: { search: string };
     result: HistoryEntry[];
+  };
+  history_page: {
+    args: { request: HistoryPageRequest };
+    result: HistoryPage;
+  };
+  history_entry: {
+    args: { id: string };
+    result: HistoryEntry | null;
   };
   clear_history: {
     args?: Record<string, unknown>;

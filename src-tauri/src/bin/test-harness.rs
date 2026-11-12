@@ -33,6 +33,7 @@ struct ExportStream {
 }
 struct Harness {
     studio: Arc<Studio>,
+    root: std::path::PathBuf,
     sandbox: Arc<SandboxFileDialog>,
     token: String,
     streams: Mutex<HashMap<String, Stream>>,
@@ -105,6 +106,42 @@ fn arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> AppResult<T> 
         .map_err(|_| AppError::invalid(format!("Invalid request field: {key}")))
 }
 
+// Fixed local metadata only: exercises real history SQLite reads without
+// submitting a thousand queries to a database or enrolling a desktop command.
+fn seed_history_fixture(root: &std::path::Path) -> AppResult<Value> {
+    let store = joinery_core::persistence::Persistence::open(root)?;
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| AppError::internal("Fixture clock is invalid"))?
+        .as_millis() as u64;
+    let full_sql = format!(
+        "SELECT 'history fixture';\n/* {}\nolderneedle CAFÉ 雪🦀\n*/",
+        "雪🦀".repeat(1_000)
+    );
+    for index in 0..1_006 {
+        store.record_history(&HistoryEntry {
+            execution_summary: None,
+            snowflake_dml: None,
+            snowflake_ddl: None,
+            id: format!("history-fixture-{index:04}"),
+            connection_id: "history-fixture-connection".into(),
+            connection_name: format!("History fixture {index:04}"),
+            // Many timestamp ties exercise the secondary cursor key.
+            started_at: started_at - 100_000 + index / 10,
+            sql: match index {
+                0 => Some(full_sql.clone()),
+                1_004 => None,
+                1_005 => Some(String::new()),
+                _ => Some(format!("SELECT {index} /* history fixture */")),
+            },
+            statement_count: 1,
+            status: RunStatus::Completed,
+            elapsed_ms: 2,
+        })?;
+    }
+    Ok(json!({ "count": 1_006, "olderId": "history-fixture-0000" }))
+}
+
 // Snowflake profile persistence can be exercised offline. This harness must
 // never load a genuine SDK. The opt-in retained-console harness owns an entirely
 // synthetic runtime and permits only its immutable fixed fixture profile.
@@ -142,6 +179,7 @@ async fn rpc(
     let outcome: AppResult<Value> = async {
         let studio = &state.studio;
         Ok(match command.as_str() {
+            "test_seed_history" => seed_history_fixture(&state.root)?,
             #[cfg(unix)]
             "test_synthetic_console_evidence" => {
                 let fixture = state.synthetic_snowflake.as_ref().ok_or_else(|| AppError::invalid("Synthetic console mode is disabled"))?;
@@ -552,6 +590,8 @@ async fn rpc(
             )?),
             "health" => json!(studio.health(&arg::<String>(&args, "sessionId")?).await?),
             "history" => json!(studio.history(&arg::<String>(&args, "search")?)?),
+            "history_page" => json!(studio.history_page(&arg(&args, "request")?)?),
+            "history_entry" => json!(studio.history_entry(&arg::<String>(&args, "id")?)?),
             "clear_history" => {
                 studio.clear_history()?;
                 Value::Null
@@ -933,6 +973,7 @@ async fn main() {
     let stop = Arc::new(tokio::sync::Notify::new());
     let state = Arc::new(Harness {
         studio,
+        root: std::path::PathBuf::from(root),
         sandbox,
         token,
         streams: Mutex::new(HashMap::new()),

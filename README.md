@@ -4,6 +4,8 @@ The active DataGrip replacement Goal, required workflow questions, and migration
 walkthrough are in [daily replacement acceptance](docs/replacement-acceptance.md).
 Use the [migration guide](docs/migration-from-datagrip.md) for local setup and
 hands-on evaluation.
+The [query history guide](docs/query-history.md) covers paged browsing, full-text
+search and explicit reopening, along with current retention and recovery limits.
 See the [verification ledger](docs/replacement-verification.md) for the current
 local run; historical feature completion does not establish replacement readiness.
 

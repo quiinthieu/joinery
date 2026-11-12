@@ -12,9 +12,15 @@ import {
   Search,
   type LucideIcon,
 } from "lucide-react";
-import type { HistoryEntry } from "../../ipc/generated";
+import type { HistoryEntry, HistoryPage } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { Modal } from "../../components/ui/Modal";
+import {
+  historyAccessEpoch,
+  historyClearPending,
+  historySearchError,
+  useHistoryAccessEpoch,
+} from "./history-access";
 import { tabNavigation } from "../../components/ui/tabs";
 import { useStudio, type TabKind } from "../../state/studio";
 import { ObjectKindGlyph } from "./ObjectInspectorView";
@@ -67,27 +73,92 @@ export function SearchEverywhere({
   const [search, setSearch] = useState(""),
     [scope, setScope] = useState<SearchScope>(initialScope),
     [activeIndex, setActiveIndex] = useState(0),
-    [history, setHistory] = useState<HistoryEntry[]>([]);
+    [history, setHistory] = useState<{
+      query: string;
+      scope: SearchScope;
+      page: HistoryPage;
+    } | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const epoch = useHistoryAccessEpoch();
+  const generation = useRef(0);
+  const detail = useRef(0);
+  const mounted = useRef(false);
+  function invalidate() {
+    generation.current += 1;
+    detail.current += 1;
+    setOpening(false);
+    setHistory(null);
+  }
+  function close() {
+    invalidate();
+    mounted.current = false;
+    onClose();
+  }
+  function changeScope(next: SearchScope) {
+    if (next !== scope) invalidate();
+    setScope(next);
+    setActiveIndex(0);
+  }
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      generation.current += 1;
+      detail.current += 1;
+    };
+  }, []);
+  useEffect(() => {
+    generation.current += 1;
+    detail.current += 1;
+    setHistory(null);
     setScope(initialScope);
     setActiveIndex(0);
   }, [initialScope]);
-
   useEffect(() => {
-    let active = true;
-    void client
-      .call<HistoryEntry[]>("history", { search: "" })
-      .then((entries) => {
-        if (active && Array.isArray(entries)) setHistory(entries);
-      })
-      .catch(() => {});
+    const version = ++generation.current;
+    detail.current += 1;
+    setOpening(false);
+    setHistory(null);
+    setHistoryError(null);
+    if ((scope !== "all" && scope !== "history") || historyClearPending()) {
+      setHistoryLoading(false);
+      return;
+    }
+    const invalid = historySearchError(search);
+    if (invalid) {
+      setHistoryError(invalid);
+      setHistoryLoading(false);
+      return;
+    }
+    setHistoryLoading(true);
+    const timer = setTimeout(() => {
+      void client
+        .call<HistoryPage>("history_page", { request: { search, cursor: null, limit: 80 } })
+        .then((page) => {
+          if (mounted.current && generation.current === version && historyAccessEpoch() === epoch)
+            setHistory({ query: search, scope, page });
+        })
+        .catch((cause) => {
+          if (mounted.current && generation.current === version && historyAccessEpoch() === epoch)
+            setHistoryError(messageOf(cause));
+        })
+        .finally(() => {
+          if (mounted.current && generation.current === version && historyAccessEpoch() === epoch)
+            setHistoryLoading(false);
+        });
+    }, 120);
     return () => {
-      active = false;
+      clearTimeout(timer);
+      generation.current += 1;
     };
-  }, []);
+  }, [search, scope, epoch, retry]);
+  const currentHistory = history?.query === search && history.scope === scope ? history.page : null;
 
   const currentTab = state.tabs.find((tab) => tab.id === state.activeTabId);
   const preferredConnectionId = currentTab?.connectionId ?? state.selectedConnectionId ?? null;
@@ -103,8 +174,7 @@ export function SearchEverywhere({
         icon: Search,
         keepOpen: true,
         action: () => {
-          setScope("objects");
-          setActiveIndex(0);
+          changeScope("objects");
         },
       },
     ],
@@ -125,10 +195,11 @@ export function SearchEverywhere({
         catalog: state.catalog,
         objects: state.objects,
         savedQueries: state.savedQueries,
-        history,
+        history: currentHistory?.entries ?? [],
+        historyMatchedQuery: currentHistory ? search : undefined,
       }),
     [
-      history,
+      currentHistory,
       paletteCommands,
       preferredConnectionId,
       scope,
@@ -157,17 +228,17 @@ export function SearchEverywhere({
         inputRef.current?.focus();
         return;
       }
-      onClose();
+      close();
       item.action();
       return;
     }
     if (item.kind === "tab") {
-      onClose();
+      close();
       onActivateTab(item.tabId);
       return;
     }
     if (item.kind === "object") {
-      onClose();
+      close();
       void useStudio
         .getState()
         .openObject(item.connectionId, item.object)
@@ -175,16 +246,42 @@ export function SearchEverywhere({
       return;
     }
     if (item.kind === "savedQuery") {
-      onClose();
+      close();
       useStudio.getState().openSavedQuery(item.savedQuery.id);
       return;
     }
-    onClose();
-    if (item.entry.sql) {
-      useStudio.getState().openQuery(item.entry.connectionId, item.entry.sql);
-    } else {
-      useStudio.getState().notify("Only execution metadata was saved for this query.");
-    }
+    if (opening || historyClearPending()) return;
+    const version = ++detail.current;
+    const access = historyAccessEpoch();
+    setOpening(true);
+    setHistoryError(null);
+    void client
+      .call<HistoryEntry | null>("history_entry", { id: item.entry.id })
+      .then((entry) => {
+        if (!mounted.current || detail.current !== version || historyAccessEpoch() !== access)
+          return;
+        if (!entry) throw new Error("This history entry was deleted or cleared. Refresh history.");
+        if (
+          entry.id !== item.entry.id ||
+          entry.connectionId !== item.entry.connectionId ||
+          entry.startedAt !== item.entry.startedAt
+        )
+          throw new Error("The history entry identity changed. Refresh history.");
+        if (entry.sql !== null) {
+          useStudio.getState().openQuery(entry.connectionId, entry.sql);
+          close();
+        } else {
+          useStudio.getState().notify("Only execution metadata was saved for this query.");
+          setHistoryError("SQL text was not stored for this query.");
+        }
+      })
+      .catch((cause) => {
+        if (mounted.current && detail.current === version && historyAccessEpoch() === access)
+          setHistoryError(messageOf(cause));
+      })
+      .finally(() => {
+        if (mounted.current && detail.current === version) setOpening(false);
+      });
   }
 
   function moveActive(nextIndex: number) {
@@ -211,7 +308,7 @@ export function SearchEverywhere({
           : "No matching commands";
 
   return (
-    <Modal title="Command palette" onClose={onClose}>
+    <Modal title="Command palette" onClose={close}>
       <div className="palette-search">
         <Search size={17} />
         <input
@@ -229,6 +326,7 @@ export function SearchEverywhere({
           }
           value={search}
           onChange={(e) => {
+            invalidate();
             setSearch(e.target.value);
             setActiveIndex(0);
           }}
@@ -243,8 +341,7 @@ export function SearchEverywhere({
                 event.key.toLowerCase() === "o")
             ) {
               event.preventDefault();
-              setScope("objects");
-              setActiveIndex(0);
+              changeScope("objects");
               return;
             }
             if (
@@ -257,8 +354,7 @@ export function SearchEverywhere({
                 event.key.toLowerCase() === "k")
             ) {
               event.preventDefault();
-              setScope("all");
-              setActiveIndex(0);
+              changeScope("all");
               return;
             }
             if (event.key === "ArrowDown" && items.length > 0) {
@@ -297,8 +393,7 @@ export function SearchEverywhere({
                 tabIndex={selected ? 0 : -1}
                 className={selected ? "active" : ""}
                 onClick={(event) => {
-                  setScope(tab.id);
-                  setActiveIndex(0);
+                  changeScope(tab.id);
                   if (event.detail > 0) inputRef.current?.focus();
                 }}
               >
@@ -315,6 +410,40 @@ export function SearchEverywhere({
           </span>
         )}
       </div>
+      {(scope === "all" || scope === "history") && (
+        <div className="palette-history-summary">
+          {historyLoading && <p role="status">Searching history…</p>}
+          {opening && <p role="status">Opening saved SQL…</p>}
+          {historyError && (
+            <p role="alert">
+              {historyError}{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  invalidate();
+                  setRetry((value) => value + 1);
+                }}
+              >
+                Retry history
+              </button>
+            </p>
+          )}
+          <p>
+            {currentHistory?.nextCursor
+              ? "More matching history is available. "
+              : "History shows at most 80 matches. "}
+            <button
+              type="button"
+              onClick={() => {
+                useStudio.getState().openUtility("history");
+                close();
+              }}
+            >
+              Open query history
+            </button>
+          </p>
+        </div>
+      )}
       <div className="palette-commands" ref={listRef}>
         {items.map((item, idx) => {
           const selected = idx === clampedIndex;
@@ -324,6 +453,7 @@ export function SearchEverywhere({
               key={item.id}
               type="button"
               data-palette-index={idx}
+              disabled={item.kind === "history" && opening}
               aria-disabled={isDisabled || undefined}
               className={`${selected ? "selected" : ""} ${isDisabled ? "disabled" : ""}`.trim()}
               onMouseEnter={() => setActiveIndex(idx)}

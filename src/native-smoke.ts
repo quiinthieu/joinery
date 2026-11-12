@@ -52,6 +52,17 @@ export async function runNativeSmoke() {
   try {
     await useStudio.getState().initialize();
     assert(useStudio.getState().bootstrap, "Native bootstrap failed");
+    const history = await client.call("history_page", {
+      request: { search: "", cursor: null, limit: 50 },
+    });
+    assert(
+      history.entries.length === 0 && history.nextCursor === null,
+      "Fresh native history must be empty",
+    );
+    assert(
+      (await client.call("history_entry", { id: "missing-native-history" })) === null,
+      "Missing native history must not return cached SQL",
+    );
     for (const [command, args] of [
       ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1" }],
       ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1", analyze: true }],
@@ -936,6 +947,7 @@ export async function runNativeSmoke() {
     report.passed = true;
     report.checks = [
       "native bootstrap",
+      "main WebView history page/detail command permissions",
       "completion IPC disconnected-session guards",
       "explicit transaction IPC admission guards",
       "CSV required preview ownership IPC",

@@ -1,5 +1,23 @@
 # Joinery implementation roadmap
 
+## Paged query history (13 November 2026, locally verified)
+
+The [history workflow](query-history.md) replaces newest-prefix/full-SQL reads
+with bounded summaries, full-retained-store search and explicit exact detail.
+History uses 50-row keyset pages; the palette shows up to 80 matches with a route
+to the complete browser. Shared clear invalidation prevents stale page/detail
+responses from reopening SQL. Twelve real SQLite and 38 focused UI cases pass;
+four actual browser cases and hidden main-WebView command checks also pass within
+the source scopes in the [ledger](replacement-verification.md#paged-query-history-13-november-2026).
+Independent review corrected metadata-search omissions and has no remaining
+material findings in this increment.
+
+Continue the atomic admitted/completed history, durable side-write obligations,
+publisher sealing and reservation workflow below. Configurable retention,
+large-payload search/writer-contention measurements, full-capacity recovery,
+Snowflake/account and normal owner acceptance remain required. Keep existing
+count gates and `retentionEnabled=false`; complete DataGrip parity is not proven.
+
 ## Checked receipt accounting (13 November 2026, locally verified)
 
 Startup, migration and restore now independently recompute journal charges with
@@ -19,9 +37,11 @@ gates and `retentionEnabled=false`. The normal local package remains the verifie
 The dependent [atomic history lifecycle](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract)
 must preserve opted-in SQL in one pending history row before dispatch, make
 terminal/history/audit writes atomic, respect clear/prune/opt-out suppression,
-and seal publishers before reservation settlement. Bounded history summary/detail
-pages are also required: current history loads 1,000 complete rows before search,
-which omits older retained matches and permits large query-text responses.
+and seal publishers before reservation settlement. The
+[history browsing increment](query-history.md) implements bounded summary/detail
+pages and searches across retained rows. Its verification is recorded in the
+ledger; it does not close the dependent atomic history lifecycle or retention
+policy requirements.
 
 ## Encrypted metadata recovery (12 November 2026, locally verified)
 
