@@ -102,6 +102,22 @@ fn every_closed_ledger_entry_matches_its_exact_production_shape() {
 }
 
 #[test]
+fn reviewed_console_transport_cannot_substitute_for_any_qualification_entry() {
+    let identity = identity();
+    for entry in entries() {
+        let frame = Frame::new(
+            "reviewedSql",
+            Impact::Mutating,
+            json!({"sql":entry.sql(),"binds":[],
+                "expected":{"user":identity.user(),"session":identity.session()},
+                "credits":1,"maxRows":1000,"maxBytes":65536}),
+        );
+        assert!(validate_envelope(&frame.request()).is_ok());
+        assert!(validate_sql(&entry, &frame.request(), Some(&identity)).is_err());
+    }
+}
+
+#[test]
 fn envelope_rejects_field_id_generation_operation_and_byte_substitution() {
     let valid = || Frame::new("context", Impact::Read, json!({}));
     for (key, value) in [

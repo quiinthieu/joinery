@@ -53,7 +53,7 @@ for (const layout of ["source", "flat"]) {
     try {
       assert.deepEqual(verifyTransportSources(f.entry), {
         format: "joinery-snowflake-transport-pins-v1",
-        files: 13,
+        files: 15,
       });
       assert(Object.isFrozen(verifyTransportSources(f.entry)));
     } finally {

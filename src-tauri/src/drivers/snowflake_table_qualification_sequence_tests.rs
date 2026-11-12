@@ -30,6 +30,7 @@ fn report() -> Report {
         use_acknowledged: None,
         boundary_acknowledged: None,
         dml_acknowledged: None,
+        statement_acknowledged: None,
         ddl_acknowledged: None,
     }
 }

@@ -335,6 +335,7 @@ async fn guard_failed_attempt_still_durably_forwards_original_terminal_and_local
         use_acknowledged: None,
         boundary_acknowledged: None,
         dml_acknowledged: None,
+        statement_acknowledged: None,
         ddl_acknowledged: Some(DdlAcknowledgement {
             kind: SnowflakeDdlKind::CreateTable,
             statement,

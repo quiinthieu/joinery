@@ -82,6 +82,14 @@ for (const scenario of [
   cases.push([scenario, "http"]);
 cases.push(["untrusted-tls", "tls"], ["untrusted-tls", "proxy"]);
 cases.push(["fixture-boundary", "http"]);
+for (const transport of ["http", "tls", "proxy"])
+  for (const scenario of [
+    "reviewed-success",
+    "reviewed-context-partial",
+    "reviewed-ack-drain",
+    "reviewed-file-veto",
+  ])
+    cases.push([scenario, transport]);
 
 async function bounded(promise, milliseconds) {
   let timer;
@@ -230,6 +238,37 @@ for (const [scenario, transport] of cases) {
         assert.equal(result.connected, true);
         assert.equal(result.intendedSQLOnly, true);
         assert.equal(result.scalarBindsExact, true);
+        if (scenario.startsWith("reviewed-")) {
+          assert.equal(result.helperFixturePreconnected, true);
+          assert.equal(result.externalBrowserConnectSkipped, true);
+          assert.equal(result.violations, 0);
+          if (scenario === "reviewed-file-veto") {
+            assert.equal(result.queryPosts, 0);
+            assert.equal(result.guardAdmitted, 0);
+            assert.equal(result.vetoCases, 4);
+            assert.equal(result.helperTerminals, 4);
+          } else {
+            assert.equal(result.queryPosts, 1);
+            assert.equal(result.guardAdmitted, 1);
+            assert.equal(result.singleStatementParameter, true);
+            assert.equal(result.originalAck, true);
+            assert.equal(result.ackBeforeTerminal, true);
+            assert.equal(result.ackIdentityRegistered, true);
+            assert.equal(result.helperTerminals, 1);
+            assert.deepEqual(result.passiveContext, {
+              database: "RESPONSE_DB",
+              schema: "RESPONSE_SCHEMA",
+              role: scenario === "reviewed-context-partial" ? null : "RESPONSE_ROLE",
+              warehouse: scenario === "reviewed-context-partial" ? null : "RESPONSE_WH",
+            });
+            assert.equal(
+              result.helperTerminal,
+              scenario === "reviewed-ack-drain" ? "connectionClosed" : "success",
+            );
+            assert.equal(result.rows, scenario === "reviewed-ack-drain" ? 0 : 1);
+          }
+          return;
+        }
         if (scenario.startsWith("helper-setup-")) {
           assert.equal(result.helperFixturePreconnected, true);
           assert.equal(result.externalBrowserConnectSkipped, true);

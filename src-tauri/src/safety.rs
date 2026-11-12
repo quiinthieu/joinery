@@ -13,6 +13,7 @@ use std::ops::ControlFlow;
 
 pub mod snowflake_ddl;
 pub mod snowflake_dml;
+pub mod snowflake_script;
 
 pub(crate) fn has_mysql_executable_comment(sql: &str) -> bool {
     let bytes = sql.as_bytes();

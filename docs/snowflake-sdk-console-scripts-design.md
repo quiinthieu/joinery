@@ -1,9 +1,12 @@
 # Snowflake reviewed SQL consoles and scripts
 
-Status: required design; not implemented or externally qualified. This is the
-next product workflow after script early-stop accounting in `278754b`. All
-applicable DataGrip capabilities remain required. The design is an execution
-path to broader owner-authored SQL, not a permanent grammar-only allowlist.
+Status: required workflow, incomplete and not externally qualified. Its
+[compiler and private transport foundations](snowflake-sdk-console-transport.md)
+are implemented locally; retained application ownership, admission, receipts and
+UI remain open. This is the next product workflow after script early-stop
+accounting in `278754b`. All applicable DataGrip capabilities remain required.
+The design is an execution path to broader owner-authored SQL, not a permanent
+grammar-only allowlist.
 
 ## Daily workflow and acceptance target
 

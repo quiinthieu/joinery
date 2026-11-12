@@ -29,6 +29,14 @@ const pins = [
     "d3472ce19a64e6f7d09b55aaa0af21639e8a9cde69e1922e15e49e4ac4d4ae3f",
   ],
   [
+    "snowflake-sdk/dist/lib/connection/result/result.js",
+    "c93849d709f305ff33250c3f0197b6f96b03e174b51c031ea2641810edfde9c5",
+  ],
+  [
+    "snowflake-sdk/dist/lib/util.js",
+    "fb6ae19efd9cb1697abf947ef56e6e5019c3049330f2c88479315c58a3b955a0",
+  ],
+  [
     "snowflake-sdk/dist/lib/connection/bind_uploader.js",
     "683bc1bfb99766755eb64e1be4d97a4d5e39e7cfe40b8663dbbf15f277d5030a",
   ],

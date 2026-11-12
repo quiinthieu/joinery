@@ -42,6 +42,10 @@ const allowed = new Set([
   "helper-lost-ack",
   "helper-ack-drain",
   "helper-database",
+  "reviewed-success",
+  "reviewed-context-partial",
+  "reviewed-ack-drain",
+  "reviewed-file-veto",
   "helper-transaction-begin",
   "helper-transaction-commit",
   "helper-transaction-rollback",
@@ -138,6 +142,7 @@ const transactionScenario = scenario.startsWith("helper-transaction-");
 const dmlScenario = scenario.startsWith("helper-dml-");
 const ddlScenario = scenario.startsWith("helper-ddl-");
 const setupScenario = scenario.startsWith("helper-setup-");
+const reviewedScenario = scenario.startsWith("reviewed-");
 const setupRunId = "0123456789ABCDEF0123456789ABCDEF";
 const setupLedger = deriveSetupLedger(setupRunId);
 const setupStep =
@@ -342,9 +347,12 @@ try {
       const url = new URL(request.url, "http://127.0.0.1");
       if (url.pathname === "/dml-status-chunk") {
         assert(
-          ["helper-dml-ack-drain", "helper-ddl-ack-drain", "helper-setup-ack-drain"].includes(
-            scenario,
-          ),
+          [
+            "helper-dml-ack-drain",
+            "helper-ddl-ack-drain",
+            "helper-setup-ack-drain",
+            "reviewed-ack-drain",
+          ].includes(scenario),
         );
         assert.equal(request.method, "GET");
         report.resultChunkRequests = (report.resultChunkRequests ?? 0) + 1;
@@ -393,6 +401,25 @@ try {
           ? body.bindings === undefined || JSON.stringify(body.bindings) === "{}"
           : JSON.stringify(body.bindings) === JSON.stringify(expectedBindings);
       resolveFirstQuery();
+      if (reviewedScenario) {
+        report.singleStatementParameter = body.parameters?.MULTI_STATEMENT_COUNT === 1;
+        assert.deepEqual(body.parameters, { MULTI_STATEMENT_COUNT: 1 });
+        const reply = success();
+        reply.data.finalDatabaseName = "RESPONSE_DB";
+        reply.data.finalSchemaName = "RESPONSE_SCHEMA";
+        reply.data.finalRoleName = scenario === "reviewed-context-partial" ? null : "RESPONSE_ROLE";
+        if (scenario !== "reviewed-context-partial") reply.data.finalWarehouseName = "RESPONSE_WH";
+        if (scenario === "reviewed-ack-drain") {
+          reply.data.rowset = [];
+          reply.data.chunks = [
+            {
+              url: `${transport === "http" ? "http" : "https"}://127.0.0.1:${port}/dml-status-chunk`,
+              rowCount: 1,
+            },
+          ];
+        }
+        return json(response, reply);
+      }
       if (setupScenario) {
         if (scenario === "helper-setup-rejected")
           return json(response, {
@@ -707,7 +734,7 @@ try {
   for (const method of ["log", "info", "warn", "error", "debug", "trace"])
     console[method] = () => {};
   phase = "source-pins";
-  report.sourcePins = verifyTransportSources().files === 13;
+  report.sourcePins = verifyTransportSources().files === 15;
   if (scenario === "fixture-boundary") {
     phase = "boundary-check";
     let dnsChecks = 0;
@@ -833,6 +860,122 @@ try {
   }
   assert.notEqual(scenario, "untrusted-tls");
   report.connected = true;
+  if (reviewedScenario) {
+    // Only authentication/bootstrap is seeded. SDK execute, response getters,
+    // transport registration, result streaming and source-pinned veto are real.
+    phase = "preconnected-reviewed-helper";
+    const { isPutCommand, isGetCommand } = require("snowflake-sdk/dist/lib/util.js");
+    report.helperFixturePreconnected = true;
+    report.externalBrowserConnectSkipped = true;
+    report.helperTerminals = 0;
+    report.helperRetired = 0;
+    const events = [];
+    let resolveTerminal;
+    let terminal = new Promise((resolve) => {
+      resolveTerminal = resolve;
+    });
+    helper = new Helper(
+      sdk,
+      (event) => {
+        events.push(event);
+        if (event.type === "rows") report.rows += event.rows.length;
+        if (event.type === "statementAcknowledged") {
+          report.originalAck = event.sdkRequestId === firstId;
+          report.ackBeforeTerminal = report.helperTerminals === 0;
+          report.passiveContext = event.context;
+          report.ackIdentityRegistered = events.some(
+            (e) =>
+              e.type === "statement" &&
+              e.sdkRequestId === event.sdkRequestId &&
+              (!event.queryId || e.queryId === event.queryId),
+          );
+        }
+        if (event.type === "terminal") {
+          report.helperTerminals++;
+          report.helperTerminal = event.ok ? "success" : event.error.code;
+          resolveTerminal();
+        }
+      },
+      () => report.helperRetired++,
+      {
+        submitGuard: guard,
+        clientConfigFile: join(root, "disabled-config.json"),
+        isFileTransfer: (sql) => isPutCommand(sql) || isGetCommand(sql),
+      },
+    );
+    helper.connection = connection;
+    helper.state = "connected";
+    helper.generation = "11111111-1111-4111-8111-111111111111";
+    helper.identityPin = { user: "SERVER_USER", session: "OPAQUE-SESSION" };
+    const send = (id, sql) =>
+      helper.receive({
+        v: 1,
+        generation: helper.generation,
+        id,
+        op: "reviewedSql",
+        payload: {
+          sql,
+          binds,
+          expected: { user: "SERVER_USER", session: "OPAQUE-SESSION" },
+          credits: 1,
+          maxRows: 4,
+          maxBytes: 4096,
+        },
+      });
+    if (scenario === "reviewed-file-veto") {
+      const candidates = [
+        "PUT file:///unreadable @stage",
+        " get @stage file:///unwritten",
+        "\ufeffpUt file:///none @stage",
+        "GETTING_NOT_SQL",
+      ];
+      for (let i = 0; i < candidates.length; i++) {
+        terminal = new Promise((resolve) => {
+          resolveTerminal = resolve;
+        });
+        assert(isPutCommand(candidates[i]) || isGetCommand(candidates[i]));
+        send(String(i + 1), candidates[i]);
+        await bounded(terminal);
+        assert.equal(report.helperTerminal, "unsupported");
+      }
+      // Comment-prefixed strings take the same non-file SDK branch. They are
+      // not claimed safe SQL; the server remains the SQL validity boundary.
+      for (const sql of [
+        "/* comment */ PUT file:///none @stage",
+        "-- comment\nGET @stage file:///none",
+        "SELECT 'PUT'",
+      ])
+        assert.equal(isPutCommand(sql) || isGetCommand(sql), false);
+      report.vetoCases = candidates.length;
+      assert.equal(report.queryPosts, 0);
+      assert.equal(guard.snapshot().admitted, 0);
+      assert.equal(report.helperRetired, 0);
+    } else {
+      send("1", SQL);
+      await bounded(terminal);
+      assert.equal(report.queryPosts, 1);
+      assert.equal(report.singleStatementParameter, true);
+      assert.equal(report.originalAck, true);
+      assert.equal(report.ackBeforeTerminal, true);
+      assert.equal(report.ackIdentityRegistered, true);
+      assert.deepEqual(report.passiveContext, {
+        database: "RESPONSE_DB",
+        schema: "RESPONSE_SCHEMA",
+        role: scenario === "reviewed-context-partial" ? null : "RESPONSE_ROLE",
+        warehouse: scenario === "reviewed-context-partial" ? null : "RESPONSE_WH",
+      });
+      assert.equal(
+        report.helperTerminal,
+        scenario === "reviewed-ack-drain" ? "connectionClosed" : "success",
+      );
+      assert.equal(report.helperRetired, scenario === "reviewed-ack-drain" ? 1 : 0);
+      assert.equal(report.rows, scenario === "reviewed-ack-drain" ? 0 : 1);
+    }
+    report.guardAdmitted = guard.snapshot().admitted;
+    report.outcome = `reviewed-${report.helperTerminal}`;
+    if (!helper.retired) helper.stop();
+    await finish();
+  }
   if (setupScenario) {
     phase = "preconnected-setup-helper";
     report.helperFixturePreconnected = true;

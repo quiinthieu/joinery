@@ -1,6 +1,7 @@
 import { closeSync, fchownSync, lstatSync, openSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { Decoder, writer } from "./framing.mjs";
+import { createRequire } from "node:module";
 import { Helper } from "./helper.mjs";
 import { installQuerySubmitGuard } from "./query-submit-guard.mjs";
 import { verifyTransportSources } from "./transport-source-pins.mjs";
@@ -76,6 +77,9 @@ const submitGuard = installQuerySubmitGuard({
   },
 });
 const sdk = (await import("snowflake-sdk")).default;
+const { isPutCommand, isGetCommand } = createRequire(import.meta.url)(
+  "snowflake-sdk/dist/lib/util.js",
+);
 // An explicit custom logger avoids file transports, even before a connection.
 sdk.configure({
   logLevel: "OFF",
@@ -95,7 +99,11 @@ helper = new Helper(
       exit(0);
     });
   },
-  { clientConfigFile, submitGuard },
+  {
+    clientConfigFile,
+    submitGuard,
+    isFileTransfer: (sql) => isPutCommand(sql) || isGetCommand(sql),
+  },
 );
 const decoder = new Decoder();
 process.stdin.on("data", (chunk) => {

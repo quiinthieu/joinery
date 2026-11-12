@@ -8,6 +8,112 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Reviewed Snowflake console foundations (12 November 2026)
+
+Base is clean `591055d` on `feat/datagrip-replacement`. The
+[foundation contract](snowflake-sdk-console-transport.md) implements a pure
+mixed-script compiler and private `reviewedSql` transport without an application
+command, profile opt-in, retained console owner or UI. The
+[complete design](snowflake-sdk-console-scripts-design.md) remains required.
+No account SQL, authentication, owner-profile/marker-store access, installation
+or publication occurs. Account effects and daily replacement acceptance stay
+open.
+
+Ignored receipts live under `.cache/verification/reviewed-console/`. Commands use
+pinned Node 24.22.2, pnpm 11.23.0 and Rust/Cargo 1.99.1 with explicit RUSTC/RUSTDOC;
+child tests receive the pinned absolute JOINERY_TEST_NODE. The initial source
+freeze binds 17 changed source/test files, manifest SHA256
+`45e4820633e109f3760b61d78fc45fea998b5a2056f38799ab88cd6ba8031755`.
+Root graph calls return Transport closed. Delegated Tier 2 coverage uses matching
+project/generations, source reads for the process cfg gaps and excluded SDK
+sources, and direct final-delta reads. Coverage is best effort, not proof of
+complete indexing.
+
+The compiler review corrected named-input test keys before final verification.
+The first compiler run exits 101 with 11 passes/two fixture failures and changed
+source; it is not a frozen qualification. Corrected focused compilation passes
+13/13, exit 0 in 1.212 seconds, unchanged captured compiler source
+(compiler-focused-corrected.json). It covers mixed ordering, global anonymous
+binds, shared named values, scalar types, original spans, procedural selections,
+whole-plan rejection, canonical forgery, exact client file-prefix veto and
+per-unit/aggregate expansion bounds. Unsupported selected syntax remains
+explicitly server-validated; no universal dry-run or application permission is
+claimed.
+
+```sh
+pnpm test:snowflake:helper
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_process:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --test snowflake_process -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib safety::snowflake_script::tests:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib reviewed_console_transport_cannot_substitute_for_any_qualification_entry -- --test-threads=1
+```
+
+Canonical helper regression passes 385/385, no skips, exit 0 in 241.855 seconds;
+all seven owned hashes are unchanged (helper-implementation.json and
+helper-full-canonical.log). New coverage includes 12 synthetic helper cases and
+12 actual pinned-SDK cases across local HTTP/TLS/proxy services: fixed
+MULTI_STATEMENT_COUNT=1, unchanged wire SQL/file veto, passive final-response
+context including individual unknowns, and original ACK before drain failure.
+The initial invocation incorrectly used repository cwd for package-relative
+subprocess paths: 381 pass/four MODULE_NOT_FOUND-related failures. It is retained
+as helper-initial-invalid-cwd, superseded by the clean canonical run without a
+source change. SDK loopback is actual driver behavior against synthetic local
+services, not Snowflake account qualification.
+
+Final process tests pass 70/70 in 34.650 seconds including compilation and actual
+child-process integration passes 43/43 in 58.727 seconds (23.51 seconds test time).
+Receipts process-unit-final.json and process-child-final.json record unchanged
+owned source. They cover strict shape/order/identity, passive context bounds,
+query-ID upgrades, arbitrary bounded rows, credits/discard, cancellation,
+EOF/protocol/drain failure, dropped consumers and stale controls.
+
+Review identified a newly introduced ordering race: failed original terminal
+publication preceded retirement, briefly allowing replacement admission. The
+reviewed-only fix retires under State before waking that terminal recipient,
+retains the original ACK/report, and publishes other retirements outside the
+lock. Explicit closing already seals admission and allows priority logout to
+continue. A deterministic observer regression verifies both intervals. Reversing
+only the new retirement ordering reproduces the exact replacement-admission
+panic, exit 101 (process-retirement-race-baseline-corrected.json). The first
+baseline failed to compile a test receiver and establishes no reproduction.
+Fixed source SHA256 is
+`aecb9384221358bedb505d034e6e0b9f3b128562ffe67ad44f49ebceeef890a8`.
+
+The qualification wire regression passes 1/1 in 0.280 seconds, rejecting the new
+operation for all 393 closed ledger entries. No qualification route or account
+authority is expanded. Final process/compiler/gate receipts have unchanged
+captured source. Independent bounded compiler/transport reviews have no remaining
+material finding; review source hashes and limitations are in compiler-review.json
+and transport-review.json. Reviewers did not run these checks themselves.
+
+Full `pnpm validate` passes, exit 0 in 698.215 seconds with all 17 captured
+source/test hashes unchanged (validate.json/log): 823 frontend and 521 standard
+Rust tests, with 136 fixture/helper ignores, formatting, contract generation,
+TypeScript, production UI build, compiler checks and strict all-target/all-feature
+Clippy. Separately executed helper/child tests above are not inferred from these
+default ignores. Existing nonfatal ts-rs attribute and UI bundle-size/timing
+warnings remain. New contract/design documentation passes Prettier; the relative
+file-target check finds no missing target (fragments are not validated).
+
+Runtime tooling passes 54/54 in 3.557 seconds. Offline preparation first fails
+because the default repository cache lacks @smithy/types 4.20.0. The documented
+existing cache resolves it without a source change:
+
+```sh
+pnpm snowflake:prepare --cache-dir .cache/snowflake-helper-dev/npm-cache --offline
+node scripts/verify-snowflake-package.mjs
+node scripts/verify-snowflake-runtime.mjs
+```
+
+Preparation passes in 19.456 seconds; staged resources pass with 15,109 entries,
+five contained symlinks and manifest SHA256
+`8b9005d801c8242aeac4572e5e2507cb4367b3078c41cc243942f565818fa622`.
+Guarded staged SDK 3.4.1 startup passes in 1.879 seconds with zero authentication
+and zero SQL requests. This is a staged helper, not a rebuilt/installed macOS
+app. The existing normal package still matches the recorded `278754b` binary
+hash; it does not contain this new foundation. No changed UI flow exists yet;
+browser/native console acceptance requires the remaining application integration.
+
 ### Script early-stop accounting (12 November 2026)
 
 Base is clean e8f0765 on feat/datagrip-replacement. Ignored evidence lives under

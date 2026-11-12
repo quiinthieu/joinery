@@ -62,7 +62,7 @@ const error = (code) => ({
   message: {
     invalidInput: "Invalid helper request",
     busy: "Console queue is full",
-    unsupported: "Only caller-classified read-only queries are supported",
+    unsupported: "Unsupported helper operation",
     connectionClosed: "Snowflake helper connection closed",
     cancelled: "Snowflake operation cancelled",
     database: "Snowflake operation failed",
@@ -79,6 +79,9 @@ export class Helper {
     // Direct synthetic tests may omit this seam; production main always injects
     // the mandatory process-local guard after verifying the pinned sources.
     this.submitGuard = options.submitGuard;
+    // Production injects the exact source-verified SDK predicates after isolation.
+    // Without them the new database-only operation remains unavailable.
+    this.isFileTransfer = options.isFileTransfer;
     this.closeTimeoutMs = options.closeTimeoutMs ?? 1000;
     this.generation = null;
     this.lastId = 0n;
@@ -113,7 +116,9 @@ export class Helper {
     this.done.add(request);
     if (
       !this.setupRun &&
-      ["context", "query", "switchSchema", "transaction", "dml", "ddl"].includes(request.op)
+      ["context", "query", "switchSchema", "transaction", "dml", "ddl", "reviewedSql"].includes(
+        request.op,
+      )
     ) {
       const p = request.payload;
       if (!code && request.op === "context" && this.setupBootstrap === 0) this.setupBootstrap = 1;
@@ -136,6 +141,7 @@ export class Helper {
       else this.setupBootstrap = -1;
     }
     const a = this.active?.request === request ? this.active : null;
+    if (a) this.publishStatementAcknowledged(a);
     this.send(request, "terminal", {
       ...(a ? this.idsFor(a) : {}),
       ...(code ? { ok: false, error: error(code) } : { ok: true, result }),
@@ -153,6 +159,7 @@ export class Helper {
         this.active.boundaryAcknowledged ||
         this.active.dmlAcknowledged ||
         this.active.ddlAcknowledged ||
+        this.active.statementAcknowledged ||
         this.active.setupAcknowledged
           ? "connectionClosed"
           : undefined) ??
@@ -199,7 +206,18 @@ export class Helper {
     if (r.op === "close") return this.close(r);
     if (r.op === "cancel") return this.cancel(r);
     if (r.op === "credit") return this.credit(r);
-    if (!["query", "context", "switchSchema", "transaction", "dml", "ddl", "setup"].includes(r.op))
+    if (
+      ![
+        "query",
+        "context",
+        "switchSchema",
+        "transaction",
+        "dml",
+        "ddl",
+        "reviewedSql",
+        "setup",
+      ].includes(r.op)
+    )
       return this.finish(r, "unsupported");
     if (this.state !== "connected") {
       this.finish(r, "connectionClosed");
@@ -266,6 +284,45 @@ export class Helper {
   }
   validateWork(r) {
     const p = r.payload;
+    if (r.op === "reviewedSql") {
+      if (
+        !exact(p, ["sql", "binds", "expected", "credits", "maxRows", "maxBytes"]) ||
+        !text(p.sql, 262144) ||
+        !p.sql.isWellFormed() ||
+        !Array.isArray(p.binds) ||
+        p.binds.length > 1000 ||
+        !p.binds.every(
+          (x) =>
+            x === null ||
+            typeof x === "boolean" ||
+            (typeof x === "string" && Buffer.byteLength(x) <= 262144 && x.isWellFormed()),
+        ) ||
+        !exact(p.expected, ["user", "session"]) ||
+        !identifier(p.expected.user) ||
+        !text(p.expected.session, 1024) ||
+        !p.expected.session.isWellFormed() ||
+        !this.identityPin ||
+        p.expected.user !== this.identityPin.user ||
+        p.expected.session !== this.identityPin.session ||
+        !integer(p.credits, 1, 32) ||
+        !integer(p.maxRows, 0, 1000000) ||
+        !integer(p.maxBytes, 0, 1099511627776) ||
+        typeof this.isFileTransfer !== "function"
+      ) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      try {
+        if (this.isFileTransfer(p.sql)) {
+          this.finish(r, "unsupported");
+          return false;
+        }
+      } catch {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
     if (r.op === "setup") {
       let ledger;
       try {
@@ -430,7 +487,8 @@ export class Helper {
     });
     try {
       a.submitOwner = this.submitGuard?.beginOperation();
-      if (r.op === "query") {
+      if (r.op === "query" || r.op === "reviewedSql") {
+        if (r.op === "reviewedSql" && !this.validateWork(r)) return;
         const result = await this.execute(a, r.payload.sql, r.payload.binds, true);
         this.finish(r, null, { ...result, ...this.idsFor(a) });
       } else if (r.op === "setup") {
@@ -565,6 +623,7 @@ export class Helper {
           a.boundaryAcknowledged ||
           a.dmlAcknowledged ||
           a.ddlAcknowledged ||
+          a.statementAcknowledged ||
           a.setupAcknowledged
           ? "connectionClosed"
           : ["resultLimitReached", "outcomeUnknown", "connectionClosed", "database"].includes(
@@ -580,7 +639,8 @@ export class Helper {
         r.op === "switchSchema" ||
         a.boundaryAcknowledged ||
         a.dmlAcknowledged ||
-        a.ddlAcknowledged
+        a.ddlAcknowledged ||
+        (r.op === "reviewedSql" && (a.statementAcknowledged || (a.dispatching && !a.knownFailure)))
       )
         this.stop();
     } finally {
@@ -599,6 +659,39 @@ export class Helper {
   idsFor(a) {
     if (!a?.lastIdentity) return {};
     return { ...a.lastIdentity };
+  }
+  publishStatementAcknowledged(a) {
+    if (!a.statementAcknowledged || a.statementAcknowledgedPublished) return;
+    a.statementAcknowledgedPublished = true;
+    // Copy before publication: getters may reenter close/retirement, and an
+    // already emitted observation must never acquire fields retrospectively.
+    this.send(a.request, "statementAcknowledged", {
+      ...a.statementAcknowledged,
+      context: { ...a.statementAcknowledged.context },
+    });
+  }
+  captureReviewedContext(a, statement) {
+    let state;
+    try {
+      state = statement.getSessionState?.();
+    } catch {
+      return;
+    }
+    for (const [key, getter] of [
+      ["database", "getCurrentDatabase"],
+      ["schema", "getCurrentSchema"],
+      ["role", "getCurrentRole"],
+      ["warehouse", "getCurrentWarehouse"],
+    ]) {
+      if (a.statementAcknowledgedPublished || this.done.has(a.request)) return;
+      try {
+        const value = state?.[getter]?.();
+        if (!a.statementAcknowledgedPublished && !this.done.has(a.request) && identifier(value))
+          a.statementAcknowledged.context[key] = value;
+      } catch {
+        /* Missing/invalid passive observations remain individually unknown. */
+      }
+    }
   }
   record(a, statement) {
     if (!statement) return;
@@ -655,6 +748,14 @@ export class Helper {
     // pending. Retirement alone is too late to prevent that settled dispatch.
     if (this.retired || this.done.has(a.request) || this.state !== "connected")
       return Promise.reject(error("connectionClosed"));
+    if (a.request.op === "reviewedSql") {
+      try {
+        if (typeof this.isFileTransfer !== "function") return Promise.reject(error("invalidInput"));
+        if (this.isFileTransfer(sql)) return Promise.reject(error("unsupported"));
+      } catch {
+        return Promise.reject(error("invalidInput"));
+      }
+    }
     const ticket = this.submitGuard?.beginStatement(a.submitOwner);
     const task = new Promise((resolve, reject) => {
       if (this.retired || this.done.has(a.request) || this.state !== "connected")
@@ -683,48 +784,66 @@ export class Helper {
           return reject(failure);
         }
         a.acknowledged = true;
-        if (setup) {
-          a.setupAcknowledged = setup;
-          this.send(a.request, "setupAcknowledged", { ...setup, ...this.idsFor(a) });
+        try {
+          if (a.request.op === "reviewedSql") {
+            // Only the exact identity already recorded from execute's return is
+            // authoritative. Establish success before any passive SDK getter.
+            if (statement !== a.statement || !a.lastIdentity || a.statements.size !== 1) {
+              return reject({ code: "outcomeUnknown", retire: true });
+            }
+            a.statementAcknowledged = {
+              ...this.idsFor(a),
+              context: { database: null, schema: null, role: null, warehouse: null },
+            };
+            this.captureReviewedContext(a, statement);
+            this.publishStatementAcknowledged(a);
+            if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+          }
+          if (setup) {
+            a.setupAcknowledged = setup;
+            this.send(a.request, "setupAcknowledged", { ...setup, ...this.idsFor(a) });
+            if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+          }
+          if (dml) {
+            a.dmlAcknowledged = dml;
+            this.send(a.request, "dmlAcknowledged", { kind: dml, ...this.idsFor(a) });
+            if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+          }
+          if (ddl) {
+            a.ddlAcknowledged = ddl;
+            this.send(a.request, "ddlAcknowledged", { kind: ddl, ...this.idsFor(a) });
+            if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+          }
+          if (boundary) {
+            // Command success is distinct from verified transaction disposition.
+            // Registered identity and ACK survive reentrant record/send failures.
+            a.boundaryAcknowledged = boundary;
+            this.send(a.request, "boundaryAcknowledged", { action: boundary, ...this.idsFor(a) });
+            if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+          }
+          // Operation evidence survives the following readback's per-execute reset.
+          // Establish it before record/send can reenter submissionViolation().
+          if (use) {
+            a.useAcknowledged = true;
+            // This ID was registered and recorded from execute's return value.
+            // Publish ACK before record's query-ID upgrade can reenter the guard.
+            this.send(a.request, "useAcknowledged", this.idsFor(a));
+            if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+          }
+          a.statement = statement;
+          this.record(a, statement);
           if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
+          if (publish)
+            this.send(a.request, "phase", {
+              phase: "acknowledged",
+              ...this.idsFor(a),
+            });
+          this.consume(a, statement, publish).then(resolve, (e) =>
+            reject(e?.code === "resultLimitReached" ? e : sdkFailure(e, true)),
+          );
+        } catch (failure) {
+          reject(failure);
         }
-        if (dml) {
-          a.dmlAcknowledged = dml;
-          this.send(a.request, "dmlAcknowledged", { kind: dml, ...this.idsFor(a) });
-          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
-        }
-        if (ddl) {
-          a.ddlAcknowledged = ddl;
-          this.send(a.request, "ddlAcknowledged", { kind: ddl, ...this.idsFor(a) });
-          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
-        }
-        if (boundary) {
-          // Command success is distinct from verified transaction disposition.
-          // Registered identity and ACK survive reentrant record/send failures.
-          a.boundaryAcknowledged = boundary;
-          this.send(a.request, "boundaryAcknowledged", { action: boundary, ...this.idsFor(a) });
-          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
-        }
-        // Operation evidence survives the following readback's per-execute reset.
-        // Establish it before record/send can reenter submissionViolation().
-        if (use) {
-          a.useAcknowledged = true;
-          // This ID was registered and recorded from execute's return value.
-          // Publish ACK before record's query-ID upgrade can reenter the guard.
-          this.send(a.request, "useAcknowledged", this.idsFor(a));
-          if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
-        }
-        a.statement = statement;
-        this.record(a, statement);
-        if (this.retired || this.done.has(a.request)) return reject(error("connectionClosed"));
-        if (publish)
-          this.send(a.request, "phase", {
-            phase: "acknowledged",
-            ...this.idsFor(a),
-          });
-        this.consume(a, statement, publish).then(resolve, (e) =>
-          reject(e?.code === "resultLimitReached" ? e : sdkFailure(e, true)),
-        );
       };
       try {
         if (this.retired || this.done.has(a.request) || this.state !== "connected")
@@ -735,6 +854,7 @@ export class Helper {
           rowMode: "array",
           fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON"],
           streamResult: true,
+          ...(a.request.op === "reviewedSql" ? { parameters: { MULTI_STATEMENT_COUNT: 1 } } : {}),
           complete,
         });
         // Do not infer an ID from a native URL or completion callback. Register
@@ -885,7 +1005,12 @@ export class Helper {
     )
       return this.finish(r, "invalidInput");
     if (p.discard && this.removeQueued(r, p.target)) return;
-    if (!a || a.request.op !== "query" || a.request.id !== p.target || a.credits + p.batches > 32)
+    if (
+      !a ||
+      !["query", "reviewedSql"].includes(a.request.op) ||
+      a.request.id !== p.target ||
+      a.credits + p.batches > 32
+    )
       return this.finish(r, "invalidInput");
     this.send(r, "accepted");
     a.credits += p.batches;
@@ -896,7 +1021,8 @@ export class Helper {
   removeQueued(control, target) {
     const index = this.queue.findIndex(
       (r) =>
-        ["query", "switchSchema", "transaction", "dml", "ddl"].includes(r.op) && r.id === target,
+        ["query", "reviewedSql", "switchSchema", "transaction", "dml", "ddl"].includes(r.op) &&
+        r.id === target,
     );
     if (index < 0) return false;
     const [queued] = this.queue.splice(index, 1);
@@ -923,6 +1049,7 @@ export class Helper {
       a.request.op === "transaction" ||
       a.request.op === "dml" ||
       a.request.op === "ddl" ||
+      a.request.op === "reviewedSql" ||
       a.request.op === "setup"
     ) {
       // A cancel ACK cannot verify either the USE outcome or final context.
@@ -936,6 +1063,7 @@ export class Helper {
           a.boundaryAcknowledged ||
           a.dmlAcknowledged ||
           a.ddlAcknowledged ||
+          a.statementAcknowledged ||
           a.setupAcknowledged
           ? "connectionClosed"
           : (a.knownFailure ?? "outcomeUnknown"),
@@ -962,7 +1090,8 @@ export class Helper {
       this.finish(
         a.request,
         (a.request.op === "setup" && !a.setupAcknowledged) ||
-          (a.request.op === "ddl" && a.dispatching && !a.ddlAcknowledged)
+          (a.request.op === "ddl" && a.dispatching && !a.ddlAcknowledged) ||
+          (a.request.op === "reviewedSql" && a.dispatching && !a.statementAcknowledged)
           ? (a.knownFailure ?? "outcomeUnknown")
           : "connectionClosed",
       );

@@ -93,6 +93,237 @@ async fn columns(operation: &mut Operation) {
     .unwrap();
 }
 
+async fn spawn_reviewed_protocol(scenario: &str) -> Supervisor {
+    let launch = Launch::new(
+        explicit_node(),
+        Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/support/snowflake-reviewed-protocol.mjs"),
+        ),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        tempfile::tempdir().unwrap(),
+    )
+    .unwrap();
+    let supervisor = Supervisor::spawn(launch, GENERATION, bounds())
+        .await
+        .unwrap();
+    let mut connect = supervisor
+        .request(
+            "connect",
+            "connect",
+            json!({"scenario":scenario}),
+            Impact::Control,
+        )
+        .unwrap();
+    assert!(connect.wait_bounded(LIMIT).await.ok);
+    supervisor
+}
+fn reviewed_query(supervisor: &Supervisor, id: &str) -> Operation {
+    supervisor.request(id, "reviewedSql", json!({"sql":"SHOW TABLES","binds":[],"expected":{"user":"USER","session":"PINNED"},"credits":1,"maxRows":500,"maxBytes":2097152}), Impact::Mutating).unwrap()
+}
+
+#[tokio::test]
+async fn reviewed_sql_child_streams_arbitrary_results_and_original_response_context() {
+    for scenario in ["healthy", "truncated"] {
+        let supervisor = spawn_reviewed_protocol(scenario).await;
+        let mut operation = reviewed_query(&supervisor, "reviewed");
+        let batch = timeout(LIMIT, operation.rows.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            batch.rows,
+            vec![
+                vec![Some("9007199254740993".into()), None, Some("first".into())],
+                vec![
+                    Some("2".into()),
+                    Some("quoted \" cell".into()),
+                    Some("second".into())
+                ]
+            ]
+        );
+        let report = operation.wait_bounded(LIMIT).await;
+        assert!(report.ok, "{scenario}: {report:?}");
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        let ack = report.statement_acknowledged.unwrap();
+        assert_eq!(ack, operation.statement_acknowledged().unwrap());
+        assert_eq!(
+            ack.context,
+            ReviewedContext {
+                database: Some("Quoted \"DB".into()),
+                schema: Some("Mixed.Schema".into()),
+                role: None,
+                warehouse: Some("WH".into())
+            }
+        );
+        assert_eq!(
+            ack.statement.query_id.as_deref(),
+            Some("00000000-0000-4000-8000-000000000012")
+        );
+        assert_eq!(operation.columns.borrow().as_ref().unwrap().len(), 3);
+        assert_eq!(report.result.unwrap()["truncated"], scenario == "truncated");
+        assert!(!supervisor.is_closed());
+        assert!(supervisor.close().await.unwrap().ok);
+        assert!(supervisor.wait_exited().await);
+    }
+}
+
+#[tokio::test]
+async fn reviewed_sql_child_original_ack_survives_eof_protocol_and_drain_failure() {
+    for scenario in [
+        "after_ack_eof",
+        "after_ack_protocol",
+        "after_ack_drain_error",
+    ] {
+        let supervisor = spawn_reviewed_protocol(scenario).await;
+        let mut operation = reviewed_query(&supervisor, "reviewed");
+        let report = operation.wait_bounded(LIMIT).await;
+        assert!(!report.ok, "{scenario}");
+        assert_eq!(
+            report.certainty,
+            Certainty::StatementSucceeded,
+            "{scenario}"
+        );
+        assert_eq!(
+            report.statement_acknowledged,
+            operation.statement_acknowledged(),
+            "{scenario}"
+        );
+        assert_eq!(
+            report
+                .statement_acknowledged
+                .unwrap()
+                .context
+                .database
+                .as_deref(),
+            Some("Quoted \"DB")
+        );
+        assert!(supervisor.is_closed(), "{scenario}");
+        assert!(supervisor.wait_exited().await, "{scenario}");
+    }
+    let supervisor = spawn_reviewed_protocol("before_ack_eof").await;
+    let mut operation = reviewed_query(&supervisor, "reviewed");
+    let report = operation.wait_bounded(LIMIT).await;
+    assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+    assert!(report.statement_acknowledged.is_none());
+    assert!(supervisor.wait_exited().await);
+}
+
+#[tokio::test]
+async fn reviewed_sql_child_rejects_unregistered_foreign_malformed_duplicate_and_early_ack() {
+    for scenario in [
+        "unregistered_ack",
+        "foreign_ack",
+        "malformed_context",
+        "duplicate_ack",
+        "early_phase",
+    ] {
+        let supervisor = spawn_reviewed_protocol(scenario).await;
+        let mut operation = reviewed_query(&supervisor, "reviewed");
+        let report = operation.wait_bounded(LIMIT).await;
+        assert!(!report.ok, "{scenario}");
+        assert_eq!(report.retirement, Some(Retirement::Protocol), "{scenario}");
+        assert_eq!(
+            report.statement_acknowledged.is_some(),
+            scenario == "duplicate_ack",
+            "{scenario}"
+        );
+        assert_eq!(
+            report.certainty,
+            if scenario == "duplicate_ack" {
+                Certainty::StatementSucceeded
+            } else {
+                Certainty::OutcomeUnknown
+            },
+            "{scenario}"
+        );
+        assert!(supervisor.wait_exited().await, "{scenario}");
+    }
+}
+
+#[tokio::test]
+async fn reviewed_sql_child_credits_discard_and_stale_tokens_stay_bounded() {
+    let supervisor = spawn_reviewed_protocol("held").await;
+    let mut operation = reviewed_query(&supervisor, "same");
+    let stale = operation.token();
+    columns(&mut operation).await;
+    assert!(supervisor.credit(&operation.token(), 32).is_err());
+    let mut credit = supervisor.credit(&operation.token(), 31).unwrap();
+    assert!(credit.wait_bounded(LIMIT).await.ok);
+    assert!(
+        supervisor.credit(&operation.token(), 1).is_err(),
+        "outstanding plus buffered batch bound"
+    );
+    let batch = timeout(LIMIT, operation.rows.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.rows.len(), 2);
+    drop(batch);
+    let mut credit = supervisor.credit(&operation.token(), 1).unwrap();
+    assert!(credit.wait_bounded(LIMIT).await.ok);
+    let mut discard = supervisor.discard(&operation.token()).unwrap();
+    assert!(discard.wait_bounded(LIMIT).await.ok);
+    let report = operation.wait_bounded(LIMIT).await;
+    assert!(report.ok);
+    assert!(report.statement_acknowledged.is_some());
+    assert_eq!(report.result.unwrap()["rowsRetained"], 64);
+    // Consume the retained consumer batches before admitting a replacement;
+    // they continue owning the global row budget even after the terminal.
+    while operation.rows.recv().await.is_some() {}
+    let mut replacement = reviewed_query(&supervisor, "same");
+    columns(&mut replacement).await;
+    assert!(supervisor.credit(&stale, 1).is_err());
+    assert!(supervisor.discard(&stale).is_err());
+    assert!(supervisor.cancel(&stale).is_err());
+    assert!(!supervisor.is_closed());
+    assert!(replacement.report().is_none());
+    let mut cancel = supervisor.cancel(&replacement.token()).unwrap();
+    assert!(cancel.wait_bounded(LIMIT).await.ok);
+    let report = replacement.wait_bounded(LIMIT).await;
+    assert_eq!(report.error_code.as_deref(), Some("cancelled"));
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    assert!(supervisor.wait_exited().await);
+}
+
+#[tokio::test]
+async fn reviewed_sql_cancel_request_ack_does_not_replace_original_statement_outcome() {
+    let supervisor = spawn_reviewed_protocol("cancel_ack_only").await;
+    let mut operation = reviewed_query(&supervisor, "reviewed");
+    columns(&mut operation).await;
+    let acknowledgement = operation.statement_acknowledged().unwrap();
+    let mut cancel = supervisor.cancel(&operation.token()).unwrap();
+    assert!(cancel.wait_bounded(LIMIT).await.ok);
+    assert!(operation.report().is_none());
+    assert_eq!(
+        operation.statement_acknowledged(),
+        Some(acknowledgement.clone())
+    );
+    let report = operation.wait_bounded(Duration::from_millis(40)).await;
+    assert!(!report.ok);
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    assert_eq!(report.statement_acknowledged, Some(acknowledgement));
+    assert_eq!(report.retirement, Some(Retirement::Deadline));
+    assert!(supervisor.wait_exited().await);
+}
+
+#[tokio::test]
+async fn reviewed_sql_dropped_consumer_retires_instead_of_releasing_mutating_lane() {
+    let supervisor = spawn_reviewed_protocol("held").await;
+    let mut operation = reviewed_query(&supervisor, "reviewed");
+    columns(&mut operation).await;
+    let mut terminal = operation.terminal_receiver();
+    drop(operation);
+    if terminal.borrow().is_none() {
+        timeout(LIMIT, terminal.changed()).await.unwrap().unwrap();
+    }
+    let report = terminal.borrow().clone().unwrap();
+    assert_eq!(report.certainty, Certainty::StatementSucceeded);
+    assert_eq!(report.retirement, Some(Retirement::Dropped));
+    assert!(supervisor.is_closed());
+    assert!(supervisor.wait_exited().await);
+}
+
 #[tokio::test]
 async fn child_has_explicit_paths_no_arguments_or_inherited_credentials() {
     let supervisor = spawn("healthy").await;

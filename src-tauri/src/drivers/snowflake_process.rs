@@ -509,6 +509,46 @@ pub struct DdlAcknowledgement {
     pub kind: SnowflakeDdlKind,
     pub statement: StatementIdentity,
 }
+/// Context observed from the original statement response, never a transaction grant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedContext {
+    pub database: Option<String>,
+    pub schema: Option<String>,
+    pub role: Option<String>,
+    pub warehouse: Option<String>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedAcknowledgement {
+    pub statement: StatementIdentity,
+    pub context: ReviewedContext,
+}
+fn parse_reviewed_context(value: &Value) -> Option<ReviewedContext> {
+    let object = value.as_object()?;
+    if object.len() != 4 {
+        return None;
+    }
+    let field = |name| match object.get(name)? {
+        Value::Null => Some(None),
+        Value::String(value)
+            if !value.is_empty()
+                && value.len() <= 1020
+                && value.chars().count() <= 255
+                && !value.contains('\0') =>
+        {
+            Some(Some(value.clone()))
+        }
+        _ => None,
+    };
+    Some(ReviewedContext {
+        database: field("database")?,
+        schema: field("schema")?,
+        role: field("role")?,
+        warehouse: field("warehouse")?,
+    })
+}
+fn streams_rows(op: &str) -> bool {
+    matches!(op, "query" | "reviewedSql")
+}
 fn parse_dml_kind(value: &Value) -> Option<SnowflakeDmlKind> {
     serde_json::from_value(value.clone()).ok()
 }
@@ -516,6 +556,9 @@ fn parse_ddl_kind(value: &Value) -> Option<SnowflakeDdlKind> {
     serde_json::from_value(value.clone()).ok()
 }
 fn valid_transaction_impact(op: &str, payload: &Value, impact: Impact) -> bool {
+    if op == "reviewedSql" {
+        return impact == Impact::Mutating;
+    }
     if op == "dml" {
         return impact == Impact::Mutating
             && payload.get("kind").and_then(parse_dml_kind).is_some();
@@ -579,6 +622,8 @@ pub struct Report {
     pub dml_acknowledged: Option<DmlAcknowledgement>,
     /// DDL statement success, independently of status-row drain or later catalog observation.
     pub ddl_acknowledged: Option<DdlAcknowledgement>,
+    /// Original reviewed SQL success, independent of result retention or later failure.
+    pub statement_acknowledged: Option<ReviewedAcknowledgement>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatementIdentity {
@@ -629,6 +674,7 @@ struct Pending {
     dml_acknowledged: Option<DmlAcknowledgement>,
     ddl_kind: Option<SnowflakeDdlKind>,
     ddl_acknowledged: Option<DdlAcknowledgement>,
+    statement_acknowledged: Option<ReviewedAcknowledgement>,
     statement_events: u8,
     wire_id: Option<String>,
     terminal: watch::Sender<Option<Report>>,
@@ -803,6 +849,17 @@ impl Operation {
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.ddl_acknowledged.clone())
     }
+    pub fn statement_acknowledged(&self) -> Option<ReviewedAcknowledgement> {
+        let state = self.owner.state.lock().unwrap();
+        if let Some(report) = self.completion_evidence(&state) {
+            return report.statement_acknowledged;
+        }
+        state
+            .pending
+            .get(&self.token.id)
+            .filter(|pending| pending.ticket == self.token.ticket)
+            .and_then(|pending| pending.statement_acknowledged.clone())
+    }
     /// Observe completion while independently consuming columns and queued rows.
     /// A terminal report does not imply the row receiver has been drained.
     pub fn terminal_receiver(&self) -> watch::Receiver<Option<Report>> {
@@ -827,6 +884,7 @@ impl Operation {
                     boundary_acknowledged: None,
                     dml_acknowledged: None,
                     ddl_acknowledged: None,
+                    statement_acknowledged: None,
                 };
             }
         }
@@ -859,7 +917,14 @@ impl Operation {
     fn cleanup_unfinished(&self) {
         if matches!(
             self.op.as_str(),
-            "connect" | "context" | "switchSchema" | "transaction" | "dml" | "ddl" | "close"
+            "connect"
+                | "context"
+                | "switchSchema"
+                | "transaction"
+                | "dml"
+                | "ddl"
+                | "reviewedSql"
+                | "close"
         ) {
             self.owner.retire_target(&self.token, Retirement::Dropped);
             return;
@@ -1133,7 +1198,10 @@ impl Supervisor {
             if pending.phase == Phase::Queued {
                 return Err("query has not been transmitted");
             }
-            if pending.op != "query" || pending.discard || pending.credits + batches > MAX_CREDITS {
+            if !streams_rows(&pending.op)
+                || pending.discard
+                || pending.credits + batches > MAX_CREDITS
+            {
                 return Err("invalid credit target");
             }
             pending.credits += batches;
@@ -1184,6 +1252,7 @@ impl Supervisor {
                                         | "transaction"
                                         | "dml"
                                         | "ddl"
+                                        | "reviewedSql"
                                 )
                         })
                         .map(|(id, _)| id.clone())
@@ -1202,6 +1271,7 @@ impl Supervisor {
                             boundary_acknowledged: pending.boundary_acknowledged.clone(),
                             dml_acknowledged: pending.dml_acknowledged.clone(),
                             ddl_acknowledged: pending.ddl_acknowledged.clone(),
+                            statement_acknowledged: pending.statement_acknowledged.clone(),
                         };
                         publications.push(self.inner.stage_local(
                             &mut state,
@@ -1429,7 +1499,7 @@ impl Inner {
             .filter(|pending| pending.ticket == target.ticket)
             .ok_or(TargetError::Inactive)?;
         let is_connect = pending.op == "connect";
-        if pending.op != "query"
+        if !streams_rows(&pending.op)
             && !(allow_connect
                 && (is_connect
                     || matches!(
@@ -1456,6 +1526,7 @@ impl Inner {
             boundary_acknowledged: pending.boundary_acknowledged.clone(),
             dml_acknowledged: pending.dml_acknowledged.clone(),
             ddl_acknowledged: pending.ddl_acknowledged.clone(),
+            statement_acknowledged: pending.statement_acknowledged.clone(),
         };
         let publication = self.stage_local(
             &mut state,
@@ -1542,6 +1613,7 @@ impl Inner {
                     | "transaction"
                     | "dml"
                     | "ddl"
+                    | "reviewedSql"
                     | "credit"
                     | "cancel"
                     | "close"
@@ -1560,12 +1632,12 @@ impl Inner {
         if priority && impact != Impact::Control {
             return Err("invalid control impact");
         }
-        let credits = if op == "query" {
+        let credits = if streams_rows(op) {
             payload.get("credits").and_then(Value::as_u64).unwrap_or(0)
         } else {
             0
         };
-        if credits > u64::from(MAX_CREDITS) {
+        if credits > u64::from(MAX_CREDITS) || (op == "reviewedSql" && credits == 0) {
             return Err("invalid credit bound");
         }
         let target = payload
@@ -1643,6 +1715,7 @@ impl Inner {
                 dml_acknowledged: None,
                 dml_kind,
                 ddl_acknowledged: None,
+                statement_acknowledged: None,
                 ddl_kind,
                 transaction_action,
                 statement_events: 0,
@@ -1728,6 +1801,7 @@ impl Inner {
             let certainty = if pending.boundary_acknowledged.is_some()
                 || pending.dml_acknowledged.is_some()
                 || pending.ddl_acknowledged.is_some()
+                || pending.statement_acknowledged.is_some()
             {
                 Certainty::StatementSucceeded
             } else {
@@ -1752,6 +1826,7 @@ impl Inner {
                 boundary_acknowledged: pending.boundary_acknowledged.clone(),
                 dml_acknowledged: pending.dml_acknowledged.clone(),
                 ddl_acknowledged: pending.ddl_acknowledged.clone(),
+                statement_acknowledged: pending.statement_acknowledged.clone(),
             };
             publications.push(self.stage_local(
                 state,
@@ -1801,7 +1876,13 @@ impl Inner {
                     if pending.accepted
                         && matches!(
                             pending.op.as_str(),
-                            "query" | "context" | "switchSchema" | "transaction" | "dml" | "ddl"
+                            "query"
+                                | "context"
+                                | "switchSchema"
+                                | "transaction"
+                                | "dml"
+                                | "ddl"
+                                | "reviewedSql"
                         )
                         && pending.phase < Phase::Dispatching =>
                 {
@@ -1835,6 +1916,13 @@ impl Inner {
                     }
                     if pending.op == "ddl"
                         && (pending.ddl_acknowledged.is_none()
+                            || pending.statements.len() != 1
+                            || event.get("sdkRequestId").and_then(Value::as_str).is_none())
+                    {
+                        return false;
+                    }
+                    if pending.op == "reviewedSql"
+                        && (pending.statement_acknowledged.is_none()
                             || pending.statements.len() != 1
                             || event.get("sdkRequestId").and_then(Value::as_str).is_none())
                     {
@@ -1939,6 +2027,40 @@ impl Inner {
                 });
                 true
             }
+            Some("statementAcknowledged") => {
+                if pending.op != "reviewedSql"
+                    || pending.impact != Impact::Mutating
+                    || !pending.accepted
+                    || pending.phase != Phase::Dispatching
+                    || pending.statement_acknowledged.is_some()
+                    || pending.statements.len() != 1
+                    || event.get("sdkRequestId").and_then(Value::as_str).is_none()
+                    || !event.as_object().is_some_and(|object| {
+                        object.keys().all(|key| {
+                            matches!(
+                                key.as_str(),
+                                "v" | "generation"
+                                    | "id"
+                                    | "type"
+                                    | "sdkRequestId"
+                                    | "queryId"
+                                    | "context"
+                            )
+                        })
+                    })
+                    || !validate_latest_statement(pending, &event)
+                {
+                    return false;
+                }
+                let Some(context) = event.get("context").and_then(parse_reviewed_context) else {
+                    return false;
+                };
+                pending.statement_acknowledged = Some(ReviewedAcknowledgement {
+                    statement: pending.statements[0].clone(),
+                    context,
+                });
+                true
+            }
             Some("useAcknowledged") => {
                 if pending.op != "switchSchema"
                     || !pending.accepted
@@ -1958,7 +2080,13 @@ impl Inner {
                     || pending.phase < Phase::Dispatching
                     || !matches!(
                         pending.op.as_str(),
-                        "query" | "context" | "switchSchema" | "transaction" | "dml" | "ddl"
+                        "query"
+                            | "context"
+                            | "switchSchema"
+                            | "transaction"
+                            | "dml"
+                            | "ddl"
+                            | "reviewedSql"
                     )
                 {
                     return false;
@@ -1968,7 +2096,7 @@ impl Inner {
                 pending.statement_events <= limit && update_statement(pending, &event)
             }
             Some("columns") => {
-                if pending.op != "query"
+                if !streams_rows(&pending.op)
                     || pending.phase != Phase::Acknowledged
                     || pending.width.is_some()
                 {
@@ -2000,7 +2128,7 @@ impl Inner {
                 let Some(value) = event.get("rows") else {
                     return false;
                 };
-                if pending.op != "query"
+                if !streams_rows(&pending.op)
                     || pending.phase != Phase::Acknowledged
                     || pending.credits == 0
                     || serde_json::to_vec(value).map_or(true, |b| b.len() > MAX_BATCH)
@@ -2081,6 +2209,17 @@ impl Inner {
                         return false;
                     }
                 }
+                if ok && pending.op == "reviewedSql" {
+                    let Some(result) = event.get("result") else {
+                        return false;
+                    };
+                    if pending.statement_acknowledged.is_none()
+                        || event.get("sdkRequestId").and_then(Value::as_str).is_none()
+                        || !valid_reviewed_result(pending, result)
+                    {
+                        return false;
+                    }
+                }
                 let (code, result) = if ok {
                     if event.get("error").is_some() || event.get("result").is_none() {
                         return false;
@@ -2112,7 +2251,13 @@ impl Inner {
                 if ok
                     && matches!(
                         pending.op.as_str(),
-                        "query" | "context" | "switchSchema" | "transaction" | "dml" | "ddl"
+                        "query"
+                            | "context"
+                            | "switchSchema"
+                            | "transaction"
+                            | "dml"
+                            | "ddl"
+                            | "reviewedSql"
                     )
                     && pending.phase != Phase::Acknowledged
                 {
@@ -2131,6 +2276,7 @@ impl Inner {
                 let certainty = if pending.boundary_acknowledged.is_some()
                     || pending.dml_acknowledged.is_some()
                     || pending.ddl_acknowledged.is_some()
+                    || pending.statement_acknowledged.is_some()
                 {
                     Certainty::StatementSucceeded
                 } else if pending.phase == Phase::Acknowledged {
@@ -2165,9 +2311,11 @@ impl Inner {
                     || unverified_use
                     || ((pending.boundary_acknowledged.is_some()
                         || pending.dml_acknowledged.is_some()
-                        || pending.ddl_acknowledged.is_some())
+                        || pending.ddl_acknowledged.is_some()
+                        || pending.statement_acknowledged.is_some())
                         && pending.phase != Phase::Acknowledged)
-                    || cancelled_context;
+                    || cancelled_context
+                    || (pending.statement_acknowledged.is_some() && !ok);
                 let report = Report {
                     ok,
                     certainty,
@@ -2180,8 +2328,10 @@ impl Inner {
                     boundary_acknowledged: pending.boundary_acknowledged,
                     dml_acknowledged: pending.dml_acknowledged,
                     ddl_acknowledged: pending.ddl_acknowledged,
+                    statement_acknowledged: pending.statement_acknowledged,
                 };
-                let closing = state.pending.values().any(|p| p.op == "close");
+                let closing = (pending.op == "reviewedSql" && state.closing)
+                    || state.pending.values().any(|p| p.op == "close");
                 #[cfg(all(unix, feature = "test-harness"))]
                 let mut publication_guard = None;
                 #[cfg(all(unix, feature = "test-harness"))]
@@ -2202,6 +2352,16 @@ impl Inner {
                     });
                     state = self.state.lock().unwrap();
                 }
+                // A failed reviewed drain must close admission before waking
+                // the original terminal recipient. Preserve its original report;
+                // stage other operations for publication outside State.
+                let reviewed_retirement =
+                    pending.op == "reviewedSql" && terminal_connection_loss && !closing;
+                let retirement_publications = if reviewed_retirement {
+                    self.retire_locked(&mut state, Retirement::Requested)
+                } else {
+                    Vec::new()
+                };
                 // A policy failure prevents future admission; it must never
                 // replace the helper's validated original outcome or ACK.
                 pending.terminal.send_replace(Some(report));
@@ -2212,9 +2372,14 @@ impl Inner {
                         .send_modify(|sequence| *sequence = sequence.wrapping_add(1));
                 }
                 drop(state);
+                #[cfg(test)]
+                tests::observe_terminal_publication(self);
                 #[cfg(all(unix, feature = "test-harness"))]
                 drop(publication_guard);
-                if terminal_connection_loss && !closing {
+                for publication in retirement_publications {
+                    self.publish_local(publication);
+                }
+                if terminal_connection_loss && !closing && !reviewed_retirement {
                     self.retire(Retirement::Requested);
                 }
                 true
@@ -2285,6 +2450,25 @@ fn valid_private_status_result(pending: &Pending, result: &Value) -> bool {
                     && row.iter().all(|cell| cell.is_null() || cell.is_string())
             })
         })
+}
+
+fn valid_reviewed_result(pending: &Pending, result: &Value) -> bool {
+    let Some(object) = result.as_object() else {
+        return false;
+    };
+    object.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "rowsSeen" | "rowsRetained" | "truncated" | "sdkRequestId" | "queryId"
+        )
+    }) && result.get("sdkRequestId").and_then(Value::as_str).is_some()
+        && validate_latest_statement(pending, result)
+        && result.get("truncated").and_then(Value::as_bool).is_some()
+        && result
+            .get("rowsSeen")
+            .and_then(Value::as_u64)
+            .zip(result.get("rowsRetained").and_then(Value::as_u64))
+            .is_some_and(|(seen, retained)| retained <= seen)
 }
 
 fn validate_latest_statement(pending: &Pending, event: &Value) -> bool {
@@ -2360,6 +2544,13 @@ fn update_statement(pending: &mut Pending, event: &Value) -> bool {
         {
             ack.statement = existing.clone();
         }
+        if let Some(ack) = pending
+            .statement_acknowledged
+            .as_mut()
+            .filter(|ack| ack.statement.sdk_request_id == request_id)
+        {
+            ack.statement = existing.clone();
+        }
     } else {
         if pending.statements.len() >= if pending.op == "switchSchema" { 2 } else { 1 }
             || (pending.op == "switchSchema"
@@ -2389,6 +2580,7 @@ fn local_report(result: Value) -> Report {
         boundary_acknowledged: None,
         dml_acknowledged: None,
         ddl_acknowledged: None,
+        statement_acknowledged: None,
     }
 }
 
@@ -2826,6 +3018,19 @@ async fn write_bytes(writer: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> st
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TerminalPublicationObserver = Box<dyn FnOnce(&Inner)>;
+    std::thread_local! {
+        // Observe the exact synchronous boundary after a terminal is visible and
+        // State unlocks, before the legacy deferred-retirement path. Production
+        // has no callback or admission override.
+        static TERMINAL_PUBLICATION_OBSERVER: std::cell::RefCell<Option<TerminalPublicationObserver>> = const { std::cell::RefCell::new(None) };
+    }
+    pub(super) fn observe_terminal_publication(inner: &Inner) {
+        let observer = TERMINAL_PUBLICATION_OBSERVER.with(|slot| slot.borrow_mut().take());
+        if let Some(observer) = observer {
+            observer(inner);
+        }
+    }
     fn isolated() -> (
         Arc<Inner>,
         mpsc::Receiver<Outbound>,
@@ -2868,6 +3073,489 @@ mod tests {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         inner.event(event)
+    }
+    fn reviewed_ack() -> Value {
+        json!({"type":"statementAcknowledged","sdkRequestId":USE_ID,
+            "context":{"database":"DB", "schema":"Quoted \"schema", "role":null,"warehouse":"WH"}})
+    }
+    fn dispatched_reviewed() -> (Arc<Inner>, Operation) {
+        let (inner, _normal, _control) = isolated();
+        let operation = inner
+            .request(
+                "reviewed",
+                "reviewedSql",
+                json!({"credits":1}),
+                Impact::Mutating,
+            )
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.pending.get_mut("reviewed").unwrap().phase = Phase::Sent;
+            state.wire_ids.insert("1".into(), "reviewed".into());
+        }
+        assert!(switch_event(&inner, json!({"type":"accepted"})));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"dispatching"})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":USE_ID})
+        ));
+        (inner, operation)
+    }
+    #[tokio::test]
+    async fn reviewed_sql_requires_mutating_impact_and_bounded_initial_credits() {
+        let (inner, _normal, _control) = isolated();
+        for impact in [
+            Impact::Read,
+            Impact::Control,
+            Impact::ContextChange,
+            Impact::Begin,
+            Impact::Commit,
+            Impact::Rollback,
+        ] {
+            assert!(
+                inner
+                    .request("bad", "reviewedSql", json!({"credits":1}), impact)
+                    .is_err()
+            );
+        }
+        for credits in [json!(0), json!(33), json!(-1), json!("1"), Value::Null] {
+            assert!(
+                inner
+                    .request(
+                        "bad",
+                        "reviewedSql",
+                        json!({"credits":credits}),
+                        Impact::Mutating
+                    )
+                    .is_err()
+            );
+        }
+        let mut operation = inner
+            .request(
+                "valid",
+                "reviewedSql",
+                json!({"credits":32}),
+                Impact::Mutating,
+            )
+            .unwrap();
+        assert!(inner.cancel(&operation.token()).unwrap().wait().await.ok);
+        let report = operation.wait().await;
+        assert_eq!(report.certainty, Certainty::NotSubmitted);
+        assert!(report.statement_acknowledged.is_none());
+    }
+    #[test]
+    fn reviewed_ack_rejects_foreign_identity_wrong_shape_and_out_of_order_frames() {
+        let mut invalid = vec![
+            json!({"sdkRequestId":READBACK_ID}),
+            json!({"sdkRequestId":null}),
+            json!({"queryId":READBACK_ID}),
+            json!({"extra":true}),
+            json!({"context":null}),
+            json!({"context":{"database":null,"schema":null,"role":null}}),
+            json!({"context":{"database":null,"schema":null,"role":null,"warehouse":null,"extra":null}}),
+        ];
+        for value in [
+            json!(""),
+            json!("a".repeat(256)),
+            json!("😀".repeat(256)),
+            json!("nul\0field"),
+            json!(17),
+            json!([]),
+            json!({}),
+        ] {
+            invalid.push(
+                json!({"context":{"database":value,"schema":null,"role":null,"warehouse":null}}),
+            );
+        }
+        for patch in invalid {
+            let (inner, operation) = dispatched_reviewed();
+            let mut frame = reviewed_ack();
+            frame
+                .as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            assert!(!switch_event(&inner, frame), "{patch}");
+            assert!(operation.statement_acknowledged().is_none());
+            inner.retire(Retirement::Protocol);
+            assert_eq!(
+                operation.report().unwrap().certainty,
+                Certainty::OutcomeUnknown
+            );
+        }
+        let (inner, operation) = dispatched_reviewed();
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(operation.statement_acknowledged().is_none());
+        inner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .get_mut("reviewed")
+            .unwrap()
+            .statements
+            .clear();
+        assert!(!switch_event(&inner, reviewed_ack()));
+        inner.retire(Retirement::Protocol);
+        for (inner, operation) in [
+            dispatched_dml(SnowflakeDmlKind::Insert),
+            dispatched_transaction(TransactionAction::Commit),
+            dispatched_switch(),
+        ] {
+            assert!(!switch_event(&inner, reviewed_ack()));
+            assert!(operation.statement_acknowledged().is_none());
+            inner.retire(Retirement::Protocol);
+        }
+        for (op, payload, impact) in [
+            ("query", json!({}), Impact::Read),
+            ("context", json!({}), Impact::Read),
+            ("ddl", json!({"kind":"createTable"}), Impact::Mutating),
+        ] {
+            let (inner, _normal, _control) = isolated();
+            let operation = inner.request("other", op, payload, impact).unwrap();
+            {
+                let mut state = inner.state.lock().unwrap();
+                let pending = state.pending.get_mut("other").unwrap();
+                pending.accepted = true;
+                pending.phase = Phase::Dispatching;
+                pending.statements.push(StatementIdentity {
+                    sdk_request_id: USE_ID.into(),
+                    query_id: None,
+                });
+                state.wire_ids.insert("1".into(), "other".into());
+            }
+            assert!(!switch_event(&inner, reviewed_ack()), "{op}");
+            assert!(operation.statement_acknowledged().is_none());
+            inner.retire(Retirement::Protocol);
+        }
+    }
+    #[test]
+    fn reviewed_ack_context_bounds_nulls_and_query_id_upgrade_are_preserved() {
+        let (inner, operation) = dispatched_reviewed();
+        let context =
+            json!({"database":"😀".repeat(255),"schema":null,"role":null,"warehouse":null});
+        let mut ack = reviewed_ack();
+        ack["context"] = context;
+        assert!(switch_event(&inner, ack.clone()));
+        assert!(!switch_event(&inner, ack));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":USE_ID,"queryId":READBACK_ID})
+        ));
+        let retained = operation.statement_acknowledged().unwrap();
+        assert_eq!(retained.statement.query_id.as_deref(), Some(READBACK_ID));
+        assert_eq!(
+            retained.context.database.as_deref(),
+            Some("😀".repeat(255).as_str())
+        );
+        assert_eq!(retained.context.schema, None);
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID,"queryId":READBACK_ID})
+        ));
+        inner.retire(Retirement::Eof);
+        assert_eq!(
+            operation.report().unwrap().statement_acknowledged,
+            Some(retained)
+        );
+    }
+    #[test]
+    fn reviewed_ack_survives_retirement_before_phase_and_after_drain_failure() {
+        for reason in [
+            Retirement::Eof,
+            Retirement::Protocol,
+            Retirement::Write,
+            Retirement::Requested,
+            Retirement::Deadline,
+            Retirement::Dropped,
+        ] {
+            for acknowledged in [false, true] {
+                let (inner, operation) = dispatched_reviewed();
+                if acknowledged {
+                    assert!(switch_event(&inner, reviewed_ack()));
+                }
+                inner.retire(reason);
+                let report = operation.report().unwrap();
+                assert!(!report.ok);
+                assert_eq!(
+                    report.certainty,
+                    if acknowledged {
+                        Certainty::StatementSucceeded
+                    } else {
+                        Certainty::OutcomeUnknown
+                    }
+                );
+                assert_eq!(report.statement_acknowledged.is_some(), acknowledged);
+                assert_eq!(report.phase, Phase::Dispatching);
+            }
+        }
+        for code in [
+            "database",
+            "cancelled",
+            "connectionClosed",
+            "outcomeUnknown",
+            "resultLimitReached",
+        ] {
+            let (inner, operation) = dispatched_reviewed();
+            assert!(switch_event(&inner, reviewed_ack()));
+            assert!(switch_event(
+                &inner,
+                json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+            ));
+            assert!(switch_event(
+                &inner,
+                json!({"type":"terminal","ok":false,"sdkRequestId":USE_ID,"error":{"code":code}})
+            ));
+            assert_eq!(
+                operation.report().unwrap().certainty,
+                Certainty::StatementSucceeded
+            );
+            assert!(operation.statement_acknowledged().is_some());
+            assert!(inner.state.lock().unwrap().retired.is_some(), "{code}");
+        }
+    }
+    #[test]
+    fn reviewed_failed_terminal_recipient_cannot_admit_replacement_before_retirement() {
+        let (inner, _normal, _control) = isolated();
+        let operation = inner
+            .request(
+                "reviewed",
+                "reviewedSql",
+                json!({"credits":1}),
+                Impact::Mutating,
+            )
+            .unwrap();
+        // Retain both receiver queues: admission failure must prove retirement,
+        // not merely a closed/full test queue. This queued probe proves admission
+        // was available and will receive its own NotSubmitted retirement report.
+        let queued_probe = inner
+            .request("probe", "context", json!({}), Impact::Read)
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            let pending = state.pending.get_mut("reviewed").unwrap();
+            pending.phase = Phase::Dispatching;
+            pending.accepted = true;
+            pending.statements.push(StatementIdentity {
+                sdk_request_id: USE_ID.into(),
+                query_id: None,
+            });
+            state.wire_ids.insert("1".into(), "reviewed".into());
+        }
+        assert!(switch_event(&inner, reviewed_ack()));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+        ));
+        let terminal = operation.terminal_receiver();
+        let recipient = inner.clone();
+        TERMINAL_PUBLICATION_OBSERVER.with(|slot| {
+            assert!(
+                slot.borrow_mut()
+                    .replace(Box::new(move |_inner| {
+                        let report = terminal
+                            .borrow()
+                            .clone()
+                            .expect("original terminal already published");
+                        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+                        assert!(report.statement_acknowledged.is_some());
+                        match recipient.request(
+                            "replacement",
+                            "reviewedSql",
+                            json!({"credits":1}),
+                            Impact::Mutating,
+                        ) {
+                            Err(error) => assert_eq!(error, "helper is retired or closing"),
+                            Ok(_) => {
+                                panic!("terminal recipient admitted replacement before retirement")
+                            }
+                        }
+                    }))
+                    .is_none()
+            );
+        });
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":false,"sdkRequestId":USE_ID,"error":{"code":"database"}})
+        ));
+        assert!(
+            TERMINAL_PUBLICATION_OBSERVER.with(|slot| slot.borrow().is_none()),
+            "publication observer ran"
+        );
+        assert_eq!(
+            operation.report().unwrap().certainty,
+            Certainty::StatementSucceeded
+        );
+        assert_eq!(
+            queued_probe.report().unwrap().certainty,
+            Certainty::NotSubmitted
+        );
+    }
+    #[test]
+    fn reviewed_failure_during_explicit_close_preserves_the_logout_admission_window() {
+        let (inner, _normal, _control) = isolated();
+        let operation = inner
+            .request(
+                "reviewed",
+                "reviewedSql",
+                json!({"credits":1}),
+                Impact::Mutating,
+            )
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            let pending = state.pending.get_mut("reviewed").unwrap();
+            pending.phase = Phase::Dispatching;
+            pending.accepted = true;
+            pending.statements.push(StatementIdentity {
+                sdk_request_id: USE_ID.into(),
+                query_id: None,
+            });
+            state.wire_ids.insert("1".into(), "reviewed".into());
+            // This is Supervisor::close's real interval after sealing admission
+            // and before queued publications finish and close control is queued.
+            state.closing = true;
+        }
+        assert!(switch_event(&inner, reviewed_ack()));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":false,"sdkRequestId":USE_ID,"error":{"code":"database"}})
+        ));
+        let report = operation.report().unwrap();
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        assert!(report.statement_acknowledged.is_some());
+        assert!(!inner.logout_acknowledged.load(Ordering::SeqCst));
+        assert!(
+            inner.state.lock().unwrap().retired.is_none(),
+            "explicit close still owns logout"
+        );
+        assert!(matches!(
+            inner.request(
+                "replacement",
+                "reviewedSql",
+                json!({"credits":1}),
+                Impact::Mutating
+            ),
+            Err("helper is retired or closing")
+        ));
+        let close = inner
+            .control("close", json!({}))
+            .expect("priority logout remains admitted");
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.pending.get_mut(&close.id).unwrap().phase = Phase::Sent;
+            state.wire_ids.insert("2".into(), close.id.clone());
+        }
+        assert!(
+            inner.event(json!({"v":1,"generation":inner.generation,"id":"2","type":"accepted"}))
+        );
+        assert!(inner.event(json!({"v":1,"generation":inner.generation,"id":"2","type":"terminal","ok":true,"result":{"closed":true,"logoutAcknowledged":true}})));
+        assert!(close.report().unwrap().ok);
+        assert!(inner.logout_acknowledged.load(Ordering::SeqCst));
+        assert_eq!(
+            operation.report().unwrap().statement_acknowledged,
+            report.statement_acknowledged
+        );
+        inner.retire(Retirement::Requested);
+    }
+    #[tokio::test]
+    async fn reviewed_sql_streams_multiple_rows_and_columns_with_generic_terminal() {
+        let (inner, mut operation) = dispatched_reviewed();
+        assert!(switch_event(&inner, reviewed_ack()));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged","sdkRequestId":USE_ID})
+        ));
+        assert!(switch_event(
+            &inner,
+            json!({"type":"columns","columns":[{"name":"same","type":"TEXT"},{"name":"same","type":"TEXT"},{"name":"third","type":"TEXT"}]})
+        ));
+        let rows = json!([
+            ["9007199254740993", null, "a"],
+            ["2", "quoted \" text", "b"]
+        ]);
+        assert!(switch_event(&inner, json!({"type":"rows","rows":rows})));
+        let batch = operation.rows.recv().await.unwrap();
+        assert_eq!(batch.rows.len(), 2);
+        assert_eq!(batch.rows[0].len(), 3);
+        assert_eq!(batch.rows[0][0].as_deref(), Some("9007199254740993"));
+        assert!(
+            !switch_event(&inner, json!({"type":"rows","rows":[[null,null,null]]})),
+            "no second batch credit"
+        );
+        for bad in [
+            json!({"rowsSeen":1,"rowsRetained":2,"truncated":false,"sdkRequestId":USE_ID}),
+            json!({"rowsSeen":2,"rowsRetained":2,"truncated":false,"sdkRequestId":USE_ID,"affectedRows":"2"}),
+        ] {
+            assert!(!switch_event(
+                &inner,
+                json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":bad})
+            ));
+            assert!(operation.report().is_none());
+        }
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":true,"sdkRequestId":USE_ID,"result":{"rowsSeen":2,"rowsRetained":2,"truncated":false,"sdkRequestId":USE_ID}})
+        ));
+        let report = operation.wait().await;
+        assert!(report.ok);
+        assert_eq!(report.certainty, Certainty::StatementSucceeded);
+        assert_eq!(report.result.unwrap()["rowsRetained"], 2);
+        assert!(inner.state.lock().unwrap().retired.is_none());
+    }
+    #[tokio::test]
+    async fn reviewed_queued_close_and_stale_controls_cannot_touch_replacement() {
+        let (inner, _normal, _control) = isolated();
+        let supervisor = Supervisor {
+            inner: inner.clone(),
+            pid: 0,
+            bounds: Bounds {
+                exit: Duration::from_millis(1),
+                ..Bounds::default()
+            },
+        };
+        let mut queued = supervisor
+            .request(
+                "reviewed",
+                "reviewedSql",
+                json!({"credits":1}),
+                Impact::Mutating,
+            )
+            .unwrap();
+        inner.state.lock().unwrap().connect_sent = true;
+        supervisor.close().await;
+        assert_eq!(queued.wait().await.certainty, Certainty::NotSubmitted);
+        assert!(queued.statement_acknowledged().is_none());
+        let (inner, _normal, _control) = isolated();
+        let mut old = inner
+            .request(
+                "same",
+                "reviewedSql",
+                json!({"credits":1}),
+                Impact::Mutating,
+            )
+            .unwrap();
+        let stale = old.token();
+        assert!(inner.cancel(&stale).unwrap().wait().await.ok);
+        assert_eq!(old.wait().await.certainty, Certainty::NotSubmitted);
+        let replacement = inner
+            .request(
+                "same",
+                "reviewedSql",
+                json!({"credits":1}),
+                Impact::Mutating,
+            )
+            .unwrap();
+        assert!(inner.cancel(&stale).is_err());
+        assert!(inner.discard(&stale).is_err());
+        assert!(replacement.report().is_none());
+        assert!(inner.state.lock().unwrap().retired.is_none());
+        inner.retire(Retirement::Requested);
     }
     fn dispatched_switch() -> (Arc<Inner>, Operation) {
         let (inner, _normal, _control) = isolated();

@@ -1,5 +1,29 @@
 # Implementation and release status
 
+## Reviewed Snowflake console foundations (12 November 2026)
+
+The [pure compiler and private transport](snowflake-sdk-console-transport.md)
+implement ordered mixed SQL units, canonical scalar bindings, a closed
+potentially mutating helper operation, per-request single-statement enforcement
+and sticky original acknowledgements with passive response context. They expose
+no new application command or profile permission. Current checks and review
+evidence belong in the [ledger](replacement-verification.md).
+
+Focused verification passes 13 compiler, 385 helper, 70 process and 43 actual-child
+cases plus the closed qualification guard. Independent bounded review has no
+remaining material finding. Full validation passes 823 frontend and 521 standard
+Rust tests (136 fixture/helper ignores), build/compiler checks and strict Clippy
+on unchanged captured source. Staged SDK resources and guarded startup pass with
+zero authentication/SQL requests. The existing normal macOS package predates this
+foundation; no new UI/native console workflow is qualified.
+
+The [complete required workflow](snowflake-sdk-console-scripts-design.md) still
+needs retained application ownership across runs, suppression of hidden SQL
+observers, one-use native admission/review, durable receipts and UI integration.
+Complete Snowflake read/write/DDL/transaction workflows, million-row interaction
+and normal packaged/owner acceptance remain open. All applicable DataGrip features
+remain in scope; the Goal is active and incomplete.
+
 ## Script early-stop accounting (12 November 2026)
 
 A reproduced defect marked a script Completed after its first classified read
@@ -31,7 +55,8 @@ packaged UI/SSO/restart acceptance stay open.
 The next required workflow has a [reviewed SQL console/script design](snowflake-sdk-console-scripts-design.md).
 It preserves one physical session across runs without hidden SQL probes, retains
 original outcomes, and uses passive SDK context without inventing transaction
-knowledge. It remains design work, not implemented capability.
+knowledge. Its compiler/transport foundations are described above; the usable
+application workflow remains incomplete.
 
 Generalized mixed Snowflake scripts, account write/transaction/DDL effects,
 million-row Snowflake interaction/export, safe editing/import, broader metadata

@@ -63,13 +63,27 @@ and [ledger](replacement-verification.md).
 ## Required reviewed Snowflake consoles and mixed scripts
 
 The [design](snowflake-sdk-console-scripts-design.md) is prepared and independently
-reviewed; implementation and external qualification remain incomplete. It covers
+reviewed. [Compiler and private transport foundations](snowflake-sdk-console-transport.md)
+are implemented locally; application integration and external qualification
+remain incomplete. These foundations do not expose a new user workflow or
+change profile permissions. The required design covers
 retained console ownership across runs, mixed reviewed SQL, scalar binds, explicit
 transactions, passive response context, SQL-free local outcome recovery and
 preserving LAST_QUERY_ID adjacency. Broad owner-authored SQL and separate file
 transfer/import permissions remain required. Existing probe-bearing actions
 cannot simply be looped to establish this workflow. The roadmap keeps broader
 metadata, editing/import, authoring, performance and native usability in scope.
+
+| Foundation | Recorded local evidence | Remaining required work |
+| --- | --- | --- |
+| Pure mixed-script compilation | 13/13 focused cases; ordered parsed units, selected server-validated units, global scalar bindings, canonical verification and size/expansion bounds | Trusted native review/admission and complete envelope bounds; no execution permission comes from compilation |
+| Private reviewed SQL transport | 385 helper cases including 12 new actual-SDK loopback cases, 70 process cases and 43 actual-child cases pass; original ACK/context, fixed per-request statement count, file veto and retirement ordering | Retained application owner, profile consent, review UI, durable run/step receipts and actual account semantics |
+| Complete daily console workflow | Design and bounded foundation review; qualification guard rejects substitution for all 393 existing account-ledger entries | End-to-end mixed reads/writes/DDL/transactions across runs, no hidden observers, interruption/restart, native usability and owner acceptance remain incomplete |
+
+All counts apply to the frozen foundation source recorded in the
+[ledger](replacement-verification.md). Loopback services and synthetic child
+fixtures do not qualify Snowflake account behavior. The currently recorded macOS
+package predates this private foundation.
 
 ## Local CHECK inspection (12 November 2026)
 

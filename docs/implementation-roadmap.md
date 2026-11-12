@@ -1,5 +1,23 @@
 # Joinery implementation roadmap
 
+## Reviewed Snowflake console foundations (12 November 2026)
+
+The [pure compiler and private transport](snowflake-sdk-console-transport.md)
+are locally implemented. They preserve ordered mixed SQL, canonical scalar
+bindings, original acknowledgement and bounded result streaming without granting
+application permission. The [ledger](replacement-verification.md) records their
+source-scoped checks and review; no account effects or usable console workflow
+are established by transport tests.
+
+Next implement the retained native console owner, default-off profile consent,
+one-use immutable review/admission, SQL-free run correlation and local receipts.
+Then integrate editor controls and exercise complete mixed reads/writes/explicit
+boundaries across runs, hidden-observer suppression, interruption and recovery.
+The [full design](snowflake-sdk-console-scripts-design.md) remains the acceptance
+contract. Generated-action recovery holds, file-transfer permission, actual
+Snowflake effects, million-row results and the other required capability areas
+remain open; no permanent feature reduction is accepted.
+
 ## Script early-stop accounting (12 November 2026)
 
 A reproduced defect marked a script Completed after its first classified read
