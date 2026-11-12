@@ -4,8 +4,10 @@ import { StrictMode } from "react";
 import type {
   BrowseCatalog,
   ColumnInfo,
+  RelationDefinition,
   RelationInspection,
   RelationPreview,
+  SessionInfo,
 } from "../../ipc/generated";
 import { client } from "../../ipc/client";
 import { RelationBrowser } from "./RelationBrowser";
@@ -91,6 +93,13 @@ const preview: RelationPreview = {
   rows: [["9007199254740993"], [null], [""]],
   truncated: true,
 };
+const definition: RelationDefinition = {
+  revision: catalog.revision,
+  targetId: catalog.relations[0].targetId,
+  database: catalog.database,
+  table: catalog.relations[0].table,
+  ddl: 'CREATE OR REPLACE TABLE "DB"."S"."Quoted Table" ("EXACT" NUMBER(38,0));',
+};
 beforeEach(() => {
   vi.clearAllMocks();
   useStudio.setState({
@@ -98,11 +107,18 @@ beforeEach(() => {
     sessionContexts: {},
     sessionContextAuthorities: {},
     sessionContextSwitching: {},
+    sessionContextRevision: {},
+    sessionTransactionPending: {},
+    sessionMetadataRefreshRequired: {},
+    sessionDdlCatalogRefreshRequired: {},
+    sessions: {},
+    tabs: [],
   });
   vi.mocked(client.call).mockImplementation(async (method) => {
     if (method === "relation_catalog") return catalog;
     if (method === "inspect_relation") return inspection;
     if (method === "preview_relation") return preview;
+    if (method === "define_relation") return definition;
     throw new Error(`Unexpected ${method}`);
   });
 });
@@ -116,6 +132,71 @@ it("opens one catalog request during StrictMode effect replay", async () => {
   await screen.findByText("1 visible relations · DB");
   expect(client.call).toHaveBeenCalledTimes(1);
 });
+
+it.each(["pending", "displayed"])(
+  "keeps the %s catalog when background context observation initializes an unknown runtime",
+  async (phase) => {
+    const session: SessionInfo = {
+      id: "s",
+      connectionId: "synthetic-profile",
+      engine: "snowflake",
+      serverVersion: "synthetic",
+      latencyMs: 1,
+      encrypted: true,
+      capabilities: {
+        sql: true,
+        transactions: false,
+        cancellation: true,
+        tableBrowsing: false,
+        relationBrowsing: true,
+        tableEditing: false,
+        tableFiltering: false,
+        processes: false,
+      },
+    };
+    useStudio.setState({ sessions: { [session.connectionId]: session } });
+    let release!: (value: BrowseCatalog) => void;
+    const held = new Promise<BrowseCatalog>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(client.call).mockImplementation(async (method) => {
+      if (method === "relation_catalog") return held;
+      if (method === "session_contexts") throw new Error("Synthetic context unavailable");
+      throw new Error(`Unexpected ${method}`);
+    });
+    render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+    await waitFor(() => expect(client.call).toHaveBeenCalledTimes(1));
+    if (phase === "displayed") {
+      await act(async () => {
+        release(catalog);
+        await held;
+      });
+      await screen.findByText("1 visible relations · DB");
+    }
+    // SqlEditor refreshes context after its background completion request.
+    // A denied initial observation installs unknown defaults, not a new context.
+    await act(async () => {
+      expect(await useStudio.getState().refreshSessionContexts("s")).toBe(false);
+    });
+    expect(useStudio.getState().sessionStates.s.database).toBe("");
+    expect(useStudio.getState().sessionContextRevision.s).toBeUndefined();
+    if (phase === "pending") {
+      await act(async () => {
+        release(catalog);
+        await held;
+      });
+    }
+    await screen.findByText("1 visible relations · DB");
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+    expect(
+      (screen.getByRole("button", { name: "View definition" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(vi.mocked(client.call).mock.calls.map(([method]) => method)).toEqual([
+      "relation_catalog",
+      "session_contexts",
+    ]);
+  },
+);
 
 function installSchemaAuthority() {
   const runtime = {
@@ -294,6 +375,9 @@ it.each(["shadowed", "ambiguous", "unknownTraits", "unsupportedKind"] as const)(
     expect(
       (screen.getByRole("button", { name: "Inspect relation" }) as HTMLButtonElement).disabled,
     ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "View definition" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
     expect(screen.getByRole("note").textContent).toContain(availability);
     expect(client.call).toHaveBeenCalledTimes(1);
   },
@@ -360,4 +444,192 @@ it("pages retained rows and wide columns locally without SQL re-execution", asyn
   fireEvent.click(screen.getByRole("button", { name: "Next columns" }));
   expect(screen.getByText("r25c20")).toBeTruthy();
   expect(client.call).toHaveBeenCalledTimes(3);
+});
+
+async function selectAndDefine() {
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  return screen.findByRole("region", { name: "Relation definition" });
+}
+
+it("views and copies generated DDL before column inspection, without an editor or execute action", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  try {
+    render(<RelationBrowser sessionId="isolated-console" onClose={vi.fn()} />);
+    const region = await selectAndDefine();
+    expect(client.call).toHaveBeenCalledWith("define_relation", {
+      sessionId: "isolated-console",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expect(client.call).toHaveBeenCalledTimes(2);
+    expect(within(region).getByLabelText("Object DDL").textContent).toBe(definition.ddl);
+    expect(within(region).getByRole("note").textContent).toContain("CREATE OR REPLACE");
+    expect(within(region).getByRole("note").textContent).toContain("normalize types");
+    expect(within(region).getByRole("note").textContent).toContain("hidden policy and tag");
+    expect(within(region).getByRole("note").textContent).toContain("replay is safe or complete");
+    const copy = within(region).getByRole("button", { name: "Copy DDL" });
+    copy.focus();
+    expect(document.activeElement).toBe(copy);
+    fireEvent.click(copy);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(definition.ddl));
+    expect(within(region).getAllByRole("button")).toEqual([copy]);
+    expect(screen.queryByRole("button", { name: /Open in SQL editor|Execute|Review/ })).toBeNull();
+  } finally {
+    if (descriptor) Object.defineProperty(navigator, "clipboard", descriptor);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  }
+});
+
+it.each(["selection", "filter", "refresh"])("clears displayed DDL on %s", async (action) => {
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await selectAndDefine();
+  if (action === "selection")
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "" } });
+  else if (action === "filter")
+    fireEvent.change(screen.getByLabelText("Find relation"), { target: { value: "absent" } });
+  else fireEvent.click(screen.getByRole("button", { name: "Refresh relations" }));
+  expect(screen.queryByRole("region", { name: "Relation definition" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy DDL" })).toBeNull();
+});
+
+it("clears the old definition after a current permission failure", async () => {
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await selectAndDefine();
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Insufficient privileges for GET_DDL"));
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Insufficient privileges");
+  expect(screen.queryByLabelText("Object DDL")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy DDL" })).toBeNull();
+});
+
+it.each(["revision", "targetId"] as const)(
+  "rejects a definition with a mismatched %s",
+  async (field) => {
+    vi.mocked(client.call).mockImplementation(async (method) => {
+      if (method === "relation_catalog") return catalog;
+      if (method === "define_relation") return { ...definition, [field]: "different" };
+      throw new Error(`Unexpected ${method}`);
+    });
+    render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+    await screen.findByText("1 visible relations · DB");
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+    fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Relation definition changed");
+    expect(screen.queryByLabelText("Object DDL")).toBeNull();
+  },
+);
+
+it.each([
+  "transaction",
+  "transientTransaction",
+  "metadata",
+  "ddlCatalog",
+  "schemaSwitch",
+  "context",
+])("suppresses a pending definition after %s changes the console context", async (change) => {
+  installSchemaAuthority();
+  let release!: (value: RelationDefinition) => void;
+  const held = new Promise<RelationDefinition>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "define_relation") return held;
+    throw new Error(`Unexpected ${method}`);
+  });
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  await waitFor(() => expect(client.call).toHaveBeenCalledTimes(2));
+  act(() => {
+    if (change === "transaction") useStudio.setState({ sessionTransactionPending: { s: true } });
+    else if (change === "transientTransaction") {
+      useStudio.setState({ sessionTransactionPending: { s: true } });
+      useStudio.setState({ sessionTransactionPending: {} });
+    } else if (change === "metadata")
+      useStudio.setState({ sessionMetadataRefreshRequired: { s: true } });
+    else if (change === "ddlCatalog")
+      useStudio.setState({ sessionDdlCatalogRefreshRequired: { s: true } });
+    else if (change === "schemaSwitch")
+      useStudio.setState({ sessionContextSwitching: { s: true } });
+    else
+      useStudio.setState((state) => ({
+        sessionStates: {
+          s: { ...state.sessionStates.s, activeContext: "OTHER", contextFingerprint: "changed" },
+        },
+      }));
+  });
+  await act(async () => {
+    release(definition);
+    await held;
+  });
+  expect(screen.queryByLabelText("Object DDL")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy DDL" })).toBeNull();
+  expect(
+    (screen.getByRole("button", { name: "View definition" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(client.call).toHaveBeenCalledTimes(2);
+});
+
+it("clears an already visible definition when the observed console context changes", async () => {
+  installSchemaAuthority();
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await selectAndDefine();
+  act(() => useStudio.setState({ sessionContextRevision: { s: 1 } }));
+  expect(screen.queryByLabelText("Object DDL")).toBeNull();
+});
+
+it("a late failed definition cannot erase a definition fetched after refresh", async () => {
+  let reject!: (error: Error) => void;
+  const held = new Promise<RelationDefinition>((_resolve, fail) => {
+    reject = fail;
+  });
+  let definitions = 0;
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "define_relation") return ++definitions === 1 ? held : definition;
+    throw new Error(`Unexpected ${method}`);
+  });
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh relations" }));
+  await selectAndDefine();
+  await act(async () => {
+    reject(new Error("stale permission failure"));
+    await held.catch(() => {});
+  });
+  expect(screen.getByLabelText("Object DDL").textContent).toBe(definition.ddl);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("discards a pending definition when rebound to another console", async () => {
+  let release!: (value: RelationDefinition) => void;
+  const held = new Promise<RelationDefinition>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "define_relation") return held;
+    throw new Error(`Unexpected ${method}`);
+  });
+  const { rerender } = render(<RelationBrowser sessionId="old" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  rerender(<RelationBrowser sessionId="new" onClose={vi.fn()} />);
+  await waitFor(() =>
+    expect(client.call).toHaveBeenCalledWith("relation_catalog", { sessionId: "new" }),
+  );
+  await act(async () => {
+    release(definition);
+    await held;
+  });
+  expect(screen.queryByLabelText("Object DDL")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy DDL" })).toBeNull();
 });

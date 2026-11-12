@@ -56,6 +56,25 @@ pub struct InspectRelationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DefineRelationRequest {
+    pub revision: String,
+    pub target_id: String,
+}
+
+/// Snowflake's current GET_DDL output, not the original creation text or an
+/// executable migration. Names remain subject to the catalog's drift checks.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationDefinition {
+    pub revision: String,
+    pub target_id: String,
+    pub database: String,
+    pub table: TableRef,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewRelationRequest {
     pub revision: String,
     pub target_id: String,
@@ -149,6 +168,17 @@ mod tests {
 
     #[test]
     fn requests_reject_sql_fragments_and_unknown_options() {
+        for unknown in ["sql", "objectType", "database", "inspectionRevision"] {
+            let mut value = serde_json::json!({"revision":"r", "targetId":"opaque"});
+            value[unknown] = "caller input".into();
+            assert!(serde_json::from_value::<DefineRelationRequest>(value).is_err());
+        }
+        let definition: DefineRelationRequest = serde_json::from_value(serde_json::json!({
+            "revision":"r", "targetId":"opaque"
+        }))
+        .unwrap();
+        assert_eq!(definition.revision, "r");
+        assert_eq!(definition.target_id, "opaque");
         assert!(
             serde_json::from_value::<PreviewRelationRequest>(serde_json::json!({
                 "revision": "r", "targetId": "opaque", "inspectionRevision": "i",

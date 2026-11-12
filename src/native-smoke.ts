@@ -55,6 +55,13 @@ export async function runNativeSmoke() {
       ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1", analyze: true }],
       ["relation_catalog", { sessionId: "missing-native-fixture" }],
       [
+        "define_relation",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
         "inspect_relation",
         {
           sessionId: "missing-native-fixture",

@@ -5,9 +5,11 @@ import type {
   BrowseApproval,
   BrowseQuery,
   BrowseCatalog,
+  DefineRelationRequest,
   InspectRelationRequest,
   PreviewRelationRequest,
   RelationInspection,
+  RelationDefinition,
   RelationPreview,
   CellChange,
   ChangePreview,
@@ -86,6 +88,10 @@ import type {
  */
 export interface JoineryCommandMap {
   relation_catalog: { args: { sessionId: string }; result: BrowseCatalog };
+  define_relation: {
+    args: { sessionId: string; request: DefineRelationRequest };
+    result: RelationDefinition;
+  };
   inspect_relation: {
     args: { sessionId: string; request: InspectRelationRequest };
     result: RelationInspection;

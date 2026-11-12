@@ -298,18 +298,27 @@ permission handling and relative-query-history limitations.
 
 The current source also has a distinct **Browse relations** action in an SDK
 query console. It loads visible schemas and relations for the configured current
-database, then offers bounded column inspection and an unordered read-only
-preview. This is separate from generic table browsing (`tableBrowsing` remains
-disabled) and provides no editing. Inspection reports
+database, then offers bounded column inspection, generated relation definitions
+and an unordered read-only preview. This is separate from generic table browsing
+(`tableBrowsing` remains disabled) and provides no editing. Inspection reports
 constraints as **not fetched**; metadata does not establish edit eligibility.
 The feature is locally implemented but not qualified against an account.
+
+After selecting an available relation, **View definition** works before column
+inspection. Read the generated-DDL warning, then use **Copy DDL** to copy the
+complete returned text. The panel offers no execution action. Snowflake may
+normalize types, emit `CREATE OR REPLACE`, or hide policy/tag details; review the
+text before using it elsewhere. Definitions that exceed the response budget are
+rejected rather than shown partially. Selection, refresh and observed context
+changes clear old definitions.
 
 Do not use the old two-query canary approval for this flow. The separate
 [browsing contract](snowflake-sdk-browsing-design.md) describes the exact local
 limits and a synthetic UI check. For an account walkthrough, first obtain reviewed
 approval covering the query-editor completion metadata and Browse relations
-schema/relationship metadata. Previewing rows from an existing table requires
-additional approval for that exact target and data scope; the current account
+schema/relationship metadata. Definition viewing additionally needs `GET_DDL`
+approval for the named target and its context/metadata checks. Previewing rows
+from an existing table requires additional approval for that exact target and data scope; the current account
 qualification plan excludes existing-table data reads. Without approval, use the
 synthetic test flow documented in the contract and do not authenticate to
 Snowflake for this walkthrough.

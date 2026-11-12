@@ -2687,6 +2687,43 @@ impl Driver for SnowflakeExternal {
         .await
     }
 
+    async fn define_relation(
+        &self,
+        request: &DefineRelationRequest,
+    ) -> AppResult<RelationDefinition> {
+        let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
+        let read = metadata::definition_read(&target)?;
+        self.browse_operation(&request.revision, async {
+            // Recheck after the metadata lane wait; a refresh may have replaced
+            // the retained target before this operation acquired the lane.
+            self.browse_target(&request.revision, &request.target_id)?;
+            self.browse_context(Some(&context)).await?;
+            self.require_browse_relation(&context, &target).await?;
+            let ddl = browsing::parse_definition(&self.read_spec(&read).await?)?;
+            self.require_browse_relation(&context, &target).await?;
+            self.browse_context(Some(&context)).await?;
+            self.browse_target(&request.revision, &request.target_id)?;
+            #[cfg(all(unix, feature = "test-harness"))]
+            self.check_metadata_observer()?;
+            let result = RelationDefinition {
+                revision: request.revision.clone(),
+                target_id: request.target_id.clone(),
+                database: target.database,
+                table: target.table,
+                ddl,
+            };
+            if serde_json::to_vec(&result)
+                .map_err(|_| protocol_error())?
+                .len()
+                > browsing::DEFINITION_MAX_BYTES
+            {
+                return Err(metadata_limit());
+            }
+            Ok(result)
+        })
+        .await
+    }
+
     async fn preview_relation(
         &self,
         request: &PreviewRelationRequest,
@@ -3274,6 +3311,9 @@ mod session_tests {
     mod read_spec_tests {
         include!("snowflake_read_spec_adapter_tests.rs");
     }
+    mod relation_definition_tests {
+        include!("snowflake_relation_definition_adapter_tests.rs");
+    }
     mod qualification_finalizing_tests {
         include!("snowflake_qualification_finalizing_adapter_tests.rs");
     }
@@ -3290,7 +3330,7 @@ const file = name => new URL(name, import.meta.url);
 // coercion in the production template. This models routing, not Snowflake typing.
 const normalizedContextSql = 'SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES';
 const oldContextSql = normalizedContextSql.replace('TO_VARCHAR(CURRENT_SCHEMAS())', 'TO_JSON(CURRENT_SCHEMAS())');
-let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, ddlSeen = false, currentTransaction = null;
+let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, ddlSeen = false, definitionSeen = false, currentTransaction = null;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
   appendFileSync(file('connections'), '1');
@@ -3301,7 +3341,7 @@ const sdk = { createConnection() {
       const sql = options.sqlText, id = ++sequence;
       appendFileSync(file('queries'), JSON.stringify(sql) + '\n');
       const settingsText = existsSync(file('settings')) ? readFileSync(file('settings'), 'utf8') : '{}';
-      if (settingsText !== previousSettings) { previousSettings = settingsText; contextReads = 0; transactionReads = 0; }
+      if (settingsText !== previousSettings) { previousSettings = settingsText; contextReads = 0; transactionReads = 0; definitionSeen = false; }
       const settings = JSON.parse(settingsText);
       const value = (key, fallback) => Object.hasOwn(settings, key) ? settings[key] : fallback;
       const context = sql === normalizedContextSql;
@@ -3311,6 +3351,7 @@ const sdk = { createConnection() {
       const columnMetadata = sql.includes('.INFORMATION_SCHEMA.COLUMNS AS C ');
       const describe = sql.startsWith('DESCRIBE TABLE ');
       const zeroRows = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
+      const definition = sql.startsWith('SELECT GET_DDL(');
       const use = sql.startsWith('USE SCHEMA ');
       const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
       const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /u.test(sql);
@@ -3359,6 +3400,10 @@ const sdk = { createConnection() {
         transactionReads++;
         names = ['TRANSACTION_ID'];
         rows = [[boundarySeen ? value('afterBoundaryTransactionId',currentTransaction) : (switched || dmlSeen || ddlSeen) ? value('afterTransactionId',value('transactionId',currentTransaction)) : settings.transactionDrift && transactionReads >= 2 ? 'different' : value('transactionId',currentTransaction)]];
+      } else if (definition) {
+        definitionSeen = true;
+        names = value('definitionColumns',['DDL']);
+        rows = value('definitionRows',[[value('definition','create or replace table "DB"."PUBLIC"."ORDERS" (ID NUMBER);')]]);
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
         rows = value('schemas',['OTHER','PUBLIC']).map(name => ['DB',name]);
@@ -3368,7 +3413,7 @@ const sdk = { createConnection() {
         const table = schema === 'OTHER' ? 'Mixed.Name' : value('tableName','ORDERS');
         const kind = value('tableType','BASE TABLE');
         const transient = value('isTransient','NO');
-        const lastDdl = ddlSeen ? value('afterLastDdl','last-ddl') : value('lastDdl','last-ddl');
+        const lastDdl = definitionSeen ? value('afterDefinitionLastDdl',value('lastDdl','last-ddl')) : ddlSeen ? value('afterLastDdl','last-ddl') : value('lastDdl','last-ddl');
         rows = settings.emptyRelations ? [] : [['DB',schema,table,kind,transient,'NO','NO','NO','NO','NO','created',lastDdl]];
       } else if (columnMetadata) {
         names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','COLUMN_NAME','ORDINAL_POSITION','COLUMN_DEFAULT','IS_NULLABLE','DATA_TYPE','DATA_TYPE_ALIAS','CHARACTER_MAXIMUM_LENGTH','CHARACTER_OCTET_LENGTH','NUMERIC_PRECISION','NUMERIC_PRECISION_RADIX','NUMERIC_SCALE','IS_IDENTITY','IDENTITY_GENERATION','IDENTITY_START','IDENTITY_INCREMENT','IDENTITY_ORDERED','COMMENT','EXPRESSION','KIND'];
@@ -3376,7 +3421,7 @@ const sdk = { createConnection() {
         rows = [['DB','PUBLIC',table,'ID','1','42','NO','NUMBER','BIGINT',null,null,'38','10','0','NO',null,null,null,null,'identifier',null,'COLUMN'],['DB','PUBLIC',table,'NOTES','3',null,'YES','TEXT',null,'100','400',null,null,null,'NO',null,null,null,null,null,null,'COLUMN']];
       } else if (describe) {
         names = ['name','type','kind','null?','default','expression','comment'];
-        rows = [['ID','NUMBER(38,0)','COLUMN','N','42',null,'identifier'],['NOTES','VARCHAR(100)','COLUMN','Y',null,null,null]];
+        rows = [['ID','NUMBER(38,0)',value('descriptorKind','COLUMN'),'N','42',null,'identifier'],['NOTES','VARCHAR(100)','COLUMN','Y',null,null,null]];
       } else if (zeroRows) {
         names = ['ID','NOTES'];
         rows = [];
@@ -3386,8 +3431,16 @@ const sdk = { createConnection() {
       let cancelled = false;
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map(name => ({ getName: () => settings.badDmlName && dml ? 'unexpected' : name, getType: () => (zeroRows && name === 'ID') ? 'FIXED' : dml ? value('dmlType','FIXED') : settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
+        getColumns: () => names.map(name => ({ getName: () => settings.badDmlName && dml ? 'unexpected' : name, getType: () => definition ? value('definitionType','TEXT') : (zeroRows && name === 'ID') ? 'FIXED' : dml ? value('dmlType','FIXED') : settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
         streamRows() {
+          if (definition && settings.holdDefinition) {
+            writeFileSync(file('held-definition'), '');
+            return Readable.from((async function*() {
+              while (!existsSync(file('release')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5));
+              if (cancelled) throw { sqlState: '57014' };
+              yield* rows;
+            })());
+          }
           if (dml && settings.protocolDml || ddl && settings.protocolDdl) {
             send.flush().then(() => process.stdout.write(Buffer.alloc(4)));
             return Readable.from((async function*() { await new Promise(() => {}); })());
@@ -3416,7 +3469,7 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = ddl && settings.rejectDdl || ddlSeen && settings.failDdlObserver === parameter && parameter !== undefined || dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      const denied = definition && settings.rejectDefinition || ddl && settings.rejectDdl || ddlSeen && settings.failDdlObserver === parameter && parameter !== undefined || dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
       setImmediate(() => {
         if (ddl && settings.holdDdl) { writeFileSync(file('held-ddl'), ''); return; }
         if (dml && settings.holdDml) { writeFileSync(file('held-dml'), ''); return; }

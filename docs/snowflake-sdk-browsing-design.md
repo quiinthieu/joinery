@@ -2,14 +2,16 @@
 
 The current working source implements a narrow, read-only **Browse relations**
 flow for SDK Snowflake sessions. It lists visible relations in the configured
-current database, inspects a selected target, and can show a bounded unordered
-preview. This is not complete DataGrip browsing, Snowflake account qualification,
+current database, inspects a selected target, can show its generated definition,
+and can show a bounded unordered preview. This is not complete DataGrip browsing, Snowflake account qualification,
 or permission to use the old two-SELECT canary for metadata. The required
 [replacement scope](snowflake-datagrip-replacement.md) remains open.
 
 Joinery reports `relation_browsing` separately from generic `table_browsing`;
 the SDK enables relation browsing while generic table browsing, grid editing,
-table filtering, transactions, and DDL remain off. The relation modal has a
+and table filtering remain off. Separately reviewed transactions, SQL writes and
+generated table changes have their own opt-in contracts; relation metadata grants
+none of that authority. The relation modal has a
 local name filter, but relation browsing does not enable grid writes or infer
 that displayed metadata is authoritative. The route stays on the existing SDK
 connection and serialized session lane; it does not create a second OAuth or
@@ -32,7 +34,7 @@ The synthetic browser flow intercepts the SDK RPCs and supplies fixture results;
 it performs no SSO or Snowflake SQL:
 
 ```sh
-pnpm test:e2e -- tests/e2e/snowflake-sdk-browsing.spec.ts
+pnpm exec playwright test tests/e2e/snowflake-sdk-browsing.spec.ts
 ```
 
 This checks the UI path and request shapes against synthetic responses. It does
@@ -56,6 +58,10 @@ rows, stop after inspection and do not press **Preview rows**.
 3. Choose **Inspect relation**. Review the type, nullability, defaults, identity,
    kind, and comment observations. The modal explicitly says constraints have
    not been fetched; do not infer primary keys, foreign keys, or edit eligibility.
+   If the approval includes `GET_DDL` on this target, **View definition** can be
+   used before inspection. Review the warning and use **Copy DDL** to copy the
+   complete returned text. This view has no execution action. A definition read
+   needs its own approved scope even when no table rows are previewed.
 4. Only for an explicitly approved row target, choose **Preview rows**. The
    preview is unordered, may show up to 500 rows, and has no server continuation.
    The 25-row and 20-column page controls operate on the retained local result.
@@ -129,16 +135,51 @@ local parser and UI regressions pass; actual account descriptor shapes remain
 unqualified. See the [official default semantics](https://docs.snowflake.com/en/user-guide/tables-iceberg-default-values)
 and [verification ledger](replacement-verification.md#sdk-relation-browsing-10-november-2026).
 
+### Generated relation definitions
+
+The separate `define_relation` command accepts only the current catalog revision
+and opaque target ID. The backend resolves the qualified name from its retained
+target, uses the existing console/metadata lanes, and checks session context and
+relation metadata before and after the read. It does not require a successful
+column inspection, so an unmapped column type need not prevent definition viewing.
+These checks detect observed drift; they do not make name-based reads atomic.
+
+A closed builder issues one aliased `GET_DDL` query with independently quoted
+database, schema and relation components, encoded as a SQL string argument. The
+documented type mapping covers the existing available table/view families,
+including external, hybrid, Iceberg, dynamic, event and materialized relations.
+Unknown or unavailable targets are rejected without guessing another type.
+One complete, non-NULL text cell and the enclosing response must fit the bounded
+1 MiB budget. Truncated, malformed or oversized definitions are rejected rather
+than exposed as copyable partial SQL.
+
+The UI presents the generated text read-only with **Copy DDL**. Selection,
+filtering, refresh, observed context/session changes and current-request failures
+clear the previous definition; late responses cannot republish it. Definition
+viewing does not enable the generic object explorer, grid editing or SQL writes.
+
+Snowflake's [official GET_DDL reference](https://docs.snowflake.com/en/sql-reference/functions/get_ddl)
+describes generated output rather than an exact original script: types and
+properties may be normalized, views include `CREATE OR REPLACE`, and hidden
+policy/tag assignments may contain placeholders. Fully qualifying the recreated
+object does not qualify every reference inside a view. Secure-view access can
+require ownership. The visible warning explains why returned text is not proof
+that replay is safe or complete. No session parameter is changed to obtain it.
+
+Focused regressions, full validation, the changed browser flow and hidden native
+IPC checks pass. Actual account qualification remains open. See the ledger for the
+tested source and results; source presence alone closes no replacement acceptance gate.
+
 ## Still required
 
-- Schema switching and verified same-session context observation. The current
-  SDK session-context operation remains unsupported; do not assume a displayed
-  database, schema, role, warehouse, secondary-role list, or search path can be
-  switched or authoritatively observed through this browser.
+- Actual-account qualification of the separately implemented
+  [session observations](snowflake-sdk-session-observation.md) and
+  [guarded schema selection](snowflake-sdk-session-design.md), including
+  database, schema, role, warehouse, secondary roles and search path.
 - Actual account qualification for schema visibility, quoted identifiers,
   object traits, collisions, permission failures, COLUMNS/DESCRIBE differences,
   preview result types, context continuity, warehouse use, and cleanup.
-- Cross-database browsing, authoritative constraints and DDL, schema diagrams,
+- Cross-database browsing, authoritative constraints, complete DDL tooling, schema diagrams,
   writes, DDL editing, transactions, and the required million-row result/export
   workflow.
 - Unmapped type families, including DECFLOAT and MAP, currently fail inspection

@@ -179,6 +179,7 @@ pub fn run() {
             commands::inspection_schema,
             commands::relation_catalog,
             commands::inspect_relation,
+            commands::define_relation,
             commands::preview_relation,
             commands::catalog,
             commands::database_objects,

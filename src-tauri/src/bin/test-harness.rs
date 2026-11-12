@@ -285,6 +285,7 @@ async fn rpc(
             "execute_snowflake_ddl" => json!(studio.execute_snowflake_ddl(&arg::<String>(&args, "planId")?, arg::<Option<String>>(&args, "approval")?.as_deref()).await?),
             "refresh_snowflake_ddl_metadata" => json!(studio.refresh_snowflake_ddl_metadata(&arg::<String>(&args, "sessionId")?).await?),
             "inspect_relation" => json!(studio.inspect_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
+            "define_relation" => json!(studio.define_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
             "preview_relation" => json!(studio.preview_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),
             "catalog" => json!(studio.catalog(&arg::<String>(&args, "sessionId")?).await?),
             "database_objects" => {

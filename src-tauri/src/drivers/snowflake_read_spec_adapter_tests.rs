@@ -144,3 +144,41 @@ fn named_read_specs_keep_fixed_order_and_distinct_retention_and_result_bounds() 
     assert_eq!(version.max_rows(), 1_000_000);
     assert_eq!(version.max_bytes(), 8 * 1024 * 1024 * 1024);
 }
+
+#[tokio::test]
+async fn definition_read_spec_uses_one_bounded_cell_and_brackets_the_wire_read() {
+    let h = Harness::open().await;
+    let catalog = h.driver.relation_catalog().await.unwrap();
+    let target = catalog
+        .relations
+        .iter()
+        .find(|target| target.table.schema == "PUBLIC")
+        .unwrap();
+    let (context, relation) = h
+        .driver
+        .browse_target(&catalog.revision, &target.target_id)
+        .unwrap();
+    let start = wire_reads(&h).len();
+    h.driver
+        .define_relation(&DefineRelationRequest {
+            revision: catalog.revision,
+            target_id: target.target_id.clone(),
+        })
+        .await
+        .unwrap();
+    let read = metadata::definition_read(&relation).unwrap();
+    assert_eq!(read.kind(), metadata::ReadKind::Definition);
+    assert_eq!(
+        read.sql(),
+        "SELECT GET_DDL('TABLE', '\"DB\".\"PUBLIC\".\"ORDERS\"', TRUE) AS DDL"
+    );
+    assert_eq!(read.max_rows(), 1);
+    assert_eq!(read.max_bytes(), 1024 * 1024);
+    let mut expected = metadata::context_reads().to_vec();
+    expected.push(metadata::exact_relation_read(&context, &relation).unwrap());
+    expected.push(read);
+    expected.push(metadata::exact_relation_read(&context, &relation).unwrap());
+    expected.extend(metadata::context_reads());
+    assert_wire_reads(&wire_reads(&h)[start..], &expected);
+    h.finish().await;
+}

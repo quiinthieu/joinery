@@ -1,5 +1,36 @@
 # Implementation and release status
 
+## Snowflake generated relation definitions (12 November 2026)
+
+Browse relations now offers **View definition** and **Copy DDL** for retained
+Snowflake table/view targets. The new typed command accepts catalog revision and
+opaque target ID only. Backend catalog resolution, the shared relation lane and
+session/context checks surround a fixed GET_DDL request; no caller SQL or object
+name is accepted. Definitions remain available when column inspection is denied.
+Only complete, nonempty text within the 1 MiB serialized-response bounds is
+published. Refresh, selection/context changes and transaction/metadata holds
+invalidate displayed or outstanding results. The panel has no execution action.
+
+GET_DDL is normalized generated SQL, may contain CREATE OR REPLACE and governance
+placeholders, and may require additional privileges. It is not an exact source
+backup or a migration approval. See the [contract](snowflake-sdk-browsing-design.md)
+and [verification ledger](replacement-verification.md) for supported object kinds,
+limits, checks and reproducible steps. Full validation on the UI-corrected source
+passes 697 frontend and 471 standard Rust tests (129 fixture/helper ignores), formatting/build/compiler
+checks and strict Clippy. Changed browser workflow and the hidden native IPC/
+cleanup check pass after the recorded initialization and ACL fixes. Account
+GET_DDL and normal packaged workflow acceptance remain open.
+Independent bounded review has no unresolved material finding.
+
+The separate qualification preview uses frozen source `103cb45`, private copied
+artifacts and a deliberately expired window. Its offline emit/verify pass does
+not execute or qualify this new feature. There is no pending account approval
+question. Actual writes/transactions/DDL under `SANDBOX.BILLIE_TESTING`, million-row
+Snowflake interaction/export and every applicable DataGrip workflow remain open.
+The Goal is active and incomplete. Nothing is installed, published or merged.
+Repository evidence and the local Orca worktree status are updated. The private
+project hub is not published because publication is outside the authorized scope.
+
 ## Dedicated execute entry (12 November 2026)
 
 The dedicated qualification binary now restores the original reviewed envelope

@@ -17,6 +17,7 @@ pub(crate) const RELATION_LIMIT: usize = 10_000;
 pub(crate) const CATALOG_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const COLUMN_LIMIT: usize = 1000;
 pub(crate) const COLUMN_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const DEFINITION_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const PREVIEW_LIMIT: usize = 500;
 pub(crate) const PREVIEW_MAX_BYTES: usize = 2 * 1024 * 1024;
 
@@ -361,6 +362,38 @@ pub(crate) fn describe_sql(target: &BrowseRelation) -> AppResult<String> {
 
 pub(crate) fn resolved_columns_sql(target: &BrowseRelation) -> AppResult<String> {
     Ok(format!("SELECT * FROM {} LIMIT 0", qualified(target)?))
+}
+
+pub(crate) fn definition_sql(target: &BrowseRelation) -> AppResult<String> {
+    let name = qualified(target)?;
+    // GET_DDL's closed object types differ from catalog and DESCRIBE spellings.
+    // Dynamic Iceberg tables use DYNAMIC_TABLE; ordinary Iceberg tables use
+    // ICEBERG_TABLE. No retry with another kind or caller-provided object type.
+    let kind = match target.table_type.as_str() {
+        "VIEW" | "MATERIALIZED VIEW" => "VIEW",
+        "EVENT TABLE" => "EVENT_TABLE",
+        "EXTERNAL TABLE" => "TABLE",
+        "BASE TABLE" | "TEMPORARY TABLE" if target.traits.dynamic == Some(true) => "DYNAMIC_TABLE",
+        "BASE TABLE" | "TEMPORARY TABLE" if target.traits.iceberg == Some(true) => "ICEBERG_TABLE",
+        "BASE TABLE" | "TEMPORARY TABLE" => "TABLE",
+        _ => return Err(malformed()),
+    };
+    // Each component was validated and double-quoted by qualified(). The whole
+    // qualified name is a string argument, not a single identifier component.
+    let name = name.replace('\\', "\\\\").replace('\'', "''");
+    Ok(format!("SELECT GET_DDL('{kind}', '{name}', TRUE) AS DDL"))
+}
+
+pub(crate) fn parse_definition(result: &MetadataResult) -> AppResult<String> {
+    exact(result, &["DDL"], 1, DEFINITION_MAX_BYTES)?;
+    if result.rows.len() != 1 {
+        return Err(malformed());
+    }
+    let ddl = text(required(&result.rows[0][0])?, DEFINITION_MAX_BYTES, false)?;
+    if ddl.trim().is_empty() {
+        return Err(malformed());
+    }
+    Ok(ddl.to_owned())
 }
 
 pub(crate) fn parse_inspection(
@@ -1016,6 +1049,109 @@ mod tests {
             &resolved_result(&["ID", "quoted\"name"]),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn definition_builder_quotes_each_component_then_escapes_the_string_argument() {
+        let mut target = target();
+        target.database = "D'\\\"B".into();
+        target.table.schema = "S.with.dot".into();
+        target.table.name = "T\"; DROP TABLE X;--".into();
+        assert_eq!(
+            definition_sql(&target).unwrap(),
+            "SELECT GET_DDL('TABLE', '\"D''\\\\\"\"B\".\"S.with.dot\".\"T\"\"; DROP TABLE X;--\"', TRUE) AS DDL"
+        );
+        // The qualified name is longer than one legal identifier component.
+        target.database = "D".repeat(255);
+        target.table.schema = "S".repeat(255);
+        target.table.name = "T".repeat(255);
+        assert!(definition_sql(&target).is_ok());
+        target.table.name.push('T');
+        assert!(definition_sql(&target).is_err());
+    }
+
+    #[test]
+    fn definition_builder_uses_only_documented_closed_relation_kinds() {
+        for (kind, temporary, iceberg, dynamic, hybrid, expected) in [
+            ("BASE TABLE", false, false, false, false, "TABLE"),
+            ("TEMPORARY TABLE", true, false, false, false, "TABLE"),
+            ("EXTERNAL TABLE", false, false, false, false, "TABLE"),
+            ("EVENT TABLE", false, false, false, false, "EVENT_TABLE"),
+            ("BASE TABLE", false, false, false, true, "TABLE"),
+            ("BASE TABLE", false, true, false, false, "ICEBERG_TABLE"),
+            ("BASE TABLE", false, false, true, false, "DYNAMIC_TABLE"),
+            ("BASE TABLE", false, true, true, false, "DYNAMIC_TABLE"),
+            ("VIEW", false, false, false, false, "VIEW"),
+            ("MATERIALIZED VIEW", false, false, false, false, "VIEW"),
+        ] {
+            let mut target = target();
+            target.table_type = kind.into();
+            target.traits.temporary = Some(temporary);
+            target.traits.iceberg = Some(iceberg);
+            target.traits.dynamic = Some(dynamic);
+            target.traits.hybrid = Some(hybrid);
+            assert_eq!(
+                definition_sql(&target).unwrap(),
+                format!("SELECT GET_DDL('{expected}', '\"DB\".\"PUBLIC\".\"ITEM\"', TRUE) AS DDL")
+            );
+        }
+        for availability in [
+            RelationAvailability::Shadowed,
+            RelationAvailability::Ambiguous,
+            RelationAvailability::UnknownTraits,
+            RelationAvailability::UnsupportedKind,
+        ] {
+            let mut target = target();
+            target.availability = availability;
+            assert!(definition_sql(&target).is_err());
+        }
+        let mut target = target();
+        target.table_type = "SCHEMA".into();
+        assert!(definition_sql(&target).is_err());
+        target.table_type = "BASE TABLE".into();
+        target.traits.dynamic = None;
+        assert!(definition_sql(&target).is_err());
+    }
+
+    #[test]
+    fn definition_parser_requires_one_complete_bounded_text_cell() {
+        let ddl = "create or replace table \"雪\" (\"A\" VARCHAR);\n-- preserved text";
+        let valid = result(&["DDL"], vec![row(&[ddl])]);
+        assert_eq!(parse_definition(&valid).unwrap(), ddl);
+        let mut cases = vec![
+            result(&["DDL"], vec![]),
+            result(&["DDL"], vec![vec![None]]),
+            result(&["DDL"], vec![row(&[ddl]), row(&[ddl])]),
+            result(&["ddl"], vec![row(&[ddl])]),
+            result(&["DDL", "EXTRA"], vec![row(&[ddl, "extra"])]),
+            result(&["DDL"], vec![row(&[""])]),
+            result(&["DDL"], vec![row(&[" \n\t"])]),
+            result(&["DDL"], vec![row(&["CREATE\0 TABLE X"])]),
+            result(
+                &["DDL"],
+                vec![row(&[&"x".repeat(DEFINITION_MAX_BYTES + 1)])],
+            ),
+        ];
+        let mut wrong_type = valid.clone();
+        wrong_type.columns[0].kind = ColumnKind::Integer;
+        cases.push(wrong_type);
+        let mut truncated = valid.clone();
+        truncated.truncated = true;
+        cases.push(truncated);
+        let mut missing_rows = valid.clone();
+        missing_rows.rows_seen = 2;
+        cases.push(missing_rows);
+        let mut bad_width = valid.clone();
+        bad_width.rows[0].clear();
+        cases.push(bad_width);
+        // Escaping also consumes the response budget, not just raw DDL bytes.
+        cases.push(result(
+            &["DDL"],
+            vec![row(&[&"\"".repeat(DEFINITION_MAX_BYTES / 2)])],
+        ));
+        for malformed in cases {
+            assert!(parse_definition(&malformed).is_err());
+        }
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub(crate) enum ReadKind {
     Schemas,
     Relations,
     ExactRelation,
+    Definition,
     Columns,
     Describe,
     ZeroRowResolution,
@@ -152,6 +153,18 @@ pub(crate) fn exact_relation_read(
         browsing::relation_sql(context, target)?,
         3,
         browsing::CATALOG_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn definition_read(
+    target: &super::snowflake_browsing::BrowseRelation,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_browsing as browsing;
+    Ok(ReadSpec::bounded(
+        ReadKind::Definition,
+        browsing::definition_sql(target)?,
+        1,
+        browsing::DEFINITION_MAX_BYTES as u64,
     ))
 }
 

@@ -117,6 +117,15 @@ pub trait Driver: Send + Sync {
             "Session relation inspection is unavailable for this engine",
         ))
     }
+    async fn define_relation(
+        &self,
+        _request: &DefineRelationRequest,
+    ) -> AppResult<RelationDefinition> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Session relation definitions are unavailable for this engine",
+        ))
+    }
     async fn preview_relation(
         &self,
         _request: &PreviewRelationRequest,

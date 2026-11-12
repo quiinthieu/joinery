@@ -42,6 +42,7 @@
     "allow-inspection-schema",
     "allow-relation-catalog",
     "allow-inspect-relation",
+    "allow-define-relation",
     "allow-preview-relation",
     "allow-redis-scan",
     "allow-redis-inspect",

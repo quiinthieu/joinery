@@ -6,7 +6,13 @@ import type {
   NoArgCommandName,
   RequiredArgCommandName,
 } from "./command-map";
-import type { Bootstrap, PreparedPlan, SchemaDdlPlan, TableSchema } from "./generated";
+import type {
+  Bootstrap,
+  PreparedPlan,
+  RelationDefinition,
+  SchemaDdlPlan,
+  TableSchema,
+} from "./generated";
 
 describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
   it("infers exact return types and argument shapes for zero-arg and required-arg commands", async () => {
@@ -26,6 +32,12 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       table: { schema: "public", name: "orders" },
     });
     expectTypeOf(schemaPromise).toEqualTypeOf<Promise<TableSchema>>();
+
+    const definitionPromise = typedClient.call("define_relation", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(definitionPromise).toEqualTypeOf<Promise<RelationDefinition>>();
 
     const explicitGenericPromise = typedClient.call<TableSchema>("table_schema", {
       sessionId: "session-1",
@@ -69,12 +81,13 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
 
     await Promise.all([
       bootstrapPromise,
+      definitionPromise,
       schemaPromise,
       explicitGenericPromise,
       migrationPrepPromise,
       releasePreviewPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(5);
+    expect(callMock).toHaveBeenCalledTimes(6);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -87,6 +100,17 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
 
       // @ts-expect-error — missing required arguments for table_schema
       void c.call("table_schema");
+
+      void c.call("define_relation", {
+        sessionId: "session-1",
+        // @ts-expect-error — definitions resolve only retained targets, never caller SQL
+        request: { revision: "catalog-1", targetId: "opaque-target", sql: "SELECT 1" },
+      });
+      void c.call("define_relation", {
+        sessionId: "session-1",
+        // @ts-expect-error — a retained target requires its catalog revision
+        request: { targetId: "opaque-target" },
+      });
 
       // @ts-expect-error — wrong argument shape for connect
       void c.call("connect", { id: 123 });

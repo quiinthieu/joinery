@@ -3,18 +3,21 @@ import type {
   BrowseCatalog,
   ColumnInfo,
   ConnectionProfile,
+  RelationDefinition,
   RelationInspection,
   RelationPreview,
 } from "../../src/ipc/generated";
 
 // Synthetic RPCs exercise the real UI only; no Snowflake SSO/account SQL occurs.
-test("SDK console browses qualified targets, inspects, pages a preview and rejects a failed refresh", async ({
+test("SDK console copies a definition, rejects stale results, inspects and previews qualified targets", async ({
   page,
 }) => {
   const sessionId = "synthetic-browse-session";
   const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
   let profile!: ConnectionProfile;
   let failRefresh = false;
+  let definitionMode: "available" | "denied" | "held" = "available";
+  let releaseDefinition: (() => void) | undefined;
   const catalog: BrowseCatalog = {
     revision: "catalog-r1",
     database: "DB",
@@ -111,6 +114,24 @@ test("SDK console browses qualified targets, inspects, pages a preview and rejec
     ],
     truncated: true,
   };
+  const definition: RelationDefinition = {
+    revision: catalog.revision,
+    targetId: catalog.relations[0].targetId,
+    database: catalog.database,
+    table: catalog.relations[0].table,
+    ddl: 'CREATE OR REPLACE TABLE "DB"."S"."Quoted ""table" ("EXACT" NUMBER(38,0));',
+  };
+  // Capture the app's copy request without touching the user's clipboard.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          Object.assign(window, { copiedDefinition: text });
+        },
+      },
+    });
+  });
   await page.route("http://127.0.0.1:1422/rpc/*", async (route) => {
     const command = new URL(route.request().url()).pathname.split("/").at(-1)!;
     const args = route.request().postDataJSON();
@@ -150,6 +171,22 @@ test("SDK console browses qualified targets, inspects, pages a preview and rejec
         return;
       }
       result = catalog;
+    } else if (command === "define_relation") {
+      expect(args).toEqual({
+        sessionId,
+        request: { revision: "catalog-r1", targetId: "opaque-r1-target" },
+      });
+      if (definitionMode === "denied") {
+        await route.fulfill({
+          json: { error: { code: "database", message: "Synthetic GET_DDL permission denied" } },
+        });
+        return;
+      }
+      if (definitionMode === "held")
+        await new Promise<void>((resolve) => {
+          releaseDefinition = resolve;
+        });
+      result = definition;
     } else if (command === "inspect_relation") {
       expect(args).toEqual({
         sessionId,
@@ -195,7 +232,55 @@ test("SDK console browses qualified targets, inspects, pages a preview and rejec
   await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
   await dialog.getByLabel("Relation", { exact: true }).selectOption("shadowed-target");
   await expect(dialog.getByRole("button", { name: "Inspect relation" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "View definition" })).toBeDisabled();
   await expect(dialog.getByRole("note")).toContainText("shadowed");
+  await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
+  // Native buttons expose the definition and exact copy flow to the keyboard,
+  // independently of column inspection. The panel offers no execute/editor path.
+  const viewDefinition = dialog.getByRole("button", { name: "View definition" });
+  await viewDefinition.focus();
+  await page.keyboard.press("Enter");
+  const definitionRegion = dialog.getByRole("region", { name: "Relation definition" });
+  await expect(definitionRegion.getByLabel("Object DDL")).toHaveText(definition.ddl);
+  await expect(definitionRegion.getByRole("note")).toContainText("CREATE OR REPLACE");
+  await expect(definitionRegion.getByRole("note")).toContainText("replay is safe or complete");
+  await expect(definitionRegion.getByRole("button")).toHaveCount(1);
+  await definitionRegion.getByRole("button", { name: "Copy DDL" }).focus();
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as unknown as { copiedDefinition?: string }).copiedDefinition),
+    )
+    .toBe(definition.ddl);
+  expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(0);
+
+  definitionMode = "denied";
+  await viewDefinition.click();
+  await expect(dialog.getByRole("alert")).toContainText("Synthetic GET_DDL permission denied");
+  await expect(definitionRegion).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Copy DDL" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Refresh relations" }).click();
+  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
+  definitionMode = "held";
+  await viewDefinition.click();
+  await expect.poll(() => !!releaseDefinition).toBe(true);
+  await dialog.getByRole("button", { name: "Refresh relations" }).click();
+  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  const staleResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/rpc/define_relation"),
+  );
+  releaseDefinition!();
+  await (await staleResponse).finished();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+  await expect(viewDefinition).toBeDisabled();
+  await expect(definitionRegion).toHaveCount(0);
+  definitionMode = "available";
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
   await dialog.getByRole("button", { name: "Inspect relation" }).click();
   await expect(dialog).toContainText("NUMBER(38,0)");
@@ -219,7 +304,9 @@ test("SDK console browses qualified targets, inspects, pages a preview and rejec
   await expect(open).toBeFocused();
   expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(1);
   for (const call of calls.filter((c) =>
-    ["relation_catalog", "inspect_relation", "preview_relation"].includes(c.command),
+    ["relation_catalog", "define_relation", "inspect_relation", "preview_relation"].includes(
+      c.command,
+    ),
   ))
     expect(call.args.sessionId).toBe(sessionId);
 });

@@ -8,6 +8,146 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Generated Snowflake relation definitions (12 November 2026)
+
+This product increment adds `define_relation` to the same-session Snowflake
+relation browser. The request contains a retained revision and opaque target ID,
+never SQL or a caller object name. The driver resolves and rechecks the catalog,
+serializes through the browsing lane, observes context and exact relation metadata
+before/after a closed GET_DDL query, and publishes only one complete, nonblank
+text value. Both metadata and final DTO serialization are bounded to 1 MiB.
+Column inspection failure does not prevent definition retrieval. Supported kinds,
+escaping and GET_DDL normalization/privilege limits are documented in the
+[browsing contract](snowflake-sdk-browsing-design.md). Concurrent external DDL is
+not made atomic by these observations.
+
+The UI exposes View definition and Copy DDL, with no execute action. Tests cover
+stale context, transaction/metadata holds (including transient changes), selection,
+refresh, failure, target identity and malformed results. Browser copy uses a
+page-local clipboard stub; the OS clipboard is untouched. The native smoke addition
+checks command registration and the missing-session rejection, not successful
+Snowflake GET_DDL execution.
+
+Source was frozen before the initial checks. The initial 19-file manifest is
+`.cache/verification/relation-definition/source-freeze-final-ui.json`; it was
+written during the focused frontend check, after the frontend worker had frozen
+its source. The earlier provisional manifest preceded the final UI edits and is
+not used as an identity record for those checks. The UI correction described
+below has its own 19-file `source-freeze-context-fix.json`; exactly the component
+and its unit test differ. Logs below use the same directory. Rust
+1.99.1 and repository-local Node 24.22.2 are selected explicitly, with
+JOINERY_TEST_NODE set to that Node; no global configuration changes.
+
+```sh
+pnpm contracts
+pnpm exec vitest run src/features/studio/RelationBrowser.test.tsx src/features/studio/ObjectInspectorView.test.tsx src/ipc/command-map.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib definition -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests:: -- --test-threads=3
+pnpm validate
+pnpm exec playwright test tests/e2e/snowflake-sdk-browsing.spec.ts
+pnpm desktop:smoke:build
+python3 scripts/native-smoke.py --runs 1
+```
+
+| Check                            | Terminal result and evidence                                                                                                                                                                                                                                                                                 |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Contracts                        | Exit 0, `contracts.log`                                                                                                                                                                                                                                                                                      |
+| Focused frontend                 | 37/37 across three files, exit 0, `frontend-focused.log`                                                                                                                                                                                                                                                     |
+| Focused Rust                     | 12/12, exit 0, `rust-focused.log`; eleven new definition regressions plus one existing matching case                                                                                                                                                                                                         |
+| Existing SDK session regressions | 80/80, exit 0, `rust-adapter.log`; synthetic SDK, not account evidence                                                                                                                                                                                                                                       |
+| Initial full validation          | Exit 0, 695 frontend / 471 standard Rust tests, 129 fixture/helper ignores, plus formatting/build/compiler checks and strict Clippy. `validate.log`; precedes the two-file UI correction                                                                                                                     |
+| Final full validation            | Exit 0, 697 frontend / 471 standard Rust tests, 129 fixture/helper ignores and all strict checks. `validate-context-fix.log`; corrected snapshot                                                                                                                                                             |
+| Changed browser workflow         | Final corrected 1/1 pass, exit 0, `browser-context-fix.log`; synthetic IPC, no account effects                                                                                                                                                                                                               |
+| Hidden native build and smoke    | Final build and runner exit 0, 10 cleanup cycles; 4355 ms native elapsed, 98.91 MiB main-process peak RSS. `native-build-acl-fix.log`, `native-smoke-acl-fix.log`, `native-final-build.json`, `native-final-runs.json`. Guard/cleanup evidence, not representative performance or successful account GET_DDL |
+| Independent review               | No unresolved material finding; bounded Tier 2 generation `2026-11-12T05:06:24Z`, 24 relied paths checked plus direct source reads. Root MCP transport unavailable; root integration uses bounded direct reads                                                                                               |
+
+The first browser command, `pnpm test:e2e -- tests/e2e/snowflake-sdk-browsing.spec.ts`,
+exits 1 and unexpectedly selects all 161 tests. All 161 fail at browser launch:
+the expected default-cache headless Chromium executable is absent. No application
+assertion is reached. The failure is preserved as `browser.log`. Chromium build
+1248 and FFmpeg 1013 were then installed into the ignored repository-local
+`.cache/playwright-browsers` using Playwright's installer (`browser-install.log`,
+exit 0). No user browser profile is changed. The corrected command above uses
+PLAYWRIGHT_BROWSERS_PATH pointing to that directory; `--list` confirms exactly one
+test in one file (`browser-selection-pnpm.log`, exit 0). Browser checks remain
+synthetic IPC UI evidence and cannot qualify account privileges or data effects.
+
+The corrected single-test browser run (`browser-corrected.log`) exits 1 after
+24.0 seconds in the test. It reaches the app, but initial catalog loading changes
+to **Refresh required** before the expected relation list is displayed. The
+failure is at the initial catalog assertion; definition/copy assertions have not
+run. The prior validation and focused tests therefore do not establish a working
+browser flow. The trace identifies the catalog starting before the SQL editor
+completion callback initializes absent session runtime with unknown defaults.
+The invalidation key previously distinguished absent fields from those equivalent
+unknown values, falsely revoking an in-flight catalog. Normalizing only those
+defaults preserves actual context, revision, owner and hold transitions. Two
+new tests invoke the real refreshSessionContexts action with a denied synthetic
+observation while the catalog is pending or already displayed. The corrected
+focused frontend command passes **39/39** (`frontend-context-fix.log`, exit 0).
+The E2E assertion is unchanged. The corrected browser run passes **1/1**
+(`browser-context-fix.log`, exit 0, 18.3 seconds overall / 13.0 in the test),
+exercising keyboard definition display and copy, unavailable targets, permission
+denial, delayed stale definition suppression, column inspection and row preview.
+Final `pnpm validate` passes on the corrected frozen snapshot: **697 frontend /
+471 standard Rust tests**, **129 fixture/helper ignores**, formatting, production
+build, compiler checks and strict all-target/all-feature Clippy, exit 0
+(`validate-context-fix.log`). Rust source is identical to the focused adapter
+checks; only the two UI files changed after those checks.
+A narrow second review at generation `2026-11-12T05:19:07Z` checks four relied paths
+with no recorded gaps plus direct reads and finds no material issue in the fix.
+
+The first hidden native build passes (`native-build.log`, exit 0, optimized
+compilation 4m02s). The existing LLVM rust-objcopy stripping warning is nonfatal
+and remains in the log. The hidden smoke runner then exits **1**
+(`native-smoke.log`): `define_relation` does not reach the expected Rust
+`connectionClosed` guard. The process itself exits 0, but that does not make the
+runner successful. It stops before cleanup cycles. Initial build/run manifests
+are copied to `native-initial-build.json` and `native-initial-runs.json`. Native
+registration was correct, but `build.rs` omitted the command from AppManifest
+and `capabilities/main.json` omitted its main-window permission. The correction
+adds exactly those two entries; the smoke assertion is unchanged. The 19 runtime
+and test source files remain byte-identical to the corrected validation/browser
+snapshot. Final `source-freeze-native-acl-fix.json` adds the two ACL inputs, for
+21 files. Full validation above precedes this ACL-only correction; strict Rust
+checks and actual native build/smoke are rerun afterward as recorded below. No account
+connection is involved.
+
+After the ACL fix, `pnpm check:rust` passes (`rust-check-native-acl-fix.log`,
+exit 0): Rust formatting, compiler checks and strict all-target/all-feature
+Clippy. Independent narrow review confirms only the existing main-window
+permission is added; six relied paths have no recorded gaps plus direct reads,
+generation `2026-11-12T05:19:07Z`. The unchanged runtime assertion is retained
+for the corrected hidden-app build below.
+
+An additional optional `prettier --check src-tauri/capabilities/main.json`
+exits 1 (`acl-format.log`). The committed HEAD version also differs from the
+formatter, confirmed without editing either version (`acl-format-baseline.json`).
+This file is outside the repository's format:check selection. The two-line ACL
+change preserves its existing layout; this pre-existing extra-check failure is
+not hidden or repaired by unrelated formatting.
+
+The corrected hidden build exits **0** (`native-build-acl-fix.log`, optimized
+compile 3m41s); the unchanged runner exits **0** (`native-smoke-acl-fix.log`).
+The actual WebView request reaches the Rust disconnected-session guard and all
+**10 cleanup cycles** complete. Native elapsed time is 4355 ms and main-process
+peak RSS 98.91 MiB; these are synthetic smoke observations, not representative
+startup/performance or whole-process memory acceptance. The build is explicitly
+recorded as dirty source at documentation HEAD `0c8433e`; all **21** final source
+hashes match the frozen manifest. Copied `native-final-build.json` and
+`native-final-runs.json` retain that provenance. Generated ACL verification finds
+only `define_relation` under `allow-define-relation` (`native-acl-generated.json`).
+No generated permission file is committed. The normal SDK-bearing application
+bundle still needs its own clean-source build; successful account GET_DDL,
+packaged SSO and owner acceptance remain open.
+
+The separate [expired offline preview](snowflake-existing-schema-qualification.md)
+uses frozen source `103cb45`, not this new feature. Its emit/verify exit 0 grants
+no approval or account evidence. No SSO, account SQL, native owner marker-store
+access, install or publication occurs in these checks. Actual Snowflake GET_DDL,
+normal packaged workflow, million-row results/export and all remaining applicable
+DataGrip requirements stay open; the Goal is incomplete.
+
 ### Fixed execute entry and real process signals (12 November 2026)
 
 The dedicated command dispatches `emit`/`verify` synchronously and `execute`

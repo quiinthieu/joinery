@@ -26,6 +26,8 @@ fn main() {
         RelationTraits::decl(),
         RelationAvailability::decl(),
         InspectRelationRequest::decl(),
+        DefineRelationRequest::decl(),
+        RelationDefinition::decl(),
         PreviewRelationRequest::decl(),
         RelationInspection::decl(),
         ConstraintInspectionStatus::decl(),

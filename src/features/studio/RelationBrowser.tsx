@@ -1,12 +1,53 @@
 import { useEffect, useRef, useState } from "react";
-import type { BrowseCatalog, RelationInspection, RelationPreview } from "../../ipc/generated";
+import type {
+  BrowseCatalog,
+  RelationDefinition,
+  RelationInspection,
+  RelationPreview,
+} from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { querySessionForTab, revokeSchemaSelectionBeforeWork, useStudio } from "../../state/studio";
 import { Modal } from "../../components/ui/Modal";
 import { SnowflakeDdlDialog, type SnowflakeDdlDialogRequest } from "./SnowflakeDdlDialog";
+import { DdlPanel } from "./ObjectInspectorView";
 
 const PAGE_ROWS = 25;
 const PAGE_COLUMNS = 20;
+
+function relationContextKey(
+  state: ReturnType<typeof useStudio.getState>,
+  sessionId: string,
+  ownerTabId?: string,
+) {
+  const owner = state.tabs.find((tab) => tab.id === ownerTabId);
+  const owned = owner && querySessionForTab(owner, state.sessions);
+  const session =
+    owned?.id === sessionId
+      ? owned
+      : Object.values(state.sessions).find((entry) => entry.id === sessionId);
+  const runtime = state.sessionStates[sessionId];
+  return JSON.stringify([
+    sessionId,
+    session?.id,
+    session?.connectionId,
+    !ownerTabId || owned?.id === sessionId,
+    !!(
+      state.sessionTransactionPending[sessionId] ||
+      state.sessionMetadataRefreshRequired[sessionId] ||
+      state.sessionDdlCatalogRefreshRequired[sessionId] ||
+      state.sessionContextSwitching[sessionId] ||
+      runtime?.transactionControlAuthority?.status === "rollbackOnly"
+    ),
+    state.sessionContextRevision[sessionId] ?? 0,
+    // The first background observation installs an unknown SDK runtime. It
+    // supplies no new context, so it must not revoke an already admitted read.
+    runtime?.database ?? "",
+    runtime?.activeContext ?? null,
+    runtime?.role ?? null,
+    runtime?.searchPath ?? [],
+    runtime?.contextFingerprint ?? null,
+  ]);
+}
 
 /** Every action carries server-held target revisions from this console session. */
 export function RelationBrowser({
@@ -33,9 +74,17 @@ export function RelationBrowser({
       !!(
         state.sessionTransactionPending[sessionId] ||
         state.sessionMetadataRefreshRequired[sessionId] ||
-        state.sessionContextSwitching[sessionId]
+        state.sessionDdlCatalogRefreshRequired[sessionId] ||
+        state.sessionContextSwitching[sessionId] ||
+        state.sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly"
       ),
   );
+  const ownerAvailable = useStudio((state) => {
+    if (!ownerTabId) return true;
+    const owner = state.tabs.find((tab) => tab.id === ownerTabId);
+    return !!owner && querySessionForTab(owner, state.sessions)?.id === sessionId;
+  });
+  const contextKey = useStudio((state) => relationContextKey(state, sessionId, ownerTabId));
   const canDdl =
     session?.capabilities.snowflakeReviewedDdl === true &&
     profile?.snowflake?.reviewedDdl === true &&
@@ -44,6 +93,10 @@ export function RelationBrowser({
   const [catalog, setCatalog] = useState<BrowseCatalog | null>(null);
   const [inspection, setInspection] = useState<RelationInspection | null>(null);
   const [preview, setPreview] = useState<RelationPreview | null>(null);
+  const [definition, setDefinition] = useState<{
+    contextKey: string;
+    value: RelationDefinition;
+  } | null>(null);
   const [selected, setSelected] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,6 +105,8 @@ export function RelationBrowser({
   const [columnPage, setColumnPage] = useState(0);
   const generation = useRef(0);
   const mounted = useRef(false);
+  const renderedContext = useRef(contextKey);
+  renderedContext.current = contextKey;
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -59,12 +114,39 @@ export function RelationBrowser({
       generation.current++;
     };
   }, []);
+  useEffect(() => {
+    const invalidate = () => {
+      generation.current++;
+      setCatalog(null);
+      setInspection(null);
+      setPreview(null);
+      setDefinition(null);
+      setSelected("");
+      setBusy(false);
+      setError(null);
+    };
+    invalidate();
+    // Observe every transition, including a hold set and cleared within one
+    // React batch. A later response cannot revive its earlier authority.
+    return useStudio.subscribe((next, previous) => {
+      if (
+        relationContextKey(next, sessionId, ownerTabId) !==
+        relationContextKey(previous, sessionId, ownerTabId)
+      )
+        invalidate();
+    });
+  }, [sessionId, ownerTabId]);
 
   const run = async (work: (current: () => boolean) => Promise<void>) => {
     const request = ++generation.current;
-    const current = () => mounted.current && request === generation.current;
+    const current = () =>
+      mounted.current &&
+      request === generation.current &&
+      renderedContext.current === contextKey &&
+      relationContextKey(useStudio.getState(), sessionId, ownerTabId) === contextKey;
     setBusy(true);
     setError(null);
+    setDefinition(null);
     try {
       revokeSchemaSelectionBeforeWork(sessionId);
       await work(current);
@@ -73,6 +155,7 @@ export function RelationBrowser({
         setCatalog(null);
         setInspection(null);
         setPreview(null);
+        setDefinition(null);
         setSelected("");
         setError(messageOf(err));
       }
@@ -84,6 +167,7 @@ export function RelationBrowser({
     setCatalog(null);
     setInspection(null);
     setPreview(null);
+    setDefinition(null);
     setSelected("");
     setRowPage(0);
     setColumnPage(0);
@@ -129,6 +213,26 @@ export function RelationBrowser({
         },
       });
       if (current()) setPreview(result);
+    });
+  };
+  const loadDefinition = () => {
+    const target = catalog?.relations.find((entry) => entry.targetId === selected);
+    if (!catalog || target?.availability !== "available" || blocked || !ownerAvailable) return;
+    void run(async (current) => {
+      const result = await client.call("define_relation", {
+        sessionId,
+        request: { revision: catalog.revision, targetId: target.targetId },
+      });
+      if (!current()) return;
+      if (
+        result.revision !== catalog.revision ||
+        result.targetId !== target.targetId ||
+        result.database !== catalog.database ||
+        result.table.schema !== target.table.schema ||
+        result.table.name !== target.table.name
+      )
+        throw new Error("Relation definition changed. Refresh relations and try again.");
+      setDefinition({ contextKey, value: result });
     });
   };
   const target = catalog?.relations.find((entry) => entry.targetId === selected);
@@ -194,6 +298,8 @@ export function RelationBrowser({
               setSelected("");
               setInspection(null);
               setPreview(null);
+              setDefinition(null);
+              setBusy(false);
             }}
           />
         </label>
@@ -208,6 +314,8 @@ export function RelationBrowser({
               setSelected(event.target.value);
               setInspection(null);
               setPreview(null);
+              setDefinition(null);
+              setBusy(false);
             }}
           >
             <option value="">Select a relation</option>
@@ -246,6 +354,13 @@ export function RelationBrowser({
           </button>
           <button className="button small" disabled={busy || !inspection} onClick={loadPreview}>
             Preview rows
+          </button>
+          <button
+            className="button small"
+            disabled={busy || blocked || !ownerAvailable || target?.availability !== "available"}
+            onClick={loadDefinition}
+          >
+            View definition
           </button>
           {canDdl && (
             <>
@@ -313,6 +428,23 @@ export function RelationBrowser({
             </>
           )}
         </div>
+        {definition &&
+          definition.contextKey === contextKey &&
+          !blocked &&
+          definition.value.targetId === selected &&
+          definition.value.revision === catalog?.revision && (
+            <section aria-label="Relation definition">
+              <h3>Snowflake relation definition</h3>
+              <p role="note">
+                Snowflake-generated DDL may use CREATE OR REPLACE, normalize types, or omit hidden
+                policy and tag information. It is not proof that replay is safe or complete.
+              </p>
+              <DdlPanel
+                connectionId={null}
+                ddlStatus={{ status: "available", ddl: definition.value.ddl, truncated: false }}
+              />
+            </section>
+          )}
         {inspection && (
           <>
             <h3>

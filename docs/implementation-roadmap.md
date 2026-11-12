@@ -1,5 +1,35 @@
 # Joinery implementation roadmap
 
+## Product increment: generated relation definitions (12 November 2026)
+
+The Snowflake relation browser now displays and copies generated table/view DDL
+through a closed typed GET_DDL command. It resolves retained opaque catalog
+targets, serializes metadata operations, rejects incomplete/oversized responses
+and discards stale UI results. It does not execute the displayed SQL. Full
+validation passes 697 frontend / 471 standard Rust tests (129 fixture ignores)
+plus strict checks; see the [contract](snowflake-sdk-browsing-design.md)
+and [ledger](replacement-verification.md). Independent bounded review is clean.
+
+The changed browser workflow passes after the recorded initialization fix.
+The corrected hidden native IPC/cleanup check passes; strict Rust checks pass
+after the two ACL enrollment entries. Next, build the normal local SDK package
+from committed source and retain its evidence. Account definition privileges,
+secure views and supported Snowflake object families still need explicitly scoped acceptance. Continue broader metadata,
+object search, grid editing/import, multi-statement SQL, performance and million-row
+workflows; displaying a definition closes none of those required gates.
+
+A separate offline preview now binds copied source `103cb45`, the actual binary,
+compiler and zero-link runtime. Its deliberately expired Plan was emitted and
+verified without SSO or account activity. Before execution, create a fresh exact
+window/Plan, review the full SQL and metadata disclosure, and obtain explicit
+account/billing approval for the single generated table under
+`SANDBOX.BILLIE_TESTING` and the broader metadata inventory. This preview does not
+qualify the new definition command.
+No approval question is pending; the earlier CREATE DATABASE approval is spent.
+Normal packaged SSO/recovery, actual database effects, all applicable DataGrip
+capabilities and owner hands-on acceptance remain required. No publication or
+installation is authorized.
+
 ## Execute entry and next qualification gates (12 November 2026)
 
 The dedicated command now connects original-envelope restoration to the fixed

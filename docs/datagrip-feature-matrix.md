@@ -14,7 +14,7 @@ new source or actual Snowflake behavior.
 | Required area                                | Local implementation and recorded evidence                                                                                                                                       | Remaining replacement gate                                                                                                                                  |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Connections, authentication, TLS and tunnels | SDK external-browser profiles, retained helper lifecycle and verified runtime; bounded helper-only account SSO/read checks recorded in the [ledger](replacement-verification.md) | Normal packaged SSO, connection failure/reconnect and applicable TLS/tunnel workflows need account/native acceptance                                        |
-| Navigation, metadata and object search       | Same-session relation/column completion, bounded browsing, column inspection and schema selection; [browsing contract](snowflake-sdk-browsing-design.md)                         | Complete Snowflake object kinds, keys, definitions, dependencies, search and privilege-sensitive refresh remain incomplete                                  |
+| Navigation, metadata and object search       | Same-session relation/column completion, bounded browsing, column inspection, generated definitions and schema selection; [browsing contract](snowflake-sdk-browsing-design.md)  | Complete object kinds, keys, dependencies, search, definition privileges and refresh need implementation/account acceptance                                 |
 | SQL editing and authoring                    | Bounded completion, formatting, parameters, diagnostics, navigation and refactoring slices; detailed source evidence below                                                       | Complete Snowflake semantics and the applicable DataGrip authoring workflow remain incomplete; daily native acceptance is open                              |
 | Query execution                              | Reads plus separately reviewed single INSERT/UPDATE/DELETE, explicit boundaries and generated table DDL; [DML contract](snowflake-sdk-dml-design.md)                             | General multi-statement execution, broader SQL/session commands and actual cancellation/interruption/account outcomes remain incomplete                     |
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
@@ -36,11 +36,30 @@ from a short summary does not make a feature optional.
 
 The [acceptance gates](replacement-acceptance.md) define observable workflows;
 the [roadmap](implementation-roadmap.md) orders implementation. The immediate
-qualification dependency is current executable/source/runtime binding after
-local entry verification, followed by a
-freshly reviewed table-only plan for `SANDBOX.BILLIE_TESTING`. No existing application-table access
-or account execution is authorized by this matrix. Broad product work remains required alongside
-qualification; these internal checks do not substitute for completing the rows.
+qualification gate is a fresh exact-window Plan and account/billing approval
+for one generated table under `SANDBOX.BILLIE_TESTING`, including its disclosed
+broader metadata inventory. An expired offline preview retains the reviewed
+executable/source/runtime; it supplies no execution authority. No existing
+application-table access or account execution is authorized by this matrix.
+Broad product work remains required alongside qualification; internal checks do
+not substitute for completing the rows.
+
+## Generated relation definitions (12 November 2026)
+
+| Capability                   | Local implementation                                                                                                 | Remaining gate                                                                                       |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| View/copy table and view DDL | Opaque catalog target/revision, fixed GET_DDL, serialized operation and context checks; copy-only panel              | Actual Snowflake privileges, secure views, object families and packaged keyboard workflow acceptance |
+| Complete and current output  | Reject null, malformed, truncated and oversized results; invalidate on refresh, selection, context and holds         | Context checks do not establish atomic object identity against concurrent external DDL               |
+| Recoverable failures         | Definition access is independent of column inspection; failures clear stale text and permit a fresh explicit request | Real account denial, interruption and reconnect outcomes remain unqualified                          |
+
+See the [contract](snowflake-sdk-browsing-design.md) and
+[ledger](replacement-verification.md). Focused checks and full validation pass:
+697 frontend / 471 standard Rust tests, 129 fixture ignores and strict checks.
+The changed browser flow and hidden native IPC/cleanup check pass. Strict Rust
+checks pass after the ACL fix. Independent review of both corrections has no
+material finding. The ledger records source boundaries and the failed runs.
+These changes do not enable grid writes/import or general SQL execution. All
+required areas above and the additional applicability inventory remain open.
 
 ## Dedicated execute entry (12 November 2026)
 
