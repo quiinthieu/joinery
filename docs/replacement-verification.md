@@ -8,7 +8,141 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Durable console admission refusals (12 November 2026)
+
+Base is `4ac8eb2` on `feat/datagrip-replacement`. This increment adds SQL-free
+request lookup for both admitted runs and immutable, committed pre-admission
+refusals. A lost refusal response can be recovered without replay. SQLite schema
+3 separates physical journal tables, excludes already-open version-2 SQL writers
+and preserves current decisions when restoring older backups. An uncertain
+refusal write retains its original in-memory payload and holds its identity;
+absence, arbitrary errors and process loss before commit still prove nothing.
+The frontend retains opaque client UUIDs and holds contradictory decisions.
+The [design](snowflake-console-negative-receipts-design.md) and
+[walkthrough](snowflake-sdk-console-workflow.md) describe the limits.
+
+Native implementation is committed as `ed99fa4`, frontend recovery/layout and
+browser coverage as `4956562`, and the separate navigation fixture correction as
+`ebb0d53`. The checks below ran before these local commits; the lead compared
+their captured source hashes with the reviewed and staged source without drift.
+
+Local verification for this increment is complete within the synthetic scope
+below; current normal packaging and external acceptance remain pending. Focused
+frontend checks pass **205 cases** across
+seven files, IPC checks pass **9 cases** across three files, and TypeScript
+compiles against the actual newly generated contract. Local records are under
+`.cache/verification/reviewed-console/`: `negative-frontend-implementation.json`,
+`negative-frontend-focused.log`, `negative-frontend-typecheck.log` and
+`negative-ipc-focused.log`. The contract generator exits zero; its receipt
+`negative-contracts.json` records a concurrent change only to the new persistence
+test file, with no production-source drift. It is contract-generation evidence,
+not a frozen-source native test result.
+
+The initial native test compile fails before running tests: test code accessed a
+private coordinator field, and two fixture parameters passed `u64` directly to
+SQLite. A test-only cloned accessor and checked SQLite integer conversion fix
+those compile errors. The next frozen-source run passes **69 cases**, fails two,
+and ignores one internal child fixture invoked by its parent. Its failures are
+test synchronization/execution mistakes: the synthetic helper's stream marker
+can precede the parent's SQLite ACK commit, and a prepared SQLite SELECT must
+step its lazy cursor to exercise a missing-table error. The cancellation test now
+waits within its existing 15-second barrier budget for the actual durable ACK;
+the stale-writer SELECT test steps the cursor. Production deadlines and migration
+behavior are unchanged by these corrections. Failed receipts/logs remain
+`negative-final-validation.json` and `negative-corrected-validation.json`.
+Independent review confirms the ordering and both corrections. The corrected
+focused run passes **71 cases**, with one internal child fixture invoked by its
+parent, in **185.66 seconds** including compile (**117.84 seconds** tests).
+Captured Rust source hashes remain unchanged; see
+`negative-synchronized-validation.json` and adjacent log.
+
+The first full validation passes **892 frontend tests** across 64 files, the
+production UI build, **559 standard Rust tests** with **137 default fixture
+ignores**, formatting, contracts, TypeScript and the desktop compiler check.
+Strict Clippy then rejects `.err().expect()` in the corrected lazy-cursor fixture;
+the narrow correction uses `expect_err` without changing production behavior.
+See `negative-integrated-validation.json` and adjacent full-validation log.
+The next full run stops on an unchanged SQL-navigation usage-limit test: 891
+frontend cases pass and that case returns no symbol. It passed in the prior full
+run and again in isolation. Its approximately 11 KiB cold CodeMirror fixture
+depends on timed parsing while asserting a 500-usage cap and Unicode positions.
+Source inspection proves this timing sensitivity, but the actual failed branch
+and scheduler cause were not observed. A test-only bounded preparse now asserts
+the parse precondition before the unchanged semantic assertions. Production
+75/10 ms budgets remain unchanged. The corrected narrow case passes; source and
+failed-run evidence are retained in `navigation-usage-fixture-investigation.json`,
+the adjacent two narrow logs and `negative-checked-validation.json`.
+
+The separate pre-layout `pnpm check:rust` passes formatting, desktop compilation and
+strict all-target/all-feature Clippy in **80.41 seconds** on unchanged captured
+native source; see `negative-strict.json` and log. The pre-layout full `pnpm validate`
+passes in **198.66 seconds**: **892 frontend tests** across 64 files, **559
+standard Rust tests** with **137 default fixture ignores**, formatting, contracts,
+TypeScript, production UI build, desktop compilation and strict Clippy. Captured
+Rust source hashes remain unchanged; see `negative-final-checked-validation.json`
+and adjacent log. Target occupies 5,239,580 KiB (5.0 GiB), with 216,950,030,336
+bytes (202.1 GiB) free after that run. Browser verification at that point was
+pending; the corrected current-source result follows below.
+
+The first actual browser run fails after eleven acknowledged runs: expanding the
+unstyled app-scope receipts section creates an implicit shell-grid row, leaving
+the editor's Run button behind the footer/tab strip. Its ordinary click times
+out; no force click or bypass is used. `negative-browser.json` and log retain the
+unchanged-source failure; the trace/context are archived in
+`negative-browser-failure/`. A bounded nonmodal card removes receipts from grid
+sizing, keeps its header and pending notices visible, and puts history inside a
+keyboard-focusable scroll region. It overlays a bounded lower results area while
+open; settled history can be collapsed. The App layout source is unchanged.
+Focused UI checks pass **61 cases** across four files and TypeScript compiles;
+see `negative-receipt-layout-implementation.json` and adjacent logs.
+
+The corrected actual browser case passes **1/1** in **26.56 seconds** including
+server startup (**18.9 seconds** test time), on unchanged captured source; see
+`negative-browser-layout.json` and log. It exercises browser → real Rust Studio,
+SQLite journal, helper/framing and Arrow results with an isolated synthetic SDK.
+After its same-session SQL/transaction-shaped sequence and lost positive
+response, it resizes to **1024 × 720**, keyboard-scrolls eleven receipts and
+submits another review with ordinary clicks. The fault route removes approval
+from the actual native request, verifies its committed refusal and discards only
+the response. SQL-free reconciliation recovers the decision with one start
+request and no extra helper SQL. Clicking Reconcile verifies the real response.
+A graceful backend restart restores positive and negative receipts; another UI
+reconciliation leaves both SDK events and SQL empty. Native responses are never
+fabricated. This proves local correlation/layout behavior, not actual Snowflake
+effects, account cancellation, transaction semantics or performance.
+
+The final post-layout `pnpm validate` passes in **206.21 seconds** total (**205.89 seconds** for the validation stage):
+**893 frontend tests** across **64 files**, **559 standard Rust tests** and **137 default fixture
+ignores**. Formatting, contracts, TypeScript, production UI build, desktop
+compilation and strict all-target/all-feature Clippy pass. Captured source hashes
+remain unchanged; see `negative-layout-checked-validation.json` and
+`negative-layout-checked-retained-full-validate.log`. Target occupies
+**5,545,644 KiB**, with **216,742,141,952 bytes** free after the run.
+
+The bounded independent review records no remaining material source finding in
+`negative-final-review.json`; it is a read-only source review, not another test
+run or account qualification. Its final documentation/source pins are refreshed
+separately so the ledger does not create a hash self-reference.
+
+Storage verification uses serialized Rust runs with a 20 GiB free-space gate.
+Both default target output trees became absent before the first Cargo invocation
+of this increment, outside these commands. No further cleanup was performed.
+The older preserved `278754b` app remains available under
+`.cache/verification/reviewed-console/preserved-release-278754b/`; it predates both
+console application increments. Historical packaging results below describe
+their recorded source, not a currently retained default-target artifact. The
+current increment has not yet been packaged; its new normal SDK-bearing bundle
+is pending.
+No account/profile/approval-marker access, sign-in, billable operation, app
+installation, push or publication occurs in this increment. Real Snowflake
+effects, million-row interaction, packaged native workflows and owner acceptance
+remain open, along with the other required capabilities in the matrix.
+
 ### Retained console application integration (12 November 2026)
+
+This and subsequent sections retain historical results and gaps at their named
+source. The current admission-refusal increment above supersedes the lost-negative
+recovery gap below; it does not extend historical package or account qualification.
 
 Base is `ec7e473` on `feat/datagrip-replacement`; native integration is committed
 as `e20c416` and UI/browser coverage as `c3bada6`. The retained Studio owner,

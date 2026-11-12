@@ -9,9 +9,26 @@ Keep DataGrip available until your required workflows are accepted.
 The new [reviewed retained-console walkthrough](snowflake-sdk-console-workflow.md)
 describes opt-in connection setup, mixed-script review, retained session context,
 explicit transaction boundaries and SQL-free receipt/result recovery. It is a
-local implementation undergoing qualification. Existing private-foundation
-passes and synthetic SDK tests do not establish real Snowflake effects or daily
-replacement readiness.
+locally verified implementation with a synthetic SDK, including durable refusal
+response-loss/restart recovery and a bounded receipt panel. This does not
+establish real Snowflake effects, current packaged native UI behavior or daily
+replacement readiness; packaging this increment remains pending.
+
+Console receipts retain both admitted runs and committed pre-admission refusals.
+After a lost response, use **Reconcile receipt (no SQL)** to retrieve the original local
+decision. A refused request needs a new explicit review before a different
+request can run. A missing receipt or recording error remains uncertain; never
+retry SQL merely to discover its outcome. Restart restores opaque request IDs,
+then retrieves their decisions without reconnecting or submitting SQL. Earlier
+versions' discarded refusal IDs cannot be reconstructed. See the walkthrough
+for recording holds and recovery limits. Receipt history opens in a bounded,
+keyboard-scrollable panel; its pending notices stay visible when settled history
+is collapsed. The panel can cover part of the lower results area while open,
+without displacing the editor or run toolbar.
+
+This increment upgrades local metadata to schema 3. Earlier Joinery versions
+cannot open that format. Preserve a pre-upgrade metadata backup if you need to
+return to an earlier app; never run both versions against the same data directory.
 
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.
@@ -356,6 +373,7 @@ be substituted into that closed lifecycle.
    identifier in the fresh approved plan. Use Integer `9007199254740993`, Text
    `synthetic note` and Boolean `true` in the parameter dialog. Integer text stays
    exact.
+
 4. Inspect the SQL, ordered typed parameters and warnings in **Review this
    operation**. Approve once with the policy's confirmation/passphrase. The review
    closes after approval. Running controls and background metadata pause; prior

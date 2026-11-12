@@ -1,5 +1,26 @@
 # Joinery implementation roadmap
 
+## Durable console admission decisions (12 November 2026)
+
+This increment implements SQL-free durable admission refusals and request lookup,
+schema-3 migration with old-writer exclusion, exact restore merging and frontend
+response-loss/restart recovery. Local verification passes 205 focused frontend,
+nine IPC and 71 focused native cases (one internal child ignored by default).
+Full validation passes 893 frontend / 559 standard Rust cases (137 default
+ignores), and the actual browser-to-Rust/helper/SQLite/Arrow workflow passes with
+a synthetic SDK. At 1024 × 720, bounded receipt history supports ordinary clicks
+and keyboard scrolling while pending notices remain visible. The
+[contract](snowflake-console-negative-receipts-design.md) and
+[ledger](replacement-verification.md) track this source separately. Earlier
+sections describe their recorded predecessor, not verification of new source.
+
+Current-increment normal packaging is pending; historical bundle checks below
+qualify only their recorded source. After packaging, continue practical receipt
+retention without losing recovery identities, configurable qualified long-running queries, then the fresh
+approved disposable Snowflake/native/owner acceptance plan. Every applicable
+DataGrip capability remains required. No account, installation or publication
+authority is granted by local tests.
+
 ## Retained console application integration (12 November 2026)
 
 The retained owner and UI are locally implemented and verified with synthetic SDKs:
@@ -16,9 +37,10 @@ The normal SDK-bearing ARM64 app builds from clean `12fef9a`; strict ad-hoc
 signature/resources and network-guarded helper startup pass with no sign-in or
 SQL. It remains local and uninstalled; packaged UI startup is not established.
 
-Next implement
+At this predecessor, the next work included
 [durable negative admission receipts](snowflake-console-negative-receipts-design.md)
-for a lost refusal response, practical journal retention that
+for a lost refusal response; the increment above now verifies that local recovery.
+Remaining work includes practical journal retention that
 preserves deduplication/recovery, and qualified configurable long-running query
 behavior. Then execute a fresh approved disposable account plan for real
 Snowflake writes/DDL/transactions/interruption and million-row interaction/export.

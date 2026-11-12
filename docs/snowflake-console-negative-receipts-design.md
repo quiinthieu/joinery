@@ -1,12 +1,13 @@
 # Durable console admission refusals
 
-Status: reviewed next-increment design, **not implemented**. The current console
-can recover an admitted run after a lost start response. A lost pre-admission
-refusal has no durable record and remains uncertain. See the
+Status: implemented and locally verified, including schema-3 migration, refusal
+recording failures and browser response-loss/restart recovery with a synthetic
+SDK. Both admitted runs and committed refusals have SQL-free recovery.
+Absence remains uncertain. See the
 [workflow](snowflake-sdk-console-workflow.md) and
 [roadmap](implementation-roadmap.md).
 
-## Evidence and intended behavior
+## Local contract and evidence
 
 The bounded native review on 12 November 2026 inspected admission, journal
 validation, SQLite writes, restore merging and closed-owner recovery. It found
@@ -29,7 +30,11 @@ identity; a refused identity never becomes an admitted run.
 
 ## Atomicity and failure handling
 
-Add schema version 3 and a separate rejection table. Every positive preparation
+Schema version 3 uses separate physical run/step/refusal tables with `_v3`
+suffixes and exact validated cross-decision triggers. Migration holds the existing
+OS lease without recovering intents. An already-open version-2 writer fails
+against its removed table names; new writers also check the exact version.
+The separate rejection table contains no SQL. Every positive preparation
 and refusal writer must check both decision tables within an `IMMEDIATE` SQLite
 transaction while holding the existing OS journal lease. Reject any journal
 containing both decisions for one client. Older writers must fail the journal
@@ -67,7 +72,18 @@ Restoring legacy or older backups must preserve current refusal tombstones.
 Exact duplicates merge; changed payloads and positive/negative conflicts fail
 before replacement. Version-2 missing refusals cannot be reconstructed.
 
-## Required verification
+## Local verification and remaining acceptance
+
+Focused checks pass 205 frontend, nine IPC and 71 native cases (one internal child
+fixture ignored by default). Full validation passes 893 frontend / 559 standard
+Rust cases with 137 default ignores. The actual browser-to-Rust/helper/SQLite/
+Arrow case passes at 1024 × 720, including ordinary clicks, keyboard receipt
+scrolling, a dropped committed-refusal response and graceful restart with no
+replay or lookup SQL. The SDK is synthetic. Current normal packaging, real
+Snowflake effects, native UI/SSO/restart, million-row workflows and owner
+acceptance remain open; see the [ledger](replacement-verification.md).
+
+The local regression scope covers:
 
 - Lose a committed refusal response, restart and recover it with zero helper SQL.
 - Repeat it after authorization or policy changes; preserve the original refusal.

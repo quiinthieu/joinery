@@ -15,9 +15,20 @@ failures preserve original acknowledgements and stop the untouched suffix. A
 lost start response must recover only by SQL-free correlation, without replay.
 Rows must remain openable after editor closure while their process still owns
 them; backend restart must restore honest SQL-free outcomes without signing in
-or implying unavailable rows were empty. A received exact pre-admission refusal
-may settle; a lost refusal still needs durable negative recovery. Configurable
-long-running query behavior and practical journal retention are required.
+or implying unavailable rows were empty. Drop a response after an actual native
+refusal commit, then reconcile and restart: the exact refusal must recover with
+zero helper SQL and no start retry. Changing policy or authorization must not
+change that refused identity. Insert/commit/readback failure must remain uncertain
+until exact durable recording, and contradictory decisions must keep execution
+held. Local checks now pass 71 focused native cases (one internal child fixture
+ignored by default), full validation with 893 frontend / 559 standard Rust cases
+(137 default ignores), and the actual browser-to-Rust/helper/SQLite/Arrow case
+with a synthetic SDK. The browser case includes the real committed-refusal
+response loss, graceful restart without replay and ordinary clicks/keyboard
+receipt scrolling at 1024 × 720. Pending notices remain visible with settled
+history collapsed. These local results do not establish actual account semantics
+or native application UI acceptance. Current packaging, configurable long-running
+query behavior and practical journal retention remain required.
 
 Real Snowflake effects, one-million-row paging/export, normal packaged external-
 browser SSO/restart and the owner's complete daily evaluation remain open. The

@@ -49,19 +49,35 @@ durable intents, original acknowledgements/rejections/unknown outcomes, proven
 local non-dispatch and untouched suffix. Result delivery, truncation, cancellation
 and recording failures are separate observations.
 
+The receipt card stays above the status bar and uses a bounded scrollable region
+so history cannot displace the editor or run toolbar. Pending notices stay visible
+when settled history is collapsed. Focus **Console receipt details** to scroll
+with the keyboard; use **Console receipts** to show or hide settled history. An
+expanded card can cover a bounded part of the lower result area.
+
 **Open retained results** opens existing process-local results without executing
 SQL or signing in. **Reconcile receipt (no SQL)** looks up the same client identity;
 it never resends a start request or resumes a suffix. A lost response is not proof
 of non-execution. A native, identity-matched **No SQL was admitted** response allows
 a fresh manual review; a generic error or missing receipt does not.
 
-There is a remaining recovery gap: if a definitive pre-admission refusal response
-itself is lost, the backend has no durable negative receipt. Its lookup can remain
-missing and the UI conservatively holds new admissions. Durable negative
-correlation/recovery is required before daily replacement acceptance; the
-[reviewed design](snowflake-console-negative-receipts-design.md) is not yet
-implemented. Never infer
-that such a request is safe to resubmit from its error code or a null lookup.
+The local implementation now records a durable refusal before reporting
+**No SQL was admitted**. A lost refusal response can be recovered using the same
+SQL-free request lookup, including after restart. The original refused identity
+stays refused after later authorization or policy changes; use a fresh manual
+review to create a new request. A conflicting positive/negative response holds
+new execution and cannot be dismissed by another matching refusal in that process.
+See the [durability contract](snowflake-console-negative-receipts-design.md).
+Local migration/failure checks, full validation and the actual browser recovery
+case pass; see the ledger. This is synthetic-SDK evidence, not account qualification.
+
+Only opaque request UUIDs are retained in browser persistence, including settled
+refusals; native lookup supplies the proof after restart. This change cannot
+rediscover negative IDs discarded by older versions or reconstruct refusals that
+were never recorded by version 2. If recording fails, the exact refusal remains
+pending in memory, without an authoritative negative response. Process loss
+before a successful commit still leaves absence unknown. Never infer safe replay
+from a transport error, arbitrary error code or null lookup.
 
 A recording hold retains the owner and pending evidence in memory and prevents
 normal shutdown/new admission until local recording succeeds. Forced process
@@ -75,8 +91,12 @@ without a login, replay or automatic commit/rollback.
 The synthetic browser case `tests/e2e/snowflake-retained-console.spec.ts` uses the
 real UI, Rust Studio, helper framing, journal and Arrow result store with an
 isolated synthetic SDK. It checks session adjacency, transaction-shaped sequences,
-lost-start-response recovery and backend restart without replay. This does not
-qualify actual Snowflake effects, cancellation, SSO or performance.
+lost-start-response recovery, committed-refusal response loss, and backend
+restart without replay. At 1024 × 720 it also checks ordinary run/review clicks
+after eleven receipts and keyboard scrolling/reconciliation in the bounded panel.
+Full local validation passes 893 frontend / 559 standard Rust tests (137 default
+ignores). This does not qualify actual Snowflake effects, cancellation, SSO,
+performance or packaged native UI behavior. Packaging this increment is pending.
 
 Account acceptance still needs a fresh exact reviewed plan and billing scope for
 the permitted disposable `SANDBOX.BILLIE_TESTING` target, then independently read
