@@ -33,6 +33,7 @@ import type {
   SnowflakeDdlResult,
   TransactionControlAuthority,
   SnowflakeConsolePlan,
+  SnowflakeConsoleReceiptSummary,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
 import { sealConsoleSession } from "../ipc/console-session-guard";
@@ -43,6 +44,11 @@ import {
   consoleReceiptBlocksSession,
   consoleRunStatus,
   rememberConsoleReceipts,
+  consoleReceiptStorageProblem,
+  validateConsoleHandoff,
+  validateConsoleSummary,
+  compactConsoleReceipts,
+  consoleReceiptAccess,
   restoredConsoleReceipts,
   validateConsolePlan,
   validateConsoleReceipt,
@@ -227,10 +233,14 @@ interface StudioState {
   sessions: Record<string, SessionInfo>;
   consoleSessions: Record<string, true>;
   snowflakeConsoleReceipts: Record<string, SnowflakeConsoleReceipt>;
+  snowflakeConsoleResultOwners: Record<string, string>;
   startSnowflakeConsole(tabId: string, plan: SnowflakeConsolePlan, approval: string): Promise<void>;
   refreshSnowflakeConsole(clientRequestId: string): Promise<void>;
   openSnowflakeConsoleResults(clientRequestId: string): Promise<void>;
   cancelSnowflakeConsole(clientRequestId: string): Promise<void>;
+  discoverSnowflakeConsoleReceipt(summary: SnowflakeConsoleReceiptSummary): Promise<void>;
+  handoffSnowflakeConsoleReceipt(clientRequestId: string): Promise<void>;
+  releaseSnowflakeConsoleResults(clientRequestId: string): Promise<void>;
   sessionPool: Record<string, NamedSession[]>;
   sessionStates: Record<string, SessionRuntimeState>;
   sessionContexts: Record<string, string[]>;
@@ -580,9 +590,13 @@ export function assertOrdinarySession(sessionId: string): void {
 }
 /** Receipt ownership outlives editor tabs and local Arrow caches. */
 export function isConsoleOwnedResult(result: ResultInfo): boolean {
-  return Object.values(useStudio.getState().snowflakeConsoleReceipts).some(
-    (receipt) =>
-      receipt.runId === result.runId || receipt.view?.run.metadata.runId === result.runId,
+  const state = useStudio.getState();
+  return (
+    state.snowflakeConsoleResultOwners[result.id] === result.runId ||
+    Object.values(state.snowflakeConsoleReceipts).some(
+      (receipt) =>
+        receipt.runId === result.runId || receipt.view?.run.metadata.runId === result.runId,
+    )
   );
 }
 
@@ -803,6 +817,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   sessions: {},
   consoleSessions: {},
   snowflakeConsoleReceipts: restoredConsoleReceipts(),
+  snowflakeConsoleResultOwners: {},
   sessionPool: {},
   sessionStates: {},
   sessionContexts: {},
@@ -954,6 +969,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().setTableLayout(connectionId, table, null);
   },
   async startSnowflakeConsole(tabId, plan, approval) {
+    const storageProblem = consoleReceiptStorageProblem();
+    if (storageProblem) throw new Error(storageProblem);
     const active = get().tabs.find((entry) => entry.id === tabId);
     const session = active && querySessionForTab(active, get().sessions);
     if (!active || !session?.consoleMode || session.id !== plan.review.sessionId)
@@ -1003,7 +1020,24 @@ export const useStudio = create<StudioState>((set, get) => ({
       planSource: undefined,
       clientStartedAt: performance.now(),
     });
-    const publish = beginEventBatch(tabId);
+    const acceptsConsoleEvent = (event: QueryEvent) => {
+      const resultId =
+        event.type === "result"
+          ? event.result.id
+          : event.type === "progress"
+            ? event.resultId
+            : null;
+      if (resultId === null) return true;
+      const current = get().snowflakeConsoleReceipts[clientRequestId];
+      if (!current) return false;
+      if (!current.view) return !current.settledProof && !current.notAdmitted;
+      return (
+        current.view.run.state !== "terminal" ||
+        current.view.pendingRecording ||
+        current.view.results.some((result) => result.id === resultId)
+      );
+    };
+    const publish = beginEventBatch(tabId, acceptsConsoleEvent);
     const batch = (event: QueryEvent) => {
       // Register ownership before a queued Result can meet stale-tab cleanup.
       const eventRunId =
@@ -1014,6 +1048,10 @@ export const useStudio = create<StudioState>((set, get) => ({
             : null;
       if (eventRunId) {
         const current = get().snowflakeConsoleReceipts[clientRequestId];
+        if (!current) {
+          if (acceptsConsoleEvent(event)) publish(event);
+          return;
+        }
         if (current.notAdmitted) {
           set((state) => ({
             snowflakeConsoleReceipts: {
@@ -1043,6 +1081,14 @@ export const useStudio = create<StudioState>((set, get) => ({
           }));
           return;
         }
+        if (!acceptsConsoleEvent(event)) return;
+        if (event.type === "result")
+          set((state) => ({
+            snowflakeConsoleResultOwners: {
+              ...state.snowflakeConsoleResultOwners,
+              [event.result.id]: eventRunId,
+            },
+          }));
         set((state) => ({
           snowflakeConsoleReceipts: {
             ...state.snowflakeConsoleReceipts,
@@ -1050,7 +1096,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           },
         }));
       }
-      publish(event);
+      if (acceptsConsoleEvent(event)) publish(event);
     };
     try {
       const result = await client.startSnowflakeConsole(
@@ -1175,26 +1221,86 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       const view = decision.view;
       validateConsoleReceipt(current, view);
+      const authoritativeResults = view.run.state === "terminal" && !view.pendingRecording;
+      const retained = new Map(view.results.map((result) => [result.id, result]));
+      if (!authoritativeResults) {
+        // A running lookup may have been serialized before a newer Result
+        // event. Absence in that snapshot cannot mean explicit row release.
+        for (const result of [
+          ...(current.view?.results ?? []),
+          ...get().tabs.flatMap((tab) => tab.results),
+        ]) {
+          if (result.runId !== view.run.metadata.runId) continue;
+          const prior = retained.get(result.id);
+          if (
+            !prior ||
+            result.retainedRows > prior.retainedRows ||
+            (result.retainedRows === prior.retainedRows && prior.status === "streaming")
+          )
+            retained.set(result.id, result);
+        }
+      }
+      const results = [...retained.values()].sort((a, b) => a.statementIndex - b.statementIndex);
+      const liveIds = new Set(results.map((result) => result.id));
+      const releasedIds = new Set(
+        Object.entries(get().snowflakeConsoleResultOwners)
+          .filter(
+            ([id, run]) =>
+              authoritativeResults && run === view.run.metadata.runId && !liveIds.has(id),
+          )
+          .map(([id]) => id),
+      );
+      for (const tab of get().tabs)
+        for (const result of tab.results)
+          if (
+            authoritativeResults &&
+            result.runId === view.run.metadata.runId &&
+            !liveIds.has(result.id)
+          )
+            releasedIds.add(result.id);
+      for (const id of releasedIds) {
+        resultCache.release(id);
+        dirtyStore.clearTab(id, [id]);
+      }
       const next: SnowflakeConsoleReceipt = {
         ...current,
-        view,
+        view: { ...view, results },
         runId: view.run.metadata.runId,
         sessionId: view.run.metadata.sessionId,
         connectionId: view.run.metadata.connectionId,
         planDigest: view.run.metadata.planDigest,
         stepCount: view.run.metadata.stepCount,
         lookupPending: false,
+        lastAccessed: consoleReceiptAccess(),
         error: undefined,
       };
       set((state) => ({
         snowflakeConsoleReceipts: { ...state.snowflakeConsoleReceipts, [clientRequestId]: next },
+        snowflakeConsoleResultOwners: {
+          ...Object.fromEntries(
+            Object.entries(state.snowflakeConsoleResultOwners).filter(
+              ([, run]) => !authoritativeResults || run !== view.run.metadata.runId,
+            ),
+          ),
+          ...Object.fromEntries(results.map((result) => [result.id, result.runId])),
+        },
+        ...(releasedIds.size
+          ? {
+              tabs: state.tabs.map((tab) => ({
+                ...tab,
+                results: tab.results.filter((result) => !releasedIds.has(result.id)),
+                activeResultId:
+                  tab.activeResultId && releasedIds.has(tab.activeResultId)
+                    ? null
+                    : tab.activeResultId,
+              })),
+            }
+          : {}),
       }));
       const tab = get().tabs.find(
         (entry) => entry.id === current.tabId && entry.revision === current.tabRevision,
       );
       if (tab && querySessionForTab(tab, get().sessions)?.id === next.sessionId) {
-        const sameRun = tab.results.filter((result) => result.runId === next.runId);
-        const results = view.results.length ? view.results : sameRun;
         get().updateTab(tab.id, {
           status: consoleRunStatus(view),
           runId: consoleReceiptHeld(next) ? next.runId! : null,
@@ -1220,6 +1326,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       }));
     } finally {
       receiptLookups.delete(clientRequestId);
+      set((state) => ({
+        snowflakeConsoleReceipts: compactConsoleReceipts(state.snowflakeConsoleReceipts),
+      }));
     }
   },
   async openSnowflakeConsoleResults(clientRequestId) {
@@ -1254,6 +1363,101 @@ export const useStudio = create<StudioState>((set, get) => ({
         [clientRequestId]: { ...receipt, tabId, tabRevision: revision },
       },
     }));
+  },
+  async discoverSnowflakeConsoleReceipt(summary) {
+    validateConsoleSummary(summary);
+    const current = get().snowflakeConsoleReceipts[summary.clientRequestId];
+    if (!current)
+      set((state) => ({
+        snowflakeConsoleReceipts: {
+          ...state.snowflakeConsoleReceipts,
+          [summary.clientRequestId]: {
+            clientRequestId: summary.clientRequestId,
+            sessionId: summary.sessionId,
+            planDigest: summary.planDigest,
+            ...(summary.connectionId ? { connectionId: summary.connectionId } : {}),
+            ...(summary.runId ? { runId: summary.runId } : {}),
+            inventoried: true,
+            nativeSettled: summary.archiveEligible,
+            lastAccessed: consoleReceiptAccess(),
+            lookupPending: true,
+          },
+        },
+      }));
+    await get().refreshSnowflakeConsole(summary.clientRequestId);
+    await get().handoffSnowflakeConsoleReceipt(summary.clientRequestId);
+  },
+  async handoffSnowflakeConsoleReceipt(clientRequestId) {
+    const receipt = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!receipt || consoleReceiptHeld(receipt)) return;
+    const summary = await client.call("snowflake_console_receipt_summary", { clientRequestId });
+    if (!summary)
+      throw new Error(
+        "Native inventory has not confirmed the receipt; its browser correlation remains preserved.",
+      );
+    const current = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!current) return;
+    validateConsoleHandoff(current, summary);
+    const receipts = {
+      ...get().snowflakeConsoleReceipts,
+      [clientRequestId]: {
+        ...current,
+        inventoried: true,
+        nativeSettled: true,
+        lastAccessed: consoleReceiptAccess(),
+      },
+    };
+    rememberConsoleReceipts(receipts);
+    set({ snowflakeConsoleReceipts: compactConsoleReceipts(receipts) });
+  },
+  async releaseSnowflakeConsoleResults(clientRequestId) {
+    if (receiptLookups.has(clientRequestId))
+      throw new Error("Wait for receipt reconciliation, then release retained result rows.");
+    const receipt = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!receipt?.view || consoleReceiptHeld(receipt))
+      throw new Error("Reconcile this settled receipt before releasing retained result rows.");
+    receiptLookups.add(clientRequestId);
+    try {
+      await client.call("release_snowflake_console_results", { clientRequestId });
+      // Native release is authoritative. A failed/lost response leaves local state
+      // intact for SQL-free reconciliation; rows are never resubmitted.
+      const ids = new Set([
+        ...receipt.view.results.map((result) => result.id),
+        ...Object.entries(get().snowflakeConsoleResultOwners)
+          .filter(([, run]) => run === receipt.runId)
+          .map(([id]) => id),
+        ...get().tabs.flatMap((tab) =>
+          tab.results.filter((result) => result.runId === receipt.runId).map((result) => result.id),
+        ),
+      ]);
+      for (const id of ids) {
+        resultCache.release(id);
+        dirtyStore.clearTab(id, [id]);
+      }
+      set((state) => ({
+        snowflakeConsoleReceipts: state.snowflakeConsoleReceipts[clientRequestId]
+          ? {
+              ...state.snowflakeConsoleReceipts,
+              [clientRequestId]: {
+                ...state.snowflakeConsoleReceipts[clientRequestId],
+                view: { ...receipt.view!, results: [] },
+              },
+            }
+          : state.snowflakeConsoleReceipts,
+        snowflakeConsoleResultOwners: Object.fromEntries(
+          Object.entries(state.snowflakeConsoleResultOwners).filter(([id]) => !ids.has(id)),
+        ),
+        tabs: state.tabs.map((tab) => ({
+          ...tab,
+          results: tab.results.filter((result) => !ids.has(result.id)),
+          activeResultId:
+            tab.activeResultId && ids.has(tab.activeResultId) ? null : tab.activeResultId,
+        })),
+      }));
+    } finally {
+      receiptLookups.delete(clientRequestId);
+    }
+    await get().refreshSnowflakeConsole(clientRequestId);
   },
   async cancelSnowflakeConsole(clientRequestId) {
     const receipt = get().snowflakeConsoleReceipts[clientRequestId];
@@ -3312,7 +3516,10 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
 }));
 
-export function beginEventBatch(tabId: string) {
+export function beginEventBatch(
+  tabId: string,
+  acceptsEvent: (event: QueryEvent) => boolean = () => true,
+) {
   const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision ?? -1;
   let events: QueryEvent[] = [],
     frame = 0;
@@ -3321,7 +3528,7 @@ export function beginEventBatch(tabId: string) {
     frame = 0;
     const batch = events;
     events = [];
-    useStudio.getState().applyEvents(tabId, batch, revision);
+    useStudio.getState().applyEvents(tabId, batch.filter(acceptsEvent), revision);
   };
   return (event: QueryEvent) => {
     events.push(event);

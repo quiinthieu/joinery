@@ -34,6 +34,10 @@ test("only opaque receipt IDs survive reload; malformed storage never restores S
   expect(restoredConsoleReceipts()).toEqual({
     [clientId]: { clientRequestId: clientId, lookupPending: true },
   });
+  const corrupt = localStorage.getItem("joinery.snowflakeConsoleReceipts.v1");
+  expect(() => rememberConsoleReceipts({})).toThrow(/malformed/);
+  expect(localStorage.getItem("joinery.snowflakeConsoleReceipts.v1")).toBe(corrupt);
+  localStorage.setItem("joinery.snowflakeConsoleReceipts.v1", JSON.stringify([clientId]));
   rememberConsoleReceipts({
     [clientId]: {
       clientRequestId: clientId,
@@ -162,7 +166,7 @@ test("recording hold remains cancellable/reconcilable after terminal ACK and exp
   fireEvent.click(screen.getByRole("button", { name: /Reconcile receipt/ }));
   expect(reconcile).toHaveBeenCalledWith(clientId);
 });
-test("missing receipt keeps lookup/cancel available and does not offer retry execution", () => {
+test("missing receipt keeps lookup/cancel available and does not offer retry execution", async () => {
   const reconcile = vi.fn().mockResolvedValue(undefined),
     cancel = vi.fn().mockResolvedValue(undefined);
   useStudio.setState({
@@ -180,7 +184,7 @@ test("missing receipt keeps lookup/cancel available and does not offer retry exe
   expect(screen.getByText(/execution will not be resent/)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Cancel retained run" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
-  expect(reconcile).toHaveBeenCalledOnce();
+  await waitFor(() => expect(reconcile).toHaveBeenCalledOnce());
 });
 test("closed plan and receipt validation rejects identity/count/result-index changes", () => {
   expect(() => validateConsolePlan({ ...plan, validations: [] }, plan.review.sessionId)).toThrow();
@@ -241,7 +245,13 @@ test("receipt opens existing native rows explicitly without replaying SQL", () =
   fireEvent.click(screen.getByRole("button", { name: /Console receipts/ }));
   fireEvent.click(screen.getByRole("button", { name: "Open retained results" }));
   expect(open).toHaveBeenCalledWith(clientId);
-  expect(client.call).not.toHaveBeenCalled();
+  expect(
+    vi
+      .mocked(client.call)
+      .mock.calls.every(([command]) =>
+        ["snowflake_console_storage", "snowflake_console_receipts"].includes(command),
+      ),
+  ).toBe(true);
 });
 
 test("received definite non-admission is settled and offers a fresh review, not cancel or retry", () => {
@@ -322,7 +332,7 @@ test("pending receipts stay visible while settled history expands independently 
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(toggle);
   expect(toggle.getAttribute("aria-expanded")).toBe("true");
-  expect(screen.getAllByRole("article")).toHaveLength(12);
+  expect(screen.getAllByRole("article")).toHaveLength(1);
   fireEvent.click(toggle);
   expect(screen.getAllByRole("article")).toHaveLength(1);
   expect(screen.getByRole("button", { name: "Cancel retained run" })).toBeTruthy();

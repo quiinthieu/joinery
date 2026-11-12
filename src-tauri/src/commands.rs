@@ -239,6 +239,52 @@ pub async fn snowflake_console_request(
 }
 
 #[tauri::command]
+pub async fn snowflake_console_receipts(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeConsoleReceiptPageRequest,
+) -> AppResult<SnowflakeConsoleReceiptPage> {
+    studio.snowflake_console_receipts(&request)
+}
+
+#[tauri::command]
+pub async fn snowflake_console_receipt_summary(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<Option<SnowflakeConsoleReceiptSummary>> {
+    studio.snowflake_console_receipt_summary(&client_request_id)
+}
+
+#[tauri::command]
+pub async fn set_snowflake_console_receipt_archive(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeConsoleReceiptArchiveRequest,
+) -> AppResult<SnowflakeConsoleReceiptArchiveResult> {
+    studio.set_snowflake_console_receipt_archive(&request)
+}
+
+#[tauri::command]
+pub async fn snowflake_console_pending(
+    studio: State<'_, Arc<Studio>>,
+) -> AppResult<SnowflakeConsolePending> {
+    studio.snowflake_console_pending()
+}
+
+#[tauri::command]
+pub async fn snowflake_console_storage(
+    studio: State<'_, Arc<Studio>>,
+) -> AppResult<SnowflakeConsoleStorage> {
+    studio.snowflake_console_storage()
+}
+
+#[tauri::command]
+pub async fn release_snowflake_console_results(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<()> {
+    studio.release_snowflake_console_results(&client_request_id)
+}
+
+#[tauri::command]
 pub async fn execute_plan(
     studio: State<'_, Arc<Studio>>,
     plan_id: String,

@@ -11,7 +11,19 @@ use crate::drivers::{
 #[cfg(unix)]
 use crate::persistence::snowflake_console::validate_console_request_identity;
 use crate::persistence::snowflake_console::{ConsoleAdmissionRejection, ConsoleJournalOwner};
-use std::{collections::VecDeque, sync::atomic::AtomicU64};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::atomic::AtomicU64,
+};
+
+const MAX_HOT_RUNS: usize = 32;
+// Reserve the complete bounded run and its post-failure snapshot outbox before
+// accepting it. This gate is independent of lifetime SQLite count limits.
+const RUN_MEMORY_RESERVATION: usize = 32 * 1024 * 1024;
+const HOT_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+const MAX_PENDING_REFUSALS: usize = 32;
+const DETAIL_CACHE_ENTRIES: usize = 16;
+const DETAIL_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -26,16 +38,165 @@ pub(super) struct State {
 struct Journal {
     owner: Option<ConsoleJournalOwner>,
     runs: HashMap<String, Retained>,
+    clients: HashMap<String, String>,
+    active: HashSet<String>,
+    publishers: HashSet<String>,
+    dirty: HashSet<String>,
+    result_runs: HashMap<String, (String, usize)>,
+    details: DetailCache,
     rejections: HashMap<String, ConsoleAdmissionRejection>,
 }
 
 struct Retained {
     run: ConsoleRunSnapshot,
     writes: VecDeque<Write>,
-    results: Vec<String>,
     started_pending: bool,
     history: Option<HistoryEntry>,
     finished_pending: bool,
+}
+
+impl Retained {
+    fn pending(&self) -> bool {
+        !self.writes.is_empty()
+            || self.started_pending
+            || self.history.is_some()
+            || self.finished_pending
+    }
+}
+
+#[derive(Default)]
+struct DetailCache {
+    entries: VecDeque<(String, ConsoleRunSnapshot, usize)>,
+    bytes: usize,
+}
+
+impl DetailCache {
+    fn get(&mut self, client: &str) -> Option<ConsoleRunSnapshot> {
+        let position = self.entries.iter().position(|(id, _, _)| id == client)?;
+        let entry = self.entries.remove(position)?;
+        let snapshot = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(snapshot)
+    }
+
+    fn remove(&mut self, client: &str) {
+        if let Some(position) = self.entries.iter().position(|(id, _, _)| id == client)
+            && let Some((_, _, bytes)) = self.entries.remove(position)
+        {
+            self.bytes -= bytes;
+        }
+    }
+
+    fn insert(&mut self, run: ConsoleRunSnapshot) {
+        let client = run.metadata.client_request_id.clone();
+        self.remove(&client);
+        // JSON bounds every dynamic string's occupied bytes; account for the
+        // owned structs/step allocation as well. The measuring writer allocates
+        // no lifetime-sized serialization buffer.
+        struct Size(usize);
+        impl std::io::Write for Size {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self.0.saturating_add(bytes.len());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut encoded = Size(0);
+        if serde_json::to_writer(&mut encoded, &run).is_err() {
+            return;
+        }
+        let bytes = encoded
+            .0
+            .saturating_add(std::mem::size_of::<ConsoleRunSnapshot>())
+            .saturating_add(run.steps.capacity() * std::mem::size_of::<ConsoleStep>());
+        if bytes > DETAIL_CACHE_BYTES {
+            return;
+        }
+        while self.entries.len() >= DETAIL_CACHE_ENTRIES
+            || self.bytes.saturating_add(bytes) > DETAIL_CACHE_BYTES
+        {
+            if let Some((_, _, prior)) = self.entries.pop_front() {
+                self.bytes -= prior;
+            } else {
+                return;
+            }
+        }
+        self.bytes += bytes;
+        self.entries.push_back((client, run, bytes));
+    }
+}
+
+impl Journal {
+    fn retain_owner(&mut self, owner: ConsoleJournalOwner) {
+        // Unowned reads may predate another writer's late observations. Trust
+        // cached originals only within the same uninterrupted lease lifetime.
+        self.details = DetailCache::default();
+        self.owner = Some(owner);
+    }
+
+    fn can_admit(&self) -> bool {
+        self.runs.len() < MAX_HOT_RUNS
+            && self.runs.len().saturating_add(1) * RUN_MEMORY_RESERVATION <= HOT_MEMORY_BUDGET
+            && self.rejections.len() < MAX_PENDING_REFUSALS
+    }
+
+    fn result_ids(&self, run: &str) -> Vec<String> {
+        let mut results: Vec<_> = self
+            .result_runs
+            .iter()
+            .filter(|(_, (owner, _))| owner.as_str() == run)
+            .map(|(id, (_, ordinal))| (*ordinal, id))
+            .collect();
+        results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        results.into_iter().map(|(_, id)| id.clone()).collect()
+    }
+
+    fn archive_block(&self, client: &str) -> Option<&'static str> {
+        if self.rejections.contains_key(client) {
+            return Some("This refusal is waiting for local recording");
+        }
+        let id = self.clients.get(client)?;
+        if self.active.contains(id) {
+            Some("The console owner is still running")
+        } else if self.publishers.contains(id) {
+            Some("Console event publication is still finishing")
+        } else if self.runs.get(id).is_some_and(Retained::pending) {
+            Some("This receipt is waiting for local recording")
+        } else {
+            None
+        }
+    }
+
+    fn refine_summary(&self, summary: &mut SnowflakeConsoleReceiptSummary) {
+        if let Some(reason) = self.archive_block(&summary.client_request_id) {
+            summary.archive_eligible = false;
+            summary.archive_block_reason = Some(reason.into());
+        }
+    }
+
+    fn compact(&mut self) {
+        let ready: Vec<_> = self
+            .runs
+            .iter()
+            .filter(|(id, r)| {
+                r.run.terminal.is_some()
+                    && !r.pending()
+                    && !self.active.contains(*id)
+                    && !self.publishers.contains(*id)
+                    && !self.dirty.contains(*id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ready {
+            if let Some(retained) = self.runs.remove(&id) {
+                self.clients
+                    .remove(&retained.run.metadata.client_request_id);
+                self.details.insert(retained.run);
+            }
+        }
+    }
 }
 
 struct Write {
@@ -70,6 +231,10 @@ impl State {
     pub(super) fn pending_rejection(&self, id: &str) -> Option<ConsoleAdmissionRejection> {
         self.journal.lock().rejections.get(id).cloned()
     }
+    #[cfg(all(test, unix, feature = "test-harness"))]
+    pub(super) fn publisher_active(&self, id: &str) -> bool {
+        self.journal.lock().publishers.contains(id)
+    }
     pub(super) fn revoke(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
@@ -77,6 +242,9 @@ impl State {
         let mut previews = self.previews.lock();
         let epoch = previews.entry(session.into()).or_default();
         *epoch = epoch.wrapping_add(1);
+    }
+    pub(super) fn forget_session(&self, session: &str) {
+        self.previews.lock().remove(session);
     }
     fn preview(&self, session: &str) -> u64 {
         self.previews
@@ -86,17 +254,18 @@ impl State {
             .unwrap_or_default()
     }
     pub(super) fn owns_result(&self, id: &str) -> bool {
-        self.journal
-            .lock()
-            .runs
-            .values()
-            .any(|r| r.results.iter().any(|result| result == id))
+        self.journal.lock().result_runs.contains_key(id)
+    }
+    pub(super) fn release_result(&self, id: &str) {
+        self.journal.lock().result_runs.remove(id);
     }
     pub(super) fn is_run(&self, id: &str) -> bool {
-        self.journal.lock().runs.contains_key(id)
+        self.journal.lock().active.contains(id)
     }
     pub(super) fn release_journal(&self) {
-        self.journal.lock().owner.take();
+        let mut journal = self.journal.lock();
+        journal.details = DetailCache::default();
+        journal.owner.take();
     }
 }
 
@@ -253,13 +422,16 @@ impl Studio {
     /// never discarded on failure, event detachment or session removal.
     pub(super) fn flush_console_recordings(&self) -> AppResult<()> {
         let mut journal = self.console.journal.lock();
-        if journal.runs.is_empty() && journal.rejections.is_empty() {
+        if journal.dirty.is_empty() && journal.rejections.is_empty() {
+            journal.compact();
             return Ok(());
         }
         let Journal {
             owner,
             runs,
             rejections,
+            dirty,
+            ..
         } = &mut *journal;
         let owner = owner.as_ref().ok_or_else(recording_error)?;
         let pending: Vec<_> = rejections.keys().cloned().collect();
@@ -281,7 +453,9 @@ impl Studio {
             }
             rejections.remove(&id);
         }
-        for retained in runs.values_mut() {
+        let pending: Vec<_> = dirty.iter().cloned().collect();
+        for id in pending {
+            let retained = runs.get_mut(&id).ok_or_else(recording_error)?;
             while let Some(write) = retained.writes.front() {
                 let durable = self
                     .persistence
@@ -339,7 +513,9 @@ impl Studio {
                 })?;
                 retained.finished_pending = false;
             }
+            dirty.remove(&id);
         }
+        journal.compact();
         Ok(())
     }
 
@@ -354,6 +530,7 @@ impl Studio {
                 after: retained.run.clone(),
                 operation,
             });
+            journal.dirty.insert(id.into());
         }
         self.flush_console_recordings()
     }
@@ -405,26 +582,42 @@ impl Studio {
         &self,
         client_request_id: &str,
     ) -> AppResult<Option<SnowflakeConsoleRunView>> {
-        uuid::Uuid::parse_str(client_request_id)
-            .map_err(|_| AppError::invalid("Invalid console request identifier"))?;
+        if uuid::Uuid::parse_str(client_request_id)
+            .ok()
+            .is_none_or(|id| id.to_string() != client_request_id)
+        {
+            return Err(AppError::invalid("Invalid console request identifier"));
+        }
         let _ = self.flush_console_recordings();
-        let journal = self.console.journal.lock();
+        let mut journal = self.console.journal.lock();
         if let Some(r) = journal
-            .runs
-            .values()
-            .find(|r| r.run.metadata.client_request_id == client_request_id)
+            .clients
+            .get(client_request_id)
+            .and_then(|id| journal.runs.get(id))
         {
             return Ok(Some(SnowflakeConsoleRunView {
                 run: r.run.clone(),
-                results: r
-                    .results
+                results: journal
+                    .result_ids(&r.run.metadata.run_id)
                     .iter()
                     .filter_map(|id| self.results.info(id).ok())
                     .collect(),
-                pending_recording: !r.writes.is_empty()
-                    || r.started_pending
-                    || r.history.is_some()
-                    || r.finished_pending,
+                pending_recording: r.pending(),
+            }));
+        }
+        // A held lease excludes another writer. Once released (including a
+        // closed coordinator), read SQLite again instead of serving stale cache.
+        if journal.owner.is_some()
+            && let Some(run) = journal.details.get(client_request_id)
+        {
+            return Ok(Some(SnowflakeConsoleRunView {
+                results: journal
+                    .result_ids(&run.metadata.run_id)
+                    .iter()
+                    .filter_map(|id| self.results.info(id).ok())
+                    .collect(),
+                run,
+                pending_recording: false,
             }));
         }
         drop(journal);
@@ -446,19 +639,156 @@ impl Studio {
                     .any(|id| journal.runs.contains_key(id))
                 && let Ok(owner) = self.persistence.claim_console_journal_owner()
             {
-                journal.owner = Some(owner);
+                journal.retain_owner(owner);
                 run = self
                     .persistence
                     .console_run_by_client_request(client_request_id)?;
             }
         }
-        Ok(run.map(|run| SnowflakeConsoleRunView {
-            pending_recording: run.terminal.is_none(),
-            run,
-            results: Vec::new(),
+        Ok(run.map(|run| {
+            let mut journal = self.console.journal.lock();
+            let results = journal
+                .result_ids(&run.metadata.run_id)
+                .iter()
+                .filter_map(|id| self.results.info(id).ok())
+                .collect();
+            if run.terminal.is_some() {
+                journal.details.insert(run.clone());
+            }
+            SnowflakeConsoleRunView {
+                pending_recording: run.terminal.is_none(),
+                run,
+                results,
+            }
         }))
     }
+
+    /// Local paged metadata only. No console admission, helper request or auth.
+    pub fn snowflake_console_receipts(
+        &self,
+        request: &SnowflakeConsoleReceiptPageRequest,
+    ) -> AppResult<SnowflakeConsoleReceiptPage> {
+        let mut page = self.persistence.console_receipts(request)?;
+        let journal = self.console.journal.lock();
+        for summary in &mut page.receipts {
+            journal.refine_summary(summary);
+        }
+        Ok(page)
+    }
+
+    pub fn snowflake_console_receipt_summary(
+        &self,
+        client_request_id: &str,
+    ) -> AppResult<Option<SnowflakeConsoleReceiptSummary>> {
+        let mut summary = self
+            .persistence
+            .console_receipt_summary(client_request_id)?;
+        if let Some(summary) = &mut summary {
+            self.console.journal.lock().refine_summary(summary);
+        }
+        Ok(summary)
+    }
+
+    pub fn snowflake_console_pending(&self) -> AppResult<SnowflakeConsolePending> {
+        let _ = self.flush_console_recordings();
+        let journal = self.console.journal.lock();
+        let mut clients: HashSet<_> = journal.rejections.keys().cloned().collect();
+        for (id, retained) in &journal.runs {
+            if retained.pending() || journal.active.contains(id) || journal.publishers.contains(id)
+            {
+                clients.insert(retained.run.metadata.client_request_id.clone());
+            }
+        }
+        let mut client_request_ids: Vec<_> = clients.into_iter().collect();
+        client_request_ids.sort();
+        Ok(SnowflakeConsolePending {
+            client_request_ids,
+            recording_hold: !journal.rejections.is_empty() || !journal.dirty.is_empty(),
+        })
+    }
+
+    pub fn snowflake_console_storage(&self) -> AppResult<SnowflakeConsoleStorage> {
+        self.persistence.console_storage()
+    }
+
+    pub fn set_snowflake_console_receipt_archive(
+        &self,
+        request: &SnowflakeConsoleReceiptArchiveRequest,
+    ) -> AppResult<SnowflakeConsoleReceiptArchiveResult> {
+        let _configuration = self.configuration_gate.lock();
+        if self.dml_tasks.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "The app is closing",
+            ));
+        }
+        let _ = self.flush_console_recordings();
+        let journal = self.console.journal.lock();
+        for item in &request.items {
+            if let Some(reason) = journal.archive_block(&item.client_request_id) {
+                return Err(AppError::new(ErrorCode::Conflict, reason));
+            }
+        }
+        // Archive is browsing only. A temporary raw lease must neither seal
+        // unrelated originals nor count as normal recovery for a later start.
+        let temporary_owner = if journal.owner.is_none() {
+            Some(self.persistence.claim_console_archive_owner()?)
+        } else {
+            None
+        };
+        self.persistence.console_archive_receipts(
+            journal
+                .owner
+                .as_ref()
+                .or(temporary_owner.as_ref())
+                .ok_or_else(recording_error)?,
+            request,
+            now_ms(),
+        )
+    }
+
+    /// Explicit row-buffer disposal is independent of archive and original proof.
+    pub fn release_snowflake_console_results(&self, client_request_id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_gate.lock();
+        self.flush_console_recordings()?;
+        let journal = self.console.journal.lock();
+        if let Some(reason) = journal.archive_block(client_request_id) {
+            return Err(AppError::new(ErrorCode::Conflict, reason));
+        }
+        let run = self
+            .persistence
+            .console_run_by_client_request(client_request_id)?
+            .ok_or_else(|| AppError::new(ErrorCode::NotFound, "Console run not found"))?;
+        if run.terminal.is_none() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "The console run has not settled",
+            ));
+        }
+        let result_ids = journal.result_ids(&run.metadata.run_id);
+        for id in &result_ids {
+            if let Ok(result) = self.results.info(id)
+                && result.run_id != run.metadata.run_id
+            {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "Console result ownership changed",
+                ));
+            }
+        }
+        // Studio::release_result invokes the State registry hook. Do not recurse
+        // into that mutex while holding the journal guard.
+        drop(journal);
+        for id in result_ids {
+            self.release_result(&id);
+        }
+        Ok(())
+    }
 }
+
+#[cfg(all(test, unix, feature = "test-harness"))]
+#[path = "snowflake_console_retention_tests.rs"]
+mod retention_tests;
 
 fn refusal_view(receipt: ConsoleAdmissionRejection) -> SnowflakeConsoleRequestLookup {
     SnowflakeConsoleRequestLookup::NotAdmitted {
@@ -696,13 +1026,19 @@ impl Studio {
                 "The app is closing; this console cannot admit another request",
             ));
         }
+        if !self.console.journal.lock().can_admit() {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "Console recording memory is reserved by active or pending work; reconcile it before starting another request",
+            ));
+        }
         // A definite negative requires proving absence while holding the OS
         // journal lease. A failed lookup/lease can hide another owner's original;
         // propagate that uncertainty instead of manufacturing NotAdmitted.
         {
             let mut journal = self.console.journal.lock();
             if journal.owner.is_none() {
-                journal.owner = Some(self.persistence.claim_console_journal_owner()?);
+                journal.retain_owner(self.persistence.claim_console_journal_owner()?);
             }
         }
         if let Some(existing) = self.snowflake_console_request(&request.client_request_id)? {
@@ -793,8 +1129,14 @@ impl Studio {
                 step_count: compiled.units().len() as u32,
                 created_at: now_ms(),
             };
+            let run_id = metadata.run_id.clone();
             {
                 let mut journal = self.console.journal.lock();
+                // The configuration gate serializes admissions. Owner completion
+                // can only release reservations while this review is checked.
+                if !journal.can_admit() {
+                    return Err(recording_error());
+                }
                 let run = ConsoleRunSnapshot {
                     metadata: metadata.clone(),
                     revision: 0,
@@ -814,27 +1156,20 @@ impl Studio {
                     Retained {
                         run,
                         writes,
-                        results: Vec::new(),
                         started_pending: true,
                         history: None,
                         finished_pending: false,
                     },
                 );
+                journal
+                    .clients
+                    .insert(request.client_request_id.clone(), run_id.clone());
+                journal.active.insert(run_id.clone());
+                journal.publishers.insert(run_id.clone());
+                journal.dirty.insert(run_id.clone());
             }
             let stored = plans.remove(&request.plan_id).unwrap();
             drop(plans);
-            let run_id = self
-                .console
-                .journal
-                .lock()
-                .runs
-                .values()
-                .find(|r| r.run.metadata.client_request_id == request.client_request_id)
-                .unwrap()
-                .run
-                .metadata
-                .run_id
-                .clone();
             let token = CancellationToken::new();
             self.jobs.lock().insert(
                 run_id.clone(),
@@ -852,6 +1187,12 @@ impl Studio {
             let task_id = run_id.clone();
             self.dml_tasks.spawn(async move {
                 use futures_util::FutureExt;
+                // This guard outlives normal Finished publication AND the panic
+                // fallback. Its drop is the final publisher/owner boundary.
+                let completion = OwnerCompletion {
+                    studio: studio.clone(),
+                    run_id: task_id.clone(),
+                };
                 let fallback = studio.clone();
                 let fallback_session = session.clone();
                 let fallback_id = task_id.clone();
@@ -877,6 +1218,7 @@ impl Studio {
                         &fallback_events,
                     );
                 }
+                drop(completion);
             });
             Ok(run_id)
         })();
@@ -1041,6 +1383,26 @@ impl ReviewedConsoleAdmission for Admission<'_> {
 }
 
 #[cfg(unix)]
+struct OwnerCompletion {
+    studio: Arc<Studio>,
+    run_id: String,
+}
+
+#[cfg(unix)]
+impl Drop for OwnerCompletion {
+    fn drop(&mut self) {
+        {
+            let mut journal = self.studio.console.journal.lock();
+            journal.active.remove(&self.run_id);
+            journal.publishers.remove(&self.run_id);
+        }
+        // Failure retains dirty full snapshots and the journal lease. Nothing
+        // pending is placed in the evictable settled-detail cache.
+        let _ = self.studio.flush_console_recordings();
+    }
+}
+
+#[cfg(unix)]
 struct RunOwner {
     session: Arc<Session>,
     console: Arc<tokio::sync::Mutex<ReviewedConsole>>,
@@ -1100,7 +1462,7 @@ impl Studio {
                 },
             );
         }
-        let result_ids = self.console.journal.lock().runs[id].results.clone();
+        let result_ids = self.console.journal.lock().result_ids(id);
         for result in result_ids {
             if self
                 .results
@@ -1132,10 +1494,12 @@ impl Studio {
                 snowflake_ddl: None,
             });
             retained.finished_pending = true;
+            journal.dirty.insert(id.into());
         }
         let _ = self.flush_console_recordings();
         *session.active_run.lock() = None;
         self.jobs.lock().remove(id);
+        self.console.journal.lock().active.remove(id);
         // Already durable success ACKs remain known even when publication panics.
         events(QueryEvent::Finished {
             run_id: id.into(),
@@ -1429,12 +1793,14 @@ impl Studio {
             let retained = journal.runs.get_mut(&run_id).unwrap();
             retained.history = Some(history);
             retained.finished_pending = true;
+            journal.dirty.insert(run_id.clone());
         }
         if self.flush_console_recordings().is_err() {
             events(QueryEvent::Notice { message: "The original console outcome is retained in memory, but local recording is pending. Keep Joinery open.".into() });
         }
         *session.active_run.lock() = None;
         self.jobs.lock().remove(&run_id);
+        self.console.journal.lock().active.remove(&run_id);
         if !events(QueryEvent::Finished {
             run_id: run_id.clone(),
             status: status(&snapshot),
@@ -1520,11 +1886,8 @@ impl QuerySink for ConsoleOutput<'_> {
             .console
             .journal
             .lock()
-            .runs
-            .get_mut(self.run_id)
-            .unwrap()
-            .results
-            .push(result.id.clone());
+            .result_runs
+            .insert(result.id.clone(), (self.run_id.into(), self.index));
         self.current = Some(result.id.clone());
         self.publish(QueryEvent::Result { result })
     }

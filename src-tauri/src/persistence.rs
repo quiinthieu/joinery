@@ -332,7 +332,7 @@ fn enable_wal(connection: &Connection, budget: Duration) -> rusqlite::Result<()>
     result.and(restored)
 }
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 fn schema_version(connection: &Connection) -> AppResult<i64> {
     let version = connection
@@ -357,7 +357,7 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
     let version = schema_version(&transaction)?;
     // A live version-2 coordinator must finish recording before its physical
     // tables are renamed. Private backup copies need no external lease.
-    let _migration_lease = if version == 2 {
+    let _migration_lease = if version == 2 || version == 3 {
         migration_root
             .map(snowflake_console::claim_migration_lease)
             .transpose()?
@@ -392,6 +392,15 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
         for (_, sql) in snowflake_console::DECISION_TRIGGERS {
             transaction.execute_batch(sql).map_err(db_error)?;
         }
+    }
+    if version < 4 {
+        // Validate the complete legacy evidence before physically fencing old SQL.
+        transaction
+            .pragma_update(None, "user_version", 3)
+            .map_err(db_error)?;
+        snowflake_console::validate_schema(&transaction)?;
+        snowflake_console::validate_records(&transaction)?;
+        snowflake_console::migrate_v4(&transaction)?;
     }
     if version < SCHEMA_VERSION {
         transaction
@@ -578,7 +587,7 @@ mod tests {
         db.set_setting("marker", "preserved").unwrap();
         db.connection
             .lock()
-            .execute_batch("DROP TABLE snowflake_console_steps_v3;")
+            .execute_batch("DROP TABLE snowflake_console_steps_v4;")
             .unwrap();
         drop(db);
         let path = root.path().join("joinery.sqlite");
@@ -598,7 +607,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_steps_v3'",
+                    "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_steps_v4'",
                     [],
                     |r| r.get::<_, i64>(0)
                 )

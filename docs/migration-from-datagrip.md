@@ -10,8 +10,8 @@ The new [reviewed retained-console walkthrough](snowflake-sdk-console-workflow.m
 describes opt-in connection setup, mixed-script review, retained session context,
 explicit transaction boundaries and SQL-free receipt/result recovery. It is a
 locally verified implementation with a synthetic SDK, including durable refusal
-response-loss/restart recovery and a bounded receipt panel. This does not
-establish real Snowflake effects, current packaged native UI behavior or daily
+response-loss/restart recovery, native paged history and a bounded receipt panel.
+This does not establish real Snowflake effects, current packaged native UI behavior or daily
 replacement readiness. The normal SDK-bearing ARM64 bundle from clean `72ee3e4`
 passes resource/signature and guarded helper-startup checks. It is local and
 uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`; native UI/SSO
@@ -21,9 +21,11 @@ Console receipts retain both admitted runs and committed pre-admission refusals.
 After a lost response, use **Reconcile receipt (no SQL)** to retrieve the original local
 decision. A refused request needs a new explicit review before a different
 request can run. A missing receipt or recording error remains uncertain; never
-retry SQL merely to discover its outcome. Restart restores opaque request IDs,
-then retrieves their decisions without reconnecting or submitting SQL. Earlier
-versions' discarded refusal IDs cannot be reconstructed. See the walkthrough
+retry SQL merely to discover its outcome. The current source can discover
+committed decisions through native inventory even when browser IDs or connection
+profiles are absent; browsing does not
+reconnect or submit SQL. Decisions never committed by earlier versions cannot
+be reconstructed. See the walkthrough
 for recording holds and recovery limits. Receipt history opens in a bounded,
 keyboard-scrollable panel; its pending notices stay visible when settled history
 is collapsed. The panel can cover part of the lower results area while open,
@@ -42,9 +44,21 @@ See the [query-limit contract](snowflake-console-query-limits.md) and current
 ledger for verification status. The `72ee3e4` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
-This increment upgrades local metadata to schema 3. Earlier Joinery versions
-cannot open that format. Preserve a pre-upgrade metadata backup if you need to
-return to an earlier app; never run both versions against the same data directory.
+The new inventory source upgrades local metadata to schema 4 under exclusive
+ownership. It physically fences older cached writers; the earlier `72ee3e4`
+release bundle does not include this format or the new history UI. Use a separate
+evaluation data directory, preserve the original backup and never run old and new
+versions against one directory. Going back to an old backup can lose newer
+receipt knowledge, so it is not a safe way to determine whether SQL ran.
+
+In the new source, use **Console receipts** for 25-row history pages, filters and
+exact UUID lookup. **Archive receipt** changes browsing only and frees no journal
+space. **Release retained result rows** separately releases process-local buffers
+after confirmation, preserving original decisions. The existing 10,000-decision
+limits remain; encrypted streaming backup and full-capacity resource acceptance
+are unfinished. Current metadata backups are plaintext, limited to 64 MiB / 20
+copies. The [workflow guide](snowflake-sdk-console-workflow.md) contains the
+concrete inspection/recovery steps and unchanged uncertainty holds.
 
 The confirmed target is Snowflake externalbrowser SSO on macOS, with all
 applicable DataGrip functionality including writes, DDL and explicit transactions.

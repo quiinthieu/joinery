@@ -11,6 +11,7 @@ import type {
   SnowflakeConsolePlan,
   SnowflakeConsoleRunView,
   SnowflakeConsoleRequestLookup,
+  SnowflakeConsoleReceiptPage,
 } from "../../src/ipc/generated";
 
 // Real browser -> loopback Rust Studio -> real helper/framing/ResultStore.
@@ -237,6 +238,12 @@ test("retained console preserves adjacency, recovers a lost start response and r
     await page.getByRole("textbox", { name: "SQL editor" }).fill("");
     await page.locator(".workspace-tab.active .tab-close").click();
     await page.getByRole("button", { name: /^Console receipts \(/ }).click();
+    await page
+      .getByRole("button", {
+        name: `Receipt ${recovered.run.metadata.clientRequestId}`,
+        exact: true,
+      })
+      .click();
     await expect(page.getByRole("region", { name: "Snowflake console receipts" })).toContainText(
       "acknowledged",
     );
@@ -255,6 +262,30 @@ test("retained console preserves adjacency, recovers a lost start response and r
     );
     await expect(page.getByRole("textbox", { name: "SQL editor" })).toHaveText("");
     expect(await values(await receipt(recovered.run.metadata.clientRequestId))).toEqual(["99"]);
+    const originalRun = recovered.run;
+    const recoveredArticle = page.getByRole("article", {
+      name: `Console receipt ${recovered.run.metadata.clientRequestId}`,
+    });
+    await expect(
+      recoveredArticle.getByRole("button", { name: "Release retained result rows", exact: true }),
+    ).toBeEnabled();
+    await recoveredArticle
+      .getByRole("button", { name: "Release retained result rows", exact: true })
+      .click();
+    await recoveredArticle
+      .getByRole("button", { name: "Confirm row release", exact: true })
+      .click();
+    await expect
+      .poll(async () => (await receipt(recovered.run.metadata.clientRequestId)).results.length)
+      .toBe(0);
+    expect((await receipt(recovered.run.metadata.clientRequestId)).run).toEqual(originalRun);
+    expect(
+      (
+        await request.get(`${bridge}/result/${recovered.results.at(-1)!.id}?start=0&count=1`, {
+          headers,
+        })
+      ).ok(),
+    ).toBe(false);
     expect(commands).not.toContain("release_result");
     expect(
       commands.some((command) =>
@@ -315,9 +346,11 @@ test("retained console preserves adjacency, recovers a lost start response and r
     expect(starts).toHaveLength(count + 1);
     await page.getByRole("textbox", { name: "SQL editor" }).fill("");
     const negative = page.getByRole("article", { name: `Console receipt ${refusedId}` });
+    await page.getByRole("button", { name: "Refresh receipts", exact: true }).click();
+    await page.getByRole("button", { name: `Receipt ${refusedId}`, exact: true }).click();
     await expect(negative).toContainText("No SQL was admitted");
     await details.focus();
-    await details.press("End");
+    await details.press("Home");
     await expect(negative).toBeInViewport();
     const reconcileRefusal = async () => {
       const response = page.waitForResponse(
@@ -342,6 +375,62 @@ test("retained console preserves adjacency, recovers a lost start response and r
     expect((await rpc<{ queries: string }>("test_synthetic_console_evidence")).queries).toBe(
       evidence.queries,
     );
+    // More than one page and more than the full-detail cache. All account SQL
+    // still goes only to this isolated synthetic SDK.
+    await page.unroute("http://127.0.0.1:1422/rpc/start_snowflake_console");
+    for (let n = 0; n < 15; n++) {
+      const extra = await run("SELECT 1");
+      ids.push(extra.run.metadata.clientRequestId);
+    }
+    await page.getByRole("textbox", { name: "SQL editor" }).fill("");
+    await page.getByRole("button", { name: "Refresh receipts", exact: true }).click();
+    const inventory = page.getByRole("list", { name: "Durable console receipt inventory" });
+    await expect(inventory.getByRole("listitem")).toHaveCount(25);
+    await page.getByRole("button", { name: "Next receipts", exact: true }).click();
+    await expect(inventory.getByRole("listitem")).toHaveCount(2);
+    await page.getByRole("button", { name: "Previous receipts", exact: true }).click();
+    await expect(inventory.getByRole("listitem")).toHaveCount(25);
+    const noSqlBeforeArchive = await rpc("test_synthetic_console_evidence");
+    await page.route(
+      "http://127.0.0.1:1422/rpc/set_snowflake_console_receipt_archive",
+      async (route) => {
+        commands.push("set_snowflake_console_receipt_archive");
+        const response = await route.fetch({
+          url: `${bridge}/rpc/set_snowflake_console_receipt_archive`,
+        });
+        expect((await response.json()).error).toBeUndefined();
+        await route.abort("connectionreset");
+      },
+    );
+    const refusalRow = inventory
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("button", { name: `Receipt ${refusedId}`, exact: true }) });
+    await refusalRow.getByRole("button", { name: "Archive receipt", exact: true }).click();
+    await expect(page.getByText(/Current local preference is archived/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Refresh receipts", exact: true })).toBeFocused();
+    await page.unroute("http://127.0.0.1:1422/rpc/set_snowflake_console_receipt_archive");
+    await page.getByLabel("Receipt visibility", { exact: true }).selectOption("archived");
+    await expect(inventory.getByRole("listitem")).toHaveCount(1);
+    await inventory.getByRole("button", { name: "Unarchive receipt", exact: true }).click();
+    await expect(inventory.getByRole("listitem")).toHaveCount(0);
+    await page.getByLabel("Receipt visibility", { exact: true }).selectOption("all");
+    expect(await rpc("test_synthetic_console_evidence")).toEqual(noSqlBeforeArchive);
+    const allReceipts = await rpc<SnowflakeConsoleReceiptPage>("snowflake_console_receipts", {
+      request: {
+        filter: { visibility: "all", kind: null, connectionId: null },
+        cursor: null,
+        limit: 100,
+      },
+    });
+    expect(allReceipts.receipts).toHaveLength(27);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            JSON.parse(localStorage.getItem("joinery.snowflakeConsoleReceipts.v1") ?? "[]").length,
+        ),
+      )
+      .toBe(0);
     await page.goto("about:blank");
     await expect.poll(() => pendingBridgeRequests).toBe(0);
     await stop();
@@ -371,7 +460,7 @@ test("retained console preserves adjacency, recovers a lost start response and r
       clientRequestId: refusedId,
       code: "approvalRequired",
     });
-    expect(starts).toHaveLength(count + 1);
+    expect(starts).toHaveLength(count + 16);
     expect(
       commands.some((command) =>
         [
@@ -383,9 +472,11 @@ test("retained console preserves adjacency, recovers a lost start response and r
       ),
     ).toBe(false);
     await page.getByRole("button", { name: /^Console receipts \(/ }).click();
+    await page.getByRole("button", { name: `Receipt ${ids.at(-1)}`, exact: true }).click();
     await expect(page.getByRole("region", { name: "Snowflake console receipts" })).toContainText(
       "does not mean the statements returned zero rows",
     );
+    await page.getByRole("button", { name: `Receipt ${refusedId}`, exact: true }).click();
     await expect(negative).toContainText("No SQL was admitted");
     await reconcileRefusal();
     expect(await rpc("test_synthetic_console_evidence")).toMatchObject({

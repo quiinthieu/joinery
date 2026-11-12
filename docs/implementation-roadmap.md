@@ -1,5 +1,33 @@
 # Joinery implementation roadmap
 
+## Paged receipt inventory and bounded hot state (12 November 2026)
+
+The first [retention slice](snowflake-console-retention-design.md) implements
+schema-4 physical writer fencing, SQL-free keyset inventory/exact lookup,
+compare-and-set browsing preferences and exact restore merging with fresh epochs.
+Native working/publisher/dirty ownership and result lifetimes are separate from
+16-entry / 16 MiB detail caches. The browser has bounded history pages and
+background concurrency, exact native handoff before removing opaque browser IDs,
+and explicit result-row release that preserves original decisions. Refusal detail
+selection and delayed lookup/row-event races have regression coverage. See the
+[verification ledger](replacement-verification.md) for commands, failed attempts,
+review corrections and final results.
+
+Current local checks pass 948 frontend / 572 standard Rust cases, 98 focused
+native cases, the actual browser full-restart workflow and independent review.
+These are source-scoped local results with a synthetic SDK.
+
+Keep the original lifetime count gates and `retentionEnabled=false`. Next required
+work is encrypted bounded-memory metadata backup/restore, byte reservations and
+admission budgets, full-capacity/resource measurements and crash/storage-failure
+acceptance. Existing snapshots remain plaintext and limited to 64 MiB / 20 copies.
+Archive is a browsing preference, never evidence deletion or journal reclamation.
+Actual Snowflake and normal packaged/macOS/owner acceptance remain open. The
+current local release bundle still comes from clean `72ee3e4` and does not include
+this new source increment. No installation or account activity is authorized.
+
+The private project hub has not been updated: publication is not authorized.
+
 ## Query limits and retention investigation (12 November 2026)
 
 The [configured console query limit](snowflake-console-query-limits.md) is locally
@@ -10,17 +38,17 @@ SDK cases and full validation with 921 frontend / 561 standard Rust cases (137
 default ignores). The ledger records fixture corrections and affected reruns.
 Normal SDK-bearing ARM64 packaging from clean `72ee3e4` passes resource, strict
 ad-hoc signature and guarded helper startup with zero authentication/SQL. The
-app remains local and uninstalled. Advance the reviewed receipt-retention
-workflow next; actual Snowflake long-query/cancellation and native owner
+app remains local and uninstalled. Continue the remaining receipt-retention
+workflow; actual Snowflake long-query/cancellation and native owner
 acceptance remain open.
 
 The bounded retention inventory at `b86ac44` found separate 10,000-positive and
 10,000-negative native limits, a combined 10,000-ID browser limit, retained full
 in-memory snapshots, whole-ledger startup validation and 64 MiB whole-database
 backup/restore limits. Simply increasing a count would leave daily-use failures.
-The next retention increment should keep full immutable evidence in one
-authoritative database, add paged SQL-free inventory/detail, compact only settled
-hot state, and support bounded-memory backup/restore. Archiving evidence must not
+The complete retention target keeps full immutable evidence in one
+authoritative database, adds paged SQL-free inventory/detail, compacts only settled
+hot state, and supports bounded-memory backup/restore. Archiving evidence must not
 erase deduplication or imply reclaimed journal disk. Keep explicit result-row
 release separate. The source-pinned inventory is retained locally at
 `.cache/verification/reviewed-console/retention-inventory.json`; this is design
@@ -30,8 +58,9 @@ The [paged receipt retention design](snowflake-console-retention-design.md)
 specifies the next complete workflow, including immutable recovery identities,
 bounded hot state, SQL-free paging, backup/restore and capacity failure behavior.
 Independent review resolved cross-branch restore sequence collisions with a fresh
-inventory epoch. This remains a proposal; its migration, performance and recovery
-acceptance checks must pass before the existing retention limits change.
+inventory epoch. The inventory/compaction slice above is now implemented.
+Encrypted recovery, reservations, performance and full-capacity acceptance must pass before the
+existing retention limits change.
 
 ## Durable console admission decisions (12 November 2026)
 

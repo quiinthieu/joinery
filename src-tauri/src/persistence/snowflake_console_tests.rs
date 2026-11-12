@@ -1,4 +1,5 @@
 use super::*;
+use crate::console_contract::*;
 
 fn metadata(steps: u32) -> ConsoleRunMetadata {
     ConsoleRunMetadata {
@@ -82,6 +83,8 @@ fn pinned() -> Connection {
     for (_, sql) in DECISION_TRIGGERS {
         connection.execute_batch(sql).unwrap();
     }
+    connection.pragma_update(None, "user_version", 3).unwrap();
+    migrate_v4(&connection).unwrap();
     connection
         .pragma_update(None, "user_version", super::super::SCHEMA_VERSION)
         .unwrap();
@@ -108,19 +111,702 @@ fn for_refusal(value: &ConsoleAdmissionRejection) -> ConsoleRunMetadata {
 }
 
 fn downgrade_fixture_to_v2(connection: &Connection) {
-    for (name, _) in DECISION_TRIGGERS {
+    for (kind, name) in schema_objects(4)
+        .unwrap()
+        .into_iter()
+        .filter(|(kind, _)| kind != "table")
+    {
         connection
-            .execute_batch(&format!("DROP TRIGGER {name};"))
+            .execute_batch(&format!("DROP {kind} {name}"))
+            .unwrap();
+    }
+    connection.execute_batch("DROP TABLE snowflake_console_retention_v4; DROP TABLE snowflake_console_rejections_v4;").unwrap();
+    for column in ["receipt_sequence", "archived_at", "browsing_revision"] {
+        connection
+            .execute_batch(&format!(
+                "ALTER TABLE snowflake_console_runs_v4 DROP COLUMN {column}"
+            ))
+            .unwrap();
+    }
+    connection.execute_batch("ALTER TABLE snowflake_console_runs_v4 RENAME TO snowflake_console_runs; ALTER TABLE snowflake_console_steps_v4 RENAME TO snowflake_console_steps; PRAGMA user_version=2;").unwrap();
+}
+
+fn downgrade_fixture_to_v3(connection: &Connection) {
+    for (kind, name) in schema_objects(4)
+        .unwrap()
+        .into_iter()
+        .filter(|(kind, _)| kind != "table")
+    {
+        connection
+            .execute_batch(&format!("DROP {kind} {name}"))
             .unwrap();
     }
     connection
-        .execute_batch(
-            "DROP TABLE snowflake_console_rejections_v3;
-         ALTER TABLE snowflake_console_runs_v3 RENAME TO snowflake_console_runs;
-         ALTER TABLE snowflake_console_steps_v3 RENAME TO snowflake_console_steps;
-         PRAGMA user_version=2;",
+        .execute_batch("DROP TABLE snowflake_console_retention_v4")
+        .unwrap();
+    for table in [
+        "snowflake_console_runs_v4",
+        "snowflake_console_rejections_v4",
+    ] {
+        for column in ["receipt_sequence", "archived_at", "browsing_revision"] {
+            connection
+                .execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))
+                .unwrap();
+        }
+    }
+    connection.execute_batch("ALTER TABLE snowflake_console_runs_v4 RENAME TO snowflake_console_runs_v3; ALTER TABLE snowflake_console_steps_v4 RENAME TO snowflake_console_steps_v3; ALTER TABLE snowflake_console_rejections_v4 RENAME TO snowflake_console_rejections_v3; PRAGMA user_version=3;").unwrap();
+    for (_, sql) in DECISION_TRIGGERS {
+        connection.execute_batch(sql).unwrap();
+    }
+}
+
+fn receipt_page(limit: u32) -> SnowflakeConsoleReceiptPageRequest {
+    SnowflakeConsoleReceiptPageRequest {
+        filter: SnowflakeConsoleReceiptFilter {
+            visibility: SnowflakeConsoleReceiptVisibility::All,
+            kind: None,
+            connection_id: None,
+        },
+        cursor: None,
+        limit,
+    }
+}
+
+fn archive_item(summary: &SnowflakeConsoleReceiptSummary) -> SnowflakeConsoleReceiptArchiveItem {
+    SnowflakeConsoleReceiptArchiveItem {
+        client_request_id: summary.client_request_id.clone(),
+        session_id: summary.session_id.clone(),
+        plan_digest: summary.plan_digest.clone(),
+        run_id: summary.run_id.clone(),
+        kind: summary.kind,
+        recorded_at: summary.recorded_at.clone(),
+        original_revision: summary.original_revision.clone(),
+        browsing_revision: summary.browsing_revision.clone(),
+        refusal_code: summary.refusal_code,
+    }
+}
+
+#[test]
+fn console_retention_v4_migration_fences_cached_v3_sql_without_reclassifying_originals() {
+    let (root, store, owner) = setup();
+    let run = prepared(&store, &owner, 2);
+    let run = intended(&store, &owner, &run);
+    let run = acknowledged(&store, &owner, &run);
+    let run = intended(&store, &owner, &run);
+    let negative = refusal();
+    store.console_record_rejection(&owner, &negative).unwrap();
+    let canonical = store.root.clone();
+    drop(owner);
+    drop(store);
+    let old = Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    downgrade_fixture_to_v3(&old);
+    let mut insert=old.prepare("INSERT INTO snowflake_console_runs_v3(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json) VALUES(?1,?2,?3,?4,?5,1,1000,0,'prepared',?6)").unwrap();
+    let mut outcome = old
+        .prepare(
+            "UPDATE snowflake_console_steps_v3 SET outcome_json=?1 WHERE run_id=?2 AND ordinal=1",
         )
         .unwrap();
+    let mut recovery = old
+        .prepare("SELECT run_id FROM snowflake_console_runs_v3 WHERE state!='terminal'")
+        .unwrap();
+    let lease = claim_migration_lease(&canonical).unwrap();
+    assert_eq!(
+        Persistence::open(root.path()).err().unwrap().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(super::super::schema_version(&old).unwrap(), 3);
+    assert_eq!(
+        read_run(&old, &run.metadata.run_id).unwrap(),
+        Some(run.clone())
+    );
+    drop(lease);
+    let upgraded = Persistence::open(root.path()).unwrap();
+    assert_eq!(
+        upgraded.console_run(&run.metadata.run_id).unwrap(),
+        Some(run.clone())
+    );
+    assert_eq!(
+        upgraded
+            .console_rejection_by_client_request(&negative.client_request_id)
+            .unwrap(),
+        Some(negative.clone())
+    );
+    let other = metadata(1);
+    assert!(
+        insert
+            .execute(params![
+                other.run_id,
+                other.client_request_id,
+                other.session_id,
+                other.connection_id,
+                other.plan_digest,
+                encode(&ConsoleObservations::default()).unwrap()
+            ])
+            .unwrap_err()
+            .to_string()
+            .contains("no such table")
+    );
+    assert!(
+        outcome
+            .execute(params![
+                encode(&acknowledgement()).unwrap(),
+                run.metadata.run_id
+            ])
+            .unwrap_err()
+            .to_string()
+            .contains("no such table")
+    );
+    assert!(
+        recovery
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap_err()
+            .to_string()
+            .contains("no such table")
+    );
+    let page = upgraded.console_receipts(&receipt_page(100)).unwrap();
+    assert_eq!(page.receipts.len(), 2);
+    let mut expected = vec![run.metadata.client_request_id, negative.client_request_id];
+    expected.sort();
+    expected.reverse();
+    assert_eq!(
+        page.receipts
+            .iter()
+            .map(|r| r.client_request_id.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let db = upgraded.connection.lock();
+    validate_schema(&db).unwrap();
+    validate_records(&db).unwrap();
+    assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('snowflake_console_runs_v3','snowflake_console_steps_v3','snowflake_console_rejections_v3','snowflake_console_runs','snowflake_console_steps')",[],|r|r.get::<_,u32>(0)).unwrap(),0);
+}
+
+#[test]
+fn console_retention_pages_are_bounded_filtered_and_snapshot_high_water_is_stable() {
+    let (_root, store, owner) = setup();
+    let positive = prepared(&store, &owner, 1);
+    for _ in 0..105 {
+        store.console_record_rejection(&owner, &refusal()).unwrap();
+    }
+    let mut request = receipt_page(10);
+    let first = store.console_receipts(&request).unwrap();
+    assert_eq!(first.receipts.len(), 10);
+    let newest = refusal();
+    store.console_record_rejection(&owner, &newest).unwrap();
+    let mut all = first.receipts.clone();
+    request.cursor = first.next_cursor;
+    while request.cursor.is_some() {
+        let page = store.console_receipts(&request).unwrap();
+        assert!(page.receipts.len() <= 10);
+        all.extend(page.receipts);
+        request.cursor = page.next_cursor;
+    }
+    assert_eq!(all.len(), 106);
+    assert_eq!(
+        all.iter()
+            .map(|s| &s.client_request_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        106
+    );
+    assert!(
+        !all.iter()
+            .any(|s| s.client_request_id == newest.client_request_id)
+    );
+    assert!(
+        all.windows(2)
+            .all(|p| p[0].sequence.parse::<u64>().unwrap() > p[1].sequence.parse::<u64>().unwrap())
+    );
+    request = receipt_page(100);
+    request.filter.connection_id = Some(positive.metadata.connection_id.clone());
+    let page = store.console_receipts(&request).unwrap();
+    assert_eq!(page.receipts.len(), 1);
+    assert_eq!(
+        page.receipts[0].client_request_id,
+        positive.metadata.client_request_id
+    );
+    request.filter.kind = Some(SnowflakeConsoleReceiptKind::Refusal);
+    assert!(
+        store
+            .console_receipts(&request)
+            .unwrap()
+            .receipts
+            .is_empty()
+    );
+    for limit in [0, 101, u32::MAX] {
+        assert!(store.console_receipts(&receipt_page(limit)).is_err());
+    }
+    let mut changed = receipt_page(10);
+    changed.cursor = store
+        .console_receipts(&receipt_page(10))
+        .unwrap()
+        .next_cursor;
+    changed.filter.visibility = SnowflakeConsoleReceiptVisibility::Archived;
+    assert_eq!(
+        store.console_receipts(&changed).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    let storage = store.console_storage().unwrap();
+    assert_eq!(storage.positive_count, "1");
+    assert_eq!(storage.refusal_count, "106");
+    assert!(storage.charged_bytes.unwrap().parse::<u64>().unwrap() > 0);
+    assert!(storage.reserved_bytes.is_none());
+    assert!(!storage.retention_enabled);
+    validate_records(&store.connection.lock()).unwrap();
+}
+
+#[test]
+fn console_retention_archive_is_atomic_browsing_only_and_rejects_stale_authority() {
+    let (_root, store, owner) = setup();
+    let initial = prepared(&store, &owner, 1);
+    let pending = intended(&store, &owner, &initial);
+    let ack = acknowledged(&store, &owner, &pending);
+    let original = store
+        .console_finish(
+            &owner,
+            &ack.metadata.run_id,
+            ack.revision,
+            ConsoleStopReason::Completed,
+            2000,
+        )
+        .unwrap();
+    let negative = refusal();
+    store.console_record_rejection(&owner, &negative).unwrap();
+    let a = store
+        .console_receipt_summary(&original.metadata.client_request_id)
+        .unwrap()
+        .unwrap();
+    let b = store
+        .console_receipt_summary(&negative.client_request_id)
+        .unwrap()
+        .unwrap();
+    let cursor = store
+        .console_receipts(&receipt_page(1))
+        .unwrap()
+        .next_cursor;
+    let mut batch = SnowflakeConsoleReceiptArchiveRequest {
+        inventory_epoch: a.inventory_epoch.clone(),
+        items: vec![archive_item(&a), archive_item(&b)],
+        archived: true,
+    };
+    batch.items[1].refusal_code = Some(ErrorCode::ApprovalExpired);
+    assert_eq!(
+        store
+            .console_archive_receipts(&owner, &batch, 3000)
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        store
+            .console_receipt_summary(&a.client_request_id)
+            .unwrap()
+            .unwrap(),
+        a
+    );
+    batch.items[1] = archive_item(&b);
+    let result = store
+        .console_archive_receipts(&owner, &batch, 3000)
+        .unwrap();
+    assert!(
+        result
+            .receipts
+            .iter()
+            .all(|s| s.archived && s.browsing_revision == "1")
+    );
+    assert_eq!(
+        store.console_run(&original.metadata.run_id).unwrap(),
+        Some(original.clone())
+    );
+    assert_eq!(
+        store
+            .console_rejection_by_client_request(&negative.client_request_id)
+            .unwrap(),
+        Some(negative)
+    );
+    assert!(
+        store
+            .console_archive_receipts(&owner, &batch, 3000)
+            .is_err()
+    );
+    let mut old_page = receipt_page(1);
+    old_page.cursor = cursor;
+    assert_eq!(
+        store.console_receipts(&old_page).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    let mut visible = receipt_page(100);
+    visible.filter.visibility = SnowflakeConsoleReceiptVisibility::Visible;
+    assert!(
+        store
+            .console_receipts(&visible)
+            .unwrap()
+            .receipts
+            .is_empty()
+    );
+    let mut unarchive = SnowflakeConsoleReceiptArchiveRequest {
+        inventory_epoch: a.inventory_epoch,
+        items: result.receipts.iter().map(archive_item).collect(),
+        archived: false,
+    };
+    unarchive.inventory_epoch = crate::domain::new_id();
+    assert!(
+        store
+            .console_archive_receipts(&owner, &unarchive, 4000)
+            .is_err()
+    );
+    unarchive.inventory_epoch = result.receipts[0].inventory_epoch.clone();
+    assert!(
+        store
+            .console_archive_receipts(&owner, &unarchive, 4000)
+            .unwrap()
+            .receipts
+            .iter()
+            .all(|s| !s.archived)
+    );
+    validate_records(&store.connection.lock()).unwrap();
+}
+
+#[test]
+fn console_retention_archive_lease_never_recovers_unrelated_incomplete_originals() {
+    let (_root, store, owner) = setup();
+    let pending = intended(&store, &owner, &prepared(&store, &owner, 2));
+    let ack = acknowledged(
+        &store,
+        &owner,
+        &intended(&store, &owner, &prepared(&store, &owner, 1)),
+    );
+    let settled = store
+        .console_finish(
+            &owner,
+            &ack.metadata.run_id,
+            ack.revision,
+            ConsoleStopReason::Completed,
+            2000,
+        )
+        .unwrap();
+    let summary = store
+        .console_receipt_summary(&settled.metadata.client_request_id)
+        .unwrap()
+        .unwrap();
+    drop(owner);
+    let archive_owner = store.claim_console_archive_owner().unwrap();
+    assert_eq!(
+        store.console_run(&pending.metadata.run_id).unwrap(),
+        Some(pending.clone())
+    );
+    assert!(
+        store.claim_console_journal_owner().is_err(),
+        "the raw lease remains exclusive"
+    );
+    let mut request = SnowflakeConsoleReceiptArchiveRequest {
+        inventory_epoch: summary.inventory_epoch.clone(),
+        items: vec![archive_item(&summary)],
+        archived: true,
+    };
+    request.items[0].original_revision = "999".into();
+    assert!(
+        store
+            .console_archive_receipts(&archive_owner, &request, 3000)
+            .is_err()
+    );
+    assert_eq!(
+        store.console_run(&pending.metadata.run_id).unwrap(),
+        Some(pending.clone())
+    );
+    request.items[0] = archive_item(&summary);
+    store
+        .console_archive_receipts(&archive_owner, &request, 3000)
+        .unwrap();
+    assert_eq!(
+        store.console_run(&pending.metadata.run_id).unwrap(),
+        Some(pending)
+    );
+    assert_eq!(
+        store.console_run(&settled.metadata.run_id).unwrap(),
+        Some(settled)
+    );
+    validate_records(&store.connection.lock()).unwrap();
+}
+
+#[test]
+fn console_retention_validation_rejects_empty_ids_in_every_journal_schema() {
+    for version in [2, 3, 4] {
+        for refusal_record in [false, true] {
+            if version == 2 && refusal_record {
+                continue;
+            }
+            let (_root, store, owner) = setup();
+            if refusal_record {
+                store.console_record_rejection(&owner, &refusal()).unwrap();
+            } else {
+                prepared(&store, &owner, 1);
+            }
+            let connection = store.connection.lock();
+            match version {
+                2 => downgrade_fixture_to_v2(&connection),
+                3 => downgrade_fixture_to_v3(&connection),
+                _ => {}
+            }
+            validate_schema(&connection).unwrap();
+            validate_records(&connection).unwrap();
+            let (table, column) = match (version, refusal_record) {
+                (2, false) => ("snowflake_console_runs", "run_id"),
+                (3, false) => ("snowflake_console_runs_v3", "run_id"),
+                (3, true) => ("snowflake_console_rejections_v3", "client_request_id"),
+                (4, false) => ("snowflake_console_runs_v4", "run_id"),
+                (4, true) => ("snowflake_console_rejections_v4", "client_request_id"),
+                _ => unreachable!(),
+            };
+            connection
+                .execute(&format!("UPDATE {table} SET {column}=''"), [])
+                .unwrap();
+            // The v4 update triggers keep counts/charges consistent, isolating
+            // ID validation rather than relying on an unrelated totals error.
+            validate_schema(&connection).unwrap();
+            assert!(
+                validate_records(&connection).is_err(),
+                "schema {version}, refusal={refusal_record}"
+            );
+        }
+    }
+}
+
+#[test]
+fn console_retention_pending_cannot_archive_and_unknown_terminal_keeps_original_uncertainty() {
+    let (_root, store, owner) = setup();
+    let initial = prepared(&store, &owner, 2);
+    let run = intended(&store, &owner, &initial);
+    let before = store
+        .console_receipt_summary(&run.metadata.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert!(!before.archive_eligible);
+    assert!(before.unknown);
+    let batch = SnowflakeConsoleReceiptArchiveRequest {
+        inventory_epoch: before.inventory_epoch.clone(),
+        items: vec![archive_item(&before)],
+        archived: true,
+    };
+    assert!(
+        store
+            .console_archive_receipts(&owner, &batch, 3000)
+            .is_err()
+    );
+    store.console_interrupt_incomplete_runs(&owner).unwrap();
+    let original = store.console_run(&run.metadata.run_id).unwrap().unwrap();
+    let summary = store
+        .console_receipt_summary(&run.metadata.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert!(summary.archive_eligible && summary.unknown);
+    let batch = SnowflakeConsoleReceiptArchiveRequest {
+        inventory_epoch: summary.inventory_epoch.clone(),
+        items: vec![archive_item(&summary)],
+        archived: true,
+    };
+    assert!(
+        store
+            .console_archive_receipts(&owner, &batch, crate::domain::now_ms())
+            .unwrap()
+            .receipts[0]
+            .unknown
+    );
+    assert_eq!(
+        store.console_run(&run.metadata.run_id).unwrap(),
+        Some(original)
+    );
+}
+
+#[test]
+fn console_retention_restore_union_refreshes_epoch_and_preserves_live_archive_and_originals() {
+    let (_root, store, owner) = setup();
+    let run = prepared(&store, &owner, 1);
+    let run = intended(&store, &owner, &run);
+    let run = acknowledged(&store, &owner, &run);
+    let original = store
+        .console_finish(
+            &owner,
+            &run.metadata.run_id,
+            run.revision,
+            ConsoleStopReason::Completed,
+            2000,
+        )
+        .unwrap();
+    let summary = store
+        .console_receipt_summary(&run.metadata.client_request_id)
+        .unwrap()
+        .unwrap();
+    let request = SnowflakeConsoleReceiptArchiveRequest {
+        inventory_epoch: summary.inventory_epoch.clone(),
+        items: vec![archive_item(&summary)],
+        archived: true,
+    };
+    store
+        .console_archive_receipts(&owner, &request, 3000)
+        .unwrap();
+    let mut backup = pinned();
+    let backup_only = refusal();
+    insert_rejection(&backup, &backup_only).unwrap();
+    let old_epoch: String = backup
+        .query_row(
+            "SELECT inventory_epoch FROM snowflake_console_retention_v4",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    merge_for_restore(&store.connection.lock(), &mut backup).unwrap();
+    assert_eq!(
+        read_run(&backup, &run.metadata.run_id).unwrap(),
+        Some(original)
+    );
+    assert_eq!(
+        read_rejection(&backup, &backup_only.client_request_id).unwrap(),
+        Some(backup_only)
+    );
+    let new_epoch: String = backup
+        .query_row(
+            "SELECT inventory_epoch FROM snowflake_console_retention_v4",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(new_epoch, old_epoch);
+    assert_ne!(new_epoch, summary.inventory_epoch);
+    assert_eq!(
+        backup
+            .query_row(
+                "SELECT archived_at FROM snowflake_console_runs_v4",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        3000
+    );
+    validate_schema(&backup).unwrap();
+    validate_records(&backup).unwrap();
+}
+
+#[test]
+fn console_retention_corrupt_control_or_browsing_records_are_rejected() {
+    for sql in [
+        "UPDATE snowflake_console_retention_v4 SET positive_count=positive_count+1",
+        "UPDATE snowflake_console_retention_v4 SET charged_bytes=charged_bytes+1",
+        "UPDATE snowflake_console_retention_v4 SET inventory_epoch='invalid'",
+        "UPDATE snowflake_console_retention_v4 SET next_sequence=1",
+        "PRAGMA ignore_check_constraints=ON; UPDATE snowflake_console_runs_v4 SET browsing_revision=-1",
+    ] {
+        let (_root, store, owner) = setup();
+        prepared(&store, &owner, 1);
+        store.connection.lock().execute_batch(sql).unwrap();
+        assert!(validate_records(&store.connection.lock()).is_err(), "{sql}");
+    }
+    let (_root, store, owner) = setup();
+    let run = prepared(&store, &owner, 1);
+    let negative = refusal();
+    store.console_record_rejection(&owner, &negative).unwrap();
+    assert!(
+        store
+            .connection
+            .lock()
+            .execute(
+                "UPDATE snowflake_console_runs_v4 SET receipt_sequence=2 WHERE run_id=?1",
+                [run.metadata.run_id]
+            )
+            .is_err()
+    );
+    store.connection.lock().execute_batch("DROP INDEX console_run_browse_v4; CREATE INDEX console_run_browse_v4 ON snowflake_console_runs_v4(client_request_id)").unwrap();
+    assert!(validate_schema(&store.connection.lock()).is_err());
+}
+
+#[test]
+fn console_retention_decimal_identity_preserves_i64_precision_and_rejects_sequence_exhaustion() {
+    let (_root, store, owner) = setup();
+    store
+        .connection
+        .lock()
+        .execute(
+            "UPDATE snowflake_console_retention_v4 SET next_sequence=?1",
+            [9_007_199_254_740_993i64],
+        )
+        .unwrap();
+    let negative = refusal();
+    store.console_record_rejection(&owner, &negative).unwrap();
+    store.connection.lock().execute("UPDATE snowflake_console_rejections_v4 SET browsing_revision=?1 WHERE client_request_id=?2",params![9_007_199_254_740_993i64,negative.client_request_id]).unwrap();
+    let summary = store
+        .console_receipt_summary(&negative.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.sequence, "9007199254740993");
+    assert_eq!(summary.browsing_revision, "9007199254740993");
+    let request = SnowflakeConsoleReceiptArchiveRequest {
+        inventory_epoch: summary.inventory_epoch.clone(),
+        items: vec![archive_item(&summary)],
+        archived: true,
+    };
+    assert_eq!(
+        store
+            .console_archive_receipts(&owner, &request, 3000)
+            .unwrap()
+            .receipts[0]
+            .browsing_revision,
+        "9007199254740994"
+    );
+    validate_records(&store.connection.lock()).unwrap();
+    store
+        .connection
+        .lock()
+        .execute(
+            "UPDATE snowflake_console_retention_v4 SET next_sequence=?1",
+            [i64::MAX],
+        )
+        .unwrap();
+    assert!(store.console_record_rejection(&owner, &refusal()).is_err());
+    assert_eq!(store.console_storage().unwrap().refusal_count, "1");
+    validate_records(&store.connection.lock()).unwrap();
+    for raw in ["x".repeat(2049), "{\"unexpected\":true}".into()] {
+        let mut request = receipt_page(1);
+        request.cursor = Some(raw);
+        assert!(store.console_receipts(&request).is_err());
+    }
+}
+
+#[test]
+fn console_retention_failed_physical_migration_rolls_back_without_rewriting_originals() {
+    let (root, store, owner) = setup();
+    let original = prepared(&store, &owner, 1);
+    drop(owner);
+    drop(store);
+    let old = Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    downgrade_fixture_to_v3(&old);
+    old.execute_batch("CREATE TABLE snowflake_console_retention_v4(unexpected TEXT)")
+        .unwrap();
+    assert!(Persistence::open(root.path()).is_err());
+    assert_eq!(super::super::schema_version(&old).unwrap(), 3);
+    assert_eq!(
+        read_run(&old, &original.metadata.run_id).unwrap(),
+        Some(original)
+    );
+    assert_eq!(
+        old.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_runs_v4'",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        old.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'console_%'",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        4
+    );
 }
 
 #[test]
@@ -208,7 +894,7 @@ fn console_negative_identity_time_and_closed_payload_reject_without_writes() {
         }
         assert!(store.console_record_rejection(&owner, &value).is_err());
     }
-    assert!(rejection_ids(&store.connection.lock()).unwrap().is_empty());
+    assert!(visit_ids(&store.connection.lock(), true, false, |_| Ok(())).unwrap() == 0);
     let mut raw = serde_json::to_value(refusal()).unwrap();
     raw["sql"] = serde_json::json!("must not be admitted into a receipt");
     assert!(serde_json::from_value::<ConsoleAdmissionRejection>(raw).is_err());
@@ -284,7 +970,7 @@ fn console_negative_foreign_owner_and_both_decision_orders_cannot_overwrite_evid
 fn console_negative_sqlite_insert_commit_and_readback_failures_never_return_a_receipt() {
     let (_root, store, owner) = setup();
     let value = refusal();
-    store.connection.lock().execute_batch("CREATE TRIGGER refuse_negative_insert BEFORE INSERT ON snowflake_console_rejections_v3 BEGIN SELECT RAISE(FAIL,'fixture insert failure'); END;").unwrap();
+    store.connection.lock().execute_batch("CREATE TRIGGER refuse_negative_insert BEFORE INSERT ON snowflake_console_rejections_v4 BEGIN SELECT RAISE(FAIL,'fixture insert failure'); END;").unwrap();
     assert!(store.console_record_rejection(&owner, &value).is_err());
     assert!(
         store
@@ -294,7 +980,7 @@ fn console_negative_sqlite_insert_commit_and_readback_failures_never_return_a_re
     );
     store.connection.lock().execute_batch("DROP TRIGGER refuse_negative_insert;
         CREATE TABLE refusal_commit_fault(parent TEXT REFERENCES settings(key) DEFERRABLE INITIALLY DEFERRED);
-        CREATE TRIGGER refuse_negative_commit AFTER INSERT ON snowflake_console_rejections_v3 BEGIN INSERT INTO refusal_commit_fault VALUES('missing-commit-parent'); END;").unwrap();
+        CREATE TRIGGER refuse_negative_commit AFTER INSERT ON snowflake_console_rejections_v4 BEGIN INSERT INTO refusal_commit_fault VALUES('missing-commit-parent'); END;").unwrap();
     assert!(
         store.console_record_rejection(&owner, &value).is_err(),
         "deferred FK must fail at COMMIT"
@@ -323,7 +1009,7 @@ fn console_negative_sqlite_insert_commit_and_readback_failures_never_return_a_re
         .execute_batch("DROP TRIGGER refuse_negative_commit; DROP TABLE refusal_commit_fault;")
         .unwrap();
     store.console_record_rejection(&owner, &value).unwrap();
-    store.connection.lock().execute("UPDATE snowflake_console_rejections_v3 SET code='unrecognized' WHERE client_request_id=?1", [&value.client_request_id]).unwrap();
+    store.connection.lock().execute("UPDATE snowflake_console_rejections_v4 SET code='unrecognized' WHERE client_request_id=?1", [&value.client_request_id]).unwrap();
     assert!(
         store
             .console_rejection_by_client_request(&value.client_request_id)
@@ -359,7 +1045,7 @@ fn console_negative_database_guards_and_all_readers_reject_dual_decisions() {
             .connection
             .lock()
             .execute(
-                "UPDATE snowflake_console_runs_v3 SET client_request_id=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_runs_v4 SET client_request_id=?1 WHERE run_id=?2",
                 params![negative.client_request_id, other.metadata.run_id]
             )
             .is_err()
@@ -369,7 +1055,7 @@ fn console_negative_database_guards_and_all_readers_reject_dual_decisions() {
         ..refusal()
     };
     assert!(insert_rejection(&store.connection.lock(), &denied).is_err());
-    assert!(store.connection.lock().execute("UPDATE snowflake_console_rejections_v3 SET client_request_id=?1 WHERE client_request_id=?2", params![other.metadata.client_request_id,negative.client_request_id]).is_err());
+    assert!(store.connection.lock().execute("UPDATE snowflake_console_rejections_v4 SET client_request_id=?1 WHERE client_request_id=?2", params![other.metadata.client_request_id,negative.client_request_id]).is_err());
     // Deliberately corrupt a fixture after proving the database guard, to test
     // the independent read-time defense rather than assuming triggers exist.
     store
@@ -393,7 +1079,7 @@ fn console_negative_database_guards_and_all_readers_reject_dual_decisions() {
 }
 
 fn fill_refusal_capacity(connection: &Connection, seed: &ConsoleAdmissionRejection) {
-    connection.execute("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO snowflake_console_rejections_v3(client_request_id,session_id,plan_digest,code,recorded_at) SELECT printf('%08x-0000-4000-8000-000000000002',n),?1,?2,'approvalRequired',1000 FROM numbers", params![seed.session_id,seed.plan_digest]).unwrap();
+    connection.execute("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO snowflake_console_rejections_v4(client_request_id,session_id,plan_digest,code,recorded_at) SELECT printf('%08x-0000-4000-8000-000000000002',n),?1,?2,'approvalRequired',1000 FROM numbers", params![seed.session_id,seed.plan_digest]).unwrap();
 }
 
 #[test]
@@ -417,7 +1103,7 @@ fn console_negative_capacity_preserves_lookup_dedup_and_rejects_restore_union_at
         first
     );
     assert_eq!(
-        rejection_ids(&store.connection.lock()).unwrap().len(),
+        visit_ids(&store.connection.lock(), true, false, |_| Ok(())).unwrap(),
         MAX_REJECTIONS as usize
     );
     assert!(
@@ -434,7 +1120,10 @@ fn console_negative_capacity_preserves_lookup_dedup_and_rejects_restore_union_at
             .unwrap()
             .is_none()
     );
-    assert_eq!(rejection_ids(&full).unwrap().len(), MAX_REJECTIONS as usize);
+    assert_eq!(
+        visit_ids(&full, true, false, |_| Ok(())).unwrap(),
+        MAX_REJECTIONS as usize
+    );
 }
 
 #[test]
@@ -519,7 +1208,7 @@ fn console_negative_v3_migration_excludes_live_owner_and_fences_an_already_open_
         read_run(&old, &pending.metadata.run_id).unwrap(),
         Some(pending.clone())
     );
-    assert_eq!(old.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('snowflake_console_runs_v3','snowflake_console_steps_v3','snowflake_console_rejections_v3')", [], |row| row.get::<_,u32>(0)).unwrap(), 0);
+    assert_eq!(old.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('snowflake_console_runs_v4','snowflake_console_steps_v4','snowflake_console_rejections_v4')", [], |row| row.get::<_,u32>(0)).unwrap(), 0);
     drop(lease);
     let upgraded = Persistence::open(root.path()).unwrap();
     assert_eq!(
@@ -704,7 +1393,7 @@ fn console_negative_all_journal_mutation_paths_recheck_schema_version_without_ch
             store.console_run(&start.metadata.run_id).unwrap(),
             Some(pending.clone())
         );
-        assert!(rejection_ids(&store.connection.lock()).unwrap().is_empty());
+        assert!(visit_ids(&store.connection.lock(), true, false, |_| Ok(())).unwrap() == 0);
     }
     drop(owner);
     store
@@ -1301,7 +1990,7 @@ fn console_journal_rejects_corrupt_gaps_unknown_fields_and_oversized_records() {
         .connection
         .lock()
         .execute(
-            "UPDATE snowflake_console_steps_v3 SET ordinal=1 WHERE run_id=?1",
+            "UPDATE snowflake_console_steps_v4 SET ordinal=1 WHERE run_id=?1",
             [id],
         )
         .unwrap();
@@ -1322,7 +2011,7 @@ fn console_journal_rejects_corrupt_gaps_unknown_fields_and_oversized_records() {
         .connection
         .lock()
         .execute(
-            "UPDATE snowflake_console_steps_v3 SET ordinal=0,outcome_json=?1 WHERE run_id=?2",
+            "UPDATE snowflake_console_steps_v4 SET ordinal=0,outcome_json=?1 WHERE run_id=?2",
             params![
                 r#"{"kind":"unknown","evidence":{"statement":null,"sql":"must-not-load"}}"#,
                 id
@@ -1330,7 +2019,7 @@ fn console_journal_rejects_corrupt_gaps_unknown_fields_and_oversized_records() {
         )
         .unwrap();
     assert!(validate_records(&store.connection.lock()).is_err());
-    store.connection.lock().execute("UPDATE snowflake_console_steps_v3 SET outcome_json=NULL,observations_json=?1 WHERE run_id=?2", params![" ".repeat(MAX_JSON_BYTES + 1), id]).unwrap();
+    store.connection.lock().execute("UPDATE snowflake_console_steps_v4 SET outcome_json=NULL,observations_json=?1 WHERE run_id=?2", params![" ".repeat(MAX_JSON_BYTES + 1), id]).unwrap();
     assert!(store.console_run(id).is_err());
 }
 
@@ -1435,7 +2124,7 @@ fn console_journal_restore_preserves_current_ack_tombstones_and_seals_backup_onl
     );
     let clients: u32 = backup
         .query_row(
-            "SELECT count(*) FROM snowflake_console_runs_v3 WHERE client_request_id IN (?1,?2)",
+            "SELECT count(*) FROM snowflake_console_runs_v4 WHERE client_request_id IN (?1,?2)",
             params![
                 start.metadata.client_request_id,
                 imported.metadata.client_request_id
@@ -1479,7 +2168,7 @@ fn console_journal_restore_rejects_newer_or_conflicting_backup_evidence_atomical
 }
 
 fn fill_capacity(connection: &Connection, seed: &ConsoleRunMetadata) {
-    connection.execute("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO snowflake_console_runs_v3(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json) SELECT printf('%08x-0000-4000-8000-000000000000',n),printf('%08x-0000-4000-8000-000000000001',n),?1,?2,?3,1,1000,0,'prepared',?4 FROM numbers",
+    connection.execute("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO snowflake_console_runs_v4(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json) SELECT printf('%08x-0000-4000-8000-000000000000',n),printf('%08x-0000-4000-8000-000000000001',n),?1,?2,?3,1,1000,0,'prepared',?4 FROM numbers",
         params![seed.session_id,seed.connection_id,seed.plan_digest,encode(&ConsoleObservations::default()).unwrap()]).unwrap();
 }
 
@@ -1497,7 +2186,7 @@ fn console_journal_capacity_rejects_new_admission_and_restore_union_without_evic
         ErrorCode::ResultLimitReached
     );
     assert_eq!(
-        run_ids(&store.connection.lock(), false).unwrap().len(),
+        visit_ids(&store.connection.lock(), false, false, |_| Ok(())).unwrap(),
         MAX_RUNS as usize
     );
     let mut backup = pinned();
@@ -1513,7 +2202,10 @@ fn console_journal_capacity_rejects_new_admission_and_restore_union_without_evic
     };
     insert_snapshot(&empty, &extra).unwrap();
     assert!(merge_for_restore(&empty, &mut backup).is_err());
-    assert_eq!(run_ids(&backup, false).unwrap().len(), MAX_RUNS as usize);
+    assert_eq!(
+        visit_ids(&backup, false, false, |_| Ok(())).unwrap(),
+        MAX_RUNS as usize
+    );
     assert!(read_run(&backup, &extra.metadata.run_id).unwrap().is_none());
 }
 
@@ -1823,7 +2515,7 @@ fn console_journal_rejects_malformed_persisted_terminal_snapshot() {
             .connection
             .lock()
             .execute(
-                "UPDATE snowflake_console_runs_v3 SET terminal_json=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_runs_v4 SET terminal_json=?1 WHERE run_id=?2",
                 params![value.to_string(), start.metadata.run_id],
             )
             .unwrap();
@@ -1834,7 +2526,7 @@ fn console_journal_rejects_malformed_persisted_terminal_snapshot() {
         .connection
         .lock()
         .execute(
-            "UPDATE snowflake_console_runs_v3 SET terminal_json=?1 WHERE run_id=?2",
+            "UPDATE snowflake_console_runs_v4 SET terminal_json=?1 WHERE run_id=?2",
             params![original.to_string(), start.metadata.run_id],
         )
         .unwrap();
@@ -2084,14 +2776,14 @@ fn console_journal_sqlite_integer_boundaries_are_checked_without_wrapping() {
         for column in ["created_at", "revision"] {
             connection
                 .execute(
-                    &format!("UPDATE snowflake_console_runs_v3 SET {column}=-1 WHERE run_id=?1"),
+                    &format!("UPDATE snowflake_console_runs_v4 SET {column}=-1 WHERE run_id=?1"),
                     [&next.metadata.run_id],
                 )
                 .unwrap();
             assert!(read_run(&connection, &next.metadata.run_id).is_err());
             connection
                 .execute(
-                    &format!("UPDATE snowflake_console_runs_v3 SET {column}=?1 WHERE run_id=?2"),
+                    &format!("UPDATE snowflake_console_runs_v4 SET {column}=?1 WHERE run_id=?2"),
                     params![
                         if column == "created_at" {
                             1000_i64
@@ -2105,27 +2797,27 @@ fn console_journal_sqlite_integer_boundaries_are_checked_without_wrapping() {
         }
         connection
             .execute(
-                "UPDATE snowflake_console_steps_v3 SET intended_at=-1 WHERE run_id=?1",
+                "UPDATE snowflake_console_steps_v4 SET intended_at=-1 WHERE run_id=?1",
                 [&start.metadata.run_id],
             )
             .unwrap();
         assert!(read_run(&connection, &start.metadata.run_id).is_err());
         connection
             .execute(
-                "UPDATE snowflake_console_steps_v3 SET intended_at=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_steps_v4 SET intended_at=?1 WHERE run_id=?2",
                 params![i64::MAX, start.metadata.run_id],
             )
             .unwrap();
         connection
             .execute(
-                "UPDATE snowflake_console_runs_v3 SET revision=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_runs_v4 SET revision=?1 WHERE run_id=?2",
                 params![i64::MAX, next.metadata.run_id],
             )
             .unwrap();
         assert!(read_run(&connection, &next.metadata.run_id).is_err());
         connection
             .execute(
-                "UPDATE snowflake_console_runs_v3 SET revision=?1 WHERE run_id=?2",
+                "UPDATE snowflake_console_runs_v4 SET revision=?1 WHERE run_id=?2",
                 params![
                     sqlite_integer(MAX_REVISION - 1).unwrap(),
                     next.metadata.run_id

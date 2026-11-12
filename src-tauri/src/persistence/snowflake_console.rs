@@ -13,6 +13,10 @@ use std::{
 };
 use ts_rs::TS;
 
+mod retention;
+pub(super) use retention::migrate_v4;
+pub(crate) use retention::schema_objects;
+
 pub(crate) const MAX_STEPS: u32 = 100;
 pub(crate) const MAX_RUNS: u32 = 10_000;
 pub(crate) const MAX_REJECTIONS: u32 = 10_000;
@@ -651,20 +655,19 @@ fn sqlite_nonnegative(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result
 }
 
 fn read_sql<'a>(connection: &Connection, sql: &'a str) -> AppResult<std::borrow::Cow<'a, str>> {
-    // Version-2 backup validation is read-only and precedes private migration.
-    if super::schema_version(connection)? == 2 {
-        Ok(std::borrow::Cow::Owned(
-            sql.replace("snowflake_console_runs_v3", "snowflake_console_runs")
-                .replace("snowflake_console_steps_v3", "snowflake_console_steps"),
-        ))
-    } else {
-        Ok(std::borrow::Cow::Borrowed(sql))
+    match super::schema_version(connection)? {
+        2 => Ok(std::borrow::Cow::Owned(
+            sql.replace("snowflake_console_runs_v4", "snowflake_console_runs")
+                .replace("snowflake_console_steps_v4", "snowflake_console_steps"),
+        )),
+        3 => Ok(std::borrow::Cow::Owned(sql.replace("_v4", "_v3"))),
+        _ => Ok(std::borrow::Cow::Borrowed(sql)),
     }
 }
 
 fn ensure_single_decision(connection: &Connection, client: &str) -> AppResult<()> {
     if super::schema_version(connection)? >= 3 {
-        let dual: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v3 r JOIN snowflake_console_rejections_v3 n USING(client_request_id) WHERE r.client_request_id=?1)", [client], |row| row.get(0)).map_err(db_error)?;
+        let dual: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v4 r JOIN snowflake_console_rejections_v4 n USING(client_request_id) WHERE r.client_request_id=?1)")?, [client], |row| row.get(0)).map_err(db_error)?;
         if dual {
             return Err(conflict());
         }
@@ -677,7 +680,7 @@ fn read_rejection(
     client: &str,
 ) -> AppResult<Option<ConsoleAdmissionRejection>> {
     let row = connection.query_row(
-        "SELECT CASE WHEN length(CAST(client_request_id AS BLOB))=36 THEN client_request_id ELSE '' END,CASE WHEN length(CAST(session_id AS BLOB))=36 THEN session_id ELSE '' END,CASE WHEN length(CAST(plan_digest AS BLOB))=64 THEN plan_digest ELSE '' END,CASE WHEN length(CAST(code AS BLOB))<=64 THEN code ELSE '' END,recorded_at FROM snowflake_console_rejections_v3 WHERE client_request_id=?1",
+        &read_sql(connection, "SELECT CASE WHEN length(CAST(client_request_id AS BLOB))=36 THEN client_request_id ELSE '' END,CASE WHEN length(CAST(session_id AS BLOB))=36 THEN session_id ELSE '' END,CASE WHEN length(CAST(plan_digest AS BLOB))=64 THEN plan_digest ELSE '' END,CASE WHEN length(CAST(code AS BLOB))<=64 THEN code ELSE '' END,recorded_at FROM snowflake_console_rejections_v4 WHERE client_request_id=?1")?,
         [client], |row| Ok((row.get::<_, String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,sqlite_nonnegative(row,4)?)),
     ).optional().map_err(db_error)?;
     let Some((client_request_id, session_id, plan_digest, code, recorded_at)) = row else {
@@ -698,18 +701,18 @@ fn read_rejection(
 fn insert_rejection(connection: &Connection, value: &ConsoleAdmissionRejection) -> AppResult<()> {
     let encoded = serde_json::to_value(value.code).map_err(|_| invalid())?;
     let code = encoded.as_str().ok_or_else(invalid)?;
-    connection.execute("INSERT INTO snowflake_console_rejections_v3(client_request_id,session_id,plan_digest,code,recorded_at) VALUES(?1,?2,?3,?4,?5)", params![value.client_request_id,value.session_id,value.plan_digest,code,sqlite_integer(value.recorded_at)?]).map_err(db_error)?;
+    connection.execute("INSERT INTO snowflake_console_rejections_v4(client_request_id,session_id,plan_digest,code,recorded_at) VALUES(?1,?2,?3,?4,?5)", params![value.client_request_id,value.session_id,value.plan_digest,code,sqlite_integer(value.recorded_at)?]).map_err(db_error)?;
     Ok(())
 }
 
 fn read_run(connection: &Connection, id: &str) -> AppResult<Option<ConsoleRunSnapshot>> {
     // Bound text before copying it out of SQLite, including corrupt local data.
-    let oversized: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v3 WHERE run_id=?1 AND (length(CAST(run_id AS BLOB))!=36 OR length(CAST(client_request_id AS BLOB))!=36 OR length(CAST(session_id AS BLOB))!=36 OR length(CAST(connection_id AS BLOB))!=36 OR length(CAST(plan_digest AS BLOB))!=64 OR length(CAST(state AS BLOB))>8 OR length(CAST(observations_json AS BLOB))>16384 OR length(CAST(terminal_json AS BLOB))>16384)) OR EXISTS(SELECT 1 FROM snowflake_console_steps_v3 WHERE run_id=?1 AND (length(CAST(outcome_json AS BLOB))>16384 OR length(CAST(observations_json AS BLOB))>16384))")?, [id], |row| row.get(0)).map_err(db_error)?;
+    let oversized: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v4 WHERE run_id=?1 AND (length(CAST(run_id AS BLOB))!=36 OR length(CAST(client_request_id AS BLOB))!=36 OR length(CAST(session_id AS BLOB))!=36 OR length(CAST(connection_id AS BLOB))!=36 OR length(CAST(plan_digest AS BLOB))!=64 OR length(CAST(state AS BLOB))>8 OR length(CAST(observations_json AS BLOB))>16384 OR length(CAST(terminal_json AS BLOB))>16384)) OR EXISTS(SELECT 1 FROM snowflake_console_steps_v4 WHERE run_id=?1 AND (length(CAST(outcome_json AS BLOB))>16384 OR length(CAST(observations_json AS BLOB))>16384))")?, [id], |row| row.get(0)).map_err(db_error)?;
     if oversized {
         return Err(invalid());
     }
     let row = connection.query_row(
-        &read_sql(connection, "SELECT run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json FROM snowflake_console_runs_v3 WHERE run_id=?1")?,
+        &read_sql(connection, "SELECT run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json FROM snowflake_console_runs_v4 WHERE run_id=?1")?,
         [id], |row| Ok((ConsoleRunMetadata { run_id: row.get(0)?, client_request_id: row.get(1)?, session_id: row.get(2)?, connection_id: row.get(3)?, plan_digest: row.get(4)?, step_count: row.get(5)?, created_at: sqlite_nonnegative(row,6)? }, sqlite_nonnegative(row,7)?, row.get::<_,String>(8)?, row.get::<_,String>(9)?, row.get::<_,Option<String>>(10)?)),
     ).optional().map_err(db_error)?;
     let Some((metadata, revision, state, observations, terminal)) = row else {
@@ -721,7 +724,7 @@ fn read_run(connection: &Connection, id: &str) -> AppResult<Option<ConsoleRunSna
         "terminal" => ConsoleRunState::Terminal,
         _ => return Err(invalid()),
     };
-    let mut statement = connection.prepare(&read_sql(connection, "SELECT ordinal,intended_at,outcome_json,observations_json FROM snowflake_console_steps_v3 WHERE run_id=?1 ORDER BY ordinal LIMIT 101")?).map_err(db_error)?;
+    let mut statement = connection.prepare(&read_sql(connection, "SELECT ordinal,intended_at,outcome_json,observations_json FROM snowflake_console_steps_v4 WHERE run_id=?1 ORDER BY ordinal LIMIT 101")?).map_err(db_error)?;
     let rows = statement
         .query_map([id], |row| {
             Ok((
@@ -761,7 +764,7 @@ fn write_run(
     prior_revision: u64,
 ) -> AppResult<()> {
     require_current_schema(connection)?;
-    let updated = connection.execute("UPDATE snowflake_console_runs_v3 SET revision=?1,state=?2,observations_json=?3,terminal_json=?4 WHERE run_id=?5 AND revision=?6",
+    let updated = connection.execute("UPDATE snowflake_console_runs_v4 SET revision=?1,state=?2,observations_json=?3,terminal_json=?4 WHERE run_id=?5 AND revision=?6",
         params![sqlite_integer(run.revision)?, state_name(run.state), encode(&run.observations)?, run.terminal.as_ref().map(encode).transpose()?, run.metadata.run_id, sqlite_integer(prior_revision)?]).map_err(db_error)?;
     if updated != 1 {
         return Err(conflict());
@@ -791,7 +794,7 @@ impl Persistence {
         }
         let prior: Option<String> = tx
             .query_row(
-                "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v3 WHERE client_request_id=?1",
+                "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v4 WHERE client_request_id=?1",
                 [&metadata.client_request_id],
                 |r| r.get(0),
             )
@@ -814,7 +817,7 @@ impl Persistence {
             });
         }
         let count: u32 = tx
-            .query_row("SELECT count(*) FROM snowflake_console_runs_v3", [], |r| {
+            .query_row("SELECT count(*) FROM snowflake_console_runs_v4", [], |r| {
                 r.get(0)
             })
             .map_err(db_error)?;
@@ -835,7 +838,7 @@ impl Persistence {
             steps: vec![],
             terminal: None,
         };
-        tx.execute("INSERT INTO snowflake_console_runs_v3(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json) VALUES(?1,?2,?3,?4,?5,?6,?7,0,'prepared',?8,NULL)",
+        tx.execute("INSERT INTO snowflake_console_runs_v4(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json) VALUES(?1,?2,?3,?4,?5,?6,?7,0,'prepared',?8,NULL)",
             params![run.metadata.run_id,run.metadata.client_request_id,run.metadata.session_id,run.metadata.connection_id,run.metadata.plan_digest,run.metadata.step_count,sqlite_integer(run.metadata.created_at)?,encode(&run.observations)?]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
         Ok(ConsolePrepareResult { created: true, run })
@@ -866,7 +869,7 @@ impl Persistence {
         read_rejection(&tx, client_request_id)?;
         let id: Option<String> = tx
             .query_row(
-                "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v3 WHERE client_request_id=?1",
+                "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v4 WHERE client_request_id=?1",
                 [client_request_id],
                 |r| r.get(0),
             )
@@ -913,7 +916,7 @@ impl Persistence {
         }
         let positive: bool = tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v3 WHERE client_request_id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v4 WHERE client_request_id=?1)",
                 [&value.client_request_id],
                 |row| row.get(0),
             )
@@ -923,7 +926,7 @@ impl Persistence {
         }
         let count: u32 = tx
             .query_row(
-                "SELECT count(*) FROM snowflake_console_rejections_v3",
+                "SELECT count(*) FROM snowflake_console_rejections_v4",
                 [],
                 |row| row.get(0),
             )
@@ -986,7 +989,7 @@ impl Persistence {
         self.mutate_console_run(owner, run_id, revision, |tx, run| {
             if run.state == ConsoleRunState::Terminal || run.observations.blocks_admission() || ordinal != run.steps.len() as u32 || ordinal >= run.metadata.step_count || run.steps.last().is_some_and(|s| !matches!(s.outcome, Some(ConsoleStepOutcome::Acknowledged(_)))) { return Err(conflict()); }
             let step = ConsoleStep { ordinal, intended_at, outcome: None, observations: ConsoleObservations::default() };
-            tx.execute("INSERT INTO snowflake_console_steps_v3(run_id,ordinal,intended_at,outcome_json,observations_json) VALUES(?1,?2,?3,NULL,?4)", params![run_id,ordinal,sqlite_integer(intended_at)?,encode(&step.observations)?]).map_err(db_error)?;
+            tx.execute("INSERT INTO snowflake_console_steps_v4(run_id,ordinal,intended_at,outcome_json,observations_json) VALUES(?1,?2,?3,NULL,?4)", params![run_id,ordinal,sqlite_integer(intended_at)?,encode(&step.observations)?]).map_err(db_error)?;
             run.steps.push(step);
             run.state = ConsoleRunState::Running;
             Ok(())
@@ -1009,7 +1012,7 @@ impl Persistence {
             if step.outcome.is_some() { return Err(conflict()); }
             step.outcome = Some(outcome);
             step.observations.absorb(&observations);
-            let changed = tx.execute("UPDATE snowflake_console_steps_v3 SET outcome_json=?1,observations_json=?2 WHERE run_id=?3 AND ordinal=?4 AND outcome_json IS NULL", params![encode(&step.outcome)?,encode(&step.observations)?,run_id,ordinal]).map_err(db_error)?;
+            let changed = tx.execute("UPDATE snowflake_console_steps_v4 SET outcome_json=?1,observations_json=?2 WHERE run_id=?3 AND ordinal=?4 AND outcome_json IS NULL", params![encode(&step.outcome)?,encode(&step.observations)?,run_id,ordinal]).map_err(db_error)?;
             if changed != 1 { return Err(conflict()); }
             run.observations.absorb(&observations);
             Ok(())
@@ -1028,7 +1031,7 @@ impl Persistence {
             if let Some(ordinal) = ordinal {
                 let step = run.steps.get_mut(ordinal as usize).ok_or_else(conflict)?;
                 step.observations.apply(&observations)?;
-                tx.execute("UPDATE snowflake_console_steps_v3 SET observations_json=?1 WHERE run_id=?2 AND ordinal=?3", params![encode(&step.observations)?,run_id,ordinal]).map_err(db_error)?;
+                tx.execute("UPDATE snowflake_console_steps_v4 SET observations_json=?1 WHERE run_id=?2 AND ordinal=?3", params![encode(&step.observations)?,run_id,ordinal]).map_err(db_error)?;
                 run.observations.absorb(&observations);
             } else {
                 run.observations.apply(&observations)?;
@@ -1076,6 +1079,16 @@ impl Persistence {
         Ok(owner)
     }
 
+    /// Browsing changes need exclusivity, but must not recover unrelated runs.
+    pub(crate) fn claim_console_archive_owner(&self) -> AppResult<ConsoleJournalOwner> {
+        let owner = claim_migration_lease(&self.root)?;
+        owner.validate(self)?;
+        let connection = self.connection.lock();
+        require_current_schema(&connection)?;
+        validate_schema(&connection)?;
+        Ok(owner)
+    }
+
     /// Recovery only while the caller retains the same exclusive owner lease.
     pub(crate) fn console_interrupt_incomplete_runs(
         &self,
@@ -1117,25 +1130,67 @@ pub(super) fn claim_migration_lease(root: &std::path::Path) -> AppResult<Console
     Ok(owner)
 }
 
-fn run_ids(connection: &Connection, incomplete_only: bool) -> AppResult<Vec<String>> {
-    let mut statement = connection.prepare(&read_sql(connection, if incomplete_only {
-        "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v3 WHERE state!='terminal' ORDER BY run_id LIMIT 10001"
-    } else { "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v3 ORDER BY run_id LIMIT 10001" })?).map_err(db_error)?;
-    let ids = statement
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(db_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(db_error)?;
-    if ids.len() > MAX_RUNS as usize {
+/// Constant-memory keyset traversal; no lifetime-sized ID vector is retained.
+fn visit_ids(
+    connection: &Connection,
+    refusals: bool,
+    incomplete_only: bool,
+    mut visit: impl FnMut(&str) -> AppResult<()>,
+) -> AppResult<usize> {
+    let table = if refusals {
+        "snowflake_console_rejections_v4"
+    } else {
+        "snowflake_console_runs_v4"
+    };
+    let column = if refusals {
+        "client_request_id"
+    } else {
+        "run_id"
+    };
+    // The empty keyset sentinel must never hide corrupt empty/NULL IDs. Reject
+    // them before traversal, including records outside an incomplete-only scan.
+    let malformed: bool = connection.query_row(
+        &read_sql(connection, &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE typeof({column})!='text' OR length(CAST({column} AS BLOB))!=36)"))?,
+        [],
+        |row| row.get(0),
+    ).map_err(db_error)?;
+    if malformed {
         return Err(invalid());
     }
-    Ok(ids)
+    let predicate = if incomplete_only {
+        " AND state!='terminal'"
+    } else {
+        ""
+    };
+    let sql=read_sql(connection,&format!("SELECT CASE WHEN length(CAST({column} AS BLOB))=36 THEN {column} ELSE '' END FROM {table} WHERE {column}>?1{predicate} ORDER BY {column} LIMIT 1"))?.into_owned();
+    let mut last = String::new();
+    let mut count = 0usize;
+    loop {
+        let next: Option<String> = connection
+            .query_row(&sql, [&last], |row| row.get(0))
+            .optional()
+            .map_err(db_error)?;
+        let Some(id) = next else { break };
+        if !valid_uuid(&id)
+            || count
+                >= if refusals {
+                    MAX_REJECTIONS as usize
+                } else {
+                    MAX_RUNS as usize
+                }
+        {
+            return Err(invalid());
+        }
+        visit(&id)?;
+        count += 1;
+        last = id;
+    }
+    Ok(count)
 }
 
 fn interrupt_in_transaction(connection: &Connection) -> AppResult<usize> {
     require_current_schema(connection)?;
-    let ids = run_ids(connection, true)?;
-    for id in &ids {
+    visit_ids(connection, false, true, |id| {
         let mut run = read_run(connection, id)?.ok_or_else(invalid)?;
         let revision = run.revision;
         if revision >= MAX_REVISION {
@@ -1145,7 +1200,7 @@ fn interrupt_in_transaction(connection: &Connection) -> AppResult<usize> {
             step.outcome = Some(ConsoleStepOutcome::Unknown(ConsoleUnknown {
                 statement: None,
             }));
-            let changed = connection.execute("UPDATE snowflake_console_steps_v3 SET outcome_json=?1 WHERE run_id=?2 AND ordinal=?3 AND outcome_json IS NULL", params![encode(&step.outcome)?,id,step.ordinal]).map_err(db_error)?;
+            let changed = connection.execute("UPDATE snowflake_console_steps_v4 SET outcome_json=?1 WHERE run_id=?2 AND ordinal=?3 AND outcome_json IS NULL", params![encode(&step.outcome)?,id,step.ordinal]).map_err(db_error)?;
             if changed != 1 {
                 return Err(conflict());
             }
@@ -1164,8 +1219,8 @@ fn interrupt_in_transaction(connection: &Connection) -> AppResult<usize> {
         run.revision += 1;
         validate_snapshot(&run)?;
         write_run(connection, &run, revision)?;
-    }
-    Ok(ids.len())
+        Ok(())
+    })
 }
 
 /// Parent recovery hook. The caller must hold the live store's owner lease.
@@ -1201,10 +1256,10 @@ fn evidence_covers(current: &ConsoleRunSnapshot, prior: &ConsoleRunSnapshot) -> 
 
 fn insert_snapshot(connection: &Connection, run: &ConsoleRunSnapshot) -> AppResult<()> {
     require_current_schema(connection)?;
-    connection.execute("INSERT INTO snowflake_console_runs_v3(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+    connection.execute("INSERT INTO snowflake_console_runs_v4(run_id,client_request_id,session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         params![run.metadata.run_id,run.metadata.client_request_id,run.metadata.session_id,run.metadata.connection_id,run.metadata.plan_digest,run.metadata.step_count,sqlite_integer(run.metadata.created_at)?,sqlite_integer(run.revision)?,state_name(run.state),encode(&run.observations)?,run.terminal.as_ref().map(encode).transpose()?]).map_err(db_error)?;
     for step in &run.steps {
-        connection.execute("INSERT INTO snowflake_console_steps_v3(run_id,ordinal,intended_at,outcome_json,observations_json) VALUES(?1,?2,?3,?4,?5)",
+        connection.execute("INSERT INTO snowflake_console_steps_v4(run_id,ordinal,intended_at,outcome_json,observations_json) VALUES(?1,?2,?3,?4,?5)",
             params![run.metadata.run_id,step.ordinal,sqlite_integer(step.intended_at)?,step.outcome.as_ref().map(encode).transpose()?,encode(&step.observations)?]).map_err(db_error)?;
     }
     Ok(())
@@ -1218,18 +1273,17 @@ pub(super) fn merge_for_restore(current: &Connection, pinned: &mut Connection) -
     require_current_schema(pinned)?;
     validate_records(current)?;
     validate_records(pinned)?;
-    let current_ids = run_ids(current, false)?;
     let tx = pinned
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(db_error)?;
-    for id in &current_ids {
+    visit_ids(current, false, false, |id| {
         let live = read_run(current, id)?.ok_or_else(invalid)?;
         if read_rejection(&tx, &live.metadata.client_request_id)?.is_some() {
             return Err(conflict());
         }
         let prior_client: Option<String> = tx
             .query_row(
-                "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v3 WHERE client_request_id=?1",
+                "SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v4 WHERE client_request_id=?1",
                 [&live.metadata.client_request_id],
                 |row| row.get(0),
             )
@@ -1243,23 +1297,25 @@ pub(super) fn merge_for_restore(current: &Connection, pinned: &mut Connection) -
                 return Err(conflict());
             }
             tx.execute(
-                "DELETE FROM snowflake_console_steps_v3 WHERE run_id=?1",
+                "DELETE FROM snowflake_console_steps_v4 WHERE run_id=?1",
                 [id],
             )
             .map_err(db_error)?;
             tx.execute(
-                "DELETE FROM snowflake_console_runs_v3 WHERE run_id=?1",
+                "DELETE FROM snowflake_console_runs_v4 WHERE run_id=?1",
                 [id],
             )
             .map_err(db_error)?;
         }
         insert_snapshot(&tx, &live)?;
-    }
-    for client in rejection_ids(current)? {
-        let live = read_rejection(current, &client)?.ok_or_else(invalid)?;
+        retention::copy_browsing(current, &tx, &live.metadata.client_request_id)?;
+        Ok(())
+    })?;
+    visit_ids(current, true, false, |client| {
+        let live = read_rejection(current, client)?.ok_or_else(invalid)?;
         let positive: bool = tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v3 WHERE client_request_id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v4 WHERE client_request_id=?1)",
                 [&client],
                 |row| row.get(0),
             )
@@ -1267,55 +1323,50 @@ pub(super) fn merge_for_restore(current: &Connection, pinned: &mut Connection) -
         if positive {
             return Err(conflict());
         }
-        if let Some(prior) = read_rejection(&tx, &client)? {
+        if let Some(prior) = read_rejection(&tx, client)? {
             if prior != live {
                 return Err(conflict());
             }
         } else {
             insert_rejection(&tx, &live)?;
         }
-    }
+        retention::copy_browsing(current, &tx, client)?;
+        Ok(())
+    })?;
     // This checks the bounded union before recovery writes or live replacement.
-    run_ids(&tx, false)?;
-    rejection_ids(&tx)?;
+    visit_ids(&tx, false, false, |_| Ok(()))?;
+    visit_ids(&tx, true, false, |_| Ok(()))?;
     interrupt_in_transaction(&tx)?;
+    retention::restore_epoch(&tx)?;
     validate_records(&tx)?;
     tx.commit().map_err(db_error)
 }
 
 pub(super) fn validate_records(connection: &Connection) -> AppResult<()> {
-    for id in run_ids(connection, false)? {
-        read_run(connection, &id)?.ok_or_else(invalid)?;
-    }
-    let orphan: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM snowflake_console_steps_v3 s LEFT JOIN snowflake_console_runs_v3 r ON r.run_id=s.run_id WHERE r.run_id IS NULL)")?, [], |r| r.get(0)).map_err(db_error)?;
+    visit_ids(connection, false, false, |id| {
+        read_run(connection, id)?.ok_or_else(invalid)?;
+        Ok(())
+    })?;
+    let orphan: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM snowflake_console_steps_v4 s LEFT JOIN snowflake_console_runs_v4 r ON r.run_id=s.run_id WHERE r.run_id IS NULL)")?, [], |r| r.get(0)).map_err(db_error)?;
     if orphan {
         return Err(invalid());
     }
     if super::schema_version(connection)? >= 3 {
-        for client in rejection_ids(connection)? {
-            read_rejection(connection, &client)?.ok_or_else(invalid)?;
-        }
+        visit_ids(connection, true, false, |client| {
+            read_rejection(connection, client)?.ok_or_else(invalid)?;
+            Ok(())
+        })?;
+    }
+    if super::schema_version(connection)? == 4 {
+        retention::validate_records(connection)?;
     }
     Ok(())
-}
-
-fn rejection_ids(connection: &Connection) -> AppResult<Vec<String>> {
-    let mut statement = connection.prepare("SELECT CASE WHEN length(CAST(client_request_id AS BLOB))=36 THEN client_request_id ELSE '' END FROM snowflake_console_rejections_v3 ORDER BY client_request_id LIMIT 10001").map_err(db_error)?;
-    let ids = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(db_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(db_error)?;
-    if ids.len() > MAX_REJECTIONS as usize {
-        return Err(invalid());
-    }
-    Ok(ids)
 }
 
 pub(super) fn validate_schema(connection: &Connection) -> AppResult<()> {
     for (table, expected) in [
         (
-            "snowflake_console_runs_v3",
+            "snowflake_console_runs_v4",
             vec![
                 ("run_id", "TEXT", 1, 1),
                 ("client_request_id", "TEXT", 1, 0),
@@ -1331,7 +1382,7 @@ pub(super) fn validate_schema(connection: &Connection) -> AppResult<()> {
             ],
         ),
         (
-            "snowflake_console_steps_v3",
+            "snowflake_console_steps_v4",
             vec![
                 ("run_id", "TEXT", 1, 1),
                 ("ordinal", "INTEGER", 1, 2),
@@ -1359,22 +1410,32 @@ pub(super) fn validate_schema(connection: &Connection) -> AppResult<()> {
             .map_err(db_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_error)?;
-        let expected = expected
+        let mut expected = expected
             .into_iter()
             .map(|(name, kind, not_null, key)| (name.to_string(), kind.to_string(), not_null, key))
             .collect::<Vec<_>>();
+        if super::schema_version(connection)? == 4 && table == "snowflake_console_runs_v4" {
+            expected.extend([
+                ("receipt_sequence".into(), "INTEGER".into(), 1, 0),
+                ("archived_at".into(), "INTEGER".into(), 0, 0),
+                ("browsing_revision".into(), "INTEGER".into(), 1, 0),
+            ]);
+        }
         if columns != expected {
             return Err(conflict());
         }
     }
-    let unique_request: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM pragma_index_list('snowflake_console_runs_v3') i JOIN pragma_index_info(i.name) c WHERE i.\"unique\"=1 AND i.partial=0 AND c.name='client_request_id' AND (SELECT count(*) FROM pragma_index_info(i.name))=1)")?, [], |r| r.get(0)).map_err(db_error)?;
-    let foreign_key: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('snowflake_console_steps_v3') WHERE \"table\"='snowflake_console_runs_v3' AND \"from\"='run_id' AND \"to\"='run_id' AND on_delete='NO ACTION' AND on_update='NO ACTION')")?, [], |r| r.get(0)).map_err(db_error)?;
+    let unique_request: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM pragma_index_list('snowflake_console_runs_v4') i JOIN pragma_index_info(i.name) c WHERE i.\"unique\"=1 AND i.partial=0 AND c.name='client_request_id' AND (SELECT count(*) FROM pragma_index_info(i.name))=1)")?, [], |r| r.get(0)).map_err(db_error)?;
+    let foreign_key: bool = connection.query_row(&read_sql(connection, "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('snowflake_console_steps_v4') WHERE \"table\"='snowflake_console_runs_v4' AND \"from\"='run_id' AND \"to\"='run_id' AND on_delete='NO ACTION' AND on_update='NO ACTION')")?, [], |r| r.get(0)).map_err(db_error)?;
     if !unique_request || !foreign_key {
         return Err(conflict());
     }
     if super::schema_version(connection)? >= 3 {
         let mut statement = connection
-            .prepare("PRAGMA table_info(snowflake_console_rejections_v3)")
+            .prepare(&read_sql(
+                connection,
+                "PRAGMA table_info(snowflake_console_rejections_v4)",
+            )?)
             .map_err(db_error)?;
         let columns = statement
             .query_map([], |row| {
@@ -1388,16 +1449,28 @@ pub(super) fn validate_schema(connection: &Connection) -> AppResult<()> {
             .map_err(db_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_error)?;
-        let expected = [
+        let mut expected = vec![
             ("client_request_id", "TEXT", 1, 1),
             ("session_id", "TEXT", 1, 0),
             ("plan_digest", "TEXT", 1, 0),
             ("code", "TEXT", 1, 0),
             ("recorded_at", "INTEGER", 1, 0),
         ]
-        .map(|(name, kind, not_null, key)| (name.to_owned(), kind.to_owned(), not_null, key));
+        .into_iter()
+        .map(|(name, kind, not_null, key)| (name.to_owned(), kind.to_owned(), not_null, key))
+        .collect::<Vec<_>>();
+        if super::schema_version(connection)? == 4 {
+            expected.extend([
+                ("receipt_sequence".into(), "INTEGER".into(), 1, 0),
+                ("archived_at".into(), "INTEGER".into(), 0, 0),
+                ("browsing_revision".into(), "INTEGER".into(), 1, 0),
+            ]);
+        }
         if columns != expected {
             return Err(conflict());
+        }
+        if super::schema_version(connection)? == 4 {
+            return retention::validate_schema(connection);
         }
         for (name, sql) in DECISION_TRIGGERS {
             let stored: Option<String> = connection

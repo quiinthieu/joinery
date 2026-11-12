@@ -8,6 +8,127 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Paged receipt inventory and hot-state compaction (12 November 2026)
+
+Base is `cfdcb23` on the existing `feat/datagrip-replacement` branch. The
+[retention design](snowflake-console-retention-design.md) distinguishes this
+implemented slice from the full encrypted/capacity target. No account activity,
+private application-state access, installation or publication occurred. Existing
+10,000-positive / 10,000-refusal gates remain; `retentionEnabled=false`. Metadata
+backup is still plaintext and limited to 64 MiB / 20 copies. No full-capacity,
+RSS plateau or encrypted recovery result is claimed.
+
+Three bounded workers used `gpt-6.1-sol` with high effort for persistence/migration,
+native ownership, and recovery/scheduler plus independent review. The lead owned
+contracts, command integration, UI/store, end-to-end checks and documentation.
+Workers shared the checkout, preserved others' edits and ran no concurrent builds.
+Root graph transport was unavailable; direct source reads were used. Worker
+coverage reports for relied paths were metadata-matching with no recorded issues,
+which is not proof of graph completeness.
+
+Implemented source behavior:
+
+- Schema 4 atomically migrates exact legacy schemas under a raw exclusive OS
+  lease, physically excludes old cached writers, and validates every original
+  decision. SQL-free summaries use decimal strings for 64-bit counters/revisions,
+  epoch-bound keyset pages, immutable identity and separate browsing revisions.
+- Archive uses exact CAS and a raw temporary owner. It cannot recover an unrelated
+  abandoned run. Restore preserves the exact evidence union with a fresh ordering
+  epoch. Logical charged bytes are derived/validated; unavailable reservations,
+  byte budget and free journal budget are explicit nulls.
+- Native owners separate active/publisher/dirty state and result ownership from
+  bounded settled detail caching. Browser details and settled refusals share a
+  16-entry / 16 MiB LRU independently of storage success. Unhanded identities/proof
+  remain preserved. Background reconciliation uses four shared slots/backoff;
+  manual history uses 25-row pages and one expanded detail.
+- Fresh exact native proof precedes browser-ID removal. Malformed/quota-failed
+  browser persistence is preserved and holds new starts. Explicit settled buffer
+  release is serialized with lookup, clears all tabs on confirmed success, and
+  filters queued/late row events at delivery. Original outcomes are unchanged.
+
+Meaningful failed checks and review corrections:
+
+| Evidence label under `.cache/verification/reviewed-console/` | Observed failure / correction |
+| --- | --- |
+| `retention-frontend-first` | 80 pass / 4 fail and seven unhandled malformed-accounting errors; native DTO validation now rejects unavailable/malformed values without fabricated zero counts; old UI expectations were updated |
+| `retention-ui-regressions-first` | 90 pass / 1 fail: a later page error overwrote storage failure; storage errors now remain independently visible |
+| `retention-ui-regressions-second` | 90 pass / 1 fail: proof-only entries survived after successful handoff; evict only exact-handed-off settled entries, preserving start-pending callback identity |
+| `retention-tscheck-second`, `retention-tscheck-release`, `retention-final-validation` | Test fixture type errors (oversized error-code field, invalid `succeeded` run status and Testing Library's unsupported `exact` option); corrected fixtures use valid types / `completed` and exact string accessible names; no compiler check was bypassed |
+| `retention-result-race-reproduce` | Deferred running snapshot erased a newer Result owner; active/pending snapshots now merge newer same-run results; settled native snapshots remain authoritative |
+| `retention-release-lane-reproduce`, `retention-release-queued-reproduce` | Release overlapped exact lookup; queued Result/progress resurrected released rows. Reserve the lookup lane across release/local cleanup and recheck current row authority at callback and frame flush; Finished/contradictions remain observed |
+| `retention-browser-first` | Real browser detail disappeared after durable-refusal handoff. Refusals now share the detail LRU and refresh stamps recency; keyboard Home returns to the selected detail above inventory |
+| `retention-browser-second` | Exact filter-label lookup timed out. Explicit accessible names now match the three visible filter labels; browser rerun passes |
+
+Independent review also found raw archive ownership accidentally recovering other
+runs, keyset validation skipping empty/NULL/non-text IDs, and unowned cached views
+remaining trusted after a new lease. Separate regressions cover raw temporary
+archive claims, malformed identity preflight across v2/v3/v4, and cache invalidation
+on every owner acquisition/release. All material findings were corrected. The
+reviewer read source/logs and did not execute the lead's tests or browser checks.
+The final accessibility-only delta was separately reviewed. Removing an
+unsupported test query option then restored TypeScript checking; the exact string
+accessible-name assertion remains, and production source is unchanged.
+
+Recorded checks (labels refer to adjacent JSON/log files):
+
+| Check | Result and scope |
+| --- | --- |
+| `retention-native-first-validation` | 98 pass, one internal child fixture ignored by default; 926 filtered. Real SQLite/OS lease, native owner, helper framing with synthetic SDK; 222.55 seconds including compilation/wrapper, unchanged captured native hashes |
+| `retention-full-first-validation` | `pnpm validate` passes on the preceding UI snapshot: 943 frontend / 572 standard Rust tests, 137 default fixture ignores; formatting, contracts, TypeScript, production UI build, native compile and strict all-target/all-feature Clippy. Native hashes unchanged; later UI fixes are qualified separately below |
+| `retention-cache-release-final` | 196 cases in four files pass, 1.95 seconds; unchanged captured frontend source. Includes null-after-release, mixed refusal/positive LRU, malformed browser storage and 10,000-ID scheduler cases |
+| `retention-all-frontend-final`, `retention-tscheck-final2` | 948 cases / 66 files pass in 27.80 seconds; TypeScript passes in 5.52 seconds. These precede the final accessible-name-only delta |
+| `retention-browser-third` | Actual headless browser → Rust Studio/helper/SQLite/Arrow passes, 25.08 seconds including server startup (18.9-second case), unchanged all changed product/test hashes; synthetic SDK, no account semantics claim |
+| `retention-final-corrected-validation` | Final `pnpm validate` passes: 948 frontend cases / 66 files, 572 standard Rust cases and 137 default fixture ignores; formatting, regenerated contracts, TypeScript, production UI build, desktop compile and strict all-target/all-feature Clippy. 163.95 seconds; all captured native source hashes unchanged |
+
+The browser receipt JSON SHA-256 is
+`8a7a274bcb3c3a4a97e15459696f0ca69a3fa85b6f8346550399095962f7d351`;
+it pins every changed product/test file before and after the passing case. The
+final compiler-only correction removes the unsupported `exact` test option, with
+no production delta. Final full-validation log SHA-256 is
+`aee3fbbd3c86060789dcdc4b0b1be6dc556530edd9b023b08776c8ab1aa34a85`.
+
+The browser case creates 26 positive decisions plus one durable refusal, beyond
+both detail cache and page bounds. It verifies paging, lost start/refusal/archive
+responses, exact original preservation during release, released Arrow retrieval
+failure, keyboard scrolling/focus, archive/unarchive filters, browser-ID drain,
+and complete UI/native restart without authentication or SQL replay. Native
+inventory remains discoverable with no browser correlations. Unit regressions
+separately check absent profiles and corrupt browser persistence. This is not
+normal packaged macOS or actual Snowflake acceptance.
+
+Review-pinned production hashes:
+
+| Path | SHA-256 |
+| --- | --- |
+| `src/features/studio/SnowflakeConsole.ts` | `78f7a4230bcf58283e964ddd67d3857803c49b7d0e7102d2bb8df938df5b7e3b` |
+| `src/state/studio.ts` | `c4058d5c3827b7d4b49ee6cbc5c2e4d31df7466c4aeac47e4b79d3ebca6e3ea8` |
+| `src/features/studio/SnowflakeConsoleReceipts.tsx` | `1ae61fc3c9705d7eeae35e7c2111789eb807f475175610aae12f7872d621a507` |
+| `src-tauri/src/persistence/snowflake_console/retention.rs` | `e0fae7b4e1de575cd48bb297a68c3c2a722ef6187c379cb053d6d8b8a0bcfa03` |
+| `src-tauri/src/execution/snowflake_console.rs` | `cf09e7c6ec314fa548f5e8bd387ad7caabdaef86d4606c3f296f7930d7a9b277` |
+| `src-tauri/src/persistence/recovery.rs` | `8d039e869b6403602a71a96f0d6ede333273046e3841b20e547e33cbf767ada5` |
+
+Reproduce using the pinned Node 24.22.2 / Rust 1.99.1 environment, one Cargo
+build at a time and the README's 20 GiB free-space preflight:
+
+```sh
+pnpm validate
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib console -- --test-threads=1
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" pnpm exec playwright test tests/e2e/snowflake-retained-console.spec.ts --workers=1
+```
+
+The approved one-time debug cleanup receipt remains
+`.cache/verification/build-storage/approved-debug-cleanup.json`: actual net free
+space increased 145,766,936,576 bytes (135.8 GiB). The delayed approval response was
+not reused to delete rebuilt artifacts. Debug symbols remain line tables with
+incremental builds disabled. Existing release bundle `72ee3e4` and the preserved
+`9b20aa2` predecessor were not rebuilt or removed for this increment; it is not
+present in the runnable release app. Final validation storage: target
+**8,092,400 KiB** (about 7.72 GiB), free **211,839,623,168 bytes** (about
+197.3 GiB). Debug artifacts measured **5,589,912 KiB**, release **2,502,408 KiB**.
+The preserved release binary still hashes to
+`e29d03ee6c653361d7a9e7ef1ddf295c5a84991c52fd5c57cafac3748baf0732`.
+Private hub publication remains unauthorized.
+
 ### Configured console query limits (12 November 2026, locally verified)
 
 Base is clean `b86ac44` on `feat/datagrip-replacement`. The

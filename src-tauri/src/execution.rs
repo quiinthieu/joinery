@@ -1216,7 +1216,10 @@ impl Studio {
 
     pub fn disconnect(&self, id: &str) {
         #[cfg(unix)]
-        self.console.owners.lock().remove(id);
+        {
+            self.console.owners.lock().remove(id);
+            self.console.forget_session(id);
+        }
         if let Some(session) = self.sessions.lock().remove(id) {
             session.closed.store(true, Ordering::Release);
             session.driver.close();
@@ -3933,6 +3936,7 @@ impl Studio {
     pub fn release_result(&self, id: &str) {
         self.result_sessions.lock().remove(id);
         self.results.release(id);
+        self.console.release_result(id);
     }
     pub fn history(&self, search: &str) -> AppResult<Vec<HistoryEntry>> {
         self.persistence.history(search)

@@ -322,6 +322,21 @@ async fn rpc(
             "snowflake_console_run" => json!(studio.snowflake_console_run(
                 &arg::<String>(&args, "clientRequestId")?
             )?),
+            "snowflake_console_receipts" => json!(studio.snowflake_console_receipts(
+                &arg(&args, "request")?
+            )?),
+            "snowflake_console_receipt_summary" => json!(studio.snowflake_console_receipt_summary(
+                &arg::<String>(&args, "clientRequestId")?
+            )?),
+            "set_snowflake_console_receipt_archive" => json!(studio.set_snowflake_console_receipt_archive(
+                &arg(&args, "request")?
+            )?),
+            "snowflake_console_pending" => json!(studio.snowflake_console_pending()?),
+            "snowflake_console_storage" => json!(studio.snowflake_console_storage()?),
+            "release_snowflake_console_results" => {
+                studio.release_snowflake_console_results(&arg::<String>(&args, "clientRequestId")?)?;
+                json!(null)
+            }
             "start_snowflake_console" | "execute_plan" => {
                 let stream_id: String = arg(&args, "streamId")?;
                 uuid::Uuid::parse_str(&stream_id)

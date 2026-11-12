@@ -1,5 +1,29 @@
 # Implementation and release status
 
+## Paged console receipt inventory (12 November 2026)
+
+Local source implements schema-4 migration/old-writer fencing, SQL-free paged
+inventory and exact lookup, compare-and-set archive preferences, restore merging,
+bounded native/browser detail caches and background reconciliation, and explicit
+settled result-buffer release. Original outcomes/refusals and deduplication remain
+permanent. Archive does not reclaim journal space. See the
+[retention design](snowflake-console-retention-design.md),
+[usage guide](snowflake-sdk-console-workflow.md) and
+[verification ledger](replacement-verification.md).
+
+Final `pnpm validate` passes 948 frontend / 572 standard Rust cases (137 default
+fixture ignores), production UI build and strict Rust checks. Focused native
+verification passes 98 cases (one internal child ignored), and the real browser
+case passes paging, archive response loss, explicit row release and full restart
+with a synthetic SDK. Independent review has no remaining material findings.
+
+Lifetime count limits remain unchanged; `retentionEnabled` is false. Byte
+reservations/admission budget and encrypted streaming backup are unimplemented;
+existing metadata snapshots are plaintext with 64 MiB / 20-copy limits. Capacity,
+memory plateau, real Snowflake, normal native UI and owner acceptance remain open.
+The release app below is the preserved earlier source, not this increment. The
+private hub is unchanged because publication is not authorized.
+
 ## Configured console query limits (12 November 2026, locally verified)
 
 The [query-limit contract](snowflake-console-query-limits.md) defines persisted
@@ -17,7 +41,8 @@ helper-startup checks with zero authentication/SQL. The local, uninstalled app i
 The preceding `9b20aa2` app is separately preserved and byte-for-byte unchanged.
 After packaging, the Rust target occupies about 7.7 GiB and 196.3 GiB remains
 free. Real long-query/cancellation, packaged UI and owner acceptance remain
-required; receipt retention is still a reviewed proposal.
+required; the inventory/compaction slice above supersedes the proposal-only
+status while leaving complete retention capacity/recovery open.
 
 ## Durable console admission decisions (12 November 2026)
 

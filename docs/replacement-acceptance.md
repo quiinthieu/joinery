@@ -1,5 +1,47 @@
 # Daily DataGrip replacement acceptance
 
+## Receipt inventory and explicit row release acceptance
+
+This local inventory/compaction increment preserves the existing capacity gates.
+Use a disposable synthetic test environment for the automated steps below;
+normal packaged/macOS and owner acceptance remain open.
+
+1. Run the retained-console browser case below. It must create more than one
+   25-row page, retain exact durable refusals, recover lost start/refusal responses
+   and leave the original SQL dispatch count unchanged during browsing.
+2. Select an older positive and a refusal after cache eviction. Each detail must
+   remain inspectable. Page/filter history and use exact UUID lookup; no login or
+   SQL may occur. Verify browser correlations are handed off only to matching
+   native identities.
+3. Archive and unarchive a refusal, including a lost archive response. The native
+   original tuple/revision and deduplication decision must stay unchanged; focus
+   returns to the stable refresh control. Archiving an unknown positive must not
+   authorize replay, commit or rollback.
+4. Open retained rows, then explicitly release them. All tabs and Arrow retrieval
+   must lose the buffer while the original receipt stays byte-equivalent. Deferred
+   lookups/queued row events must not resurrect released buffers. A lost response
+   must retain uncertainty until exact reconciliation.
+5. Restart both UI and native owner after browser IDs have drained. Native history
+   must still list originals/refusals, without replay, new authentication or SQL.
+   Result rows are unavailable after restart; they must not be reported as zero.
+6. Verify malformed/quota-failed browser storage remains preserved and blocks new
+   execution; native storage/accounting failure displays unavailable rather than
+   a fabricated empty history or zero budget.
+
+Reproduce with pinned repository toolchains:
+
+```sh
+pnpm exec vitest run src/features/studio/SnowflakeConsoleRetention.test.tsx src/features/studio/SnowflakeConsoleReconciler.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib console -- --test-threads=1
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" pnpm exec playwright test tests/e2e/snowflake-retained-console.spec.ts --workers=1
+```
+
+These checks use real SQLite, process leases, native Studio, helper framing and
+Arrow with a synthetic SDK. They do not establish Snowflake transaction effects,
+SSO, live million-row behavior, packaged accessibility or daily replacement.
+Encrypted streaming backup, byte reservations and measured full-capacity resource
+behavior are still required before the lifetime count gates can change.
+
 ## Configured long-query behavior (12 November 2026)
 
 The [query-limit contract](snowflake-console-query-limits.md) adds concrete local

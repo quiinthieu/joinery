@@ -3,7 +3,7 @@
 use super::*;
 use crate::{secrets::MemorySecrets, snowflake_runtime::studio_fixture::Fixture};
 
-static FIXTURE_LANE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(super) static FIXTURE_LANE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn profile() -> ConnectionProfile {
     ConnectionProfile {
@@ -36,7 +36,7 @@ fn profile() -> ConnectionProfile {
     }
 }
 
-fn new_studio(f: &Fixture) -> Arc<Studio> {
+pub(super) fn new_studio(f: &Fixture) -> Arc<Studio> {
     Studio::with_snowflake_runtime(
         &f.directory.path().join("workspace"),
         Arc::new(MemorySecrets::default()),
@@ -46,7 +46,7 @@ fn new_studio(f: &Fixture) -> Arc<Studio> {
     .unwrap()
 }
 
-async fn connected(f: &Fixture) -> (Arc<Studio>, SessionInfo) {
+pub(super) async fn connected(f: &Fixture) -> (Arc<Studio>, SessionInfo) {
     let studio = new_studio(f);
     let profile = studio.save_profile(profile(), None).unwrap();
     let info = studio
@@ -65,7 +65,7 @@ fn request(sql: &str) -> SnowflakeConsoleRequest {
     }
 }
 
-fn approved(studio: &Studio, session: &str, sql: &str) -> SnowflakeConsoleStart {
+pub(super) fn approved(studio: &Studio, session: &str, sql: &str) -> SnowflakeConsoleStart {
     let plan = studio
         .prepare_snowflake_console(session, &request(sql))
         .unwrap();
@@ -80,7 +80,7 @@ fn approved(studio: &Studio, session: &str, sql: &str) -> SnowflakeConsoleStart 
     }
 }
 
-fn queries(f: &Fixture) -> Vec<String> {
+pub(super) fn queries(f: &Fixture) -> Vec<String> {
     std::fs::read_to_string(f.controls.join("queries"))
         .unwrap()
         .lines()
@@ -88,7 +88,10 @@ fn queries(f: &Fixture) -> Vec<String> {
         .collect()
 }
 
-async fn finished(studio: &Studio, request: &SnowflakeConsoleStart) -> SnowflakeConsoleRunView {
+pub(super) async fn finished(
+    studio: &Studio,
+    request: &SnowflakeConsoleStart,
+) -> SnowflakeConsoleRunView {
     tokio::time::timeout(Duration::from_secs(85), async {
         loop {
             let view = studio
@@ -97,6 +100,7 @@ async fn finished(studio: &Studio, request: &SnowflakeConsoleStart) -> Snowflake
                 .unwrap();
             if view.run.terminal.is_some()
                 && !studio.jobs.lock().contains_key(&view.run.metadata.run_id)
+                && !studio.console.publisher_active(&view.run.metadata.run_id)
             {
                 return view;
             }
@@ -117,7 +121,7 @@ async fn marker(f: &Fixture, name: &str) {
     .expect("synthetic callback barrier must be reached");
 }
 
-fn start_run(
+pub(super) fn start_run(
     studio: &Arc<Studio>,
     request: &SnowflakeConsoleStart,
     events: EventHandler,
@@ -136,7 +140,7 @@ async fn run(studio: &Arc<Studio>, session: &str, sql: &str) -> SnowflakeConsole
     finished(studio, &request).await
 }
 
-fn database(f: &Fixture) -> rusqlite::Connection {
+pub(super) fn database(f: &Fixture) -> rusqlite::Connection {
     rusqlite::Connection::open(f.directory.path().join("workspace/joinery.sqlite")).unwrap()
 }
 
@@ -535,7 +539,7 @@ async fn reviewed_console_ack_recording_failure_blocks_rows_suffix_and_shutdown_
     let f = Fixture::new();
     let (studio, info) = connected(&f).await;
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_ack BEFORE UPDATE OF outcome_json ON snowflake_console_steps_v3 BEGIN SELECT RAISE(FAIL,'fixture receipt failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_ack BEFORE UPDATE OF outcome_json ON snowflake_console_steps_v4 BEGIN SELECT RAISE(FAIL,'fixture receipt failure'); END;").unwrap();
     let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
     let results = Arc::new(Mutex::new(0));
     let observed = results.clone();
@@ -731,7 +735,7 @@ async fn reviewed_console_prepare_recording_failure_retains_identity_but_never_d
     let (studio, info) = connected(&f).await;
     let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_prepare BEFORE INSERT ON snowflake_console_runs_v3 BEGIN SELECT RAISE(FAIL,'fixture prepare failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_prepare BEFORE INSERT ON snowflake_console_runs_v4 BEGIN SELECT RAISE(FAIL,'fixture prepare failure'); END;").unwrap();
     let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
     let view = finished(&studio, &start).await;
     assert!(view.pending_recording);
@@ -906,14 +910,14 @@ async fn reviewed_console_definite_negative_is_distinct_from_unreadable_original
     // original cannot turn an already acknowledged action into NotAdmitted.
     let observer = new_studio(&f);
     let db = database(&f);
-    db.execute_batch("ALTER TABLE snowflake_console_runs_v3 RENAME TO held_console_runs;")
+    db.execute_batch("ALTER TABLE snowflake_console_runs_v4 RENAME TO held_console_runs;")
         .unwrap();
     assert!(
         observer
             .start_snowflake_console(&start, Arc::new(|_| true))
             .is_err()
     );
-    db.execute_batch("ALTER TABLE held_console_runs RENAME TO snowflake_console_runs_v3;")
+    db.execute_batch("ALTER TABLE held_console_runs RENAME TO snowflake_console_runs_v4;")
         .unwrap();
     assert_eq!(
         start_run(&observer, &start, Arc::new(|_| true)).unwrap(),
@@ -1113,7 +1117,7 @@ async fn reviewed_console_refusal_write_failure_remains_frozen_until_sql_free_re
     let approval = start.approval.take();
     let backup = studio.create_metadata_backup().unwrap();
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_refusal BEFORE INSERT ON snowflake_console_rejections_v3 BEGIN SELECT RAISE(FAIL,'fixture refusal failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_refusal BEFORE INSERT ON snowflake_console_rejections_v4 BEGIN SELECT RAISE(FAIL,'fixture refusal failure'); END;").unwrap();
     assert!(
         studio
             .start_snowflake_console(&start, Arc::new(|_| true))
@@ -1206,7 +1210,7 @@ async fn reviewed_console_malformed_request_identity_never_creates_a_refusal() {
     let db = database(&f);
     assert_eq!(
         db.query_row(
-            "SELECT count(*) FROM snowflake_console_rejections_v3",
+            "SELECT count(*) FROM snowflake_console_rejections_v4",
             [],
             |row| row.get::<_, i64>(0)
         )

@@ -2,8 +2,9 @@
 
 ## Decision and status
 
-Proposed next increment, 12 November 2026. This document does not implement or
-qualify retention, encryption, account effects or daily replacement. It follows
+Partially implemented locally, 12 November 2026. This document specifies the
+complete target; the inventory/compaction slice below does not qualify unlimited
+lifetime retention, encryption, account effects or daily replacement. It follows
 the [roadmap](implementation-roadmap.md), the
 [console workflow](snowflake-sdk-console-workflow.md) and the
 [durable admission decision contract](snowflake-console-negative-receipts-design.md).
@@ -24,7 +25,36 @@ unlimited lifetime retention. At an explicit storage boundary, preserve all old
 decisions and stop new admissions. Never delete an identity or replace full
 original outcomes with hashes to make another query fit.
 
-## Current behavior and constraints
+## Implemented inventory and compaction slice
+
+Schema 4 now physically fences older journal writers and provides a native,
+SQL-free paged inventory, exact identity lookup and compare-and-set archive
+preferences. Original positive decisions, refusals and their revisions remain
+intact. Migration and archive use a raw exclusive lease; archiving one receipt
+cannot recover unrelated abandoned runs. Restore retains the exact union of
+original evidence and gives the merged inventory a fresh ordering epoch.
+
+Settled native full-detail caching is bounded to 16 entries / 16 MiB; working
+owners have separate active/publisher/dirty reservations and result ownership.
+Frontend detail payloads have the same cache bounds independently of browser
+storage success. Pending, unrecorded or conflicting evidence stays held. Opaque
+browser IDs are removed only after a fresh exact native inventory confirmation;
+malformed/quota-failed browser storage stays preserved and blocks new admission.
+Background reconciliation has four shared slots and retry backoff. Manual native
+inventory uses 25-row pages and one expanded detail. Explicit result release is
+separate from archive and preserves original outcomes.
+
+**The 10,000-positive and 10,000-refusal lifetime gates remain.** Native accounting
+reports logical charged bytes, while reservations, admission byte budget and
+available journal budget remain unavailable. `retentionEnabled` is false. Current
+metadata backup remains plaintext, whole-file and limited to 64 MiB / 20 snapshots.
+There is no encrypted streaming recovery implementation in this slice. No memory
+plateau, full-capacity recovery or actual-account qualification is claimed.
+See the [verification ledger](replacement-verification.md) and
+[usage walkthrough](snowflake-sdk-console-workflow.md) for source-scoped checks.
+The remaining sections describe the full design, including unimplemented gates.
+
+## Pre-increment behavior and constraints
 
 The source baseline is `b86ac44a2124d2690cf5dfeaf87dea462b62c0a7`, inspected with
 the concurrent query-limit increment present as uncommitted changes. Earlier

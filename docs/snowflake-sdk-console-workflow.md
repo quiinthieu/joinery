@@ -71,13 +71,37 @@ See the [durability contract](snowflake-console-negative-receipts-design.md).
 Local migration/failure checks, full validation and the actual browser recovery
 case pass; see the ledger. This is synthetic-SDK evidence, not account qualification.
 
-Only opaque request UUIDs are retained in browser persistence, including settled
-refusals; native lookup supplies the proof after restart. This change cannot
-rediscover negative IDs discarded by older versions or reconstruct refusals that
-were never recorded by version 2. If recording fails, the exact refusal remains
-pending in memory, without an authoritative negative response. Process loss
-before a successful commit still leaves absence unknown. Never infer safe replay
-from a transport error, arbitrary error code or null lookup.
+Native history is now authoritative for browsing. Open **Console receipts** even
+when no connection profiles or browser correlations remain. The history shows 25
+SQL-free summaries per page; filter visible/archived decisions or connection, use
+**Next receipts** / **Previous receipts**, or enter an exact client request UUID.
+Select a summary to inspect its original decision. Only one detail expands at a
+time; recent positive and refusal details share a bounded cache.
+
+**Archive receipt** changes a local browsing preference. It keeps every original
+ACK, unknown outcome, refusal and deduplication identity, and does not reclaim
+journal disk space. A lost archive response is reconciled by exact native lookup;
+it is not retried automatically. Unknown outcomes remain unknown when archived.
+**Release retained result rows** has a separate confirmation. It releases only
+that settled run's process-local buffers and removes them from all editor tabs;
+original row counts/outcomes remain evidence. After release, unavailable rows do
+not mean the query returned zero rows. An interrupted release response leaves
+local state until an exact SQL-free lookup can establish the remaining buffers.
+
+Only opaque request UUIDs are written to browser persistence. A fresh exact native
+inventory confirmation is required before removing each browser correlation.
+Malformed or quota-failed storage is preserved and blocks new submissions;
+recent full-detail payload compaction does not depend on a successful browser
+write. Native inventory can rediscover previously committed positive and negative
+IDs even if older browser state discarded them. It cannot reconstruct a refusal
+that version 2 never committed. A missing lookup remains unknown and never permits
+replay. Contradictory decisions keep execution held.
+
+The lifetime decision-count gates remain unchanged. Storage accounting reports
+logical charged bytes, not reclaimable disk or an implemented admission byte
+budget. Metadata backups are still plaintext with the existing 64 MiB / 20-copy
+limits. Encrypted streaming backup/restore and full-capacity validation remain
+required; see the [retention design](snowflake-console-retention-design.md).
 
 A recording hold retains the owner and pending evidence in memory and prevents
 normal shutdown/new admission until local recording succeeds. Forced process

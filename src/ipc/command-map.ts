@@ -92,6 +92,13 @@ import type {
   SnowflakeConsoleStartResult,
   SnowflakeConsoleRunView,
   SnowflakeConsoleRequestLookup,
+  SnowflakeConsoleReceiptPageRequest,
+  SnowflakeConsoleReceiptPage,
+  SnowflakeConsoleReceiptSummary,
+  SnowflakeConsoleReceiptArchiveRequest,
+  SnowflakeConsoleReceiptArchiveResult,
+  SnowflakeConsolePending,
+  SnowflakeConsoleStorage,
 } from "./generated";
 
 /**
@@ -114,6 +121,24 @@ export interface JoineryCommandMap {
   snowflake_console_run: {
     args: { clientRequestId: string };
     result: SnowflakeConsoleRunView | null;
+  };
+  snowflake_console_receipts: {
+    args: { request: SnowflakeConsoleReceiptPageRequest };
+    result: SnowflakeConsoleReceiptPage;
+  };
+  snowflake_console_receipt_summary: {
+    args: { clientRequestId: string };
+    result: SnowflakeConsoleReceiptSummary | null;
+  };
+  set_snowflake_console_receipt_archive: {
+    args: { request: SnowflakeConsoleReceiptArchiveRequest };
+    result: SnowflakeConsoleReceiptArchiveResult;
+  };
+  snowflake_console_pending: { args: undefined; result: SnowflakeConsolePending };
+  snowflake_console_storage: { args: undefined; result: SnowflakeConsoleStorage };
+  release_snowflake_console_results: {
+    args: { clientRequestId: string };
+    result: null;
   };
   relation_catalog: { args: { sessionId: string }; result: BrowseCatalog };
   define_relation: {

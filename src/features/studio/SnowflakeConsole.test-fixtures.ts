@@ -3,9 +3,36 @@ import type {
   SnowflakeConsolePlan,
   SnowflakeConsoleRunView,
   ConsoleObservations,
+  SnowflakeConsoleReceiptSummary,
 } from "../../ipc/generated";
 export const clientId = "11111111-1111-4111-8111-111111111111";
 export const runId = "22222222-2222-4222-8222-222222222222";
+export const inventoryEpoch = "33333333-3333-4333-8333-333333333333";
+export function receiptSummary(
+  overrides: Partial<SnowflakeConsoleReceiptSummary> = {},
+): SnowflakeConsoleReceiptSummary {
+  return {
+    inventoryEpoch,
+    sequence: "1",
+    clientRequestId: clientId,
+    sessionId: "console-session",
+    connectionId: "profile",
+    runId,
+    planDigest: "a".repeat(64),
+    recordedAt: "1",
+    originalRevision: "4",
+    browsingRevision: "0",
+    kind: "positive",
+    state: "terminal",
+    stopReason: "resultLimit",
+    unknown: false,
+    refusalCode: null,
+    archived: false,
+    archiveEligible: true,
+    archiveBlockReason: null,
+    ...overrides,
+  };
+}
 export const session: SessionInfo = {
   id: "console-session",
   connectionId: "profile",
