@@ -62,6 +62,16 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
       },
     ],
   };
+  const referencedTarget = {
+    ...catalog.relations[0],
+    targetId: "opaque-qualified-reference",
+    table: { schema: "P.dot", name: 'Quoted "parent' },
+  };
+  catalog.relations.push(referencedTarget, {
+    ...referencedTarget,
+    targetId: "opaque-same-name-decoy",
+    table: { ...referencedTarget.table, schema: "S" },
+  });
   const column: ColumnInfo = {
     id: "c0",
     name: "EXACT",
@@ -211,8 +221,8 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
           { ordinal: 1, columnName: 'first"part', referencedColumnName: 'parent"first' },
         ],
         referencedTable: {
-          database: 'PARENT"DB',
-          table: { schema: "P.dot", name: 'Quoted "parent' },
+          database: "DB",
+          table: referencedTarget.table,
         },
       },
       {
@@ -345,11 +355,16 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
         });
       result = definition;
     } else if (command === "inspect_relation") {
+      const targetId = args.request.targetId;
+      expect(["opaque-r1-target", referencedTarget.targetId]).toContain(targetId);
       expect(args).toEqual({
         sessionId,
-        request: { revision: "catalog-r1", targetId: "opaque-r1-target" },
+        request: { revision: "catalog-r1", targetId },
       });
-      result = inspection;
+      result =
+        targetId === referencedTarget.targetId
+          ? { ...inspection, targetId, table: referencedTarget.table }
+          : inspection;
     } else if (command === "preview_relation") {
       expect(args).toEqual({
         sessionId,
@@ -386,13 +401,14 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   const open = page.getByRole("button", { name: "Browse relations", exact: true });
   await open.click();
   const dialog = page.getByRole("dialog", { name: "Browse relations" });
-  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
   await dialog.getByLabel("Relation", { exact: true }).selectOption("shadowed-target");
   await expect(dialog.getByRole("button", { name: "Inspect relation" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "View definition" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "View key constraints" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "View key column mappings" })).toBeDisabled();
   await expect(dialog.getByRole("note")).toContainText("shadowed");
+  await dialog.getByLabel("Find relation").fill('Quoted "table');
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
   const viewMappings = dialog.getByRole("button", { name: "View key column mappings" });
   const mappingsRegion = dialog.getByRole("region", { name: "Relation key column mappings" });
@@ -406,7 +422,7 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await expect(mappingsTable.getByRole("row").nth(2)).toContainText('"second.part"');
   await expect(mappingsTable.getByRole("row").nth(3)).toContainText('"first""part"');
   await expect(mappingsTable.getByRole("row").nth(3)).toContainText(
-    '"PARENT""DB"."P.dot"."Quoted ""parent"',
+    '"DB"."P.dot"."Quoted ""parent"',
   );
   await expect(mappingsTable.getByRole("row").nth(3)).toContainText('"parent""first"');
   await expect(mappingsTable.getByRole("row").nth(4)).toContainText('"parent.second"');
@@ -415,12 +431,36 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await expect(mappingsRegion.getByRole("note")).toContainText(
     "do not establish row editing safety",
   );
-  await expect(mappingsRegion.getByRole("button")).toHaveCount(0);
+  const selectReference = mappingsRegion.getByRole("button", {
+    name: 'Select referenced table "DB"."P.dot"."Quoted ""parent"',
+    exact: true,
+  });
+  await expect(selectReference).toBeEnabled();
   expect(
     calls.filter((c) =>
       ["inspect_relation", "inspect_relation_constraints", "define_relation"].includes(c.command),
     ),
   ).toHaveLength(0);
+  await expect(dialog.getByRole("option", { name: /P.dot.Quoted/ })).toHaveCount(0);
+  await selectReference.focus();
+  const beforeSelection = calls.length;
+  await page.keyboard.press("Enter");
+  expect(calls).toHaveLength(beforeSelection);
+  await expect(dialog.getByLabel("Relation", { exact: true })).toHaveValue(
+    referencedTarget.targetId,
+  );
+  await expect(dialog.getByLabel("Relation", { exact: true })).toBeFocused();
+  await expect(dialog.getByLabel("Find relation")).toHaveValue("");
+  await expect(mappingsTable).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Inspect relation" }).click();
+  await expect(dialog.getByRole("heading", { name: 'DB.P.dot.Quoted "parent' })).toBeVisible();
+  expect(calls.filter((call) => call.command === "inspect_relation").at(-1)?.args).toEqual({
+    sessionId,
+    request: { revision: "catalog-r1", targetId: referencedTarget.targetId },
+  });
+  await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
+  await viewMappings.click();
+  await expect(mappingsTable).toBeVisible();
   const viewKeys = dialog.getByRole("button", { name: "View key constraints" });
   const keyRegion = dialog.getByRole("region", { name: "Relation key constraints" });
   const keyTable = keyRegion.getByRole("table", { name: "Key constraint inventory" });
@@ -436,9 +476,8 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
     "excludes column mappings, CHECK constraints, and NOT NULL",
   );
   await expect(keyRegion.getByRole("button")).toHaveCount(0);
-  expect(
-    calls.filter((c) => c.command === "inspect_relation" || c.command === "define_relation"),
-  ).toHaveLength(0);
+  expect(calls.filter((c) => c.command === "define_relation")).toHaveLength(0);
+  expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(1);
   constraintsMode = "denied";
   await viewKeys.click();
   await expect(keyRegion.getByRole("alert")).toContainText("Synthetic key metadata denied");
@@ -454,7 +493,7 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await viewKeys.click();
   await expect.poll(() => !!releaseConstraints).toBe(true);
   await dialog.getByRole("button", { name: "Refresh relations" }).click();
-  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
   const staleKeys = page.waitForResponse((response) =>
     response.url().endsWith("/rpc/inspect_relation_constraints"),
   );
@@ -492,7 +531,7 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
       page.evaluate(() => (window as unknown as { copiedDefinition?: string }).copiedDefinition),
     )
     .toBe(definition.ddl);
-  expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(0);
+  expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(1);
 
   mappingsMode = "denied";
   await viewMappings.click();
@@ -513,13 +552,13 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await expect(definitionRegion).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Copy DDL" })).toHaveCount(0);
   await dialog.getByRole("button", { name: "Refresh relations" }).click();
-  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
   definitionMode = "held";
   await viewDefinition.click();
   await expect.poll(() => !!releaseDefinition).toBe(true);
   await dialog.getByRole("button", { name: "Refresh relations" }).click();
-  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
   const staleResponse = page.waitForResponse((response) =>
     response.url().endsWith("/rpc/define_relation"),
   );
@@ -537,20 +576,20 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   dynamicTarget = true;
   mappingsMode = "unsupported";
   await dialog.getByRole("button", { name: "Refresh relations" }).click();
-  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
   await viewMappings.click();
   await expect(mappingsTable.getByText("Unsupported", { exact: true })).toHaveCount(3);
   await expect(mappingsRegion).not.toContainText("No visible key column mappings were returned");
   dynamicTarget = false;
   await dialog.getByRole("button", { name: "Refresh relations" }).click();
-  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
   mappingsMode = "held";
   await viewMappings.click();
   await expect.poll(() => !!releaseMappings).toBe(true);
   await dialog.getByRole("button", { name: "Refresh relations" }).click();
-  await expect(dialog.getByRole("status").first()).toContainText("2 visible relations · DB");
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
   const staleMappings = page.waitForResponse((response) =>
     response.url().endsWith("/rpc/inspect_relation_constraint_mappings"),
   );
@@ -586,7 +625,7 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(open).toBeFocused();
-  expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(1);
+  expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(2);
   for (const call of calls.filter((c) =>
     [
       "relation_catalog",

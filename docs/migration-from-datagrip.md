@@ -115,10 +115,45 @@ or data changes require their own approved disposable SQL plan.
    restore them. Repeat by keyboard in the normal packaged macOS app and record
    focus behavior, source version and observed account outcomes.
 
-The current mapping workflow displays referenced identities; table navigation and
+The mapping workflow displays referenced identities. The local navigation
+increment below selects retained destinations; cross-database navigation and
 inbound references remain required. Mappings and reported enforcement do not
 validate existing values or establish editing safety. Keep these account and
 owner acceptance gates open until demonstrated.
+
+## Referenced Snowflake tables (prepared acceptance walkthrough)
+
+Implementation/verification status is recorded in the
+[selection contract](snowflake-sdk-key-mappings-design.md#referenced-table-selection)
+and [ledger](replacement-verification.md). This is a prepared walkthrough, not
+completed account or owner acceptance. Loading the catalog, mappings and later
+inspection still requires a separately approved account scope.
+
+1. Use an approved source table with a foreign key to a known table in another
+   schema of the same database. Include quoted names and a same-named table in a
+   different schema so matching the wrong destination would be observable.
+2. Filter the relation list to the source, select it and choose **View key column
+   mappings**. Check the full referenced database/schema/table and column pairs.
+3. By keyboard, activate **Select referenced table** for the intended destination.
+   The filter must clear, the Relation selector must select the exact retained
+   destination and receive focus, and old details must disappear. No metadata
+   query or row preview should start automatically.
+4. Explicitly choose **Inspect relation**. Confirm columns belong to the
+   destination and that the console's active schema/context did not switch.
+   Definitions, keys and preview remain separate explicit actions within the
+   approved scope.
+5. Check an external-database, missing, ambiguous or unavailable destination.
+   The action must explain why it cannot select the table; it must not refresh,
+   connect, switch context or choose a partially matching name.
+6. Repeat after refresh, owner/session replacement and a transaction/metadata
+   hold. Previous mapping actions must disappear and must not revive after the
+   hold clears. Record normal macOS focus/keyboard behavior, source version and
+   observed account requests. The automated same-batch stale-handler regression
+   remains separate from this hands-on walkthrough.
+
+Cross-database catalogs/navigation, inbound references and actual role/DDL
+visibility remain required. Selection does not establish immutable table identity
+or permit editing.
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 

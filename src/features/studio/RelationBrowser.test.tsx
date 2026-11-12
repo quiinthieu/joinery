@@ -1041,6 +1041,7 @@ it("views composite key mappings independently, in ordinal order with quoted FK 
     .map((row) =>
       within(row)
         .getAllByRole("cell")
+        .slice(0, -1)
         .map((cell) => cell.textContent),
     );
   expect(rows).toEqual([
@@ -1078,11 +1079,17 @@ it("views composite key mappings independently, in ordinal order with quoted FK 
     '"DB"."S"."FK hidden"',
   ]);
   const region = screen.getByRole("region", { name: "Relation key column mappings" });
-  expect(within(region).getByRole("note").textContent).toContain("can lag schema changes");
-  expect(within(region).getByRole("note").textContent).toContain(
+  expect(within(region).getByText(/Visible column mappings can lag/).textContent).toContain(
+    "can lag schema changes",
+  );
+  expect(within(region).getByText(/Visible column mappings can lag/).textContent).toContain(
     "do not establish row editing safety",
   );
-  expect(within(region).queryByRole("button")).toBeNull();
+  expect(
+    (within(region).getByRole("button", { name: /Select referenced table/ }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(within(region).getByText(/Cross-database navigation is not available yet/)).toBeTruthy();
 });
 
 it("mapping denial clears old mappings, preserves other metadata, and retries to explicit empty", async () => {
@@ -1228,3 +1235,303 @@ it.each(["resolve", "reject"])(
     expect(screen.queryByRole("alert")).toBeNull();
   },
 );
+
+const referencedTarget: BrowseCatalog["relations"][number] = {
+  ...catalog.relations[0],
+  targetId: "opaque-qualified-destination",
+  table: { schema: 'P."quoted', name: 'Parent "table' },
+};
+const referenceCatalog: BrowseCatalog = {
+  ...catalog,
+  relations: [
+    catalog.relations[0],
+    referencedTarget,
+    {
+      ...referencedTarget,
+      targetId: "opaque-same-name-decoy",
+      table: { ...referencedTarget.table, schema: "S" },
+    },
+  ],
+};
+const referenceMappings: RelationConstraintMappings = {
+  ...keyMappings,
+  mappings: [
+    {
+      ...keyMappings.mappings[2],
+      referencedTable: { database: "DB", table: referencedTarget.table },
+    },
+  ],
+};
+
+function renderReferenceNavigation(
+  retainedCatalog = referenceCatalog,
+  resultMappings = referenceMappings,
+) {
+  const session: SessionInfo = {
+    id: "s",
+    connectionId: "synthetic-profile",
+    engine: "snowflake",
+    serverVersion: "synthetic",
+    latencyMs: 1,
+    encrypted: true,
+    capabilities: {
+      sql: true,
+      transactions: false,
+      cancellation: true,
+      tableBrowsing: false,
+      relationBrowsing: true,
+      tableEditing: false,
+      tableFiltering: false,
+      processes: false,
+    },
+  };
+  useStudio.setState({ sessions: { [session.connectionId]: session } });
+  const ownerTabId = useStudio.getState().openQuery(session.connectionId);
+  installSchemaAuthority();
+  vi.mocked(client.call).mockImplementation(async (method, args) => {
+    if (method === "relation_catalog") return retainedCatalog;
+    if (method === "inspect_relation_constraint_mappings") return resultMappings;
+    if (method === "define_relation") return definition;
+    if (method === "inspect_relation_constraints") return keyConstraints;
+    if (method === "preview_relation") return preview;
+    if (method === "inspect_relation") {
+      const id = (args as { request: { targetId: string } }).request.targetId;
+      const target = retainedCatalog.relations.find((entry) => entry.targetId === id)!;
+      return { ...inspection, targetId: id, table: target.table };
+    }
+    throw new Error(`Unexpected ${method}`);
+  });
+  return {
+    view: render(<RelationBrowser sessionId="s" ownerTabId={ownerTabId} onClose={vi.fn()} />),
+    ownerTabId,
+    session,
+  };
+}
+
+async function loadReferenceButton() {
+  await screen.findByRole("option", { name: /S.Quoted Table/ });
+  fireEvent.change(screen.getByLabelText("Find relation"), { target: { value: "Quoted Table" } });
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "View key column mappings" }));
+  return screen.findByRole("button", { name: /^Select referenced table/ });
+}
+
+it("selects the exact quoted cross-schema opaque target from the full catalog without RPCs", async () => {
+  renderReferenceNavigation();
+  const button = await loadReferenceButton();
+  expect(button.tagName).toBe("BUTTON");
+  expect(button.getAttribute("aria-label")).toBe(
+    'Select referenced table "DB"."P.""quoted"."Parent ""table"',
+  );
+  expect(screen.queryByRole("option", { name: /Parent/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  await screen.findByLabelText("Object DDL");
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByRole("table", { name: "Column inspection" });
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Read-only preview" });
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Synthetic declaration denial"));
+  fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+  await screen.findByRole("alert");
+  const before = vi.mocked(client.call).mock.calls.slice();
+  button.focus();
+  fireEvent.click(button);
+  expect(client.call).toHaveBeenCalledTimes(before.length);
+  const selector = screen.getByLabelText("Relation") as HTMLSelectElement;
+  expect(selector.value).toBe("opaque-qualified-destination");
+  expect(document.activeElement).toBe(selector);
+  expect((screen.getByLabelText("Find relation") as HTMLInputElement).value).toBe("");
+  expect(screen.queryByLabelText("Object DDL")).toBeNull();
+  expect(screen.queryByRole("table")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Key constraints have not been fetched.")).toBeTruthy();
+  expect(screen.getByText("Key column mappings have not been fetched.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByRole("table", { name: "Column inspection" });
+  expect(client.call).toHaveBeenLastCalledWith("inspect_relation", {
+    sessionId: "s",
+    request: { revision: "catalog-1", targetId: "opaque-qualified-destination" },
+  });
+  expect(vi.mocked(client.call).mock.calls.map(([method]) => method)).toEqual([
+    "relation_catalog",
+    "inspect_relation_constraint_mappings",
+    "define_relation",
+    "inspect_relation",
+    "preview_relation",
+    "inspect_relation_constraints",
+    "inspect_relation",
+  ]);
+});
+
+it("selects a self-reference locally and clears old mapping details", async () => {
+  renderReferenceNavigation(referenceCatalog, {
+    ...referenceMappings,
+    mappings: [
+      {
+        ...referenceMappings.mappings[0],
+        referencedTable: { database: "DB", table: catalog.relations[0].table },
+      },
+    ],
+  });
+  const button = await loadReferenceButton();
+  const before = vi.mocked(client.call).mock.calls.length;
+  fireEvent.click(button);
+  expect((screen.getByLabelText("Relation") as HTMLSelectElement).value).toBe("opaque-target");
+  expect(document.activeElement).toBe(screen.getByLabelText("Relation"));
+  expect(screen.queryByRole("table", { name: "Key column mapping inventory" })).toBeNull();
+  expect(client.call).toHaveBeenCalledTimes(before);
+});
+
+it.each([
+  "absent",
+  "case mismatch",
+  "ambiguous",
+  "unavailable duplicate",
+  "shadowed",
+  "unknownTraits",
+  "external database",
+] as const)(
+  "explains %s referenced destinations without selecting or issuing RPCs",
+  async (scenario) => {
+    const retained = structuredClone(referenceCatalog);
+    const result = structuredClone(referenceMappings);
+    let reason = "";
+    if (scenario === "absent") {
+      retained.relations = retained.relations.filter(
+        (entry) => entry.targetId !== referencedTarget.targetId,
+      );
+      reason = "absent from this retained catalog";
+    } else if (scenario === "case mismatch") {
+      retained.relations[1].table.name = referencedTarget.table.name.toUpperCase();
+      reason = "absent from this retained catalog";
+    } else if (scenario === "ambiguous" || scenario === "unavailable duplicate") {
+      retained.relations.push({
+        ...retained.relations[1],
+        targetId: "duplicate-exact-identity",
+        availability: scenario === "ambiguous" ? "available" : "shadowed",
+      });
+      reason = "identity is ambiguous";
+    } else if (scenario === "external database") {
+      result.mappings[0].referencedTable!.database = "OTHER";
+      reason = "Cross-database navigation is not available yet";
+    } else {
+      retained.relations[1].availability = scenario;
+      reason = `unavailable (${scenario})`;
+    }
+    renderReferenceNavigation(retained, result);
+    const button = (await loadReferenceButton()) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    const explanation = screen.getByText((text) => text.includes(reason));
+    expect(button.getAttribute("aria-describedby")).toBe(explanation.id);
+    const before = vi.mocked(client.call).mock.calls.length;
+    fireEvent.click(button);
+    expect((screen.getByLabelText("Relation") as HTMLSelectElement).value).toBe("opaque-target");
+    expect(client.call).toHaveBeenCalledTimes(before);
+  },
+);
+
+it("revokes referenced navigation after a committed session replacement and loads only its catalog", async () => {
+  const { view, ownerTabId, session } = renderReferenceNavigation();
+  await loadReferenceButton();
+  const nextCatalog: BrowseCatalog = {
+    ...referenceCatalog,
+    revision: "replacement-catalog",
+    relations: referenceCatalog.relations.map((entry) => ({
+      ...entry,
+      targetId: `replacement-${entry.targetId}`,
+    })),
+  };
+  vi.mocked(client.call).mockImplementation(async (method, args) => {
+    if (method === "relation_catalog" && (args as { sessionId: string }).sessionId === "other")
+      return nextCatalog;
+    throw new Error(`Unexpected ${method}`);
+  });
+  const before = vi.mocked(client.call).mock.calls.length;
+  act(() => {
+    useStudio.setState({
+      sessions: { [session.connectionId]: { ...session, id: "other" } },
+    });
+  });
+  // Commit the new props before checking the replacement session. A pending
+  // rerender cannot revoke an otherwise valid currently installed handler.
+  view.rerender(<RelationBrowser sessionId="other" ownerTabId={ownerTabId} onClose={vi.fn()} />);
+  await waitFor(() => {
+    expect(screen.getByRole("option", { name: /S.Quoted Table/ }).getAttribute("value")).toBe(
+      "replacement-opaque-target",
+    );
+  });
+  expect(screen.queryByRole("button", { name: /^Select referenced table/ })).toBeNull();
+  expect(screen.queryByRole("table", { name: "Key column mapping inventory" })).toBeNull();
+  expect((screen.getByLabelText("Relation") as HTMLSelectElement).value).toBe("");
+  expect((screen.getByLabelText("Find relation") as HTMLInputElement).value).toBe("Quoted Table");
+  expect(
+    (screen.getByRole("button", { name: "Inspect relation" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(vi.mocked(client.call).mock.calls.slice(before)).toEqual([
+    ["relation_catalog", { sessionId: "other" }],
+  ]);
+});
+
+it.each([
+  "refresh",
+  "owner",
+  "owner revision",
+  "context",
+  "transaction hold",
+  "metadata hold",
+  "DDL metadata hold",
+  "schema hold",
+  "capability",
+])("rejects still-connected stale activation after %s before React commits", async (change) => {
+  const { view, session } = renderReferenceNavigation();
+  const button = await loadReferenceButton();
+  const filter = screen.getByLabelText("Find relation") as HTMLInputElement;
+  filter.focus();
+  const bubbled = vi.fn();
+  view.container.addEventListener("click", bubbled);
+  act(() => {
+    if (change === "refresh")
+      fireEvent.click(screen.getByRole("button", { name: "Refresh relations" }));
+    else if (change === "owner") useStudio.setState({ tabs: [] });
+    else if (change === "owner revision")
+      useStudio.setState((state) => ({
+        tabs: state.tabs.map((tab) => ({ ...tab, revision: tab.revision + 1 })),
+      }));
+    else if (change === "context") useStudio.setState({ sessionContextRevision: { s: 1 } });
+    else if (change === "capability")
+      useStudio.setState({
+        sessions: {
+          [session.connectionId]: {
+            ...session,
+            capabilities: { ...session.capabilities, relationBrowsing: false },
+          },
+        },
+      });
+    else {
+      const key =
+        change === "transaction hold"
+          ? "sessionTransactionPending"
+          : change === "metadata hold"
+            ? "sessionMetadataRefreshRequired"
+            : change === "DDL metadata hold"
+              ? "sessionDdlCatalogRefreshRequired"
+              : "sessionContextSwitching";
+      useStudio.setState({ [key]: { s: true } });
+      useStudio.setState({ [key]: {} });
+    }
+    // The old React handler is still installed: dispatch bubbles through the
+    // mounted root before this outer batch may commit the invalidation.
+    expect(button.isConnected).toBe(true);
+    const before = vi.mocked(client.call).mock.calls.length;
+    bubbled.mockClear();
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(button.isConnected).toBe(true);
+    expect(bubbled).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledTimes(before);
+  });
+  expect(filter.value).toBe("Quoted Table");
+  expect(document.activeElement).not.toBe(screen.getByLabelText("Relation"));
+  expect((screen.getByLabelText("Relation") as HTMLSelectElement).value).not.toBe(
+    "opaque-qualified-destination",
+  );
+});

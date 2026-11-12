@@ -3402,6 +3402,9 @@ mod session_tests {
     mod read_spec_tests {
         include!("snowflake_read_spec_adapter_tests.rs");
     }
+    mod reference_navigation_tests {
+        include!("snowflake_reference_navigation_tests.rs");
+    }
     mod relation_definition_tests {
         include!("snowflake_relation_definition_adapter_tests.rs");
     }
@@ -3441,6 +3444,16 @@ const sdk = { createConnection() {
       if (settingsText !== previousSettings) { previousSettings = settingsText; contextReads = 0; transactionReads = 0; definitionSeen = false; constraintsSeen = false; mappingSeen = false; }
       const settings = JSON.parse(settingsText);
       const value = (key, fallback) => Object.hasOwn(settings, key) ? settings[key] : fallback;
+      // Opt-in navigation fixture; ordinary observer/qualification fixtures keep
+      // their original inventories and routing unchanged.
+      const navigation = settings.referenceNavigation === true;
+      const navigationSchema = `Ref."Schema'雪`;
+      const navigationTable = `Shared."Table'雪`;
+      const predicate = column => {
+        const match = new RegExp(column + " = '((?:[^']|'')*)'", 'u').exec(sql);
+        return match ? match[1].replaceAll("''", "'") : null;
+      };
+
       const context = sql === normalizedContextSql;
       const unsupportedContext = sql === oldContextSql;
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
@@ -3504,8 +3517,8 @@ const sdk = { createConnection() {
         names = mappingKind === 'Foreign' ? ['FK_DATABASE_NAME','FK_SCHEMA_NAME','FK_TABLE_NAME','FK_COLUMN_NAME','KEY_SEQUENCE','FK_NAME','PK_DATABASE_NAME','PK_SCHEMA_NAME','PK_TABLE_NAME','PK_COLUMN_NAME','PK_NAME'] : ['DATABASE_NAME','SCHEMA_NAME','TABLE_NAME','COLUMN_NAME','KEY_SEQUENCE','CONSTRAINT_NAME'];
         const key = mappingKind === 'Primary' ? 'ORDERS_PK' : 'ORDERS_UQ';
         rows = value('mapping' + mappingKind + 'Rows', mappingKind === 'Foreign' ? [
-          ['DB','PUBLIC','ORDERS','PARENT_B','2','ORDERS_PARENT_FK','DB','PUBLIC','PARENTS','B','PARENT_PK'],
-          ['DB','PUBLIC','ORDERS','PARENT_A','1','ORDERS_PARENT_FK','DB','PUBLIC','PARENTS','A','PARENT_PK'],
+          ['DB','PUBLIC','ORDERS','PARENT_B','2','ORDERS_PARENT_FK','DB',navigation ? navigationSchema : 'PUBLIC',navigation ? navigationTable : 'PARENTS','B','PARENT_PK'],
+          ['DB','PUBLIC','ORDERS','PARENT_A','1','ORDERS_PARENT_FK','DB',navigation ? navigationSchema : 'PUBLIC',navigation ? navigationTable : 'PARENTS','A','PARENT_PK'],
         ] : [['DB','PUBLIC','ORDERS','B','2',key],['DB','PUBLIC','ORDERS','A','1',key]]);
         if (settings.mappingColumnName !== undefined) names[0] = settings.mappingColumnName;
       } else if (constraints) {
@@ -3514,7 +3527,7 @@ const sdk = { createConnection() {
         names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','CONSTRAINT_CATALOG','CONSTRAINT_SCHEMA','CONSTRAINT_NAME','CONSTRAINT_TYPE','IS_DEFERRABLE','INITIALLY_DEFERRED','ENFORCED','RELY','COMMENT','FK_CONSTRAINT_CATALOG','FK_CONSTRAINT_SCHEMA','FK_CONSTRAINT_NAME','UNIQUE_CONSTRAINT_CATALOG','UNIQUE_CONSTRAINT_SCHEMA','UNIQUE_CONSTRAINT_NAME','MATCH_OPTION','UPDATE_RULE','DELETE_RULE'];
         const key = (name, kind) => ['DB','PUBLIC','ORDERS','DB','PUBLIC',name,kind,'NO','YES','NO','NO',null,...Array(9).fill(null)];
         const foreign = key('ORDERS_PARENT_FK','FOREIGN KEY');
-        foreign.splice(12,9,'DB','PUBLIC','ORDERS_PARENT_FK','DB','PUBLIC','PARENT_PK','FULL','NO ACTION','NO ACTION');
+        foreign.splice(12,9,'DB','PUBLIC','ORDERS_PARENT_FK','DB',navigation ? navigationSchema : 'PUBLIC','PARENT_PK','FULL','NO ACTION','NO ACTION');
         rows = value('constraintRows',[key('ORDERS_PK','PRIMARY KEY'),key('ORDERS_UQ','UNIQUE'),foreign]);
         if (settings.constraintColumnName !== undefined) names[0] = settings.constraintColumnName;
       } else if (definition) {
@@ -3523,7 +3536,7 @@ const sdk = { createConnection() {
         rows = value('definitionRows',[[value('definition','create or replace table "DB"."PUBLIC"."ORDERS" (ID NUMBER);')]]);
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
-        rows = value('schemas',['OTHER','PUBLIC']).map(name => ['DB',name]);
+        rows = value('schemas',navigation ? ['PUBLIC',navigationSchema] : ['OTHER','PUBLIC']).map(name => ['DB',name]);
       } else if (relations) {
         names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE','CREATED','LAST_DDL'];
         const schema = sql.includes("TABLE_SCHEMA = 'OTHER'") ? 'OTHER' : 'PUBLIC';
@@ -3532,10 +3545,25 @@ const sdk = { createConnection() {
         const transient = value('isTransient','NO');
         const lastDdl = mappingSeen ? value('afterMappingLastDdl',value('lastDdl','last-ddl')) : constraintsSeen ? value('afterConstraintsLastDdl',value('lastDdl','last-ddl')) : definitionSeen ? value('afterDefinitionLastDdl',value('lastDdl','last-ddl')) : ddlSeen ? value('afterLastDdl','last-ddl') : value('lastDdl','last-ddl');
         rows = settings.emptyRelations ? [] : [['DB',schema,table,kind,transient,'NO','NO',value('isDynamic','NO'),'NO','NO','created',lastDdl]];
+        if (navigation) {
+          const exactSchema = predicate('TABLE_SCHEMA');
+          const exactTable = predicate('TABLE_NAME');
+          if (!['PUBLIC', navigationSchema].includes(exactSchema)) throw new Error('unexpected navigation schema');
+          rows = settings.emptyRelations ? [] : ['ORDERS',navigationTable]
+            .filter(name => exactTable === null || name === exactTable)
+            .map(name => ['DB',exactSchema,name,kind,transient,'NO','NO',value('isDynamic','NO'),'NO','NO','created',lastDdl]);
+        }
+
       } else if (columnMetadata) {
         names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','COLUMN_NAME','ORDINAL_POSITION','COLUMN_DEFAULT','IS_NULLABLE','DATA_TYPE','DATA_TYPE_ALIAS','CHARACTER_MAXIMUM_LENGTH','CHARACTER_OCTET_LENGTH','NUMERIC_PRECISION','NUMERIC_PRECISION_RADIX','NUMERIC_SCALE','IS_IDENTITY','IDENTITY_GENERATION','IDENTITY_START','IDENTITY_INCREMENT','IDENTITY_ORDERED','COMMENT','EXPRESSION','KIND'];
         const table = value('tableName','ORDERS');
         rows = [['DB','PUBLIC',table,'ID','1','42','NO','NUMBER','BIGINT',null,null,'38','10','0','NO',null,null,null,null,'identifier',null,'COLUMN'],['DB','PUBLIC',table,'NOTES','3',null,'YES','TEXT',null,'100','400',null,null,null,'NO',null,null,null,null,null,null,'COLUMN']];
+        if (navigation) {
+          const exactSchema = predicate('TABLE_SCHEMA'), exactTable = predicate('TABLE_NAME');
+          if (!['PUBLIC',navigationSchema].includes(exactSchema) || !['ORDERS',navigationTable].includes(exactTable)) throw new Error('unexpected navigation columns target');
+          rows = rows.map(row => ['DB',exactSchema,exactTable,...row.slice(3)]);
+        }
+
       } else if (describe) {
         names = ['name','type','kind','null?','default','expression','comment'];
         rows = [['ID','NUMBER(38,0)',value('descriptorKind','COLUMN'),'N','42',null,'identifier'],['NOTES','VARCHAR(100)','COLUMN','Y',null,null,null]];

@@ -24,6 +24,24 @@ own eligibility, online activation/renewal and telemetry terms. See the
 and [registration and licensing](https://www.jetbrains.com/help/datagrip/register.html).
 AI service/subscription/provider access is separate from that IDE license.
 
+## Targeted constraint refresh (12 November 2026)
+
+Current Snowflake documentation confirms CHECK constraints for standard, hybrid
+and Snowflake-managed Iceberg tables, with enforcement. Hybrid tables accept
+them during creation; adding one afterward is unsupported. CHECK inspection
+therefore remains required, while a hybrid ALTER ADD CHECK action must reflect
+the engine limitation. This targeted refresh does not qualify any account or
+refresh the full 9 November inventory. See the
+[constraint overview](https://docs.snowflake.com/en/sql-reference/constraints-overview)
+and [hybrid CHECK rules](https://docs.snowflake.com/en/sql-reference/sql/create-hybrid-table#check-constraints).
+
+The [CHECK_CONSTRAINTS view](https://docs.snowflake.com/en/sql-reference/info-schema/check_constraints)
+provides constraint database/schema/table/name and expression, subject to the
+current role's object visibility. A future inspector must preserve those
+identities and visibility limits; this metadata is not proof that existing data
+was validated or that a row can be edited safely. No account reads or DDL were
+performed for this research.
+
 ## Connector route: recommended candidate, not yet qualified
 
 The exact user requirement is Snowflake SAML federated SSO using

@@ -55,6 +55,7 @@ and remaining account qualification. Local source also provides revision-bound
 [relation browsing, column inspection and read-only preview](docs/snowflake-sdk-browsing-design.md),
 generated table/view DDL, [declared key inspection](docs/snowflake-sdk-constraints-design.md)
 and [ordered key column mappings](docs/snowflake-sdk-key-mappings-design.md),
+including local [selection of a retained referenced table](docs/snowflake-sdk-key-mappings-design.md#referenced-table-selection),
 explicit [session observations](docs/snowflake-sdk-session-observation.md), and
 [guarded schema selection](docs/snowflake-sdk-session-design.md), whose local
 application qualification passes. Separately reviewed

@@ -57,6 +57,18 @@ separate from DataGrip's non-commercial IDE license. [AI Assistant docs](https:/
 | Installation, updates, and local persistence | Standalone installs and Toolbox-managed installs have update channels/policies, with automatic update checks enabled by default for standalone. Projects store data-source settings in `.idea/dataSources.xml`; personal IDE settings, caches/Local History, and projects occupy separate configuration, system, and projects directories. Backup and Sync can copy/sync selected settings through a JetBrains Account; projects/files remain local unless otherwise shared. [Update DataGrip (2026.3)](https://www.jetbrains.com/help/datagrip/update.html), [project data (2026.3)](https://www.jetbrains.com/help/datagrip/working-with-projects.html), [IDE directories (2026.3)](https://www.jetbrains.com/help/datagrip/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html), [settings sync (2026.3)](https://www.jetbrains.com/help/datagrip/sharing-your-ide-settings.html), [data sources](https://www.jetbrains.com/help/datagrip/managing-data-sources.html) |
 | AI and agents | AI Assistant provides chat, in-editor assistance, and coding agents. It can use database objects as context; external agents can connect via ACP, and MCP can expose tools or the IDE. In 2026.3, Air is included by default with a free Junie Lite configuration. This is a provider-dependent capability layer in the required applicability inventory and does not change non-commercial licensing parity for core IDE functionality. [AI Assistant](https://www.jetbrains.com/help/datagrip/ai-assistant-in-jetbrains-ides.html), [2026.3 What's New](https://www.jetbrains.com/datagrip/whatsnew/) |
 
+## Targeted relationship refresh (12 November 2026)
+
+The currently served foreign-key and data-exploration help pages label themselves
+2026.2. They document explicit and virtual foreign keys, relationship-assisted
+JOIN completion/diagrams, and navigation from selected cells to related rows.
+These remain in the full applicable acceptance inventory. Joinery's separate
+table-selection increment supplies no evidence for those related-row or
+relationship-authoring workflows. See
+[foreign keys](https://www.jetbrains.com/help/datagrip/foreign-keys.html) and
+[data exploration](https://www.jetbrains.com/help/datagrip/explore-data-in-data-editor.html#navigation-by-foreign-keys).
+This targeted page check does not change the stable-release baseline above.
+
 ## Scope notes for comparisons
 
 - Official feature pages describe the product generally; they do not guarantee

@@ -1,5 +1,34 @@
 # Implementation and release status
 
+## Referenced Snowflake table selection (12 November 2026)
+
+The relation browser adds **Select referenced table** for a complete foreign-key
+mapping whose full database/schema/table identity resolves to exactly one
+available retained catalog target. It clears the filter and old details,
+selects the existing opaque target ID and focuses the Relation selector, without
+an RPC. Further inspection remains explicit. Missing, ambiguous, unavailable and
+external-database targets have visible explanations. Live ownership/context and
+invalidation checks reject stale actions, including transient transaction and
+metadata holds.
+
+Focused UI tests pass 97/97, three new backend regressions and all 97 synthetic
+SDK session regressions pass, and production backend source is unchanged. Full
+validation passes 762 frontend / 481 standard Rust tests with 129 fixture/helper
+ignores and strict checks; the changed synthetic browser workflow passes 1/1.
+Independent bounded review has no material finding. Hidden native startup/IPC
+and 10 cleanup cycles pass; normal packaging remains pending. The
+[contract](snowflake-sdk-key-mappings-design.md#referenced-table-selection),
+[prepared walkthrough](migration-from-datagrip.md#referenced-snowflake-tables-prepared-acceptance-walkthrough)
+and [ledger](replacement-verification.md) record source-specific results and
+remaining checks. Earlier package evidence does not qualify this changed UI.
+
+Cross-database/inbound/related-row navigation, CHECK constraints, dynamic-table
+mappings and complete object coverage remain required. Live Snowflake writes,
+transactions, DDL, million-row interaction/export, normal packaged SSO/recovery
+and hands-on replacement acceptance remain open. No account request, owner
+marker-store access, installation or publication is included. The Goal remains
+active and incomplete.
+
 ## Ordered Snowflake key columns (12 November 2026)
 
 The relation browser adds a separate **View key column mappings** action for

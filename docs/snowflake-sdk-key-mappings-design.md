@@ -2,7 +2,10 @@
 
 ## Scope and acceptance
 
-Implemented locally; source, browser and hidden native checks pass. The
+The ordered-mapping increment is locally verified on 54f59b6; source, browser,
+hidden native and package checks pass for that source. Referenced-table
+selection is a separate increment below; source, browser and hidden native
+checks pass, with normal packaging verification pending. The
 [verification ledger](replacement-verification.md) records completed checks and
 their source identity. Actual Snowflake and
 normal packaged acceptance remain open. This extends the
@@ -14,8 +17,9 @@ The required workflow is to select a retained relation, inspect ordered primary,
 unique and foreign-key columns, retain the local/referenced pairing of composite
 foreign keys, distinguish unavailable mappings from absent declarations, recover
 from a denied request, and discard stale results after refresh or context changes.
-Referenced tables are displayed with their database and schema; clickable table
-navigation, inbound references, dynamic-table mappings, CHECK constraints and
+Referenced tables are displayed with their database and schema. Local selection
+of retained referenced tables is described below. Cross-database navigation,
+inbound references, dynamic-table mappings, CHECK constraints and
 complete object inspection remain required work. Mappings do not enable grid
 editing or establish safe row identity.
 
@@ -107,6 +111,44 @@ The UI distinguishes not fetched, empty declarations, unavailable/unsupported
 mappings and action failure. Selection, filter, refresh, owner/session changes,
 context changes and transaction/metadata holds invalidate stored/outstanding
 results. Late responses and mismatched returned identities cannot publish.
+
+## Referenced-table selection
+
+Implemented locally; source/browser/hidden native checks and independent review
+pass. Normal packaging remains pending. **Select referenced table** is
+a local navigation action for a complete, available foreign-key mapping. Resolve
+the full database/schema/table identity against the entire retained catalog,
+including entries hidden by the current text filter. Require exactly one match
+before checking its availability; an unavailable duplicate must not be filtered
+away to choose an available sibling. Preserve exact case and quoting. Never fall
+back to a table name alone.
+
+Selection clears the filter, previous metadata/error panels and pagination,
+selects the destination's existing opaque target ID, and focuses the Relation
+selector. It does not load metadata, preview data or issue any RPC. Subsequent
+inspection, definitions, key reads and previews remain explicit actions using
+their existing retained-target admission and context checks. No refresh,
+connection, USE or session-context switch is performed by navigation.
+
+Activation must recheck the live owner/session/context and a render-captured
+invalidation generation. A transaction or metadata hold that starts and ends in
+one React batch still revokes the old action, even if the context value returns
+to its previous value before rendering. Refresh, owner replacement, unmount and
+new work likewise prevent a captured old handler from selecting a target.
+
+Explain missing, ambiguous, unavailable and external-database destinations.
+The current catalog is scoped to the profile database and covers multiple
+schemas. Cross-database navigation remains required and needs a separately
+admitted database-scoped retained catalog; existing schema-switch authority is
+not a substitute. Names remain observations, not immutable object identity or
+edit authority. Inbound-reference discovery remains required.
+
+The read-only design was reviewed on clean 54f59b6 with Tier 2 generation
+2026-11-12T07:01:27Z, coverage for ten evidence paths and direct source reads.
+Implementation-specific review and test evidence belong in the
+[verification ledger](replacement-verification.md). Actual role visibility,
+external DDL and normal packaged macOS keyboard/focus behavior remain acceptance
+gates; this contract authorizes no account requests.
 
 ## Required verification
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type {
   BrowseCatalog,
   RelationConstraintMappings,
@@ -18,6 +18,42 @@ const PAGE_COLUMNS = 20;
 
 function quotedName(...parts: string[]) {
   return parts.map((part) => `"${part.replaceAll('"', '""')}"`).join(".");
+}
+
+type KeyMapping = RelationConstraintMappings["mappings"][number];
+
+function referencedDestination(catalog: BrowseCatalog | null, mapping: KeyMapping) {
+  const reference = mapping.referencedTable;
+  if (!catalog || mapping.kind !== "foreignKey" || mapping.status !== "available" || !reference)
+    return null;
+  if (reference.database !== catalog.database)
+    return {
+      reason:
+        "The referenced table is in another database. Cross-database navigation is not available yet.",
+      target: null,
+    };
+  // Count every exact identity before availability; a hidden/shadowed duplicate
+  // must never let an available sibling win by elimination.
+  const matches = catalog.relations.filter(
+    (entry) =>
+      entry.database === reference.database &&
+      entry.table.schema === reference.table.schema &&
+      entry.table.name === reference.table.name,
+  );
+  if (matches.length === 0)
+    return {
+      reason:
+        "The referenced table is absent from this retained catalog. Refresh relations explicitly to check visibility.",
+      target: null,
+    };
+  if (matches.length !== 1)
+    return { reason: "The referenced table identity is ambiguous in this catalog.", target: null };
+  if (matches[0].availability !== "available")
+    return {
+      reason: `The referenced table is unavailable (${matches[0].availability}).`,
+      target: null,
+    };
+  return { reason: null, target: matches[0] };
 }
 
 function relationContextKey(
@@ -91,6 +127,9 @@ export function RelationBrowser({
     return !!owner && querySessionForTab(owner, state.sessions)?.id === sessionId;
   });
   const contextKey = useStudio((state) => relationContextKey(state, sessionId, ownerTabId));
+  const renderedOwner = ownerTabId
+    ? useStudio.getState().tabs.find((tab) => tab.id === ownerTabId)
+    : undefined;
   const canDdl =
     session?.capabilities.snowflakeReviewedDdl === true &&
     profile?.snowflake?.reviewedDdl === true &&
@@ -120,6 +159,11 @@ export function RelationBrowser({
   const [rowPage, setRowPage] = useState(0);
   const [columnPage, setColumnPage] = useState(0);
   const generation = useRef(0);
+  const activationEpoch = generation.current;
+  const navigationId = useId();
+  const relationSelector = useRef<HTMLSelectElement>(null);
+  const retainedSelection = useRef({ catalog, mappings, selected, sessionId, ownerTabId });
+  retainedSelection.current = { catalog, mappings, selected, sessionId, ownerTabId };
   const mounted = useRef(false);
   const renderedContext = useRef(contextKey);
   renderedContext.current = contextKey;
@@ -325,6 +369,68 @@ export function RelationBrowser({
       setMappings({ contextKey, value: result });
     }, setMappingsError);
   };
+  const selectReferencedTable = (mapping: KeyMapping) => {
+    const fresh = useStudio.getState();
+    const owner = ownerTabId ? fresh.tabs.find((tab) => tab.id === ownerTabId) : undefined;
+    const liveSession = ownerTabId
+      ? owner && querySessionForTab(owner, fresh.sessions)
+      : Object.values(fresh.sessions).find((entry) => entry.id === sessionId);
+    const runtime = fresh.sessionStates[sessionId];
+    const retained = retainedSelection.current;
+    if (
+      !mounted.current ||
+      activationEpoch !== generation.current ||
+      busy ||
+      !liveSession ||
+      liveSession.id !== sessionId ||
+      !liveSession.capabilities.relationBrowsing ||
+      (ownerTabId && owner?.revision !== renderedOwner?.revision) ||
+      fresh.sessionTransactionPending[sessionId] ||
+      fresh.sessionMetadataRefreshRequired[sessionId] ||
+      fresh.sessionDdlCatalogRefreshRequired[sessionId] ||
+      fresh.sessionContextSwitching[sessionId] ||
+      runtime?.transactionControlAuthority?.status === "rollbackOnly" ||
+      renderedContext.current !== contextKey ||
+      relationContextKey(fresh, sessionId, ownerTabId) !== contextKey ||
+      retained.catalog !== catalog ||
+      retained.mappings !== mappings ||
+      retained.selected !== selected ||
+      retained.sessionId !== sessionId ||
+      retained.ownerTabId !== ownerTabId ||
+      !catalog ||
+      !mappings ||
+      !target ||
+      mappings.contextKey !== contextKey ||
+      mappings.value.revision !== catalog.revision ||
+      mappings.value.targetId !== target.targetId ||
+      mappings.value.database !== catalog.database ||
+      mappings.value.table.schema !== target.table.schema ||
+      mappings.value.table.name !== target.table.name ||
+      target.database !== catalog.database ||
+      target.availability !== "available" ||
+      !mappings.value.mappings.includes(mapping) ||
+      mapping.columns.length === 0 ||
+      mapping.columns.some((column) => column.referencedColumnName === null)
+    )
+      return;
+    const destination = referencedDestination(catalog, mapping)?.target;
+    if (!destination) return;
+    generation.current++;
+    setSearch("");
+    setDdlRequest(null);
+    setSelected(destination.targetId);
+    setInspection(null);
+    setPreview(null);
+    setDefinition(null);
+    setConstraints(null);
+    setConstraintsError(null);
+    setMappings(null);
+    setMappingsError(null);
+    setError(null);
+    setRowPage(0);
+    setColumnPage(0);
+    relationSelector.current?.focus();
+  };
   const matches =
     catalog?.relations.filter((entry) =>
       `${entry.table.schema}.${entry.table.name}`
@@ -399,6 +505,7 @@ export function RelationBrowser({
         <label>
           Relation
           <select
+            ref={relationSelector}
             aria-label="Relation"
             disabled={busy || !catalog}
             value={selected}
@@ -676,10 +783,11 @@ export function RelationBrowser({
                         <th>Column</th>
                         <th>Referenced table</th>
                         <th>Referenced column</th>
+                        <th>Navigation</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {mappings.value.mappings.flatMap((mapping) => {
+                      {mappings.value.mappings.flatMap((mapping, mappingIndex) => {
                         const identity = quotedName(mapping.catalog, mapping.schema, mapping.name);
                         const kind =
                           mapping.kind === "primaryKey"
@@ -693,13 +801,14 @@ export function RelationBrowser({
                             : mapping.status === "notVisible"
                               ? "Not visible"
                               : "Unsupported";
+                        const destination = referencedDestination(catalog, mapping);
                         const columns =
                           mapping.status === "available"
                             ? [...mapping.columns].sort(
                                 (left, right) => left.ordinal - right.ordinal,
                               )
                             : [null];
-                        return columns.map((column) => (
+                        return columns.map((column, index) => (
                           <tr
                             key={JSON.stringify([
                               mapping.catalog,
@@ -730,6 +839,36 @@ export function RelationBrowser({
                                   ? "Not applicable"
                                   : "—"
                                 : quotedName(column.referencedColumnName)}
+                            </td>
+                            <td>
+                              {destination && mapping.referencedTable && index === 0 ? (
+                                <>
+                                  <button
+                                    className="button small"
+                                    aria-label={`Select referenced table ${quotedName(mapping.referencedTable.database, mapping.referencedTable.table.schema, mapping.referencedTable.table.name)}`}
+                                    aria-describedby={
+                                      destination.reason
+                                        ? `${navigationId}-${mappingIndex}`
+                                        : undefined
+                                    }
+                                    disabled={
+                                      busy ||
+                                      !session?.capabilities.relationBrowsing ||
+                                      !destination.target
+                                    }
+                                    onClick={() => selectReferencedTable(mapping)}
+                                  >
+                                    Select referenced table
+                                  </button>
+                                  {destination.reason && (
+                                    <p id={`${navigationId}-${mappingIndex}`} role="note">
+                                      {destination.reason}
+                                    </p>
+                                  )}
+                                </>
+                              ) : (
+                                "—"
+                              )}
                             </td>
                           </tr>
                         ));

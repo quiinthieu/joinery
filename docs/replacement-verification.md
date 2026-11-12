@@ -8,6 +8,111 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Referenced-table selection (12 November 2026)
+
+Local source, browser and hidden native checks pass. The
+[selection contract](snowflake-sdk-key-mappings-design.md#referenced-table-selection)
+defines exact retained-target navigation without an RPC or session switch.
+Cross-database navigation, inbound relationships, related-row navigation and
+actual account/native acceptance remain required. Earlier package evidence does
+not qualify changed source.
+
+Evidence uses `.cache/verification/reference-navigation/`. The backend worker
+froze its two test files before checks; source-freeze-backend.json records those
+hashes and clean documentation HEAD 97d5f4d. The checkout was dirty with the new
+implementation. Rust-only command receipts capture the two changed Rust files
+while UI work continues separately. The 135,125-byte production prefix before
+the cfg attribute gating session_tests is byte-identical to that HEAD
+(production-prefix.json). No production driver command, SQL factory, ACL or
+frozen account-ledger admission is changed.
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib reference_navigation_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests:: -- --test-threads=3
+```
+
+Both completed commands exit 0 with unchanged captured Rust source: 3/3 focused
+regressions (rust-focused.log), then 97/97 synthetic SDK session regressions
+(rust-sdk-regressions.log). They select pinned Rust 1.99.1 and repository-local
+Node 24.22.2/JOINERY_TEST_NODE. Cases traverse source FK mapping to the exact
+quoted cross-schema opaque target among same-name alternatives, assert fully
+qualified reads/empty binds, one helper connection, unchanged context and no
+USE/ALTER SESSION. Forged/stale targets reject before SQL; post-inspection drift
+revokes the destination. These synthetic results do not prove account behavior.
+
+Independent review of the two-file backend delta has no material finding.
+Tier 2 generation 2026-11-12T07:10:53Z reports matching metadata/no recorded issue
+for both paths, supplemented with direct reads. Existing fixture defaults and
+SQL inventory checks are preserved. Root graph discovery/coverage still returns
+Transport closed, so bounded source reads supplement delegated graph evidence.
+The first focused UI run exits 1: 96 pass and one pending-session-rerender
+case fails (frontend-focused.log). That fixture queued new props inside an outer
+React batch, then expected the still-authoritative old handler to reject before
+the replacement rendered. The corrected test actually replaces the live session,
+commits new props and awaits the new catalog. It checks that the old mapping
+action disappears and only the replacement catalog RPC is sent. Production UI
+and browser source do not change for this correction. All 97 focused UI tests
+then pass, exit 0 (frontend-corrected.log).
+
+source-freeze-initial.json preserves the first five-file snapshot;
+source-freeze-final.json records the corrected snapshot. The lead temporarily
+removed only `activationEpoch !== generation.current` and ran the single
+still-connected transaction-hold regression. It fails as expected, exit 1
+(frontend-epoch-mutant.log): the stale click incorrectly clears the filter.
+epoch-mutation-result.json records original/mutated/restored hashes and exact
+restoration before independent UI review or full validation. This demonstrates
+that the transient-hold regression exercises the generation guard. No mutant
+source is retained in the implementation.
+
+Independent bounded UI review has no material finding. Its Tier 2 generation
+2026-11-12T07:13:02Z covers the three UI/browser files and the contract/walkthrough.
+The TSX metadata changed after exact-byte restoration, so the reviewer inspected
+the current functions/component directly; the other four paths report matching
+metadata and no recorded issue. Full relevant direct reads and snippets/trace
+supplement coverage. ui-review.json records the scope; the reviewer ran no builds
+or tests. All three reviewed source hashes match the final freeze.
+
+Full validation exits 0 with unchanged captured source (validate.log / json),
+513.535 seconds: 762 frontend / 481 standard Rust tests, 129 fixture/helper
+ignores, formatting, TypeScript, production UI build, compiler checks and strict
+all-target/all-feature Clippy. environment.json records pinned Node 24.22.2,
+pnpm 11.23.0 and Rust/Cargo 1.99.1. Nonfatal ts-rs attribute and Vite chunk/timing
+warnings remain visible in the log.
+
+Completed UI/application commands:
+
+```sh
+pnpm exec vitest run src/features/studio/RelationBrowser.test.tsx
+pnpm validate
+pnpm exec playwright test tests/e2e/snowflake-sdk-browsing.spec.ts
+pnpm desktop:smoke:build
+python3 scripts/native-smoke.py --runs 1
+```
+
+The changed headless browser workflow passes 1/1, exit 0 with unchanged source
+(browser.log / json), 36.612 seconds. It selects the quoted cross-schema target
+while the text filter hides it and a same-name decoy remains in another schema.
+Keyboard activation makes zero RPCs, clears the filter/details and focuses the
+exact retained destination. A later explicit **Inspect relation** sends that
+destination's opaque ID. Existing denial/empty/unsupported and held-response
+flows also pass. Synthetic IPC exercises the real UI, not account metadata or
+normal packaged macOS focus behavior. No user browser profile is used.
+
+Hidden native build and runner both exit 0 with unchanged frozen source
+(native-build.log / native-smoke.log). The build takes 312.169 seconds including
+frontend/preparation; optimized compilation takes 3m52s. The synthetic hidden
+runner passes 20 check categories and 10 cleanup cycles, 3,524 ms native elapsed
+and 99.45 MiB main-process peak RSS. This is startup/IPC/cleanup evidence, not
+native account navigation, visible cold startup or representative performance.
+Runtime resources are absent in this hidden fixture. native-final-build.json and
+native-final-runs.json preserve its source/binary identity and run details before
+the normal build replaces the release binary. The known nonfatal LLVM
+rust-objcopy/libLLVM stripping warning is retained.
+
+All five final frozen source/browser files still match. A new normal package
+remains pending. No account requests, private marker-store access, installation,
+push or publication occurred.
+
 ### Ordered Snowflake key columns (12 November 2026)
 
 Local source verification passes. The independent

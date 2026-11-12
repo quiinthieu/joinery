@@ -1,5 +1,66 @@
 # Joinery implementation roadmap
 
+## Product increment: select a referenced table (12 November 2026)
+
+**Select referenced table** is implemented locally; source and browser checks
+pass. It resolves the exact foreign-key database/schema/table against the
+entire retained catalog, requires one match before checking availability, clears
+the filter and old details, selects the retained opaque target and focuses the
+Relation selector. It sends no RPC. Visible explanations cover missing,
+ambiguous, unavailable and external-database destinations. Fresh ownership,
+context and render-generation checks protect activation across refresh and
+transient holds.
+
+Three focused backend regressions and all 97 synthetic SDK session regressions
+pass, proving exact quoted cross-schema inspection against the existing backend
+admission. Focused UI tests pass 97/97; full validation passes 762 frontend /
+481 standard Rust tests (129 fixture/helper ignores) and strict checks. The
+changed synthetic browser workflow passes 1/1. Independent bounded review has
+no material finding. Production backend source is unchanged. The
+[contract](snowflake-sdk-key-mappings-design.md#referenced-table-selection),
+[prepared walkthrough](migration-from-datagrip.md#referenced-snowflake-tables-prepared-acceptance-walkthrough)
+and [ledger](replacement-verification.md) record results. Hidden native
+startup/IPC and 10 cleanup cycles pass; normal packaging remains pending.
+
+Cross-database navigation remains required and needs a separately admitted
+database-scoped retained catalog; do not relax profile-database checks or borrow
+schema-switch authority. Inbound/related-row navigation, virtual foreign keys,
+JOIN completion and diagrams remain in the required applicability inventory.
+Current official Snowflake documentation confirms CHECK constraints are
+applicable; their inventory remains required. Dynamic-table mappings,
+dependencies, complete object coverage, safe grid editing/import, general SQL,
+broader schema changes, performance tools and actual million-row Snowflake
+interaction/export remain open. Normal packaged SSO/recovery, live account
+effects and owner hands-on acceptance remain gates. The Goal is active and
+incomplete; no new account activity is authorized.
+
+### Next increment: CHECK-constraint inspection
+
+Planned, not implemented. Add an independent retained-target
+`inspect_relation_check_constraints` action. The official
+[CHECK_CONSTRAINTS view](https://docs.snowflake.com/en/sql-reference/info-schema/check_constraints)
+provides constraint catalog/schema/table/name and clause directly. Use one closed
+read against the fully quoted retained database, binding its exact catalog,
+schema and table; no constraint-name join or schema-wide fallback is needed.
+Reuse the serialized relation lane, retained revision/opaque target and pre/post
+context/relation checks. Preserve current unavailable-target admission.
+
+The proposed response retains the target identity and five text fields per
+constraint. Bound it to 1,000 rows with an overflow sentinel and 1 MiB, reject
+incomplete/malformed/duplicate/mismatched rows, and preserve clause text as inert
+read-only text. Empty role-visible results and denied requests remain distinct;
+neither grants editing authority or proves engine eligibility. The view supplies
+no enforced/validated flag. Current traits do not distinguish Snowflake-managed
+and externally managed Iceberg tables, so do not infer support from that flag.
+
+The read-only design review used Tier 2 generation 2026-11-12T07:13:02Z,
+coverage for nine source paths, snippets/trace and direct reads. Required
+regressions include quoted cross-schema identities, same names on other tables,
+multiline/Unicode clauses, malformed/NULL/duplicate/overflow results,
+denial/empty states, forged/stale IDs before SQL, held reads and context drift,
+independent UI failure and stale-result invalidation. No files, tests, builds,
+account requests or qualification-ledger authority changed for that review.
+
 ## Product increment: ordered key columns (12 November 2026)
 
 The separate Snowflake **View key column mappings** action is implemented locally.
@@ -27,30 +88,10 @@ broader schema changes, performance tools and actual million-row Snowflake
 interaction/export remain required. Normal packaged SSO/recovery and owner
 hands-on acceptance remain gates; the Goal is active and incomplete.
 
-### Next increment: select a referenced table
-
-Planned, not implemented. Add a keyboard-accessible action that resolves a full
-foreign-key database/schema/table identity to exactly one available target in the
-retained catalog. Clear the filter and old details, select its existing opaque
-target ID and focus the relation selector without SQL. Inspection and preview
-remain separate explicit actions. Explain missing, ambiguous, unavailable and
-external-database destinations; never fall back to a name alone or automatically
-refresh, connect or switch context.
-
-Before activation, recheck live store ownership/context and the render's
-invalidation generation. A hold that begins and ends in one React batch must
-still revoke a captured old click handler. UI ownership is RelationBrowser.tsx,
-its unit tests and the existing browsing browser test. Backend changes should be
-limited to session regressions proving fully qualified retained cross-schema
-inspection uses the same connection without USE. Regression cases include
-quoted/duplicate names, self-references, zero RPCs on selection, keyboard focus
-and stale activation after refresh, owner replacement and transient holds.
-
-Cross-database navigation remains required and needs a separately admitted
-database-scoped retained catalog; do not relax existing profile-database context
-checks or borrow schema-switch authority. The independent read-only design used
-Tier 2 generation 2026-11-12T07:01:27Z, coverage for ten evidence paths and direct
-reads on clean 54f59b6. It made no edits, builds or account requests.
+Referenced-table selection now has its own increment above. Its initial
+read-only design used Tier 2 generation 2026-11-12T07:01:27Z, coverage for ten
+evidence paths and direct reads on clean 54f59b6. It made no edits, builds or
+account requests.
 
 ## Product increment: declared keys (12 November 2026)
 
