@@ -8,6 +8,36 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Normal macOS package after performance repair (12 November 2026)
+
+`pnpm desktop:snowflake:bundle:mac` exits **0** from clean source
+`f5d02e4cfccd1597e19c34e02ebce02c7e29961d`, which contains the reviewed source
+commits `db18e03` and `a05cfae`. Log:
+`.cache/verification/connection-attempts/real-content-normal-bundle-final.log`;
+structured artifact evidence: `real-content-normal-bundle-final-evidence.json`
+in the same directory. All 13 tested source hashes still match after packaging.
+
+The local normal bundle is
+`src-tauri/target/release/bundle/macos/Joinery.app`, version **0.1.0**, **ARM64**,
+**224.93 MiB**. Its executable is **32,480,896 bytes**, SHA-256
+`f7e5ffbe70f4273651dd1b3a72e340d578e5d1678af428daf9b58bda4c2d73f6`.
+Resource verification passes with **15,109 descendant entries / zero symlinks**;
+this count excludes the root, unlike the 15,110-entry inventory below. The staged
+resource input still has five dependency symlinks; the assembled bundle resolves
+them. Manifest SHA-256:
+`74e1dfac7b3346d163fad04879dc7f558c73111d2eac6230a904a98e34621f1f`.
+
+The normal bundle's local ad-hoc signature verifies. Its genuine SDK-bearing
+helper starts and exits on empty stdin under the Node network guard, emitting
+exactly one protocol hello; **zero authentication requests / zero SQL requests**.
+This is helper startup, not normal application UI or real-account acceptance.
+No installation, existing application-state access or account activity occurs.
+Developer ID/notarization, installation/update, normal packaged SSO/restart/UI,
+actual Snowflake effects and owner acceptance remain open. The private Site hub
+is not published by this milestone: the available update path publishes, which
+the owner's no-publish instruction does not authorize. Repository status is the
+durable local evidence; nothing is pushed, merged or published.
+
 ### Complete-content performance acceptance (12 November 2026, local verification)
 
 This increment adds explicitly selected optimized offline measurements. The
@@ -183,7 +213,8 @@ strict all-target/all-feature Clippy. The 13-path frozen source still matches
 after validation. The ignored account/native workflows are not executed by this
 command. Source is committed locally as `db18e03` (ARM64 hashing) and `a05cfae`
 (consumed read deadlines and full-runtime regressions). No source changes follow
-these successful checks; the normal package rebuild is a separate next gate.
+these successful checks. The separate normal package check now also passes as
+recorded above.
 
 Independent bounded review finds no blocker in the target-specific feature or
 new digest vector. Feature unification affects other `sha2` 0.10.9 consumers on

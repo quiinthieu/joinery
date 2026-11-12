@@ -23,8 +23,10 @@ source hashes match. The combined optimized module passes 204 tests with 4
 default ignores. Full application validation passes 679 frontend / 467 standard
 Rust tests, with 129 fixtures ignored, plus formatting/build/check/strict Clippy.
 Source commits `db18e03` and `a05cfae` preserve every inventory check and existing
-admission/lifecycle limit. Rebuild/check the normal macOS package, then proceed
-to the fixed account entry and bound-root construction below. `SANDBOX.BILLIE_TESTING` is the owner's
+admission/lifecycle limit. The normal ARM64 package build, zero-link resources,
+ad-hoc signature and network-guarded helper startup pass on clean `f5d02e4`;
+normal UI, installation and account acceptance remain open. Proceed to the fixed
+account entry and bound-root construction below. `SANDBOX.BILLIE_TESTING` is the owner's
 permitted new-table location; prepare the exact table-only plan before fresh
 execution/billing approval. No new account activity has occurred. All applicable
 DataGrip workflows and hands-on acceptance remain required; the Goal is active

@@ -37,7 +37,11 @@ with no outstanding material findings. The source increments are committed
 locally as `db18e03` (ARM64 hashing) and `a05cfae` (deadlines and full-runtime
 regressions). See the [ledger](replacement-verification.md).
 All replacement, account and owner acceptance gates remain open as previously
-recorded; no normal package build, installation or account activity occurred.
+recorded. The normal macOS ARM64 package build, zero-link resource checks, ad-hoc
+signature verification and network-guarded helper startup now pass on clean
+source `f5d02e4`. The startup sends zero authentication/SQL requests. This is not
+normal application UI, installed-version or account acceptance. No installation
+or account activity occurred.
 
 ## Consumed runner guard (12 November 2026, local verification)
 
