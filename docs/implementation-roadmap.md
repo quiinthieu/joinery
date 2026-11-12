@@ -23,6 +23,13 @@ release separate. The source-pinned inventory is retained locally at
 `.cache/verification/reviewed-console/retention-inventory.json`; this is design
 evidence, not implemented or measured lifetime retention.
 
+The [paged receipt retention design](snowflake-console-retention-design.md)
+specifies the next complete workflow, including immutable recovery identities,
+bounded hot state, SQL-free paging, backup/restore and capacity failure behavior.
+Independent review resolved cross-branch restore sequence collisions with a fresh
+inventory epoch. This remains a proposal; its migration, performance and recovery
+acceptance checks must pass before the existing retention limits change.
+
 ## Durable console admission decisions (12 November 2026)
 
 This increment implements SQL-free durable admission refusals and request lookup,
