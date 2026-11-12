@@ -120,7 +120,8 @@ pub(super) fn validate(connection: &Connection) -> AppResult<()> {
             let valid = match kind {
                 0 => serde_json::from_str::<ConnectionProfile>(&row).is_ok(),
                 1 => serde_json::from_str::<ConnectionGroup>(&row).is_ok(),
-                _ => serde_json::from_str::<HistoryEntry>(&row).is_ok(),
+                _ => serde_json::from_str::<HistoryEntry>(&row)
+                    .is_ok_and(|entry| entry.validate_lifecycle().is_ok()),
             };
             if !valid {
                 return Err(AppError::invalid(
@@ -359,6 +360,90 @@ mod tests {
     use super::*;
     pub(super) static PAUSE_RESTORE: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
+
+    #[test]
+    fn history_lifecycle_backup_validation_accepts_legacy_and_pending_and_rejects_inconsistency() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        let legacy = json!({
+            "id": "history-fixture", "connectionId": "fixture", "connectionName": "Fixture",
+            "startedAt": 1, "sql": "SELECT 'exact original'", "statementCount": 1,
+            "status": "completed", "elapsedMs": 7
+        });
+        let mut pending = legacy.clone();
+        pending["provenance"] = json!("admitted");
+        pending["status"] = serde_json::Value::Null;
+        pending["elapsedMs"] = serde_json::Value::Null;
+        let mut recovered = pending.clone();
+        recovered["provenance"] = json!("restoreRecovered");
+        let cases = [
+            (legacy.clone(), true),
+            (pending.clone(), true),
+            (recovered, true),
+            (
+                {
+                    let mut v = legacy.clone();
+                    v["provenance"] = serde_json::Value::Null;
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = legacy.clone();
+                    v["provenance"] = json!("unknown");
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = legacy.clone();
+                    v["status"] = serde_json::Value::Null;
+                    v["elapsedMs"] = serde_json::Value::Null;
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = pending.clone();
+                    v["elapsedMs"] = json!(0);
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = pending;
+                    v["status"] = json!("completed");
+                    v
+                },
+                false,
+            ),
+        ];
+        for (raw, expected) in cases {
+            let encoded = serde_json::to_string(&raw).unwrap();
+            let connection = db.connection.lock();
+            connection.execute(
+                "INSERT INTO history(id,started_at,json) VALUES('history-fixture',1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
+                [&encoded],
+            ).unwrap();
+            assert_eq!(validate(&connection).is_ok(), expected, "{raw}");
+            let after: String = connection
+                .query_row(
+                    "SELECT json FROM history WHERE id='history-fixture'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                after, encoded,
+                "validation must not repair or discard history"
+            );
+        }
+    }
 
     // These fixtures start with an empty current journal. Rebuild an actual
     // legacy schema, rather than changing only user_version on newer tables.

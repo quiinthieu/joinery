@@ -7,10 +7,11 @@ shows 50 summaries at a time; use **Next history page** and **Previous history
 page**. **Refresh** returns to the newest page. Pages use descending execution
 time and identity to keep timestamp ties deterministic.
 
-Searchable metadata includes run status, script counts and stop reason,
+Searchable metadata includes lifecycle provenance, unavailable duration, run
+status, script counts and stop reason,
 Snowflake DML/DDL kind and outcome, validated affected/multi-joined row counts,
 unavailable-summary status, DDL target, retirement and reconciliation state.
-Elapsed time, dates and general explanatory warnings are not search fields.
+Numeric elapsed time, dates and general explanatory warnings are not search fields.
 Complete DataGrip query-history, SQL-log and Local History workflows remain
 separately tracked requirements.
 
@@ -31,6 +32,39 @@ values and rewritten wire SQL are excluded. **Clear history** requires local
 confirmation and removes history rows; audit entries remain. Clearing invalidates
 pending list and detail responses in the history view and mounted palette. An
 already opened editor is independent work and is not erased by clearing history.
+
+## Completion and recovery evidence
+
+History distinguishes a recorded outcome from admission and local recovery. A
+missing measured duration displays **Duration unavailable**, never an invented
+zero. A known original status remains visible when its duration is unavailable.
+
+| Provenance | Presentation and meaning |
+| --- | --- |
+| Recorded | The original recorded status; this includes failed, cancelled, stopped and unknown-outcome results, as well as completed results. Older rows without provenance retain their original status and duration |
+| Admitted | **Admitted; completion pending**. Admission does not prove dispatch or server submission |
+| Interrupted | **Recovered after interruption**, preserving any original recorded completion; otherwise **Completion unknown** |
+| Restore recovered | **Recovered from metadata restore**, preserving any original recorded completion; otherwise **Completion unknown** |
+
+The same labels appear in Query history and the keyboard palette. Reopening an
+entry still requires explicit activation and only opens saved SQL in a new tab.
+Recovery provenance does not authorize resuming a run or infer failure,
+cancellation, rollback or committed effects.
+
+This is the shared history representation and presentation contract. Normal
+execution producers currently record terminal rows. The console publication-panic
+fallback now preserves its recorded status with unavailable duration because the
+owner's monotonic timer is no longer available. Production admission, interruption
+recovery and metadata restore do **not yet create the new lifecycle states**;
+the fixed local fixture exercises those states. Atomic creation/completion and
+privacy suppression remain the next required implementation.
+
+History writes, full-detail reads, summary pages, compatibility reads and backup
+validation share lifecycle invariants. Missing legacy provenance defaults to
+Recorded; explicit null or unknown provenance is invalid. Admitted rows cannot
+carry a terminal status, measured duration or completed execution/DML/DDL
+evidence. An unknown completion cannot carry a measured duration. These JSON
+contract changes do not migrate the SQLite physical schema, which remains 4.
 
 ## Current limits and remaining requirements
 
@@ -53,7 +87,7 @@ memory and writer-contention acceptance remain open. The compatibility `history`
 API still returns up to 1,000 full matching entries; the history view and palette
 use the new summary/detail APIs.
 
-This browsing increment does not implement the dependent
+This browsing and lifecycle-model increment does not implement the dependent
 [atomic admitted/completed history and privacy contract](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract),
 publisher settlement or durable reservations. Those remain required, together
 with account qualification and owner acceptance. See the
@@ -62,26 +96,32 @@ with account qualification and owner acceptance. See the
 
 ## Reproducible local acceptance
 
-The local SDK-bearing ARM64 app at
-`src-tauri/target/release/bundle/macos/Joinery.app` packages from clean `99a3ca3`.
-Final full validation passes 1,022 frontend and 641 standard Rust cases. Twelve
-history SQLite cases, four actual browser cases and the separately scoped native
-command checks are recorded in the ledger. Normal packaged owner interaction and
-restart acceptance remain open.
+Current-source full validation passes 1,038 frontend and 653 standard Rust cases,
+including 15 inline history cases, a backup-invariant case and all eight new
+integration cases. All 54 focused UI and five actual browser cases pass. The
+preceding local package is from clean `99a3ca3`; package evidence is tracked
+separately in the ledger. Normal packaged owner interaction and restart
+acceptance remain open.
 
 Use the pinned Node/Rust toolchains and isolated fixture setup in the README.
 
 ```sh
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib persistence::history -- --test-threads=1
-pnpm exec vitest run src/features/studio/UtilityViews.test.tsx src/features/studio/SearchEverywhere.test.tsx src/features/studio/search-everywhere.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test history_lifecycle -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib execution::snowflake_ -- --test-threads=1
+pnpm exec vitest run src/features/studio/HistoryMetadata.test.tsx src/features/studio/UtilityViews.test.tsx src/features/studio/SearchEverywhere.test.tsx src/features/studio/search-everywhere.test.ts
 pnpm test:e2e tests/e2e/history.spec.ts
 ```
 
-The browser suite seeds 1,006 fixed synthetic history rows through a test-only
+The browser suite seeds 1,011 fixed synthetic history rows through a test-only
 loopback command excluded from desktop IPC. It exercises real local SQLite,
 timestamp ties, paging, a match older than the newest 1,000 entries, deep Unicode
 SQL text, exact reopening, renderer reload, metadata-only and empty SQL, and
-clearing while an actual detail response is delayed. It submits no database SQL.
+clearing while an actual detail response is delayed. Five older fixture rows
+exercise pending/recovered provenance, known original completion and unavailable
+duration through the history view and keyboard palette. These history cases
+submit no database SQL. The separately scoped PostgreSQL browser case executes
+reviewed synthetic bindings and verifies template-only history.
 
 For a manual walkthrough, execute a disposable query with history text enabled,
 open Query history, search for text near the end of the statement, and activate

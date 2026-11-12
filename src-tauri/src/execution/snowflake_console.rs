@@ -1534,16 +1534,17 @@ impl Studio {
             let mut journal = self.console.journal.lock();
             let retained = journal.runs.get_mut(id).unwrap();
             retained.history = Some(HistoryEntry {
+                provenance: HistoryProvenance::Recorded,
                 id: id.into(),
                 connection_id: session.profile.id.clone(),
                 connection_name: session.profile.name.clone(),
                 started_at: snapshot.metadata.created_at,
                 sql: None,
                 statement_count: snapshot.metadata.step_count as usize,
-                status: status(&snapshot),
-                elapsed_ms: now_ms()
-                    .saturating_sub(snapshot.metadata.created_at)
-                    .min(u32::MAX as u64) as u32,
+                status: Some(status(&snapshot)),
+                // The owner's monotonic timer was lost during unwind. Wall
+                // clock distance from admission is not a measured duration.
+                elapsed_ms: None,
                 execution_summary: None,
                 snowflake_dml: None,
                 snowflake_ddl: None,
@@ -1828,6 +1829,7 @@ impl Studio {
         let snapshot = self.console_snapshot(&run_id).unwrap();
         let elapsed_ms = began.elapsed().as_millis().min(u32::MAX as u128) as u32;
         let history = HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             id: run_id.clone(),
             connection_id: session.profile.id.clone(),
             connection_name: session.profile.name.clone(),
@@ -1837,8 +1839,8 @@ impl Studio {
                 .store_query_text
                 .then(|| compiled.original_sql().to_owned()),
             statement_count: compiled.units().len(),
-            status: status(&snapshot),
-            elapsed_ms,
+            status: Some(status(&snapshot)),
+            elapsed_ms: Some(elapsed_ms),
             execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,

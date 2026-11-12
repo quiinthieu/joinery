@@ -1250,9 +1250,53 @@ pub struct LockWaitSnapshot {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryProvenance {
+    #[default]
+    Recorded,
+    Admitted,
+    Interrupted,
+    RestoreRecovered,
+}
+
+// Unit-enum Deserialize also accepts {"variant":null}. Persisted lifecycle
+// provenance has a closed string representation shared with summary projections.
+impl<'de> Deserialize<'de> for HistoryProvenance {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "recorded" => Ok(Self::Recorded),
+            "admitted" => Ok(Self::Admitted),
+            "interrupted" => Ok(Self::Interrupted),
+            "restoreRecovered" => Ok(Self::RestoreRecovered),
+            _ => Err(serde::de::Error::custom("Invalid history provenance")),
+        }
+    }
+}
+
+fn validate_history_lifecycle(
+    provenance: HistoryProvenance,
+    status: Option<RunStatus>,
+    elapsed_ms: Option<u32>,
+    has_outcome_evidence: bool,
+) -> AppResult<()> {
+    if (provenance == HistoryProvenance::Recorded && status.is_none())
+        || (status.is_none() && elapsed_ms.is_some())
+        || (provenance == HistoryProvenance::Admitted
+            && (status.is_some() || elapsed_ms.is_some() || has_outcome_evidence))
+    {
+        return Err(AppError::invalid("History lifecycle is inconsistent"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
+    /// Legacy entries predate lifecycle provenance and contain recorded outcomes.
+    #[serde(default)]
+    pub provenance: HistoryProvenance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub execution_summary: Option<ExecutionSummary>,
@@ -1269,8 +1313,21 @@ pub struct HistoryEntry {
     pub started_at: u64,
     pub sql: Option<String>,
     pub statement_count: usize,
-    pub status: RunStatus,
-    pub elapsed_ms: u32,
+    pub status: Option<RunStatus>,
+    pub elapsed_ms: Option<u32>,
+}
+
+impl HistoryEntry {
+    pub(crate) fn validate_lifecycle(&self) -> AppResult<()> {
+        validate_history_lifecycle(
+            self.provenance,
+            self.status,
+            self.elapsed_ms,
+            self.execution_summary.is_some()
+                || self.snowflake_dml.is_some()
+                || self.snowflake_ddl.is_some(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1293,6 +1350,8 @@ pub struct HistoryPageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistorySummary {
+    #[serde(default)]
+    pub provenance: HistoryProvenance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub execution_summary: Option<ExecutionSummary>,
@@ -1310,8 +1369,21 @@ pub struct HistorySummary {
     pub sql_preview: Option<String>,
     pub sql_stored: bool,
     pub statement_count: usize,
-    pub status: RunStatus,
-    pub elapsed_ms: u32,
+    pub status: Option<RunStatus>,
+    pub elapsed_ms: Option<u32>,
+}
+
+impl HistorySummary {
+    pub(crate) fn validate_lifecycle(&self) -> AppResult<()> {
+        validate_history_lifecycle(
+            self.provenance,
+            self.status,
+            self.elapsed_ms,
+            self.execution_summary.is_some()
+                || self.snowflake_dml.is_some()
+                || self.snowflake_ddl.is_some(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -21,6 +21,7 @@ afterEach(() => {
 
 test("shows DML acknowledgement and exact counts in durable history without SQL text", async () => {
   const entry: HistorySummary = {
+    provenance: "recorded",
     id: "dml-history",
     connectionId: "snowflake-profile",
     connectionName: "Warehouse",
@@ -57,6 +58,7 @@ test("shows DML acknowledgement and exact counts in durable history without SQL 
 
 test("history distinguishes stopped suffixes, complete plans and legacy unknown counts with SQL storage unchanged", async () => {
   const base: HistorySummary = {
+    provenance: "recorded",
     id: "stopped",
     connectionId: "fixture",
     connectionName: "Stopped fixture",
@@ -133,6 +135,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const summary: HistorySummary = {
+  provenance: "recorded",
   id: "one",
   connectionId: "pg",
   connectionName: "Page one",
@@ -288,4 +291,98 @@ test("stored empty SQL is reopened exactly rather than treated as missing text",
   fireEvent.click(await screen.findByRole("button", { name: /Empty SQL text/ }));
   await waitFor(() => expect(studio.openQuery).toHaveBeenCalledWith("pg", ""));
   expect(studio.notify).not.toHaveBeenCalled();
+});
+
+test("history renders admitted and recovered records honestly while preserving original terminals", async () => {
+  const entries: HistorySummary[] = [
+    {
+      ...summary,
+      id: "admitted",
+      connectionName: "Admitted fixture",
+      provenance: "admitted",
+      status: null,
+      elapsedMs: null,
+    },
+    {
+      ...summary,
+      id: "interrupted",
+      connectionName: "Interrupted fixture",
+      provenance: "interrupted",
+      status: null,
+      elapsedMs: null,
+    },
+    {
+      ...summary,
+      id: "restored",
+      connectionName: "Restored fixture",
+      provenance: "restoreRecovered",
+      status: null,
+      elapsedMs: null,
+    },
+    {
+      ...summary,
+      id: "known",
+      connectionName: "Known fixture",
+      provenance: "interrupted",
+      status: "completed",
+      elapsedMs: 17,
+    },
+    {
+      ...summary,
+      id: "duration",
+      connectionName: "Duration fixture",
+      provenance: "interrupted",
+      status: "failed",
+      elapsedMs: null,
+    },
+  ];
+  vi.mocked(client.call).mockResolvedValue(page(entries));
+  render(<HistoryView />);
+  const admitted = await screen.findByRole("button", { name: /Admitted fixture/ });
+  expect(admitted.textContent).toContain("Admitted; completion pending");
+  expect(admitted.textContent).toContain("Admission does not prove dispatch or server submission");
+  expect(
+    admitted.querySelector(".status-dot.completed,.status-dot.failed,.status-dot.cancelled"),
+  ).toBeNull();
+  for (const name of ["Admitted", "Interrupted", "Restored", "Duration"]) {
+    const row = screen.getByRole("button", { name: new RegExp(`${name} fixture`) });
+    expect(row.textContent).toContain("Duration unavailable");
+    expect(row.textContent).not.toMatch(/\b0 ms\b/);
+  }
+  expect(screen.getByRole("button", { name: /Interrupted fixture/ }).textContent).toContain(
+    "Recovered after interruption · Completion unknown",
+  );
+  expect(screen.getByRole("button", { name: /Restored fixture/ }).textContent).toContain(
+    "Recovered from metadata restore · Completion unknown",
+  );
+  const known = screen.getByRole("button", { name: /Known fixture/ });
+  expect(known.textContent).toContain("Completed · Statement counts unknown");
+  expect(known.textContent).toContain("17 ms");
+  expect(known.textContent).toContain("Original recorded completion is preserved");
+  expect(screen.getByRole("button", { name: /Duration fixture/ }).textContent).toContain(
+    "Failed · Statement counts unknown",
+  );
+});
+
+test("explicitly reopening admitted saved SQL opens an exact new draft without execution", async () => {
+  const admitted: HistorySummary = {
+    ...summary,
+    connectionName: "Admitted reopen fixture",
+    provenance: "admitted",
+    status: null,
+    elapsedMs: null,
+  };
+  const sql = "SELECT 'pending original';\n/* exact admitted text */";
+  vi.mocked(client.call)
+    .mockResolvedValueOnce(page([admitted]))
+    .mockResolvedValueOnce({ ...admitted, sql });
+  render(<HistoryView />);
+  const row = await screen.findByRole("button", { name: /Admitted reopen fixture/ });
+  expect(within(row).getByText("Admitted; completion pending")).toBeTruthy();
+  fireEvent.click(row);
+  await waitFor(() => expect(studio.openQuery).toHaveBeenCalledExactlyOnceWith("pg", sql));
+  expect(vi.mocked(client.call).mock.calls.map(([command]) => command)).toEqual([
+    "history_page",
+    "history_entry",
+  ]);
 });

@@ -15,6 +15,7 @@ const COMPATIBILITY_LIMIT: usize = 1_000;
 // it contains at least 257 characters when truncation is needed. CASE does not
 // extract full SQL into Rust unless search needs it.
 const PAGE_SQL: &str = "SELECT json_object(
+ 'provenance',CASE WHEN json_type(json,'$.provenance') IS NULL THEN 'recorded' ELSE json_extract(json,'$.provenance') END,
  'id',json_extract(json,'$.id'),
  'connectionId',json_extract(json,'$.connectionId'),
  'connectionName',json_extract(json,'$.connectionName'),
@@ -94,6 +95,7 @@ fn preview(source: Vec<u8>) -> AppResult<String> {
 
 fn metadata(entry: &HistoryEntry) -> HistorySummary {
     HistorySummary {
+        provenance: entry.provenance,
         execution_summary: entry.execution_summary.clone(),
         snowflake_dml: entry.snowflake_dml.clone(),
         snowflake_ddl: entry.snowflake_ddl.clone(),
@@ -114,13 +116,25 @@ fn matches(summary: &HistorySummary, sql: Option<&str>, tokens: &[String]) -> bo
         return true;
     }
     let status = match summary.status {
-        RunStatus::Completed => "completed",
-        RunStatus::Stopped => "stopped",
-        RunStatus::Failed => "failed",
-        RunStatus::Cancelled => "cancelled",
-        RunStatus::OutcomeUnknown => "outcome unknown",
+        Some(RunStatus::Completed) => "completed",
+        Some(RunStatus::Stopped) => "stopped",
+        Some(RunStatus::Failed) => "failed",
+        Some(RunStatus::Cancelled) => "cancelled",
+        Some(RunStatus::OutcomeUnknown) => "outcome unknown",
+        None => "completion unknown",
     };
     let mut text = format!("{} {status}", summary.connection_name);
+    text.push_str(match summary.provenance {
+        HistoryProvenance::Recorded => " recorded",
+        HistoryProvenance::Admitted => " admitted completion pending",
+        HistoryProvenance::Interrupted => " recovered after interruption interrupted recovery",
+        HistoryProvenance::RestoreRecovered => {
+            " recovered from metadata restore restored restore recovered recovery"
+        }
+    });
+    if summary.elapsed_ms.is_none() {
+        text.push_str(" duration unavailable");
+    }
     if let Some(execution) = &summary.execution_summary {
         text.push_str(&format!(
             " planned: {} attempted: {} completed: {} not attempted: {}",
@@ -248,6 +262,7 @@ impl Persistence {
             .map(|(started_at, json)| {
                 let entry: HistoryEntry =
                     serde_json::from_str(&json).map_err(|_| invalid_data())?;
+                entry.validate_lifecycle().map_err(|_| invalid_data())?;
                 validate_row(id, started_at, &entry.id, entry.started_at)?;
                 Ok(entry)
             })
@@ -290,6 +305,7 @@ fn read_page(
             .map_err(db_error)?;
         let mut summary: HistorySummary =
             serde_json::from_str(&projected.json).map_err(|_| invalid_data())?;
+        summary.validate_lifecycle().map_err(|_| invalid_data())?;
         validate_row(&id, started_at, &summary.id, summary.started_at)?;
         if !matches!(projected.sql_type.as_deref(), None | Some("null" | "text")) {
             return Err(invalid_data());
@@ -335,6 +351,7 @@ pub(super) fn compatibility_history(
         let started_at: i64 = row.get(1).map_err(db_error)?;
         let json: String = detail.query_row([&id], |r| r.get(0)).map_err(db_error)?;
         let entry: HistoryEntry = serde_json::from_str(&json).map_err(|_| invalid_data())?;
+        entry.validate_lifecycle().map_err(|_| invalid_data())?;
         validate_row(&id, started_at, &entry.id, entry.started_at)?;
         if matches(&metadata(&entry), entry.sql.as_deref(), &search) {
             entries.push(entry);
@@ -348,7 +365,7 @@ pub(super) fn compatibility_history(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SAFE_TIMESTAMP, PREVIEW_CHARS};
+    use super::{MAX_SAFE_TIMESTAMP, PREVIEW_CHARS, metadata};
     use crate::{domain::*, persistence::Persistence};
     use rusqlite::params;
 
@@ -361,6 +378,7 @@ mod tests {
             let tx = connection.transaction().unwrap();
             for index in 0..=1_001 {
                 let entry = HistoryEntry {
+                    provenance: HistoryProvenance::Recorded,
                     execution_summary: None,
                     snowflake_dml: None,
                     snowflake_ddl: None,
@@ -377,8 +395,8 @@ mod tests {
                         .into(),
                     ),
                     statement_count: 1,
-                    status: RunStatus::Completed,
-                    elapsed_ms: 1,
+                    status: Some(RunStatus::Completed),
+                    elapsed_ms: Some(1),
                 };
                 tx.execute(
                     "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
@@ -408,6 +426,7 @@ mod tests {
 
     fn entry(id: &str, started_at: u64, sql: Option<&str>) -> HistoryEntry {
         HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,
@@ -417,8 +436,8 @@ mod tests {
             started_at,
             sql: sql.map(str::to_owned),
             statement_count: 1,
-            status: RunStatus::Completed,
-            elapsed_ms: 7,
+            status: Some(RunStatus::Completed),
+            elapsed_ms: Some(7),
         }
     }
 
@@ -445,6 +464,177 @@ mod tests {
             cursor: None,
             limit,
         }
+    }
+
+    #[test]
+    fn history_lifecycle_projection_preserves_legacy_defaults_and_nullable_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Persistence::open(root.path()).unwrap();
+        let legacy = entry("legacy", 1, None);
+        let mut admitted = entry("pending", 2, None);
+        admitted.provenance = HistoryProvenance::Admitted;
+        admitted.status = None;
+        admitted.elapsed_ms = None;
+        let mut interrupted = admitted.clone();
+        interrupted.id = "interrupted".into();
+        interrupted.started_at = 3;
+        interrupted.provenance = HistoryProvenance::Interrupted;
+        let mut restored = admitted.clone();
+        restored.id = "restored".into();
+        restored.started_at = 4;
+        restored.provenance = HistoryProvenance::RestoreRecovered;
+        restored.status = Some(RunStatus::Completed);
+        let mut unmeasured = legacy.clone();
+        unmeasured.id = "unmeasured".into();
+        unmeasured.started_at = 5;
+        unmeasured.elapsed_ms = None;
+        seed(
+            &store,
+            &[legacy, admitted, interrupted, restored, unmeasured],
+        );
+        store
+            .connection
+            .lock()
+            .execute(
+                "UPDATE history SET json=json_remove(json,'$.provenance') WHERE id='legacy'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = Persistence::open(root.path()).unwrap();
+        let page = store.history_page(&request("", 100)).unwrap();
+        assert_eq!(page.entries.len(), 5);
+        for summary in &page.entries {
+            summary.validate_lifecycle().unwrap();
+            let detail = store.history_entry(&summary.id).unwrap().unwrap();
+            assert_eq!(summary.provenance, detail.provenance);
+            assert_eq!(summary.status, detail.status);
+            assert_eq!(summary.elapsed_ms, detail.elapsed_ms);
+            let encoded = serde_json::to_value(summary).unwrap();
+            assert!(encoded["provenance"].is_string());
+            if summary.id == "legacy" {
+                assert_eq!(summary.provenance, HistoryProvenance::Recorded);
+                assert_eq!(summary.elapsed_ms, Some(7));
+            } else {
+                assert!(encoded["elapsedMs"].is_null());
+            }
+        }
+        for (search, ids) in [
+            ("admitted completion pending", vec!["pending"]),
+            ("interrupted", vec!["interrupted"]),
+            (
+                "recovered after interruption completion unknown",
+                vec!["interrupted"],
+            ),
+            ("recovered from metadata restore", vec!["restored"]),
+            ("restored completed", vec!["restored"]),
+            (
+                "duration unavailable",
+                vec!["unmeasured", "restored", "interrupted", "pending"],
+            ),
+        ] {
+            let page = store.history_page(&request(search, 100)).unwrap();
+            assert_eq!(
+                page.entries
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>(),
+                ids
+            );
+            assert_eq!(
+                store
+                    .history(search)
+                    .unwrap()
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>(),
+                ids
+            );
+        }
+    }
+
+    #[test]
+    fn history_lifecycle_readers_reject_explicit_null_unknown_and_inconsistent_states() {
+        use serde_json::json;
+        let patches = [
+            json!({"provenance": null}),
+            json!({"provenance": "future"}),
+            json!({"provenance": 1}),
+            json!({"provenance": {"kind": "recorded"}}),
+            json!({"status": null, "elapsedMs": null}),
+            json!({"provenance": "admitted"}),
+            json!({"provenance": "admitted", "status": null, "elapsedMs": 0}),
+            json!({"provenance": "interrupted", "status": null, "elapsedMs": 0}),
+            json!({"provenance": "restoreRecovered", "status": null, "elapsedMs": 1}),
+            json!({"provenance": "admitted", "status": null, "elapsedMs": null,
+                "executionSummary": {"planned": 1, "attempted": 0, "completed": 0, "notAttempted": 1, "stopReason": null}}),
+        ];
+        for patch in patches {
+            let root = tempfile::tempdir().unwrap();
+            let store = Persistence::open(root.path()).unwrap();
+            let original = entry("original", 1, None);
+            let mut raw = serde_json::to_value(&original).unwrap();
+            for (key, value) in patch.as_object().unwrap() {
+                raw[key] = value.clone();
+            }
+            store
+                .connection
+                .lock()
+                .execute(
+                    "INSERT INTO history(id,started_at,json) VALUES('original',1,?1)",
+                    [serde_json::to_string(&raw).unwrap()],
+                )
+                .unwrap();
+            for search in ["", "no matching text"] {
+                assert!(
+                    store.history_page(&request(search, 100)).is_err(),
+                    "{patch}"
+                );
+                assert!(store.history(search).is_err(), "{patch}");
+            }
+            assert!(store.history_entry("original").is_err(), "{patch}");
+        }
+    }
+
+    #[test]
+    fn history_lifecycle_shared_validator_rejects_admitted_outcome_evidence() {
+        let mut value = entry("pending", 1, None);
+        value.provenance = HistoryProvenance::Admitted;
+        value.status = None;
+        value.elapsed_ms = None;
+        value.validate_lifecycle().unwrap();
+        metadata(&value).validate_lifecycle().unwrap();
+        value.execution_summary = Some(ExecutionSummary {
+            planned: 1,
+            attempted: 0,
+            completed: 0,
+            not_attempted: 1,
+            stop_reason: None,
+        });
+        assert!(value.validate_lifecycle().is_err());
+        assert!(metadata(&value).validate_lifecycle().is_err());
+        value.execution_summary = None;
+        value.snowflake_dml = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "update", "statementOutcome": "unknown", "summary": {
+                    "status": "unavailable", "affectedRows": null, "multiJoinedRows": null
+                }, "retired": true
+            }))
+            .unwrap(),
+        );
+        assert!(value.validate_lifecycle().is_err());
+        assert!(metadata(&value).validate_lifecycle().is_err());
+        value.snowflake_dml = None;
+        value.snowflake_ddl = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "addColumn", "statementOutcome": "unknown", "summaryStatus": "unavailable",
+                "qualifiedTarget": "\"DB\".\"PUBLIC\".\"T\"", "catalogReconciliationRequired": true,
+                "retired": true
+            }))
+            .unwrap(),
+        );
+        assert!(value.validate_lifecycle().is_err());
+        assert!(metadata(&value).validate_lifecycle().is_err());
     }
 
     #[test]
@@ -661,7 +851,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = Persistence::open(root.path()).unwrap();
         let mut script = entry("script", 1, None);
-        script.status = RunStatus::Stopped;
+        script.status = Some(RunStatus::Stopped);
         script.execution_summary = Some(ExecutionSummary {
             planned: 3,
             attempted: 1,
@@ -670,7 +860,7 @@ mod tests {
             stop_reason: Some(ExecutionStopReason::ResultLimit),
         });
         let mut dml = entry("dml", 2, None);
-        dml.status = RunStatus::OutcomeUnknown;
+        dml.status = Some(RunStatus::OutcomeUnknown);
         dml.snowflake_dml = Some(SnowflakeDmlEvidence {
             kind: SnowflakeDmlKind::Update,
             statement_outcome: SnowflakeDmlOutcome::Unknown,

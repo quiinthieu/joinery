@@ -1,5 +1,32 @@
 # Joinery implementation roadmap
 
+## History completion evidence (13 November 2026, locally verified)
+
+The [history lifecycle model and UI](query-history.md#completion-and-recovery-evidence)
+now preserve unknown completion and unavailable measured duration. History-only
+provenance distinguishes recorded, admitted, interrupted and restore-recovered
+metadata without changing execution events or claiming server outcomes. Legacy
+rows retain their original status and duration. Shared write/read/backup checks
+reject inconsistent states and non-string provenance. The console publication-panic
+fallback preserves its known status and reports unavailable duration instead of
+estimating it from wall-clock time.
+
+Full validation passes 1,038 frontend and 653 standard Rust cases, including all
+eight new integration cases and four inline lifecycle cases. All 54 focused UI
+cases, 68 feature-specific Snowflake producer cases and five actual browser cases
+pass. The latter exercise real SQLite and an isolated PostgreSQL database.
+Independent review has no remaining material
+findings; attempts, corrections and source scopes are in the
+[ledger](replacement-verification.md#history-completion-evidence-13-november-2026).
+
+This is a prerequisite for the complete atomic workflow. Production admission,
+restart and metadata restore do not yet create pending/recovered history.
+Next implement atomic admitted/completed history, clear/prune/opt-out suppression,
+schema-5 writer fencing, publisher sealing and durable reservations together with
+real crash/privacy/restore acceptance. Keep both count gates and
+`retentionEnabled=false`. Actual Snowflake, full-capacity and owner acceptance
+remain required; the complete DataGrip target is unchanged.
+
 ## Paged query history (13 November 2026, locally verified)
 
 The [history workflow](query-history.md) replaces newest-prefix/full-SQL reads

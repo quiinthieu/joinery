@@ -402,6 +402,7 @@ impl Studio {
             self.disconnect(&session_id);
         }
         let entry = HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             execution_summary: None,
             snowflake_ddl: Some(SnowflakeDdlEvidence {
                 kind: result.kind,
@@ -419,12 +420,12 @@ impl Studio {
                 .saturating_sub(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
             sql: session.profile.store_query_text.then_some(request.sql),
             statement_count: 1,
-            status: match result.statement_outcome {
+            status: Some(match result.statement_outcome {
                 SnowflakeDdlOutcome::Succeeded => RunStatus::Completed,
                 SnowflakeDdlOutcome::Rejected => RunStatus::Failed,
                 SnowflakeDdlOutcome::Unknown => RunStatus::OutcomeUnknown,
-            },
-            elapsed_ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+            }),
+            elapsed_ms: Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32),
         };
         if self
             .retain_snowflake_receipt(snowflake_receipts::PendingReceipt::statement(

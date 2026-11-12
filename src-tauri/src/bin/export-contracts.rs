@@ -196,6 +196,7 @@ fn main() {
         ProcessInfo::decl(),
         LockWait::decl(),
         LockWaitSnapshot::decl(),
+        HistoryProvenance::decl(),
         HistoryEntry::decl(),
         HistoryCursor::decl(),
         HistoryPageRequest::decl(),

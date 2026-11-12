@@ -164,6 +164,7 @@ impl Persistence {
     }
 
     pub fn record_history(&self, entry: &HistoryEntry) -> AppResult<()> {
+        entry.validate_lifecycle()?;
         let mut conn = self.connection.lock();
         let tx = conn.transaction().map_err(db_error)?;
         let json = serde_json::to_string(entry)
@@ -181,6 +182,7 @@ impl Persistence {
     /// A console outbox may retry after an uncertain local commit. An existing
     /// identity must contain the exact original payload, never a replacement.
     pub(crate) fn record_history_once(&self, entry: &HistoryEntry) -> AppResult<()> {
+        entry.validate_lifecycle()?;
         let json = serde_json::to_string(entry)
             .map_err(|_| AppError::internal("Could not encode history"))?;
         let mut conn = self.connection.lock();
@@ -892,14 +894,15 @@ mod tests {
             outcome: "started".into(),
         };
         let mut history = HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             id: new_id(),
             connection_id: "synthetic".into(),
             connection_name: "Synthetic".into(),
             started_at: now_ms(),
             sql: None,
             statement_count: 2,
-            status: RunStatus::Failed,
-            elapsed_ms: 7,
+            status: Some(RunStatus::Failed),
+            elapsed_ms: Some(7),
             execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,
@@ -915,7 +918,7 @@ mod tests {
         assert_eq!(db.audit_log().unwrap().len(), 1);
         assert_eq!(db.history("").unwrap().len(), 1);
         audit.outcome = "completed".into();
-        history.status = RunStatus::Completed;
+        history.status = Some(RunStatus::Completed);
         assert_eq!(
             db.record_audit_once(&audit).unwrap_err().code,
             ErrorCode::Conflict
@@ -925,7 +928,7 @@ mod tests {
             ErrorCode::Conflict
         );
         assert_eq!(db.audit_log().unwrap()[0].outcome, "started");
-        assert_eq!(db.history("").unwrap()[0].status, RunStatus::Failed);
+        assert_eq!(db.history("").unwrap()[0].status, Some(RunStatus::Failed));
     }
 
     #[test]
@@ -934,6 +937,7 @@ mod tests {
         let db = Persistence::open(dir.path()).unwrap();
         assert_eq!(db.groups().unwrap().len(), 3);
         db.record_history(&HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,
@@ -943,8 +947,8 @@ mod tests {
             started_at: now_ms(),
             sql: None,
             statement_count: 1,
-            status: RunStatus::Completed,
-            elapsed_ms: 5,
+            status: Some(RunStatus::Completed),
+            elapsed_ms: Some(5),
         })
         .unwrap();
         assert!(db.history("").unwrap()[0].sql.is_none());

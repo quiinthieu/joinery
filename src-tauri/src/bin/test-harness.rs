@@ -120,6 +120,7 @@ fn seed_history_fixture(root: &std::path::Path) -> AppResult<Value> {
     );
     for index in 0..1_006 {
         store.record_history(&HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,
@@ -135,11 +136,47 @@ fn seed_history_fixture(root: &std::path::Path) -> AppResult<Value> {
                 _ => Some(format!("SELECT {index} /* history fixture */")),
             },
             statement_count: 1,
-            status: RunStatus::Completed,
-            elapsed_ms: 2,
+            status: Some(RunStatus::Completed),
+            elapsed_ms: Some(2),
         })?;
     }
-    Ok(json!({ "count": 1_006, "olderId": "history-fixture-0000" }))
+    for (index, (name, provenance, status, elapsed_ms)) in [
+        ("admitted", HistoryProvenance::Admitted, None, None),
+        ("interrupted", HistoryProvenance::Interrupted, None, None),
+        ("restored", HistoryProvenance::RestoreRecovered, None, None),
+        (
+            "known",
+            HistoryProvenance::Interrupted,
+            Some(RunStatus::Completed),
+            Some(17),
+        ),
+        (
+            "duration",
+            HistoryProvenance::Interrupted,
+            Some(RunStatus::Failed),
+            None,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        store.record_history(&HistoryEntry {
+            provenance,
+            execution_summary: None,
+            snowflake_dml: None,
+            snowflake_ddl: None,
+            id: format!("history-lifecycle-{name}"),
+            connection_id: "history-fixture-connection".into(),
+            connection_name: format!("Lifecycle fixture {name}"),
+            // Keep existing tied-timestamp pages unchanged.
+            started_at: started_at - 200_000 + index as u64,
+            sql: Some(format!("SELECT 'lifecycle_{name}'")),
+            statement_count: 1,
+            status,
+            elapsed_ms,
+        })?;
+    }
+    Ok(json!({ "count": 1_011, "olderId": "history-fixture-0000" }))
 }
 
 // Snowflake profile persistence can be exercised offline. This harness must

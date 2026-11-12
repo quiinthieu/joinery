@@ -2107,6 +2107,7 @@ impl Studio {
             None
         };
         let history = HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             execution_summary: execution_summary.clone(),
             snowflake_dml: None,
             snowflake_ddl: None,
@@ -2116,8 +2117,8 @@ impl Studio {
             started_at: now_ms().saturating_sub(elapsed_ms as u64),
             sql,
             statement_count: stored.plan.statements.len(),
-            status,
-            elapsed_ms,
+            status: Some(status),
+            elapsed_ms: Some(elapsed_ms),
         };
         if self.persistence.record_history(&history).is_err()
             || self

@@ -16,7 +16,7 @@ async function rpc<T>(request: APIRequestContext, command: string, args = {}): P
 
 async function seed(request: APIRequestContext) {
   await rpc(request, "clear_history");
-  expect(await rpc(request, "test_seed_history")).toMatchObject({ count: 1_006 });
+  expect(await rpc(request, "test_seed_history")).toMatchObject({ count: 1_011 });
 }
 
 async function openHistory(page: Page) {
@@ -179,4 +179,80 @@ test("clearing history invalidates a delayed exact-detail response", async ({ pa
   } finally {
     release();
   }
+});
+
+test("history and keyboard palette preserve admitted and recovered provenance without executing saved SQL", async ({
+  page,
+  request,
+}) => {
+  await seed(request);
+  const commands: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/rpc/")) commands.push(request.url().split("/rpc/")[1]);
+  });
+  await page.goto("/");
+  await openHistory(page);
+  await page
+    .getByRole("textbox", { name: "Search history", exact: true })
+    .fill("Lifecycle fixture");
+  const rows = page.locator(".history-list .history-entry");
+  await expect(rows).toHaveCount(5);
+  const admitted = rows.filter({ hasText: "Lifecycle fixture admitted" });
+  const interrupted = rows.filter({ hasText: "Lifecycle fixture interrupted" });
+  const restored = rows.filter({ hasText: "Lifecycle fixture restored" });
+  const known = rows.filter({ hasText: "Lifecycle fixture known" });
+  const duration = rows.filter({ hasText: "Lifecycle fixture duration" });
+  await expect(admitted).toContainText("Admitted; completion pending");
+  await expect(admitted).toContainText("Admission does not prove dispatch or server submission");
+  await expect(interrupted).toContainText("Recovered after interruption · Completion unknown");
+  await expect(restored).toContainText("Recovered from metadata restore · Completion unknown");
+  for (const row of [admitted, interrupted, restored, duration]) {
+    await expect(row).toContainText("Duration unavailable");
+    await expect(row).not.toContainText(/\b0 ms\b/);
+  }
+  await expect(known).toContainText("Completed · Statement counts unknown");
+  await expect(known).toContainText("17 ms");
+  await expect(known).toContainText("Original recorded completion is preserved");
+  await expect(duration).toContainText("Failed · Statement counts unknown");
+  const stored = await rpc<HistoryEntry>(request, "history_entry", {
+    id: "history-lifecycle-admitted",
+  });
+  expect(stored).toMatchObject({ provenance: "admitted", status: null, elapsedMs: null });
+  expect(stored.sql).toContain("lifecycle_admitted");
+  await admitted.click();
+  await expect.poll(() => activeSql(page)).toBe(stored.sql);
+
+  // Renderer restart reads the same SQLite provenance, without resuming work.
+  await page.reload();
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Command palette", exact: true });
+  await palette.getByRole("tab", { name: "History", exact: true }).click();
+  const search = palette.getByRole("textbox", { name: "Search commands", exact: true });
+  await search.fill("Lifecycle fixture");
+  const matches = palette.locator(".palette-commands button[data-palette-index]");
+  await expect(matches).toHaveCount(5);
+  await expect(matches.filter({ hasText: "Lifecycle fixture interrupted" })).toContainText(
+    "Recovered after interruption · Completion unknown",
+  );
+  await expect(matches.filter({ hasText: "Lifecycle fixture restored" })).toContainText(
+    "Recovered from metadata restore · Completion unknown",
+  );
+  await expect(matches.filter({ hasText: "Lifecycle fixture known" })).toContainText("17 ms");
+  await expect(matches.filter({ hasText: "Lifecycle fixture duration" })).toContainText(
+    "Duration unavailable",
+  );
+  await search.fill("Lifecycle fixture admitted");
+  await expect(matches).toHaveCount(1);
+  await expect(matches).toContainText("Admitted; completion pending");
+  await expect(matches).toContainText("Duration unavailable");
+  await search.press("Enter");
+  await expect(palette).toHaveCount(0);
+  await expect.poll(() => activeSql(page)).toBe(stored.sql);
+  expect(
+    commands.filter((command) =>
+      /^(connect|prepare_execution|execute_plan|prepare_snowflake_console|start_snowflake_console)/.test(
+        command,
+      ),
+    ),
+  ).toEqual([]);
 });

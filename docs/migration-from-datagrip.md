@@ -11,6 +11,12 @@ search all retained entries, browse summaries and open exact saved SQL explicitl
 without executing it. This does not close atomic crash-time history, configurable
 retention, full-capacity or actual Snowflake acceptance requirements.
 
+History's [completion labels](query-history.md#completion-and-recovery-evidence)
+preserve unavailable timing and distinguish admitted/recovered metadata from a
+recorded outcome. **Duration unavailable** does not mean zero milliseconds.
+The new lifecycle representation is a prerequisite; normal admission and restart
+do not yet create pending/recovered history or provide crash-time text recovery.
+
 The new [reviewed retained-console walkthrough](snowflake-sdk-console-workflow.md)
 describes opt-in connection setup, mixed-script review, retained session context,
 explicit transaction boundaries and SQL-free receipt/result recovery. It is a

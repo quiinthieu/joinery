@@ -13,7 +13,7 @@ no Snowflake activity or access to existing private application state.
    Search for a marker near the end of its SQL. Open the summary and compare the
    complete statement in the new editor; opening must not execute or reconnect.
 2. Repeat from the keyboard palette's History scope. For more than one page,
-   browse Next/Previous and Refresh; the automated suite also covers 1,006 entries
+   browse Next/Previous and Refresh; the automated suite also covers 1,011 entries
    with tied timestamps and a match beyond the newest 1,000.
 3. Disable SQL-text history and run another synthetic query. Its metadata remains
    inspectable and opening explains that SQL was not stored. Parameter values
@@ -25,6 +25,15 @@ no Snowflake activity or access to existing private application state.
 
 These steps do not accept crash-time pending history, configurable retention,
 full-capacity performance, SQL-log/Local History parity or Snowflake workflows.
+
+The [lifecycle representation](query-history.md#completion-and-recovery-evidence)
+also has a fixed local-fixture walkthrough: Query history and the keyboard
+palette must show admitted completion pending, interrupted/restored completion
+unknown, original known completion and unavailable duration without inventing
+status or zero timing. Explicitly opening saved SQL must not connect or execute.
+This exercises representation and rendering, not actual crash recovery: normal
+admission/recovery/restore producers remain incomplete until the atomic lifecycle
+and privacy workflow is implemented.
 
 ## Local metadata recovery acceptance
 

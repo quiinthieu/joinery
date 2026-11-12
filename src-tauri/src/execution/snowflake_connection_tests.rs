@@ -1346,7 +1346,7 @@ async fn sdk_studio_dml_parameterized_uses_eleven_sql_and_persists_exact_evidenc
     .unwrap();
     let history = reopened.history("").unwrap();
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].status, RunStatus::Completed);
+    assert_eq!(history[0].status, Some(RunStatus::Completed));
     assert!(history[0].sql.is_none());
     let evidence = history[0].snowflake_dml.as_ref().unwrap();
     assert_eq!(evidence.statement_outcome, SnowflakeDmlOutcome::Succeeded);
@@ -1431,7 +1431,7 @@ async fn sdk_studio_dml_lost_ack_is_unknown_retires_and_never_replays() {
     assert_dml_reads(&fixture, before, 0);
     let history = studio.history("").unwrap();
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].status, RunStatus::OutcomeUnknown);
+    assert_eq!(history[0].status, Some(RunStatus::OutcomeUnknown));
     assert_eq!(
         history[0].snowflake_dml.as_ref().unwrap().statement_outcome,
         SnowflakeDmlOutcome::Unknown

@@ -31,6 +31,7 @@ beforeEach(() => vi.resetAllMocks());
 afterEach(cleanup);
 
 const summary: HistorySummary = {
+  provenance: "recorded",
   id: "one",
   connectionId: "pg",
   connectionName: "Local",
@@ -188,4 +189,56 @@ test("rejects over-budget UTF-8 search locally while retaining the palette", asy
     expect.stringContaining("512 UTF-8 bytes"),
   );
   expect(client.call).not.toHaveBeenCalled();
+});
+
+test("the palette exposes admission uncertainty and opens pending saved SQL only explicitly", async () => {
+  const admitted: HistorySummary = {
+    ...summary,
+    provenance: "admitted",
+    status: null,
+    elapsedMs: null,
+  };
+  vi.mocked(client.call)
+    .mockResolvedValueOnce(page([admitted]))
+    .mockResolvedValueOnce({ ...admitted, sql: "SELECT 'admitted exact'" });
+  const { onClose } = mount();
+  const row = await screen.findByRole("button", { name: /Admitted; completion pending/ });
+  expect(row.textContent).toContain("Duration unavailable");
+  expect(row.textContent).toContain("Admission does not prove dispatch or server submission");
+  expect(studio.openQuery).not.toHaveBeenCalled();
+  fireEvent.keyDown(screen.getByLabelText("Search commands"), { key: "Enter" });
+  await waitFor(() =>
+    expect(studio.openQuery).toHaveBeenCalledExactlyOnceWith("pg", "SELECT 'admitted exact'"),
+  );
+  expect(onClose).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(client.call).mock.calls.map(([command]) => command)).toEqual([
+    "history_page",
+    "history_entry",
+  ]);
+});
+
+test("the palette distinguishes unknown recovered completion from preserved original failure", async () => {
+  const interrupted: HistorySummary = {
+    ...summary,
+    id: "unknown",
+    provenance: "interrupted",
+    status: null,
+    elapsedMs: null,
+  };
+  const known: HistorySummary = {
+    ...summary,
+    id: "known",
+    provenance: "restoreRecovered",
+    status: "failed",
+    elapsedMs: 17,
+  };
+  vi.mocked(client.call).mockResolvedValue(page([interrupted, known]));
+  mount();
+  const unknown = await screen.findByRole("button", { name: /Recovered after interruption/ });
+  expect(unknown.textContent).toContain("Completion unknown");
+  expect(unknown.textContent).toContain("Duration unavailable");
+  const preserved = screen.getByRole("button", { name: /Recovered from metadata restore/ });
+  expect(preserved.textContent).toContain("Failed · Statement counts unknown");
+  expect(preserved.textContent).toContain("17 ms");
+  expect(preserved.textContent).toContain("Original recorded completion is preserved");
 });

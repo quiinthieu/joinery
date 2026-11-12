@@ -1,5 +1,27 @@
 # Implementation and release status
 
+## History completion evidence (13 November 2026, locally verified)
+
+History and its keyboard palette now distinguish recorded outcomes, admission
+and local recovery, with unknown completion and unavailable duration preserved.
+Legacy rows keep their original evidence. Shared write/read/backup validation
+rejects inconsistent states and non-string provenance; the console panic fallback
+keeps its known status without inventing duration from wall-clock time.
+Full validation passes 1,038 frontend / 653 standard Rust cases, with 139 default
+fixture ignores. All eight new integration cases, four inline lifecycle cases,
+54 focused UI cases, 68 feature-specific Snowflake producer cases and five actual
+browser cases pass. Source scopes, initial
+failures, corrections and independent review are in the
+[ledger](replacement-verification.md#history-completion-evidence-13-november-2026).
+
+This is the model/presentation prerequisite. Production admission, restart and
+restore do not yet create pending/recovered history; atomic history/privacy,
+publisher settlement and durable reservations remain required. Keep both count
+gates and `retentionEnabled=false`. The preceding clean-`99a3ca3` app is preserved
+before packaging current source. Actual account effects, normal packaged owner
+UI/SSO/restart, installation/update and signing/notarization acceptance remain
+open. No account activity, installation, push or publication occurred.
+
 ## Paged query history (13 November 2026, locally verified)
 
 History and the keyboard palette now search across retained rows before limiting

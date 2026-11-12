@@ -2,7 +2,7 @@
 
 ## Decision and status
 
-Partially implemented locally, 12 November 2026. This document specifies the
+Partially implemented locally, updated 13 November 2026. This document specifies the
 complete target; the inventory/compaction slice below does not qualify unlimited
 lifetime retention, full-capacity recovery, account effects or daily replacement. It follows
 the [roadmap](implementation-roadmap.md), the
@@ -246,6 +246,15 @@ view and Search Everywhere. Do not add a fake completed outcome to the shared
 duration, rollback, failure, cancellation or delivery result. An already committed
 terminal preserves its original completion status/duration even if publication
 later fails. Opening saved SQL requires an explicit new-tab action.
+
+The [history lifecycle model and UI](query-history.md#completion-and-recovery-evidence)
+now implement nullable history-only status/duration, closed provenance,
+legacy defaults and shared read/write/backup invariants. This is a prerequisite,
+not the atomic persistence described above. Normal producers still write terminal
+rows; admission/recovery/restore do not yet produce pending/recovered history.
+The publication-panic fallback reports unavailable duration instead of estimating
+it from the wall clock. No schema-5 writer fencing, privacy suppression,
+durable side-write settlement or reservation is implied by the JSON model.
 
 History privacy/disposition is separate from immutable original receipt evidence.
 Clear history atomically removes history rows and suppresses already-admitted

@@ -287,6 +287,7 @@ impl Studio {
         }
         // Neither local persistence nor a late close may erase remote ACKs.
         let entry = HistoryEntry {
+            provenance: HistoryProvenance::Recorded,
             execution_summary: None,
             snowflake_dml: Some(SnowflakeDmlEvidence {
                 kind: result.kind,
@@ -302,12 +303,12 @@ impl Studio {
                 .saturating_sub(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
             sql: session.profile.store_query_text.then_some(request.sql),
             statement_count: 1,
-            status: match result.statement_outcome {
+            status: Some(match result.statement_outcome {
                 SnowflakeDmlOutcome::Succeeded => RunStatus::Completed,
                 SnowflakeDmlOutcome::Rejected => RunStatus::Failed,
                 SnowflakeDmlOutcome::Unknown => RunStatus::OutcomeUnknown,
-            },
-            elapsed_ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+            }),
+            elapsed_ms: Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32),
         };
         if self
             .retain_snowflake_receipt(snowflake_receipts::PendingReceipt::statement(

@@ -150,6 +150,7 @@ describe("buildSearchEverywhereResults", () => {
 
   const history: HistorySummary[] = [
     {
+      provenance: "recorded",
       id: "h-1",
       connectionId: "pg-1",
       connectionName: "Local Postgres",
@@ -388,6 +389,7 @@ describe("buildSearchEverywhereResults", () => {
 
 describe("script history accounting", () => {
   const base: HistorySummary = {
+    provenance: "recorded",
     id: "script",
     connectionId: "pg",
     connectionName: "Accounting fixture",
@@ -482,6 +484,7 @@ describe("script history accounting", () => {
 // A 256-character summary cannot independently verify a match deep in stored SQL.
 describe("native history matches", () => {
   const entry: HistorySummary = {
+    provenance: "recorded",
     id: "deep",
     connectionId: "pg",
     connectionName: "Local",
@@ -516,4 +519,52 @@ describe("native history matches", () => {
     ).toHaveLength(0);
     expect(buildSearchEverywhereResults(input).items).toHaveLength(0);
   });
+});
+
+describe("history lifecycle metadata", () => {
+  const entry: HistorySummary = {
+    id: "lifecycle",
+    connectionId: "pg",
+    connectionName: "Local",
+    startedAt: 1,
+    sqlPreview: "SELECT original",
+    sqlStored: true,
+    statementCount: 1,
+    provenance: "admitted",
+    status: null,
+    elapsedMs: null,
+  };
+  function search(history: HistorySummary[], query = "") {
+    return buildSearchEverywhereResults({
+      query,
+      scope: "history",
+      commands: [],
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: null,
+      profiles: [],
+      sessions: {},
+      catalog: {},
+      objects: {},
+      history,
+    }).items;
+  }
+  it("renders and searches admitted metadata without fabricating completion or duration", () => {
+    const [item] = search([entry], "completion pending");
+    expect(item.subtitle).toContain("Admitted; completion pending");
+    expect(item.subtitle).toContain("Duration unavailable");
+    expect(item.subtitle).toContain("Admission does not prove dispatch or server submission");
+    expect(item.subtitle).not.toMatch(/undefined|\b0 ms\b|Completed ·/);
+  });
+  it.each(["interrupted", "restoreRecovered"] as const)(
+    "searches %s unknown provenance and preserves exact known terminals",
+    (provenance) => {
+      const [unknown] = search([{ ...entry, provenance }], "recovered completion unknown");
+      expect(unknown.subtitle).toContain("Completion unknown");
+      const [known] = search([{ ...entry, provenance, status: "completed", elapsedMs: 17 }]);
+      expect(known.subtitle).toContain("Completed · Statement counts unknown");
+      expect(known.subtitle).toContain("17 ms");
+      expect(known.subtitle).toContain("Original recorded completion is preserved");
+    },
+  );
 });

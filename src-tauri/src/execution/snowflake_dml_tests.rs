@@ -455,7 +455,7 @@ async fn dml_studio_ack_survives_late_disconnect_and_is_durable() {
     );
     let history = studio.history("").unwrap();
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].status, RunStatus::Completed);
+    assert_eq!(history[0].status, Some(RunStatus::Completed));
     let evidence = history[0].snowflake_dml.as_ref().unwrap();
     assert_eq!(evidence.statement_outcome, SnowflakeDmlOutcome::Succeeded);
     assert_eq!(evidence.summary, result.summary);
@@ -747,7 +747,7 @@ async fn dml_studio_shutdown_waits_for_detached_owner_and_durable_ack_history() 
     .await
     .unwrap();
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].status, RunStatus::Completed);
+    assert_eq!(history[0].status, Some(RunStatus::Completed));
     let evidence = history[0].snowflake_dml.as_ref().unwrap();
     assert_eq!(evidence.statement_outcome, SnowflakeDmlOutcome::Succeeded);
     assert_eq!(

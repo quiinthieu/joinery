@@ -8,6 +8,72 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### History completion evidence (13 November 2026)
+
+Base is `718530e` on `feat/datagrip-replacement`. The lead coordinates three
+bounded `gpt-6.1-sol` high-effort agents for the history model/SQLite contracts,
+UI/browser coverage and integration tests/independent review. The
+[workflow guide](query-history.md#completion-and-recovery-evidence) describes
+the representation and its limits. Nullable history-only status/duration and
+closed string provenance preserve original known evidence without guessing an
+unknown outcome or duration. Shared validation covers writes, all history readers
+and backup validation. Missing legacy provenance defaults to Recorded; explicit
+null, unknown and unit-object encodings are rejected. Physical SQLite schema
+remains 4. Normal terminal producers preserve their existing outcomes; the
+console panic fallback no longer invents duration from wall-clock distance.
+
+Production admission, restart and restore do not yet create new pending/recovered
+history. Fixture coverage of these states is not proof of runtime crash recovery.
+The atomic history/privacy, publisher settlement and reservation workflow remains
+required. Keep both count gates and `retentionEnabled=false`.
+
+Evidence labels refer to `.cache/verification/reviewed-console/`. Receipts record
+exact commands, source hashes, elapsed time and before/after disk usage.
+
+| Label | Actual result |
+| --- | --- |
+| `history-lifecycle-null-reproduced` | Expected exit 101 before implementation: the original non-nullable status/duration contract rejects admitted unknown evidence. 15.551 seconds, unchanged captured sources |
+| `history-lifecycle-object-reproduced` | Expected exit 101 after independent review: derived enum deserialization accepts a unit-variant object instead of the closed string representation. 13.367 seconds, unchanged captured sources. Replaced by a string-only decoder |
+| `history-lifecycle-integration-first` | Seven pass / one fails, 13.641 seconds, unchanged sources. The test expected `recorded` to match only provenance; existing generic search also matches “counts were not recorded.” Corrected the test oracle without changing search semantics |
+| `history-lifecycle-focused-corrected` | All nine name-matching cases pass: four inline lifecycle and five matching integration cases; other integration names are filtered. 37.744 seconds, unchanged sources. All eight integration cases run in full validation below |
+| `history-lifecycle-focused-ui` | 53 pass / one fails, 5.031 seconds. New test locator did not account for the existing accessible button name; corrected the locator |
+| `history-lifecycle-ui-corrected` | 53 pass / one fails, 3.768 seconds. The replacement test used an unavailable jest-dom matcher; corrected it to the project's Vitest DOM-presence assertion. No production change |
+| `history-lifecycle-ui-final` | All 54 focused cases in four files pass, 3.765 seconds, unchanged captured sources. Includes known/unknown status and duration, legacy rows, accessible history activation, metadata search and palette presentation |
+| `history-lifecycle-full-validation` | `pnpm validate` passes: 1,038 frontend cases / 72 files, 653 standard Rust cases / 139 default fixture ignores, formatting, regenerated contracts, TypeScript, production UI build, desktop compilation and strict all-target/all-feature Clippy. 133.577 seconds, all 554 captured source files unchanged |
+| `history-lifecycle-browser` | All five actual headless Chromium cases pass, 30.307 seconds, all 554 captured sources unchanged. Four history cases use real SQLite with 1,011 entries, including five older fixed lifecycle fixtures; cover exact reopening, reload, keyboard palette, clear during delayed detail, and unknown completion/duration without reconnect or execution. The fifth uses isolated PostgreSQL for reviewed writes/NULL/injection-shaped bindings and template-only history. Only the lead's PostgreSQL fixture was started/stopped; the unrelated running container was preserved |
+| `history-lifecycle-snowflake-producers` | All 68 feature-specific native cases pass with `--features test-harness --lib execution::snowflake_ -- --test-threads=1`, 190.423 seconds, all 554 captured sources unchanged. Covers local synthetic SDK/helper and native execution paths, original ACK/history after DML/DDL, lost ACKs, shutdown, retries and publication panic with unavailable duration. No account connection or billable activity |
+| `history-lifecycle-prior-app-preservation` | The clean-`99a3ca3` app is preserved with APFS copy-on-write; all 15,120 inventory entries match and both strict signatures verify. Regular-file inventory is 242,393,335 bytes. The first helper assumed the executable's case and stopped before copying; it now reads the executable name from the bundle plist |
+
+The full Rust run includes all eight new integration cases, 15 inline history
+cases and one backup-invariant case. Snowflake producer regressions, including
+publication panic, pass in the separate `test-harness` feature run above.
+The integration cases preserve 33 valid lifecycle combinations through actual
+SQLite close/reopen, three-row paging, detail, compatibility/full-SQL search and
+an exact copied test database. This copied-database check does not claim product
+metadata restore or owner crash recovery. Invalid typed writes, inconsistent raw
+rows and all four unit-object provenance encodings are rejected. Original known
+status with unavailable duration remains valid; measured zero stays zero.
+
+Independent review found the enum object-encoding issue above. Final review has
+no material findings within the frozen model/persistence/producer and UI scopes.
+The final decoder hash is
+`ca4f94d442be0da71d99ccdca44d15c079757cc8717fa33b0b12e3c764e21d49`.
+The lead's graph transport was closed; reviewers used Tier 2 generations
+`2026-11-12T17:57:04Z` and `17:59:22Z`, matching metadata and coverage checks
+plus direct source reads. No call-path conclusion relies on unreliable graph
+edges. Subsequent UI changes corrected test-only locators/matchers.
+
+The approved debug-cache deletion was already completed and reclaimed 135.8 GiB;
+its receipt is `.cache/verification/build-storage/approved-debug-cleanup.json`.
+Current checks run serially under the 20 GiB free-space preflight. After full
+validation and browser checks, about 189.6 GiB remains free; debug output is
+about 8.9 GiB, release output 3.0 GiB. No additional cache deletion is authorized
+or performed. The preceding clean-`99a3ca3` normal app is preserved before any
+new package build. Normal packaged owner UI/SSO/restart, actual account effects,
+installation/update and Developer ID/notarization remain open. No account activity,
+installation, push or publication occurred; the private project hub is unchanged
+because publication is not authorized.
+
 ### Paged query history (13 November 2026)
 
 Base is `2b4ee70` on `feat/datagrip-replacement`. The lead coordinates three

@@ -1,4 +1,4 @@
-import { executionSummaryText } from "./ExecutionSummary";
+import { historyDurationText, historyEvidenceText, historyExecutionText } from "./HistoryMetadata";
 import type {
   ConnectionProfile,
   DatabaseObjectKind,
@@ -418,18 +418,20 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
     for (const entry of input.history) {
       if (!queryLower && input.scope === "all" && !entry.sqlStored) continue;
       const preview = formatHistorySingleLine(entry.sqlPreview);
-      const execution = executionSummaryText(entry.executionSummary, entry.status);
+      const execution = historyExecutionText(entry);
+      const lifecycle =
+        (entry.provenance ?? "recorded") !== "recorded" ? historyEvidenceText(entry) : "";
       historyItems.push({
         item: {
           id: `hist:${entry.id}`,
           kind: "history",
           entry,
           label: preview,
-          subtitle: `${entry.connectionName} · ${entry.elapsedMs} ms · ${execution}${entry.executionSummary ? " · Attempts may not reach the server; completed statements may be uncommitted" : ""}`,
+          subtitle: `${entry.connectionName} · ${historyDurationText(entry)} · ${execution}${lifecycle ? ` · ${lifecycle}` : ""}${entry.executionSummary ? " · Attempts may not reach the server; completed statements may be uncommitted" : ""}`,
           shortcut: "History",
         },
         primary: preview,
-        haystack: `${entry.sqlPreview ?? ""} ${entry.connectionName} ${execution} history`,
+        haystack: `${entry.sqlPreview ?? ""} ${entry.connectionName} ${execution} ${lifecycle} history`,
       });
     }
   }

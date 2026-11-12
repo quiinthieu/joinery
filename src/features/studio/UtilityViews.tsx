@@ -37,7 +37,7 @@ import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
 import { SnowflakeDmlHistorySummary } from "./SnowflakeDmlNotice";
 import { SnowflakeDdlHistorySummary } from "./SnowflakeDdlNotice";
-import { ExecutionSummary } from "./ExecutionSummary";
+import { HistoryExecutionSummary, historyDurationText } from "./HistoryMetadata";
 import {
   beginHistoryClear,
   historyAccessEpoch,
@@ -279,17 +279,17 @@ export function HistoryView() {
                 onClick={() => void openEntry(entry)}
               >
                 <div className="history-entry-top">
-                  <span className={`status-dot ${entry.status}`} />
+                  <span className={`status-dot ${entry.status ?? "idle"}`} aria-hidden="true" />
                   <strong>{entry.connectionName}</strong>
                   <span>{new Date(entry.startedAt).toLocaleString()}</span>
-                  <em>{entry.elapsedMs} ms</em>
+                  <em>{historyDurationText(entry)}</em>
                 </div>
                 <code>
                   {entry.sqlPreview === null
                     ? "SQL text not stored"
                     : entry.sqlPreview || "Empty SQL text"}
                 </code>
-                <ExecutionSummary summary={entry.executionSummary} status={entry.status} />
+                <HistoryExecutionSummary entry={entry} />
                 {entry.snowflakeDml && <SnowflakeDmlHistorySummary evidence={entry.snowflakeDml} />}
                 {entry.snowflakeDdl && <SnowflakeDdlHistorySummary evidence={entry.snowflakeDdl} />}
                 {entry.sqlStored && <ArrowUpRight size={15} className="history-open" />}

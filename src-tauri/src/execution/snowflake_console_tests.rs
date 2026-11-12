@@ -854,7 +854,10 @@ async fn reviewed_console_publication_panic_keeps_durable_ack_and_records_failur
     assert_eq!(terminal.accounting.not_attempted, 1);
     assert_eq!(*final_status.lock(), Some(RunStatus::Failed));
     assert_eq!(view.results[0].status, RetentionStatus::Truncated);
-    assert_eq!(studio.history("").unwrap()[0].status, RunStatus::Failed);
+    let history = studio.history("").unwrap();
+    assert_eq!(history[0].status, Some(RunStatus::Failed));
+    assert_eq!(history[0].provenance, HistoryProvenance::Recorded);
+    assert_eq!(history[0].elapsed_ms, None);
     assert_eq!(
         studio
             .persistence
